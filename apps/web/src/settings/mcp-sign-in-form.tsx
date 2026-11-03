@@ -166,8 +166,12 @@ export const OauthDisclosure = ({
     oauth.clientRegistration !== "auto" ||
     grant;
 
+  // Open on first sight when the entry already has something to show; after that the owner's own opening and closing stand,
+  // so typing the first character into a closed disclosure does not shut it under the owner's hands.
+  const [openAtStart] = useState(touched);
+
   return (
-    <details className="rounded-lg border" open={touched}>
+    <details className="rounded-lg border" open={openAtStart}>
       <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Sign-in (OAuth)</summary>
       <div className="flex flex-col gap-4 border-t p-4">
         <p className="max-w-prose text-xs text-muted-foreground">

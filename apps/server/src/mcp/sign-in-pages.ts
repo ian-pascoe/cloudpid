@@ -18,11 +18,9 @@ import type {
   McpSignInKnownCompleteAnswer,
 } from "@cloudpid/mcp/types";
 import { MCP_SIGN_IN_GLOBAL } from "@cloudpid/mcp/types";
+import { SIGN_IN_CHANNEL } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { sha256Bytes } from "./sign-in-client.ts";
-
-/** The channel the callback page tells Settings (any open tab of the app) on. */
-export const SIGN_IN_CHANNEL = "cloudpid:mcp-sign-in";
 
 /**
  * The callback page's one script: it takes the code out of the address bar, then tells the channel the outcome. It is

@@ -3,16 +3,11 @@
 // the stage's client name, the client document, the DCR redirect URI, the 256-bit `state`, the PKCE pair and the
 // authorization URL. Pure but for the random bytes, so it is tested without a Worker.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over values.
-import { type McpStageNaming, mcpClientNameFor, sha256Hex } from "@cloudpid/config";
+import { sha256Hex } from "@cloudpid/config";
 import type { AuthorizationServerMetadata } from "@cloudpid/mcp/oauth";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { callbackUrl, clientDocumentUrl } from "./sign-in-origin.ts";
-
-/** The stage a client name is made for, and the name (`@cloudpid/config`'s, which the Settings form shows too). */
-export type StageNaming = McpStageNaming;
-
-export const clientNameFor = mcpClientNameFor;
 
 /** The client document (→ The document): the content an authorization server fetches at its first sign-in. */
 export const clientDocument = (input: {

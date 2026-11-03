@@ -235,13 +235,17 @@ const McpRowView = ({
     ) || undefined;
 
   return (
-    <li id={`mcp-server-${row.name}`} className="flex scroll-mt-6 flex-col gap-2 py-3">
+    <li
+      id={`mcp-server-${row.name}`}
+      tabIndex={-1}
+      className="flex scroll-mt-6 flex-col gap-2 py-3"
+    >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-mono text-sm font-medium break-all">{row.name}</span>
         <Badge>{row.server.type === "stdio" ? "stdio" : "HTTP"}</Badge>
         <Badge>{sourceBadgeOf(row, atGlobal)}</Badge>
-        {signIn !== null && <SignInChip line={signIn} />}
-        {chip !== undefined && !(signIn !== null && isSignInState(chip)) && (
+        {signIn?.chip != null && <SignInChip chip={signIn.chip} />}
+        {chip !== undefined && !(signIn?.chip != null && isSignInState(chip)) && (
           <StatusChip chip={chip} />
         )}
       </div>
@@ -327,7 +331,14 @@ const McpRowView = ({
             Tool exposure…
           </Button>
         )}
-        {signIn !== null && <SignInControls scope={scope} name={row.name} line={signIn} />}
+        {signIn !== null && (
+          <SignInControls
+            scope={scope}
+            name={row.name}
+            line={signIn}
+            returnTo={`mcp-server-${row.name}`}
+          />
+        )}
         <span className="flex items-center gap-1 sm:ml-auto">
           {own ? (
             <>
@@ -792,7 +803,7 @@ const McpLoaded = ({ scope, view }: { scope: string; view: McpScopeView }) => {
                 scope={scope}
                 row={row}
                 chip={statuses.chips[row.name]}
-                signIn={mcpSignInLine(row, signIns)}
+                signIn={mcpSignInLine(row, signIns, statuses.chips[row.name]?.state)}
                 references={references}
                 busy={busy}
                 onChange={change}

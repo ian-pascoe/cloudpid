@@ -13,10 +13,10 @@ import {
   invalidCallbackPage,
   PAGE_STYLE,
   type Page,
-  SIGN_IN_CHANNEL,
   startProblemPage,
   startPromptPage,
 } from "./sign-in-pages.ts";
+import { SIGN_IN_CHANNEL } from "@cloudpid/protocol";
 
 const sha256Source = async (text: string): Promise<string> => {
   const digest = new Uint8Array(

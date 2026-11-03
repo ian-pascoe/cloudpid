@@ -47,6 +47,9 @@ export const MAX_MCP_BINDINGS = 200;
 export const MAX_MCP_PENDING = 20;
 export const MAX_MCP_WAITERS = 100;
 
+/** How long a pending sign-in that expired unanswered is kept, to be told to the owner as a lapsed start. */
+export const LAPSED_START_RETENTION_MS = 7 * 24 * 60 * 60_000;
+
 /** How long a pending sign-in and a waiter live. */
 export const PENDING_SIGN_IN_TTL_MS = 10 * 60_000;
 export const SIGN_IN_WAITER_TTL_MS = 30 * 24 * 60 * 60_000;
@@ -510,7 +513,7 @@ export type McpSignIns = {
 
   /**
    * Keep `pending` as the key's one pending row (a newer start replaces it), at most 20, the oldest dropped and the
-   * expired ones swept. Refused when its metadata or client is over 64 KiB.
+   * ones that expired more than a week ago swept (an expired document start is kept for Settings: a lapsed start). Refused when its metadata or client is over 64 KiB.
    */
   readonly putPending: (pending: McpPendingSignIn) => { readonly status: "put" } | McpStoreRefusal;
   /** Take the pending row of a `state`'s hash, deleting it first (a code is used once). */
@@ -938,7 +941,12 @@ export const openMcpSignIns = (
       }
 
       transactionSync(() => {
-        sql.exec("DELETE FROM mcp_pending_sign_ins WHERE expires_at <= ?", pending.createdAt);
+        // An expired start stays for a week, so that Settings can say a document client may have been refused
+        // (`listPending`): it goes with its server's next start, its completion, or this sweep.
+        sql.exec(
+          "DELETE FROM mcp_pending_sign_ins WHERE expires_at <= ?",
+          pending.createdAt - LAPSED_START_RETENTION_MS,
+        );
         sql.exec(
           `INSERT OR REPLACE INTO mcp_pending_sign_ins (
              key_hash, state_hash, environment, redirect_uri, issuer, metadata, client, sealed_verifier,

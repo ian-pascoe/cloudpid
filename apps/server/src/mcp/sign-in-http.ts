@@ -9,6 +9,7 @@
 // made on and the same-origin header. Nothing here logs a URL, a query or a body: a callback's address holds a single-use
 // code.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off preferSchemaOverJson:off
+import { mcpClientNameFor } from "@cloudpid/config";
 import { boundedText } from "@cloudpid/mcp/oauth";
 import {
   type McpSignInStage,
@@ -29,12 +30,7 @@ import {
   STAGE_LABEL_VAR,
 } from "../deployment.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
-import {
-  clientDocument,
-  clientNameFor,
-  safeReturnPath,
-  WELL_FORMED_STATE,
-} from "./sign-in-client.ts";
+import { clientDocument, safeReturnPath, WELL_FORMED_STATE } from "./sign-in-client.ts";
 import { signInOrigin } from "./sign-in-origin.ts";
 import { type McpSignInCarry } from "./sign-in-carry.ts";
 import {
@@ -143,7 +139,7 @@ export const serveClientDocument = Effect.fn("mcp.oauth.client_document")(functi
 
   const document = clientDocument({
     origin: stage.origin,
-    clientName: clientNameFor({ label: stage.label, local: false }),
+    clientName: mcpClientNameFor({ label: stage.label, local: false }),
   });
 
   return HttpServerResponse.fromWeb(

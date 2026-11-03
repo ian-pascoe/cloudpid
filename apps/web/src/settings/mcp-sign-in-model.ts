@@ -14,6 +14,7 @@ import {
   mcpClientGrantRow,
   mcpClientNameFor,
   mcpSignInKey,
+  mcpSignInNotApplicable,
   signsInOnItsOwn,
 } from "@cloudpid/config";
 import {
@@ -25,7 +26,6 @@ import {
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import * as Record from "effect/Record";
 import type { McpRow } from "./mcp-model.ts";
 
 /** What the page knows of the sign-ins: still asking, why it could not read them, or the list. */
@@ -49,7 +49,8 @@ export type McpSignInActions = {
 
 /** What an HTTP server's row says of its sign-in. */
 export type McpSignInLine = {
-  readonly chip: { readonly label: string; readonly tone: McpSignInTone };
+  /** The state chip, or null when the row has nothing to say: a server that has not asked for a sign-in. */
+  readonly chip: { readonly label: string; readonly tone: McpSignInTone } | null;
   /** The last problem (at most 300 characters, the Registry's), or null. */
   readonly problem: string | null;
   /** Other words under the chip: the scope a step-up wants. */
@@ -65,8 +66,7 @@ const NO_ACTIONS: McpSignInActions = { signIn: null, stepUp: false, signOut: nul
 
 /** Whether `row` is a server that signs in with OAuth at all: HTTP, and sends no `Authorization` header of its own. */
 export const mcpSignInApplies = (row: McpRow): boolean =>
-  row.server.type === "http" &&
-  !Arr.some(Record.keys(row.server.headers), (name) => name.toLowerCase() === "authorization");
+  mcpSignInNotApplicable(row.server) === undefined;
 
 /** The sign-in of `row` in `list`, by the key's hash. */
 export const mcpSignInOf = (
@@ -111,9 +111,15 @@ const withIssuer = (label: string, host: string | null): string =>
  * What `row` says of its sign-in, given what the page knows of the sign-ins; null for a row that has none (a stdio server,
  * or one with its own `Authorization` header). A server that signs in on its own has its row from `@cloudpid/config`
  * ("Signs in on its own · <issuer host>", no actions) and the Registry's last problem; any other reads its status from the
- * sign-in list.
+ * sign-in list. A server with no sign-in there has not asked for one (OAuth begins with a 401): it shows no chip and no Sign
+ * in, unless its host says it is waiting for a sign-in or was refused (`hostState`, at an Environment), and a sign-in is
+ * then offered. A row at Global has no host: it shows its sign-in once a host has met a 401 and the Registry has noted it.
  */
-export const mcpSignInLine = (row: McpRow, state: McpSignInsState): McpSignInLine | null => {
+export const mcpSignInLine = (
+  row: McpRow,
+  state: McpSignInsState,
+  hostState?: string,
+): McpSignInLine | null => {
   if (!mcpSignInApplies(row)) return null;
 
   const key = mcpSignInKey(row);
@@ -175,12 +181,14 @@ export const mcpSignInLine = (row: McpRow, state: McpSignInsState): McpSignInLin
   const hint = hintFor(row, lapsed);
 
   if (view === undefined) {
+    const waiting = hostState === "sign_in" || hostState === "rejected";
+
     return {
-      chip: { label: "Needs sign-in", tone: "attention" },
+      chip: waiting ? { label: "Needs sign-in", tone: "attention" } : null,
       problem: null,
       notes: [],
       hint,
-      actions: { signIn: "Sign in", stepUp: false, signOut: null },
+      actions: waiting ? { signIn: "Sign in", stepUp: false, signOut: null } : NO_ACTIONS,
       hash,
     };
   }

@@ -184,6 +184,19 @@ export const mcpConnectionKey = (server: McpKeyed): string =>
 export const mcpServerIdentity = (server: McpKeyed): string =>
   sha256Hex(canonicalMcpIdentity(server));
 
+/**
+ * Why OAuth does not apply to `server` (`docs/architecture/mcp-sign-in.md` → MCP sign-ins, Which servers), or undefined when it
+ * does: only an HTTP entry signs in with OAuth, and one that sends its own `Authorization` header does not. The Registry's
+ * sign-in target and the Settings page's rows both read this one rule.
+ */
+export const mcpSignInNotApplicable = (server: McpKeyed["server"]): string | undefined => {
+  if (server.type !== "http") return "Only an HTTP server signs in with OAuth";
+
+  return Arr.some(Record.keys(server.headers), (name) => name.toLowerCase() === "authorization")
+    ? "The entry sends its own Authorization header, so OAuth does not apply"
+    : undefined;
+};
+
 /** An MCP sign-in's key: the three parts, and their SHA-256, which the Registry keys the sign-in's row by. */
 export type McpSignInKey = {
   /** `owner`, or `repo:<owner/repo>` (`mcpKeySource`). */

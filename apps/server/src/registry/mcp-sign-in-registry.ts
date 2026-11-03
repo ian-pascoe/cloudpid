@@ -11,6 +11,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import {
   mcpSignInKey,
+  mcpSignInNotApplicable,
   type McpResolvedServer,
   type McpSignInKey,
   signsInOnItsOwn,
@@ -28,7 +29,6 @@ import type {
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Record from "effect/Record";
 import type * as Types from "effect/Types";
 import { resolvedServer, type ResolvedServersStore } from "./mcp-registry.ts";
 import { type McpSignInRow, type McpSignIns } from "./mcp-sign-ins.ts";
@@ -73,14 +73,12 @@ export const CLIENT_GRANT_REASON =
 export const signInTargetOf = (resolved: McpResolvedServer): SignInTarget => {
   const entry = resolved.server;
 
-  if (entry.type !== "http") {
-    return { status: "not_applicable", reason: "Only an HTTP server signs in with OAuth" };
-  }
+  const reason = mcpSignInNotApplicable(entry);
 
-  if (Arr.some(Record.keys(entry.headers), (name) => name.toLowerCase() === "authorization")) {
+  if (reason !== undefined || entry.type !== "http") {
     return {
       status: "not_applicable",
-      reason: "The entry sends its own Authorization header, so OAuth does not apply",
+      reason: reason ?? "Only an HTTP server signs in with OAuth",
     };
   }
 
@@ -93,6 +91,20 @@ export const signInTargetOf = (resolved: McpResolvedServer): SignInTarget => {
   }
 
   return { status: "target", key, configuredScope: entry.oauth?.scope };
+};
+
+/** How an entry uses a sign-in's row: as the owner's own (`target`), or as a client grant (`client_grant`). */
+export type SignInUse = "owner" | "client_grant";
+
+/** The row `target` uses, by its hash, and how; undefined for a server with no sign-in. */
+export const signInUseOf = (
+  target: SignInTarget,
+): { readonly kind: SignInUse; readonly hash: string } | undefined => {
+  if (target.status === "target") return { kind: "owner", hash: target.key.hash };
+
+  return target.status === "client_grant"
+    ? { kind: "client_grant", hash: target.key.hash }
+    : undefined;
 };
 
 /**

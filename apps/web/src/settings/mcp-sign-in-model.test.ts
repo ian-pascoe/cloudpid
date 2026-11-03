@@ -133,13 +133,26 @@ describe("a row's state chip", () => {
   const line = (more: Partial<McpSignInView>, name = "sentry") =>
     mcpSignInLine(rowOf(name), ready([view(name, more)]));
 
-  it("needs a sign-in when there is none, with Sign in and nothing to sign out of", () => {
+  it("says nothing of a server that has not asked for a sign-in: OAuth begins with a 401", () => {
     expect(mcpSignInLine(rowOf("sentry"), ready([]))).toMatchObject({
-      chip: { label: "Needs sign-in", tone: "attention" },
+      chip: null,
       problem: null,
-      actions: { signIn: "Sign in", stepUp: false, signOut: null },
+      actions: { signIn: null, stepUp: false, signOut: null },
       hash: hashOf("sentry"),
     });
+    expect(mcpSignInLine(rowOf("sentry"), ready([]), "connected")?.chip).toBeNull();
+    expect(mcpSignInLine(rowOf("sentry"), ready([]), "failed")?.actions.signIn).toBeNull();
+  });
+
+  it("needs a sign-in when its host is waiting for one or was refused, with Sign in and nothing to sign out of", () => {
+    for (const waiting of ["sign_in", "rejected"]) {
+      expect(mcpSignInLine(rowOf("sentry"), ready([]), waiting)).toMatchObject({
+        chip: { label: "Needs sign-in", tone: "attention" },
+        problem: null,
+        actions: { signIn: "Sign in", stepUp: false, signOut: null },
+        hash: hashOf("sentry"),
+      });
+    }
   });
 
   it("is signed in at the issuer's host, with Sign in again and Sign out", () => {
@@ -147,7 +160,7 @@ describe("a row's state chip", () => {
       chip: { label: "Signed in · auth.example.com", tone: "ok" },
       actions: { signIn: "Sign in again", stepUp: false, signOut: hashOf("sentry") },
     });
-    expect(line({ issuerHost: null })?.chip.label).toBe("Signed in");
+    expect(line({ issuerHost: null })?.chip?.label).toBe("Signed in");
   });
 
   it("says more access was requested, and signs in again for the wanted scope", () => {
@@ -219,7 +232,7 @@ describe("a server that signs in on its own", () => {
   });
 
   it("takes the host from the metadata URL when the entry pins that, and has no host without a pin's", () => {
-    expect(mcpSignInLine(rowOf("bare"), ready([]))?.chip.label).toBe(
+    expect(mcpSignInLine(rowOf("bare"), ready([]))?.chip?.label).toBe(
       "Signs in on its own · auth.bare.dev",
     );
   });
@@ -241,13 +254,13 @@ describe("a server that signs in on its own", () => {
       problem: "invalid_client (no such client)",
       actions: { signIn: null, signOut: null },
     });
-    expect(grant?.chip.label).toBe("Signs in on its own · auth.service.dev");
+    expect(grant?.chip?.label).toBe("Signs in on its own · auth.service.dev");
   });
 
   it("has no row of its own while the sign-ins cannot be read, but says why", () => {
-    expect(mcpSignInLine(rowOf("service"), { status: "failed", problem: "down" })?.chip.label).toBe(
-      "Can't open sign-ins",
-    );
+    expect(
+      mcpSignInLine(rowOf("service"), { status: "failed", problem: "down" })?.chip?.label,
+    ).toBe("Can't open sign-ins");
   });
 });
 

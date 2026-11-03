@@ -35,7 +35,6 @@ import {
   MAX_METADATA_BYTES,
   pemSecrets,
   requestClientCredentials,
-  revokeTokens,
   type ClientCredentialsAuth,
   type ClientCredentialsOutcome,
   scrubbed,
@@ -63,7 +62,6 @@ import {
 } from "./mcp-sign-in-backoff.ts";
 import {
   attempt,
-  clientInformation,
   environmentsUsing,
   type FlowDeps,
   hostOf,
@@ -82,6 +80,7 @@ import {
   told,
 } from "./mcp-sign-in-registry.ts";
 import { type McpTokens, openTokens, sealTokens } from "./mcp-sign-in-seal.ts";
+import { revokeOwnerRow } from "./mcp-sign-in-revoke.ts";
 import type { McpSignInRow, McpSignIns } from "./mcp-sign-ins.ts";
 import { type OauthSecret, type OauthSecretField, resolveOauthValue } from "./mcp-values.ts";
 
@@ -370,74 +369,31 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
    */
   const retireOwnerSignIn = (
     request: ClientGrantRequest,
-    vault: KeptVault,
     row: McpSignInRow,
     now: number,
   ): Effect.Effect<string | undefined> =>
     Effect.gen(function* () {
       const { hash } = request.key;
-      const { client, sealed } = row;
-      let failure: string | undefined;
-      const metadata = row.metadata === null ? Option.none() : metadataOf(row.metadata);
 
-      const opened =
-        sealed === null ? undefined : yield* openTokens(vault, hash, sealed).pipe(Effect.result);
+      const revoked = yield* revokeOwnerRow(deps, row, {
+        environment: request.environment,
+        server: request.server,
+      });
 
-      if (opened !== undefined && Result.isSuccess(opened) && Option.isSome(metadata)) {
-        yield* Effect.annotateCurrentSpan({ "mcp.issuer_host": hostOf(metadata.value.issuer) });
+      yield* outcomeOf(revoked.outcome);
 
-        // The client as it signed in; a confidential one whose secret is gone revokes as a public client, which the
-        // server may refuse.
-        const info =
-          client === null
-            ? undefined
-            : yield* clientInformation(deps, vault, request.environment, {
-                server: request.server,
-                client,
-              }).pipe(Effect.orElseSucceed(() => ({ client_id: client.id })));
-
-        const revoked =
-          info === undefined
-            ? undefined
-            : yield* Effect.promise(() =>
-                revokeTokens({
-                  metadata: metadata.value,
-                  client: info,
-                  refreshToken: opened.success.refresh_token,
-                  accessToken: opened.success.access_token,
-                  fetch: deps.fetch,
-                }),
-              );
-
-        const failed = (revoked ?? []).filter((each) => each.status === "failed");
-
-        yield* outcomeOf(
-          revoked === undefined
-            ? "no_revocation_endpoint"
-            : failed.length === 0
-              ? "revoked"
-              : "revocation_failed",
-        );
-
-        // What failed is said by the kind of token and the status, an OAuth code or the kind of failure: never a token.
-        if (failed.length > 0) {
-          failure = told(
-            `The owner's previous sign-in was dropped, but the authorization server did not revoke its ${failed
-              .map(
-                (each) =>
-                  `${each.token.replace("_", " ")} (${each.status === "failed" ? each.reason : ""})`,
-              )
-              .join(" and ")}`,
-          );
-        }
-      } else {
-        yield* outcomeOf("not_revoked");
-        failure =
-          "The owner's previous sign-in was dropped without being revoked: its tokens or its authorization server's metadata could not be read";
-      }
+      // What failed is said by the kind of token and the status, an OAuth code or the kind of failure: never a token.
+      const failure =
+        revoked.refused !== undefined
+          ? told(
+              `The owner's previous sign-in was dropped, but the authorization server did not revoke its ${revoked.refused}`,
+            )
+          : revoked.outcome === "not_revoked"
+            ? "The owner's previous sign-in was dropped without being revoked: its tokens or its authorization server's metadata could not be read"
+            : undefined;
 
       // Nothing is awaited between this check and the delete.
-      if (sameSealed(deps.signIns.get(hash)?.sealed ?? null, sealed))
+      if (sameSealed(deps.signIns.get(hash)?.sealed ?? null, row.sealed))
         deps.signIns.delete(hash, now);
 
       // Reported as far as there is somebody to tell: the log, and (below) the new row's last problem. Nothing here fails
@@ -492,7 +448,7 @@ export const mcpClientGrant = (deps: ClientGrantDeps): ClientGrant => {
 
         if (users.length > 0) return { status: "failed", reason: signInClash(users, "owner") };
 
-        switched = yield* retireOwnerSignIn(request, vault.success, owned, startedAt);
+        switched = yield* retireOwnerSignIn(request, owned, startedAt);
       }
 
       // The row this fetch is about: what it is checked against again just before it writes.

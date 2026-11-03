@@ -10,12 +10,10 @@
 // of failure, never a token.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import type { McpResolvedServer } from "@cloudpid/config";
-import { revokeTokens } from "@cloudpid/mcp/oauth";
 import { MCP_SIGN_IN_GLOBAL, type McpSignInEnvironment } from "@cloudpid/mcp/types";
 import {
   type McpLapsedStart,
   McpNoSignIn,
-  type McpRevocationView,
   McpSignedOut,
   McpSignInsListing,
   type McpSignInView,
@@ -27,21 +25,13 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import { outcomeOf, sameSealed } from "./mcp-sign-in-backoff.ts";
-import {
-  clientInformation,
-  decodeContext,
-  type FlowDeps,
-  hostOf,
-  metadataOf,
-  serversOf,
-  usesSignIn,
-} from "./mcp-sign-in-flow.ts";
-import { clip, signInTargetOf, told } from "./mcp-sign-in-registry.ts";
-import { openTokens } from "./mcp-sign-in-seal.ts";
+import { outcomeOf } from "./mcp-sign-in-backoff.ts";
+import { decodeContext, type FlowDeps, hostOf, serversOf, usesSignIn } from "./mcp-sign-in-flow.ts";
+import { type SignInUse, signInTargetOf, signInUseOf, told } from "./mcp-sign-in-registry.ts";
+import { notRevoked, revokeOwnerRow } from "./mcp-sign-in-revoke.ts";
 import type { McpSignInRecord } from "./mcp-sign-ins.ts";
 
-type Kind = "owner" | "client_grant";
+type Kind = SignInUse;
 
 /** Who uses a sign-in, by the kind of entry (a row's own kind is the one that counts for it). */
 type Users = {
@@ -79,11 +69,9 @@ const usersOfAll = (deps: FlowDeps): ReadonlyMap<string, Users> => {
     use: (hash: string, kind: Kind) => void,
   ) => {
     for (const resolved of servers ?? []) {
-      const target = signInTargetOf(resolved);
+      const used = signInUseOf(signInTargetOf(resolved));
 
-      if (target.status === "target") use(target.key.hash, "owner");
-
-      if (target.status === "client_grant") use(target.key.hash, "client_grant");
+      if (used !== undefined) use(used.hash, used.kind);
     }
   };
 
@@ -183,14 +171,6 @@ export const listMcpSignIns = (deps: FlowDeps, now: number): Effect.Effect<McpSi
     return Result.isFailure(vault) ? { ...listing, sealing: told(vault.failure.message) } : listing;
   });
 
-/** What revoking came to, as the owner is told it. */
-type Revoked = { readonly view: McpRevocationView; readonly outcome: string };
-
-const notRevoked = (note: string): Revoked => ({
-  view: { status: "not_attempted", note },
-  outcome: "not_revoked",
-});
-
 /**
  * The entry that uses sign-in `hash` as an owner's (an Environment's first, else Global's own), for the secret of a
  * configured client to be read from the entry as it is now.
@@ -213,81 +193,6 @@ const userOf = (
   return undefined;
 };
 
-/** RFC 7009 for the owner's row `row`: the refresh token, then the access token, at the endpoint its metadata recorded. */
-const revokeRow = (
-  deps: FlowDeps,
-  row: NonNullable<ReturnType<FlowDeps["signIns"]["get"]>>,
-): Effect.Effect<Revoked> =>
-  Effect.gen(function* () {
-    const { client, sealed } = row;
-    const hash = row.key.hash;
-
-    if (sealed === null || client === null) return notRevoked("There were no tokens to revoke");
-
-    const vault = yield* deps.vault.pipe(Effect.result);
-
-    if (Result.isFailure(vault)) {
-      return notRevoked("The tokens could not be opened, so they were not revoked");
-    }
-
-    const opened = yield* openTokens(vault.success, hash, sealed).pipe(Effect.result);
-    const metadata = row.metadata === null ? Option.none() : metadataOf(row.metadata);
-
-    if (Result.isFailure(opened) || Option.isNone(metadata)) {
-      return notRevoked(
-        "The tokens or the authorization server's metadata could not be read, so they were not revoked",
-      );
-    }
-
-    yield* Effect.annotateCurrentSpan({ "mcp.issuer_host": hostOf(metadata.value.issuer) });
-
-    // The client as it signed in; a confidential one whose secret does not resolve revokes as a public client, which the
-    // server may refuse (and the note then says so).
-    const user = userOf(deps, hash);
-
-    const info =
-      user === undefined
-        ? { client_id: client.id }
-        : yield* clientInformation(deps, vault.success, user.environment, {
-            server: user.server,
-            client,
-          }).pipe(Effect.orElseSucceed(() => ({ client_id: client.id })));
-
-    const revoked = yield* Effect.promise(() =>
-      revokeTokens({
-        metadata: metadata.value,
-        client: info,
-        refreshToken: opened.success.refresh_token,
-        accessToken: opened.success.access_token,
-        fetch: deps.fetch,
-      }),
-    );
-
-    if (revoked === undefined)
-      return { view: { status: "no_endpoint" }, outcome: "no_revocation_endpoint" };
-
-    const failed = Arr.filter(revoked, (each) => each.status === "failed");
-
-    if (failed.length === 0) return { view: { status: "revoked" }, outcome: "revoked" };
-
-    return {
-      view: {
-        status: "failed",
-        note: told(
-          `The authorization server did not revoke its ${Arr.join(
-            Arr.map(
-              failed,
-              (each) =>
-                `${each.token.replace("_", " ")} (${each.status === "failed" ? clip(each.reason, 80) : ""})`,
-            ),
-            " and ",
-          )}`,
-        ),
-      },
-      outcome: "revocation_failed",
-    };
-  });
-
 /**
  * Sign out of the sign-in `hash` (→ Sign-out): the server's revocation, then the delete. A client grant that an entry still
  * uses has nothing to sign out of (`NotApplicable`: its host's `failed` state is its error and the Registry mends it by
@@ -307,7 +212,7 @@ export const signOutMcpSignIn = (
     const kind = kindOf(row);
     const users = usersOfAll(deps).get(hash) ?? NO_USERS;
 
-    if (kind === "client_grant" && users.client_grant.length > 0) {
+    if (kind === "client_grant" && (users.client_grant.length > 0 || users.global.client_grant)) {
       return McpSignOutNotApplicable.make({
         message:
           "This server signs in on its own with client credentials: there is no sign-in to sign out of",
@@ -326,16 +231,17 @@ export const signOutMcpSignIn = (
     const revoked =
       kind === "client_grant"
         ? notRevoked("A client grant's short-lived token is not revoked")
-        : yield* revokeRow(deps, row);
+        : yield* revokeOwnerRow(deps, row, userOf(deps, hash));
 
     yield* outcomeOf(revoked.outcome);
 
-    // Nothing is awaited between this check and the delete.
-    const now2 = deps.signIns.get(hash);
+    // Nothing is awaited between this check and the delete. A refresh keeps the grant (`grantId`) and replaces the tokens,
+    // and dropping them keeps it too: only a sign-in made in the meantime is another grant, and it is kept.
+    const current = deps.signIns.get(hash);
 
-    if (now2 === null) return McpNoSignIn.make({});
+    if (current === null) return McpNoSignIn.make({});
 
-    if (!sameSealed(now2.sealed, row.sealed) || now2.grantId !== row.grantId) {
+    if (current.grantId !== row.grantId) {
       return McpSignOutChanged.make({
         message:
           "A new sign-in was made while this one was being signed out of: it was kept. Sign out again if you meant it.",

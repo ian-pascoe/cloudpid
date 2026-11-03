@@ -9,6 +9,12 @@ import * as Schema from "effect/Schema";
 import { McpUnavailable, OtherAnswerFromWire } from "./mcp-status.ts";
 
 /**
+ * The `BroadcastChannel` the sign-in page tells its outcome on (its message is `{ outcome }`) and the Settings page listens
+ * on, to ask for the list again (`docs/architecture/mcp-sign-in.md` → Starting and completing a sign-in, Learning the outcome).
+ */
+export const SIGN_IN_CHANNEL = "cloudpid:mcp-sign-in";
+
+/**
  * A sign-in: its status (`ok`, `required`, `step_up`, `rejected`, `refresh_failing`; read it with `readMcpSignInStatus`),
  * the kind of its client (`configured`, `document`, `registered`, `client_grant`; null for a row that only remembers a
  * challenge) and the Environments that use it. `unused` says no Environment's set and no Global entry uses it any more.

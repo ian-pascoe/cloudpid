@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off globalDate:off -- JSX lists are native arrays, and the words of an answer are no combinator, and a time is said against now as the Skills page does.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off globalDate:off globalTimers:off -- JSX lists are native arrays, and the words of an answer are no combinator, a time is said against now as the Skills page does, and focus returns after the dialog closes by a DOM timer.
 
 // The pieces of the MCP servers section that show and act on the owner's MCP sign-ins (docs/architecture/mcp-sign-in.md →
 // Settings, Sign-out): a row's state chip, last problem and hint, its Sign in, Sign in again and Sign out; the Sign out dialog;
@@ -11,7 +11,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import type { FormEvent } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Button, buttonVariants } from "../components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "../components/ui/dialog.tsx";
 import { relativeTime } from "../format.ts";
@@ -35,14 +35,15 @@ const TONES: Readonly<Record<McpSignInTone, string>> = {
 };
 
 /** A server's sign-in state: "Signed in · host", "Needs sign-in", "More access requested", … */
-export const SignInChip = ({ line }: { line: McpSignInLine }) => (
+export const SignInChip = ({ chip }: { chip: NonNullable<McpSignInLine["chip"]> }) => (
   <span
+    // Never cut: a refresh's problem rides in the label, and the owner reads all of it (it wraps within the row).
     className={cn(
-      "inline-flex h-5 max-w-full shrink-0 items-center truncate rounded-sm border px-1.5 text-xs leading-none",
-      TONES[line.chip.tone],
+      "inline-flex min-h-5 max-w-full items-center rounded-sm border px-1.5 py-0.5 text-xs leading-tight break-words",
+      TONES[chip.tone],
     )}
   >
-    {line.chip.label}
+    {chip.label}
   </span>
 );
 
@@ -72,10 +73,13 @@ export const SignInControls = ({
   scope,
   name,
   line,
+  returnTo,
 }: {
   scope: string;
   name: string;
   line: McpSignInLine;
+  /** The id of the row, which holds focus when its Sign out is gone. */
+  returnTo: string;
 }) => {
   const setSigningOut = useAtomSet(mcpSignOutOpenAtom(scope));
   const { actions } = line;
@@ -108,7 +112,7 @@ export const SignInControls = ({
           onClick={() => {
             const hash = actions.signOut;
 
-            if (hash !== null) setSigningOut(hash);
+            if (hash !== null) setSigningOut({ hash, returnTo });
           }}
         >
           Sign out
@@ -130,10 +134,11 @@ export const signOutWords = (answer: McpSignOutView): ReadonlyArray<string> => {
           return `${host} revoked the tokens.`;
         case "no_endpoint":
           return `${host} does not offer revocation, so the tokens stay valid there until they expire.`;
-        case "failed":
-          return `${revocation.note ?? `${host} did not revoke the tokens`}. The sign-out went through, but the grant may still stand there: revoke it in the server's own settings.`;
-        default:
+        case "not_attempted":
           return `${revocation.note ?? "Nothing was revoked"}.`;
+        default:
+          // `failed`, and a status a later build adds: the safe reading is that the grant may still stand.
+          return `${revocation.note ?? `${host} did not revoke the tokens`}. The sign-out went through, but the grant may still stand there: revoke it in the server's own settings.`;
       }
     })();
 
@@ -155,12 +160,23 @@ const viewOf = (state: McpSignInsState, hash: string): McpSignInView | undefined
     ? Arr.findFirst(state.list.signIns, (held) => held.hash === hash).pipe(Option.getOrUndefined)
     : undefined;
 
-/** The body of the Sign out dialog: who it affects, what the server is asked, then what came of it. */
-const SignOutDialogBody = ({ scope, hash }: { scope: string; hash: string }) => {
-  const state = useAtomValue(mcpSignInsStateAtom);
+/**
+ * The body of the Sign out dialog: who it affects, what the server is asked, then what came of it. `view` is the sign-in as
+ * the dialog opened on it, which the refreshed list no longer holds once it is signed out. The status region is always
+ * there, empty until the answer, so that a screen reader announces the answer when it is put in.
+ */
+const SignOutDialogBody = ({
+  scope,
+  hash,
+  view,
+  onClose,
+}: {
+  scope: string;
+  hash: string;
+  view: McpSignInView | undefined;
+  onClose: () => void;
+}) => {
   const [result, signOut] = useAtom(signOutMcpAtom(scope));
-  const setOpen = useAtomSet(mcpSignOutOpenAtom(scope));
-  const view = viewOf(state, hash);
   const answer = AsyncResult.isSuccess(result) ? result.value : null;
   const done = answer !== null;
   const busy = result.waiting;
@@ -177,7 +193,7 @@ const SignOutDialogBody = ({ scope, hash }: { scope: string; hash: string }) => 
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
-      {answer === null ? (
+      {!done && (
         <div className="flex flex-col gap-2 text-sm">
           <p>
             {view === undefined || view.environments.length === 0
@@ -185,7 +201,7 @@ const SignOutDialogBody = ({ scope, hash }: { scope: string; hash: string }) => 
               : `Used by ${Arr.join(
                   Arr.map(view.environments, ({ name: environment }) => environment),
                   ", ",
-                )}: their sessions close ${name}'s connection and stop watching its resources. Its tools stay listed.`}
+                )}: their sessions close ${name}'s connection. Its tools stay listed.`}
           </p>
           <p className="text-muted-foreground">
             {view?.issuerHost == null ? "The authorization server" : view.issuerHost} is asked to
@@ -193,23 +209,13 @@ const SignOutDialogBody = ({ scope, hash }: { scope: string; hash: string }) => 
             client binding stay, so you can sign in again.
           </p>
         </div>
-      ) : (
-        <div role="status" className="flex flex-col gap-1 text-sm">
-          {Arr.map(signOutWords(answer), (line) => (
-            <p key={line}>{line}</p>
-          ))}
-        </div>
       )}
+      <div role="status" className="flex flex-col gap-1 text-sm">
+        {answer !== null && Arr.map(signOutWords(answer), (line) => <p key={line}>{line}</p>)}
+      </div>
       <DialogProblem problem={settledFailureOf(result)} />
       <DialogActions>
-        <Button
-          type="button"
-          variant="outline"
-          disabled={busy}
-          onClick={() => {
-            setOpen(null);
-          }}
-        >
+        <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
           {done ? "Close" : "Cancel"}
         </Button>
         {!done && (
@@ -222,25 +228,51 @@ const SignOutDialogBody = ({ scope, hash }: { scope: string; hash: string }) => 
   );
 };
 
-/** The Sign out dialog, open while a sign-in's hash is set at the Scope. */
+/**
+ * The Sign out dialog, open while a sign-out is set at the Scope. It keeps the sign-in as it was when it opened (the list
+ * asks again after the sign-out and no longer holds it), and gives focus back to the row or the list heading when it closes,
+ * since the button that opened it may be gone.
+ */
 export const SignOutDialog = ({ scope }: { scope: string }) => {
-  const [hash, setHash] = useAtom(mcpSignOutOpenAtom(scope));
+  const [signingOut, setSigningOut] = useAtom(mcpSignOutOpenAtom(scope));
   const [result, signOut] = useAtom(signOutMcpAtom(scope));
   const state = useAtomValue(mcpSignInsStateAtom);
-  const view = hash === null ? undefined : viewOf(state, hash);
+  const [held, setHeld] = useState<{ hash: string; view: McpSignInView } | null>(null);
+  const hash = signingOut?.hash ?? null;
+  const listed = hash === null ? undefined : viewOf(state, hash);
+
+  if (hash === null && held !== null) setHeld(null);
+  else if (hash !== null && listed !== undefined && held?.hash !== hash) {
+    setHeld({ hash, view: listed });
+  }
+
+  const view = held?.hash === hash ? held.view : listed;
+
+  const close = () => {
+    const returnTo = signingOut?.returnTo;
+
+    setSigningOut(null);
+    // What an earlier sign-out said shows no more once the dialog is opened again.
+    signOut(Atom.Reset);
+
+    // The dialog gives focus back to what opened it; when that is gone, the page's body has it, and the row or heading does.
+    setTimeout(() => {
+      if (returnTo === undefined) return;
+
+      const active = document.activeElement;
+
+      if (active === null || active === document.body) document.getElementById(returnTo)?.focus();
+    }, 0);
+  };
 
   return (
     <Dialog
       open={hash !== null}
-      onClose={() => {
-        setHash(null);
-        // What an earlier sign-out said shows no more once the dialog is opened again.
-        signOut(Atom.Reset);
-      }}
+      onClose={close}
       dismissible={!result.waiting}
       title={`Sign out of ${view?.server ?? "this server"}?`}
     >
-      {hash !== null && <SignOutDialogBody scope={scope} hash={hash} />}
+      {hash !== null && <SignOutDialogBody scope={scope} hash={hash} view={view} onClose={close} />}
     </Dialog>
   );
 };
@@ -248,6 +280,9 @@ export const SignOutDialog = ({ scope }: { scope: string }) => {
 /** The time of a sign-in's last event, as a list says it. */
 const when = (time: number | null, now: number): string =>
   time === null ? "never" : relativeTime(time, now);
+
+/** The id of the Sign-ins heading, where focus goes when a sign-out from the list is done and its button is gone. */
+const SIGN_INS_HEADING = "sign-ins-heading";
 
 /** One sign-in of the Sign-ins list. */
 const SignInItem = ({ scope, view, now }: { scope: string; view: McpSignInView; now: number }) => {
@@ -270,7 +305,7 @@ const SignInItem = ({ scope, view, now }: { scope: string; view: McpSignInView; 
   ];
 
   return (
-    <li className="flex flex-col gap-2 py-3" data-sign-in={view.hash}>
+    <li className="flex flex-col gap-2 py-3">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-mono text-sm font-medium break-all">{view.server}</span>
         {view.unused && (
@@ -286,7 +321,7 @@ const SignInItem = ({ scope, view, now }: { scope: string; view: McpSignInView; 
             className="sm:ml-auto"
             aria-label={`Sign out of ${view.server} (${view.urlHost})`}
             onClick={() => {
-              setSigningOut(view.hash);
+              setSigningOut({ hash: view.hash, returnTo: SIGN_INS_HEADING });
             }}
           >
             Sign out
@@ -324,13 +359,20 @@ const SignInItem = ({ scope, view, now }: { scope: string; view: McpSignInView; 
  */
 export const SignInsList = () => {
   const state = useAtomValue(mcpSignInsStateAtom);
-  const now = Date.now();
+  // The times are said against now, taken again whenever the list is (a time says "5 min ago" of the moment it was asked).
+  const [now, setNow] = useState(Date.now);
+
+  useEffect(() => {
+    setNow(Date.now());
+  }, [state]);
 
   return (
     <div id="sign-ins" className="scroll-mt-6">
-      <section aria-label="Sign-ins" className="flex flex-col gap-4 border-t py-6">
+      <section aria-labelledby={SIGN_INS_HEADING} className="flex flex-col gap-4 border-t py-6">
         <div className="flex flex-col gap-1">
-          <h2 className="text-sm font-semibold">Sign-ins</h2>
+          <h2 id={SIGN_INS_HEADING} tabIndex={-1} className="text-sm font-semibold">
+            Sign-ins
+          </h2>
           <p className="max-w-prose text-sm text-muted-foreground">
             The MCP sign-ins you have made, kept Global: each environment that has the server uses
             it. One no entry uses any more stays here, unused, until you sign out.

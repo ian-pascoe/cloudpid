@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import {
   authorizationUrl,
   clientDocument,
-  clientNameFor,
   dcrRedirectUri,
   pkceChallenge,
   randomToken,
@@ -16,26 +15,6 @@ import {
 } from "./sign-in-client.ts";
 
 const ORIGIN = "https://cloudpid-server-pr-450.ian-g-pascoe.workers.dev";
-
-describe("the client name", () => {
-  it("is cloudpid on prod and carries the label elsewhere", () => {
-    expect(clientNameFor({ local: false })).toBe("cloudpid");
-    expect(clientNameFor({ label: "pr-450", local: false })).toBe("cloudpid (pr-450)");
-    expect(clientNameFor({ label: "ian", local: true })).toBe("cloudpid (ian, local)");
-  });
-
-  it("puts the suffix on a configured name off prod only", () => {
-    expect(clientNameFor({ local: false }, "Acme Agent")).toBe("Acme Agent");
-    expect(clientNameFor({ label: "pr-1", local: false }, "Acme Agent")).toBe("Acme Agent (pr-1)");
-  });
-
-  it("shortens the configured part and never the suffix", () => {
-    const name = clientNameFor({ label: "pr-1", local: true }, "🙂".repeat(300));
-
-    expect(Array.from(name)).toHaveLength(100);
-    expect(name.endsWith(" (pr-1, local)")).toBe(true);
-  });
-});
 
 describe("the client document", () => {
   it("names itself as the client id and the callback as its one redirect URI", () => {

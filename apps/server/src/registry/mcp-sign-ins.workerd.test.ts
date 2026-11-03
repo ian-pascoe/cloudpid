@@ -46,6 +46,7 @@ import {
 } from "./mcp-sign-in-seal.ts";
 import {
   MAX_MCP_BINDINGS,
+  LAPSED_START_RETENTION_MS,
   MAX_MCP_PENDING,
   MAX_MCP_REGISTRATIONS,
   MAX_MCP_SIGN_INS,
@@ -1051,7 +1052,7 @@ describe("the bounds", () => {
       expect(signIns.takePending(stateHash("unknown"), NOW)).toEqual({ status: "none" });
     }));
 
-  it("treats a pending row older than 10 minutes as absent, and sweeps the expired ones when another is put", () =>
+  it("treats a pending row older than 10 minutes as absent, and keeps it a week for a lapsed start", () =>
     fresh(async ({ signIns, sql }) => {
       signIns.putPending(pending(1));
       signIns.putPending(pending(2, { createdAt: NOW + 5 * 60_000, expiresAt: NOW + 15 * 60_000 }));
@@ -1064,13 +1065,23 @@ describe("the bounds", () => {
       expect(signIns.getPending(fakeKey(1).hash, NOW + 1 + PENDING_SIGN_IN_TTL_MS)).toBeNull();
       expect(signIns.getPending(fakeKey(2).hash, NOW + 1 + PENDING_SIGN_IN_TTL_MS)).not.toBeNull();
 
-      // It is only treated as absent: the row stays until a put sweeps it.
+      // It is only treated as absent: the row stays, for Settings to say a document client may have been refused.
       expect(rowCount()).toBe(2);
 
       signIns.putPending(
         pending(3, { createdAt: NOW + 1 + PENDING_SIGN_IN_TTL_MS, expiresAt: NOW + 20 * 60_000 }),
       );
-      expect(rowCount()).toBe(2);
+      expect(rowCount()).toBe(3);
+
+      // A week after it expired, the next put sweeps it.
+      signIns.putPending(
+        pending(4, {
+          createdAt: NOW + 1 + PENDING_SIGN_IN_TTL_MS + LAPSED_START_RETENTION_MS,
+          expiresAt: NOW + 2 * LAPSED_START_RETENTION_MS,
+        }),
+      );
+      expect(rowCount()).toBe(3);
+      expect(signIns.listPending().map(({ keyHash }) => keyHash)).not.toContain(fakeKey(1).hash);
       expect(signIns.takePending(stateHash("state-1"), NOW)).toEqual({ status: "none" });
     }));
 

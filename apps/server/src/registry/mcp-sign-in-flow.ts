@@ -11,7 +11,7 @@
 // characters, and a span says the OAuth error code and the status only. The Registry never calls a host: a completed
 // sign-in raises the sign-ins revision, which the hosts pull at `windowOpened`.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off preferSchemaOverJson:off
-import { type McpResolvedServer, type McpSignInKey } from "@cloudpid/config";
+import { type McpResolvedServer, type McpSignInKey, mcpClientNameFor } from "@cloudpid/config";
 import type { KeptVault, SealedValue, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import {
   type AuthorizationServerMetadata,
@@ -51,7 +51,6 @@ import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import {
   authorizationUrl,
-  clientNameFor,
   dcrRedirectUri,
   pkceChallenge,
   randomToken,
@@ -61,7 +60,9 @@ import {
   clip,
   MAX_SIGN_IN_ERROR_LENGTH,
   mergeScopes,
+  type SignInUse,
   signInTargetOf,
+  signInUseOf,
   told,
 } from "./mcp-sign-in-registry.ts";
 import {
@@ -168,14 +169,14 @@ export const serversOf = (
 export const usesSignIn = (
   resolved: McpResolvedServer,
   hash: string,
-  kind: "owner" | "client_grant",
+  kind: SignInUse,
   clientId?: string,
 ): boolean => {
-  const target = signInTargetOf(resolved);
+  const use = signInUseOf(signInTargetOf(resolved));
 
   return (
-    target.status === (kind === "client_grant" ? "client_grant" : "target") &&
-    target.key.hash === hash &&
+    use?.kind === kind &&
+    use.hash === hash &&
     (clientId === undefined ||
       (resolved.server.type === "http" && resolved.server.oauth?.clientId === clientId))
   );
@@ -195,7 +196,7 @@ const bindingNamedBy =
 export const environmentsUsing = (
   store: FlowStore,
   hash: string,
-  kind: "owner" | "client_grant",
+  kind: SignInUse,
 ): ReadonlyArray<McpSignInEnvironment> =>
   Arr.map(
     Arr.filter(store.listEnvironments(), ({ id }) =>
@@ -448,7 +449,7 @@ const chooseClient = (
       });
     }
 
-    const clientName = clientNameFor(stage, oauth?.clientName);
+    const clientName = mcpClientNameFor(stage, oauth?.clientName);
     const key = registrationKey({ issuer, redirectUri, clientName });
     const kept = deps.signIns.getRegistration(key);
 

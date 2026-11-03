@@ -103,6 +103,8 @@ const view = (name: string, more: Partial<McpSignInView> = {}): McpSignInView =>
 
 interface Held {
   readonly signIns?: ReadonlyArray<McpSignInView>;
+  /** The state each server's host reports at the Environment. */
+  readonly host?: Readonly<Record<string, string>>;
   readonly signOut?: McpSignOutView;
   readonly signedOut?: Array<string>;
   readonly stage?: { readonly local: boolean; readonly origin?: string; readonly label?: string };
@@ -112,10 +114,30 @@ const handlersFor = (held: Held = {}): Partial<RegistryHandlers> => ({
   listSessions: () => Effect.succeed([]),
   listEnvironments: () => Effect.succeed([WORK]),
   mcpRepoFiles: () => Effect.succeed(McpRepoFiles.make({ files: [] })),
-  mcpServers: () => Effect.succeed(McpServersList.make({ version: "1", servers: [] })),
+  mcpServers: () =>
+    Effect.succeed(
+      McpServersList.make({
+        version: "1",
+        servers: Object.entries(held.host ?? {}).map(([name, state]) => ({
+          name,
+          source: { kind: "global" },
+          state,
+          counts: { tools: 0, prompts: 0 },
+          resources: false,
+          problems: [],
+          tools: [],
+          prompts: [],
+        })),
+      }),
+    ),
   mcpSignIns: () =>
     Effect.succeed({
-      ...McpSignInsListing.make({ revision: 1, signIns: held.signIns ?? [], lapsedStarts: [] }),
+      ...McpSignInsListing.make({
+        revision: 1,
+        // A sign-out the Registry did is gone from the list it answers next.
+        signIns: (held.signIns ?? []).filter(({ hash }) => !(held.signedOut ?? []).includes(hash)),
+        lapsedStarts: [],
+      }),
       stage: { documentEnabled: true, ...(held.stage ?? { local: false }) },
     }),
   signOutMcpSignIn: ({ hash }) =>
@@ -232,11 +254,25 @@ const textOf = (markup: string): string =>
     .trim();
 
 describe("a server's row", () => {
+  it.effect("shows nothing of sign-in on a server that has not asked for one", () =>
+    Effect.gen(function* () {
+      const row = rowOf(yield* render("*"), "sentry");
+
+      expect(textOf(row)).not.toContain("Needs sign-in");
+      expect(row).not.toContain("/oauth/mcp/start");
+    }),
+  );
+
   it.effect(
-    "says it needs a sign-in, and links to start it on the sign-in page, in a new tab",
+    "says a sign-in is needed once the Registry has noted it, and links to start it in a new tab",
     () =>
       Effect.gen(function* () {
-        const row = rowOf(yield* render("*"), "sentry");
+        const row = rowOf(
+          yield* render("*", {
+            signIns: [view("sentry", { status: "required", hasTokens: false })],
+          }),
+          "sentry",
+        );
 
         expect(textOf(row)).toContain("Needs sign-in");
         expect(row).toContain(
@@ -314,13 +350,16 @@ describe("a server's row", () => {
       }),
   );
 
-  it.effect("starts a sign-in from an Environment on that Environment", () =>
-    Effect.gen(function* () {
-      const row = rowOf(yield* render("work"), "sentry");
+  it.effect(
+    "starts a sign-in from an Environment on that Environment, when its host waits for one",
+    () =>
+      Effect.gen(function* () {
+        const row = rowOf(yield* render("work", { host: { sentry: "sign_in" } }), "sentry");
 
-      expect(row).toContain("environment=work");
-      expect(row).toContain("return=%2Fsettings%2Fwork%2Fmcp");
-    }),
+        expect(textOf(row)).toContain("Needs sign-in");
+        expect(row).toContain("environment=work");
+        expect(row).toContain("return=%2Fsettings%2Fwork%2Fmcp");
+      }),
   );
 });
 
@@ -370,12 +409,17 @@ describe("signing out", () => {
   it.effect("asks first, saying who it affects and that the registration stays", () =>
     Effect.gen(function* () {
       const markup = yield* render("*", { signIns: [view("sentry")] }, (registry) => {
-        registry.set(mcpSignOutOpenAtom("*"), hashOf("sentry"));
+        registry.set(mcpSignOutOpenAtom("*"), {
+          hash: hashOf("sentry"),
+          returnTo: "sign-ins-heading",
+        });
       });
 
       expect(textOf(markup)).toContain("Sign out of sentry?");
       expect(textOf(markup)).toContain("Used by Work: their sessions close sentry's connection");
       expect(textOf(markup)).toContain("auth.example.com is asked to revoke the tokens first");
+      // The status region is there before the answer, empty, so that the answer is announced when it comes.
+      expect(markup).toMatch(/<div role="status"[^>]*><\/div>/);
     }),
   );
 
@@ -385,7 +429,10 @@ describe("signing out", () => {
       const registry = yield* settledRegistry("*", { signIns: [view("sentry")], signedOut });
 
       registry.mount(signOutMcpAtom("*"));
-      registry.set(mcpSignOutOpenAtom("*"), hashOf("sentry"));
+      registry.set(mcpSignOutOpenAtom("*"), {
+        hash: hashOf("sentry"),
+        returnTo: "sign-ins-heading",
+      });
       registry.set(signOutMcpAtom("*"), hashOf("sentry"));
       yield* settled(registry, signOutMcpAtom("*"));
 
@@ -415,7 +462,10 @@ describe("signing out", () => {
           });
 
           registry.mount(signOutMcpAtom("*"));
-          registry.set(mcpSignOutOpenAtom("*"), hashOf("sentry"));
+          registry.set(mcpSignOutOpenAtom("*"), {
+            hash: hashOf("sentry"),
+            returnTo: "sign-ins-heading",
+          });
           registry.set(signOutMcpAtom("*"), hashOf("sentry"));
           yield* settled(registry, signOutMcpAtom("*"));
 
@@ -429,6 +479,13 @@ describe("signing out", () => {
       expect(yield* said("no_endpoint")).toContain("does not offer revocation");
       expect(yield* said("failed", "The refresh token was refused (400)")).toContain(
         "The refresh token was refused (400). The sign-out went through, but the grant may still stand there",
+      );
+      // A status a later build adds reads as a failure: the grant may still stand.
+      expect(yield* said("from-a-later-build")).toContain(
+        "did not revoke the tokens. The sign-out went through, but the grant may still stand there",
+      );
+      expect(yield* said("not_attempted", "There were no tokens to revoke")).toContain(
+        "There were no tokens to revoke.",
       );
     }),
   );

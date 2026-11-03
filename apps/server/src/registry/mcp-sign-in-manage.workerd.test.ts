@@ -26,7 +26,7 @@ import { listMcpSignIns, signOutMcpSignIn } from "./mcp-sign-in-manage.ts";
 import { signInTarget } from "./mcp-sign-in-registry.ts";
 import { MCP_OAUTH_PURPOSE, sealTokens } from "./mcp-sign-in-seal.ts";
 import { type McpSignIns, openMcpSignIns, PENDING_SIGN_IN_TTL_MS } from "./mcp-sign-ins.ts";
-import { writeSettings } from "./settings.ts";
+import { putSettingsOverrides, writeSettings } from "./settings.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
 
@@ -74,6 +74,8 @@ const run = <A>(
     readonly asMetadata?: Record<string, Schema.Json>;
     readonly revokeStatus?: number;
     readonly secrets?: Record<string, string>;
+    /** The secret the authorization server's registration answers a DCR client with. */
+    readonly registerSecret?: string;
   } = {},
 ) =>
   runInDurableObject(
@@ -112,7 +114,11 @@ const run = <A>(
 
         if (route === `POST ${AS}/register`) {
           return Response.json(
-            { client_id: "registered-client-1", redirect_uris: [`${ORIGIN}/oauth/mcp/callback`] },
+            {
+              client_id: "registered-client-1",
+              redirect_uris: [`${ORIGIN}/oauth/mcp/callback`],
+              client_secret: options.registerSecret,
+            },
             { status: 201 },
           );
         }
@@ -162,12 +168,15 @@ const run = <A>(
           ),
         );
 
+      // The Secrets the Environment has now: a test can take them away.
+      let kept = options.secrets ?? {};
+
       const deps: FlowDeps = {
         store,
         signIns,
         vault: Effect.succeed(vault),
         fetch,
-        sources: () => Effect.succeed({ secrets: options.secrets ?? {}, variables: {} }),
+        sources: () => Effect.succeed({ secrets: kept, variables: {} }),
       };
 
       const keyHash = (name: string): string => {
@@ -233,6 +242,12 @@ const run = <A>(
         setGlobal: (value) => {
           writeSettings(store, { mcp: { servers: value } }, 5);
         },
+        forgetSecrets: () => {
+          kept = {};
+        },
+        setOverrides: (environment, value) => {
+          putSettingsOverrides(store, environment, { mcp: { servers: value } });
+        },
         startOnly: async (server = "sentry", at = NOW) =>
           observed(
             startMcpSignIn(deps, { environment: DEFAULT_ENVIRONMENT, server, stage: STAGE }, at),
@@ -261,6 +276,9 @@ type Harness = {
     now?: number,
   ) => ReturnType<typeof signOutMcpSignIn> extends Effect.Effect<infer A> ? Promise<A> : never;
   readonly setGlobal: (value: Schema.Json) => void;
+  readonly setOverrides: (environment: string, value: Schema.Json) => void;
+  /** The Environment's Secrets are gone from now on. */
+  readonly forgetSecrets: () => void;
   readonly startOnly: (server?: string, at?: number) => Promise<{ readonly status: string }>;
   readonly dump: () => string;
 };
@@ -532,6 +550,53 @@ describe("Sign out", () => {
       expect(signIns.get(hash)).not.toBeNull();
     }));
 
+  it("keeps the sign-in when a refresh landed while it was being revoked: the grant is the same", () =>
+    run(async ({ setGlobal, signIn, signOut, signIns, keyHash, vault }) => {
+      setGlobal(SENTRY);
+      await signIn();
+
+      const hash = keyHash("sentry");
+
+      const sealed = await Effect.runPromise(
+        sealTokens(vault, hash, {
+          access_token: "rotated-access",
+          refresh_token: "rotated-refresh",
+        }),
+      );
+
+      if (sealed.status !== "sealed") throw new Error("not sealed");
+
+      onRevoke = () => {
+        signIns.replaceTokens(
+          hash,
+          { sealed: sealed.sealed, expiresAt: NOW + 7_200_000, scope: null },
+          NOW + 2900,
+        );
+        onRevoke = () => undefined;
+      };
+
+      const answer = await signOut(hash);
+
+      expect(answer._tag).toBe("SignedOut");
+      expect(signIns.get(hash)).toBeNull();
+    }));
+
+  it("signs out of a sign-in whose tokens were dropped while it was being revoked", () =>
+    run(async ({ setGlobal, signIn, signOut, signIns, keyHash }) => {
+      setGlobal(SENTRY);
+      await signIn();
+
+      const hash = keyHash("sentry");
+
+      onRevoke = () => {
+        signIns.dropTokens(hash, "The sign-in expired", NOW + 2900);
+        onRevoke = () => undefined;
+      };
+
+      expect((await signOut(hash))._tag).toBe("SignedOut");
+      expect(signIns.get(hash)).toBeNull();
+    }));
+
   it("answers NoSignIn for a sign-in that is gone", () =>
     run(async ({ signOut }) => {
       expect(await signOut("0".repeat(64))).toEqual({ _tag: "NoSignIn" });
@@ -555,6 +620,87 @@ describe("Sign out", () => {
       expect(revocations(calls)).toEqual([]);
       expect(signIns.get(hash)).toBeNull();
     }));
+});
+
+describe("revoking a sign-in no entry uses any more", () => {
+  const BASIC = { asMetadata: { token_endpoint_auth_methods_supported: ["client_secret_basic"] } };
+
+  const basicOf = (call: Call | undefined): string | undefined => {
+    const header = call?.headers.get("authorization");
+
+    return header?.startsWith("Basic ") === true ? atob(header.slice(6)) : undefined;
+  };
+
+  it("revokes as a registered client with the secret in its registration", () =>
+    run(
+      async ({ setGlobal, signIn, signOut, keyHash, calls }) => {
+        setGlobal({ sentry: { url: SERVER_URL, oauth: { clientRegistration: "dcr" } } });
+        await signIn();
+
+        const hash = keyHash("sentry");
+
+        // The entry is gone: the sign-in is unused, and its registration still says who it was.
+        setGlobal({});
+
+        expect(await signOut(hash)).toMatchObject({
+          _tag: "SignedOut",
+          revocation: { status: "revoked" },
+        });
+
+        const [first, second] = revocations(calls);
+
+        expect(basicOf(first)).toBe(`registered-client-1:${SECRET}`);
+        expect(basicOf(second)).toBe(`registered-client-1:${SECRET}`);
+      },
+      { ...BASIC, registerSecret: SECRET },
+    ));
+
+  it("revokes as a configured client with the secret its row says it used, read where it is kept", () =>
+    run(
+      async ({ setGlobal, signIn, signOut, keyHash, calls }) => {
+        setGlobal({
+          sentry: {
+            url: SERVER_URL,
+            oauth: { clientId: "owner-app", clientSecret: "${SENTRY_SECRET}", issuer: AS },
+          },
+        });
+        await signIn();
+
+        const hash = keyHash("sentry");
+
+        setGlobal({});
+
+        expect((await signOut(hash))._tag).toBe("SignedOut");
+        expect(basicOf(revocations(calls)[0])).toBe(`owner-app:${SECRET}`);
+      },
+      { ...BASIC, secrets: { SENTRY_SECRET: SECRET } },
+    ));
+
+  it("asks as a public client when the secret is gone, and says so when the server refuses", () =>
+    run(
+      async ({ setGlobal, signIn, signOut, keyHash, calls, forgetSecrets }) => {
+        setGlobal({
+          sentry: {
+            url: SERVER_URL,
+            oauth: { clientId: "owner-app", clientSecret: "${SENTRY_SECRET}", issuer: AS },
+          },
+        });
+        await signIn();
+
+        const hash = keyHash("sentry");
+
+        setGlobal({});
+        forgetSecrets();
+
+        const answer = await signOut(hash);
+
+        expect(answer).toMatchObject({ _tag: "SignedOut", revocation: { status: "failed" } });
+        expect(JSON.stringify(answer)).toContain("asked as a public client");
+        expect(revocations(calls)[0]?.headers.get("authorization")).toBeNull();
+        expect(revocations(calls)[0]?.form.get("client_id")).toBe("owner-app");
+      },
+      { ...BASIC, secrets: { SENTRY_SECRET: SECRET }, revokeStatus: 400 },
+    ));
 });
 
 describe("a client grant", () => {
@@ -615,6 +761,21 @@ describe("a client grant", () => {
       expect(answer._tag).toBe("NotApplicable");
       expect(harness.signIns.get(hash)).not.toBeNull();
       expect(revocations(harness.calls)).toEqual([]);
+    }));
+
+  it("has nothing to sign out of while Global's own entry signs in on its own, whichever Environment follows it", () =>
+    run(async (harness) => {
+      harness.setGlobal(GRANT);
+
+      const hash = harness.keyHash("sentry");
+
+      await putGrant(harness, hash);
+      // The Environment keeps a server of its own under that name, at another URL: only Global's layers use the grant.
+      harness.setOverrides(DEFAULT_ENVIRONMENT, { sentry: { url: "https://mcp.other.dev/mcp" } });
+
+      expect(only(await harness.list())).toMatchObject({ unused: false, environments: [] });
+      expect((await harness.signOut(hash))._tag).toBe("NotApplicable");
+      expect(harness.signIns.get(hash)).not.toBeNull();
     }));
 
   it("is unused once the entry stops signing in on its own, and is then only deleted, its short-lived token not revoked", () =>
