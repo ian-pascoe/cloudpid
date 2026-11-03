@@ -18,6 +18,10 @@ export class SessionError extends Schema.TaggedError<
 >()("SessionError", {
   operation: Schema.String,
   message: Schema.String,
+  /** Why a send was refused, for a client that acts on it: an `MCP_PROMPT_*` code (`MCP_PROMPT_ERROR_CODES`). */
+  code: Schema.optionalKey(Schema.String),
+  /** With `code`: the MCP server it is about. */
+  server: Schema.optionalKey(Schema.String),
 }) {}
 
 /** Run `run`, failing with a `SessionError` of `operation` when it rejects. */

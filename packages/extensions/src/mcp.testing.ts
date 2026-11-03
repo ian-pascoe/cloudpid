@@ -13,6 +13,7 @@ import {
   McpApplied,
   McpHostCompleted,
   McpReloaded,
+  type McpHostPromptGet,
   type McpHostRequest,
   type McpHostRequestHooks,
   type McpHostResourceRequest,
@@ -24,6 +25,7 @@ import {
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import type { Mutable } from "effect/Types";
 import type { HostLost, McpHostClientService } from "./mcp.ts";
@@ -60,8 +62,11 @@ export type FakeMcpServer = {
   readonly error?: string;
   /** Problems found at discovery. */
   readonly problems?: ReadonlyArray<{ tool?: string; prompt?: string; problem: string }>;
-  /** The prompts it offers, by name. */
-  readonly prompts?: ReadonlyArray<string>;
+  /**
+   * The prompts it offers: a name, or the prompt as the inventory keeps it (`name`, `title`, `description`, `arguments`).
+   * They move `promptsVersion` and never `version`.
+   */
+  readonly prompts?: ReadonlyArray<string | JsonObject>;
   /** Where it was discovered (a stdio server's Workspace). */
   readonly discoveredIn?: string;
 };
@@ -73,7 +78,7 @@ export type FakeMcpCall =
   | { readonly method: "apply"; readonly input: McpApply }
   | {
       readonly method: "request";
-      readonly input: McpHostRequest | McpHostResourceRequest;
+      readonly input: McpHostRequest | McpHostResourceRequest | McpHostPromptGet;
     };
 
 /**
@@ -87,7 +92,7 @@ export type FakeMcpApplyAnswer = (
 
 /** How the fake answers a request: by default, the tool's name and its arguments as text. */
 export type FakeMcpAnswer = (
-  input: McpHostRequest | McpHostResourceRequest,
+  input: McpHostRequest | McpHostResourceRequest | McpHostPromptGet,
   hooks: McpHostRequestHooks,
 ) => Promise<McpHostRequestResult | HostLost>;
 
@@ -150,8 +155,8 @@ const inventoryOf = (
       conn: `conn-${server.name}`,
       state: server.state ?? "connected",
       toolsHash: JSON.stringify(tools),
-      promptsHash: "",
-      counts: { tools: tools.length, prompts: 0 },
+      promptsHash: JSON.stringify(server.prompts ?? []),
+      counts: { tools: tools.length, prompts: server.prompts?.length ?? 0 },
       resources: server.resources === true,
       problems: [],
     };
@@ -181,7 +186,9 @@ const inventoryOf = (
       inventory.counts = { tools: tools.length, prompts: server.prompts.length };
 
       if (parts.includes("prompts")) {
-        inventory.prompts = Arr.map(server.prompts, (name) => ({ name }));
+        inventory.prompts = Arr.map(server.prompts, (prompt) =>
+          Predicate.isString(prompt) ? { name: prompt } : prompt,
+        );
       }
     }
 
@@ -194,14 +201,21 @@ const inventoryOf = (
     return inventory;
   });
 
-/** The fake's version: the same inventory always answers the same one, as the host's content hashes do. */
-const versionOf = (servers: ReadonlyArray<FakeMcpServer>) => {
+const hashOf = (text: string, prefix: string) => {
   let hash = 5381;
 
-  for (const char of JSON.stringify(servers)) hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0;
+  for (const char of text) hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0;
 
-  return `v-${hash.toString(16)}`;
+  return `${prefix}-${hash.toString(16)}`;
 };
+
+/** The fake's version: the same inventory always answers the same one, as the host's content hashes do. Prompts are not in it. */
+const versionOf = (servers: ReadonlyArray<FakeMcpServer>) =>
+  hashOf(JSON.stringify(Arr.map(servers, ({ prompts: _prompts, ...rest }) => rest)), "v");
+
+/** The fake's prompts version: the prompts alone, as the host's `promptsVersion` is. */
+const promptsVersionOf = (servers: ReadonlyArray<FakeMcpServer>) =>
+  hashOf(JSON.stringify(Arr.map(servers, ({ name, prompts }) => [name, prompts ?? []])), "p");
 
 /**
  * An in-memory host. `set` replaces its inventory, `features` what `requestStart` lists (the host's own by default),
@@ -226,12 +240,16 @@ export const fakeMcpHost = (initial: ReadonlyArray<FakeMcpServer> = []) => {
           ? failed
           : {
               version: versionOf(servers),
-              promptsVersion: "",
+              promptsVersion: promptsVersionOf(servers),
               features,
               servers: Record.fromEntries(
                 Arr.map(inventoryOf(servers, []), (server) => [
                   server.name,
-                  { toolsHash: server.toolsHash, promptsHash: "", state: server.state },
+                  {
+                    toolsHash: server.toolsHash,
+                    promptsHash: server.promptsHash,
+                    state: server.state,
+                  },
                 ]),
               ),
               watches: { changed: [], ended: [] },
@@ -245,7 +263,7 @@ export const fakeMcpHost = (initial: ReadonlyArray<FakeMcpServer> = []) => {
           ? failed
           : {
               version: versionOf(servers),
-              promptsVersion: "",
+              promptsVersion: promptsVersionOf(servers),
               servers: inventoryOf(
                 input.names === undefined
                   ? servers
