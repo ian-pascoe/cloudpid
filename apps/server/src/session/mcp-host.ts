@@ -105,15 +105,19 @@ const PART_LENGTH = 256 * 1024;
  * A store in `kv` for Environment `environment`'s MCP tools: the text in parts of at most `PART_LENGTH` characters
  * under `mcp-tools:<environment>:<n>`, with their count under `mcp-tools:<environment>`, written last, so a text is
  * read whole or not at all; and each conversation's last opened Context Window under
- * `mcp-window:<environment>:<conversation>`.
+ * `mcp-window:<environment>:<conversation>`; and the hash of the listing the last completed broadcast of notices told
+ * every conversation of, under `mcp-broadcast:<environment>`.
  */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a store over two values, not a combinator.
 export const kvMcpToolsStore = (kv: McpToolsKv, environment: string): McpToolsStore => {
   const countKey = `mcp-tools:${environment}`;
   const partKey = (index: number) => `${countKey}:${index}`;
   const windowKey = (conversation: string) => `mcp-window:${environment}:${conversation}`;
+  const broadcastKey = `mcp-broadcast:${environment}`;
 
   return {
+    broadcast: () => kv.get<string>(broadcastKey),
+    broadcasted: (hash) => kv.put(broadcastKey, hash),
     window: (conversation) => kv.get<string>(windowKey(conversation)),
     openWindow: (conversation, window) => kv.put(windowKey(conversation), window),
     load: () => {

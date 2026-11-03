@@ -841,34 +841,40 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const installing = Semaphore.withPermit(yield* Semaphore.make(1));
 
   /**
-   * Install again what the MCP tools are built from now, if it is not what is installed. The conversations are told of
-   * its listing first (their notices queued: placed at the next boundary of a busy Run, at once in an idle one), then the
-   * build is installed, so no model call renders new declarations without the notice that explains them.
+   * What the MCP tools are built from now: the effect that tells the conversations of its listing, and the one that
+   * installs it. Told first (their notices queued: placed at the next boundary of a busy Run, at once in an idle one),
+   * installed second, so a model call that renders the new declarations has its notice queued. Known limits (see
+   * `docs/architecture/mcp-in-a-session.md` → The prompt cache and the `mcp_servers` section): pi-durable places a Run's
+   * inbox at a boundary and fixes its tools later, in `prepare`, so a request in that gap has the new tools and its notice
+   * one boundary later; and the broadcast reads each conversation's context, so a Stop or message waits for it.
    */
-  const reinstallMcp = Effect.suspend(() => {
-    if (options.mcp === undefined) return Effect.void;
+  const mcpBuild = () => {
+    if (options.mcp === undefined) return { announce: Effect.void, install: Effect.void };
 
     const built = options.mcp.reinstall(installed, settings.current());
 
-    return Effect.provideContext(built.announce, services).pipe(
-      Effect.andThen(installOver(built.extensions)),
-    );
+    return {
+      announce: Effect.provideContext(built.announce, services),
+      install: installOver(built.extensions),
+    };
+  };
+
+  /** Install again what the MCP tools are built from now, if it is not what is installed. */
+  const reinstallMcp = Effect.suspend(() => {
+    const { announce, install } = mcpBuild();
+
+    return announce.pipe(Effect.andThen(install));
   });
 
   // The `mcp_servers` notices go to this Harness, before anything resumes or renders a section.
   options.mcp?.bind(mcpNotices(harness.harness));
 
   // What the MCP tools were last built from, before anything resumes: a resumed Run or call finds the tools, and the
-  // declarations, that its Context Window was shown.
-  let announceMcp: Effect.Effect<void> = Effect.void;
+  // declarations, that its Context Window was shown. The conversations are told once the work is resumed (and only if
+  // the kept listing is not the one last told), which finds the tools and the sections as they were shown.
+  const started = mcpBuild();
 
-  if (options.mcp !== undefined) {
-    const built = options.mcp.reinstall(installed, settings.current());
-
-    // The conversations are told once the work is resumed, which finds the tools and the sections as they were shown.
-    announceMcp = Effect.provideContext(built.announce, services);
-    yield* installOver(built.extensions);
-  }
+  yield* started.install;
 
   /** The settings the extensions were last built for. */
   let built = settings.current();
@@ -2711,8 +2717,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   yield* wakeAndResume;
 
-  // What the kept MCP build lists, told to the conversations that were not shown it (a notice a restart cut off).
-  yield* announceMcp;
+  // A broadcast a restart cut off finishes in the background: it is not held up by the start (it ends by itself, and
+  // nothing but a listing that was not told yet makes it read a conversation).
+  yield* started.announce.pipe(Effect.forkIn(scope));
 
   // A `/compact` that was waiting for a Run when the last instance went away waits again.
   for (const key of Record.keys(pendingCompactions())) {

@@ -130,7 +130,11 @@ const stripControls = (text: string): string => text.replace(/\p{Cc}/gu, "");
 
 /** `text` as one line (each run of whitespace one space, other control characters stripped), cut to `MAX_SUMMARY_LENGTH`. */
 const summaryText = (text: string): string => {
-  const clean = text.replace(/\s+|\p{Cc}/gu, (found) => (/\s/u.test(found) ? " " : "")).trim();
+  // The controls that are not whitespace go first, then each run of whitespace becomes one space.
+  const clean = text
+    .replace(/(?!\s)\p{Cc}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
   const characters = Array.from(clean);
 

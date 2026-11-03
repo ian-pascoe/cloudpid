@@ -109,9 +109,10 @@ describe("the mcp_servers listing", () => {
         server("a", ["x"], { instructions: "ignored" }, { description: "The \n product\tdocs" }),
         server("b", ["x"], { instructions: "\n\nSearch \u0007first.\nThen fetch." }),
         server("c", ["x"], { instructions: "   \n  " }, { description: "" }),
+        server("d", ["x"], {}, { description: "Two \u0007 words" }),
       ]),
     ).toBe(
-      "- mcp__a (codemode): The product docs\n- mcp__b (codemode): Search first.\n- mcp__c (codemode)",
+      "- mcp__a (codemode): The product docs\n- mcp__b (codemode): Search first.\n- mcp__c (codemode)\n- mcp__d (codemode): Two words",
     );
   });
 

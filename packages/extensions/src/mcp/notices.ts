@@ -34,9 +34,11 @@ export type McpCheckResult = {
   /**
    * `current`: its context now holds `listing`, shown or told (a notice may have been written or still be queued).
    * `unshown`: its context shows no section yet (its first request of the window shows it), or it is gone.
+   * `pending`: it shows no section yet but has a Run live, which may be in its first `prepare` and rendering the section
+   * as it is now: it is neither told nor left out of later checks.
    * `failed`: the check could not be made; `error` says why.
    */
-  readonly outcome: "current" | "unshown" | "failed";
+  readonly outcome: "current" | "unshown" | "pending" | "failed";
   readonly error?: unknown;
 };
 
@@ -100,6 +102,8 @@ const queuedHash = (requestId: string): string => requestId.slice(requestId.last
 type Queued = {
   /** The write ticks the answer is as new as: a conversation written since is read again. */
   readonly tick: number;
+  /** The conversations with a task live when it was asked. */
+  readonly busy: ReadonlySet<ConversationId>;
   readonly byConversation: ReadonlyMap<ConversationId, ReadonlyArray<string>>;
 };
 
@@ -133,7 +137,9 @@ export const mcpNotices = (harness: Harness): McpNotices => {
       ]);
     }
 
-    return { tick: taken, byConversation };
+    const busy = new Set(Arr.map(inspection.tasks, (task) => task.record.conversationId));
+
+    return { tick: taken, busy, byConversation };
   };
 
   const check = async (
@@ -153,7 +159,7 @@ export const mcpNotices = (harness: Harness): McpNotices => {
     const ids = queued.byConversation.get(id) ?? [];
     const shown = shownIn(await conversation.context(context));
 
-    if (shown === undefined) return "unshown";
+    if (shown === undefined) return seen.busy.has(id) ? "pending" : "unshown";
 
     const last = ids.at(-1);
     const told = last === undefined ? shown.hash : queuedHash(last);

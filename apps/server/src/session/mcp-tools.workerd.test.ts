@@ -414,6 +414,31 @@ describe("an MCP tool in a Session", () => {
     expect(await notices(after)).toHaveLength(1);
   });
 
+  it("writes the notice of a settings read's change before it installs the build", async () => {
+    const { stub } = await scripted({ exposure: "codemode" });
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["First answer."]);
+      await instance.prompt({ requestId: "one", text: "First" });
+      instance.mcpOrderClear();
+      // Offering the server's tools lifts them to direct: its line goes, and the conversation is told so.
+      await instance.mcpOffered(["mcp__docs__*"]);
+    });
+
+    const { order, notices } = await runInDurableObject(stub, async (instance: TestSession) => ({
+      order: instance.mcpOrder(),
+      notices: (await instance.rootEntries()).filter(
+        (entry) => entry.kind === "cloudpid.mcp-servers",
+      ),
+    }));
+
+    expect(order.indexOf("announce")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("install")).toBeGreaterThan(order.indexOf("announce"));
+    expect(notices).toEqual([
+      expect.objectContaining({ text: expect.stringContaining("No MCP server is listed now.") }),
+    ]);
+  });
+
   it("keeps the tools it built when its Workspace cannot be looked up", async () => {
     const { stub } = await scripted();
 

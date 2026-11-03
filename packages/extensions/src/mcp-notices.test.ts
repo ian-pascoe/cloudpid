@@ -492,7 +492,9 @@ describe("a busy conversation when an install lands", () => {
     await Effect.runPromise(mcp.requestStart(startOf()));
 
     // A settings read installs the build: no request start of the owner's, and the Run is busy. Its notice is written
-    // before the build is installed, so a request that is offered the tool never lacks it.
+    // before the build is installed, so a request that is offered the tool has it, here where the Run's boundaries are
+    // far apart. (Not a guarantee to the microsecond: pi-durable places a Run's inbox at a boundary and fixes its tools
+    // later, in `prepare`, so a request in that gap has the new tools and its notice one boundary later.)
     const installed = session.install(mcp);
 
     await new Promise((resolve) => setTimeout(resolve, 60));
@@ -521,6 +523,107 @@ describe("a busy conversation when an install lands", () => {
     expect(offered.length).toBeGreaterThan(0);
     expect(offered.every(told)).toBe(true);
     expect(await session.notices()).toHaveLength(1);
+  });
+});
+
+describe("an object that starts again", () => {
+  /** A runtime over `store` whose notices count each conversation they are asked about. */
+  const counting = (
+    session: Awaited<ReturnType<typeof open>>,
+    host: ReturnType<typeof fakeMcpHost>,
+    store: McpToolsStore,
+  ) => {
+    const mcp = makeMcpTools(host.client, store);
+    const sink = mcpNotices(session.harness);
+    const asked: ConversationId[] = [];
+
+    mcp.bindNotices({
+      check: (input) => {
+        asked.push(...input.conversations);
+
+        return sink.check(input);
+      },
+      conversations: sink.conversations,
+    });
+
+    return { mcp, asked };
+  };
+
+  it("reads no conversation when the kept listing is the one its last broadcast told", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const store = memoryMcpToolsStore();
+    const session = await open(() => answer("ok"));
+
+    const other = await session.harness.createConversation(
+      {
+        ownership: { kind: "ownerless" },
+        agent: { model: { provider: "faux", modelId: "faux-1" } },
+      },
+      context,
+    );
+
+    await session.start(session.tools(host, store));
+    await session.prompt("one");
+    await (await other.submit({ type: "input", content: "hello" }, context)).wait(context);
+
+    // A wake, an alarm's included: the kept build is installed and its listing was told, so nothing is read.
+    host.fail(true);
+
+    const { mcp, asked } = counting(session, host, store);
+
+    await session.install(mcp);
+
+    expect(asked).toEqual([]);
+    expect(await session.notices(other.id)).toEqual([]);
+  });
+
+  it("finishes a broadcast that a crash cut off, though the notices it had written are not written twice", async () => {
+    const host = fakeMcpHost([DOCS]);
+    const store = memoryMcpToolsStore();
+    const session = await open(() => answer("ok"));
+    const before = session.tools(host, store);
+
+    const other = await session.harness.createConversation(
+      {
+        ownership: { kind: "ownerless" },
+        agent: { model: { provider: "faux", modelId: "faux-1" } },
+      },
+      context,
+    );
+
+    await session.start(before);
+    await session.prompt("one");
+    await (await other.submit({ type: "input", content: "hello" }, context)).wait(context);
+
+    // The change is kept and the owner's conversation told; the object goes before the others are.
+    const sink = mcpNotices(session.harness);
+
+    before.bindNotices({
+      check: sink.check,
+      conversations: async () => {
+        throw new Error("The object was evicted");
+      },
+    });
+    host.set([DOCS, LINEAR]);
+    await session.start(before);
+    expect(await session.notices()).toHaveLength(1);
+    expect(await session.notices(other.id)).toEqual([]);
+
+    host.fail(true);
+
+    const { mcp, asked } = counting(session, host, store);
+
+    await session.install(mcp);
+
+    expect(asked).toContain(other.id);
+    expect(await session.notices(other.id)).toHaveLength(1);
+    expect(await session.notices()).toHaveLength(1);
+
+    // It is told now: the next wake reads nothing.
+    const again = counting(session, host, store);
+
+    await session.install(again.mcp);
+    expect(again.asked).toEqual([]);
   });
 });
 

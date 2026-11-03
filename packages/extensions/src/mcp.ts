@@ -141,14 +141,22 @@ export type McpToolsStore = {
   readonly save: (text: string | undefined) => void;
   readonly window: (conversation: string) => string | undefined;
   readonly openWindow: (conversation: string, window: string) => void;
+  /** The hash of the listing the last completed broadcast told every conversation of; none before the first. */
+  readonly broadcast: () => string | undefined;
+  readonly broadcasted: (hash: string) => void;
 };
 
 /** A store that keeps nothing across runtimes. */
 export const memoryMcpToolsStore = (): McpToolsStore => {
   let kept: string | undefined;
   const windows = new Map<string, string>();
+  let broadcast: string | undefined;
 
   return {
+    broadcast: () => broadcast,
+    broadcasted: (hash) => {
+      broadcast = hash;
+    },
     load: () => kept,
     save: (text) => {
       kept = text;
@@ -309,8 +317,9 @@ export const makeMcpTools = (
             if (result.outcome === "current") {
               told.set(result.conversation, listing.hash);
             } else if (
+              result.outcome === "unshown" &&
               (shownCount.get(result.conversation) ?? 0) ===
-              counted[due.indexOf(result.conversation)]
+                counted[due.indexOf(result.conversation)]
             ) {
               unshown.add(result.conversation);
             }
@@ -357,7 +366,10 @@ export const makeMcpTools = (
             Effect.flatMap((all) => ask(Arr.filter(all, (each) => !unshown.has(each)))),
             Effect.tap((done) =>
               Effect.sync(() => {
-                if (done && changes === at) changed = false;
+                if (done && changes === at) {
+                  changed = false;
+                  store.broadcasted(current.hash);
+                }
               }),
             ),
             Effect.asVoid,
@@ -547,7 +559,9 @@ export const makeMcpTools = (
 
     const listing = mcpListing(latest?.servers ?? [], offered);
 
-    if (!listed || listing.hash !== current.hash) {
+    // The first listing of an object is a change only if the last broadcast that completed told another (a wake with
+    // the kept listing told reads no conversation; one a crash cut off finishes it).
+    if (listed ? listing.hash !== current.hash : listing.hash !== store.broadcast()) {
       changed = true;
       changes += 1;
     }
