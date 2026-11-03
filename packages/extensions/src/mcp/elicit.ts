@@ -236,7 +236,11 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   };
 
   const onInput: Eliciting["onInput"] = (request) => {
-    const running = answerInput(request);
+    // A Modern server's question has no error to be told: a form cloudpid cannot take is a `cancel` there, never a
+    // refusal, which would end the call (`docs/architecture/mcp-server-requests.md` → Elicitation requests, Answers).
+    const running = answerInput(request).then((answer) =>
+      request.mode === "deferrable" && answer.kind === "refused" ? CANCELLED : answer,
+    );
 
     answering.add(running);
     void running.finally(() => answering.delete(running)).catch(() => undefined);
