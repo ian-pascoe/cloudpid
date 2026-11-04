@@ -84,7 +84,7 @@ import type {
   WaitRequest,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
-import { MCP_APP_INTERNAL_ERROR, mcpAppError } from "@cloudpid/protocol";
+import { MCP_APP_INTERNAL_ERROR, mcpAppError, resourceUnavailable } from "@cloudpid/protocol";
 import {
   addTask,
   emptyMcpExtension,
@@ -121,6 +121,7 @@ import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -152,6 +153,7 @@ import { sessionApprovalsLayer } from "./approvals.ts";
 import type { McpSignInAskAnswer } from "@cloudpid/mcp/types";
 import { sessionMcpWatches } from "./mcp-watches-store.ts";
 import { sessionMcpApps } from "./mcp-apps-store.ts";
+import { mcpResourcePreviewsLayer, type SpillRead } from "./mcp-resource-previews.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
@@ -168,6 +170,7 @@ import {
   type Answer,
   SessionHost,
   type SessionHostOptions,
+  EXPAND_TIMEOUT,
   sessionHostLayer,
   type SessionHostService,
   type Prompt,
@@ -823,6 +826,16 @@ export class TestSession extends DurableObject {
     return this.#apps;
   }
 
+  /** The Session's previews of a card's links, read through its MCP tools. */
+  #resourcePreviews() {
+    return mcpResourcePreviewsLayer({
+      read: (input) =>
+        this.#mcpTools === undefined
+          ? Effect.succeed(resourceUnavailable("unavailable", "No MCP tools"))
+          : this.#mcpTools.resourcePreview(input),
+    });
+  }
+
   /** The Session's MCP sampler, for a subclass that builds MCP tools of its own. */
   protected mcpSamplingService(): McpSamplingService {
     return this.#mcpSampling().service;
@@ -1104,6 +1117,10 @@ export class TestSession extends DurableObject {
               onBranchLeft: this.#mcpWatches().service.endConversation,
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
+              // Read at each use, so a test can shorten it for one Session (`expandTimeoutMs`) after it is built.
+              get expandTimeout(): Duration.Input {
+                return ctx.storage.kv.get<number>("expand-timeout-ms") ?? EXPAND_TIMEOUT;
+              },
               // The Workspace's side of the hold cap: the activity noted is counted, and the held stops are what a
               // test put in `held-stops`.
               workspaceActivity: async () => {
@@ -1294,6 +1311,7 @@ export class TestSession extends DurableObject {
           ),
           Layer.provideMerge(Layer.merge(this.#mcpQuestions().layer, this.#mcpSampling().layer)),
           Layer.provideMerge(Layer.merge(this.#mcpApps().layer, this.#mcpWatches().layer)),
+          Layer.provideMerge(this.#resourcePreviews()),
           Layer.provideMerge(this.#mcpSignIns().layer),
           Layer.provideMerge(this.#mcpTasks().layer),
           Layer.provideMerge(
@@ -1810,6 +1828,24 @@ export class TestSession extends DurableObject {
   /** The records of the Sampling requests, oldest first. */
   samplingRecords() {
     return Effect.runPromise(this.#mcpSampling().service.records);
+  }
+
+  /** Shortens how long a message's expansion, and a spill's Workspace calls, may take in this Session, from `ms` ms. */
+  expandTimeoutMs(ms: number): void {
+    this.ctx.storage.kv.put("expand-timeout-ms", ms);
+  }
+
+  /** What the Workspace holds at a Result Spill's `path`, as a card's preview reads it (`SessionHost.spill`). */
+  spill(path: string, held: Array<number> = [], slotAfterMs = 0): Promise<SpillRead> {
+    // The slot is given after `slotAfterMs`, and the sizes it was asked for are told in `held`.
+    return this.#runtime.runPromise(
+      this.#host.spill(undefined, path, (bytes) =>
+        Effect.sleep(slotAfterMs).pipe(
+          Effect.as("held" as const),
+          Effect.tap(() => Effect.sync(() => held.push(bytes))),
+        ),
+      ),
+    );
   }
 
   /** Whether no work is live; reads only, so it never runs work itself. */

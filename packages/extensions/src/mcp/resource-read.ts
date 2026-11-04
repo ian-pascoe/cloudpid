@@ -12,12 +12,13 @@ import { utf8ByteLength } from "@earendil-works/chord/output";
 import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import type { ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
+import { bytesFromBase64 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { bytesOf, modelBlocks, oneLine, type Piece, refOf, suffixOf, textOf } from "./blocks.ts";
+import { modelBlocks, oneLine, type Piece, refOf, suffixOf, textOf } from "./blocks.ts";
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails, McpResourceRef } from "./details.ts";
 import { withElicitation } from "./elicit.ts";
@@ -120,11 +121,9 @@ const scriptBlob = async (
 
   if (content.mimeType !== undefined) entry["mimeType"] = content.mimeType;
 
-  let bytes: Uint8Array;
+  const bytes = bytesFromBase64(content.blob);
 
-  try {
-    bytes = bytesOf(content.blob);
-  } catch {
+  if (bytes === undefined) {
     entry["save_error"] = "its data is not base64";
 
     return { entry };

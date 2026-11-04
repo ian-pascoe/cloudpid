@@ -7,6 +7,8 @@ export * from "./attached-resources.ts";
 
 export * from "./attachments.ts";
 
+export * from "./base64.ts";
+
 export * from "./changes.ts";
 
 export * from "./comparison.ts";
@@ -28,6 +30,8 @@ export * from "./mcp-elicitation.ts";
 export * from "./mcp-prompts.ts";
 
 export * from "./mcp-repo-files.ts";
+
+export * from "./mcp-resources.ts";
 
 export * from "./mcp-sampling.ts";
 

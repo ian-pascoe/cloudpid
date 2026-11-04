@@ -114,12 +114,57 @@ const bounded = (pieces: ReadonlyArray<Piece>) => {
   };
 };
 
-/** The references of `pieces`, at most `MAX_RESOURCE_REFS`, in order; none when there is no resource. */
-export const refsOf = (pieces: ReadonlyArray<Piece>): Array<McpResourceRef> =>
-  Arr.take(
-    Arr.flatMap(pieces, (piece) => (piece.ref === undefined ? [] : [piece.ref])),
+/**
+ * Where each of `shown`'s pieces is in the output the model is given (and the transcript keeps): its own index, unless the
+ * server's text was cut, when the first text block holds the head of all of them (no resource's own) and the others are
+ * gone. A piece the output does not hold is left out.
+ */
+const outputIndexes = (
+  shown: ReadonlyArray<Piece>,
+  cut: boolean,
+): ReadonlyMap<Piece, number | undefined> => {
+  const at = new Map<Piece, number | undefined>();
+  let index = 0;
+  let head = false;
+
+  for (const piece of shown) {
+    if (!cut || !isServerText(piece)) {
+      at.set(piece, index);
+      index += 1;
+    } else if (!head) {
+      // The place of the cut text: it holds no one resource's own.
+      head = true;
+      at.set(piece, undefined);
+      index += 1;
+    }
+  }
+
+  return at;
+};
+
+/**
+ * The references of `pieces`, at most `MAX_RESOURCE_REFS`, in order; none when there is no resource. With `shown` (the
+ * pieces the model was given) and whether its text was `cut`, each carries `at`, the index in the output where the
+ * transcript holds the resource's own data: an image, or a text the limits left whole.
+ */
+export const refsOf = (
+  pieces: ReadonlyArray<Piece>,
+  anchored?: { readonly shown: ReadonlyArray<Piece>; readonly cut: boolean },
+): Array<McpResourceRef> => {
+  const indexes = anchored === undefined ? undefined : outputIndexes(anchored.shown, anchored.cut);
+
+  return Arr.take(
+    Arr.flatMap(pieces, (piece) => {
+      if (piece.ref === undefined) return [];
+
+      const at =
+        piece.ref.kind === "text" || piece.ref.kind === "image" ? indexes?.get(piece) : undefined;
+
+      return [at === undefined ? piece.ref : { ...piece.ref, at }];
+    }),
     MAX_RESOURCE_REFS,
   );
+};
 
 /**
  * What the model is given for `shown`: all of it within the limits (`./head.ts`), else the server's text cut to its head
@@ -217,7 +262,11 @@ export const resultFor = async (
 
   const { output, diagnostics: cutDiagnostics, fullOutputPath } = await withinLimits(shown, call);
   const diagnostics: Array<ToolDiagnostic> = [...cutDiagnostics];
-  const refs = refsOf(base);
+
+  const refs = refsOf(base, {
+    shown,
+    cut: cutDiagnostics.some((each) => each.code === "truncated"),
+  });
 
   if (fullOutputPath !== undefined) details.full_output_path = fullOutputPath;
 
@@ -260,7 +309,11 @@ export const modelResultOf = async (
 ): Promise<ToolExecutionResult<JsonValue>> => {
   const limited = await withinLimits(shown, call);
   const details: Mutable<McpDetails> = { ...call.details };
-  const refs = refsOf(shown);
+
+  const refs = refsOf(shown, {
+    shown,
+    cut: limited.diagnostics.some((each) => each.code === "truncated"),
+  });
 
   if (limited.fullOutputPath !== undefined) details.full_output_path = limited.fullOutputPath;
 

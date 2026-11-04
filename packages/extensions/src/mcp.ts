@@ -41,6 +41,7 @@ import {
   type McpAppHtmlAnswer,
   type McpAppRequestAnswer,
   type McpResourceMenu,
+  type McpResourcePreviewAnswer,
 } from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -84,10 +85,11 @@ import {
   type AttachedResourcesDeps,
   type AttachedReadResult,
   listResourceMenu,
-  MCP_NO_START_FEATURE,
   readAttachedResource,
   type ResourceMenuInput,
 } from "./mcp/attached-resources.ts";
+import { MCP_NO_START_FEATURE } from "./mcp/no-start.ts";
+import { type McpResourcePreviewInput, resourcePreviewOf } from "./mcp/resource-preview.ts";
 import {
   MCP_RESEND_FEATURE,
   MCP_RESUME_FEATURE,
@@ -109,6 +111,10 @@ export { MCP_APP_FEATURE, type McpAppHtmlInput, type McpAppRecorder } from "./mc
 
 export { type McpAppRequestInput } from "./mcp/app-request.ts";
 
+export { MCP_NO_START_FEATURE } from "./mcp/no-start.ts";
+
+export { type McpResourcePreviewInput } from "./mcp/resource-preview.ts";
+
 export {
   MCP_WATCHES_FEATURE,
   MCP_WATCHES_KIND,
@@ -120,7 +126,6 @@ export {
   type AttachedContent,
   type AttachedReadInput,
   type AttachedReadResult,
-  MCP_NO_START_FEATURE,
   type ResourceMenuInput,
 } from "./mcp/attached-resources.ts";
 
@@ -137,9 +142,16 @@ export {
   type McpSignInStorage,
 } from "./mcp/sign-in.ts";
 
+export { spillTo, type Spilled } from "./mcp/spill.ts";
+
 export {
+  DECODE_SLOT_OVER,
+  decodeSlotHeld,
+  PREVIEW_SLOT_OVER,
   MCP_STREAM_SLOT_WAIT_MS,
   readStreamed,
+  type SlotTaken,
+  takeDecodeSlot,
   type Streamed,
   type StreamLimits,
 } from "./mcp/stream.ts";
@@ -240,7 +252,7 @@ export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
  * them live; it keeps a Legacy server's `-32042` pages with `resend`, and without it that is the server's error; a
  * Legacy server whose definition says `sampling: "allow"` is answered its Sampling requests with `sampling`
  * (`./mcp/sample.ts`), and none is declared without it; a stdio server's resource is listed for the `@` menu, and read for
- * a preview, without starting its Container only with `no_start` (`./mcp/attached-resources.ts`).
+ * a preview, without starting its Container only with `no_start` (`./mcp/attached-resources.ts`, `./mcp/resource-preview.ts`).
  */
 export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESOURCE_FEATURE,
@@ -396,6 +408,14 @@ export type McpToolsService = {
     readonly menu: (input: ResourceMenuInput) => Effect.Effect<McpResourceMenu>;
     readonly read: <A>(input: AttachedReadInput<A>) => Effect.Effect<AttachedReadResult<A>>;
   };
+  /**
+   * The owner's read of a resource a tool call's card links (`docs/architecture/mcp-in-a-session.md` → Resource links and
+   * embedded resources): checked against the inventory the tools were last built from, sent to the host as an `owner`
+   * request that starts no Container (a stdio server's only with `no_start`), and answered as the card is. Never fails.
+   */
+  readonly resourcePreview: (
+    input: McpResourcePreviewInput,
+  ) => Effect.Effect<McpResourcePreviewAnswer>;
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
   /**
@@ -937,6 +957,17 @@ export const makeMcpTools = (
       menu: (input) => listResourceMenu(attachedDeps(), input),
       read: (input) => readAttachedResource(attachedDeps(), input),
     },
+    resourcePreview: (input) =>
+      resourcePreviewOf(
+        {
+          client,
+          servers: latest?.servers ?? [],
+          origin: latest?.origin ?? {},
+          noStart: latest?.features.includes(MCP_NO_START_FEATURE) === true,
+          slackMs: options.slackMs,
+        },
+        input,
+      ),
     bindNotices: (next) => {
       notices = next;
     },

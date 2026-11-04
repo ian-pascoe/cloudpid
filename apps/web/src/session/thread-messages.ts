@@ -21,6 +21,7 @@ import { type CallDiff, callDiffOf } from "../call-diff.ts";
 import { madeChanges, type ShownChange } from "../chat/agent-change.ts";
 import { askedQuestions, type ShownElicitation } from "../chat/mcp-elicitation-detail.ts";
 import { sampledRequests, type ShownSampling } from "../chat/mcp-sampling-detail.ts";
+import { resourcesOf, type ShownResource } from "../chat/mcp-resources.ts";
 import { mcpStatusOf, type ShownMcpStatus } from "../chat/mcp-status.ts";
 import {
   liveCalls,
@@ -147,6 +148,7 @@ const resolveCall = (
     const changes = madeChanges(result.details);
     const elicitations = askedQuestions(result.details);
     const samplings = sampledRequests(result.details);
+    const resources = resourcesOf(result.details, result.content);
     const mcp = mcpStatusOf(result.details);
     const diff = callDiffOf(result.name, result.details, result.error);
 
@@ -154,7 +156,7 @@ const resolveCall = (
 
     // What a tool left besides its text: the calls it made, which its result lists once it has ended (and how many it left
     // out of the list), the subagent a `subagent` call started, the images it returned (a browser's screenshots), the Agent
-    // change it made, the questions its MCP server asked, and the patch an `edit` or `write` recorded (its Call diff).
+    // change it made, the questions its MCP server asked, the resources its MCP result names or holds, and the patch an `edit` or `write` recorded (its Call diff).
     const artifact: CardArtifact = {};
 
     if (nested.length > 0) artifact.nested = nested;
@@ -171,6 +173,8 @@ const resolveCall = (
 
     if (samplings.length > 0) artifact.samplings = samplings;
 
+    if (resources.length > 0) artifact.resources = resources;
+
     if (mcp !== undefined) artifact.mcp = mcp;
 
     if (diff !== undefined) artifact.diff = diff;
@@ -185,6 +189,7 @@ const resolveCall = (
         changes.length === 0 &&
         elicitations.length === 0 &&
         samplings.length === 0 &&
+        resources.length === 0 &&
         mcp === undefined &&
         diff === undefined
         ? resolved
@@ -202,6 +207,7 @@ type CardArtifact = {
   changes?: ReadonlyArray<ShownChange>;
   elicitations?: ReadonlyArray<ShownElicitation>;
   samplings?: ReadonlyArray<ShownSampling>;
+  resources?: ReadonlyArray<ShownResource>;
   mcp?: ShownMcpStatus;
   diff?: CallDiff;
 };

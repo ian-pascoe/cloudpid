@@ -30,6 +30,9 @@ import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { AppCall, AppStrip } from "../app-view/app-call.tsx";
 import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
+import { ResourceChips } from "./mcp-resource-view.tsx";
+import { LiveResource } from "./mcp-resource-live.tsx";
+import { resourcesIn } from "./mcp-resources.ts";
 import { samplingsOf } from "./mcp-sampling-detail.ts";
 import { McpTaskCall } from "./mcp-task-strip.tsx";
 import { SamplingLines } from "./mcp-sampling-record.tsx";
@@ -418,6 +421,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   const questions = questionsOf(artifact);
   const samplings = samplingsOf(artifact);
   const mcpStatus = shownMcpStatus(artifact);
+  const resources = resourcesIn(artifact);
 
   // The Call diff of an `edit` or `write` that finished: only a call with a result has one.
   const diff = Option.getOrUndefined(Option.map(decodeCardDiff(artifact), (found) => found.diff));
@@ -524,11 +528,17 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   // The MCP task it started, while the call waits for it and after (`docs/architecture/mcp-server-requests.md` → MCP tasks).
   const task = toolName.startsWith("mcp__") ? <McpTaskCall callId={toolCallId} /> : null;
 
+  // The chips of the resources an MCP result names or holds, with their previews, under the card (`mcp-in-a-session.md` →
+  // Resource links and embedded resources).
+  const chips =
+    resources.length > 0 ? <ResourceChips resources={resources} Live={LiveResource} /> : null;
+
   if (images.length === 0) {
     return (
       <>
         {card}
         {task}
+        {chips}
         {app}
       </>
     );
@@ -538,6 +548,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
     <>
       {card}
       {task}
+      {chips}
       {app}
       {Arr.map(images, (image, index) => (
         <img

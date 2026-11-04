@@ -13,6 +13,15 @@ import type * as Schema from "effect/Schema";
 export const DECODE_SLOT_OVER = 4 * MiB;
 
 /**
+ * A preview of a resource that is read as a stream, or a file, of more bytes than this takes the slot too, and holds it until
+ * the answer is sent (`docs/architecture/mcp-in-a-session.md` → Resource links and embedded resources). It is the size
+ * from which the host returns a result as a stream. A read of at most this takes no slot, and is bounded only by the
+ * socket's 4 in flight: each holds its value, the answer's JSON and the socket's copy at once, 3 to 4.75 MiB, so a socket's
+ * four are about 12 to 19 MiB. There is no cap across sockets: each tab of the owner has its own four.
+ */
+export const PREVIEW_SLOT_OVER = MiB;
+
+/**
  * The most bytes read of a stream: twice the 16 MiB the engine's byte limit allows, since the engine serializes the
  * result again, and escapes can make that longer than what the server sent.
  */
@@ -40,40 +49,79 @@ export type Streamed =
 /** The slot's queue: each holder waits for the one before it, and a waiter that gives up leaves the line in order. */
 let queue: Promise<void> = Promise.resolve();
 
+/** How many holders have the slot now: never more than one. */
+let holders = 0;
+
+/** Whether a holder has the decode slot at this moment. */
+export const decodeSlotHeld = (): boolean => holders > 0;
+
+/** The decode slot, held until `release`, or why it was not given. */
+export type SlotTaken =
+  | { readonly kind: "held"; readonly release: () => void }
+  | { readonly kind: "aborted" | "waited" };
+
 /**
- * Runs `work` when every holder before it is done, or says why it did not: `signal` aborted (Stop does not wait for the
+ * Takes the slot when every holder before it is done, or says why it did not: `signal` aborted (Stop does not wait for the
  * holder) or `waitMs` passed while it waited. A waiter that gave up still stands between the one before it and the one
- * after, so the one after waits for the same holder.
+ * after, so the one after waits for the same holder. The slot is held until `release`, which is safe to call twice.
  */
-const alone = async <A>(
-  work: () => Promise<A>,
+export const takeDecodeSlot = async (
   signal: AbortSignal | undefined,
   waitMs: number,
-): Promise<{ readonly kind: "ran"; readonly ran: A } | { readonly kind: "aborted" | "waited" }> => {
+): Promise<SlotTaken> => {
   const before = queue;
   const mine = Promise.withResolvers<void>();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   queue = before.then(() => mine.promise);
 
+  const given = new Promise<"aborted" | "waited">((resolve) => {
+    if (signal?.aborted === true) return resolve("aborted");
+
+    signal?.addEventListener("abort", () => resolve("aborted"), { once: true });
+    timer = setTimeout(() => resolve("waited"), waitMs);
+  });
+
+  const turn = await Promise.race([before.then(() => "turn" as const), given]);
+
+  clearTimeout(timer);
+
+  if (turn !== "turn") {
+    mine.resolve();
+
+    return { kind: turn };
+  }
+
+  holders += 1;
+
+  let released = false;
+
+  return {
+    kind: "held",
+    release: () => {
+      if (released) return;
+
+      released = true;
+      holders -= 1;
+      mine.resolve();
+    },
+  };
+};
+
+/** Runs `work` holding the slot, or says why it did not run (`takeDecodeSlot`). */
+const alone = async <A>(
+  work: () => Promise<A>,
+  signal: AbortSignal | undefined,
+  waitMs: number,
+): Promise<{ readonly kind: "ran"; readonly ran: A } | { readonly kind: "aborted" | "waited" }> => {
+  const taken = await takeDecodeSlot(signal, waitMs);
+
+  if (taken.kind !== "held") return taken;
+
   try {
-    const given = new Promise<"aborted" | "waited">((resolve) => {
-      if (signal?.aborted === true) return resolve("aborted");
-
-      signal?.addEventListener("abort", () => resolve("aborted"), { once: true });
-      timer = setTimeout(() => resolve("waited"), waitMs);
-    });
-
-    const turn = await Promise.race([before.then(() => "turn" as const), given]);
-
-    if (turn !== "turn") return { kind: turn };
-
-    clearTimeout(timer);
-
     return { kind: "ran", ran: await work() };
   } finally {
-    clearTimeout(timer);
-    mine.resolve();
+    taken.release();
   }
 };
 
@@ -85,6 +133,8 @@ export type StreamLimits = {
   readonly idleMs: number;
   /** The longest it waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number;
+  /** The caller holds the decode slot already (`takeDecodeSlot`), and releases it when it is done with what is read. */
+  readonly slotHeld?: boolean;
 };
 
 /** The text of `body`, read to its end, or why it was not. */
@@ -187,7 +237,7 @@ export const readStreamed = <A>(
 
   const read = async (): Promise<A> => use(await parsed());
 
-  if (bytes <= DECODE_SLOT_OVER) return read();
+  if (bytes <= DECODE_SLOT_OVER || limits.slotHeld === true) return read();
 
   return alone(read, limits.signal, limits.waitMs ?? MCP_STREAM_SLOT_WAIT_MS).then((done) => {
     if (done.kind === "ran") return done.ran;

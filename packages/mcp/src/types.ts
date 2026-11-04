@@ -361,6 +361,9 @@ export class Unsupported extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
+/** The JSON-RPC code of a Legacy server's "URL elicitation required" error (the SDK's `ProtocolErrorCode.UrlElicitationRequired`). */
+export const MCP_URL_REQUIRED_CODE = -32042;
+
 /** The server answered with something that is not MCP: not JSON-RPC, the wrong content type, a malformed result. */
 export class ProtocolViolation extends Schema.TaggedError<
   ProtocolViolation,
@@ -1153,9 +1156,11 @@ export const McpHostRequestContext = Schema.Struct({
   viewHash: Schema.optionalKey(Schema.String),
   /**
    * `false`: the request never starts a Container. A stdio server whose Workspace's Container is not running is refused as
-   * `Unreachable` with `stopped`, and a running one is read as usual. Only the owner's own reads set it (a preview of a
-   * resource link, `docs/architecture/mcp-in-a-session.md` → Resource links and embedded resources); a host that lacks the
-   * `no_start` feature drops the key and would start the Container, so a Session sends it only to one that lists it.
+   * `Unreachable` with `stopped`, and a running one is read as usual. Set by the owner's own requests that must not wake
+   * one: the pages of the `@` menu's list (`docs/architecture/mcp-in-a-session.md` → Attached resources) and a preview of a
+   * resource link (→ Resource links and embedded resources). The read of an Attached resource at send leaves it out: the
+   * owner sending a message may start the Container. A host that lacks the `no_start` feature drops the key and would
+   * start the Container, so a Session sends it only to one that lists it.
    */
   start: Schema.optionalKey(Schema.Boolean),
 });

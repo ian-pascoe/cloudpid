@@ -23,6 +23,7 @@ import {
   McpAppToolsMessage,
 } from "./mcp-apps.ts";
 import { MAX_MCP_WATCH_KEY, McpWatchesMessage } from "./mcp-watches.ts";
+import { MAX_MCP_RESOURCE_KEY } from "./mcp-resources.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
 import { McpTask } from "./mcp-tasks.ts";
 import {
@@ -776,6 +777,23 @@ export const McpAppLog = Schema.Struct({
 });
 
 /**
+ * Read the resource `uri` of MCP server `server` for the owner's preview (`docs/architecture/mcp-in-a-session.md` →
+ * Resource links and embedded resources). `server` is the call's `details.server`; `conversationId` the conversation the
+ * card is in (the active branch's when left out), whose Workspace a stdio server runs in. `path` is a Result Spill's, which
+ * the Session reads from the Workspace when it is the path of a spill (`isMcpSpillPath`) and reads `uri` instead when the
+ * file is gone. Answered with an `McpResourcePreviewAnswer`, however it ends: an answer is never an `error` message. Sent
+ * only to a Session that says `resourcePreviews` in `hello`.
+ */
+export const McpResourceRead = Schema.Struct({
+  type: Schema.Literal("mcp_resource_read"),
+  id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
+  server: Schema.String.check(Schema.isMaxLength(MAX_MCP_RESOURCE_KEY)),
+  uri: Schema.String.check(Schema.isMaxLength(MAX_MCP_RESOURCE_KEY)),
+  path: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_RESOURCE_KEY))),
+});
+
+/**
  * Whether this page is visible (`document.visibilityState`): sent when the socket opens and whenever it changes. A socket
  * that has not said is not visible, so a page that cannot say has its App Views' requests refused, and no background tab
  * keeps a Container awake (`docs/architecture/mcp-apps.md` → An App View's calls). Answered with null.
@@ -825,6 +843,7 @@ export const ClientMessage = Schema.Union([
   McpAppLog,
   McpTaskCancel,
   ContainerKeep,
+  McpResourceRead,
   PageVisible,
   WatchTaskGraph,
   UnwatchTaskGraph,
@@ -851,7 +870,7 @@ export type ClientMessage = typeof ClientMessage.Type;
  * client sends them only to a Session that says so, since one from before reads them as an unreadable message and
  * answers an error (`docs/architecture/mcp.md` → Deploys); `mcpTasks` says the same of `mcp_task_cancel` and
  * `container_keep`, and that it sends `mcp_tasks`. `attachedResources` says it takes `submit.resources` and
- * `mcp_resource_menu`, which a client sends on the same terms.
+ * `mcp_resource_menu`, and `resourcePreviews` that it takes `mcp_resource_read`, which a client sends on the same terms.
  */
 export const Hello = Schema.Struct({
   type: Schema.Literal("hello"),
@@ -860,6 +879,7 @@ export const Hello = Schema.Struct({
   appViews: Schema.optionalKey(Schema.Boolean),
   mcpTasks: Schema.optionalKey(Schema.Boolean),
   attachedResources: Schema.optionalKey(Schema.Boolean),
+  resourcePreviews: Schema.optionalKey(Schema.Boolean),
 });
 
 /**

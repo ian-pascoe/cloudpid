@@ -104,6 +104,7 @@ import {
   McpTaskCreated,
   type McpTaskInputResponses,
   McpTaskSnapshot,
+  MCP_URL_REQUIRED_CODE,
   ProtocolViolation,
   ResendStateV1,
   ResumeStateV1,
@@ -334,7 +335,7 @@ export interface CallToolParams {
 }
 
 /** The JSON-RPC code of a Legacy server's "URL elicitation required" error. */
-const URL_REQUIRED_CODE = ProtocolErrorCode.UrlElicitationRequired;
+const URL_REQUIRED_CODE = MCP_URL_REQUIRED_CODE;
 
 /** The most the SDK's own timer may be given: the core's deadline is the one that ends a call. */
 const SDK_TIMER_MAX_MS = 2_147_483_647;

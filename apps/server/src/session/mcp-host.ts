@@ -22,6 +22,7 @@ import {
   type McpAppHtmlInput,
   type McpAppRecorder,
   type McpAppRequestInput,
+  type McpResourcePreviewInput,
   type McpHostClientService,
   type McpNotices,
   type McpQuestionsService,
@@ -37,7 +38,13 @@ import {
   type SweepHarness,
 } from "@cloudpid/extensions/mcp";
 import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
-import { mcpAppError, type McpAppHtmlAnswer, type McpAppRequestAnswer } from "@cloudpid/protocol";
+import {
+  mcpAppError,
+  type McpAppHtmlAnswer,
+  type McpAppRequestAnswer,
+  type McpResourcePreviewAnswer,
+  resourceUnavailable,
+} from "@cloudpid/protocol";
 import {
   HostFailed,
   type McpApplyResult,
@@ -297,6 +304,10 @@ export type SessionMcp = SessionHostMcp<never> & {
   readonly appHtml: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
   /** An App View's request to its server, checked and sent as the View's own (`McpTools.appRequest`). Never fails. */
   readonly appRequest: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
+  /** The owner's read of a resource a card links, which starts no Container (`McpTools.resourcePreview`). Never fails. */
+  readonly resourcePreview: (
+    input: McpResourcePreviewInput,
+  ) => Effect.Effect<McpResourcePreviewAnswer>;
 };
 
 /** The Session host's MCP tools (`SessionHostOptions.mcp`), with one `McpTools` for the Session's Environment. */
@@ -612,6 +623,13 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
         )
       : held.tools.appRequest(input);
 
+  const resourcePreview: SessionMcp["resourcePreview"] = (input) =>
+    held === undefined
+      ? Effect.succeed<McpResourcePreviewAnswer>(
+          resourceUnavailable("unavailable", "This Session has no MCP servers"),
+        )
+      : held.tools.resourcePreview(input);
+
   /** The models, Roles, limit and Usage the sampler works with, once the host's Harness is open. */
   const bindSampling = (binding: McpSamplingBinding) => {
     options.sampling?.bind(binding);
@@ -631,6 +649,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     attached,
     appHtml,
     appRequest,
+    resourcePreview,
   };
 };
 

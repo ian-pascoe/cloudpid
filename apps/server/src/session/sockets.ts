@@ -31,6 +31,7 @@ import {
   type McpAppTool,
   type McpTask,
   type McpWatchEntry,
+  type McpResourcePreviewAnswer,
   type McpElicitationRequest,
   type McpSamplingRequest,
   type McpSamplingSessionGrant,
@@ -86,6 +87,7 @@ import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
 import { McpApps } from "./mcp-apps.ts";
 import { McpWatches } from "./mcp-watches.ts";
+import { McpResourcePreviews, type SpillRead } from "./mcp-resource-previews.ts";
 import { ViewedStore } from "./viewed.ts";
 
 /**
@@ -477,6 +479,7 @@ export const sessionSocketsLayer = (
   | ViewedStore
   | McpApps
   | McpWatches
+  | McpResourcePreviews
   | SessionReviews
 > =>
   Layer.effect(
@@ -490,6 +493,7 @@ export const sessionSocketsLayer = (
       const viewed = yield* ViewedStore;
       const mcpApps = yield* McpApps;
       const mcpWatches = yield* McpWatches;
+      const resourcePreviews = yield* McpResourcePreviews;
       const reviews = yield* SessionReviews;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
@@ -747,13 +751,16 @@ export const sessionSocketsLayer = (
         | McpAppMounted
         | McpAppHtmlAnswer
         | McpAppRequestAnswer
+        | McpResourcePreviewAnswer
         | null,
         | SessionError
         | SecretsError
         | BrowserError
         | ApprovalsError
         | McpQuestionsError
-        | McpSignInsError
+        | McpSignInsError,
+        // A command that holds something until its answer is sent (a large preview's decode slot) ends with the scope.
+        Scope.Scope
       > => {
         switch (message.type) {
           case "tree":
@@ -1071,6 +1078,34 @@ export const sessionSocketsLayer = (
                   Effect.orElseSucceed(() => undefined),
                 ),
             });
+          case "mcp_resource_read":
+            return (
+              message.conversationId === undefined
+                ? host.activeBranch
+                : Effect.succeed(message.conversationId)
+            ).pipe(
+              Effect.flatMap((conversationId) =>
+                resourcePreviews.resourcePreview({
+                  socket,
+                  visible: readAttachment(socket).visible === true,
+                  conversation: String(conversationId),
+                  server: message.server,
+                  uri: message.uri,
+                  path: message.path,
+                  // Only a stdio server's read asks: the Workspace the conversation works in, whose Container it never starts.
+                  workspaceOf: (conversation) =>
+                    host.workspaceOf(conversationOf(conversation)).pipe(
+                      Effect.map((workspace) => workspace?.object),
+                      Effect.orElseSucceed(() => undefined),
+                    ),
+                  // A spill's file, from the Workspace of the conversation the card is in: never through the Container.
+                  spill: (conversation, path, hold) =>
+                    host
+                      .spill(conversationOf(conversation), path, hold)
+                      .pipe(Effect.orElseSucceed((): SpillRead => ({ kind: "missing" }))),
+                }),
+              ),
+            );
           case "mcp_app_log":
             return mcpApps
               .log({
@@ -1131,32 +1166,41 @@ export const sessionSocketsLayer = (
           }
 
           const message = decoded.success;
-          const exit = yield* Effect.exit(command(socket, message));
 
-          if (Exit.isSuccess(exit)) {
-            if (message.id !== undefined) {
-              yield* send(socket, { type: "result", id: message.id, result: exit.value });
-            }
+          // What a command holds until its answer is sent is let go once it has been.
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const exit = yield* Effect.exit(command(socket, message));
 
-            return;
-          }
+              if (Exit.isSuccess(exit)) {
+                if (message.id !== undefined) {
+                  yield* send(socket, { type: "result", id: message.id, result: exit.value });
+                }
 
-          const error = Exit.findErrorOption(exit);
+                return;
+              }
 
-          const failure: Types.Mutable<ErrorMessage> = {
-            type: "error",
-            message: Option.isSome(error) ? error.value.message : "Internal error",
-          };
+              const error = Exit.findErrorOption(exit);
 
-          // A refusal of a send that names an MCP prompt carries its code, for the composer to act on.
-          if (Option.isSome(error) && Predicate.isTagged(error.value, "SessionError")) {
-            if (error.value.code !== undefined) failure.code = error.value.code;
+              const failure: Types.Mutable<ErrorMessage> = {
+                type: "error",
+                message: Option.isSome(error) ? error.value.message : "Internal error",
+              };
 
-            if (error.value.server !== undefined) failure.server = error.value.server;
-          }
+              // A refusal of a send that names an MCP prompt carries its code, for the composer to act on.
+              if (Option.isSome(error) && Predicate.isTagged(error.value, "SessionError")) {
+                if (error.value.code !== undefined) failure.code = error.value.code;
 
-          yield* Effect.logWarning(`Session command ${message.type} failed`, exit.cause);
-          yield* send(socket, message.id === undefined ? failure : { ...failure, id: message.id });
+                if (error.value.server !== undefined) failure.server = error.value.server;
+              }
+
+              yield* Effect.logWarning(`Session command ${message.type} failed`, exit.cause);
+              yield* send(
+                socket,
+                message.id === undefined ? failure : { ...failure, id: message.id },
+              );
+            }),
+          );
         });
 
       const drop = (socket: WebSocket) =>
@@ -1165,10 +1209,13 @@ export const sessionSocketsLayer = (
 
           watching.delete(socket);
 
-          // The page went: what its App Views have in flight is cancelled.
+          // The page went: what its App Views have in flight, and its previews, are cancelled.
           return mcpApps
             .endViews(socket)
-            .pipe(Effect.andThen(fibers === undefined ? Effect.void : FiberMap.clear(fibers)));
+            .pipe(
+              Effect.andThen(resourcePreviews.endResourcePreviews(socket)),
+              Effect.andThen(fibers === undefined ? Effect.void : FiberMap.clear(fibers)),
+            );
         });
 
       /** Tell every connected client which Session branch is active now, so each watches it instead. */
@@ -1257,8 +1304,16 @@ export const sessionSocketsLayer = (
                 appViews: true,
                 mcpTasks: true,
                 attachedResources: true,
+                resourcePreviews: true,
               }
-            : { type: "hello", root, appViews: true, mcpTasks: true, attachedResources: true },
+            : {
+                type: "hello",
+                root,
+                appViews: true,
+                mcpTasks: true,
+                attachedResources: true,
+                resourcePreviews: true,
+              },
         );
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),

@@ -44,8 +44,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-
-const MINUTE_MS = 60_000;
+import { socketRequests } from "./socket-requests.ts";
 
 /** What the call's record says of it: its server, and what the call was made on. */
 export type AppCallRecord = {
@@ -95,30 +94,6 @@ export type AppCallsOptions = {
   readonly now: () => number;
 };
 
-/**
- * Count a request or log line arriving at `at` against a View's `stamps` of the last minute, and say whether it is over
- * `limit`. It is counted whether or not it is let through, so a View is not let spend what it was refused; only the
- * newest `limit` stamps are kept, so a View that is over the limit stays over it for as long as it keeps asking.
- */
-const admit = (stamps: Array<number>, at: number, limit: number): boolean => {
-  const live = stamps.filter((each) => at - each < MINUTE_MS);
-  const over = live.length >= limit;
-
-  live.push(at);
-  stamps.splice(0, stamps.length, ...live.slice(-limit));
-
-  return over;
-};
-
-/** One View's counts, and what it has in flight. */
-type ViewState = {
-  /** When its requests of the last minute arrived. */
-  readonly stamps: Array<number>;
-  /** When its log lines of the last minute arrived. */
-  readonly logStamps: Array<number>;
-  readonly running: Map<string, AbortController>;
-};
-
 export type AppCalls = {
   /** One App View request: its answer, however it ends. Never fails. */
   readonly request: (input: AppViewRequest) => Effect.Effect<McpAppRequestAnswer>;
@@ -140,9 +115,6 @@ const ReadParams = Schema.Struct({ uri: Schema.String });
 const decodeToolParams = Schema.decodeUnknownOption(ToolParams);
 
 const decodeReadParams = Schema.decodeUnknownOption(ReadParams);
-
-/** An AbortController, made outside the Effect that uses it. */
-const controller = () => new AbortController();
 
 /** What an App View asked for, once its params are read. */
 type Asked =
@@ -189,25 +161,8 @@ type Run = {
 };
 
 export const appCallsOver = (options: AppCallsOptions): AppCalls => {
-  const views = new WeakMap<WebSocket, Map<string, ViewState>>();
-
-  const stateOf = (view: WebSocket, callId: string): ViewState => {
-    let calls = views.get(view);
-
-    if (calls === undefined) {
-      calls = new Map();
-      views.set(view, calls);
-    }
-
-    let state = calls.get(callId);
-
-    if (state === undefined) {
-      state = { stamps: [], logStamps: [], running: new Map() };
-      calls.set(callId, state);
-    }
-
-    return state;
-  };
+  // A View is a socket's mount of one call: its counts and what it has in flight are the registry's, under the call's id.
+  const views = socketRequests(options.now);
 
   /** A request's own checks and what it comes to, before it is answered, redacted and logged. */
   const run = (input: AppViewRequest, stop: AbortController): Effect.Effect<Run> =>
@@ -295,37 +250,30 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
         );
       }
 
-      const state = stateOf(input.view, input.callId);
+      const view = views.of(input.view, input.callId);
 
-      if (admit(state.stamps, options.now(), MAX_MCP_APP_PER_MINUTE)) {
+      if (!view.admits("request", MAX_MCP_APP_PER_MINUTE)) {
         return mcpAppError(
           "limit",
           `At most ${MAX_MCP_APP_PER_MINUTE} requests a minute for each App View`,
         );
       }
 
-      if (state.running.has(input.requestId)) {
+      if (view.running(input.requestId)) {
         return mcpAppError("limit", "That request id is already in flight");
       }
 
-      if (state.running.size >= MAX_MCP_APP_IN_FLIGHT) {
+      if (view.inFlight() >= MAX_MCP_APP_IN_FLIGHT) {
         return mcpAppError(
           "limit",
           `At most ${MAX_MCP_APP_IN_FLIGHT} requests in flight for each App View`,
         );
       }
 
-      // In flight from here, with no step between the check and this: concurrent requests cannot pass the limit together.
-      const stop = controller();
-
-      state.running.set(input.requestId, stop);
+      const stop = view.start(input.requestId);
 
       const done = yield* run(input, stop).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            state.running.delete(input.requestId);
-          }),
-        ),
+        Effect.ensuring(Effect.sync(() => view.finish(input.requestId))),
       );
 
       const redactor = yield* options.secrets;
@@ -370,16 +318,12 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
 
   const cancel: AppCalls["cancel"] = (view, callId, requestId) =>
     Effect.sync(() => {
-      views.get(view)?.get(callId)?.running.get(requestId)?.abort();
+      views.find(view, callId)?.abort(requestId);
     });
 
   const endViews: AppCalls["endViews"] = (view) =>
     Effect.sync(() => {
-      for (const state of views.get(view)?.values() ?? []) {
-        for (const stop of state.running.values()) stop.abort();
-      }
-
-      views.delete(view);
+      views.end(view);
     });
 
   const log: AppCalls["log"] = (input) =>
@@ -388,9 +332,7 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
 
       if (Option.isNone(record)) return;
 
-      const state = stateOf(input.view, input.callId);
-
-      if (admit(state.logStamps, options.now(), MAX_MCP_APP_LOGS_PER_MINUTE)) return;
+      if (!views.of(input.view, input.callId).admits("log", MAX_MCP_APP_LOGS_PER_MINUTE)) return;
 
       // A level this build does not know is kept as a warning (it may be one), but is named `unknown`, never the View's own text.
       const known = Arr.contains(MCP_LOG_LEVELS, input.level);

@@ -150,6 +150,46 @@ describe("discover, over the bridge", () => {
   });
 });
 
+describe("a read that may not start the Container (the owner's preview)", () => {
+  it("is refused as stopped when the Container is stopped, and the Container is left stopped", async () => {
+    const server = stdio("legacy", "preview-stopped");
+    const discovered = decodeDiscover(await env.MCP_ENGINE.discover(server, {}, {}));
+
+    if (discovered.kind !== "discovered") throw new Error(JSON.stringify(discovered));
+
+    // An idle stop, as any Container comes to: nothing of the server is running.
+    await control(server, "_stop");
+
+    const before = await seen(server);
+
+    expect(before.running).toBe(false);
+
+    const read = decodeRequest(
+      await env.MCP_ENGINE.request(
+        { ...server, start: false },
+        discovered.state,
+        { op: "resources/read", uri: "file:///notes.md", ctx: { origin: "owner" } },
+        patient(),
+      ),
+    );
+
+    expect(read).toMatchObject({
+      kind: "failed",
+      error: { _tag: "Unreachable", stopped: true },
+    });
+
+    // Nothing started it: it is still stopped, and no child was spawned for the read.
+    const after = await seen(server);
+
+    expect(after.running).toBe(false);
+    expect(after.spawn).toBe(before.spawn);
+    expect(after.methods).toEqual(before.methods);
+    expect(after.seen.filter((each) => each.start)).toEqual(
+      before.seen.filter((each) => each.start),
+    );
+  });
+});
+
 describe("request, over the bridge", () => {
   it("restarts the Container after an idle stop and initializes again, the call going through once", async () => {
     const server = stdio("legacy", "idle-stop");
