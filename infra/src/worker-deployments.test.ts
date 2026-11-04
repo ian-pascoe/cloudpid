@@ -2,7 +2,7 @@
 // The patched alchemy retry around a new Worker's deployments read (patches/@alchemy.run__cloudflare@2.0.0-beta.84.patch,
 // docs/development/dependencies.md): Cloudflare can answer `WorkerNotFound` (10007) for a script it registered moments
 // ago, which failed the first Preview deploy of a new stage (#615).
-import { retryScriptRegistration } from "@alchemy.run/cloudflare/Workers/WorkerProvider";
+import { retryDeploymentsRead } from "@alchemy.run/cloudflare/Workers/WorkerProvider";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -36,43 +36,43 @@ const flakyRead = (failures: number, failure: Failure) => {
     return attempts <= failures ? Effect.fail(failure) : Effect.succeed("deployments");
   });
 
-  return { read: retryScriptRegistration(read), attempts: () => attempts };
+  return { readWithRetry: retryDeploymentsRead(read), attempts: () => attempts };
 };
 
 const onTestClock = <A, E>(effect: Effect.Effect<A, E>) =>
   Effect.runPromise(Effect.provide(effect, TestClock.layer()));
 
-describe("retryScriptRegistration", { timeout: 30_000 }, () => {
-  it("waits out a registry lag of more than 90 seconds", () =>
+describe("retryDeploymentsRead", { timeout: 30_000 }, () => {
+  it("waits out a registry lag of four minutes", () =>
     onTestClock(
       Effect.gen(function* () {
-        // #610's Browsers Worker still answered 10007 about 93 s after its first upload.
-        const { read, attempts } = flakyRead(25, notFound);
-        const fiber = yield* Effect.forkChild(read);
-        yield* TestClock.adjust("4 minutes");
+        // #610's Browsers Worker still answered 10007 about 93 s after its first upload, and was found by 234 s.
+        const { readWithRetry, attempts } = flakyRead(52, notFound);
+        const fiber = yield* Effect.forkChild(readWithRetry);
+        yield* TestClock.adjust("242 seconds");
         expect(yield* Fiber.await(fiber)).toStrictEqual(Exit.succeed("deployments"));
-        expect(attempts()).toBe(26);
+        expect(attempts()).toBe(53);
       }),
     ));
 
-  it("gives up with WorkerNotFound after about three minutes", () =>
+  it("gives up with WorkerNotFound after about five minutes", () =>
     onTestClock(
       Effect.gen(function* () {
-        const { read, attempts } = flakyRead(Number.POSITIVE_INFINITY, notFound);
-        const fiber = yield* Effect.forkChild(read);
-        yield* TestClock.adjust("170 seconds");
+        const { readWithRetry, attempts } = flakyRead(Number.POSITIVE_INFINITY, notFound);
+        const fiber = yield* Effect.forkChild(readWithRetry);
+        yield* TestClock.adjust("295 seconds");
         expect(fiber.pollUnsafe()).toBeUndefined();
-        yield* TestClock.adjust("30 seconds");
+        yield* TestClock.adjust("10 seconds");
         expect(yield* Fiber.await(fiber)).toStrictEqual(Exit.fail(notFound));
-        expect(attempts()).toBe(41);
+        expect(attempts()).toBe(65);
       }),
     ));
 
   it("does not retry any other failure", () =>
     onTestClock(
       Effect.gen(function* () {
-        const { read, attempts } = flakyRead(1, rateLimited);
-        expect(yield* Effect.exit(read)).toStrictEqual(Exit.fail(rateLimited));
+        const { readWithRetry, attempts } = flakyRead(1, rateLimited);
+        expect(yield* Effect.exit(readWithRetry)).toStrictEqual(Exit.fail(rateLimited));
         expect(attempts()).toBe(1);
       }),
     ));

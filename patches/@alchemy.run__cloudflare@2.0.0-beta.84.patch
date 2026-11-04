@@ -80,7 +80,7 @@ index ea56e7fbac97fd71e6ac23d20264460347d5ffda..cc791029d1c79c0272df4ebc298595d8
          yield* assertServesNamespace(application);
          // 3. Sync declared settings and reset settings no Container declares anymore.
 diff --git a/lib/Workers/WorkerProvider.d.ts b/lib/Workers/WorkerProvider.d.ts
-index 0f9709698dc6b23e5b5252c524ab9a2eafb2f4ee..009b9c161eb3b1a73c7ae26421b3b7e857066868 100644
+index 0f9709698dc6b23e5b5252c524ab9a2eafb2f4ee..9abb045e2e61aeb335ff4e7843847d7b6f299803 100644
 --- a/lib/Workers/WorkerProvider.d.ts
 +++ b/lib/Workers/WorkerProvider.d.ts
 @@ -275,6 +275,18 @@ export declare class WorkerIdNotFound extends WorkerIdNotFound_base<{
@@ -90,20 +90,20 @@ index 0f9709698dc6b23e5b5252c524ab9a2eafb2f4ee..009b9c161eb3b1a73c7ae26421b3b7e8
 +/**
 + * Retry a read of a Worker script's deployments right after its PUT while
 + * Cloudflare still answers `WorkerNotFound` (10007): the deployments endpoint
-+ * can lag the script registry by more than 90 seconds for a script it
++ * can lag the script registry by minutes for a script it
 + * registered moments ago, after the settings read (which retries the same
 + * 404) has already caught up. The script exists — its PUT returned 200 — so
 + * wait instead of failing the deploy. Backs off from 200ms to 5s, bounded at
-+ * 40 retries (~3 minutes); every other failure is returned at once.
++ * 64 retries (~5 minutes); every other failure is returned at once.
 + */
-+export declare const retryScriptRegistration: <A, E extends {
++export declare const retryDeploymentsRead: <A, E extends {
 +    readonly _tag: string;
 +}, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
  /**
   * Normalize a Worker's persisted *legacy* `domains` state to bare
   * hostnames. Alchemy <= beta.44 stored each custom domain as a
 diff --git a/lib/Workers/WorkerProvider.js b/lib/Workers/WorkerProvider.js
-index 901fb9b7ee492909150bffe96d43c3c2f1d6ad7d..43b90672e5cad61dc87f1420076fe77e67093ba9 100644
+index 901fb9b7ee492909150bffe96d43c3c2f1d6ad7d..131d57d8370803957e0417307a4d5d81179d8c6e 100644
 --- a/lib/Workers/WorkerProvider.js
 +++ b/lib/Workers/WorkerProvider.js
 @@ -571,6 +571,20 @@ const bindingTargetNotFoundRetrySchedule = () => Schedule.max([Schedule.fixed("2
@@ -113,16 +113,16 @@ index 901fb9b7ee492909150bffe96d43c3c2f1d6ad7d..43b90672e5cad61dc87f1420076fe77e
 +/**
 + * Retry a read of a Worker script's deployments right after its PUT while
 + * Cloudflare still answers `WorkerNotFound` (10007): the deployments endpoint
-+ * can lag the script registry by more than 90 seconds for a script it
++ * can lag the script registry by minutes for a script it
 + * registered moments ago, after the settings read (which retries the same
 + * 404) has already caught up. The script exists — its PUT returned 200 — so
 + * wait instead of failing the deploy. Backs off from 200ms to 5s, bounded at
-+ * 40 retries (~3 minutes); every other failure is returned at once.
++ * 64 retries (~5 minutes); every other failure is returned at once.
 + */
-+export const retryScriptRegistration = (effect) => effect.pipe(Effect.retry({
++export const retryDeploymentsRead = (effect) => effect.pipe(Effect.retry({
 +    while: (error) => error._tag === "WorkerNotFound",
 +    schedule: Schedule.min([Schedule.exponential(200), Schedule.spaced("5 seconds")]),
-+    times: 40,
++    times: 64,
 +}));
  /**
   * Upsert a Worker script, routing to the dispatch-namespace endpoint when
@@ -135,7 +135,7 @@ index 901fb9b7ee492909150bffe96d43c3c2f1d6ad7d..43b90672e5cad61dc87f1420076fe77e
 -                accountId,
 -                scriptName: name,
 -            });
-+            const { deployments } = yield* retryScriptRegistration(workers.listScriptDeployments({ accountId, scriptName: name }));
++            const { deployments } = yield* retryDeploymentsRead(workers.listScriptDeployments({ accountId, scriptName: name }));
              const active = deployments[0];
              deploymentId = active?.id;
              versionId = active?.versions.find((version) => version.percentage === 100)?.versionId;
@@ -236,7 +236,7 @@ index 9385fb28b76d455ee9d99563ecaf6589c80d47a3..10176f69ce6945fa5266d4b2b928f405
        }
        yield* assertServesNamespace(application);
 diff --git a/src/Workers/WorkerProvider.ts b/src/Workers/WorkerProvider.ts
-index 9aeff2a30fe5cc881553f8c83f3126b72fc133dd..6ed26c8fb75dc5f26e6131c1cf50338cb04e99f4 100644
+index 9aeff2a30fe5cc881553f8c83f3126b72fc133dd..71b67b88947c47c6b5702d64ebbc9278b6f173ff 100644
 --- a/src/Workers/WorkerProvider.ts
 +++ b/src/Workers/WorkerProvider.ts
 @@ -745,6 +745,26 @@ const isScriptPutTransportError = (e: { _tag?: string }): boolean =>
@@ -246,20 +246,20 @@ index 9aeff2a30fe5cc881553f8c83f3126b72fc133dd..6ed26c8fb75dc5f26e6131c1cf50338c
 +/**
 + * Retry a read of a Worker script's deployments right after its PUT while
 + * Cloudflare still answers `WorkerNotFound` (10007): the deployments endpoint
-+ * can lag the script registry by more than 90 seconds for a script it
++ * can lag the script registry by minutes for a script it
 + * registered moments ago, after the settings read (which retries the same
 + * 404) has already caught up. The script exists — its PUT returned 200 — so
 + * wait instead of failing the deploy. Backs off from 200ms to 5s, bounded at
-+ * 40 retries (~3 minutes); every other failure is returned at once.
++ * 64 retries (~5 minutes); every other failure is returned at once.
 + */
-+export const retryScriptRegistration = <A, E extends { readonly _tag: string }, R>(
++export const retryDeploymentsRead = <A, E extends { readonly _tag: string }, R>(
 +  effect: Effect.Effect<A, E, R>,
 +): Effect.Effect<A, E, R> =>
 +  effect.pipe(
 +    Effect.retry({
 +      while: (error) => error._tag === "WorkerNotFound",
 +      schedule: Schedule.min([Schedule.exponential(200), Schedule.spaced("5 seconds")]),
-+      times: 40,
++      times: 64,
 +    }),
 +  );
 +
@@ -274,7 +274,7 @@ index 9aeff2a30fe5cc881553f8c83f3126b72fc133dd..6ed26c8fb75dc5f26e6131c1cf50338c
 -            accountId,
 -            scriptName: name,
 -          });
-+          const { deployments } = yield* retryScriptRegistration(
++          const { deployments } = yield* retryDeploymentsRead(
 +            workers.listScriptDeployments({ accountId, scriptName: name }),
 +          );
            const active = deployments[0];
