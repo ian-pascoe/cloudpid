@@ -1318,6 +1318,17 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("import-pages-fail-after", pages);
   }
 
+  /** Forget the translation a cut-off import noted, as an import written by a version before the note was has none. */
+  importForgetNote(): void {
+    const filling = this.ctx.storage.kv.get<Record<string, unknown>>("fork-copy");
+
+    if (filling === undefined) return;
+
+    const { translation: _translation, written: _written, ...rest } = filling;
+
+    this.ctx.storage.kv.put("fork-copy", rest);
+  }
+
   /** Make the next translations of another version, as a deploy that changed the translator does. */
   importTranslatorVersion(version: number): void {
     this.ctx.storage.kv.put("import-translator-version", version);

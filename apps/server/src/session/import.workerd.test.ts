@@ -279,6 +279,31 @@ describe("a Session import in the Session object", () => {
     expect((await entriesOf(stub)).at(-1)?.text).toContain(sentence);
   });
 
+  it("keeps what the finish that was accepted said of the Changes carried when finish is repeated", async () => {
+    const stub = fresh();
+    const file = [header, piMessage("a", null, userMessage("Hello"))].join("\n");
+
+    await begin(stub, file);
+    await send(stub, file);
+    await runInDurableObject(stub, (instance: TestSession) => instance.importFinishWait(0));
+
+    const finish = { sha256: await sha256(file) };
+
+    okValue(await stub.stageFinish({ ...finish, changes_carried: true }));
+    okValue(await stub.stageFinish({ ...finish, changes_carried: false }));
+
+    await vi.waitFor(
+      async () =>
+        expect(
+          (await runInDurableObject(stub, (instance: TestSession) => instance.importState())).record
+            ?.phase,
+        ).toBe("ended"),
+      { timeout: 10_000 },
+    );
+
+    expect((await entriesOf(stub)).at(-1)?.text).toContain("uncommitted Changes were carried");
+  });
+
   it("lists the laptop tools this Session lacks in the notice, by the tools the Session's requests declare", async () => {
     const stub = fresh();
 
@@ -407,6 +432,61 @@ describe("a Session import in the Session object", () => {
         ),
       ),
     ].join("\n");
+
+    /** The phase the import is in once the alarm has run it again. */
+    const phaseAfterAlarm = async (stub: Stub, phase: string) => {
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await runInDurableObject(stub, (instance: TestSession) => instance.importState()))
+              .record?.phase,
+          ).toBe(phase),
+        { timeout: 10_000 },
+      );
+    };
+
+    it("resumes under another version when the run that noted the first was cut off before it wrote anything", async () => {
+      const stub = fresh();
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importPagesFailAfter(0));
+      await begin(stub, text);
+      await send(stub, text);
+      okValue(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(await entriesOf(stub)).toHaveLength(0);
+
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.importTranslatorVersion(99),
+      );
+      await phaseAfterAlarm(stub, "ended");
+
+      // 450 messages and the notice, each once, in order.
+      const entries = await entriesOf(stub);
+
+      expect(entries).toHaveLength(451);
+      expect(new Set(entries.map((entry) => entry.id)).size).toBe(451);
+      expect(entries.at(-1)?.text).toContain("[cloudpid import]");
+    });
+
+    it("takes a root that has entries and no noted translation as written, and appends nothing to it", async () => {
+      const stub = fresh();
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importPagesFailAfter(1));
+      await begin(stub, text);
+      await send(stub, text);
+      okValue(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(await entriesOf(stub)).toHaveLength(200);
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importForgetNote());
+      await phaseAfterAlarm(stub, "ended");
+
+      const entries = await entriesOf(stub);
+
+      expect(entries).toHaveLength(200);
+      expect(new Set(entries.map((entry) => entry.id)).size).toBe(200);
+    });
 
     /** Cut a write off after its first page, then change the translation as `change` does, and run the import again. */
     const resumedAfter = async (change: (instance: TestSession) => void, count?: number) => {

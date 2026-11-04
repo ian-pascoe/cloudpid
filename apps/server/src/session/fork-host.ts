@@ -354,30 +354,47 @@ export const sessionForks = (options: ForksOptions) => {
       if (filling?.import !== true) return yield* refuse("This Session is not importing.");
 
       const noted = filling.translation;
-
-      if (
-        noted !== undefined &&
-        (noted.version !== translation.version || noted.count !== translation.count)
-      ) {
-        return `The translation that was being written (version ${String(noted.version)}, ${String(noted.count)} entries) is not the one this run makes (version ${String(translation.version)}, ${String(translation.count)} entries), so the entries already written cannot be resumed.`;
-      }
-
-      if (noted === undefined) kv.put(FILL_KEY, { ...filling, translation } satisfies Filling);
-
       const root = yield* options.root;
 
       /** The entry the root gave each translated one, by the translation's own ID (its position, from 1). */
       const ids = new Map<number, number>();
 
-      // A translation not yet noted has written nothing: only a run again has entries to read back.
       let cursor: Cursor | undefined;
+      let first = true;
 
       do {
-        if (noted === undefined) break;
-
         const page = yield* attempt("entries", () =>
           root.entries({ order: "ascending" }, READBACK_ENTRIES, cursor, context),
         );
+
+        if (first) {
+          first = false;
+
+          if (page.items.length === 0) {
+            // Nothing is written, whatever a run that was cut off before its first commit noted: this translation is the one.
+            if (
+              noted === undefined ||
+              noted.version !== translation.version ||
+              noted.count !== translation.count
+            ) {
+              kv.put(FILL_KEY, { ...filling, translation } satisfies Filling);
+            }
+
+            break;
+          }
+
+          if (noted === undefined) {
+            // Entries and no note: an earlier version wrote them whole, in one transaction, so they are all there.
+            kv.put(FILL_KEY, { ...filling, written: true } satisfies Filling);
+
+            return undefined;
+          }
+
+          // Only now are there entries that this run would build on, so only now must it be the translation that wrote them.
+          if (noted.version !== translation.version || noted.count !== translation.count) {
+            return `The translation that was being written (version ${String(noted.version)}, ${String(noted.count)} entries) is not the one this run makes (version ${String(translation.version)}, ${String(translation.count)} entries), so the entries already written cannot be resumed.`;
+          }
+        }
 
         for (const entry of page.items) ids.set(ids.size + 1, entry.id);
 
@@ -409,11 +426,27 @@ export const sessionForks = (options: ForksOptions) => {
       return undefined;
     });
 
-  /** Whether every translated entry of a Session import is in the root (see `importTranslated`). */
-  const importWritten = Effect.sync(() => {
+  /**
+   * Whether every translated entry of a Session import is in the root (see `importTranslated`): the flag says so, and so
+   * does a root that has entries while no translation was noted, which an earlier version wrote whole in one transaction
+   * before it was cut off.
+   */
+  const importWritten = Effect.gen(function* () {
     const filling = kv.get<Filling | null>(FILL_KEY) ?? null;
 
-    return filling?.import === true && filling.written === true;
+    if (filling?.import !== true) return false;
+
+    if (filling.written === true) return true;
+
+    if (filling.translation !== undefined) return false;
+
+    const root = yield* options.root;
+
+    const page = yield* attempt("entries", () =>
+      root.entries({ order: "ascending" }, 1, undefined, context),
+    );
+
+    return page.items.length > 0;
   });
 
   /** Take the agent and documents the plan carries, and take messages from then on. */

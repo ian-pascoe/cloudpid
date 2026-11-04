@@ -642,7 +642,7 @@ export type SessionHostService = {
     translation: WrittenTranslation,
   ) => Effect.Effect<string | undefined, SessionError>;
   /** Whether a Session import's translated entries are all in the root conversation. */
-  readonly importWritten: Effect.Effect<boolean>;
+  readonly importWritten: Effect.Effect<boolean, SessionError>;
   /**
    * The names of the tools the root conversation's requests declare, for the import notice's list of laptop tools this
    * Session lacks; none when they cannot be read.

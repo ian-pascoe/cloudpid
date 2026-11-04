@@ -599,7 +599,7 @@ describe("bounds", () => {
     const parts = partsOf(entriesOf(out)[2]);
 
     expect(parts.map((part) => part.type)).toEqual(["text", "image", "image", "text"]);
-    expect(parts[3]?.text).toContain("a tool result holds at most 1,500,000");
+    expect(parts[3]?.text).toContain("one tool result holds at most 1,500,000");
     expect(out.summary.cut).toBe(1);
   });
 
