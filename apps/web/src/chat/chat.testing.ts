@@ -180,3 +180,5 @@ export const live = (socket: FakeSocket, hello: { readonly [key: string]: Value 
 /** The commands of `type` the client sent on `socket`. */
 export const sent = (socket: FakeSocket, type: string) =>
   socket.commands().filter((command) => command.type === type);
+
+// #626 acceptance: a test helper-only change.

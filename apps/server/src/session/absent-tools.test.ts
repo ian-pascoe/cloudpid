@@ -140,3 +140,5 @@ describe("flattening calls to absent tools", () => {
     expect(mapFor(model, context)).toBe(context);
   });
 });
+
+// #626 acceptance: a test-only change.
