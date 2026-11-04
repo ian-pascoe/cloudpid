@@ -45,6 +45,7 @@ import { baseDetails } from "./details.ts";
 import {
   contextOf,
   type Exchange,
+  MCP_RESEND_FEATURE,
   type McpCallOrigin,
   type McpToolOptions,
   parentCallOf,
@@ -60,7 +61,12 @@ import { signInTool } from "./sign-in-tool.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { spillTo } from "./spill.ts";
 
-export { MCP_CALL_SLACK_MS, MCP_SAMPLING_FEATURE, MCP_STREAM_IDLE_MS } from "./exchange.ts";
+export {
+  MCP_CALL_SLACK_MS,
+  MCP_RESEND_FEATURE,
+  MCP_SAMPLING_FEATURE,
+  MCP_STREAM_IDLE_MS,
+} from "./exchange.ts";
 
 export type { McpCallOrigin, McpToolOptions } from "./exchange.ts";
 
@@ -72,6 +78,9 @@ export const extensionName = "mcp";
  * server's form is answered live.
  */
 export const MCP_RESUME_FEATURE = "resume";
+
+/** What the host can keep for later for a call: a Modern round of questions, and a Legacy `-32042`'s pages. */
+type HostKeeps = { readonly defers: boolean; readonly pages: boolean };
 
 /**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
@@ -156,7 +165,7 @@ const toolFor = (
   options: McpToolOptions,
   readServer: string | undefined,
   appHtml: boolean,
-  defers: boolean,
+  keeps: HostKeeps,
   samples: boolean,
 ): ToolRegistration => {
   const base = baseDetails(server.name, tool);
@@ -170,7 +179,8 @@ const toolFor = (
     tool: name,
     details: base,
     subject: "tool",
-    defers,
+    defers: keeps.defers,
+    pages: keeps.pages,
     samples,
   };
 
@@ -282,7 +292,10 @@ export const mcpExtension = (
       : undefined;
 
   // A Modern server's questions wait for the owner past their round only on a host that resumes the call.
-  const defers = build.features?.includes(MCP_RESUME_FEATURE) === true;
+  const keeps: HostKeeps = {
+    defers: build.features?.includes(MCP_RESUME_FEATURE) === true,
+    pages: build.features?.includes(MCP_RESEND_FEATURE) === true,
+  };
 
   // A Legacy server's Sampling requests are answered only on a host that lists `sampling` (it declares them to the server).
   const samples = samplesOf(build);
@@ -322,7 +335,7 @@ export const mcpExtension = (
               options,
               readServerOf(server),
               appHtml,
-              defers,
+              keeps,
               samples,
             ),
           );

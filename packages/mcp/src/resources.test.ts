@@ -18,7 +18,8 @@ import {
   modernServer,
   rpcMethods,
 } from "./fakes.fixture.ts";
-import { connect } from "./index.ts";
+import { connect, type PagesRequired } from "./index.ts";
+import type { ReadComplete } from "./connection.ts";
 import { contentsSha256 } from "./read-hash.ts";
 import { type McpCallContext, type McpInputAnswer, ServerError } from "./types.ts";
 
@@ -115,9 +116,9 @@ describe.each(servers)("against a %s server", (_name, makeServer, era) => {
     const { text, blob, again } = await run(
       Effect.gen(function* () {
         const connection = yield* connect(TARGET, testDeps(fetchTo(server)));
-        const text = yield* connection.readResource(NOTES.uri, AGENT);
-        const blob = yield* connection.readResource(LOGO.uri, AGENT);
-        const again = yield* connection.readResource(NOTES.uri, AGENT);
+        const text = readComplete(yield* connection.readResource(NOTES.uri, AGENT));
+        const blob = readComplete(yield* connection.readResource(LOGO.uri, AGENT));
+        const again = readComplete(yield* connection.readResource(NOTES.uri, AGENT));
 
         return { text, blob, again };
       }),
@@ -149,6 +150,13 @@ describe.each(servers)("against a %s server", (_name, makeServer, era) => {
     expect(outcome).toEqual(failedWith(ServerError));
   });
 });
+
+/** A read that completed: these callers keep no pages, so a `-32042` is never kept for them. */
+const readComplete = (read: ReadComplete | PagesRequired): ReadComplete => {
+  if (read.kind !== "complete") throw new Error("Expected the read to complete");
+
+  return read;
+};
 
 describe("the SHA-256 of a read's contents", () => {
   const item = { uri: "file:///a", mimeType: "text/plain", text: "one" };

@@ -142,6 +142,7 @@ export const APP_READ_HEADER = "x-cloudpid-app-read";
  */
 export class Ties {
   private readonly calls = new Map<string | number, string>();
+  private readonly completions = new Map<string, () => void>();
 
   /** Server request `id` arrived on the stream of the call `token` names. */
   tie(id: string | number, token: string) {
@@ -157,13 +158,43 @@ export class Ties {
     return token;
   }
 
-  /** The call `token` names is over: its ties no one took are let go. */
+  /**
+   * `done` is called once, when the URL elicitation `elicitationId` is completed on the stream of the call `token`
+   * names (`notifications/elicitation/complete`); the returned function takes it back. A completion on any other
+   * stream, or for another call, reaches no one.
+   */
+  onComplete(token: string, elicitationId: string, done: () => void) {
+    const key = completionKey(token, elicitationId);
+
+    this.completions.set(key, done);
+
+    return () => {
+      if (this.completions.get(key) === done) this.completions.delete(key);
+    };
+  }
+
+  /** The URL elicitation `elicitationId` was completed on the stream of the call `token` names. */
+  complete(token: string, elicitationId: string) {
+    const key = completionKey(token, elicitationId);
+    const done = this.completions.get(key);
+
+    this.completions.delete(key);
+    done?.();
+  }
+
+  /** The call `token` names is over: its ties and completions no one took are let go. */
   release(token: string) {
     for (const [id, tied] of this.calls) {
       if (tied === token) this.calls.delete(id);
     }
+
+    for (const key of this.completions.keys()) {
+      if (key.startsWith(`${token}\u0000`)) this.completions.delete(key);
+    }
   }
 }
+
+const completionKey = (token: string, elicitationId: string) => `${token}\u0000${elicitationId}`;
 
 /** What the tap needs besides the injected `fetch`: the clock (Effect's, through the connection's context). */
 export interface TapClock {
@@ -183,6 +214,28 @@ const decodeMessage = Schema.decodeUnknownOption(
     }),
   ),
 );
+
+/** A message on a call's response stream: its id and method, and the `elicitationId` a completion notice carries. */
+const decodeStreamMessage = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      id: Schema.optionalKey(JsonRpcId),
+      method: Schema.optionalKey(Schema.String),
+      params: Schema.optionalKey(Schema.Unknown),
+    }),
+  ),
+);
+
+/** The `params` of a `notifications/elicitation/complete`: the page that was finished. */
+const decodeCompletion = Schema.decodeUnknownOption(
+  Schema.Struct({ elicitationId: Schema.String }),
+);
+
+/** What the tap does for the call whose POST stream it watches: tie a question to it, and hear a page's completion. */
+interface CallStream {
+  readonly tie: (id: string | number) => void;
+  readonly complete: (elicitationId: string) => void;
+}
 
 /** A JSON-RPC request the SDK is sending: one with an id and a method, and what the tap does with it. */
 interface Outgoing {
@@ -282,7 +335,7 @@ const watchStream = (
   body: ReadableStream<Uint8Array>,
   request: Outgoing,
   verdicts: Verdicts,
-  tie?: (id: string | number) => void,
+  call?: CallStream,
 ) => {
   const limit = request.policy.limit;
   const reader = body.getReader();
@@ -304,20 +357,27 @@ const watchStream = (
         .join("\n");
 
       // An answer to the request has its id and no method (a server's own request has one).
-      Option.map(decodeMessage(data), (message) => {
+      Option.map(decodeStreamMessage(data), (message) => {
         if (message.id === request.id && message.method === undefined) {
           answered = true;
         }
 
         // A question on this call's stream is tied to the call, before the SDK is given the event that carries it.
         if (
-          tie !== undefined &&
+          call !== undefined &&
           (message.method === "elicitation/create" ||
             message.method === "sampling/createMessage") &&
           message.id !== undefined &&
           message.id !== null
         ) {
-          tie(message.id);
+          call.tie(message.id);
+        }
+
+        // A page the owner finished, told on the call's own stream (`notifications/elicitation/complete`): only here.
+        if (call !== undefined && message.method === "notifications/elicitation/complete") {
+          Option.map(decodeCompletion(message.params), ({ elicitationId }) => {
+            call.complete(elicitationId);
+          });
         }
       });
     }
@@ -590,7 +650,12 @@ export const tapFetch = (
             response.body,
             request,
             verdicts,
-            token === undefined || ties === undefined ? undefined : (id) => ties.tie(id, token),
+            token === undefined || ties === undefined
+              ? undefined
+              : {
+                  tie: (id) => ties.tie(id, token),
+                  complete: (elicitationId) => ties.complete(token, elicitationId),
+                },
           ),
           response,
         );

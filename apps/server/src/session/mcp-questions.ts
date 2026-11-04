@@ -30,6 +30,8 @@ export type SessionMcpQuestionsOptions = {
   readonly notify?: (event: PushEvent) => Effect.Effect<void>;
   /** The deploy-time credentials no answer may hold. */
   readonly credentials: ReadonlyArray<string>;
+  /** Whether a host is one of cloudpid's own, which no page a server asks the owner to open may be on. */
+  readonly ownHost?: ((host: string) => boolean) | undefined;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
   /**
@@ -82,11 +84,14 @@ export const sessionMcpQuestions = (options: SessionMcpQuestionsOptions): Sessio
     notify:
       options.notify === undefined
         ? undefined
-        : ({ server }) =>
+        : ({ server, page }) =>
             options.notify?.({
               kind: "input",
               names: [],
-              mcp: { server, kind: "elicitation" },
+              mcp:
+                page === true
+                  ? { server, kind: "elicitation", page }
+                  : { server, kind: "elicitation" },
             }) ?? Effect.void,
     // What the owner is shown never holds a Secret's value.
     redact: (shown) => Effect.map(secrets, (held) => held.redact(shown)),
@@ -98,6 +103,7 @@ export const sessionMcpQuestions = (options: SessionMcpQuestionsOptions): Sessio
         return held.redact(text) !== text || holdsCredential(text);
       }),
     waitMs: options.waitMs,
+    ownHost: options.ownHost,
     vault:
       kept === undefined || session === undefined
         ? undefined

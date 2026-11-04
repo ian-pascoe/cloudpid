@@ -13,12 +13,14 @@ import { holdsPlaceholder } from "../secrets/references.ts";
 import type {
   ElicitationContent,
   ElicitationForm,
+  McpElicitationPage,
   McpElicitationRequest,
   McpElicitationSource,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -69,6 +71,9 @@ export class McpQuestionsError extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("McpQuestionsError", { message: Schema.String }) {}
 
+/** The page a URL-mode question asks the owner to open, as the call that asks it knows it: plain text, already checked. */
+export type McpQuestionPage = Omit<McpElicitationPage, "opened" | "retry" | "again" | "finished">;
+
 /** A question as the call that gets it asks it: what the owner is shown, already plain text. */
 export type McpQuestionAsk = {
   /** The question's key within its call: the server's request. */
@@ -82,7 +87,12 @@ export type McpQuestionAsk = {
   /** The model-facing name of the tool the call is to. */
   readonly tool: string;
   readonly message: string;
+  /** A page question has a form with no fields: the card draws its `page`. */
   readonly form: ElicitationForm;
+  /** The page to open (URL mode). */
+  readonly page?: McpQuestionPage;
+  /** The call ends and is sent again once the owner is done at the page (a Legacy `-32042`), rather than going on by itself. */
+  readonly retry?: true;
   readonly notes: ReadonlyArray<string>;
 };
 
@@ -95,9 +105,20 @@ export type McpQuestionOutcome =
       readonly reason?: string;
     };
 
-/** A form cloudpid ended before showing it: a credential, or a malformed form. */
-export type McpQuestionUnseen = Omit<McpQuestionAsk, "key" | "form" | "notes" | "source"> & {
+/**
+ * Which page a note, a record of an unseen request or a `details` line is about: the address's host (ASCII) and its
+ * origin, never the rest of it.
+ */
+export type McpPageRef = { readonly host: string; readonly origin: string };
+
+/** A form or page cloudpid ended before showing it: a credential, an address it declines, or a malformed request. */
+export type McpQuestionUnseen = Omit<
+  McpQuestionAsk,
+  "key" | "form" | "notes" | "source" | "page" | "retry"
+> & {
   readonly form?: ElicitationForm;
+  /** The host of the page it was, when it was a page question (URL mode). */
+  readonly page?: McpPageRef;
   readonly notes?: ReadonlyArray<string>;
   readonly action: "decline" | "cancel";
   readonly reason: string;
@@ -110,7 +131,11 @@ export type McpQuestionRecord = {
   readonly conversationId: McpElicitationRequest["conversationId"];
   readonly server: string;
   readonly tool: string;
-  readonly mode: "form";
+  readonly mode: "form" | "url";
+  /** The Protocol era of the server that asked: a Legacy server's `-32042` and a Modern server's round are told apart here. */
+  readonly era?: "legacy";
+  /** A page question: the address's origin only, never the rest of it. */
+  readonly page?: { readonly origin: string };
   /** The message as the owner was shown it: redacted of the Secrets the Session held. */
   readonly message: string;
   readonly form?: ElicitationForm;
@@ -124,10 +149,13 @@ export type McpQuestionRecord = {
   readonly settledAt: number;
 };
 
-/** The owner's answer to a question, as a client gives it. */
+/**
+ * The owner's answer to a question, as a client gives it. `opened` and `done` are a page question's: Open's click, and
+ * "Done, try again" once every page of the round is opened.
+ */
 export type McpQuestionAnswer =
   | { readonly action: "accept"; readonly content: ElicitationContent }
-  | { readonly action: "decline" | "cancel" };
+  | { readonly action: "decline" | "cancel" | "opened" | "done" };
 
 /** What a call has asked, and whether the owner was told. */
 export type McpCallState = {
@@ -140,8 +168,50 @@ export type McpCallState = {
   idleSince: number;
 };
 
+/**
+ * What a call's pages come to, kept in the Session's storage beside its questions so a restart does not forget them
+ * (`mcp-question:pages:<callId>`, gone with the call): the keys of the pages the owner was done at, so a server that asks
+ * for one again is told "Not finished", and how many it asked for again, which gives their questions an id.
+ */
+export type McpCallPages = { readonly opened: ReadonlyArray<string>; readonly repeated: number };
+
+/** The most pages of a call that are kept as opened, and the longest a kept key is: a server's `elicitationId` is its own. */
+export const MCP_PAGES_KEPT = 64;
+export const MCP_PAGE_KEY_CHARS = 200;
+
+/** A page's key as the call's pages keep it: cut, so a server's long `elicitationId` cannot make the record large. */
+export const pageKeyOf = (key: string): string => key.slice(0, MCP_PAGE_KEY_CHARS);
+
+const pagesKey = (callId: string) => `mcp-question:pages:${callId}`;
+
+/** How a question that waits tells the owner: the first of a call does, a later one only after a pause. */
+export type McpWaitingKind = {
+  /** It asks the owner to open a page, which the Notification says. */
+  readonly page?: true;
+  /** The owner is not told at all: a page the server asks for again, which they were told of already. */
+  readonly quiet?: true;
+};
+
 /** A question's id: unique within the Session, and within its call whatever the server's own request ids are. */
 export const questionId = (callId: string, sequence: number | string) => `${callId}:${sequence}`;
+
+/** What a record keeps of an address: its origin only, never the path or the query. */
+export const originOf = (url: string): string =>
+  Option.getOrElse(
+    Option.map(Option.liftThrowable(() => new URL(url))(), (parsed) => parsed.origin),
+    () => "",
+  );
+
+/** The `mode` and `page` a record of a request has: a page question keeps its address's origin, no form. */
+export const modeOf = (ask: {
+  readonly page?: { readonly url: string } | { readonly origin: string } | undefined;
+}) =>
+  ask.page === undefined
+    ? ({ mode: "form" } as const)
+    : ({
+        mode: "url",
+        page: { origin: "url" in ask.page ? originOf(ask.page.url) : ask.page.origin },
+      } as const);
 
 export const cancelled = (reason: string): McpQuestionOutcome => ({
   action: "cancel",
@@ -169,8 +239,10 @@ export type McpQuestionBasicsOptions = {
   readonly redact: <A>(value: A) => Effect.Effect<A>;
   /** Whether a string the owner entered holds a Secret the Session holds or a deploy-time credential. */
   readonly holdsSecret: (text: string) => Effect.Effect<boolean>;
-  /** Tell the owner a call waits for them (a push); it must not fail. */
-  readonly notify?: ((who: { readonly server: string }) => Effect.Effect<void>) | undefined;
+  /** Tell the owner a call waits for them (a push); it must not fail. `page`: it asks them to open a page. */
+  readonly notify?:
+    | ((who: { readonly server: string; readonly page?: true }) => Effect.Effect<void>)
+    | undefined;
 };
 
 /** What both kinds of question are built on: the records, the calls' counts, and the checks of an answer. */
@@ -254,6 +326,38 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     }
   };
 
+  /** What the call's pages come to, as the storage keeps it (throws as the storage does). */
+  const pagesOf = (callId: string): McpCallPages =>
+    storage.get<McpCallPages>(pagesKey(callId)) ?? { opened: [], repeated: 0 };
+
+  /** The owner was done at pages `keys` of the call. */
+  const openedPages = (callId: string, keys: ReadonlyArray<string>) => {
+    const held = pagesOf(callId);
+
+    storage.put(pagesKey(callId), {
+      ...held,
+      // The newest are kept: a call that outruns the bound forgets its oldest page, which then reads as new.
+      opened: Arr.takeRight(
+        Arr.dedupe([...held.opened, ...Arr.map(keys, pageKeyOf)]),
+        MCP_PAGES_KEPT,
+      ),
+    } satisfies McpCallPages);
+  };
+
+  /** The server asked for a page of the call again: how many times so far, this one counted. */
+  const repeatedPage = (callId: string): number => {
+    const held = pagesOf(callId);
+
+    storage.put(pagesKey(callId), { ...held, repeated: held.repeated + 1 } satisfies McpCallPages);
+
+    return held.repeated + 1;
+  };
+
+  /** The call is over: what it came to goes. */
+  const forgetPages = (callId: string) => {
+    storage.delete(pagesKey(callId));
+  };
+
   /** `count` of the call's questions stopped waiting at `now`. */
   const stopWaiting = (callId: string, count: number, now: number) => {
     const state = calls.get(callId);
@@ -270,19 +374,28 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
    * only after `MCP_QUESTION_RENOTIFY_MS` with none waiting. In the background: the push may take seconds, and the
    * question must not wait on it.
    */
-  const startWaiting = (callId: string, server: string, count: number, now: number) =>
+  const startWaiting = (
+    callId: string,
+    server: string,
+    count: number,
+    now: number,
+    kind: McpWaitingKind = {},
+  ) =>
     Effect.suspend(() => {
       const state = callOf(callId);
 
       const notifies =
-        !state.notified ||
-        (state.waiting === 0 && now - state.idleSince >= MCP_QUESTION_RENOTIFY_MS);
+        kind.quiet !== true &&
+        (!state.notified ||
+          (state.waiting === 0 && now - state.idleSince >= MCP_QUESTION_RENOTIFY_MS));
 
       state.waiting += count;
       state.notified = true;
 
       return notifies && options.notify !== undefined
-        ? Effect.forkDetach(options.notify({ server })).pipe(Effect.asVoid)
+        ? Effect.forkDetach(
+            options.notify(kind.page === true ? { server, page: true } : { server }),
+          ).pipe(Effect.asVoid)
         : Effect.void;
     });
 
@@ -302,9 +415,10 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
 
   /** A request turned away at the call's cap, recorded. */
   const turnedAway = (
-    ask: Omit<McpQuestionAsk, "key" | "form" | "notes" | "source"> & {
+    ask: Omit<McpQuestionAsk, "key" | "form" | "notes" | "source" | "page" | "retry"> & {
       readonly form?: ElicitationForm;
       readonly notes?: ReadonlyArray<string>;
+      readonly page?: { readonly url: string } | { readonly origin: string };
     },
   ) =>
     Effect.gen(function* () {
@@ -321,7 +435,7 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
         conversationId: ask.conversationId,
         server: ask.server,
         tool: ask.tool,
-        mode: "form",
+        ...modeOf(ask),
         message: shown.message,
         notes: shown.notes,
         action: "cancel",
@@ -358,13 +472,17 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       return state.asked;
     });
 
-  /** The request the card shows for `ask`, as question `id`: redacted of the Secrets the Session holds. */
-  const requestOf = (ask: McpQuestionAsk, id: string, deadline: number) =>
+  /**
+   * The request the card shows for `ask`, as question `id`: redacted of the Secrets the Session holds. `again` says the
+   * page was opened before and the server asks for it once more.
+   */
+  const requestOf = (ask: McpQuestionAsk, id: string, deadline: number, again = false) =>
     Effect.gen(function* () {
       const shown = yield* options.redact({
         message: ask.message,
         form: ask.form,
         notes: ask.notes,
+        page: ask.page,
       });
 
       const request: Mutable<McpElicitationRequest> = {
@@ -381,6 +499,16 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
 
       if (ask.source !== undefined) request.source = ask.source;
 
+      if (shown.page !== undefined) {
+        const page: Mutable<McpElicitationPage> = { ...shown.page, opened: false };
+
+        if (ask.retry === true) page.retry = true;
+
+        if (again) page.again = true;
+
+        request.page = page;
+      }
+
       return request;
     });
 
@@ -395,6 +523,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       readonly by: McpQuestionRecord["by"];
       readonly reason?: string | undefined;
       readonly fields: ReadonlyArray<string>;
+      /** A server that spoke Legacy asked it. */
+      readonly era?: "legacy" | undefined;
     },
     askedAt: number,
     now: number,
@@ -405,9 +535,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       conversationId: request.conversationId,
       server: request.server,
       tool: request.tool,
-      mode: "form",
+      ...modeOf(request),
       message: request.message,
-      form: request.form,
       notes: request.notes,
       action: ended.action,
       by: ended.by,
@@ -415,6 +544,11 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       askedAt,
       settledAt: now,
     };
+
+    // A page question has no form to keep: its record names the page's origin.
+    if (request.page === undefined) record.form = request.form;
+
+    if (ended.era !== undefined) record.era = ended.era;
 
     if (ended.reason !== undefined) record.reason = ended.reason;
 
@@ -453,6 +587,10 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     keep,
     records,
     callOf,
+    pagesOf,
+    openedPages,
+    repeatedPage,
+    forgetPages,
     restoreCall,
     count,
     startWaiting,

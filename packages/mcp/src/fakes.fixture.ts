@@ -3,7 +3,7 @@
  * Modern, Legacy stateless, Legacy stateful with a GET stream, and a hostile wrapper that answers chosen requests
  * itself. Each records what reached it, so tests can see what the core sent.
  */
-// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off schemaSync:off newPromise:off globalDate:off
+// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off schemaSync:off newPromise:off globalDate:off globalTimers:off
 import {
   createMcpHandler,
   type GetPromptResult,
@@ -12,6 +12,7 @@ import {
   Server,
   type ServerCapabilities,
   type Tool,
+  UrlElicitationRequiredError,
   WebStandardStreamableHTTPServerTransport,
 } from "@modelcontextprotocol/server";
 import * as Option from "effect/Option";
@@ -192,6 +193,28 @@ export const SAMPLE_TOOL = {
   },
 };
 
+/**
+ * The fakes' tool that asks the client to open a page (`elicitation/create`, URL mode) during a Legacy call, and answers
+ * with what it got as JSON text. After an `accept` it waits `completeAfterMs` (when given) and tells the client the
+ * owner finished there (`notifications/elicitation/complete`, on the call's own stream, or on the standalone one with
+ * `completeOnStandalone`), then waits `holdMs` more before it answers.
+ */
+export const VISIT_TOOL = {
+  name: "visit",
+  description: "Ask the client to open a page, then answer with what it said.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      url: { type: "string" },
+      message: { type: "string" },
+      elicitationId: { type: "string" },
+      completeAfterMs: { type: "number" },
+      completeOnStandalone: { type: "boolean" },
+      holdMs: { type: "number" },
+    },
+  },
+};
+
 const SampleArguments = Schema.Struct({
   rounds: Schema.optionalKey(Schema.Int),
   params: Schema.optionalKey(Schema.Json),
@@ -200,6 +223,26 @@ const SampleArguments = Schema.Struct({
   /** Stop waiting for the reply after this many milliseconds: the server cancels its own request. */
   giveUpMs: Schema.optionalKey(Schema.Int),
 });
+
+const VisitArguments = Schema.Struct({
+  url: Schema.String,
+  message: Schema.optionalKey(Schema.String),
+  elicitationId: Schema.optionalKey(Schema.String),
+  completeAfterMs: Schema.optionalKey(Schema.Int),
+  completeOnStandalone: Schema.optionalKey(Schema.Boolean),
+  holdMs: Schema.optionalKey(Schema.Int),
+});
+
+/**
+ * The fakes' tool that needs the owner at a page before it runs (a Legacy server's `-32042`, URL elicitation
+ * required): it answers `-32042` listing `pages`, each a page with its own `elicitationId`, for its first
+ * `FakeOptions.gate.times` calls, then answers `opened` (it records the calls it got in `gate.calls`).
+ */
+export const GATED_TOOL = {
+  name: "gated",
+  description: "Need the owner at a page first, then answer.",
+  inputSchema: { type: "object" as const },
+};
 
 /** The MIME type of an MCP App's HTML (`docs/architecture/mcp-apps.md` → Declaring and reading Apps). */
 export const APP_MIME_TYPE = "text/html;profile=mcp-app";
@@ -290,6 +333,18 @@ export interface FakeOptions {
   readonly extensions?: Readonly<Record<string, Readonly<Record<string, never>>>> | undefined;
   /** The names of the calls whose request was cancelled while they ran. */
   readonly cancelled?: Array<string>;
+  /**
+   * The `gated` tool: it answers `-32042` for its first `times` calls (each listing `pages` pages, default 1, with
+   * the `elicitationId` `page-1`, … unless `sameId`, `page-1` each time); `calls` counts what it was sent.
+   */
+  readonly gate?: {
+    readonly times: number;
+    calls: number;
+    readonly pages?: number;
+    readonly url?: string;
+  };
+  /** Like `gate`, for `resources/read`: it answers `-32042` for its first `times` reads, and counts them in `calls`. */
+  readonly gateReads?: { readonly times: number; calls: number; readonly url?: string };
   /** What the client answered the `ask` tool's questions with (`{ action, content? }`), or the error it refused with. */
   readonly asked?: Array<Json>;
   /** What the client answered the `sample` tool's requests with (a `CreateMessageResult`), or `{ error, code }`. */
@@ -409,6 +464,26 @@ const fakeMcp = (
     });
 
     server.setRequestHandler("resources/read", async (request, ctx) => {
+      const { gateReads } = options;
+
+      if (gateReads !== undefined) {
+        gateReads.calls += 1;
+
+        if (gateReads.calls <= gateReads.times) {
+          throw new UrlElicitationRequiredError(
+            [
+              {
+                mode: "url" as const,
+                elicitationId: "page-1",
+                url: gateReads.url ?? "https://example.com/authorize",
+                message: "Authorize first",
+              },
+            ],
+            "Authorization needed",
+          );
+        }
+      }
+
       const found = resources.find((each) => each.uri === request.params.uri);
 
       if (found === undefined) throw new Error(`No resource ${request.params.uri}`);
@@ -644,6 +719,67 @@ const fakeMcp = (
 
           return { isError: true, content: [{ type: "text", text: `${code ?? "?"}: ${text}` }] };
         }
+      }
+
+      case "visit": {
+        const { url, message, elicitationId, completeAfterMs, completeOnStandalone, holdMs } =
+          Schema.decodeUnknownSync(VisitArguments)(request.params.arguments);
+
+        const id = elicitationId ?? "e1";
+
+        try {
+          const answer = await ctx.mcpReq.send({
+            method: "elicitation/create",
+            params: { mode: "url", elicitationId: id, url, message: message ?? "Open the page" },
+          });
+
+          // SAFETY: an elicitation result is JSON.
+          options.asked?.push({ ...answer } as Json);
+
+          if (answer.action === "accept" && completeAfterMs !== undefined) {
+            await new Promise((resolve) => setTimeout(resolve, completeAfterMs));
+
+            const complete = {
+              method: "notifications/elicitation/complete" as const,
+              params: { elicitationId: id },
+            };
+
+            if (completeOnStandalone === true) await server.notification(complete);
+            else await ctx.mcpReq.notify(complete);
+          }
+
+          if (holdMs !== undefined) await new Promise((resolve) => setTimeout(resolve, holdMs));
+
+          return { content: [{ type: "text", text: JSON.stringify(answer) }] };
+        } catch (error) {
+          const text = error instanceof Error ? error.message : "failed";
+
+          options.asked?.push({ error: text });
+
+          return { isError: true, content: [{ type: "text", text }] };
+        }
+      }
+
+      case "gated": {
+        const { gate } = options;
+
+        if (gate !== undefined) {
+          gate.calls += 1;
+
+          if (gate.calls <= gate.times) {
+            throw new UrlElicitationRequiredError(
+              Array.from({ length: gate.pages ?? 1 }, (_unused, index) => ({
+                mode: "url" as const,
+                elicitationId: `page-${index + 1}`,
+                url: gate.url ?? "https://example.com/authorize",
+                message: "Authorize first",
+              })),
+              "Authorization needed",
+            );
+          }
+        }
+
+        return { content: [{ type: "text", text: "opened" }] };
       }
 
       case "region": {

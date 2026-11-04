@@ -13,6 +13,7 @@
 import {
   answeredFields,
   decodeElicitParams,
+  type McpElicitParams,
   isJsonObject,
   type McpInputAnswer,
   type McpInputRequest,
@@ -22,6 +23,7 @@ import {
   plainMessage,
   quote,
 } from "@cloudpid/mcp/types";
+import { checkElicitationUrl, type ElicitationPageProblem } from "@cloudpid/mcp/elicitation-url";
 import type { ElicitationContent, ElicitationForm, McpElicitationSource } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
@@ -42,10 +44,12 @@ import {
   MCP_ELICITATION_CAP_REASON,
   MCP_QUESTION_UNRECORDED_REASON,
   MCP_RUN_STOPPED_REASON,
+  type McpPageRef,
   type McpQuestionAsk,
   type McpQuestionOutcome,
   type McpQuestionsService,
   type McpQuestionUnseen,
+  originOf,
 } from "./questions.ts";
 
 /** What a form that asks for the credential `field` is declined with: the server is told, the agent reads why. */
@@ -69,6 +73,11 @@ export type ElicitingCall = {
    * and the call waits for the owner after it. Otherwise it is answered live, as a Legacy one.
    */
   readonly defers?: boolean | undefined;
+  /**
+   * Whether a Legacy server's `-32042` pages are kept for later though a Modern form is not (a resource's read): the
+   * round of pages ends the read as `pages_required`, and the read is sent again once they are done.
+   */
+  readonly keepsPages?: boolean | undefined;
   /** Stop the call's own clock while a question waits, and start it again. */
   readonly pause: Effect.Effect<void>;
   readonly resume: Effect.Effect<void>;
@@ -80,6 +89,8 @@ export type Eliciting = {
     request: typeof McpInputRequest.Encoded,
   ) => Promise<typeof McpInputAnswer.Encoded>;
   readonly onInputEnded: (key: string) => Promise<void>;
+  /** The server says the owner finished at the page question `key` asked them to open: its card closes. */
+  readonly onInputComplete: (key: string) => Promise<void>;
   /** Resolves once every question the call asked has been answered and noted, however it ended. */
   readonly idle: () => Promise<void>;
   /** What happened to each question, in order; read when the call ends. */
@@ -112,21 +123,34 @@ export const mutableContent = (content: ElicitationContent) =>
 export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   const asked: Array<McpElicitationDetail> = [];
 
+  /** The line of each page question, by its key, and the keys the server said the owner finished at. */
+  const pages = new Map<string, Mutable<McpElicitationDetail>>();
+  const finished = new Set<string>();
+
   const note = (
     action: McpElicitationDetail["action"],
     by: McpElicitationDetail["by"],
     fields: Array<string>,
     reason?: string,
+    about?: { readonly page: McpPageRef; readonly key: string },
   ) => {
     const detail: Mutable<McpElicitationDetail> = {
       server: call.server,
-      mode: "form",
+      mode: about === undefined ? "form" : "url",
       action,
       by,
       fields,
     };
 
     if (reason !== undefined) detail.reason = reason;
+
+    if (about !== undefined) {
+      detail.host = about.page.host;
+      pages.set(about.key, detail);
+
+      // The server said the owner finished there before the question's own answer was noted.
+      if (finished.has(about.key)) detail.finished = true;
+    }
 
     asked.push(detail);
   };
@@ -140,6 +164,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     action: "decline" | "cancel",
     reason: string,
     form?: ElicitationForm,
+    page?: McpPageRef,
+    key?: string,
   ): Promise<boolean> => {
     const unseen: Mutable<McpQuestionUnseen> = {
       callId: call.callId,
@@ -154,14 +180,28 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     if (form !== undefined) unseen.form = form;
 
+    if (page !== undefined) unseen.page = page;
+
     return Effect.runPromise(call.questions.unseen(unseen)).then((recorded) => {
       if (recorded === "capped") {
-        note("cancel", "cloudpid", [], MCP_ELICITATION_CAP_REASON);
+        note(
+          "cancel",
+          "cloudpid",
+          [],
+          MCP_ELICITATION_CAP_REASON,
+          page === undefined ? undefined : { page, key: key ?? "" },
+        );
 
         return true;
       }
 
-      note(action, "cloudpid", [], reason);
+      note(
+        action,
+        "cloudpid",
+        [],
+        reason,
+        page === undefined ? undefined : { page, key: key ?? "" },
+      );
 
       return false;
     });
@@ -181,6 +221,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     }
 
     const { message, mode, requestedSchema } = params.value;
+
+    if (mode === "url") return answerPage(request, params.value);
 
     if (mode !== undefined && mode !== "form") {
       const reason = `${quote(mode)} mode is not supported`;
@@ -218,8 +260,32 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     if (call.source !== undefined) question.source = call.source;
 
-    // A Modern server's question is kept for later: the round ends, and the call waits for the owner after it.
-    if (request.mode === "deferrable" && call.defers === true) {
+    return keepOrAsk(request, question, answeredFields);
+  };
+
+  /**
+   * A question that passed its checks, kept for later or shown: a Modern server's, on a call that defers, is kept and
+   * the round ends (`defer`); any other waits on a card while the call's clock stands still. `answeredFields` names what
+   * an accepted form gave, `page` is set for a page question.
+   */
+  const keepOrAsk = async (
+    request: typeof McpInputRequest.Encoded,
+    question: McpQuestionAsk,
+    fieldsOf: typeof answeredFields,
+  ): Promise<typeof McpInputAnswer.Encoded> => {
+    const { form, page } = question;
+
+    const seen =
+      page === undefined
+        ? undefined
+        : { page: { host: page.host, origin: originOf(page.url) }, key: question.key };
+
+    // A Modern server's question, or a Legacy `-32042`'s, is kept for later: the round ends, and the call waits for the
+    // owner after it.
+    if (
+      request.mode === "deferrable" &&
+      (call.defers === true || (call.keepsPages === true && page !== undefined))
+    ) {
       const kept = await Effect.runPromise(call.questions.defer(question));
 
       if (kept === "deferred") return { kind: "defer" };
@@ -229,6 +295,7 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
         "cloudpid",
         [],
         kept === "capped" ? MCP_ELICITATION_CAP_REASON : MCP_QUESTION_UNRECORDED_REASON,
+        seen,
       );
 
       return CANCELLED;
@@ -239,29 +306,101 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     const outcome: McpQuestionOutcome = await Effect.runPromise(
       call.questions.ask(question),
       call.signal === undefined ? undefined : { signal: call.signal },
-    )
-      .catch(
-        // Stop interrupted the wait (the question is withdrawn): nobody answers, the server may ask again.
-        (): McpQuestionOutcome => ({
-          action: "cancel",
-          by: "cloudpid",
-          reason: MCP_RUN_STOPPED_REASON,
-        }),
-      )
-      .finally(() => Effect.runPromise(call.resume));
+    ).catch(
+      // Stop interrupted the wait (the question is withdrawn): nobody answers, the server may ask again.
+      (): McpQuestionOutcome => ({
+        action: "cancel",
+        by: "cloudpid",
+        reason: MCP_RUN_STOPPED_REASON,
+      }),
+    );
+
+    // A page the owner opened: the server goes on, and the call's clock stays stopped until the page is finished.
+    if (page !== undefined && outcome.action === "accept") {
+      void Effect.runPromise(call.questions.whileOpen(call.callId, question.key)).finally(() =>
+        Effect.runPromise(call.resume),
+      );
+    } else await Effect.runPromise(call.resume);
 
     if (outcome.action === "accept") {
-      note("accept", "owner", [...answeredFields(form, outcome.content)]);
+      note("accept", "owner", [...fieldsOf(form, outcome.content)], undefined, seen);
 
       return {
         kind: "answered",
-        result: { action: "accept", content: mutableContent(outcome.content) },
+        result:
+          page === undefined
+            ? { action: "accept", content: mutableContent(outcome.content) }
+            : { action: "accept" },
       };
     }
 
-    note(outcome.action, outcome.by, [], outcome.reason);
+    note(outcome.action, outcome.by, [], outcome.reason, seen);
 
     return { kind: "answered", result: { action: outcome.action } };
+  };
+
+  /**
+   * A URL-mode question: the page the server asks the owner to open. It is declined unseen, with the reason, when the
+   * address is one cloudpid never sends the owner to (`checkElicitationUrl`), and refused `-32602` when it is not an
+   * address; otherwise the owner is shown the page, and Open answers the server `accept` at once.
+   */
+  const answerPage = async (
+    request: typeof McpInputRequest.Encoded,
+    params: McpElicitParams,
+  ): Promise<typeof McpInputAnswer.Encoded> => {
+    const { message, url } = params;
+
+    const checked =
+      url === undefined
+        ? Result.fail<ElicitationPageProblem>({
+            kind: "malformed",
+            reason: "the request has no page address",
+          })
+        : checkElicitationUrl(url, call.questions.isOwnHost);
+
+    if (Result.isFailure(checked)) {
+      const { kind, reason } = checked.failure;
+
+      if (kind === "malformed") {
+        const capped = await endUnseen(message, "cancel", reason);
+
+        return capped ? CANCELLED : unsupported(reason);
+      }
+
+      const where = Option.liftThrowable(() => new URL(url ?? ""))();
+
+      const capped = await endUnseen(
+        message,
+        "decline",
+        reason,
+        undefined,
+        Option.isSome(where)
+          ? { host: where.value.hostname, origin: where.value.origin }
+          : undefined,
+        request.key,
+      );
+
+      return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
+    }
+
+    const question: Mutable<McpQuestionAsk> = {
+      key: request.key,
+      callId: call.callId,
+      conversationId: call.conversationId,
+      server: call.server,
+      tool: call.tool,
+      message: plainMessage(message),
+      form: { fields: [] },
+      page: checked.success,
+      notes: cutNotes(message),
+    };
+
+    // A Legacy `-32042` is kept for later and the call is sent again once the owner is done: "Done, try again".
+    if (request.mode === "deferrable") question.retry = true;
+
+    if (call.source !== undefined) question.source = call.source;
+
+    return keepOrAsk(request, question, answeredFields);
   };
 
   const onInput: Eliciting["onInput"] = (request) => {
@@ -284,6 +423,16 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       Effect.runPromise(
         call.questions.withdraw(call.callId, key, `${call.server} stopped waiting`),
       ),
+    onInputComplete: (key) => {
+      // The record of the page says the owner finished there, whether the call's note of it came first or not.
+      finished.add(key);
+
+      const detail = pages.get(key);
+
+      if (detail !== undefined) detail.finished = true;
+
+      return Effect.runPromise(call.questions.complete(call.callId, key));
+    },
     get asked() {
       return asked;
     },

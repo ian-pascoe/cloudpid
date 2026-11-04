@@ -36,7 +36,12 @@ export type PushEvent =
       readonly reason?: string | undefined;
       readonly approval?: string | undefined;
       readonly mcp?:
-        | { readonly server: string; readonly kind: "elicitation" | "sampling" }
+        | {
+            readonly server: string;
+            readonly kind: "elicitation" | "sampling";
+            /** The server asks the owner to open a page (URL mode), not to fill in a form. */
+            readonly page?: true | undefined;
+          }
         | undefined;
       /**
        * Or, with `signIn`, the agent's request that the owner sign in to an MCP server (`docs/architecture/mcp-sign-in.md` →

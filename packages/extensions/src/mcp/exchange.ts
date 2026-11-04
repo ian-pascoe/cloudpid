@@ -18,6 +18,7 @@ import { samplingOf } from "@cloudpid/config";
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
+  MCP_INPUT_ROUNDS,
   MCP_SAMPLING_WAIT_MS,
   type McpAnswers,
   type McpHostCompleted,
@@ -55,7 +56,7 @@ import {
   interruptedResult,
   streamFailure,
 } from "./result.ts";
-import type { McpDeferredRound, McpQuestionsService } from "./questions.ts";
+import { type McpDeferredRound, McpRoundState, type McpQuestionsService } from "./questions.ts";
 import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
@@ -135,6 +136,13 @@ export type McpCallOrigin = {
 };
 
 /**
+ * The host feature a call keeps a Legacy server's `-32042` pages for later with: a host that lists it answers a call
+ * with `ctx.answers.pages` `PagesRequired`, and resends it (`docs/architecture/mcp-server-requests.md` → Elicitation
+ * requests, URL mode). Without it, a `-32042` is the server's error.
+ */
+export const MCP_RESEND_FEATURE = "resend";
+
+/**
  * What a call says it can answer when the Session has questions to show: a Legacy server's elicitation form, for as long
  * as the owner has to answer it and a little more, so the Session's own end of the wait comes first.
  */
@@ -161,6 +169,13 @@ const withSamplingAnswers = (answers: McpAnswers | undefined): McpAnswers => ({
   ...SAMPLING_ANSWERS,
   inputWaitMs: Math.max(answers?.inputWaitMs ?? 0, SAMPLING_ANSWERS.inputWaitMs ?? 0),
 });
+
+/** What a call says it can answer when it keeps a Legacy server's `-32042` pages for later too: `pages_required`. */
+const PAGING_ANSWERS: McpAnswers = { ...DEFERRING_ANSWERS, pages: true };
+
+/** What a call says it can answer: its questions, kept for later when it defers, and its pages too when the host resends. */
+const answersOf = (deferring: boolean, pages: boolean): McpAnswers =>
+  deferring ? (pages ? PAGING_ANSWERS : DEFERRING_ANSWERS) : ELICITATION_ANSWERS;
 
 /** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
 const SENT = "mcp.sent";
@@ -277,6 +292,8 @@ export type Exchange = {
   readonly defers?: boolean | undefined;
   /** Whether the host lists `sampling`: a call or read to a server that may sample says it can answer (`options.sampling`). */
   readonly samples?: boolean | undefined;
+  /** Whether the host also resends a Legacy `-32042` (its `resend` feature): the call then keeps its pages for later too. */
+  readonly pages?: boolean | undefined;
 };
 
 /**
@@ -334,8 +351,17 @@ export const send = async <A>(
   const deferring =
     remember && exchange.defers === true && questions !== undefined && questions.defers;
 
+  // A resource's read keeps a Legacy server's `-32042` pages for the owner too, when the host resends: a read has no
+  // marker of its own, so a rerun after a restart sends it afresh, and the pages are asked again.
+  const paging =
+    !remember &&
+    subject === "resource" &&
+    exchange.pages === true &&
+    questions !== undefined &&
+    questions.defers;
+
   const rounds: Rounds | undefined =
-    deferring && questions !== undefined ? { questions, api, context } : undefined;
+    (deferring || paging) && questions !== undefined ? { questions, api, context } : undefined;
 
   let waiting: McpDeferredRound | undefined;
 
@@ -391,6 +417,7 @@ export const send = async <A>(
           signal: context.abortSignal,
           source: server.source,
           defers: deferring,
+          keepsPages: paging,
           pause: Effect.suspend(() => clock?.pause ?? Effect.void),
           resume: Effect.suspend(() => clock?.resume ?? Effect.void),
         });
@@ -415,7 +442,7 @@ export const send = async <A>(
   if (waiting !== undefined) asking?.asked.push(...waiting.asked);
 
   const questionAnswers =
-    questions === undefined ? undefined : deferring ? DEFERRING_ANSWERS : ELICITATION_ANSWERS;
+    questions === undefined ? undefined : answersOf(deferring || paging, exchange.pages === true);
 
   const request = build(
     workspace,
@@ -447,6 +474,7 @@ export const send = async <A>(
     if (asking !== undefined && sampling === undefined) {
       hooks.onInput = asking.onInput;
       hooks.onInputEnded = asking.onInputEnded;
+      hooks.onInputComplete = asking.onInputComplete;
     } else if (sampling !== undefined) {
       // A request goes to the hook of its kind.
       hooks.onInput = (input) =>
@@ -458,6 +486,9 @@ export const send = async <A>(
         sampling.onInputEnded(key);
         await asking?.onInputEnded(key);
       };
+
+      // A page's completion is a form's business only: the sampling hook has none.
+      if (asking !== undefined) hooks.onInputComplete = asking.onInputComplete;
     }
 
     const result = await Promise.race([
@@ -516,6 +547,8 @@ export const send = async <A>(
    */
   const finished = async (): Promise<Sent<A>> => {
     let round = waiting;
+    // A read's `-32042` message: the server's own error, which the read ends with when a page is not accepted.
+    let pagesMessage = "";
 
     let next: McpHostRequest | McpHostResourceRequest | undefined =
       round === undefined ? request : undefined;
@@ -529,7 +562,10 @@ export const send = async <A>(
           server: server.name,
           ctx: request.ctx,
           asked: asking?.asked,
+          read: paging && request.op === "resources/read" ? request : undefined,
         });
+
+        if (resumed.kind === "refused") return failed(failedWith(pagesMessage, base));
 
         if (resumed.kind === "stopped") return failed(failedWith(`The ${noun} was stopped`, base));
 
@@ -549,8 +585,28 @@ export const send = async <A>(
 
       if (result === undefined) return failed(hostLostResult(base, subject));
 
-      if (!Predicate.isTagged(result, "InputRequired") || rounds === undefined) {
+      if (
+        !(
+          Predicate.isTagged(result, "InputRequired") || Predicate.isTagged(result, "PagesRequired")
+        ) ||
+        rounds === undefined
+      ) {
         return settled(result);
+      }
+
+      if (Predicate.isTagged(result, "PagesRequired")) {
+        pagesMessage = result.message;
+
+        // A tool's call is ended by the core at its eleventh `-32042`; a read, which keeps no state, is ended here, so
+        // its count is this instance's: a restart sends the read afresh, bounded by the Session's restart limit.
+        if ((round?.round ?? 0) >= MCP_INPUT_ROUNDS) {
+          return failed(
+            failedWith(
+              `${result.message}. ${server.name} kept asking for the same page; stopped after ${MCP_INPUT_ROUNDS} tries`,
+              base,
+            ),
+          );
+        }
       }
 
       // The server asked questions the call keeps: the round is stored whole, then marked, and the call waits.
@@ -559,7 +615,11 @@ export const send = async <A>(
         round: (round?.round ?? 0) + 1,
         conn: result.conn,
         tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
-        resume: result.resume,
+        state: Predicate.isTagged(result, "PagesRequired")
+          ? result.resend === undefined
+            ? McpRoundState.Read()
+            : McpRoundState.Resend({ state: result.resend })
+          : McpRoundState.Resume({ state: result.resume }),
         asked: [...(asking?.asked ?? [])],
       };
 

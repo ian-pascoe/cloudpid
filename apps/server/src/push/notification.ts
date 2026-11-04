@@ -44,7 +44,9 @@ const body = (event: PushEvent): string => {
       if (event.mcp !== undefined) {
         return event.mcp.kind === "sampling"
           ? `${event.mcp.server} asks to use a model`
-          : `${event.mcp.server} needs your input`;
+          : event.mcp.page === true
+            ? `${event.mcp.server} asks you to open a page`
+            : `${event.mcp.server} needs your input`;
       }
 
       if (event.approval !== undefined) {

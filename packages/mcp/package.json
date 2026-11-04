@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./oauth": "./src/oauth.ts",
     "./types": "./src/types.ts",
+    "./elicitation-url": "./src/elicitation-url.ts",
     "./testing": "./src/testing.ts",
     "./server": "./src/server/index.ts"
   },
@@ -22,7 +23,8 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/core": "2.4.0",
     "@modelcontextprotocol/server": "2.4.0",
-    "effect": "^4.0.6"
+    "effect": "^4.0.6",
+    "tldts": "^7.4.19"
   },
   "devDependencies": {
     "@cloudpid/config": "workspace:*",

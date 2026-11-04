@@ -24,6 +24,8 @@
 //   again with the answers to its deferred questions. It carries the tool, the `conn` the server asked on (another one
 //   now is `ServerChanged`, nothing sent) and the `ResumeState`, which the host passes on unread and never keeps; it is
 //   answered as a `tools/call` is (`docs/architecture/mcp-server-requests.md` → Questions).
+// - **`resend`** (#487): a `tools/call` answered `PagesRequired` (a Legacy `-32042`; only to a caller with
+//   `ctx.answers.pages`), sent again with an answer for each page. Like `resume`, with the `ResendState`.
 // - **`ui/html`** (#466): App HTML for a View that mounts. By `hash` it is the host's own storage, which needs only a
 //   server of the set. By `uri` it is a read through the engine, joined with the one in flight, with the checks of a call.
 //
@@ -44,6 +46,7 @@ import {
   McpHostCompleted,
   McpHostPromptGet,
   McpHostInputRequired,
+  McpHostPagesRequired,
   McpHostRequest,
   McpHostTaskAck,
   McpHostTaskStarted,
@@ -282,6 +285,7 @@ const toolCall = (
       signIn: sent.success.signIn,
       mayStartTask: offeredTask,
       mayAsk: ctx.answers?.defer === true,
+      mayKeepPages: ctx.answers?.pages === true,
     });
 
     // Only a completed call answers an App's hash.
@@ -586,6 +590,15 @@ const engineRequestOf = (
         answers: call.params.answers,
         ctx,
       }));
+
+    case "resend":
+      return Option.map(heldTool(call.params.tool), (tool) => ({
+        op: "resend",
+        tool,
+        resend: call.params.resend,
+        answers: call.params.answers,
+        ctx,
+      }));
   }
 };
 
@@ -599,6 +612,8 @@ interface Answered {
   readonly mayStartTask: boolean;
   /** Whether the caller keeps questions (`ctx.answers.defer`): one that does not has none to be answered with. */
   readonly mayAsk: boolean;
+  /** Whether the caller keeps a Legacy `-32042` (`ctx.answers.pages`): one that does not has none to be answered with. */
+  readonly mayKeepPages: boolean;
 }
 
 /**
@@ -629,6 +644,22 @@ const answered = (
   switch (call.op) {
     case "tools/call":
     case "resume":
+    case "resend":
+      if (result.kind === "pages_required") {
+        // Never to a call whose caller keeps no pages.
+        return about.mayKeepPages
+          ? McpHostPagesRequired.make({
+              requests: result.requests,
+              message: result.message,
+              // A call's `ResendState`; a read, which has none, is not answered on this path.
+              resend: result.resend ?? null,
+              conn: about.conn,
+              identity: about.identity,
+              ...origin,
+            })
+          : misread;
+      }
+
       if (result.kind === "input_required") {
         // Never to a call whose caller keeps no questions.
         return about.mayAsk

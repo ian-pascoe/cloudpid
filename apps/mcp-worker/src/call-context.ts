@@ -159,14 +159,15 @@ const inputFrom =
       Effect.orElseSucceed(() => CANCELLED),
     );
 
-/** The host's `onInputEnded` hook as the core's: a notice that is lost fails nothing. */
-const endedFrom = (ended: NonNullable<McpEngineHooks["onInputEnded"]>) => (key: string) => {
-  try {
-    void Promise.resolve(ended(key)).catch(() => undefined);
-  } catch {
-    // A stub whose caller is gone may throw at once: the notice is dropped.
-  }
-};
+/** A host's notice of question `key` (`onInputEnded`, `onInputComplete`) as the core's: one that is lost fails nothing. */
+const noticeFrom =
+  (notice: NonNullable<McpEngineHooks["onInputEnded" | "onInputComplete"]>) => (key: string) => {
+    try {
+      void Promise.resolve(notice(key)).catch(() => undefined);
+    } catch {
+      // A stub whose caller is gone may throw at once: the notice is dropped.
+    }
+  };
 
 /** The host's `onDeprecated` hook as the core's: a note that is lost fails nothing. */
 const deprecatedFrom =
@@ -217,14 +218,18 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     ),
     eras: eras.store,
     sessions: sessions.store,
-    // Roots are offered on a bridge connection only (`routeVia`). A Legacy connection declares the form of an
-    // elicitation connection-wide, at `initialize`, whatever call opens it: a question on a call that cannot take it is
-    // cancelled (`docs/architecture/mcp-server-requests.md` → Questions). A Modern request declares per request: the
-    // form of an elicitation only on a call whose caller offers it (`ctx.answers`) and has an `onInput` to answer with.
+    // Roots are offered on a bridge connection only (`routeVia`). A Legacy connection declares an elicitation's form and
+    // URL modes connection-wide, at `initialize`, whatever call opens it (`ctx` is undefined there): a question on a call
+    // that cannot take it is cancelled, and a server that sees `url` may answer a `tools/call` `-32042`, which a call
+    // that cannot wait for a page gets as the server's error (`docs/architecture/mcp-server-requests.md` → Questions,
+    // Elicitation requests). A Modern request declares per request: the form of an elicitation only on a call whose caller
+    // offers it (`ctx.answers`) and has an `onInput` to answer with (Modern `url` comes with its own slice, #493).
     capabilities: (ctx?: McpCallContext) =>
-      ctx === undefined || (ctx.answers?.elicitation === true && hooks.onInput !== undefined)
-        ? { elicitation: { form: {} } }
-        : {},
+      ctx === undefined
+        ? { elicitation: { form: {}, url: {} } }
+        : ctx.answers?.elicitation === true && hooks.onInput !== undefined
+          ? { elicitation: { form: {} } }
+          : {},
     clientInfo: { name: "cloudpid", version: env.version },
     onLog: logs.hear,
   } satisfies McpDeps;
@@ -235,7 +240,11 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
 
   if (hooks.onInput !== undefined) deps.onInput = inputFrom(hooks.onInput);
 
-  if (hooks.onInputEnded !== undefined) deps.onInputEnded = endedFrom(hooks.onInputEnded);
+  if (hooks.onInputEnded !== undefined) deps.onInputEnded = noticeFrom(hooks.onInputEnded);
+
+  if (hooks.onInputComplete !== undefined) {
+    deps.onInputComplete = noticeFrom(hooks.onInputComplete);
+  }
 
   if (hooks.onDeprecated !== undefined) deps.onDeprecated = deprecatedFrom(hooks.onDeprecated);
 

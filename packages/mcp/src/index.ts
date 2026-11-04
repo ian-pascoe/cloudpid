@@ -18,6 +18,7 @@ export {
   type McpDeps,
   type McpLog,
   type McpTarget,
+  type PagesRequired,
   type McpTasks,
   type Outcome,
   type ReadComplete,

@@ -38,7 +38,7 @@ import {
   type BranchSummaryRequest,
   type TreePoint,
   type ConversationId,
-  type ElicitationAction,
+  type McpElicitationAction,
   type ElicitationContent,
   type ServerMessage,
   type SecretKeep,
@@ -319,7 +319,7 @@ export interface SessionClient {
    */
   readonly answerMcpElicitation: (
     request: string,
-    action: ElicitationAction,
+    action: McpElicitationAction,
     content?: ElicitationContent,
   ) => Effect.Effect<void, SessionCommandError>;
   /**

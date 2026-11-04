@@ -108,7 +108,7 @@ describe.each(servers)("against a %s server", (_name, makeServer, era, streams) 
       ui: { resourceUri: "ui://docs/app" },
     });
     expect(read.kind).toBe("complete");
-    expect(read.value.contents).toEqual([
+    expect(read.kind === "complete" && read.value.contents).toEqual([
       { uri: "ui://docs/app", mimeType: APP_MIME_TYPE, text: "<p>hi</p>" },
     ]);
     expect(missing._tag).toBe("ServerError");

@@ -22,6 +22,7 @@ import {
   type McpEngineTarget,
   type McpEngineRequestResult,
   McpHostCompleted,
+  McpHostPagesRequired,
   McpHostResourceRequest,
   type McpHostRequestContext,
   type McpHostRequestHooks,
@@ -266,5 +267,26 @@ export const resourceRequest = (
       hooks,
     );
 
-    return Result.isFailure(sent) ? sent.failure : completedOf(op, sent.success.result);
+    if (Result.isFailure(sent)) return sent.failure;
+
+    const { result } = sent.success;
+
+    // A Legacy server's `-32042` on a read, kept only for a caller that asked to (`ctx.answers.pages`): its pages, and
+    // the read is sent again by the caller as it was.
+    if (result.kind === "pages_required") {
+      const { server } = resolved.success.view;
+
+      return ctx.answers?.pages === true
+        ? McpHostPagesRequired.make({
+            requests: result.requests,
+            message: result.message,
+            conn: server.conn,
+            identity: server.identity,
+          })
+        : callFailed(
+            ProtocolViolation.make({ message: `The engine answered ${op} with ${result.kind}` }),
+          );
+    }
+
+    return completedOf(op, result);
   });

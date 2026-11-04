@@ -22,6 +22,7 @@ import {
   createMcpQuestions,
   MCP_DEFERRED_DEADLINE_MS,
   type McpQuestionAsk,
+  McpRoundState,
   type McpQuestionStorage,
   type McpQuestionVault,
 } from "./mcp/questions.ts";
@@ -399,7 +400,7 @@ describe("a Modern server's form", () => {
     expect(seen).toEqual([{ kind: "answered", result: { action: "decline" } }]);
   });
 
-  it("is answered live on a read of a resource, never deferred, even on a host that resumes", async () => {
+  it("is answered live on a read of a resource, never deferred: a read keeps only a Legacy -32042's pages", async () => {
     const files = { name: "files", exposure: "direct", resources: true, tools: [] };
 
     const { host, questions, tools, session, sent } = await setup(memoryStorage(), files, [
@@ -431,10 +432,10 @@ describe("a Modern server's form", () => {
     await Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" }));
     await submitted.wait(context);
 
-    // The host resumes (`resume` is listed), yet the read said it keeps nothing for later.
+    // The host resumes and resends, yet the Modern form was answered live: the read's core never defers one, and the
+    // Session keeps for later only a page (a Legacy `-32042`'s), which this form is not.
     expect(sent()).toEqual([expect.objectContaining({ op: "resources/read", server: "files" })]);
-    expect(sent()[0]?.ctx.answers).toMatchObject({ elicitation: true });
-    expect(sent()[0]?.ctx.answers).not.toHaveProperty("defer");
+    expect(sent()[0]?.ctx.answers).toMatchObject({ elicitation: true, defer: true, pages: true });
     expect(seen).toEqual([{ kind: "answered", result: { action: "decline" } }]);
     expect(await session.texts("toolResult")).toEqual([expect.stringContaining("read")]);
   });
@@ -459,7 +460,7 @@ describe("a Modern server's form", () => {
       round: 1,
       conn: "conn-docs",
       tool: "search",
-      resume: STATE,
+      state: McpRoundState.Resume({ state: STATE }),
     });
 
     // No call of the new instance waits for it: the Session going idle withdraws it.
@@ -497,7 +498,7 @@ describe("a deferred round in the Session's storage", () => {
     round: 1,
     conn: "conn-docs",
     tool: "search",
-    resume: STATE,
+    state: McpRoundState.Resume({ state: STATE }),
     asked: [],
   };
 

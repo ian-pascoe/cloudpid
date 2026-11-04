@@ -16,7 +16,11 @@ import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
 import { MAX_MCP_APP_KEY, McpAppsMessage, McpAppToolsMessage } from "./mcp-apps.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
-import { ElicitationAction, ElicitationContent, McpElicitationRequest } from "./mcp-elicitation.ts";
+import {
+  ElicitationContent,
+  McpElicitationAction,
+  McpElicitationRequest,
+} from "./mcp-elicitation.ts";
 import { McpCatalogServer, McpPromptData, McpPromptEntry, McpPromptRef } from "./mcp-prompts.ts";
 
 /**
@@ -180,15 +184,17 @@ export const ApprovalAnswer = Schema.Struct({
 /**
  * The owner's answer to MCP elicitation request `request` (`mcp_elicitation_requests`): `accept` sends `content`, the
  * form's values, which the Session checks against the form again (and against the Session's Secrets) and passes straight
- * to the server, keeping nothing; `decline` and `cancel` send none. Answered with `null`; fails when no such request
- * waits (answered, ended or withdrawn), and, for a bad `content`, with the fields to fix.
+ * to the server, keeping nothing; `decline` and `cancel` send none. For a request with a `page` (URL mode), `opened`
+ * records that the owner opened it (Open's click; a server that goes on by itself is told `accept` then) and `done` that
+ * they finished there ("Done, try again": every page of the call's round must be opened first). Answered with `null`;
+ * fails when no such request waits (answered, ended or withdrawn), and, for a bad `content`, with the fields to fix.
  * (`docs/architecture/mcp-server-requests.md` → Elicitation requests).
  */
 export const McpElicitationAnswer = Schema.Struct({
   type: Schema.Literal("mcp_elicitation_answer"),
   id: CommandId,
   request: Schema.String,
-  action: ElicitationAction,
+  action: McpElicitationAction,
   content: Schema.optionalKey(ElicitationContent),
 });
 

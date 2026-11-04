@@ -40,6 +40,7 @@ import {
   type McpEngineRequestEncoded,
   McpEngineRequestResult,
   type McpEngineInputRequired,
+  type McpEnginePagesRequired,
   type McpEngineTaskAck,
   type McpEngineTaskStarted,
   type McpEngineTaskState,
@@ -486,6 +487,8 @@ type ToolCall = McpEngineRequest & { readonly op: "tools/call" };
 
 type Resume = McpEngineRequest & { readonly op: "resume" };
 
+type Resend = McpEngineRequest & { readonly op: "resend" };
+
 type ResourceRead = McpEngineRequest & { readonly op: "resources/read" };
 
 type ResourcePage = McpEngineRequest & {
@@ -551,7 +554,8 @@ type RequestOutcome =
   | Omit<McpEngineTaskStarted, "state">
   | Omit<McpEngineTaskState, "state">
   | Omit<McpEngineTaskAck, "state">
-  | Omit<McpEngineInputRequired, "state">;
+  | Omit<McpEngineInputRequired, "state">
+  | Omit<McpEnginePagesRequired, "state">;
 
 /** Runs a `tools/call`, checking its `structuredContent`. */
 const runToolCall = Effect.fnUntraced(function* (
@@ -607,6 +611,31 @@ const runResume = Effect.fnUntraced(function* (
   return yield* callAnswer(sent, req.tool, {}, { call, env, validators, bridge });
 });
 
+/**
+ * Sends a `tools/call` that answered `pages_required` (a Legacy `-32042`) again from its `ResendState`, with an answer
+ * for each page: answered as a `tools/call` is.
+ */
+const runResend = Effect.fnUntraced(function* (
+  connection: McpConnection,
+  call: CallContext,
+  req: Resend,
+  env: CallEnvironment,
+  validators: ValidatorsApi,
+  bridge: StdioBridge | undefined,
+) {
+  const sent = yield* connection
+    .resend(
+      req.resend,
+      req.answers,
+      // SAFETY: a definition the server listed, decoded as one; the SDK reads it as its `Tool`.
+      req.tool as Parameters<McpConnection["resend"]>[2],
+      req.ctx,
+    )
+    .pipe(Effect.result);
+
+  return yield* callAnswer(sent, req.tool, {}, { call, env, validators, bridge });
+});
+
 /** What a call's answer is made with besides itself. */
 interface Answering {
   readonly call: CallContext;
@@ -642,6 +671,20 @@ const callAnswer = Effect.fnUntraced(function* (
       task: scrubValues(sent.success.task, call.tokens),
       ...extras,
     } satisfies RequestOutcome;
+  }
+
+  // A `-32042` is what a call with `ctx.answers.pages` may be answered with, and only such a call is.
+  if (sent.success.kind === "pages_required") {
+    const pages: Mutable<Omit<McpEnginePagesRequired, "state">> = {
+      kind: "pages_required",
+      requests: scrubValues(sent.success.requests, call.tokens),
+      message: sent.success.message,
+      ...extras,
+    };
+
+    if (sent.success.resend !== undefined) pages.resend = sent.success.resend;
+
+    return pages satisfies RequestOutcome;
   }
 
   // Questions are what a call with `ctx.answers.defer` may be answered with, and only such a call is.
@@ -737,11 +780,18 @@ const runRead = Effect.fnUntraced(function* (
   req: ResourceRead,
   env: CallEnvironment,
 ) {
-  const {
-    value,
-    kind: _kind,
-    ...meta
-  } = yield* connection.readResource(req.uri, req.ctx, { app: req.app === true });
+  const read = yield* connection.readResource(req.uri, req.ctx, { app: req.app === true });
+
+  // A Legacy server's `-32042`: the pages, scrubbed of the call's tokens; the caller sends the read again.
+  if (read.kind === "pages_required") {
+    return {
+      kind: "pages_required",
+      requests: scrubValues(read.requests, call.tokens),
+      message: read.message,
+    } satisfies RequestOutcome;
+  }
+
+  const { value, kind: _kind, ...meta } = read;
 
   return {
     kind: "complete",
@@ -811,7 +861,7 @@ const runList = Effect.fnUntraced(function* (
   call: CallContext,
   req: Exclude<
     McpEngineRequest,
-    ToolCall | TaskOp | ResourceRead | ResourcePage | PromptGet | Resume
+    ToolCall | TaskOp | ResourceRead | ResourcePage | PromptGet | Resume | Resend
   >,
   env: CallEnvironment,
   validators: ValidatorsApi,
@@ -889,6 +939,7 @@ export const request = Effect.fn("mcp.engine.request")(function* (
       mayHaveRun:
         req.op === "tools/call" ||
         req.op === "resume" ||
+        req.op === "resend" ||
         (isTaskRequest(req) && req.op !== "tasks/get"),
     },
     (connection, context, bridge): Effect.Effect<RequestOutcome, McpError, Scope.Scope> => {
@@ -897,6 +948,8 @@ export const request = Effect.fn("mcp.engine.request")(function* (
       }
 
       if (req.op === "resume") return runResume(connection, context, req, env, validators, bridge);
+
+      if (req.op === "resend") return runResend(connection, context, req, env, validators, bridge);
 
       if (isTaskRequest(req)) return runTaskOp(connection, context, req, env, validators);
 
