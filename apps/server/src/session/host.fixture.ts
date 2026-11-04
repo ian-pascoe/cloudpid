@@ -719,14 +719,14 @@ export class TestSession extends DurableObject {
 
   /**
    * The wait of a prompt send's question, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`: 300 ms),
-   * and for those that test the get's own clock against it (`mcp-short-clock-*`: 1.5 s, past the clock's 400 ms).
+   * and for those that test the get's own clock against it (`mcp-short-clock-*`: 6 s, past the clock's 2 s and the tests' 3 s wait).
    */
   #promptWaitMs(): number | undefined {
     const name = this.ctx.id.name ?? "";
 
     if (name.startsWith("mcp-short-wait-")) return 300;
 
-    return name.startsWith("mcp-short-clock-") ? 1500 : undefined;
+    return name.startsWith("mcp-short-clock-") ? 6000 : undefined;
   }
 
   #mcpQuestions(): ReturnType<typeof sessionMcpQuestions> {
@@ -904,7 +904,7 @@ export class TestSession extends DurableObject {
       signIns: this.#mcpSignIns().service,
       session: this.ctx.id.name,
       // The Session's 40 s get clock for a prompt send, shortened for the Sessions that test it (`mcp-short-clock-*`).
-      promptGetWaitMs: this.ctx.id.name?.startsWith("mcp-short-clock-") === true ? 400 : undefined,
+      promptGetWaitMs: this.ctx.id.name?.startsWith("mcp-short-clock-") === true ? 2000 : undefined,
       host: (environment) =>
         mcpHostClient(() => promisedMcpHost(hosts.getByName(mcpHostName(environment)))),
       kv,
