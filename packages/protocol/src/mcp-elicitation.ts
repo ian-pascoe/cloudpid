@@ -159,6 +159,12 @@ export const McpElicitationPage = Schema.Struct({
 export type McpElicitationPage = typeof McpElicitationPage.Type;
 
 /**
+ * The `callId` of the get a prompt send's questions wait on, from the send's `requestId` (a client's UUID, kept by the
+ * Session as the message's identity): a client ties each lane row of a send to its cards by it, with no text compared.
+ */
+export const mcpPromptCallId = (requestId: string): string => `prompt-${requestId}`;
+
+/**
  * One waiting question (`mcp_elicitation_requests`), as the card shows it. Every string is plain text. `deadline` is
  * the moment, in epoch milliseconds, the Session answers `cancel` for the owner, so the countdown follows the Session's
  * clock; a question with `waits: "owner"` has none, and its `deadline` is only for a client from before `waits` (a far

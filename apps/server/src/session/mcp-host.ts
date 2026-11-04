@@ -43,6 +43,7 @@ import {
   type McpAppHtmlAnswer,
   type McpAppRequestAnswer,
   type McpResourcePreviewAnswer,
+  mcpPromptCallId,
   resourceUnavailable,
 } from "@cloudpid/protocol";
 import {
@@ -68,7 +69,6 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import * as Random from "effect/Random";
 import * as Match from "effect/Match";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
@@ -201,6 +201,15 @@ export const kvMcpToolsStore = (kv: McpToolsKv, environment: string): McpToolsSt
  */
 const PROMPT_GET_WAIT_MS = 40_000;
 
+/**
+ * A prompt get's ID, what its questions are kept and withdrawn under: from the send's `requestId`, a client's UUID, so the
+ * web ties the lane row to the cards; a UUID of its own for a send with none. Unique across restarts too: a settled
+ * question's record outlives its get, and a repeated ID would key another get's records.
+ */
+const promptCallId = (requestId: string | undefined): string =>
+  // @effect-diagnostics-next-line cryptoRandomUUID:off
+  mcpPromptCallId(requestId ?? crypto.randomUUID());
+
 /** The longest an arguments refusal's message is, in characters. */
 const PROMPT_ARGUMENTS_MESSAGE = 300;
 
@@ -265,6 +274,8 @@ const abortedBy = (signal: AbortSignal) =>
 export type SessionMcpOptions = {
   /** The Session's name, its ID in the Registry; undefined when unknown, and then it has no MCP tools. */
   readonly session: string | undefined;
+  /** How long the Session waits for the host's answer to a prompt get: `PROMPT_GET_WAIT_MS` unless a test shortens it. */
+  readonly promptGetWaitMs?: number | undefined;
   /** The `McpHostClient` of Environment `environment`'s host. */
   readonly host: (environment: string) => McpHostClientService;
   /**
@@ -559,13 +570,12 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
 
     return Effect.gen(function* () {
       const workspace = yield* workspaceOf;
-      const tag = (yield* Random.nextInt).toString(36);
 
       // The get's own clock: the host's 30 s bound and its slack. It stands still while a question of the server waits for
       // the owner (up to 5 min, `MCP_PROMPT_QUESTION_WAIT_MS`); a question that is never answered ends in `cancel`, and
       // the get goes on from there.
       const clock = yield* pausableDeadline(
-        PROMPT_GET_WAIT_MS,
+        options.promptGetWaitMs ?? PROMPT_GET_WAIT_MS,
         () => new Error("The get timed out"),
       );
 
@@ -574,13 +584,12 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
 
       const asking = toolsOf(environment).promptAsking({
         server: call.server,
-        callId: `prompt-${tag}`,
+        callId: promptCallId(call.requestId),
         command: call.command,
         title: call.title,
         conversationId: call.conversationId,
         signal: stopped,
-        pause: clock.pause,
-        resume: clock.resume,
+        hold: { pause: clock.pause, resume: clock.resume },
       });
 
       const ctx: Mutable<McpHostPromptGet["ctx"]> = {

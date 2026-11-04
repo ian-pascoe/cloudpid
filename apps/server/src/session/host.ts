@@ -418,6 +418,8 @@ export type SessionHostMcpPromptGet = {
   readonly conversationId: ConversationId;
   /** The Subagent Workspace (`ws:<id>`) the conversation works in; undefined for the Session's own. */
   readonly workspace: string | undefined;
+  /** The message's `requestId`, which its questions' cards are tied to its lane row by (`mcpPromptCallId`). */
+  readonly requestId?: string | undefined;
 };
 
 /** The Session's MCP prompts (`docs/architecture/mcp-in-a-session.md` → The `/` menu and the catalog, Getting a prompt at send). */
@@ -2564,6 +2566,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             arguments: sent,
             conversationId: conversation.id,
             workspace: workspace?.object,
+            requestId: prompt.requestId,
           },
           (result) =>
             promptMessage({

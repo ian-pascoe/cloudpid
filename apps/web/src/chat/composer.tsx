@@ -82,7 +82,7 @@ import {
   refusalOutcome,
   sendGate,
   startingValues,
-  withAwaited,
+  sendingRows,
 } from "./mcp-prompt-state.ts";
 import { ComposerNote } from "./composer-note.tsx";
 import { PromptChipView } from "./prompt-chip.tsx";
@@ -98,9 +98,7 @@ import {
   deleteAnnotationAtom,
   mcpElicitationRequestsAtom,
   mcpSamplingRequestsAtom,
-  taskGraphAtom,
 } from "../session/atoms.ts";
-import { agentOfConversation } from "../session/agents.ts";
 import { useCompletion } from "./use-completion.ts";
 
 const Lane = ({
@@ -218,22 +216,10 @@ const ComposerBox = ({
 
   const dragging = useAtomValue(fileDragAtom(key));
 
-  // The messages of this conversation whose prompt's server asks the owner something in the get: their rows say so.
+  // The sends whose prompt's server asks the owner something in the get: their rows say so (`sendingRows`).
   const forms = useAtomValue(mcpElicitationRequestsAtom(key.sessionId));
   const samples = useAtomValue(mcpSamplingRequestsAtom(key.sessionId));
-  const graph = useAtomValue(taskGraphAtom(key.sessionId));
-
-  const sendingRows = withAwaited(
-    sending,
-    [...forms, ...samples].flatMap((one) =>
-      one.prompt !== undefined &&
-      (conversationId === undefined
-        ? agentOfConversation(graph, one.conversationId) === undefined
-        : one.conversationId === conversationId)
-        ? [{ server: one.server, prompt: one.prompt }]
-        : [],
-    ),
-  );
+  const sendingLane = sendingRows(sending, [...forms, ...samples]);
 
   const attached =
     attachments.items.length > 0 ||
@@ -591,7 +577,7 @@ const ComposerBox = ({
       onSubmit={onSubmit}
       className={cn("flex w-full flex-col gap-2", !compact && "mx-auto max-w-3xl px-4 pb-4")}
     >
-      <Lane label="Sending…" hint="waiting for the session" entries={sendingRows} />
+      <Lane label="Sending…" hint="waiting for the session" entries={sendingLane} />
       <Lane label="Steering" hint="joins the run after its tool calls" entries={steerLane} />
       <Lane label="Next up" hint="starts after this run" entries={followUpLane} />
       {form !== null && (

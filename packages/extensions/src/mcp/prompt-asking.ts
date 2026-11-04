@@ -38,7 +38,12 @@ export type PromptAsk = {
   readonly conversationId: ConversationId;
   /** Aborts when Stop does: a question waiting then is withdrawn. */
   readonly signal: AbortSignal | undefined;
-  /** Stop the get's own clock while a question waits, and start it again. */
+  /** The get's own clock: stopped while a question waits, and started again. */
+  readonly hold: PromptHold;
+};
+
+/** What stops and starts a get's own clock. */
+export type PromptHold = {
   readonly pause: Effect.Effect<void>;
   readonly resume: Effect.Effect<void>;
 };
@@ -90,11 +95,12 @@ export const promptAsking = (
   if (questions === undefined) return undefined;
 
   const title = plainLine(ask.title, TITLE_LENGTH);
-  const hold = { pause: ask.pause, resume: ask.resume };
+  const { hold } = ask;
 
   const asking = elicitingHooks({
     questions,
     server: server.name,
+    // The prompt's Slash command stands for the tool: a client from before `prompt` shows "during <command>".
     tool: ask.command,
     prompt: title,
     callId: ask.callId,
@@ -105,13 +111,12 @@ export const promptAsking = (
   });
 
   // A server whose definition says `off` (or a stdio one) is declared no sampling, so none is asked.
-  const samples = sampling !== undefined && deps.hostSamples && declaresSampling(server.server);
-
   const sampler =
-    samples && sampling !== undefined
+    sampling !== undefined && deps.hostSamples && declaresSampling(server.server)
       ? samplingHooks({
           sampling,
           server: server.name,
+          // The prompt's Slash command stands for the tool, as above.
           tool: ask.command,
           prompt: title,
           callId: ask.callId,
@@ -135,12 +140,12 @@ export const promptAsking = (
     hooks.onInput = async (input) => {
       if (input.kind !== "sampling") return asking.onInput(input);
 
-      await Effect.runPromise(ask.pause);
+      await Effect.runPromise(hold.pause);
 
       try {
         return await sampler.onInput(input);
       } finally {
-        await Effect.runPromise(ask.resume);
+        await Effect.runPromise(hold.resume);
       }
     };
 

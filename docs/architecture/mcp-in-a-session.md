@@ -453,8 +453,8 @@ An MCP prompt is the owner's, picked as a Slash command. It is got when its mess
   - **The card** waits above the composer, named in the lane row, for at most 5 min, with no Notification. The 30 s get bound pauses meanwhile.
   - **The line:** while it waits, the conversation's line is held, but commands, Fork/Clone and other conversations go ahead, and Stop withdraws the message (the card is withdrawn with it).
   - **Endings:** an Elicitation request whose 5 min run out gets `cancel` and the get goes on; a Modern Sampling refusal fails the send with `MCP_PROMPT_FAILED`, Retry offered.
-  - **Summaries** are kept in `mcpPrompt.sampling` and `mcpPrompt.elicitation`.
-  - **As built ([#492](https://github.com/ian-pascoe/cloudpid/issues/492)):** the cards, the 5 min wait, the paused get bound, Stop and the lane row are built as above (`apps/server/src/session/mcp-host.ts` `getPrompt`; the parts are in [_Questions_](mcp-server-requests.md#questions)); **not built:** the `mcpPrompt.sampling` and `mcpPrompt.elicitation` summaries, and Legacy `-32042` on a get (the server's error ends it, `MCP_PROMPT_FAILED`).
+  - **Summaries** are kept in `mcpPrompt.sampling` and `mcpPrompt.elicitation` (not built yet: [#492](https://github.com/ian-pascoe/cloudpid/issues/492) part B).
+  - **As built, part A ([#492](https://github.com/ian-pascoe/cloudpid/issues/492)):** the forms, Sampling requests and Legacy pages of a get, with their cards, the 5 min wait, the paused get bound, Stop and the lane row are built as above (`apps/server/src/session/mcp-host.ts` `getPrompt`; the parts are in [_Questions_](mcp-server-requests.md#questions)). **Not built yet ([#492](https://github.com/ian-pascoe/cloudpid/issues/492) part B):** Modern pages and Legacy `-32042` on a get (the server's error ends it, `MCP_PROMPT_FAILED`), and the `mcpPrompt.sampling` and `mcpPrompt.elicitation` summaries.
 
 - **Failures** refuse the send; the message is never sent as typed.
   - **`MCP_PROMPT_ARGUMENTS`:** the Session's own check or a `-32602`, with a message of at most 300 characters, redacted. The form reopens.
@@ -555,7 +555,7 @@ An MCP prompt is the owner's, picked as a Slash command. It is got when its mess
 **Left for later:**
 
 - **Completion** ([#485](https://github.com/ian-pascoe/cloudpid/issues/485); `mcp_complete`, `mcp_completion`, `ArgumentForm`'s `complete`, and the form for resource templates); `completions` stays `false` in the catalog.
-- `mcpPrompt.sampling` and `mcpPrompt.elicitation`, and Legacy `-32042` on a get ([#492](https://github.com/ian-pascoe/cloudpid/issues/492) built the questions themselves).
+- A server's page during a get, Modern or a Legacy `-32042`, and `mcpPrompt.sampling` and `mcpPrompt.elicitation` ([#492](https://github.com/ian-pascoe/cloudpid/issues/492) part B; forms and Sampling requests are built).
 
 ## Roots
 

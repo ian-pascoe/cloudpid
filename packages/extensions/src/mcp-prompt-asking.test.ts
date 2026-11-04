@@ -126,12 +126,14 @@ const setup = async (
     title: "Review PR",
     conversationId: ROOT_CONVERSATION_ID,
     signal: controller.signal,
-    pause: Effect.sync(() => {
-      clock.push("pause");
-    }),
-    resume: Effect.sync(() => {
-      clock.push("resume");
-    }),
+    hold: {
+      pause: Effect.sync(() => {
+        clock.push("pause");
+      }),
+      resume: Effect.sync(() => {
+        clock.push("resume");
+      }),
+    },
     ...over,
   });
 

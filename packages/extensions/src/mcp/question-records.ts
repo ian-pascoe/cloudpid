@@ -7,6 +7,7 @@
 import {
   answeredFields,
   MCP_ELICITATIONS_PER_CALL,
+  MCP_PROMPT_QUESTION_WAIT_MS,
   validateElicitation,
 } from "@cloudpid/mcp/types";
 import { ROLE_NAMES, type RoleName, sha256Hex } from "@cloudpid/config";
@@ -292,6 +293,23 @@ export type McpWaitingKind = {
   readonly page?: true;
   /** The owner is not told at all: a page the server asks for again, which they were told of already. */
   readonly quiet?: true;
+};
+
+/**
+ * How a question waits, by whether it is a prompt send's (`prompt` is its title): a call's question waits `waitMs` and
+ * tells the owner, a prompt send's waits `promptWaitMs` (`MCP_PROMPT_QUESTION_WAIT_MS` unless a test shortens it) and
+ * tells them nothing, as they are at the composer. One rule for the forms and the Sampling requests alike.
+ */
+export const waitsOf = (waits: {
+  readonly waitMs: number;
+  readonly promptWaitMs?: number | undefined;
+}) => {
+  const promptWaitMs = waits.promptWaitMs ?? MCP_PROMPT_QUESTION_WAIT_MS;
+
+  return (prompt: string | undefined): { readonly waitMs: number; readonly quiet: boolean } =>
+    prompt === undefined
+      ? { waitMs: waits.waitMs, quiet: false }
+      : { waitMs: promptWaitMs, quiet: true };
 };
 
 /** A question's id: unique within the Session, and within its call whatever the server's own request ids are. */

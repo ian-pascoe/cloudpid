@@ -8,6 +8,7 @@
 import {
   type Catalog,
   flatCut,
+  mcpPromptCallId,
   mcpPromptErrorCode,
   type McpPromptArgument,
   type McpPromptData,
@@ -132,25 +133,40 @@ export const gettingLine = (title: string, server: string): string =>
 export const gettingText = (chip: PromptChip): string =>
   gettingLine(promptTitle(chip.prompt), chip.prompt.server);
 
-/**
- * The lane rows of messages whose prompt is being got (`gettingText`), with the ones whose server asks the owner something
- * in the get (`asked`: the waiting questions of a prompt send, by their server and the prompt's title) reading "Getting
- * <title> from <server> · waiting for your answer" (`docs/architecture/mcp-server-requests.md` → Questions).
- */
-export const withAwaited = <A extends { readonly text: string }>(
-  rows: readonly A[],
-  asked: ReadonlyArray<{ readonly server: string; readonly prompt: string }>,
-): readonly A[] => {
-  if (asked.length === 0) return rows;
+/** What a lane says while the get of the prompt `title` of `server` waits for the owner's answer. */
+export const awaitedLine = (title: string, server: string): string =>
+  `Getting ${title} from ${server} · waiting for your answer`;
 
-  const awaited = new Set(asked.map((one) => gettingLine(one.prompt, one.server)));
-
-  return rows.map((row) =>
-    awaited.has(row.text)
-      ? { ...row, text: `${row.text.slice(0, -1)} · waiting for your answer` }
-      : row,
-  );
+/** A lane row of a message being sent, and whether its prompt's server asks the owner something in the get. */
+export type SendingRow = {
+  readonly id: string;
+  readonly text: string;
+  readonly awaited: boolean;
 };
+
+/**
+ * The "Sending…" rows, each with its flag: a row whose prompt's server asks the owner something in the get reads "Getting
+ * <title> from <server> · waiting for your answer" (`docs/architecture/mcp-server-requests.md` → Questions). A row is tied
+ * to its cards by the identity of the send, never by its text: the card's `callId` is `mcpPromptCallId` of the row's `id`
+ * (the message's `requestId`), so a long or cleaned title, and two sends of one prompt, each read as they are.
+ */
+export const sendingRows = (
+  rows: ReadonlyArray<{ readonly id: string; readonly text: string }>,
+  asked: ReadonlyArray<{
+    readonly callId: string;
+    readonly server: string;
+    readonly prompt?: string | undefined;
+  }>,
+): readonly SendingRow[] =>
+  rows.map((row) => {
+    const waiting = asked.find(
+      (one) => one.prompt !== undefined && one.callId === mcpPromptCallId(row.id),
+    );
+
+    return waiting?.prompt === undefined
+      ? { ...row, awaited: false }
+      : { id: row.id, text: awaitedLine(waiting.prompt, waiting.server), awaited: true };
+  });
 
 /** What a lane shows of the message once it has its prompt: the chip's label, then what the owner typed and attached. */
 export const promptLane = (chip: PromptChip, display: string): string => {

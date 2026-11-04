@@ -17,11 +17,7 @@
 //   reader.
 // - **The notification** is told of the first question a call waits on, and of a later one only after 2 min with none
 //   waiting for that call.
-import {
-  MCP_ELICITATION_WAIT_MS,
-  MCP_PROMPT_QUESTION_WAIT_MS,
-  type McpEra,
-} from "@cloudpid/mcp/types";
+import { MCP_ELICITATION_WAIT_MS, type McpEra } from "@cloudpid/mcp/types";
 import {
   createDeferredQuestions,
   type McpDeferredAnswer,
@@ -47,6 +43,7 @@ import {
   type McpSamplingDecision,
   type McpWaitingKind,
   questionId,
+  waitsOf,
 } from "./question-records.ts";
 import type {
   McpElicitationRequest,
@@ -152,7 +149,7 @@ export type McpQuestionsService = {
   readonly complete: (callId: string, key: string) => Effect.Effect<void>;
   /**
    * Waits until page question `key` of call `callId`, which the owner opened, has ended: finished, withdrawn, or its call
-   * over. At once for a question that has.
+   * over; a prompt send's, at most until its question's own wait is up. At once for a question that has.
    */
   readonly whileOpen: (callId: string, key: string) => Effect.Effect<void>;
   /** Whether `host` is one of cloudpid's own (`McpQuestionsOptions.ownHost`). */
@@ -326,7 +323,7 @@ type Waiting = {
 export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsService => {
   const { storage, announce } = options;
   const waitMs = options.waitMs ?? MCP_ELICITATION_WAIT_MS;
-  const promptWaitMs = options.promptWaitMs ?? MCP_PROMPT_QUESTION_WAIT_MS;
+  const waitFor = waitsOf({ waitMs, promptWaitMs: options.promptWaitMs });
   const finishedShownMs = options.finishedShownMs ?? MCP_PAGE_FINISHED_SHOWN_MS;
   const waiting = new Map<string, Waiting>();
   const basics = questionBasics(options);
@@ -419,9 +416,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       const id = questionId(question.callId, sequence);
       const now = yield* Clock.currentTimeMillis;
-      // A prompt send's question waits less than a call's, and tells the owner nothing: they are at the composer.
-      const prompting = question.prompt !== undefined;
-      const wait = prompting ? promptWaitMs : waitMs;
+      const { waitMs: wait, quiet } = waitFor(question.prompt);
       const request = yield* basics.requestOf(question, id, now + wait);
 
       const entry: WaitingEntry = {
@@ -468,7 +463,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       if (question.page !== undefined) kind.page = true;
 
-      if (prompting) kind.quiet = true;
+      if (quiet) kind.quiet = true;
 
       yield* basics.startWaiting(question.callId, question.server, 1, now, kind);
 
@@ -622,7 +617,20 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   const whileOpen = (callId: string, key: string) =>
     Option.match(waitingFor(callId, key), {
       onNone: () => Effect.void,
-      onSome: ([, held]) => Deferred.await(held.closed),
+      onSome: ([, held]) => {
+        const open = Deferred.await(held.closed);
+
+        // A page of a prompt send is waited for no longer than its question was: the get's clock is not held for good by a
+        // page that is never finished (`deadline` is the ask's 5 min).
+        if (held.request.prompt === undefined) return open;
+
+        return Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) =>
+            Effect.timeoutOption(open, Math.max(0, held.request.deadline - now)),
+          ),
+          Effect.asVoid,
+        );
+      },
     });
 
   const unseen: McpQuestionsService["unseen"] = (form) =>

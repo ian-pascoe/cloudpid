@@ -20,6 +20,7 @@ import {
   type ClientMessage,
   type McpElicitationRequest,
   type McpSamplingRequest,
+  mcpPromptCallId,
   type ServerMessage,
   ServerMessageJson,
 } from "@cloudpid/protocol";
@@ -65,6 +66,26 @@ const SAMPLE_PROMPT: FakePrompt = {
   arguments: [{ name: "pr", required: true }],
   get: () => ({ messages: [] }),
   asks: { sample: "Summarize the PR" },
+};
+
+const PAGE_URL = "https://login.example.com/authorize?state=1";
+
+/** A Legacy server's page, opened in the get: the server is told `accept` at once, then goes on for `holdMs`. */
+const pagePrompt = (holdMs: number): FakePrompt => ({
+  name: "review",
+  title: "Review PR",
+  arguments: [{ name: "pr", required: true }],
+  get: () => ({ messages: [] }),
+  asks: { url: PAGE_URL, holdMs },
+});
+
+/** A prompt whose server never answers. */
+const HANG_PROMPT: FakePrompt = {
+  name: "review",
+  title: "Review PR",
+  arguments: [{ name: "pr", required: true }],
+  get: () => ({ messages: [] }),
+  hangs: true,
 };
 
 const REVIEW = { server: "docs", name: "review", arguments: { pr: "7" } } as const;
@@ -195,6 +216,8 @@ describe.each(eras)("a %s server's form during a prompt send", (_era, make) => {
       prompt: "Review PR",
       tool: "/mcp__docs__review",
       message: "Which team?",
+      // The send's own identity, which the web ties its lane row to the card by.
+      callId: mcpPromptCallId("pick-1"),
     });
     // A prompt send's card has a countdown of 5 min at most, and never waits "for the owner" with no deadline.
     expect(card?.waits).toBeUndefined();
@@ -352,6 +375,123 @@ describe("a Modern server's Sampling request during a prompt send", () => {
         message: expect.stringContaining("refused"),
       },
     });
+    owner.close();
+  });
+});
+
+describe.each(eras)("the Session's own clock on a %s server's prompt send", (_era, make) => {
+  // `mcp-short-clock-*` Sessions have a get clock of 400 ms (`PROMPT_GET_WAIT_MS` is 40 s) and a question wait of 1.5 s.
+  it("stands still while a card waits, and the get completes after Submit", async () => {
+    const { stub } = await open(make, FORM_PROMPT, "mcp-short-clock");
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+
+    // Three times the clock: it would have run out.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(owner.forms()).toHaveLength(1);
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "yes",
+      request: owner.forms()[0]?.id ?? "",
+      action: "accept",
+      content: {},
+    });
+
+    expect(await sending).toHaveProperty("submission");
+    owner.close();
+  });
+
+  it("still runs out when no question waits", async () => {
+    const { stub } = await open(make, HANG_PROMPT, "mcp-short-clock");
+    const owner = await connect(stub);
+
+    expect(await send(stub)).toMatchObject({
+      failure: {
+        code: "MCP_PROMPT_FAILED",
+        server: "docs",
+        message: expect.stringContaining("did not answer in time"),
+      },
+    });
+    owner.close();
+  });
+});
+
+describe("a Legacy server's page during a prompt send", () => {
+  it("opens, is told accept at once, stays until the server is done, and the get completes", async () => {
+    const { stub } = await open(legacyStatefulServer, pagePrompt(400));
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+
+    const [card] = owner.forms();
+
+    expect(card).toMatchObject({
+      server: "docs",
+      prompt: "Review PR",
+      tool: "/mcp__docs__review",
+      page: { url: PAGE_URL, host: "login.example.com", domain: "example.com", opened: false },
+    });
+    expect(card?.waits).toBeUndefined();
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "open",
+      request: card?.id ?? "",
+      action: "opened",
+    });
+
+    expect(await sending).toHaveProperty("submission");
+    await settles(async () => expect(owner.forms()).toEqual([]));
+    await idle(stub);
+
+    // The server was answered `accept` by Open, which its prompt's message repeats.
+    const [, picked] = await ownerMessages(stub);
+
+    expect(picked?.text).toContain("accept");
+    expect(await inputPushes(stub)).toEqual([]);
+    owner.close();
+  });
+
+  it("is cancelled after its own wait when it is never opened, and the get goes on", async () => {
+    const { stub } = await open(legacyStatefulServer, pagePrompt(0), "mcp-short-wait");
+    const owner = await connect(stub);
+
+    expect(await send(stub)).toHaveProperty("submission");
+    await idle(stub);
+
+    const [, picked] = await ownerMessages(stub);
+
+    expect(picked?.text).toContain("cancel");
+    expect(owner.forms()).toEqual([]);
+    owner.close();
+  });
+
+  it("holds the Session's clock only until the 5 min bound, though it is open and not finished", async () => {
+    // The server goes on for 8 s after Open and never says the page is finished. The clock (400 ms) stands still until
+    // the question's 1.5 s are up, then runs out: the get is not held for the page for good.
+    const { stub } = await open(legacyStatefulServer, pagePrompt(8000), "mcp-short-clock");
+    const owner = await connect(stub);
+    const started = Date.now();
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "open",
+      request: owner.forms()[0]?.id ?? "",
+      action: "opened",
+    });
+
+    expect(await sending).toMatchObject({
+      failure: { code: "MCP_PROMPT_FAILED", message: expect.stringContaining("in time") },
+    });
+    // After the bound (1.5 s from the ask) and before the server was done (8 s).
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
+    expect(Date.now() - started).toBeLessThan(6000);
     owner.close();
   });
 });

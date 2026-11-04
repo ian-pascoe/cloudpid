@@ -27,7 +27,7 @@
 //   before it asked. `mcp-sampling:waiting` lists what waits, so a new instance, which finds nothing to answer them, can
 //   settle those records as refused.
 import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
-import { type JsonObject, MCP_PROMPT_QUESTION_WAIT_MS } from "@cloudpid/mcp/types";
+import type { JsonObject } from "@cloudpid/mcp/types";
 import type {
   McpElicitationSource,
   McpSamplingChoice,
@@ -51,6 +51,7 @@ import {
   type McpSamplingDecision,
   type McpSamplingVerdict,
   refusedBy,
+  waitsOf,
 } from "./question-records.ts";
 import { MCP_DEFERRED_DEADLINE_MS, type McpDeferredQuestions } from "./deferred-questions.ts";
 import { samplingRecords } from "./sampling-records.ts";
@@ -196,7 +197,7 @@ type Claim = {
 export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) => {
   const { storage, basics } = options;
   const waitMs = options.waitMs ?? MCP_SAMPLING_ASK_WAIT_MS;
-  const promptWaitMs = options.promptWaitMs ?? MCP_PROMPT_QUESTION_WAIT_MS;
+  const waitFor = waitsOf({ waitMs, promptWaitMs: options.promptWaitMs });
   const waiting = new Map<string, Waiting>();
   const callGrants = new Set<string>();
   const callRefusals = new Set<string>();
@@ -346,9 +347,7 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const { card } = question;
-      // A prompt send's request waits less than a call's, and tells the owner nothing: they are at the composer.
-      const prompting = card.prompt !== undefined;
-      const wait = prompting ? promptWaitMs : waitMs;
+      const { waitMs: wait, quiet } = waitFor(card.prompt);
 
       const request: Mutable<McpSamplingRequest> = {
         ...card,
@@ -383,7 +382,7 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
         card.server,
         1,
         now,
-        prompting ? { sampling: true, quiet: true } : { sampling: true },
+        quiet ? { sampling: true, quiet: true } : { sampling: true },
       );
 
       yield* Deferred.await(outcome).pipe(

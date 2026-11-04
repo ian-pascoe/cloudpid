@@ -1,9 +1,11 @@
 // @effect-diagnostics preferEffectRecord:off -- assertions over the arguments of one prompt.
 
-import type { McpPromptData, McpPromptEntry } from "@cloudpid/protocol";
+import { type McpPromptData, type McpPromptEntry, mcpPromptCallId } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import { describe, expect, it } from "vitest";
 import {
+  awaitedLine,
   chipProblem,
   chipStanding,
   chipText,
@@ -18,7 +20,7 @@ import {
   restoredChip,
   sendGate,
   startingValues,
-  withAwaited,
+  sendingRows,
   withPrompt,
 } from "./mcp-prompt-state.ts";
 
@@ -94,22 +96,60 @@ describe("the MCP prompt chip", () => {
 
 describe("the lane row of a prompt being got", () => {
   const rows = [
-    { id: "1", text: "Getting Review PR from docs…" },
-    { id: "2", text: "Getting Summarize from wiki…" },
-    { id: "3", text: "a plain message" },
+    { id: "r1", text: "Getting Review PR from docs…" },
+    { id: "r2", text: "Getting Summarize from wiki…" },
+    { id: "r3", text: "a plain message" },
   ];
 
-  it("says it waits for the owner's answer while the prompt's server asks one", () => {
-    expect(withAwaited(rows, [{ server: "docs", prompt: "Review PR" }])).toEqual([
-      { id: "1", text: "Getting Review PR from docs · waiting for your answer" },
-      rows[1],
-      rows[2],
+  const asked = (requestId: string, prompt: string | undefined = "Review PR", server = "docs") => ({
+    callId: mcpPromptCallId(requestId),
+    server,
+    prompt,
+  });
+
+  it("says it waits for the owner's answer while the send's get asks one", () => {
+    expect(sendingRows(rows, [asked("r1")])).toEqual([
+      { id: "r1", text: "Getting Review PR from docs · waiting for your answer", awaited: true },
+      { ...rows[1], awaited: false },
+      { ...rows[2], awaited: false },
     ]);
   });
 
-  it("is left as it is when nothing is asked, or another prompt is", () => {
-    expect(withAwaited(rows, [])).toBe(rows);
-    expect(withAwaited(rows, [{ server: "wiki", prompt: "Review PR" }])).toEqual(rows);
+  it("is left as it is when nothing is asked, or another send's get is", () => {
+    const plain = Arr.map(rows, (row) => ({ ...row, awaited: false }));
+
+    expect(sendingRows(rows, [])).toEqual(plain);
+    expect(sendingRows(rows, [asked("other")])).toEqual(plain);
+    // A question of a tool's call carries no prompt.
+    expect(sendingRows(rows, [{ callId: mcpPromptCallId("r1"), server: "docs" }])).toEqual(plain);
+  });
+
+  it("finds a row whose title the card cleaned or cut", () => {
+    const long = "A very long title ".repeat(20);
+    const spaced = "Review   the\n  PR";
+    const cut = long.slice(0, 119).trimEnd() + "…";
+
+    const titled = [
+      { id: "long", text: `Getting ${long} from docs…` },
+      { id: "spaced", text: `Getting ${spaced} from docs…` },
+    ];
+
+    expect(sendingRows(titled, [asked("long", cut), asked("spaced", "Review the PR")])).toEqual([
+      { id: "long", text: awaitedLine(cut, "docs"), awaited: true },
+      { id: "spaced", text: awaitedLine("Review the PR", "docs"), awaited: true },
+    ]);
+  });
+
+  it("marks only the send that waits when two sends are of the same prompt", () => {
+    const twice = [
+      { id: "first", text: "Getting Review PR from docs…" },
+      { id: "second", text: "Getting Review PR from docs…" },
+    ];
+
+    expect(sendingRows(twice, [asked("second")])).toEqual([
+      { id: "first", text: "Getting Review PR from docs…", awaited: false },
+      { id: "second", text: awaitedLine("Review PR", "docs"), awaited: true },
+    ]);
   });
 });
 
