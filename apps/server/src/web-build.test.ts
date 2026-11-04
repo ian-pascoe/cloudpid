@@ -40,6 +40,8 @@ const FILES = {
   "apps/web/src/app.tsx": "export const app = 1;\n",
   "apps/web/src/app.test.tsx": "it('renders', () => {});\n",
   "apps/web/src/view.test.ts": "it('views', () => {});\n",
+  "apps/web/src/chat.testing.ts": "export const fakeChat = {};\n",
+  "apps/web/src/view/fixtures/page.html.txt": "<p>fixture</p>\n",
   "apps/web/DESIGN.md": "# Design\n",
   "apps/web/tsconfig.tsbuildinfo": '{"root":["./src/app.tsx","./src/app.test.tsx"]}\n',
   // Written by tools, never read by the build: the `.gitignore` rules the step's `exclude` restates.
@@ -166,6 +168,8 @@ describe("the WebBuild step's plan", { timeout: 30_000 }, () => {
   it.each<CheckoutFile>([
     "apps/web/src/app.test.tsx",
     "apps/web/src/view.test.ts",
+    "apps/web/src/chat.testing.ts",
+    "apps/web/src/view/fixtures/page.html.txt",
     "packages/protocol/src/session.test.ts",
     "apps/web/DESIGN.md",
     "apps/web/tsconfig.tsbuildinfo",

@@ -11,7 +11,8 @@ import type { BuildProps } from "alchemy/Command";
  * last deploy stored, or when there is no `dist` to hash (CI builds the app before the plan for that reason). An update
  * leaves its outputs unknown until it has run, so `Server`, whose assets they are, plans an update too, and its upload
  * resets every Durable Object still busy `max_delay` later. So the inputs leave out what the build does not read: every
- * test and Markdown file, and the typecheck's `tsconfig.tsbuildinfo`, which lists the tests. Tailwind scans the app's
+ * test, test helper (`*.testing.ts`, imported by tests only), test fixture (in a `fixtures` directory under `src`) and Markdown file, and
+ * the typecheck's `tsconfig.tsbuildinfo`, which lists the tests. Tailwind scans the app's
  * files for class names, so `apps/web/src/styles.css` leaves the same files out (`@source not`), and a change to those
  * alone leaves `dist` as it was too (`apps/web/src/build.test.ts`): it plans a noop.
  *
@@ -29,16 +30,19 @@ export const webBuildProps = (webDirectory: string) =>
       include: ["**/*", "../../packages/protocol/src/**"],
       // An `exclude` replaces the `.gitignore` rules alchemy would otherwise apply, so this restates the ones that
       // reach these files (`node_modules/`, `dist/`, `.turbo/`). `**` matches no `../` path, so the protocol's tests
-      // are named on their own.
+      // and helpers are named on their own.
       exclude: [
         "node_modules/**",
         "dist/**",
         ".turbo/**",
         "**/*.test.ts",
         "**/*.test.tsx",
+        "**/*.testing.ts",
+        "src/**/fixtures/**",
         "**/*.md",
         "tsconfig.tsbuildinfo",
         "../../packages/protocol/src/**/*.test.ts",
+        "../../packages/protocol/src/**/*.testing.ts",
       ],
       lockfile: true,
     },

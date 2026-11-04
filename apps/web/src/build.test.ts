@@ -72,11 +72,13 @@ const name = (file: string, em: string) =>
   appendFileSync(join(copy, file), `\n// ${unusedClass(em)}\n`);
 
 describe("the web app's build", { timeout: 120_000 }, () => {
-  it("is the same when only tests, Markdown or the typecheck's build info name a new class", () => {
+  it("is the same when only tests, their helpers and fixtures, Markdown or the typecheck's build info name a new class", () => {
     const before = build();
 
     name("src/app-state.test.ts", "0.1234");
     name("src/chat/mcp-elicitation-card.test.tsx", "0.1234");
+    name("src/chat/chat.testing.ts", "0.1234");
+    name("src/app-view/fixtures/get-time/mcp-app.html.txt", "0.1234");
     name("DESIGN.md", "0.1234");
     name("tsconfig.tsbuildinfo", "0.1234");
 
