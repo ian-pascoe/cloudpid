@@ -297,6 +297,15 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      # The web app's build, as the stack's `WebBuild` step runs it (apps/server/src/web-build.ts), before the plan: on a
+      # checkout without `dist` the step plans an update, which leaves its outputs unknown, so `Server` (whose assets they
+      # are) updated on every deploy and reset every Session still busy 300 s later (#626). With `dist` built, an unchanged
+      # app plans a noop, and so does `Server` when its bundle, assets and bindings are unchanged
+      # (docs/development/infra.md → CI). No credentials here: the build runs the app's code and its tools.
+      - name: Build the web app
+        run: bun run build
+        working-directory: apps/web
+
       # The deploy credentials are scoped to this step: install scripts never see them.
       - run: bun run deploy --stage prod --no-input --yes
         working-directory: infra
@@ -470,6 +479,13 @@ jobs:
         if: steps.pull-request.outputs.state != 'closed'
         with:
           save-cache: "false"
+
+      # The web app's build before the plan, as in `deploy`, so a push that changes nothing the Server is built from plans
+      # `[Server] noop`. A destroy needs none.
+      - name: Build the web app
+        if: steps.pull-request.outputs.state != 'closed' && github.event.action != 'closed'
+        run: bun run build
+        working-directory: apps/web
 
       # The deploy credentials are scoped to this step: install scripts never see them. `destroy` evaluates the stack,
       # so it needs every variable `deploy` does (see the `deploy` job for what each is).

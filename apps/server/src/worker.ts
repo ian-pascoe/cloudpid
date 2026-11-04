@@ -20,6 +20,7 @@ import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
 import { accessProps } from "./access-props.ts";
 import { bypassAccessProps } from "./bypass-access.ts";
 import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
+import { webBuild } from "./web-build.ts";
 import { SERVER_COMPATIBILITY } from "./worker-shape.ts";
 import { IMAGES_BINDING } from "./session/images.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
@@ -39,7 +40,8 @@ import {
  * (`runWorkerFirst`), so its Access guard covers every request and the files are served after it from the `ASSETS`
  * binding (`serveAsset`): a file the build has, `index.html` for any page load of a path that is no file (a navigation, or a
  * `GET` or `HEAD` that accepts HTML: `/sessions/:id`), and a 404 for a missing `/assets/…` file (`missingAsset`). The Worker's bundle folds the build step away, so only the
- * deploy runs it.
+ * deploy runs it. CI builds the app before the plan too, so that an unchanged app and Worker plan no update
+ * (`web-build.ts`; `docs/development/infra.md` → CI).
  */
 const webAssets = Effect.gen(function* () {
   if (globalThis.__ALCHEMY_RUNTIME__ === true) return undefined;
@@ -47,13 +49,7 @@ const webAssets = Effect.gen(function* () {
   // Alchemy runs from `infra/`, so the app's directory is resolved from this file, not from a relative path.
   const webDirectory = fileURLToPath(new URL("../../web/", import.meta.url).href);
 
-  const build = yield* Command.Build("WebBuild", {
-    command: "bun run build",
-    cwd: webDirectory,
-    outdir: "dist",
-    // The app imports the protocol package's source, which the default scope (the app's own files) would miss.
-    memo: { include: ["**/*", "../../packages/protocol/src/**"], lockfile: true },
-  });
+  const build = yield* Command.Build("WebBuild", webBuild(webDirectory));
 
   return {
     directory: build.outdir,
