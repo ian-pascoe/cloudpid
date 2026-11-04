@@ -97,6 +97,9 @@ export type Resumed =
   | { readonly kind: "withdrawn" }
   | { readonly kind: "sunk"; readonly detail: McpSamplingDetail };
 
+/** What a round's requests are refused with when no sampler can run them. */
+const UNAVAILABLE = { reason: "cloudpid cannot run the request here", why: "internal" } as const;
+
 /** What a round's Sampling requests came to: their replies by key, or the refusal that sinks the round. */
 type Sampled =
   | { readonly kind: "replies"; readonly replies: Mutable<McpTaskInputResponses> }
@@ -111,6 +114,7 @@ const sampled = async (
   samples: ReadonlyArray<McpDeferredSample>,
   sampling: Pick<Sampling, "resume"> | undefined,
   server: string,
+  unavailable: Pick<McpSamplingDetail, "reason" | "why">,
 ): Promise<Sampled> => {
   const replies: Mutable<McpTaskInputResponses> = {};
   const refusals: Array<McpSamplingDetail> = [];
@@ -127,13 +131,18 @@ const sampled = async (
     if (outcome?.kind === "sampled") replies[key] = { ...outcome.result };
     else if (outcome?.kind === "refused") refusals.push(outcome.detail);
     else {
-      refusals.push({
-        server,
-        status: "refused",
-        by: "cloudpid",
-        reason: "cloudpid cannot run the request here",
-        why: "internal",
-      });
+      // No sampler to run it: a refusal that was decided says so itself, an allowed request that the sampler is not there
+      // to run says why (the definition says `off` by now, or cloudpid has none).
+      const decided = kept.decision;
+
+      const detail: Mutable<McpSamplingDetail> =
+        decided.action === "refuse"
+          ? { server, status: "refused", by: decided.by, reason: decided.reason }
+          : { server, status: "refused", by: "cloudpid", ...unavailable };
+
+      if (decided.action === "refuse" && decided.why !== undefined) detail.why = decided.why;
+
+      refusals.push(detail);
     }
   }
 
@@ -162,6 +171,8 @@ export const resumeOf = async (
     readonly read?: McpHostResourceRequest | undefined;
     /** The call's Sampling hook, which runs the round's Sampling requests as it resumes. */
     readonly sampling?: Pick<Sampling, "resume"> | undefined;
+    /** Why there is none, when the server's definition says `off` by now: what the refused requests say. */
+    readonly samplingOff?: Pick<McpSamplingDetail, "reason" | "why"> | undefined;
   },
 ): Promise<Resumed> => {
   const { questions, api, context } = rounds;
@@ -212,7 +223,7 @@ export const resumeOf = async (
   // The round's Sampling requests are run now, on what the owner decided, so the replies are never kept: a restart in
   // between runs them again (their record is the same one) rather than lose the call.
   if (samples.length > 0) {
-    const ran = await sampled(samples, call.sampling, call.server);
+    const ran = await sampled(samples, call.sampling, call.server, call.samplingOff ?? UNAVAILABLE);
 
     // Stopped meanwhile: the call's end settles the round.
     if (context.abortSignal?.aborted === true) return { kind: "stopped" };

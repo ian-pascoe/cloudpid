@@ -48,6 +48,7 @@ import type { McpDetails, McpElicitationDetail, McpSamplingDetail } from "./deta
 import { elicitingHooks, withElicitation } from "./elicit.ts";
 import type { Subject } from "./ended.ts";
 import { samplingHooks, samplingRefusedResult, withSampling } from "./sample.ts";
+import { MCP_SAMPLING_OFF_REASON } from "./sampling-questions.ts";
 import type { McpSamplingService } from "./sampling.ts";
 import {
   failedWith,
@@ -663,6 +664,10 @@ export const send = async <A>(
           asked: asking?.asked,
           read: paging && request.op === "resources/read" ? request : undefined,
           sampling,
+          // A definition switched to `off` since the call started has no sampler to run what the owner allowed.
+          samplingOff: declaresSampling(server.server)
+            ? undefined
+            : { reason: MCP_SAMPLING_OFF_REASON },
         });
 
         if (resumed.kind === "refused") return failed(failedWith(pagesMessage, base));

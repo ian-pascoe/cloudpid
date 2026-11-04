@@ -40,6 +40,7 @@ import {
   McpQuestionsError,
   type McpQuestionStorage,
   type McpQuestionUnseen,
+  type McpSamplingDecision,
   questionId,
 } from "./question-records.ts";
 import type {
@@ -49,7 +50,6 @@ import type {
 } from "@cloudpid/protocol";
 import {
   createSamplingQuestions,
-  type McpSamplingDecision,
   type McpSamplingGiven,
   type McpSamplingQuestion,
   type McpSamplingRemember,
@@ -76,7 +76,6 @@ export {
   MCP_SAMPLING_ASK_WAIT_MS,
   MCP_SAMPLING_UNANSWERED_REASON,
   type McpSamplingCard,
-  type McpSamplingDecision,
   type McpSamplingGiven,
   type McpSamplingQuestion,
   type McpSamplingRemember,
@@ -86,6 +85,7 @@ export {
 export {
   MCP_CALL_ENDED_REASON,
   MCP_ELICITATION_CAP_REASON,
+  type McpSamplingDecision,
   MCP_QUESTION_RECORDS,
   MCP_QUESTION_RENOTIFY_MS,
   MCP_QUESTION_UNRECORDED_REASON,

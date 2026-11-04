@@ -372,48 +372,86 @@ describe("a Modern server's Sampling request that asks the owner", () => {
     expect((await detailsOf(session))[0]).toMatchObject({ error: "sampling_refused" });
   });
 
-  it("is run, with no card, when the server's definition is switched to allow while it waits, and refused when switched to off", async () => {
-    const allowed = await setup();
-    const submitted = await allowed.run();
+  it("is run, with no card, when the inventory says the server's definition went from ask to allow while it waits", async () => {
+    const { host, tools, questions, sampling, faux, resumes, run } = await setup();
+    const submitted = await run();
 
-    await waitingFor(allowed.questions, 1);
-    allowed.host.set([{ ...DOCS, entry: { sampling: "allow" } }]);
-    await Effect.runPromise(allowed.tools.requestStart(startOf(1)));
+    await waitingFor(questions, 1);
+    host.set([{ ...DOCS, entry: { sampling: "allow" } }]);
+    await Effect.runPromise(tools.requestStart(startOf(1)));
 
     // Its card is gone and the form beside it still waits; the answer to the form sends the one resume with the reply.
-    expect(await Effect.runPromise(allowed.questions.pendingSampling)).toEqual([]);
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([]);
 
-    const [form] = await Effect.runPromise(allowed.questions.pending);
+    const [form] = await Effect.runPromise(questions.pending);
 
     await Effect.runPromise(
-      allowed.questions.answer(form?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+      questions.answer(form?.id ?? "", { action: "accept", content: { name: "Ada" } }),
     );
     await submitted.wait(context);
 
-    expect(allowed.faux.state.callCount).toBe(1);
-    expect(allowed.resumes).toHaveLength(1);
-    expect(allowed.resumes[0]).toMatchObject({
-      params: { answers: { s1: { role: "assistant" } } },
-    });
-    expect(await Effect.runPromise(allowed.sampling.records)).toEqual([
+    expect(faux.state.callCount).toBe(1);
+    expect(resumes).toHaveLength(1);
+    expect(resumes[0]).toMatchObject({ params: { answers: { s1: { role: "assistant" } } } });
+    expect(await Effect.runPromise(sampling.records)).toEqual([
       expect.objectContaining({ status: "answered", by: "definition" }),
     ]);
+  });
 
-    const off = await setup();
-    const ended = await off.run();
+  it("is refused by cloudpid, ending the call, when the inventory says the definition went from ask to off while it waits", async () => {
+    const { host, tools, questions, session, faux, resumes, run } = await setup();
+    const submitted = await run();
 
-    await waitingFor(off.questions, 1);
-    off.host.set([{ ...DOCS, entry: { sampling: "off" } }]);
-    await Effect.runPromise(off.tools.requestStart(startOf(1)));
-    await ended.wait(context);
+    await waitingFor(questions, 1);
+    host.set([{ ...DOCS, entry: { sampling: "off" } }]);
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+    await submitted.wait(context);
 
-    expect(off.resumes).toEqual([]);
-    expect(off.faux.state.callCount).toBe(0);
-    expect(await Effect.runPromise(off.questions.pending)).toEqual([]);
-    expect((await detailsOf(off.session))[0]).toMatchObject({
+    expect(resumes).toEqual([]);
+    expect(faux.state.callCount).toBe(0);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([]);
+    expect((await session.texts("toolResult"))[0]).toContain("no longer lets it use a model");
+    expect((await detailsOf(session))[0]).toMatchObject({
       error: "sampling_refused",
       sampling: [expect.objectContaining({ status: "refused", by: "cloudpid" })],
     });
+  });
+
+  it("is left waiting when the inventory changes but the definition's sampling does not", async () => {
+    const { host, tools, questions, run } = await setup();
+
+    await run();
+    await waitingFor(questions, 1);
+    host.set([{ ...DOCS, entry: { sampling: "ask" }, description: "Changed" }]);
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+
+    expect(await Effect.runPromise(questions.pendingSampling)).toHaveLength(1);
+    expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+  });
+
+  it("ends the call with the definition's off, not an internal failure, when it goes off after the owner allowed the request", async () => {
+    const { host, tools, questions, session, faux, resumes, run } = await setup();
+    const submitted = await run();
+
+    await waitingFor(questions, 1);
+
+    const [card] = await Effect.runPromise(questions.pendingSampling);
+
+    await Effect.runPromise(questions.answerSampling(card?.id ?? "", { choice: "allow_call" }));
+    host.set([{ ...DOCS, entry: { sampling: "off" } }]);
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+    await submitted.wait(context);
+
+    // The allowed request is refused with the definition's words, its round sunk: the form is withdrawn.
+    expect(resumes).toEqual([]);
+    expect(faux.state.callCount).toBe(0);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+
+    const [text] = await session.texts("toolResult");
+
+    expect(text).toContain("no longer lets it use a model");
+    expect(text).not.toContain("cloudpid cannot run the request here");
   });
 
   it("is withdrawn when Stop aborts the waiting call, and its record settles refused", async () => {
@@ -448,6 +486,8 @@ const keepRound = async (
     readonly server?: string;
     readonly samples?: ReadonlyArray<"small" | "medium">;
     readonly form?: boolean;
+    /** What writing the definition does, for a test that holds it. */
+    readonly write?: Effect.Effect<void>;
   } = {},
 ) => {
   const server = options.server ?? "docs";
@@ -460,6 +500,10 @@ const keepRound = async (
     redact: (shown) => Effect.succeed(shown),
     holdsSecret: () => Effect.succeed(false),
     vault: await testVault(),
+    remember: {
+      writable: () => Effect.succeed(true),
+      write: () => options.write ?? Effect.void,
+    },
   });
 
   const kept = await Effect.runPromise(
@@ -745,6 +789,56 @@ describe("the owner's choices on a Modern server's Sampling request", () => {
         outcome: expect.objectContaining({ action: "cancel", by: "cloudpid" }),
       }),
     ]);
+  });
+
+  it("lets the owner's answer in flight win over the definition's switch, and takes one claim for the call", async () => {
+    const memory = memoryStorage();
+    const gate = Promise.withResolvers<void>();
+
+    const { questions } = await keepRound(memory, "call-1", {
+      samples: ["small", "medium"],
+      write: Effect.promise(() => gate.promise),
+    });
+
+    await keepRound(memory, "call-2");
+
+    // The owner's Always allow is writing the definition when the Session learns it says off.
+    const answering = Effect.runPromise(
+      questions.answerSampling("call-1:1", { choice: "allow_always" }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Another answer on the call's other request yields to it; the switch refuses the other call's request only.
+    await expect(
+      Effect.runPromise(questions.answerSampling("call-1:2", { choice: "refuse" })),
+    ).rejects.toThrow("This request is being answered");
+    await Effect.runPromise(questions.samplingSwitched("docs", "off"));
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([
+      expect.objectContaining({ id: "call-1:1" }),
+      expect.objectContaining({ id: "call-1:2" }),
+    ]);
+
+    gate.resolve();
+    await answering;
+
+    // The owner's answer took both of the call's requests, each on its own Role, recorded as the owner's.
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([]);
+
+    const round = await Effect.runPromise(questions.awaitRound("call-1"));
+
+    expect(
+      round?.flatMap((each) => (each.kind === "sample" ? [each.sample.decision] : [])),
+    ).toEqual([
+      { action: "allow", role: "small", grant: "always" },
+      { action: "allow", role: "medium", grant: "always" },
+    ]);
+
+    const other = await Effect.runPromise(questions.awaitRound("call-2"));
+
+    expect(other?.[0]).toMatchObject({
+      sample: { decision: { action: "refuse", by: "cloudpid" } },
+    });
   });
 
   it("refuses the answer of a Role the card does not offer, and a second answer to a request that ended", async () => {

@@ -385,6 +385,119 @@ describe("MCP sampling on a definition that says ask", () => {
       });
     }));
 
+  test("lets the owner's answer in flight win over a switch of the definition, which finds the request taken", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+
+      const { sampler, questions, faux, announced } = open({
+        remember: () => Deferred.await(gate),
+      });
+
+      faux.setResponses([fauxAssistantMessage("as the owner allowed")]);
+
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+
+      // The owner's Always allow is writing the definition when the Session learns it says off.
+      const answering = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }),
+      );
+
+      yield* settle;
+      yield* questions.samplingSwitched("demo", "off");
+      expect(yield* questions.pendingSampling).toHaveLength(1);
+
+      yield* Deferred.succeed(gate, undefined);
+      yield* Fiber.join(answering);
+
+      expect(yield* Fiber.join(sampling)).toMatchObject({
+        kind: "sampled",
+        detail: { status: "answered", by: "owner", grant: "always" },
+      });
+    }));
+
+  test("takes one claim for the call: a second answer on another of its requests is refused while the first is in flight", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+
+      const { sampler, questions, faux, announced } = open({
+        remember: () => Deferred.await(gate),
+      });
+
+      faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+      const second = yield* Effect.forkChild(sampler.sample(ask({ key: "2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(2));
+
+      const answering = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }),
+      );
+
+      yield* settle;
+
+      // Neither a refusal of the other request nor an allow of it takes effect beside the answer in flight.
+      for (const choice of ["refuse", "allow_call"] as const) {
+        const lost = yield* questions.answerSampling("call-1:2", { choice }).pipe(Effect.flip);
+
+        expect(lost.message).toBe("This request is being answered");
+      }
+
+      expect(yield* questions.pendingSampling).toHaveLength(2);
+      yield* Deferred.succeed(gate, undefined);
+      yield* Fiber.join(answering);
+
+      expect((yield* Fiber.join(first)).kind).toBe("sampled");
+      expect(yield* Fiber.join(second)).toMatchObject({
+        kind: "sampled",
+        detail: { by: "owner", status: "answered" },
+      });
+    }));
+
+  test("tells the owner their answer lost when the definition's switch ran the request first", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, faux, announced } = open();
+
+      faux.setResponses([fauxAssistantMessage("as the definition allows")]);
+
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+      yield* questions.samplingSwitched("demo", "allow");
+      yield* Fiber.join(sampling);
+
+      const lost = yield* questions
+        .answerSampling("call-1:1", { choice: "refuse" })
+        .pipe(Effect.flip);
+
+      expect(lost.message).toBe("This request ended");
+    }));
+
+  test("runs the owner's kept decision and Role at the resume, though the definition says allow by then", () =>
+    Effect.gen(function* () {
+      const { sampler, faux } = open();
+
+      faux.setResponses([fauxAssistantMessage("from the medium one")]);
+
+      const outcome = yield* sampler.sample(
+        ask({
+          decision: "allow",
+          resumed: {
+            id: "call-1:1",
+            sequence: 1,
+            decision: { action: "allow", role: "medium", grant: "call" },
+          },
+        }),
+      );
+
+      expect(outcome).toMatchObject({
+        kind: "sampled",
+        detail: { by: "owner", grant: "call", role: "medium" },
+      });
+    }));
+
   test("writes the definition on Always allow, then runs the request and the server's other waiting ones", () =>
     Effect.gen(function* () {
       const { sampler, questions, announced, faux, written } = open();

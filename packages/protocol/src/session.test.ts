@@ -593,6 +593,7 @@ describe("the Session socket messages", () => {
       notes: [],
       writable: true,
       deadline: 1000,
+      waits: "later",
     };
 
     const text = JSON.stringify({

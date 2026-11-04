@@ -1196,40 +1196,48 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     }
   };
 
-  /** The unanswered Sampling requests of a shown round, with the round's other questions: undefined when it holds none. */
-  const pendingOf = (record: DeferredRecord) => {
+  /** The Sampling requests of a shown round that `wanted` picks, with the round's questions: undefined when it holds none. */
+  const wantedOf = (record: DeferredRecord, wanted: (question: DeferredSampling) => boolean) => {
     if (record.round?.shown !== true) return undefined;
 
     const questions = answerable(record);
 
-    const pending = Arr.filter(
+    const picked = Arr.filter(
       questions ?? [],
-      (question): question is DeferredSampling =>
-        isSampling(question) && question.answer === undefined,
+      (question): question is DeferredSampling => isSampling(question) && wanted(question),
     );
 
-    return questions === undefined || pending.length === 0 ? undefined : { questions, pending };
+    return questions === undefined || picked.length === 0 ? undefined : { questions, picked };
   };
 
+  /** A Sampling request nobody has answered. */
+  const pending = (question: DeferredSampling) => question.answer === undefined;
+
+  /** A Sampling request that is pending, or allowed and not yet run: what the definition's `off` refuses. */
+  const unrun = (question: DeferredSampling) =>
+    question.answer === undefined || question.answer.action === "allow";
+
   /**
-   * Answer the unanswered Sampling requests of `record`'s shown round, each with its own `decide`d answer, in one step with
-   * reading them. A refusal among them sinks the round: every question of it that is not a Sampling request is answered
-   * `cancel` by cloudpid, "the server's call ended" (a form the owner had answered too: the server is sent nothing), and
-   * the Sampling requests already answered stay as they were. A round with none unanswered is left alone. Throws when the
-   * storage cannot take it. `false`: nothing was pending.
+   * Answer the Sampling requests of `record`'s shown round that `wanted` picks, each with its own `decide`d answer, in one
+   * step with reading them. A refusal among them sinks the round: every question of it that is not a Sampling request is
+   * answered `cancel` by cloudpid, "the server's call ended" (a form the owner had answered too: the server is sent
+   * nothing), and the Sampling requests it does not pick stay as they were. A round with none picked is left alone.
+   * Throws when the storage cannot take it. `false`: nothing was picked.
    */
   const answerRound = (
     record: DeferredRecord,
     decide: (question: DeferredSampling) => McpSamplingDecision,
+    wanted: (question: DeferredSampling) => boolean = pending,
   ): boolean => {
-    const held = pendingOf(record);
+    const held = wantedOf(record, wanted);
 
     if (held === undefined) return false;
 
-    const decisions = Arr.map(held.pending, (question) => [question, decide(question)] as const);
+    const decisions = Arr.map(held.picked, (question) => [question, decide(question)] as const);
 
-    for (const [question, answer] of decisions)
+    for (const [question, answer] of decisions) {
       storage.put(questionKey(question.id), { ...question, answer });
+    }
 
     if (Arr.some(decisions, ([, answer]) => answer.action === "refuse")) {
       for (const question of held.questions) {
@@ -1255,12 +1263,15 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     });
 
   /**
-   * Answer the pending Sampling requests of `server`'s shown rounds, in every call, with `decide`: the definition's `allow`
-   * (they run) or `off` (they are refused, which sinks their rounds). A round with none pending is untouched.
+   * Answer the Sampling requests `wanted` of `server`'s shown rounds, in every call an owner's answer is not taking
+   * (`claimed`), with `decide`: the definition's `allow` (the pending ones run) or `off` (the pending and the allowed ones
+   * are refused, which sinks their rounds). A round with none picked is untouched.
    */
   const answerServer = (
     server: string,
     decide: (question: DeferredSampling) => McpSamplingDecision,
+    wanted: (question: DeferredSampling) => boolean,
+    claimed: (callId: string) => boolean,
   ) =>
     Effect.gen(function* () {
       const woken = new Set<string>();
@@ -1269,7 +1280,14 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         for (const callId of deferredIds()) {
           const record = readRecord(callId);
 
-          if (record?.server === server && answerRound(record, decide)) woken.add(callId);
+          // A call the owner's answer is taking is left to it.
+          if (
+            record?.server === server &&
+            !claimed(callId) &&
+            answerRound(record, decide, wanted)
+          ) {
+            woken.add(callId);
+          }
         }
       }).pipe(
         Effect.catch((cause) =>
@@ -1288,7 +1306,11 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
    * only the rounds that hold a pending request it covers (`answerRound`): a round of forms alone, or whose requests were
    * answered already, is left as it is.
    */
-  const decideSampling = (id: string, verdict: McpSamplingVerdict) =>
+  const decideSampling = (
+    id: string,
+    verdict: McpSamplingVerdict,
+    claimed: (callId: string) => boolean,
+  ) =>
     Effect.gen(function* () {
       const woken = new Set<string>();
 
@@ -1305,8 +1327,11 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
           if (record === undefined) continue;
 
+          // The owner's own call, and for a choice that reaches further the server's other calls: those an answer is taking
+          // are left to it.
           const covered =
-            other === callId || (verdict.also === "server" && record.server === server);
+            other === callId ||
+            (verdict.also === "server" && record.server === server && !claimed(other));
 
           if (covered && answerRound(record, decide)) woken.add(other);
         }
@@ -1327,13 +1352,16 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     samplingHeld,
     decideSampling,
     /** The server's definition says `allow` now: its pending requests run, on the Role each was shown on. */
-    allowServer: (server: string) =>
-      answerServer(server, (question) =>
-        decisionOf({ action: "allow", role: "small" }, question.request.role),
+    allowServer: (server: string, claimed: (callId: string) => boolean) =>
+      answerServer(
+        server,
+        (question) => decisionOf({ action: "allow", role: "small" }, question.request.role),
+        pending,
+        claimed,
       ),
-    /** The server's definition says `off` now: its pending requests are refused by cloudpid for `reason`. */
-    refuseServer: (server: string, reason: string) =>
-      answerServer(server, () => refusedBy("cloudpid", reason)),
+    /** The server's definition says `off` now: its pending and allowed requests are refused by cloudpid for `reason`. */
+    refuseServer: (server: string, reason: string, claimed: (callId: string) => boolean) =>
+      answerServer(server, () => refusedBy("cloudpid", reason), unrun, claimed),
     deferSampling,
     answer,
     defer,

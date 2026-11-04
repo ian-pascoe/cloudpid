@@ -111,12 +111,15 @@ export const McpSamplingCard = ({
   const alsoText = also === undefined ? undefined : alsoLine(request.server, also);
 
   // A call's requests each have their own deadline; the call ends with the first, unless the owner is waited for.
-  const waits = Arr.every(requests, (each) => each.waits === "owner");
-  const deadline = Math.min(...Arr.map(requests, (each) => each.deadline));
+  const waits = Arr.every(requests, (one) => one.waits === "owner");
+  const deadline = Math.min(...Arr.map(requests, (one) => one.deadline));
 
   const model = Arr.findFirst(request.roles, (option) => option.role === role).pipe(
     Option.match({ onNone: () => request.model, onSome: (option) => option.model }),
   );
+
+  // Requests asked on different Roles each keep theirs until the picker is moved, which puts them all on the one picked.
+  const each = !Arr.every(requests, (one) => one.role === request.role) && role === request.role;
 
   /** The answer, which stays on the card (buttons back on, the reason shown) if the Session refuses it. */
   const answer = (choice: McpSamplingChoice) => {
@@ -190,26 +193,37 @@ export const McpSamplingCard = ({
             )}
           </NativeSelect>
           <span className="text-xs text-muted-foreground">
-            answers on <span className="font-mono">{model}</span>
+            {each ? (
+              "each answers on the Role it was shown with"
+            ) : (
+              <>
+                answers on <span className="font-mono">{model}</span>
+              </>
+            )}
           </span>
         </div>
-        {Arr.map(requests, (each, index) => (
+        {Arr.map(requests, (shown, index) => (
           <div
-            key={each.id}
-            id={index === 0 ? undefined : requestCardId(each.id)}
+            key={shown.id}
+            id={index === 0 ? undefined : requestCardId(shown.id)}
             className={requests.length === 1 ? undefined : "mt-3 border-t pt-2"}
           >
             {requests.length === 1 ? null : (
               <div className="text-xs font-semibold">
                 Request {index + 1} of {requests.length}
+                {each ? (
+                  <span className="ml-2 font-normal text-muted-foreground">
+                    answers on <span className="font-mono">{shown.model}</span>
+                  </span>
+                ) : null}
               </div>
             )}
             <SamplingAsked
-              systemPrompt={each.systemPrompt}
-              omitted={each.omitted}
-              messages={each.messages}
-              tools={each.tools}
-              notes={each.notes}
+              systemPrompt={shown.systemPrompt}
+              omitted={shown.omitted}
+              messages={shown.messages}
+              tools={shown.tools}
+              notes={shown.notes}
             />
           </div>
         ))}

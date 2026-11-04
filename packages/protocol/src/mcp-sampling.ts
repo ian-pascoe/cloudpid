@@ -90,9 +90,10 @@ export const McpSamplingRequest = Schema.Struct({
   deadline: Schema.Finite,
   /**
    * `"owner"` for a Modern server's request, which waits for the owner with no deadline (it is answered in the call's
-   * resume); absent for a Legacy server's, whose call ends at `deadline`. A client from before it ignores the key.
+   * resume); absent for a Legacy server's, whose call ends at `deadline`. A client from before it ignores the key. A
+   * string, so a value a later build adds does not drop the whole push in an older tab (_Sockets_).
    */
-  waits: Schema.optionalKey(Schema.Literal("owner")),
+  waits: Schema.optionalKey(Schema.String),
 });
 
 export type McpSamplingRequest = typeof McpSamplingRequest.Type;

@@ -94,6 +94,20 @@ describe("McpSamplingCard", () => {
     expect(markup).toContain("call ends in");
   });
 
+  it("says each request answers on the Role it was shown with when they differ, until the picker moves", () => {
+    const markup = render(request(), false, undefined, undefined, [
+      request({ id: "call-1:s2", role: "medium", model: "m/medium" }),
+    ]);
+
+    expect(markup).toContain("each answers on the Role it was shown with");
+    expect(markup).toContain("m/small");
+    expect(markup).toContain("m/medium");
+    // Requests on one Role keep the single line.
+    expect(
+      render(request(), false, undefined, undefined, [request({ id: "call-1:s2" })]),
+    ).toContain('answers on <span class="font-mono">m/small</span>');
+  });
+
   it("groups the requests by call, in the order each call first appears", () => {
     const calls = samplingCalls([
       request({ id: "a:1", callId: "a" }),

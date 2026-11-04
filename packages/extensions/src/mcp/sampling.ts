@@ -48,10 +48,10 @@ import type * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import type { McpSamplingDetail, McpSamplingWhy } from "./details.ts";
-import type { McpQuestionStorage } from "./question-records.ts";
+import type { McpQuestionStorage, McpSamplingDecision } from "./question-records.ts";
 import type { McpQuestionsService } from "./questions.ts";
 import { cardMessages, recordView } from "./sampling-card.ts";
-import { type McpSamplingCard, type McpSamplingDecision, stoppedBy } from "./sampling-questions.ts";
+import { type McpSamplingCard, stoppedBy } from "./sampling-questions.ts";
 import {
   cutText,
   type McpSamplingRecord,
@@ -592,20 +592,13 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
       onRole(prepared);
 
-      // `ask`: the owner decides, unless they already did for this call or the Session (or the definition says `allow`).
-      if (ask.decision === "ask") {
+      // `ask`: the owner decides, unless they already did for this call or the Session (or the definition says `allow`). A
+      // request kept for later has been decided (the owner's, or the definition's switch to `allow`), and that decision and
+      // its Role stand though the definition reads `allow` by the resume (Always allow wrote it).
+      if (ask.decision === "ask" || ask.resumed !== undefined) {
         // What the owner decided of a request kept for later is its answer, not a standing one.
         const standing =
           ask.resumed === undefined ? asking?.samplingStanding(ask.callId, ask.server) : undefined;
-
-        if (asking === undefined) {
-          return yield* end(
-            "refused",
-            MCP_SAMPLING_REFUSED,
-            "cloudpid cannot ask the owner here",
-            "internal",
-          );
-        }
 
         if (standing?.action === "refuse") {
           record = { ...record, grant: standing.grant };
@@ -620,6 +613,15 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
           if (ask.resumed !== undefined) decided = ask.resumed.decision;
           else {
+            if (asking === undefined) {
+              return yield* end(
+                "refused",
+                MCP_SAMPLING_REFUSED,
+                "cloudpid cannot ask the owner here",
+                "internal",
+              );
+            }
+
             const roleOptions = Arr.filterMap(ROLE_NAMES, (each) => {
               const held = modelOf(bound.models, roles, each);
 
