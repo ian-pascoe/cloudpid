@@ -410,7 +410,7 @@ describe("a Modern server's Sampling request during a prompt send", () => {
 });
 
 describe.each(eras)("the Session's own clock on a %s server's prompt send", (_era, make) => {
-  // `mcp-short-clock-*` Sessions have a get clock of 400 ms (`PROMPT_GET_WAIT_MS` is 40 s) and a question wait of 1.5 s.
+  // `mcp-short-clock-*` Sessions have a get clock of 2 s (`PROMPT_GET_WAIT_MS` is 40 s) and a question wait of 6 s: wide margins, since the clock also runs through the connect and the server's first ask on a loaded runner.
   it("stands still while a card waits, and the get completes after Submit", async () => {
     const { stub } = await open(make, FORM_PROMPT, "mcp-short-clock");
     const owner = await connect(stub);
@@ -418,8 +418,8 @@ describe.each(eras)("the Session's own clock on a %s server's prompt send", (_er
 
     await settles(async () => expect(owner.forms()).toHaveLength(1));
 
-    // Three times the clock: it would have run out.
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    // Longer than the clock: it would have run out.
+    await new Promise((resolve) => setTimeout(resolve, 3000));
     expect(owner.forms()).toHaveLength(1);
 
     owner.send({
@@ -441,8 +441,8 @@ describe.each(eras)("the Session's own clock on a %s server's prompt send", (_er
 
     await settles(async () => expect(owner.samples()).toHaveLength(1));
 
-    // Three times the clock: it would have run out.
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    // Longer than the clock: it would have run out.
+    await new Promise((resolve) => setTimeout(resolve, 3000));
     expect(owner.samples()).toHaveLength(1);
 
     owner.send({
@@ -528,9 +528,9 @@ describe("a Legacy server's page during a prompt send", () => {
   });
 
   it("holds the Session's clock only until the 5 min bound, though it is open and not finished", async () => {
-    // The server goes on for 8 s after Open and never says the page is finished. The clock (400 ms) stands still until
-    // the question's 1.5 s are up, then runs out: the get is not held for the page for good.
-    const { stub } = await open(legacyStatefulServer, pagePrompt(8000), "mcp-short-clock");
+    // The server goes on for 12 s after Open and never says the page is finished. The clock (2 s) stands still until
+    // the question's 6 s are up, then runs out: the get is not held for the page for good.
+    const { stub } = await open(legacyStatefulServer, pagePrompt(12_000), "mcp-short-clock");
     const owner = await connect(stub);
     const started = Date.now();
     const sending = send(stub);
@@ -546,9 +546,9 @@ describe("a Legacy server's page during a prompt send", () => {
     expect(await sending).toMatchObject({
       failure: { code: "MCP_PROMPT_FAILED", message: expect.stringContaining("in time") },
     });
-    // After the bound (1.5 s from the ask) and before the server was done (8 s).
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
-    expect(Date.now() - started).toBeLessThan(6000);
+    // After the bound (6 s from the ask) and before the server was done (12 s).
+    expect(Date.now() - started).toBeGreaterThanOrEqual(6000);
+    expect(Date.now() - started).toBeLessThan(11_000);
     owner.close();
   });
 });
