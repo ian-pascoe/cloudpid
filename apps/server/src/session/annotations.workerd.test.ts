@@ -27,6 +27,7 @@ import { secretReference } from "@cloudpid/extensions/secrets";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { ChangesFixture, TestSession } from "./host.fixture.ts";
 import { DRAFTS_CHANGED } from "./reviews.ts";
@@ -205,10 +206,6 @@ const onPage = (overrides: Partial<PageAnnotationDraft> = {}): PageAnnotationDra
   text: "Make this bigger.",
   ...overrides,
 });
-
-/** Wait until Session `stub` has settled its run; the assertions after it say what is missing if it never does. */
-const settled = (stub: DurableObjectStub<TestSession>) =>
-  poll(() => runInDurableObject(stub, (instance: TestSession) => instance.idle()));
 
 describe("draft Annotations", () => {
   it("are sent after hello, then to every client on each save and delete", async () => {
@@ -668,7 +665,7 @@ describe("a Review", () => {
       ),
     );
 
-    await settled(stub);
+    await idle(stub);
 
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),
@@ -738,7 +735,7 @@ describe("a Review", () => {
       annotations: ["on-page", "on-area", "on-call"],
     });
     expect(await client.answer("send")).toMatchObject({ type: "result" });
-    await settled(stub);
+    await idle(stub);
 
     const [request] = await runInDurableObject(stub, (instance: TestSession) =>
       instance.requestUserMessages(),
@@ -813,7 +810,7 @@ describe("a Review", () => {
       annotations: Array.from({ length: count }, (_, index) => `p${index}`),
     });
     expect(await client.answer("send")).toMatchObject({ type: "result" });
-    await settled(stub);
+    await idle(stub);
 
     const [request] = await runInDurableObject(stub, (instance: TestSession) =>
       instance.requestUserMessages(),
@@ -871,7 +868,7 @@ describe("a Review", () => {
     expect(await client.answer("review")).toMatchObject({ type: "result" });
 
     await runInDurableObject(stub, (instance: TestSession) => instance.open());
-    await settled(stub);
+    await idle(stub);
 
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),
@@ -903,7 +900,7 @@ describe("a Review", () => {
     });
     await client.answer("send");
 
-    await settled(stub);
+    await idle(stub);
 
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),

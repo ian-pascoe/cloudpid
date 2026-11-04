@@ -17,6 +17,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
@@ -65,12 +66,6 @@ let made = 0;
 /** A Session whose host has a writing tool (`write`) and a fake Workspace that copies. */
 const fresh = () => env.SESSIONS.getByName(`runs-${Date.now()}-${made++}`);
 
-const idle = (stub: DurableObjectStub<TestSession>) =>
-  poll(
-    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
-    () => "The Session never went idle",
-  );
-
 /** The diff Annotation drafts of `stub`'s Session. */
 const drafts = async (stub: DurableObjectStub<TestSession>) =>
   (await runInDurableObject(stub, (instance: TestSession) => instance.annotations())).filter(
@@ -78,7 +73,7 @@ const drafts = async (stub: DurableObjectStub<TestSession>) =>
   );
 
 /** Wait until the first draft is frozen at the Run's end copy. */
-const frozen = (stub: DurableObjectStub<TestSession>) =>
+const untilFrozen = (stub: DurableObjectStub<TestSession>) =>
   poll(async () => {
     const [draft] = await drafts(stub);
 
@@ -248,7 +243,7 @@ describe("the Last run on the Session", () => {
     await idle(stub);
 
     // Ended: one more check freezes the draft at the end copy.
-    await frozen(stub);
+    await untilFrozen(stub);
 
     const [draft] = await drafts(stub);
 
@@ -332,7 +327,7 @@ describe("the Last run on the Session", () => {
     await runInDurableObject(stub, (instance: TestSession) => instance.open());
     await idle(stub);
 
-    await frozen(stub);
+    await untilFrozen(stub);
 
     // The files change after the Run: the quoted lines are gone from them.
     await runInDurableObject(stub, (instance: TestSession) => {

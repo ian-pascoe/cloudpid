@@ -9,7 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { NAVIGATE_WHILE_PREPARING } from "./branches.ts";
-import { poll } from "../poll.fixture.ts";
+import { eventually, idle } from "../durable-waits.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -22,16 +22,6 @@ declare global {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Poll `check` inside the object until it holds. */
-const eventually = (
-  stub: DurableObjectStub<TestSubagentSession>,
-  check: (instance: TestSubagentSession) => Promise<boolean>,
-): Promise<void> =>
-  poll(
-    () => runInDurableObject(stub, check),
-    () => "Condition not reached",
-  );
 
 /**
  * A Session whose root has started a subagent and whose subagent has answered, so both conversations are idle, with the
@@ -51,7 +41,7 @@ const withChild = async () => {
     async (instance) =>
       (await instance.subagents())?.agents["agent-1"]?.turns.at(-1)?.status === "completed",
   );
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   const state = await runInDurableObject(stub, (instance: TestSubagentSession) =>
     instance.subagents(),
@@ -90,7 +80,7 @@ describe("admitting a message", () => {
       instance.finishPreparing("a1");
       await slow;
     });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
@@ -123,7 +113,7 @@ describe("admitting a message", () => {
       instance.finishPreparing("a1");
       await Promise.all(root);
     });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
@@ -224,7 +214,7 @@ describe("admitting a message", () => {
       return went.active;
     });
 
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, branch)),
@@ -258,7 +248,7 @@ describe("admitting a message", () => {
 
     expect(outcomes.withdrawn).toEqual(["withdrawn", "withdrawn"]);
     expect(outcomes.other).toBe("placed");
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
     ).toEqual([]);
@@ -270,7 +260,7 @@ describe("admitting a message", () => {
     await runInDurableObject(stub, async (instance: TestSubagentSession) => {
       await instance.submit("a3");
     });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
     ).toEqual(["a3"]);
@@ -374,7 +364,7 @@ describe("admitting a message", () => {
 
     expect(order).toEqual(["placed", "stopped"]);
     // What was placed was aborted: nothing is left running or queued.
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
   });
 
   it("withdraws a message sent before Stop that was still waiting for the lock a move of the Session tree held", async () => {
@@ -406,7 +396,7 @@ describe("admitting a message", () => {
     });
 
     expect(outcomes).toEqual({ before: "withdrawn", after: "placed" });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, child)),
     ).toEqual(["c2"]);

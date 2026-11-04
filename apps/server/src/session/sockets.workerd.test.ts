@@ -24,6 +24,7 @@ import {
   REQUEST_COST,
   type TestSession,
 } from "./host.fixture.ts";
+import { idle } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import { approvalRequests } from "./sockets.ts";
 
@@ -145,13 +146,6 @@ const Submitted = Schema.Struct({
   type: Schema.Literal("result"),
   result: Schema.Struct({ submissionId: Schema.Finite }),
 });
-
-/** Wait until `stub`'s Session has no work live. */
-const idle = (stub: DurableObjectStub<TestSession>) =>
-  poll(
-    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
-    () => "Never idle",
-  );
 
 /** The conversations each of `stub`'s sockets records as watched, read inside the object. */
 const recordedWatches = (stub: DurableObjectStub<TestSession>) =>

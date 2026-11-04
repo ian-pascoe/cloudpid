@@ -19,7 +19,8 @@ import { BROWSER_IDLE_MS } from "@cloudpid/extensions/browser";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
-import { poll } from "../poll.fixture.ts";
+import { idle } from "../durable-waits.fixture.ts";
+import { poll, pollFor } from "../poll.fixture.ts";
 import { describeEvent } from "../push/notification.ts";
 import {
   LIVE_VIEW_LINKS,
@@ -57,24 +58,14 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   /** The first message after `from` that `match` accepts. */
-  const next = async <A extends ServerMessage>(
+  const next = <A extends ServerMessage>(
     match: (message: ServerMessage) => message is A,
     from = 0,
-  ): Promise<A> => {
-    const find = () => received.slice(from).find(match);
-
-    await poll(
-      () => find() !== undefined,
+  ): Promise<A> =>
+    pollFor(
+      () => received.slice(from).find(match),
       () => `Never received the expected message: ${JSON.stringify(received)}`,
     );
-
-    // Messages are only ever added, so the first match after `from` stays the first.
-    const found = find();
-
-    if (found === undefined) throw new Error("Unreachable: the wait held");
-
-    return found;
-  };
 
   return {
     received,
@@ -110,13 +101,6 @@ const only = (message: Requests): BrowserHandoffRequest => {
 
   return request;
 };
-
-/** Wait until `stub`'s Session has no work live. */
-const idle = (stub: DurableObjectStub<TestSession>) =>
-  poll(
-    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
-    () => "Never idle",
-  );
 
 const SCRIPT = [
   `call:browser_handoff:${JSON.stringify({ instructions: "Log in, then press Done" })}`,

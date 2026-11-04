@@ -5,7 +5,7 @@ import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { expect, it, vi } from "vitest";
 import { REQUEST_COST } from "./priced.fixture.ts";
-import { poll } from "../poll.fixture.ts";
+import { eventually, idle } from "../durable-waits.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -16,16 +16,6 @@ declare global {
     }
   }
 }
-
-/** Poll `check` inside the object until it holds. */
-const eventually = (
-  stub: DurableObjectStub<TestSubagentSession>,
-  check: (instance: TestSubagentSession) => Promise<boolean>,
-): Promise<void> =>
-  poll(
-    () => runInDurableObject(stub, check),
-    () => "Condition not reached",
-  );
 
 it("keeps a working subagent and the wait blocked on it through an eviction, and hands the wait the answer", async () => {
   const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
@@ -45,7 +35,7 @@ it("keeps a working subagent and the wait blocked on it through an eviction, and
   await runInDurableObject(stub, (instance: TestSubagentSession) => instance.release());
   await evictDurableObject(stub);
   expect(await runDurableObjectAlarm(stub)).toBe(true);
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   const subagents = await runInDurableObject(stub, (instance: TestSubagentSession) =>
     instance.subagents(),
@@ -79,7 +69,7 @@ it("keeps a working subagent through an eviction, and reports its answer as a fo
   await runInDurableObject(stub, (instance: TestSubagentSession) => instance.release());
   await evictDurableObject(stub);
   expect(await runDurableObjectAlarm(stub)).toBe(true);
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   expect(
     await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
@@ -145,7 +135,7 @@ it("lets the owner abort one subagent: its turn ends aborted and the root is lef
     await runInDurableObject(stub, (instance: TestSubagentSession) => instance.subagents()),
   ).toMatchObject({ agents: { "agent-1": { turns: [{ status: "aborted", delivery: "none" }] } } });
   // Nothing was reported to the root, which saw only what the owner said.
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
   expect(
     await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
   ).toEqual(["Delegate quietly"]);
@@ -191,7 +181,7 @@ it("stops the root without its subagents, and with them when asked", async () =>
     instance.abort({ subagents: true }),
   );
   await turnSettled(stub, "aborted");
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
   expect(
     await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
   ).toEqual(["Delegate quietly"]);
@@ -206,7 +196,7 @@ it("runs the owner's input to an idle subagent in its conversation, without repo
     await instance.submit("Delegate quietly");
   });
   await eventually(stub, async (instance) => (await instance.texts("user")).length === 2);
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   const state = await runInDurableObject(stub, (instance: TestSubagentSession) =>
     instance.subagents(),
@@ -222,7 +212,7 @@ it("runs the owner's input to an idle subagent in its conversation, without repo
     instance.submitTo(child, "A word from the owner"),
   );
   await eventually(stub, async (instance) => (await instance.texts("user", child)).length === 2);
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   expect(
     await runInDurableObject(stub, (instance: TestSubagentSession) =>
@@ -281,7 +271,7 @@ it("runs the owner's input into a child's run that a parent turn waits on, and g
     instance.release();
     instance.answerChild();
   });
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   const subagents = await runInDurableObject(stub, (instance: TestSubagentSession) =>
     instance.subagents(),
@@ -330,7 +320,7 @@ it("stops everything below the root, a grandchild too, and the Session goes idle
   await runInDurableObject(stub, (instance: TestSubagentSession) =>
     instance.abort({ subagents: true }),
   );
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   const agents = Object.values(
     (await runInDurableObject(stub, (instance: TestSubagentSession) => instance.subagents()))
@@ -355,7 +345,7 @@ it("holds a subagent to the Session's spend limit, and the root's next request t
 
   // The limit set above reaches the Session because the fixture reads its settings at each read. A fixture that read them
   // once, as its layer was built, let the child's request through to hang, and the Session never went idle (#551).
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   const subagents = await runInDurableObject(stub, (instance: TestSubagentSession) =>
     instance.subagents(),
@@ -433,7 +423,7 @@ it("keeps the heartbeat while the subagents could not be reported, and reports t
   );
   await delegateQuietly(stub);
   await runInDurableObject(stub, (instance: TestSubagentSession) => instance.stopEverything());
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
   // Only the start's, made before the reports failed.
   expect(
     await runInDurableObject(stub, (instance: TestSubagentSession) => instance.agentReports()),

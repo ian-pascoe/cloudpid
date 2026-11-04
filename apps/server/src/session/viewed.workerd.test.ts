@@ -20,6 +20,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
@@ -393,8 +394,7 @@ describe("drafts on a pull request", () => {
     });
     await client.answer("send");
 
-    // The assertions after it say what is missing if it never settles.
-    await poll(() => runInDurableObject(stub, (instance: TestSession) => instance.idle()));
+    await idle(stub);
 
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),

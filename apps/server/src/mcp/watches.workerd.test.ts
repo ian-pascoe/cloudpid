@@ -457,15 +457,15 @@ describe("a gap", () => {
     // At most 6 are asked at once; the engine's background queue (3) holds the rest for a slot.
     expect(await host.heldCount(URL_OF_DOCS)).toBe(3);
 
-    // Each release lets the queue send the next re-reads, which are held in turn: release until all are read.
-    await until(async () => {
-      await host.release(URL_OF_DOCS);
+    // Each release lets the queue send the next re-reads, which are held in turn: release each batch once it is held,
+    // until all are read.
+    const reads = async () =>
+      (await host.engineRequests()).filter((each) => each.request.op === "resources/read").length;
 
-      return (
-        (await host.engineRequests()).filter((each) => each.request.op === "resources/read")
-          .length === 16
-      );
-    });
+    while ((await reads()) < 16) {
+      await until(async () => (await host.heldCount(URL_OF_DOCS)) > 0 || (await reads()) === 16);
+      await host.release(URL_OF_DOCS);
+    }
   });
 });
 

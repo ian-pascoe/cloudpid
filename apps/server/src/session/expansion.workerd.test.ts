@@ -9,7 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { FakeWorkspace } from "./fake-workspace.fixture.ts";
-import { poll } from "../poll.fixture.ts";
+import { idle } from "../durable-waits.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -34,16 +34,6 @@ const block = skillBlock({ name: "deploy", location: DEPLOY, body: "Ship it." })
 
 const fresh = () => env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
 
-/** Poll `check` inside the object until it holds. */
-const eventually = (
-  stub: DurableObjectStub<TestSubagentSession>,
-  check: (instance: TestSubagentSession) => Promise<boolean>,
-): Promise<void> =>
-  poll(
-    () => runInDurableObject(stub, check),
-    () => "Condition not reached",
-  );
-
 /** Submit `text` to the root of a Session on `workspace`, and the kinds and texts of the root's owner messages after. */
 const submitted = async (workspace: FakeWorkspace, text: string) => {
   const stub = fresh();
@@ -52,7 +42,7 @@ const submitted = async (workspace: FakeWorkspace, text: string) => {
     instance.useWorkspace(workspace);
     await instance.submit(text);
   });
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   return runInDurableObject(stub, async (instance: TestSubagentSession) =>
     (await instance.entries()).filter(
@@ -69,7 +59,7 @@ describe("a submitted message", () => {
       instance.useWorkspace({ skills: [deploy], files: [DEPLOY_FILE], readDelayMs: 200 });
       await Promise.all([instance.submit("/skill:deploy now"), instance.submit("Then this")]);
     });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => instance.texts("user")),
@@ -156,7 +146,7 @@ describe("a message with Attachments", () => {
       instance.useWorkspace(workspace);
       await instance.submitInput(input, "attached");
     });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     return runInDurableObject(stub, (instance: TestSubagentSession) => instance.ownerMessages());
   };
