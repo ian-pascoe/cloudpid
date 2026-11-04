@@ -13,6 +13,7 @@ import {
   type McpInputRequest,
   plainLine,
 } from "@cloudpid/mcp/types";
+import type { McpSampledMode } from "@cloudpid/config";
 import type { McpElicitationSource } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
@@ -38,7 +39,7 @@ export type SamplingCall = {
   /** Aborts when Stop does: a sample under way is stopped, and a card waiting is withdrawn. */
   readonly signal: AbortSignal | undefined;
   /** What the server's definition says: `allow` answers without asking, `ask` asks the owner on a card first. */
-  readonly decision: "allow" | "ask";
+  readonly decision: McpSampledMode;
   /** Where the server's definition is, for the card's badge. */
   readonly source?: McpElicitationSource | undefined;
   /** Stop the call's own clock while the owner decides, and start it again. */

@@ -15,6 +15,7 @@ import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { storedBytes } from "../stored-bytes.ts";
+import type { McpSamplingGrant } from "./sampling-records.ts";
 
 /** The hints of a tool's annotations that are booleans, which the card shows as badges; they are untrusted and gate nothing. */
 export const HINTS = [
@@ -59,6 +60,9 @@ export type McpSamplingWhy =
   | "unanswered"
   | "internal";
 
+/** Who decided a Sampling request: the server's definition (`allow`), the owner on the card, a grant of theirs, or cloudpid's own rules. */
+export type McpSamplingBy = "definition" | "owner" | "grant" | "cloudpid";
+
 /**
  * One Sampling request the server made during a call (`docs/architecture/mcp-server-requests.md` → Sampling requests,
  * Records): never its content, only what the owner reads on the call's card.
@@ -66,7 +70,9 @@ export type McpSamplingWhy =
 export type McpSamplingDetail = {
   readonly server: string;
   readonly status: "answered" | "refused" | "failed";
-  readonly by: "definition" | "owner" | "grant" | "cloudpid";
+  readonly by: McpSamplingBy;
+  /** What let it run without the card's own yes, for one that ran on the owner's say: the call, the Session or Always. */
+  readonly grant?: McpSamplingGrant;
   /** Why it was refused or failed, in words. */
   readonly reason?: string;
   readonly why?: McpSamplingWhy;

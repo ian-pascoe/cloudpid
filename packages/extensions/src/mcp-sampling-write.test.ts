@@ -1,6 +1,6 @@
 // The write behind the Sampling card's *Always allow* and *Never* (`docs/architecture/mcp-server-requests.md` → Sampling
-// requests, The card): the server's definition gets `sampling: "allow"` or `"off"` at the Scope it is in, recorded as a change
-// the owner approved, and the Environment's host is pushed the new set. The world is the shared fixture's.
+// requests, The card): the server's definition gets `sampling: "allow"` or `"off"` at the Scope it is in, recorded as the owner's own change
+// (`actor: "owner"`), and the Environment's host is pushed the new set. The world is the shared fixture's.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
@@ -18,12 +18,14 @@ const write = async (
   value: "allow" | "off",
 ) =>
   Effect.runPromise(
-    rememberSampling({ settings: world.settings, mcp: world.access })({
-      server: "docs",
-      source,
-      conversationId: ROOT_CONVERSATION_ID,
-      value,
-    }).pipe(Effect.result),
+    rememberSampling({ settings: world.settings, mcp: world.access })
+      .write({
+        server: "docs",
+        source,
+        conversationId: ROOT_CONVERSATION_ID,
+        value,
+      })
+      .pipe(Effect.result),
   );
 
 describe("the Sampling card's write of the definition", () => {
@@ -81,5 +83,31 @@ describe("the Sampling card's write of the definition", () => {
     expect(result.pipe(Result.flip, Result.getOrUndefined)?.message).toBe(
       "The Settings have no definition of docs to change",
     );
+  });
+
+  it("is writable for a Global or an Environment's definition of a Session with an Environment, and for nothing else", async () => {
+    const world = await setup();
+    const remember = rememberSampling({ settings: world.settings, mcp: world.access });
+
+    const writable = (source: { kind: string; slug?: string } | undefined) =>
+      Effect.runPromise(remember.writable(source));
+
+    expect(await writable({ kind: "global" })).toBe(true);
+    expect(await writable({ kind: "environment" })).toBe(true);
+    expect(await writable({ kind: "repo", slug: "acme/app" })).toBe(false);
+    expect(await writable(undefined)).toBe(false);
+  });
+
+  it("is not writable for a Session the Registry does not list, whatever the source", async () => {
+    const world = await setup();
+
+    const unlisted = rememberSampling({
+      settings: world.settings,
+      mcp: { ...world.access, own: Effect.succeed(null) },
+    });
+
+    for (const kind of ["global", "environment"]) {
+      expect(await Effect.runPromise(unlisted.writable({ kind }))).toBe(false);
+    }
   });
 });

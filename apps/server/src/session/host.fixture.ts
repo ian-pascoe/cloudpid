@@ -708,10 +708,14 @@ export class TestSession extends DurableObject {
       waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
       samplingWaitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
       // *Always allow* and *Never* on a Sampling card: noted, never written to a Registry the fixture does not have.
-      remember: ({ server, value }) =>
-        Effect.sync(() => {
-          this.#samplingWrites.push({ server, value });
-        }),
+      remember: {
+        // A Session the Registry does not list (`mcp-unwritable-*`) has nowhere to write, so its card offers no Always or Never.
+        writable: () => Effect.succeed(this.ctx.id.name?.startsWith("mcp-unwritable-") !== true),
+        write: ({ server, value }) =>
+          Effect.sync(() => {
+            this.#samplingWrites.push({ server, value });
+          }),
+      },
       encryptionKey: SECRETS_KEY,
       session: this.ctx.id.toString(),
     });

@@ -8,9 +8,9 @@
 // refuse), the checks that refuse a request cloudpid cannot serve before it costs anything (the pairing rules, the
 // bounds, the Spend limit), the Role and the model, the sample with its 2-minute bound, the Usage it cost, and the
 // record. A request is answered `-1` when it is turned down, `-32602` when it is invalid or cannot be served, and
-// `-32603` when the model fails. Only a server whose definition says `sampling: "allow"` is answered here: the owner's
-// yes on a card is not built yet.
-import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
+// `-32603` when the model fails. A server whose definition says `sampling: "allow"` is answered at once; one that says
+// `ask` (the default) is answered after the owner's yes on a card (`./sampling-questions.ts`), or a grant of theirs.
+import { type McpSampledMode, ROLE_NAMES, type RoleName } from "@cloudpid/config";
 import type {
   McpElicitationSource,
   McpSamplingRecordView,
@@ -48,7 +48,7 @@ import type { McpSamplingDetail, McpSamplingWhy } from "./details.ts";
 import type { McpQuestionStorage } from "./question-records.ts";
 import type { McpQuestionsService } from "./questions.ts";
 import { cardMessages, recordView } from "./sampling-card.ts";
-import type { McpSamplingCard } from "./sampling-questions.ts";
+import { type McpSamplingCard, stoppedBy } from "./sampling-questions.ts";
 import {
   cutText,
   type McpSamplingRecord,
@@ -122,7 +122,7 @@ export type McpSamplingAsk = {
   /** Aborts when Stop does. */
   readonly signal?: AbortSignal | undefined;
   /** What the server's definition says: `allow` answers without asking, `ask` asks the owner on a card first. */
-  readonly decision: "allow" | "ask";
+  readonly decision: McpSampledMode;
   /** Where the server's definition is, for the card's badge. */
   readonly source?: McpElicitationSource | undefined;
   /** Stop the call's own clock while the owner decides, and start it again. */
@@ -189,6 +189,12 @@ type Pace = {
   readonly active: Semaphore.Semaphore;
   readonly stamps: Array<number>;
 };
+
+/** Why a request is refused when its record cannot be kept, which a replaced Session's storage cannot do. */
+const UNRECORDED_REASON = "cloudpid could not record the request";
+
+/** Why a request is refused when the Spend limit stops it, with the Session's own words for it. */
+const overLimitReason = (over: string): string => `out of budget: ${over}`;
 
 /** The model of `role` the Session's models list, or undefined. */
 const modelOf = (
@@ -322,6 +328,8 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
           by: settled.by,
         };
 
+        if (settled.grant !== undefined) detail.grant = settled.grant;
+
         if (settled.reason !== undefined) detail.reason = settled.reason;
 
         if (settled.why !== undefined) detail.why = settled.why;
@@ -405,7 +413,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       );
 
       if (over !== undefined) {
-        return yield* end("refused", MCP_SAMPLING_REFUSED, `out of budget: ${over}`, "budget");
+        return yield* end("refused", MCP_SAMPLING_REFUSED, overLimitReason(over), "budget");
       }
 
       // The model: the Role the server's preferences ask for, lowered to the first Role whose model the Session has.
@@ -553,19 +561,15 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         }
 
         if (standing?.action === "refuse") {
-          return yield* end(
-            "refused",
-            MCP_SAMPLING_REFUSED,
-            "refused by the owner for this Session",
-            undefined,
-            "grant",
-          );
+          record = { ...record, grant: standing.grant };
+
+          return yield* end("refused", MCP_SAMPLING_REFUSED, standing.reason, undefined, "grant");
         }
 
         if (standing?.action === "allow") {
           record = { ...record, by: "grant", grant: standing.grant };
         } else {
-          const options = Arr.filterMap(ROLE_NAMES, (each) => {
+          const roleOptions = Arr.filterMap(ROLE_NAMES, (each) => {
             const held = modelOf(bound.models, roles, each);
 
             return held === undefined
@@ -577,12 +581,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
           record = { ...record, status: "waiting" };
 
           if (!(yield* keep(record))) {
-            return yield* end(
-              "refused",
-              MCP_SAMPLING_REFUSED,
-              "cloudpid could not record the request",
-              "internal",
-            );
+            return yield* end("refused", MCP_SAMPLING_REFUSED, UNRECORDED_REASON, "internal");
           }
 
           const shown = cardMessages(record.messages);
@@ -594,7 +593,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
             tool: ask.tool,
             role: prepared.role,
             model: prepared.model.id,
-            roles: options,
+            roles: roleOptions,
             messages: shown.messages,
             tools: Arr.map(record.tools ?? [], (name) => ({ name })),
             notes: record.notes,
@@ -608,9 +607,13 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
           yield* ask.hold?.pause ?? Effect.void;
 
+          // Stop withdraws the card: the wait is raced against the call's signal, and the one that loses is interrupted.
           const decided = yield* asking
             .askSampling({ id, key: ask.key, card })
-            .pipe(Effect.ensuring(ask.hold?.resume ?? Effect.void));
+            .pipe(
+              Effect.raceFirst(stoppedBy(ask.signal)),
+              Effect.ensuring(ask.hold?.resume ?? Effect.void),
+            );
 
           record = { ...record, status: "running" };
 
@@ -624,7 +627,12 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
             );
           }
 
-          record = { ...record, by: "owner", grant: decided.grant };
+          record = {
+            ...record,
+            by: "owner",
+            grant: decided.grant,
+            notes: decided.note === undefined ? record.notes : [...record.notes, decided.note],
+          };
 
           if (decided.role !== prepared.role) {
             const model = modelOf(bound.models, roles, decided.role);
@@ -652,12 +660,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         );
 
         if (stillOver !== undefined) {
-          return yield* end(
-            "refused",
-            MCP_SAMPLING_REFUSED,
-            `out of budget: ${stillOver}`,
-            "budget",
-          );
+          return yield* end("refused", MCP_SAMPLING_REFUSED, overLimitReason(stillOver), "budget");
         }
       }
 
@@ -667,12 +670,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
       // A replaced Session, whose storage cannot take the record, cannot count the sample either: refused.
       if (!kept) {
-        return yield* end(
-          "refused",
-          MCP_SAMPLING_REFUSED,
-          "cloudpid could not record the request",
-          "internal",
-        );
+        return yield* end("refused", MCP_SAMPLING_REFUSED, UNRECORDED_REASON, "internal");
       }
 
       const sampled = yield* pace(ask.server).pipe(

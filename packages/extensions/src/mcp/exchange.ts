@@ -403,6 +403,12 @@ export const send = async <A>(
   // The clock of the request that is out: the Session gives up on the host when it passes.
   let clock: PausableDeadline | undefined;
 
+  // Stops the call's clock while the owner decides, and starts it again: what a question or a Sampling card holds.
+  const hold = {
+    pause: Effect.suspend(() => clock?.pause ?? Effect.void),
+    resume: Effect.suspend(() => clock?.resume ?? Effect.void),
+  };
+
   // A server's question waits for the owner while the call's clock stands still, and Stop withdraws it. A Modern one is
   // kept for later instead when the call defers, and waited for between its rounds, with no clock running.
   const asking =
@@ -418,8 +424,7 @@ export const send = async <A>(
           source: server.source,
           defers: deferring,
           keepsPages: paging,
-          pause: Effect.suspend(() => clock?.pause ?? Effect.void),
-          resume: Effect.suspend(() => clock?.resume ?? Effect.void),
+          ...hold,
         });
 
   // A Legacy HTTP server whose definition does not say `off` has its Sampling requests answered on the Session's models,
@@ -436,10 +441,7 @@ export const send = async <A>(
           signal: context.abortSignal,
           decision: samplingOf(server.server) === "allow" ? "allow" : "ask",
           source: server.source,
-          hold: {
-            pause: Effect.suspend(() => clock?.pause ?? Effect.void),
-            resume: Effect.suspend(() => clock?.resume ?? Effect.void),
-          },
+          hold,
         })
       : undefined;
 

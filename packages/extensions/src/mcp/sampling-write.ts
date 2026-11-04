@@ -2,10 +2,11 @@
 // The write behind the Sampling card's *Always allow* and *Never* (`docs/architecture/mcp-server-requests.md` → Sampling
 // requests, The card): the owner's choice sets the server's `sampling` to `allow` or `off` in the definition, at the Scope
 // the definition is in (Global's, or the Environment's own entry; never a Repo's file). It goes through the same
-// `SettingsAccess.change` the agent's approved changes do (`./settings-mcp-commit.ts`), as a change the owner approved by
-// the click, so it is recorded in Settings' Agent changes and can be reverted there, and the new set is pushed to the
+// `SettingsAccess.change` the agent's changes do (`./settings-mcp-commit.ts`), as the owner's own act (`actor: "owner"`):
+// the Registry records it in Settings' Agent changes as the owner's, which has no revert, and the new set is pushed to the
 // Environment's host (`pushMcpSet`). The entry is written whole, as `settings_mcp_update` writes it, only while it is as the
-// owner's Settings had it.
+// owner's Settings had it. The card offers the two only where the write can succeed (`writable`): a Session the Registry
+// does not list, or a definition in no Scope of the Settings, cannot.
 import { overrideInherited, settingsFieldValue } from "@cloudpid/config";
 import { isJsonObject } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
@@ -32,12 +33,18 @@ const scopeOf = (kind: string | undefined, environment: string | null): string |
 };
 
 /** The write of a definition's `sampling` over the Session's Settings and its MCP access. */
-export const rememberSampling =
-  (access: {
-    readonly settings: SettingsAccessService;
-    readonly mcp: SettingsMcpAccessService;
-  }): McpSamplingRemember =>
-  ({ server, source, conversationId, value }) =>
+export const rememberSampling = (access: {
+  readonly settings: SettingsAccessService;
+  readonly mcp: SettingsMcpAccessService;
+}): McpSamplingRemember => ({
+  writable: (source) =>
+    access.mcp.own.pipe(
+      Effect.map(
+        (environment) => scopeOf(source?.kind, environment) !== null && environment !== null,
+      ),
+      Effect.orElseSucceed(() => false),
+    ),
+  write: ({ server, source, conversationId, value }) =>
     Effect.gen(function* () {
       const environment = yield* access.mcp.own;
 
@@ -87,4 +94,5 @@ export const rememberSampling =
       // The host takes the new set at once, so the next request of the server is declared as it now says; a push that
       // fails is healed by the host's own pull.
       if (environment !== null) yield* pushMcpSet(access.mcp, environment);
-    }).pipe(Effect.catchTag("SettingsAccessError", (error) => refused(error.message)));
+    }).pipe(Effect.catchTag("SettingsAccessError", (error) => refused(error.message))),
+});

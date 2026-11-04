@@ -4,13 +4,19 @@
 // call* and *Allow in this Session* skip the card; *Always allow* and *Never* write the definition.
 // @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off preferSchemaOverJson:off
 import type { JsonObject } from "@cloudpid/mcp/types";
-import type { McpSamplingRequest, McpSamplingSessionGrant } from "@cloudpid/protocol";
+import type {
+  McpElicitationSource,
+  McpSamplingRequest,
+  McpSamplingSessionGrant,
+} from "@cloudpid/protocol";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it, vi } from "vitest";
+import { MCP_RUN_STOPPED_REASON } from "./mcp/question-records.ts";
 import { createMcpQuestions, McpQuestionsError } from "./mcp/questions.ts";
 import { createMcpSampling, type McpSamplingAsk, type McpSamplingOutcome } from "./mcp/sampling.ts";
 
@@ -46,6 +52,8 @@ const open = (
       readonly server: string;
       readonly value: "allow" | "off";
     }) => Effect.Effect<void, McpQuestionsError>;
+    /** Whether the write of a definition at the source can succeed (true unless a test says it cannot). */
+    readonly writable?: (source: McpElicitationSource | undefined) => boolean;
     readonly over?: () => string | undefined;
     readonly waitMs?: number;
   } = {},
@@ -74,10 +82,13 @@ const open = (
     redact: Effect.succeed,
     holdsSecret: () => Effect.succeed(false),
     samplingWaitMs: options.waitMs,
-    remember: (input) =>
-      Effect.sync(() => {
-        written.push({ server: input.server, value: input.value, source: input.source });
-      }).pipe(Effect.andThen(options.remember?.(input) ?? Effect.void)),
+    remember: {
+      writable: (source) => Effect.succeed(options.writable?.(source) ?? true),
+      write: (input) =>
+        Effect.sync(() => {
+          written.push({ server: input.server, value: input.value, source: input.source });
+        }).pipe(Effect.andThen(options.remember?.(input) ?? Effect.void)),
+    },
   });
 
   const faux = fauxProvider({
@@ -323,15 +334,63 @@ describe("MCP sampling on a definition that says ask", () => {
       });
     }));
 
-  test("writes the definition on Always allow before it runs, and keeps waiting when the write fails", () =>
+  test("writes the definition on Always allow, then runs the request and the server's other waiting ones", () =>
     Effect.gen(function* () {
-      let failing = true;
+      const { sampler, questions, announced, faux, written } = open();
+
+      faux.setResponses([fauxAssistantMessage("always"), fauxAssistantMessage("also")]);
+
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+      const other = yield* Effect.forkChild(sampler.sample(ask({ callId: "call-2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(2));
+      yield* questions.answerSampling("call-1:1", { choice: "allow_always" });
+
+      expect(yield* Fiber.join(first)).toMatchObject({ kind: "sampled", detail: { by: "owner" } });
+      expect(yield* Fiber.join(other)).toMatchObject({ kind: "sampled" });
+      expect(written).toEqual([{ server: "demo", value: "allow", source: { kind: "global" } }]);
+      expect((yield* sampler.records).find((each) => each.id === "call-1:1")).toMatchObject({
+        status: "answered",
+        grant: "always",
+      });
+    }));
+
+  test("allows for this call alone, and says so in the record, when Always allow cannot be written", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced, faux } = open({
+        remember: () => McpQuestionsError.make({ message: "The definition changed meanwhile" }),
+      });
+
+      faux.setResponses([fauxAssistantMessage("once"), fauxAssistantMessage("twice")]);
+
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+      yield* questions.answerSampling("call-1:1", { choice: "allow_always" });
+
+      expect(yield* Fiber.join(sampling)).toMatchObject({
+        kind: "sampled",
+        detail: { by: "owner" },
+      });
+      expect(yield* questions.pendingSampling).toEqual([]);
+
+      const record = (yield* sampler.records).find((each) => each.id === "call-1:1");
+
+      expect(record).toMatchObject({ status: "answered", grant: "call" });
+      expect(record?.notes).toContain(
+        "Always allow could not be saved (The definition changed meanwhile); allowed for this call only",
+      );
+
+      // The call's next request is let through; another call's asks again.
+      expect(yield* sampler.sample(ask({ key: "2" }))).toMatchObject({ kind: "sampled" });
+    }));
+
+  test("lets the first answer win: a second Always or a Refuse finds the request taken, and writes once", () =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
 
       const { sampler, questions, announced, faux, written } = open({
-        remember: () =>
-          failing
-            ? McpQuestionsError.make({ message: "The definition changed meanwhile" })
-            : Effect.void,
+        remember: () => Deferred.await(held),
       });
 
       faux.setResponses([fauxAssistantMessage("always")]);
@@ -340,37 +399,118 @@ describe("MCP sampling on a definition that says ask", () => {
 
       yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
 
-      const failed = yield* questions
+      const always = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }),
+      );
+
+      yield* eventually(() => expect(written).toHaveLength(1));
+
+      const second = yield* questions
         .answerSampling("call-1:1", { choice: "allow_always" })
         .pipe(Effect.flip);
 
-      expect(failed.message).toBe("The definition changed meanwhile");
-      expect(yield* questions.pendingSampling).toHaveLength(1);
+      const refuse = yield* questions
+        .answerSampling("call-1:1", { choice: "refuse" })
+        .pipe(Effect.flip);
 
-      failing = false;
-      yield* questions.answerSampling("call-1:1", { choice: "allow_always" });
+      expect(second.message).toBe("This request is being answered");
+      expect(refuse.message).toBe("This request is being answered");
+      expect(written).toHaveLength(1);
+
+      yield* Deferred.succeed(held, undefined);
+      yield* Fiber.join(always);
 
       expect(yield* Fiber.join(sampling)).toMatchObject({
         kind: "sampled",
         detail: { by: "owner" },
       });
-      expect(written).toEqual([
-        { server: "demo", value: "allow", source: { kind: "global" } },
-        { server: "demo", value: "allow", source: { kind: "global" } },
-      ]);
-      expect((yield* sampler.view("call-1:1"))?.status).toBe("answered");
     }));
 
-  test("writes off on Never and refuses", () =>
+  test("does not let the clock end a request an Always is writing", () =>
     Effect.gen(function* () {
-      const { sampler, questions, announced, written } = open();
+      const held = yield* Deferred.make<void>();
+
+      const { sampler, questions, announced, faux } = open({
+        waitMs: 1000,
+        remember: () => Deferred.await(held),
+      });
+
+      faux.setResponses([fauxAssistantMessage("always")]);
+
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+
+      const always = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }),
+      );
+
+      yield* settle;
+      yield* TestClock.adjust(2000);
+      yield* settle;
+      yield* Deferred.succeed(held, undefined);
+      yield* Fiber.join(always);
+
+      expect(yield* Fiber.join(sampling)).toMatchObject({
+        kind: "sampled",
+        detail: { by: "owner", status: "answered" },
+      });
+    }));
+
+  test("Never refuses the request, the call's later requests and the server's other waiting ones, without asking", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced, faux, written } = open();
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+      const other = yield* Effect.forkChild(sampler.sample(ask({ callId: "call-2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(2));
+      yield* questions.answerSampling("call-1:1", { choice: "refuse_never" });
+
+      expect(refusedWith(yield* Fiber.join(first))?.code).toBe(-1);
+      expect(refusedWith(yield* Fiber.join(other))?.code).toBe(-1);
+      expect(written).toEqual([{ server: "demo", value: "off", source: { kind: "global" } }]);
+
+      // The same call's next request is refused with no card; the Session keeps no grant, so another call asks.
+      const later = yield* sampler.sample(ask({ key: "2" }));
+
+      expect(later).toMatchObject({ kind: "refused", detail: { by: "grant", status: "refused" } });
+      expect(yield* questions.pendingSampling).toEqual([]);
+      expect(yield* questions.samplingGrants).toEqual([]);
+      expect(faux.state.callCount).toBe(0);
+    }));
+
+  test("Never still refuses when the definition cannot be written", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced } = open({
+        remember: () => McpQuestionsError.make({ message: "no" }),
+      });
+
       const sampling = yield* Effect.forkChild(sampler.sample(ask()));
 
       yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
       yield* questions.answerSampling("call-1:1", { choice: "refuse_never" });
 
       expect(refusedWith(yield* Fiber.join(sampling))?.code).toBe(-1);
-      expect(written).toEqual([{ server: "demo", value: "off", source: { kind: "global" } }]);
+    }));
+
+  test("does not offer Always allow or Never when the write cannot succeed here, and refuses it", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced, written } = open({ writable: () => false });
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+      expect((yield* questions.pendingSampling)[0]?.writable).toBe(false);
+
+      for (const choice of ["allow_always", "refuse_never"] as const) {
+        const failed = yield* questions.answerSampling("call-1:1", { choice }).pipe(Effect.flip);
+
+        expect(failed.message).toBe("This server's definition cannot be changed from here");
+      }
+
+      expect(written).toEqual([]);
+      expect(yield* questions.pendingSampling).toHaveLength(1);
+      yield* questions.answerSampling("call-1:1", { choice: "refuse" });
+      yield* Fiber.join(sampling);
     }));
 
   test("does not offer Always allow or Never for a Repo's definition, and refuses to write it", () =>
@@ -443,16 +583,38 @@ describe("MCP sampling on a definition that says ask", () => {
       expect(refusedWith(yield* Fiber.join(second))?.message).toBe("the server stopped waiting");
     }));
 
-  test("withdraws a waiting request when the Run is stopped", () =>
+  test("withdraws a waiting request when the Run is stopped, through the call's signal, and records why", () =>
     Effect.gen(function* () {
-      const { sampler, announced } = open();
-      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+      const { sampler, announced, questions } = open();
+      const stop = yield* Effect.sync(() => new AbortController());
+      const sampling = yield* Effect.forkChild(sampler.sample(ask({ signal: stop.signal })));
 
       yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
-      yield* Fiber.interrupt(sampling);
-      yield* settle;
+      stop.abort();
 
+      const outcome = yield* Fiber.join(sampling);
+
+      expect(refusedWith(outcome)).toEqual({ code: -1, message: MCP_RUN_STOPPED_REASON });
+      expect(outcome.detail).toMatchObject({ by: "cloudpid", why: "unanswered" });
       expect(announced.at(-1)?.requests).toEqual([]);
+      expect(yield* questions.pendingSampling).toEqual([]);
+      expect(yield* sampler.view("call-1:1")).toMatchObject({
+        status: "refused",
+        reason: MCP_RUN_STOPPED_REASON,
+      });
+    }));
+
+  test("refuses a request at once when the Run was stopped already", () =>
+    Effect.gen(function* () {
+      const { sampler, announced } = open();
+      const stop = yield* Effect.sync(() => new AbortController());
+
+      stop.abort();
+
+      const outcome = yield* sampler.sample(ask({ signal: stop.signal }));
+
+      expect(refusedWith(outcome)?.message).toBe(MCP_RUN_STOPPED_REASON);
+      expect(announced.at(-1)?.requests ?? []).toEqual([]);
     }));
 
   test("asks nobody about a request it cannot serve or that is over the limit", () =>

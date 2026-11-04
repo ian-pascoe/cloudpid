@@ -452,4 +452,91 @@ describe("a Legacy MCP server whose definition says ask, in a Session", () => {
 
     expect(sampled).toEqual([{ error: "the owner did not answer in time", code: -1 }]);
   });
+
+  it('withdraws the card and records "Run stopped" when the owner stops the Run', async () => {
+    const sampled: Array<Schema.Json> = [];
+    const { stub } = await open({}, sampled);
+    const owner = await connect(stub);
+
+    await start(stub, [sample(1), "never sampled", "done"]);
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+    owner.send({ type: "abort", id: "stop" });
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await idle(stub);
+
+    const records = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.samplingRecords(),
+    );
+
+    expect(records).toMatchObject([{ status: "refused", reason: "Run stopped" }]);
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.samplingUsage()),
+    ).toMatchObject({ requests: 0 });
+  });
+
+  it("checks the Spend limit again after the owner decides, and refuses what the wait made too dear", async () => {
+    const sampled: Array<Schema.Json> = [];
+    const { stub } = await open({}, sampled);
+    const owner = await connect(stub);
+
+    // Room for the Run's first request and one more: the card is shown, then the limit is lowered while it waits.
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.mcpSpendLimit(10 * REQUEST_COST),
+    );
+    await start(stub, [sample(1), "never sampled", "done"]);
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.mcpSpendLimit(REQUEST_COST / 2),
+    );
+    owner.send({
+      type: "mcp_sampling_answer",
+      id: "yes",
+      request: owner.requests()[0]?.id ?? "",
+      choice: "allow_call",
+    });
+    await idle(stub);
+
+    expect(sampled).toEqual([{ error: expect.stringContaining("out of budget"), code: -1 }]);
+
+    const records = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.samplingRecords(),
+    );
+
+    expect(records).toMatchObject([{ status: "refused", why: "budget" }]);
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.samplingUsage()),
+    ).toMatchObject({ requests: 0 });
+  });
+
+  it("offers no Always allow or Never where the Session cannot write a definition, and refuses to", async () => {
+    const sampled: Array<Schema.Json> = [];
+    const { stub } = await open({}, sampled, "mcp-unwritable-sampling");
+    const owner = await connect(stub);
+
+    await start(stub, [sample(1), "never sampled", "done"]);
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+    expect(owner.requests()[0]?.writable).toBe(false);
+
+    owner.send({
+      type: "mcp_sampling_answer",
+      id: "always",
+      request: owner.requests()[0]?.id ?? "",
+      choice: "allow_always",
+    });
+    await settles(async () =>
+      expect(owner.received.some((message) => message.type === "error")).toBe(true),
+    );
+    expect(owner.requests()).toHaveLength(1);
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.samplingWrites()),
+    ).toEqual([]);
+
+    owner.send({
+      type: "mcp_sampling_answer",
+      id: "no",
+      request: owner.requests()[0]?.id ?? "",
+      choice: "refuse",
+    });
+    await idle(stub);
+  });
 });

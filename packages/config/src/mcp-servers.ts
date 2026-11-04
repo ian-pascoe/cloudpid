@@ -80,6 +80,12 @@ export const MCP_DEFINITION_KEYS = [
   "sampling",
 ] as const;
 
+/** What `samplingOf` says of a definition. */
+export type McpSamplingMode = "allow" | "ask" | "off" | "stdio";
+
+/** The modes whose requests are declared, and so answered: the ones a call decides by. */
+export type McpSampledMode = Extract<McpSamplingMode, "allow" | "ask">;
+
 /**
  * What a server's definition says to its Sampling requests, which is the one place that decides it
  * (`docs/architecture/mcp-server-requests.md` → Sampling requests): `"allow"` answers them on the owner's models without
@@ -91,7 +97,7 @@ export const MCP_DEFINITION_KEYS = [
 export const samplingOf = (server: {
   readonly sampling?: unknown;
   readonly type?: unknown;
-}): "allow" | "ask" | "off" | "stdio" => {
+}): McpSamplingMode => {
   if (server.sampling === "off") return "off";
 
   if (server.type === "stdio") return "stdio";

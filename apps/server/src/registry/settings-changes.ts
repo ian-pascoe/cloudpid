@@ -30,7 +30,12 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { type AgentChangeAuthor, type AgentChanges, recordedAuthor } from "./agent-changes.ts";
+import {
+  type AgentChangeAuthor,
+  type AgentChanges,
+  ownerChangeRefusal,
+  recordedAuthor,
+} from "./agent-changes.ts";
 import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { mcpServerNamed, resolvedMcpServers } from "./mcp-set.ts";
 import {
@@ -208,8 +213,8 @@ export const changeSettings = (
 
 /**
  * The owner's revert of Settings change `id`: its `before` value written back and recorded as the owner's change.
- * Refused, saying what the setting is now, when it no longer has the change's `after` value; and for a revert, which is
- * not undone, and a change reverted already.
+ * Refused, saying what the setting is now, when it no longer has the change's `after` value; for an owner's change (a
+ * revert, which is not undone, or one of their own through a Session's card); and for a change reverted already.
  */
 export const revertSettingsChange = (
   storage: SettingsStorage,
@@ -224,7 +229,7 @@ export const revertSettingsChange = (
     if (change === null) return { status: "missing" };
 
     if (change.actor === "owner") {
-      return { status: "refused", message: "A revert is not undone: change the setting itself" };
+      return { status: "refused", message: ownerChangeRefusal(change) };
     }
 
     // Once only: the agent may give the setting the change's value again, which a second revert would undo unrecorded.

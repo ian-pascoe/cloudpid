@@ -13,9 +13,15 @@ export const McpSamplingRole = Schema.Literals(ROLE_NAMES);
 
 export type McpSamplingRole = typeof McpSamplingRole.Type;
 
+/**
+ * A Role as a client reads it in what the Session pushes: a string, so a Role a later build adds does not drop the whole
+ * message in an older tab. `McpSamplingRole` is what the owner's answer may name.
+ */
+export const McpSamplingRoleName = Schema.String;
+
 /** One Role the owner may pick, and the model that answers on it. */
 export const McpSamplingRoleOption = Schema.Struct({
-  role: McpSamplingRole,
+  role: McpSamplingRoleName,
   model: Schema.String,
 });
 
@@ -44,7 +50,7 @@ const Asked = {
   /** The model-facing name of the tool whose call the request came in. */
   tool: Schema.String,
   /** The Role the request runs on (the owner's pick, once answered) and the model that answers on it. */
-  role: Schema.optionalKey(McpSamplingRole),
+  role: Schema.optionalKey(McpSamplingRoleName),
   model: Schema.optionalKey(Schema.String),
   systemPrompt: Schema.optionalKey(Schema.String),
   /** The request's messages that the call's earlier requests did not carry, the last ones when there are many. */
@@ -58,8 +64,7 @@ const Asked = {
 
 /**
  * One waiting Sampling request (`mcp_sampling_requests`). `deadline` is the moment, in epoch milliseconds, the Session
- * refuses it for the owner, so the countdown follows the Session's clock; a request with `waits: "owner"` has none (one a
- * later build keeps for the owner), and its `deadline` is only for a client from before `waits`.
+ * refuses it for the owner, so the countdown follows the Session's clock.
  */
 export const McpSamplingRequest = Schema.Struct({
   ...Asked,
@@ -72,17 +77,16 @@ export const McpSamplingRequest = Schema.Struct({
   /** Where the definition is, for the card's badge; absent when the Session does not know. */
   source: Schema.optionalKey(McpElicitationSource),
   /** The Role the request would run on unless the owner picks another, and its model. */
-  role: McpSamplingRole,
+  role: McpSamplingRoleName,
   model: Schema.String,
   /** The Roles the owner may pick, those with a model the Session has. */
   roles: Schema.Array(McpSamplingRoleOption),
   /**
    * Whether the card may write the definition's `sampling` ("Always allow", "Never"): the server's definition is the owner's,
-   * at Global or in the Environment, and not a Repo's file.
+   * at Global or in the Environment, not a Repo's file, and the Session is one the Registry lists with an Environment.
    */
   writable: Schema.Boolean,
   deadline: Schema.Finite,
-  waits: Schema.optionalKey(Schema.Literal("owner")),
 });
 
 export type McpSamplingRequest = typeof McpSamplingRequest.Type;
@@ -103,10 +107,16 @@ export const McpSamplingChoice = Schema.Literals([
 
 export type McpSamplingChoice = typeof McpSamplingChoice.Type;
 
-/** What a Session grant lets or stops a server do: sample without asking, or be refused without asking. */
-export const McpSamplingGrantAction = Schema.Literals(["allow", "refuse"]);
+/**
+ * What a Session grant lets or stops a server do: sample without asking (`allow`), or be refused without asking
+ * (`refuse`). A string, so an action a later build adds reads as it is in an older tab.
+ */
+export const McpSamplingGrantAction = Schema.String;
 
 export type McpSamplingGrantAction = typeof McpSamplingGrantAction.Type;
+
+/** The actions of a grant that this build knows. */
+export const MCP_SAMPLING_GRANT_ACTIONS = ["allow", "refuse"] as const;
 
 /** A Session grant: the owner's choice for a server, for every conversation of the Session, until the Session ends. */
 export const McpSamplingSessionGrant = Schema.Struct({
@@ -125,8 +135,10 @@ export const McpSamplingRecordView = Schema.Struct({
   ...Asked,
   id: Schema.String,
   callId: Schema.String,
-  status: Schema.Literals(["answered", "refused", "failed", "waiting", "running"]),
-  by: Schema.Literals(["definition", "owner", "grant", "cloudpid"]),
+  /** `answered`, `refused`, `failed`, `waiting` or `running`; a string, so one a later build adds still reads. */
+  status: Schema.String,
+  /** `definition`, `owner`, `grant` or `cloudpid`; a string, as `status` is. */
+  by: Schema.String,
   /** Why it was refused or failed, in cloudpid's words. */
   reason: Schema.optionalKey(Schema.String),
   /** The reply's text, cut. */

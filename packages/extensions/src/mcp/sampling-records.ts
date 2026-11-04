@@ -6,7 +6,7 @@
 // tokens and cost stay; the messages, tools and reply go).
 import type { RoleName } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
-import type { McpSamplingWhy } from "./details.ts";
+import type { McpSamplingBy, McpSamplingWhy } from "./details.ts";
 import type { McpQuestionStorage } from "./question-records.ts";
 
 /** The most bytes one record holds. */
@@ -80,7 +80,7 @@ export type McpSamplingRecord = {
    * Who decided: `definition` (its `sampling` is `allow`), `owner` (the card), `grant` (an earlier choice of the owner's, kept
    * for the call or the Session) or `cloudpid` (a refusal of its own rules).
    */
-  readonly by: "definition" | "owner" | "grant" | "cloudpid";
+  readonly by: McpSamplingBy;
   /** The grant that let it run, when one did. */
   readonly grant?: McpSamplingGrant;
   readonly notes: ReadonlyArray<string>;
