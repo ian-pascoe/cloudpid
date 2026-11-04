@@ -108,6 +108,7 @@ export {
   type McpQuestionAnswer,
   type McpPageRef,
   type McpQuestionAsk,
+  type McpQuestionCopier,
   type McpQuestionCopies,
   type McpQuestionCopy,
   callKeysOf,

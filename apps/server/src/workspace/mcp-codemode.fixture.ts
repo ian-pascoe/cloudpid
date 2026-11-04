@@ -281,6 +281,11 @@ export class TestMcpCodemodeSession extends TestCodemodeSession {
     return Effect.runPromise(this.mcpQuestionsService().records);
   }
 
+  /** The Sampling requests' records, oldest first. */
+  mcpSamplingRecords() {
+    return Effect.runPromise(this.mcpSamplingService().records);
+  }
+
   /** How many `tools/call` and resumes the fake was sent, across instances, and the answers the resume carried. */
   mcpSent() {
     const { kv } = this.ctx.storage;

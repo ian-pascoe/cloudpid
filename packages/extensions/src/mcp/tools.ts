@@ -308,16 +308,27 @@ const watchHook = (touch: (conversation: string) => Promise<void>) =>
     },
   });
 
+/** What the library writes, as the whole of a result, for a script rerun after its deadline passed while it was interrupted. */
+const INTERRUPTED_PAST_DEADLINE = "Script timed out: its deadline passed while it was interrupted.";
+
 /**
- * Whether `result` is a `codemode` script's that ended because its `timeout_ms` passed: a failed result whose error is the
- * library's own words for it (`Script error:` then `Script timed out: …`, on lines of their own).
+ * Whether `result` is a `codemode` script's that ended because its `timeout_ms` passed, in the library's own words: a
+ * failed result whose error is `Script error:` then `Script timed out: …` on lines of their own (the deadline passing
+ * while the script ran), or whose only text is the one it writes for a rerun after the deadline (it passed while no
+ * instance ran the script: an eviction).
  */
-const scriptTimedOut = (result: ToolExecutionResult): boolean =>
-  result.isError === true &&
-  Arr.some(
-    result.output ?? [],
-    (item) => item.type === "text" && /^Script error:\nScript timed out: /m.test(item.text),
+const scriptTimedOut = (result: ToolExecutionResult): boolean => {
+  if (result.isError !== true) return false;
+
+  const texts = Arr.filterMap(result.output ?? [], (item) =>
+    item.type === "text" ? Result.succeed(item.text) : Result.failVoid,
   );
+
+  return (
+    (result.output?.length === 1 && texts[0] === INTERRUPTED_PAST_DEADLINE) ||
+    Arr.some(texts, (text) => /^Script error:\nScript timed out: /m.test(text))
+  );
+};
 
 /**
  * Whether the script of `call` set a timeout: its first line is `// @options: {…"timeout_ms"…}` (`docs/architecture/

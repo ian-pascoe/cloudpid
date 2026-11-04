@@ -32,6 +32,17 @@ describe("a codemode result that ends its script's questions as timed out", () =
     expect(endedByTimeout(callOf(TIMED), resultOf(TIMED_OUT))).toBe(true);
   });
 
+  it("is the library's one line for a script rerun after its deadline passed while it was interrupted", () => {
+    const interrupted = "Script timed out: its deadline passed while it was interrupted.";
+
+    expect(endedByTimeout(callOf(TIMED), resultOf(interrupted))).toBe(true);
+    // Not as anything but the whole result, nor without a timeout of the script's own, nor as a non-error.
+    expect(endedByTimeout(callOf(TIMED), resultOf(`${interrupted} And more.`))).toBe(false);
+    expect(endedByTimeout(callOf(TIMED), resultOf(`log\n${interrupted}`))).toBe(false);
+    expect(endedByTimeout(callOf("await tools.x();"), resultOf(interrupted))).toBe(false);
+    expect(endedByTimeout(callOf(TIMED), resultOf(interrupted, false))).toBe(false);
+  });
+
   it("is not a result that is not an error, whatever its text says", () => {
     expect(endedByTimeout(callOf(TIMED), resultOf(TIMED_OUT, false))).toBe(false);
   });

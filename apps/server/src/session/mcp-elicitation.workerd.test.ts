@@ -542,6 +542,62 @@ describe("a Modern MCP server's form in a Session", () => {
   });
 });
 
+describe("a Modern MCP server's form kept for later, while its server changes", () => {
+  it("is withdrawn from the cards when a client connects after the change, which a round kept for later holds no request to hear", async () => {
+    const environment = `env-${counter++}`;
+    const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+    const asked: Array<Schema.Json> = [];
+    const server = modernServer({ moreTools: [ASK_TOOL], asked });
+
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+      server.handle(new Request(input, init)),
+    );
+
+    await host.useRealEngine();
+    await host.apply(SET);
+
+    const stub = env.SESSIONS.getByName(`mcp-${environment}`);
+
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.mcpEnvironment(environment, 1);
+    });
+
+    const first = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([ask(NAME_FORM), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+    await settles(async () => expect(first.requests()).toHaveLength(1));
+
+    // The owner leaves; the server's connection changes while the round waits. The host holds no request for the round, so
+    // nothing tells the Session: its card stays.
+    first.close();
+    await host.apply({
+      ...SET,
+      hash: "h2",
+      revision: 2,
+      entries: SET.entries.map((entry) => ({ ...entry, hash: "hash-docs-2", conn: "conn-docs-2" })),
+    });
+
+    // The next client's connect makes the look, which finds the server on another connection and withdraws the card.
+    const second = await connect(stub);
+
+    await settles(async () =>
+      expect(second.received.filter((m) => m.type === "mcp_elicitation_requests")).toEqual(
+        expect.arrayContaining([expect.objectContaining({ requests: [] })]),
+      ),
+    );
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    // The call was sent once and never resumed: the question was answered `cancel` by cloudpid.
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(1);
+    second.close();
+  });
+});
+
 const PAGE_URL = "https://login.example.com/authorize?state=1";
 
 /** A Session whose host runs the real engine against a fake Modern server that has the `visit` tool. */

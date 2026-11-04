@@ -437,6 +437,57 @@ describe("what a page of a Fork carries of the Sampling requests", () => {
     }));
 });
 
+describe("what a page of a Fork carries of the questions and the Sampling requests together", () => {
+  test("counts the question records in the page's budget before the Sampling records", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const source = open(storage);
+
+      yield* source.unseen({
+        callId: "call-1",
+        conversationId: ROOT_CONVERSATION_ID,
+        server: "demo",
+        tool: "mcp__demo__ask",
+        message: "m".repeat(6000),
+        action: "decline",
+        reason: "it asked for a credential ('API token')",
+      });
+
+      for (const callId of ["call-1", "call-2"]) {
+        samplingRecords(storage).put(
+          {
+            id: `${callId}:s1`,
+            server: "demo",
+            tool: "mcp__demo__ask",
+            origin: "agent",
+            conversationId: 1,
+            callId,
+            sequence: 1,
+            status: "answered",
+            by: "owner",
+            notes: [],
+            askedAt: 1,
+            settledAt: 2,
+            reply: { role: "assistant", content: { type: "text", text: "a".repeat(5000) } },
+          },
+          2,
+        );
+      }
+
+      const [question, whole] = source.copies.copier()(["call-1"], 1_000_000);
+      const room = JSON.stringify(question).length + JSON.stringify(whole).length + 100;
+      const copied = source.copies.copier()(["call-1", "call-2"], room);
+
+      // The question's record takes its share first; what is left holds the first Sampling record whole and not the second.
+      expect(copied.map((each) => each.kind)).toEqual(["question", "sampling", "sampling"]);
+      expect(copied.map((each) => "stub" in each.record && each.record.stub === true)).toEqual([
+        false,
+        false,
+        true,
+      ]);
+    }));
+});
+
 describe("Decline all and Decline in this Session", () => {
   /** Ask `ask` as call `callId` of `server`, with question `key`. */
   const asking = (questions: ReturnType<typeof open>, over: Partial<McpQuestionAsk>) =>

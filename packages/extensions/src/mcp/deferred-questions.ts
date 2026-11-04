@@ -1229,7 +1229,9 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
   /**
    * The calls the `codemode` call `scriptCallId` made (`<scriptCallId>/<key>`) ended with the script: their rounds are
-   * settled for `reason`, and the calls woken to find none, so no resume is sent after the script's end.
+   * settled for `reason`, and their records read it. The calls are not woken: the script's end aborts its nested calls
+   * (pi-durable's cleanup), which stops the wait of each (`resumeOf` races the abort signal), and the record is gone by
+   * then, so no resume is sent.
    */
   const withdrawScript = (scriptCallId: string, reason: string) =>
     Effect.gen(function* () {
@@ -1237,7 +1239,6 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         if (!callId.startsWith(`${scriptCallId}/`)) continue;
 
         yield* settle(callId, reason);
-        yield* wake(callId);
       }
     });
 

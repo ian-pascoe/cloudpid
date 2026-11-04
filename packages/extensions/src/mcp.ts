@@ -176,6 +176,7 @@ export {
   McpQuestions,
   McpQuestionsError,
   type McpQuestionAsk,
+  type McpQuestionCopier,
   type McpQuestionCopies,
   type McpQuestionCopy,
   type McpQuestionOutcome,
