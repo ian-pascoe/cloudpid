@@ -36,7 +36,6 @@ import { WebConfig } from "@cloudpid/extensions/web";
 import { DEFAULT_OFFERED_TOOLS } from "@cloudpid/config";
 import { repoDirectory, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
-import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
@@ -192,11 +191,6 @@ export class TestWorkspaceSession extends TestSession {
 
   protected override hostLookupEnv(): HarnessOptions["env"] {
     return this.#workspace().lookupEnv;
-  }
-
-  /** Short enough for a test to pass it, long enough for a Workspace Durable Object that is cold. */
-  protected override hostExpandTimeout(): Duration.Input {
-    return "2 seconds";
   }
 
   /**

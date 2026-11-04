@@ -957,11 +957,6 @@ export class TestSession extends DurableObject {
     return undefined;
   }
 
-  /** How long a message's expansion, or a spill's Workspace read, may take: the host's own (5 s) unless a subclass sets it. */
-  protected hostExpandTimeout(): Duration.Input {
-    return EXPAND_TIMEOUT;
-  }
-
   /** The spans this instance's Effects made, in the order they started. */
   readonly #spans: Tracer.NativeSpan[] = [];
   #host!: SessionHostService;
@@ -1122,7 +1117,10 @@ export class TestSession extends DurableObject {
               onBranchLeft: this.#mcpWatches().service.endConversation,
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
-              expandTimeout: this.hostExpandTimeout(),
+              // Read at each use, so a test can shorten it for one Session (`expandTimeoutMs`) after it is built.
+              get expandTimeout(): Duration.Input {
+                return ctx.storage.kv.get<number>("expand-timeout-ms") ?? EXPAND_TIMEOUT;
+              },
               // The Workspace's side of the hold cap: the activity noted is counted, and the held stops are what a
               // test put in `held-stops`.
               workspaceActivity: async () => {
@@ -1830,6 +1828,11 @@ export class TestSession extends DurableObject {
   /** The records of the Sampling requests, oldest first. */
   samplingRecords() {
     return Effect.runPromise(this.#mcpSampling().service.records);
+  }
+
+  /** Shortens how long a message's expansion, and a spill's Workspace calls, may take in this Session, from `ms` ms. */
+  expandTimeoutMs(ms: number): void {
+    this.ctx.storage.kv.put("expand-timeout-ms", ms);
   }
 
   /** What the Workspace holds at a Result Spill's `path`, as a card's preview reads it (`SessionHost.spill`). */

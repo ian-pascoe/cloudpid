@@ -33,9 +33,11 @@ const withSpills = (slug: string) => {
     return saved.path;
   };
 
-  const read = (path: string, held: Array<number> = [], slotAfterMs = 0) =>
+  const read = (path: string, held: Array<number> = [], slotAfterMs = 0, expandMs?: number) =>
     runInDurableObject(stub, async (instance: TestWorkspaceSession) => {
       instance.bindWorkspace(slug);
+
+      if (expandMs !== undefined) instance.expandTimeoutMs(expandMs);
 
       return instance.spill(path, held, slotAfterMs);
     });
@@ -161,8 +163,8 @@ describe("a Result Spill read for a preview", () => {
     const { spill, read } = withSpills(uniqueWorkspace());
     const path = await spill(new Uint8Array(PREVIEW_SLOT_OVER + 5), ".bin");
 
-    // The test Session's limit is 2 s, and the slot comes after 2.5 s.
-    expect(await read(path, [], 2500)).toMatchObject({ kind: "base64" });
+    // The Workspace's limit is 1 s here, and the slot comes after 1.5 s.
+    expect(await read(path, [], 1500, 1000)).toMatchObject({ kind: "base64" });
   });
 
   it("is too large past a preview's bytes, which it does not read", async () => {

@@ -15,8 +15,9 @@ export const DECODE_SLOT_OVER = 4 * MiB;
 /**
  * A preview of a resource that is read as a stream, or a file, of more bytes than this takes the slot too, and holds it until
  * the answer is sent (`docs/architecture/mcp-in-a-session.md` → Resource links and embedded resources). It is the size
- * from which the host returns a result as a stream, so one that is not read under it is a result the call's own limits
- * already bound, and the 4 in flight of a socket hold at most the few MiB a small result is.
+ * from which the host returns a result as a stream. A read of at most this takes no slot, and is bounded only by the
+ * socket's 4 in flight: each holds its value, the answer's JSON and the socket's copy at once, 3 to 4.75 MiB, so a socket's
+ * four are about 12 to 19 MiB. There is no cap across sockets: each tab of the owner has its own four.
  */
 export const PREVIEW_SLOT_OVER = MiB;
 

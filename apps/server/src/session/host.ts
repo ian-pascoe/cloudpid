@@ -2000,9 +2000,20 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             if (!info.ok || info.value.kind !== "directory") return undefined;
           }
 
-          const reader = yield* attempt("spill", () =>
-            env.openBinaryReader(path, { noFollow: true }, context),
-          );
+          const reader = yield* Effect.suspend(() => {
+            const opening = env.openBinaryReader(path, { noFollow: true }, context);
+
+            return attempt("spill", () => opening).pipe(
+              // An open that comes back after its wait ended has no one to close its reader.
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  void opening
+                    .then((late) => (late.ok ? late.value.close(BACKGROUND_CONTEXT) : undefined))
+                    .catch(() => undefined);
+                }),
+              ),
+            );
+          });
 
           return reader.ok ? reader.value : undefined;
         }),
