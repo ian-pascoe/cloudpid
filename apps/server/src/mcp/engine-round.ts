@@ -58,7 +58,13 @@ import { viewHash, viewSourceOf } from "../view-hash.ts";
 /** The engine's `tools/call` request. */
 type McpEngineToolCall = Extract<McpEngineRequest, { readonly op: "tools/call" }>;
 
-export const callFailed = (error: McpHostCallFailed["error"]) => McpHostCallFailed.make({ error });
+export const callFailed = (error: McpHostCallFailed["error"], spawnId?: string) => {
+  const failed: Mutable<McpHostCallFailed> = McpHostCallFailed.make({ error });
+
+  if (spawnId !== undefined) failed.spawn = spawnId;
+
+  return failed;
+};
 
 /** A server's `timeout` when its entry has none (`targetOf` always sets one). */
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -346,10 +352,14 @@ export const sendToEngine = (
       onDeprecated: deprecationHook(store, server, run),
     };
 
+    // A question the server asks while the call waits is known to the host until it is answered, so a set change that
+    // leaves the server changed, off or gone can end it (`waiting-questions.ts`).
+    const withWaiting = store.watchInput({ name: server.name, conn: server.conn }, hooks);
+
     const engineHooks: McpEngineHooks =
       auth === undefined
-        ? { ...hooks, ...noting }
-        : { ...hooks, ...noting, auth: (stale) => run(auth(stale)) };
+        ? { ...withWaiting, ...noting }
+        : { ...withWaiting, ...noting, auth: (stale) => run(auth(stale)) };
 
     /** Whether the engine was given the call: an abort before it was cannot have run anything. */
     let sent = false;
@@ -467,7 +477,10 @@ export const sendToEngine = (
       const refusal = access.refusal?.(result);
 
       return Result.fail(
-        callFailed(refusal === undefined ? result.error : Unreachable.make({ message: refusal })),
+        callFailed(
+          refusal === undefined ? result.error : Unreachable.make({ message: refusal }),
+          result.spawn,
+        ),
       );
     }
 

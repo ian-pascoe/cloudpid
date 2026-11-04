@@ -13,8 +13,8 @@
 // - **One record per question** in the Session's storage (an implementation word): `mcp-question:waiting` lists the
 //   questions waiting (small: who asks, which call, when), and each question that ended leaves a settled record
 //   (`question-records.ts`) with the message and form the owner was shown (redacted of held Secrets). The full request
-//   is in memory only. Nothing reads the records yet: the call card and `/export` lines that will (#569) are their
-//   reader.
+//   is in memory only. `/export`, a Fork or Clone and the question's span read the records (`export-lines.ts`,
+//   `copies`; #569).
 // - **The notification** is told of the first question a call waits on, and of a later one only after 2 min with none
 //   waiting for that call.
 import { MCP_ELICITATION_WAIT_MS, type McpEra } from "@cloudpid/mcp/types";
@@ -22,12 +22,15 @@ import {
   createDeferredQuestions,
   type McpDeferredAnswer,
   type McpDeferredRound,
+  type McpWaitingRound,
   type McpQuestionVault,
 } from "./deferred-questions.ts";
 import type { JsonObject } from "@cloudpid/mcp/types";
 import {
+  callKeysOf,
   cancelled,
   modeOf,
+  type McpQuestionBasics,
   questionBasics,
   MCP_CALL_ENDED_REASON,
   MCP_ELICITATION_CAP_REASON,
@@ -35,6 +38,7 @@ import {
   MCP_RUN_STOPPED_REASON,
   type McpQuestionAnswer,
   type McpQuestionAsk,
+  type McpQuestionCopies,
   type McpQuestionOutcome,
   type McpQuestionRecord,
   McpQuestionsError,
@@ -50,6 +54,7 @@ import {
 } from "./question-records.ts";
 import type {
   McpElicitationRequest,
+  McpElicitationScope,
   McpSamplingRequest,
   McpSamplingSessionGrant,
 } from "@cloudpid/protocol";
@@ -60,18 +65,21 @@ import {
   type McpSamplingRemember,
   type McpSamplingStanding,
 } from "./sampling-questions.ts";
+import { type McpSamplingRecord, samplingRecords, stubOf } from "./sampling-records.ts";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import type { Mutable } from "effect/Types";
 
 export {
   MCP_DEFERRED_DEADLINE_MS,
   type McpDeferredAnswer,
   type McpDeferredRound,
+  type McpWaitingRound,
   type McpDeferredSample,
   McpRoundState,
   type McpQuestionVault,
@@ -89,6 +97,7 @@ export {
 
 export {
   MCP_CALL_ENDED_REASON,
+  MCP_DECLINED_IN_SESSION_REASON,
   MCP_ELICITATION_CAP_REASON,
   type McpSamplingDecision,
   MCP_QUESTION_RECORDS,
@@ -99,6 +108,10 @@ export {
   type McpQuestionAnswer,
   type McpPageRef,
   type McpQuestionAsk,
+  type McpQuestionCopier,
+  type McpQuestionCopies,
+  type McpQuestionCopy,
+  callKeysOf,
   type McpQuestionOutcome,
   type McpQuestionRecord,
   type McpQuestionStorage,
@@ -107,6 +120,9 @@ export {
 } from "./question-records.ts";
 
 const WAITING_KEY = "mcp-question:waiting";
+
+/** The servers the owner chose to decline in this Session (`mcp-question:declined`), which survives a restart. */
+const DECLINED_KEY = "mcp-question:declined";
 
 /** How long a page the server says is finished reads "Finished at <host>" before its card goes, in ms. */
 export const MCP_PAGE_FINISHED_SHOWN_MS = 4000;
@@ -144,6 +160,12 @@ export type McpQuestionsService = {
   /** The server stopped waiting for question `key` of call `callId`: withdraw its card. */
   readonly withdraw: (callId: string, key: string, reason: string) => Effect.Effect<void>;
   /**
+   * The host did not give question `key` of call `callId`'s answer to its server (it changed while the owner answered):
+   * the question's record, if the owner had answered it, says cancelled by cloudpid with `reason`. Nothing for a
+   * question that did not end in an answer.
+   */
+  readonly overturn: (callId: string, key: string, reason: string) => Effect.Effect<void>;
+  /**
    * The server says the owner finished at the page question `key` of call `callId` asked them to open (its
    * `notifications/elicitation/complete` on the call's own stream). A page the owner opened reads "Finished at <host>"
    * for a moment (`McpQuestionsOptions.finishedShownMs`) and then closes, and the call's clock goes on at once; any other
@@ -159,8 +181,27 @@ export type McpQuestionsService = {
   readonly isOwnHost: (host: string) => boolean;
   /** Server `server` was switched off, hidden or removed: cancel every question it waits on, and withdraw the cards. */
   readonly withdrawServer: (server: string, reason: string) => Effect.Effect<void>;
-  /** The call is done, however it ended: withdraw every question it still waits on, and forget its count. */
-  readonly settleCall: (callId: string) => Effect.Effect<void>;
+  /**
+   * The `codemode` call `scriptCallId` ended because its `timeout_ms` passed: cancel every question the calls it made
+   * wait on, `reason` being the one the owner and the agent read, and withdraw the cards.
+   */
+  readonly withdrawScript: (scriptCallId: string, reason: string) => Effect.Effect<void>;
+  /** The rounds kept for later that wait for the owner (`McpWaitingRound`): what a look at their servers is made from. */
+  readonly waitingRounds: Effect.Effect<ReadonlyArray<McpWaitingRound>>;
+  /** Call `callId`'s round kept for later is over because its server moved: its questions are answered `cancel` by cloudpid for `reason`, and the call woken. */
+  readonly withdrawRound: (callId: string, reason: string) => Effect.Effect<void>;
+  /**
+   * Look at the servers of the rounds that wait, and end those whose server moved (`./round-look.ts`). Nothing until
+   * `bindLook` gave it what to look with; never fails. A client connecting and a request start run it.
+   */
+  readonly lookAtRounds: Effect.Effect<void>;
+  /** Give `lookAtRounds` the look to make: the tools, which hold the host's client, bind it once. */
+  readonly bindLook: (look: Effect.Effect<void>) => void;
+  /**
+   * The call is done, however it ended: withdraw every question it still waits on, and forget its count. `reason` is
+   * what they read when it was known why (`MCP_CALL_ENDED_REASON` otherwise).
+   */
+  readonly settleCall: (callId: string, reason?: string) => Effect.Effect<void>;
   /**
    * Record a form cloudpid declined or cancelled unseen (a credential, a malformed form). It counts toward the call's
    * cap of `MCP_ELICITATIONS_PER_CALL` like any request: `"capped"` says the call was past it, and the record says so.
@@ -173,6 +214,25 @@ export type McpQuestionsService = {
   readonly expireStale: Effect.Effect<void>;
   /** The settled records, newest last. */
   readonly records: Effect.Effect<ReadonlyArray<McpQuestionRecord>>;
+  /**
+   * The owner's "Decline all" (`scope: "call"`) or "Decline in this Session" (`scope: "session"`) on question `id`: it is
+   * declined, and with `call` the call's other waiting questions too; with `session` only this one, and the server's later
+   * requests are declined unseen (`isDeclined`) until `revokeDeclined`, the questions already waiting staying on their
+   * cards. A page that is open can only be cancelled, which is what it is answered. Fails when `id` waits no more, or when
+   * the Session could not keep the choice (nothing is then declined).
+   */
+  readonly declineScoped: (
+    id: string,
+    scope: McpElicitationScope,
+  ) => Effect.Effect<void, McpQuestionsError>;
+  /** The servers the owner chose to decline in this Session, oldest first. */
+  readonly declinedServers: () => ReadonlyArray<string>;
+  /** Whether the owner chose to decline `server`'s requests in this Session. */
+  readonly isDeclined: (server: string) => boolean;
+  /** Take back "Decline in this Session" for `server`: the clients are told. */
+  readonly revokeDeclined: (server: string) => Effect.Effect<void>;
+  /** What a Fork or Clone carries of the settled records, and keeps of the ones it was sent. */
+  readonly copies: McpQuestionCopies;
   /**
    * Show the owner a Sampling request the sampler checked and wait for their decision, from any client (the first answer
    * wins). It ends with the owner's allow or refusal, or a refusal of cloudpid's own: the 10 min bound, the call's end
@@ -332,6 +392,78 @@ type Waiting = {
   readonly era?: McpEra | undefined;
 };
 
+/** What a Fork or Clone carries of the Session's records of its calls' requests: the questions' and the Sampling requests'. */
+const copiesOf = (basics: McpQuestionBasics, storage: McpQuestionStorage): McpQuestionCopies => {
+  const sampling = samplingRecords(storage);
+
+  return {
+    copier: () => {
+      // Read once for the page, at the first entry that holds a call: a page of entries with no calls never reads it.
+      let listed: ReadonlyArray<McpSamplingRecord> | undefined;
+
+      return (callIds, budget) => {
+        if (callIds.length === 0) return [];
+
+        listed ??= sampling.list();
+
+        const wanted = new Set(callIds);
+
+        const asked = Arr.map(
+          basics.recordsFor(callIds),
+          (record) => ({ kind: "question", record }) as const,
+        );
+
+        let left = budget - Arr.reduce(asked, 0, (sum, copy) => sum + JSON.stringify(copy).length);
+
+        const samples = Arr.map(
+          Arr.filter(listed, (record) =>
+            Arr.some(callKeysOf(record.callId), (key) => wanted.has(key)),
+          ),
+          (record) => {
+            const whole = { kind: "sampling", record } as const;
+            const length = JSON.stringify(whole).length;
+
+            if (record.stub === true || length <= left) {
+              left -= length;
+
+              return whole;
+            }
+
+            const stub = { kind: "sampling", record: stubOf(record) } as const;
+
+            left -= JSON.stringify(stub).length;
+
+            return stub;
+          },
+        );
+
+        return [...asked, ...samples];
+      };
+    },
+    adopt: (copies, conversationId) => {
+      basics.adoptRecords(
+        Arr.filterMap(copies, (copy) =>
+          copy.kind === "question" ? Result.succeed(copy.record) : Result.failVoid,
+        ),
+        conversationId,
+      );
+
+      for (const copy of copies) {
+        // The Session's own bound of Sampling records applies; a storage that cannot take one loses it, never the Fork.
+        if (copy.kind === "sampling") {
+          sampling.put(
+            { ...copy.record, conversationId },
+            copy.record.settledAt ?? copy.record.askedAt,
+          );
+        }
+      }
+    },
+  };
+};
+
+/** What names a question of a call in `answeredIds`. */
+const answeredKey = (callId: string, key: string) => `${callId}\u0000${key}`;
+
 /** The Session's MCP questions over its storage. Synchronous: the tools that ask are built before the runtime. */
 export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsService => {
   const { storage, announce } = options;
@@ -339,6 +471,10 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   const waitFor = waitsOf({ waitMs, promptWaitMs: options.promptWaitMs });
   const finishedShownMs = options.finishedShownMs ?? MCP_PAGE_FINISHED_SHOWN_MS;
   const waiting = new Map<string, Waiting>();
+  /** What `lookAtRounds` runs: bound by the tools, which hold the host's client. */
+  let looking: Effect.Effect<void> = Effect.void;
+  /** The id of each question of a running call that ended in an answer, by call and key: `overturn` finds its record. */
+  const answeredIds = new Map<string, string>();
   const basics = questionBasics(options);
   const { keep } = basics;
 
@@ -397,6 +533,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       // A page the owner opened was answered `accept` when it was opened, whatever ended it.
       const ended: McpQuestionOutcome = held.acceptedAtOpen ? ACCEPTED : outcome;
+
+      if (ended.action === "accept") answeredIds.set(answeredKey(request.callId, held.key), id);
 
       yield* keep(
         basics.settledOf(
@@ -610,6 +748,79 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       yield* tell;
     });
 
+  const declinedServers = (): ReadonlyArray<string> => {
+    try {
+      return storage.get<string[]>(DECLINED_KEY) ?? [];
+    } catch {
+      return [];
+    }
+  };
+
+  /** `id` answered `decline`, or `cancel` where the question cannot be declined (a page that is open). */
+  const declineOrCancel = (id: string) =>
+    answer(id, { action: "decline" }).pipe(Effect.catch(() => answer(id, { action: "cancel" })));
+
+  const declineScoped: McpQuestionsService["declineScoped"] = (id, scope) =>
+    Effect.gen(function* () {
+      const waitingNow = yield* pending;
+      const asked = Arr.findFirst(waitingNow, (request) => request.id === id);
+
+      if (Option.isNone(asked))
+        return yield* McpQuestionsError.make({ message: "This request ended" });
+
+      const { server, callId } = asked.value;
+
+      // The choice is kept first: a storage that cannot take it declines nothing. `session` declines this question and the
+      // server's later ones; the others it already waits on stay on their cards (Decline all is for those).
+      const added = scope === "session" && !declinedServers().includes(server);
+
+      if (added) {
+        const kept = yield* Effect.try(() =>
+          storage.put(DECLINED_KEY, [...declinedServers(), server]),
+        ).pipe(Effect.option);
+
+        if (Option.isNone(kept)) {
+          return yield* McpQuestionsError.make({
+            message: "The choice could not be kept; try again",
+          });
+        }
+      }
+
+      const declined = yield* declineOrCancel(id).pipe(Effect.result);
+
+      // The card that was answered ended before the choice could take it: the choice is undone, as it was never made.
+      if (Result.isFailure(declined)) {
+        if (added) yield* revokeDeclined(server);
+
+        return yield* declined.failure;
+      }
+
+      for (const other of waitingNow) {
+        if (other.id === id) continue;
+
+        if (scope === "call" && other.callId === callId) {
+          // Already ended or answered meanwhile: nothing to decline.
+          yield* declineOrCancel(other.id).pipe(Effect.ignore);
+        }
+      }
+
+      if (scope === "session") yield* tell;
+    });
+
+  const revokeDeclined: McpQuestionsService["revokeDeclined"] = (server) =>
+    Effect.suspend(() => {
+      const held = declinedServers();
+
+      if (!held.includes(server)) return Effect.void;
+
+      return Effect.try(() => {
+        const left = held.filter((each) => each !== server);
+
+        if (left.length === 0) storage.delete(DECLINED_KEY);
+        else storage.put(DECLINED_KEY, left);
+      }).pipe(Effect.ignore, Effect.andThen(tell));
+    });
+
   const answer: McpQuestionsService["answer"] = (id, given) =>
     Effect.gen(function* () {
       const held = waiting.get(id);
@@ -647,16 +858,21 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       }
     });
 
-  const settleCall = (callId: string) =>
+  const settleCall = (callId: string, reason: string = MCP_CALL_ENDED_REASON) =>
     Effect.gen(function* () {
       // A page the server said is finished is left to its own timer, so the card reads "Finished at <host>" after the
       // call that usually ends right behind `complete` (`complete`).
       yield* endWhere(
         (held) => held.request.callId === callId && held.request.page?.finished !== true,
-        MCP_CALL_ENDED_REASON,
+        reason,
       );
-      yield* sampling.settleCall(callId);
-      yield* deferred.settleCall(callId, MCP_CALL_ENDED_REASON);
+      yield* sampling.settleCall(callId, reason);
+      yield* deferred.settleCall(callId, reason);
+
+      for (const key of Arr.fromIterable(answeredIds.keys())) {
+        if (key.startsWith(`${callId}\u0000`)) answeredIds.delete(key);
+      }
+
       basics.calls.delete(callId);
     });
 
@@ -719,9 +935,29 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       },
     });
 
+  // The servers whose unseen declines were logged: once per server for as long as this instance lives.
+  const warned = new Set<string>();
+
+  /**
+   * A `warning` log, once per server, that cloudpid declined a request of it unseen (a credential asked for, an address
+   * refused, the owner's "Decline in this Session"); a `cancel` of a malformed form is only recorded. Names no value.
+   */
+  const warnOnce = (server: string, action: "decline" | "cancel") =>
+    Effect.suspend(() => {
+      if (action !== "decline" || warned.has(server)) return Effect.void;
+
+      warned.add(server);
+
+      return Effect.logWarning(
+        `cloudpid declined a request for input from MCP server ${server} unseen; later ones are recorded, not logged`,
+      );
+    });
+
   const unseen: McpQuestionsService["unseen"] = (form) =>
     Effect.gen(function* () {
       const sequence = yield* basics.count(form);
+
+      yield* warnOnce(form.server, form.action);
 
       if (sequence === undefined) return "capped" as const;
 
@@ -756,6 +992,11 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     ask,
     pending,
     answer,
+    overturn: (callId, key, reason) => {
+      const id = answeredIds.get(answeredKey(callId, key));
+
+      return id === undefined ? Effect.void : basics.overturn(id, reason);
+    },
     withdraw: (callId, key, reason) =>
       Effect.andThen(
         endWhere((held) => held.request.callId === callId && held.key === key, reason),
@@ -768,6 +1009,20 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
           sampling.withdrawServer(server, reason),
         ),
         deferred.withdrawServer(server, reason),
+      ),
+    waitingRounds: deferred.waitingRounds,
+    withdrawRound: deferred.withdrawRound,
+    lookAtRounds: Effect.suspend(() => looking),
+    bindLook: (look) => {
+      looking = look;
+    },
+    withdrawScript: (scriptCallId, reason) =>
+      Effect.andThen(
+        Effect.andThen(
+          endWhere((held) => held.request.callId.startsWith(`${scriptCallId}/`), reason),
+          sampling.withdrawScript(scriptCallId, reason),
+        ),
+        deferred.withdrawScript(scriptCallId, reason),
       ),
     askSampling: sampling.ask,
     samplingStanding: sampling.standing,
@@ -831,6 +1086,11 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       );
       yield* tell;
     }),
+    declineScoped,
+    declinedServers,
+    isDeclined: (server) => declinedServers().includes(server),
+    revokeDeclined,
     records: basics.records,
+    copies: copiesOf(basics, storage),
   } satisfies McpQuestionsService;
 };

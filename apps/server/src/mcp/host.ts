@@ -41,7 +41,7 @@ import {
   McpWatchesEnded,
   REDISCOVERING_CHANGES,
 } from "@cloudpid/mcp/types";
-import { normalizeMcpName, samplingOf } from "@cloudpid/config";
+import { normalizeMcpName } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -218,6 +218,17 @@ const settleSet = (environment: string | undefined, before: ReadonlyArray<string
 
     // A server that changed, left or was switched off no longer holds its Resource watches.
     yield* reconcileWatches(views);
+
+    // Nor does a question it waits on for a call: the call's caller withdraws the card, and the server is told `cancel`.
+    store.endWhere((waiting) => {
+      const now = Arr.findFirst(views, (view) => view.server.name === waiting.name);
+
+      if (Option.isNone(now)) return `${waiting.name} was removed`;
+
+      if (now.value.reach === "off") return `${waiting.name} was switched off or hidden`;
+
+      return now.value.server.conn === waiting.conn ? undefined : `${waiting.name} was changed`;
+    });
 
     if (environment !== undefined) yield* startDue(environment, views, "set");
 
@@ -652,10 +663,6 @@ const toServerHashes = (view: ServerView) =>
     inventory: view.inventory,
   });
 
-/** What the owner reads on a stdio server that says `sampling: "allow"`, which is not declared to it yet. */
-export const STDIO_SAMPLING_PROBLEM =
-  'sampling "allow" is not answered for a stdio server yet, so the server is not told it may sample';
-
 /** One server as `servers` answers it, with the `parts` asked for. */
 const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpServerInventory => {
   const inventory = Option.getOrUndefined(view.inventory);
@@ -670,13 +677,7 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
     ...toServerHashes(view),
     counts: { tools: inventory?.tools.length ?? 0, prompts: inventory?.prompts.length ?? 0 },
     resources: meta !== undefined && "resources" in meta.capabilities,
-    problems: [
-      ...(meta?.problems ?? []),
-      // A stdio server's `allow` is not declared until its bridge carries Legacy questions: told, not silent (#569).
-      ...(view.server.server.sampling === "allow" && samplingOf(view.server.server) === "stdio"
-        ? [{ problem: STDIO_SAMPLING_PROBLEM }]
-        : []),
-    ],
+    problems: meta?.problems ?? [],
   };
 
   if (view.status?.error !== undefined) answer.error = view.status.error;

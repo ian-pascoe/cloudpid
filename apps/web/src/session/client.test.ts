@@ -3519,6 +3519,61 @@ describe("the App calls on a Session connection", () => {
   );
 
   it.effect(
+    "sends a Decline's scope and takes a server's Decline back only to a Session that says it takes them, and holds the servers it lists",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+
+        yield* greeted(latest(), { mcpDecline: true });
+        yield* latest().say({ type: "mcp_elicitation_requests", requests: [], declined: ["docs"] });
+        expect(state().mcpElicitationDeclined).toEqual(["docs"]);
+        yield* latest().say({ type: "mcp_elicitation_requests", requests: [] });
+        expect(state().mcpElicitationDeclined).toEqual([]);
+
+        const all = yield* Effect.forkChild(
+          client.answerMcpElicitation("call-1:1", "decline", undefined, "session"),
+        );
+
+        const revoke = yield* Effect.forkChild(client.revokeMcpElicitation("docs"));
+
+        yield* settle;
+
+        expect(latest().commands().slice(-2)).toEqual([
+          {
+            type: "mcp_elicitation_answer",
+            id: expect.any(String),
+            request: "call-1:1",
+            action: "decline",
+            scope: "session",
+          },
+          { type: "mcp_elicitation_revoke", id: expect.any(String), server: "docs" },
+        ]);
+        yield* Fiber.interrupt(all);
+        yield* Fiber.interrupt(revoke);
+      }),
+  );
+
+  it.effect("sends no scope to a Session from before it, which would refuse the message", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* greeted(latest(), { appViews: true });
+
+      const before = latest().commands().length;
+
+      const failed = yield* client
+        .answerMcpElicitation("call-1:1", "decline", undefined, "call")
+        .pipe(Effect.flip);
+
+      const revoked = yield* client.revokeMcpElicitation("docs").pipe(Effect.flip);
+
+      expect(failed.message).toContain("older version");
+      expect(revoked.message).toContain("older version");
+      expect(latest().commands()).toHaveLength(before);
+    }),
+  );
+
+  it.effect(
     "mounts a call by its ID and reads its page by it, each answered as the Session did",
     () =>
       Effect.gen(function* () {

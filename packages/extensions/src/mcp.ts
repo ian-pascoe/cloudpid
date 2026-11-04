@@ -57,6 +57,8 @@ import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
+import { lookAtRounds } from "./mcp/round-look.ts";
+import type { McpQuestionsService } from "./mcp/questions.ts";
 import { type McpNotices } from "./mcp/notices.ts";
 import {
   cancelAsOwner,
@@ -174,6 +176,9 @@ export {
   McpQuestions,
   McpQuestionsError,
   type McpQuestionAsk,
+  type McpQuestionCopier,
+  type McpQuestionCopies,
+  type McpQuestionCopy,
   type McpQuestionOutcome,
   type McpQuestionRecord,
   type McpQuestionsOptions,
@@ -183,6 +188,8 @@ export {
 } from "./mcp/questions.ts";
 
 export { rememberSampling, SAMPLING_WRITE_TOOL } from "./mcp/sampling-write.ts";
+
+export { exportLinesOf } from "./mcp/export-lines.ts";
 
 export {
   createMcpSampling,
@@ -477,6 +484,10 @@ export const makeMcpTools = (
   store: McpToolsStore = memoryMcpToolsStore(),
   options: McpToolOptions = {},
 ): McpToolsService => {
+  // The rounds of questions kept for later are looked at by what has the host's client: a client connecting and a request
+  // start run it (`./mcp/round-look.ts`).
+  options.questions?.bindLook(lookAtRounds(client, options.questions));
+
   let saved = store.load();
 
   /** What the tools are built from, the newest read; undefined for none. */
@@ -826,6 +837,25 @@ export const makeMcpTools = (
     if (Option.isSome(next)) keep(read, next.value);
   });
 
+  /** The servers the owner has a question or a Sampling request waiting on that `inventory` no longer reaches. */
+  const waitingOnGone = (questions: McpQuestionsService, inventory: McpInventory) => {
+    const reached = new Set(
+      Arr.filterMap(inventory.servers, (server) =>
+        isReachable(server) ? Result.succeed(server.name) : Result.failVoid,
+      ),
+    );
+
+    return Effect.map(
+      Effect.all([questions.pending, questions.pendingSampling]),
+      ([asked, sampled]) =>
+        Arr.dedupe(
+          Arr.filterMap([...asked, ...sampled], (request) =>
+            reached.has(request.server) ? Result.failVoid : Result.succeed(request.server),
+          ),
+        ),
+    );
+  };
+
   /** A server of `before` the tools no longer reach in `after`: switched off, hidden or removed. */
   const unreachable = (before: McpInventory | undefined, after: McpInventory | undefined) =>
     Arr.filterMap(before?.servers ?? [], (server) => {
@@ -839,18 +869,15 @@ export const makeMcpTools = (
     });
 
   /**
-   * What each server of `after` reads for its definition's `sampling` (`allow`, `ask` or `off`; a stdio server has none),
+   * What each server of `after` reads for its definition's `sampling` (`allow`, `ask` or `off`),
    * which the Sampling requests waiting for the owner are answered by (`samplingSwitched`). Not only what changed since
    * the last start: a switch that had to yield to an answer in flight is made again at the next one.
    */
   const samplingRead = (after: McpInventory | undefined) =>
-    Arr.filterMap(after?.servers ?? [], (server) => {
-      const mode = samplingOf(server.server);
-
-      return mode === "allow" || mode === "ask" || mode === "off"
-        ? Result.succeed({ name: server.name, mode })
-        : Result.failVoid;
-    });
+    Arr.map(after?.servers ?? [], (server) => ({
+      name: server.name,
+      mode: samplingOf(server.server),
+    }));
 
   const requestStart: McpToolsService["requestStart"] = Effect.fn("mcp.tools.request_start")(
     function* (input: McpRequestStartInput) {
@@ -861,13 +888,24 @@ export const makeMcpTools = (
       // A question a server waits on for a call is withdrawn when the server is switched off, hidden or removed.
       const { questions, signIns } = options;
 
-      for (const name of unreachable(before, latest)) {
+      // So is one whose server is already gone from the inventory this start read, the change not having been seen by any
+      // earlier start (a server removed before the question was asked, or between two starts).
+      let gone: ReadonlyArray<string> = [];
+
+      if (questions !== undefined && latest !== undefined) {
+        gone = yield* waitingOnGone(questions, latest);
+      }
+
+      for (const name of Arr.dedupe([...unreachable(before, latest), ...gone])) {
         const why = `${name} was switched off, hidden or removed`;
 
         if (questions !== undefined) yield* questions.withdrawServer(name, why);
 
         if (signIns !== undefined) yield* signIns.withdrawServer(name, why);
       }
+
+      // A round kept for later whose server moved, by a change the inventory's version does not show (a new connection key).
+      if (questions !== undefined) yield* questions.lookAtRounds;
 
       // A Sampling request a server waits on is run, or refused, as the definition now reads.
       if (questions !== undefined) {

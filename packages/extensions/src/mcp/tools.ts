@@ -36,6 +36,9 @@ import {
   type Extension,
   GenerationTask,
   hook,
+  type ToolExecutionResult,
+  type ToolHookCall,
+  ToolTask,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -60,6 +63,8 @@ import {
   send,
 } from "./exchange.ts";
 import { withElicitation } from "./elicit.ts";
+import { MCP_SCRIPT_TIMED_OUT_REASON } from "./question-records.ts";
+import type { McpQuestionsService } from "./questions.ts";
 import { withSampling } from "./sample.ts";
 import { exposureKeys, flagsOf, isReachable, reachesModel } from "./exposure.ts";
 import { taskFollower } from "./task-follow.ts";
@@ -117,7 +122,7 @@ export const McpBuildServer = Schema.Struct({
     type: Schema.optionalKey(Schema.Json),
     timeout: Schema.optionalKey(Schema.Json),
     description: Schema.optionalKey(Schema.Json),
-    /** `ask`, `allow` or `off` (`ask` by default): only `allow` has its Sampling requests answered, on the Session's models, for now (`samplingOf`). */
+    /** `ask`, `allow` or `off` (`ask` by default): `allow` and `ask` have its Sampling requests answered, on the Session's models, `ask` after the owner's yes (`samplingOf`). */
     sampling: Schema.optionalKey(Schema.Json),
     exposure: Schema.optionalKey(Schema.Json),
     toolExposure: Schema.optionalKey(Schema.Json),
@@ -303,6 +308,66 @@ const watchHook = (touch: (conversation: string) => Promise<void>) =>
     },
   });
 
+/** What the library writes, as the whole of a result, for a script rerun after its deadline passed while it was interrupted. */
+const INTERRUPTED_PAST_DEADLINE = "Script timed out: its deadline passed while it was interrupted.";
+
+/**
+ * Whether `result` is a `codemode` script's that ended because its `timeout_ms` passed, in the library's own words: a
+ * failed result whose error is `Script error:` then `Script timed out: …` on lines of their own (the deadline passing
+ * while the script ran), or whose only text is the one it writes for a rerun after the deadline (it passed while no
+ * instance ran the script: an eviction).
+ */
+const scriptTimedOut = (result: ToolExecutionResult): boolean => {
+  if (result.isError !== true) return false;
+
+  const texts = Arr.filterMap(result.output ?? [], (item) =>
+    item.type === "text" ? Result.succeed(item.text) : Result.failVoid,
+  );
+
+  return (
+    (result.output?.length === 1 && texts[0] === INTERRUPTED_PAST_DEADLINE) ||
+    Arr.some(texts, (text) => /^Script error:\nScript timed out: /m.test(text))
+  );
+};
+
+/**
+ * Whether the script of `call` set a timeout: its first line is `// @options: {…"timeout_ms"…}` (`docs/architecture/
+ * mcp-server-requests.md` → `codemode`). The library keeps the deadline itself (`CodemodeRunDoc.start.deadline`), which
+ * pi-durable does not export, so a hook cannot compare it with the clock; a script that wrote the library's words into its
+ * own output, with no timeout of its own, is not taken for one that timed out.
+ */
+const declaresTimeout = (call: ToolHookCall): boolean => {
+  const { code } = call.arguments;
+
+  return Predicate.isString(code) && /^\s*\/\/\s*@options:.*"timeout_ms"/.test(code);
+};
+
+/** Whether `call`, with `result`, is a model-issued `codemode` script that ended because the `timeout_ms` it set passed. */
+export const endedByTimeout = (call: ToolHookCall, result: ToolExecutionResult): boolean =>
+  call.parent === undefined &&
+  call.name === "codemode" &&
+  declaresTimeout(call) &&
+  scriptTimedOut(result);
+
+/**
+ * The hook that withdraws a `codemode` script's questions as "the script timed out" when its `timeout_ms` passed: the
+ * call's own result is seen before it is stored, and before the script's nested calls are aborted, so what the owner and
+ * the agent read of a question says the script ended, not that a Run stopped (`docs/architecture/
+ * mcp-server-requests.md` → `codemode`). A failure to withdraw leaves the questions to the abort that follows.
+ */
+const scriptTimeoutHook = (questions: McpQuestionsService) =>
+  hook(ToolTask, {
+    afterTool: async (call, result) => {
+      if (!endedByTimeout(call, result)) return undefined;
+
+      await Effect.runPromise(questions.withdrawScript(call.id, MCP_SCRIPT_TIMED_OUT_REASON)).catch(
+        () => undefined,
+      );
+
+      return undefined;
+    },
+  });
+
 /**
  * The `mcp` extension over `build`: each server's tools (those its inventory lists) by their model-facing names
  * (`mcp__<server>__<tool>`), registered by their Exposure (`./exposure.ts`), then the resource tools when the host lists
@@ -404,7 +469,10 @@ export const mcpExtension = (
     ],
     sections: options.sections ?? [],
     tasks: follower === undefined ? [] : [follower],
-    hooks: beforeRequest === undefined ? [] : [watchHook(beforeRequest)],
+    hooks: [
+      ...(beforeRequest === undefined ? [] : [watchHook(beforeRequest)]),
+      ...(options.questions === undefined ? [] : [scriptTimeoutHook(options.questions)]),
+    ],
   });
 };
 

@@ -90,6 +90,7 @@ import {
   emptyMcpExtension,
   type McpHostClientService,
   type McpWatched,
+  type McpQuestionCopy,
   type McpQuestionsService,
   type McpSamplingService,
   rememberSampling,
@@ -155,6 +156,7 @@ import { sessionMcpWatches } from "./mcp-watches-store.ts";
 import { leaveConversation } from "./mcp-app-context.ts";
 import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { mcpResourcePreviewsLayer, type SpillRead } from "./mcp-resource-previews.ts";
+import { sessionMcpRecords } from "./mcp-records.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
@@ -1135,6 +1137,10 @@ export class TestSession extends DurableObject {
                 this.#mcpWatches().service,
                 this.#mcpApps().service.contexts,
               ),
+              records: sessionMcpRecords({
+                questions: this.#mcpQuestions().service,
+                sampling: this.#mcpSampling().service,
+              }),
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
               // Read at each use, so a test can shorten it for one Session (`expandTimeoutMs`) after it is built.
@@ -2065,8 +2071,8 @@ export class TestSession extends DurableObject {
         { exportEntries: this.#host.exportEntries },
         {
           importStart: Effect.promise(() => target.importStart()),
-          importEntries: (entries, apps) =>
-            Effect.promise(() => target.importEntries(entries, apps)),
+          importEntries: (entries, apps, questions) =>
+            Effect.promise(() => target.importEntries(entries, apps, questions)),
           importFinish: (finished) => Effect.promise(() => target.importFinish(finished)),
         },
         plan,
@@ -2087,8 +2093,9 @@ export class TestSession extends DurableObject {
   importEntries(
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
+    questions?: ReadonlyArray<McpQuestionCopy>,
   ): Promise<void> {
-    return this.#runtime.runPromise(this.#host.importEntries(entries, apps));
+    return this.#runtime.runPromise(this.#host.importEntries(entries, apps, questions));
   }
 
   importFinish(plan: ForkPlan): Promise<void> {

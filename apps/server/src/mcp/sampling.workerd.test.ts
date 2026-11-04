@@ -1,8 +1,8 @@
 // What the host does about a server's Sampling requests (`docs/architecture/mcp-server-requests.md` → Sampling requests,
 // Deprecation): the first one is noted on the server's status as `deprecated: ["sampling"]` and logged once per server
 // per host lifetime, whichever way it comes (a scripted engine's note, and the real engine on a call that did not offer
-// to answer it, which refuses it; the standalone stream is in the core's tests); and a stdio server's `sampling: "allow"`, which is not declared
-// until its bridge carries questions, is told on its status as a problem, never silently.
+// to answer it, which refuses it; the standalone stream is in the core's tests); and a stdio server's `allow` and `ask` are declared to its
+// connection as an HTTP server's are (#569).
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
 import { legacyStatefulServer, SAMPLE_TOOL } from "@cloudpid/mcp/testing";
@@ -17,7 +17,6 @@ import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TestMcpHost } from "./host.fixture.ts";
-import { STDIO_SAMPLING_PROBLEM } from "./host.ts";
 
 declare global {
   namespace Cloudflare {
@@ -170,25 +169,46 @@ describe("the host and a server's Sampling requests", () => {
     expect((await statusOf(host))?.status?.deprecated).toEqual(["sampling"]);
   });
 
-  it("tells a stdio server's `sampling: allow` on its status, as it is not declared yet", async () => {
+  it("declares sampling to a stdio server's connection as to an HTTP one's: `allow` and `ask`, never `off`", async () => {
     const host = freshHost();
 
+    const modes: ReadonlyArray<readonly [string, "ask" | "allow" | "off"]> = [
+      ["ask", "ask"],
+      ["allow", "allow"],
+      ["off", "off"],
+    ];
+
     await host.apply(
-      setOf(entry("docs"), {
-        name: "local",
-        source: { kind: "global" },
-        server: { type: "stdio", command: "node", args: [], sampling: "allow" },
-        hash: "hash-local",
-        conn: "conn-local",
-        identity: "identity-local",
-      }),
+      setOf(
+        ...modes.map(([name, sampling]) => ({
+          name,
+          source: { kind: "global" as const },
+          server: { type: "stdio", command: "node", args: [], sampling },
+          hash: `hash-${name}`,
+          conn: `conn-${name}`,
+          identity: `identity-${name}`,
+        })),
+      ),
     );
 
-    const { servers } = await host.servers({ parts: [] });
+    for (const [name] of modes) await host.scriptEngine(`stdio:${name}`, [{ result: found }]);
 
-    expect(servers.find((each) => each.name === "local")?.problems).toEqual([
-      { problem: STDIO_SAMPLING_PROBLEM },
+    await host.requestStart({
+      caller: { session: "s-1", conversation: "1", workspace: "ws:w-1" },
+      waitFor: modes.map(([name]) => name),
+      waitMs: 5000,
+    });
+
+    const sent = await host.engineCalls();
+
+    expect(
+      sent
+        .map((each) => [each.target.name, "sampling" in each.target ? each.target.sampling : null])
+        .toSorted((left, right) => String(left[0]).localeCompare(String(right[0]))),
+    ).toEqual([
+      ["allow", true],
+      ["ask", true],
+      ["off", null],
     ]);
-    expect(servers.find((each) => each.name === "docs")?.problems).toEqual([]);
   });
 });

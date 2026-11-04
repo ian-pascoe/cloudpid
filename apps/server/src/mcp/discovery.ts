@@ -242,6 +242,9 @@ const stdioTargetOf = (
 
     if (Predicate.isString(cwd)) target.cwd = cwd;
 
+    // As for an HTTP server: `allow` answers its Sampling requests, `ask` (the default) asks the owner on a card.
+    if (declaresSampling(server.server)) target.sampling = true;
+
     return Result.succeed<McpEngineTarget>(target);
   });
 
@@ -275,7 +278,7 @@ export const targetOf = (
         timeoutMs: (Predicate.isNumber(timeout) ? timeout : 60) * 1000,
       };
 
-      // A Legacy connection to an HTTP server that does not switch it `off` declares `sampling`: `allow` answers its requests,
+      // A Legacy connection to a server that does not switch it `off` declares `sampling`: `allow` answers its requests,
       // `ask` (the default) asks the owner on a card.
       if (declaresSampling(server.server)) reached.sampling = true;
 

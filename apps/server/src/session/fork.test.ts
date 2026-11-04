@@ -1,6 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- plain arrays of fixtures.
 import type { AgentState, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
+import type { McpQuestionCopy, McpQuestionRecord } from "@cloudpid/extensions/mcp";
 import type { McpAppCopy } from "@cloudpid/protocol";
 import { copiedDraft, copyAgent, exportPage, MAX_COPY_PAGE_SIZE, toolResultIds } from "./fork.ts";
 
@@ -107,6 +108,59 @@ describe("the App records a page of a Fork carries", () => {
     expect(page.next).toBe(1);
     expect(page.apps).toHaveLength(1);
     expect(page.apps?.[0]).toMatchObject({ kind: "record", record: { callId: "a" } });
+  });
+});
+
+describe("the question records a page of a Fork carries", () => {
+  const recordOf = (callId: string): McpQuestionCopy => ({
+    kind: "question",
+    record: recordIn(callId),
+  });
+
+  const recordIn = (callId: string): McpQuestionRecord => ({
+    id: `${callId}:1`,
+    callId,
+    // SAFETY: a plain number stands in for the branded conversation ID, which a copy never reads.
+    conversationId: 1 as McpQuestionRecord["conversationId"],
+    server: "docs",
+    tool: "mcp__docs__ask",
+    mode: "form",
+    message: "",
+    notes: [],
+    action: "decline",
+    by: "cloudpid",
+    fields: [],
+    askedAt: 1,
+    settledAt: 1,
+  });
+
+  const questionsOf = (each: EntryRecord) => toolResultIds(each).map(recordOf);
+
+  it("holds the settled records of the calls its entries have results of, and none when there are none", () => {
+    const page = exportPage(
+      [entry(1), result(2, "call-2"), result(3, "call-3")],
+      false,
+      undefined,
+      questionsOf,
+    );
+
+    expect(page.questions).toEqual([recordOf("call-2"), recordOf("call-3")]);
+    expect(exportPage([entry(1)], false, undefined, questionsOf)).toEqual({
+      entries: [entry(1)],
+      next: null,
+    });
+  });
+
+  it("is given what is left of the page beside the entry and its App records, to fit the Sampling records in", () => {
+    const budgets: number[] = [];
+
+    exportPage([result(1, "call-1")], false, undefined, (each, budget) => {
+      budgets.push(budget);
+
+      return questionsOf(each);
+    });
+
+    expect(budgets).toEqual([MAX_COPY_PAGE_SIZE - JSON.stringify(result(1, "call-1")).length]);
   });
 });
 

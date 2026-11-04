@@ -159,6 +159,8 @@ export interface SessionState {
   readonly approvalRequests: readonly ApprovalRequest[];
   /** MCP servers' questions waiting for the owner, each shown as a card, oldest first; typed values live in the card. */
   readonly mcpElicitationRequests: readonly McpElicitationRequest[];
+  /** The servers the owner chose to decline in this Session ("Decline in this Session"), which Session details list. */
+  readonly mcpElicitationDeclined: readonly string[];
   /** MCP servers' Sampling requests waiting for the owner, each shown as a card, oldest first. */
   readonly mcpSamplingRequests: readonly McpSamplingRequest[];
   /** The Session's grants for MCP servers' Sampling requests (Allow or Refuse in this Session), which Session details list. */
@@ -240,6 +242,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   mcpElicitationRequests: [],
   mcpSamplingRequests: [],
   mcpSamplingGrants: [],
+  mcpElicitationDeclined: [],
   mcpWatches: [],
   mcpSignInRequests: [],
   mcpTasks: [],

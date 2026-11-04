@@ -201,6 +201,8 @@ describe("discovery", () => {
         ],
         redact: ["resolved-1234"],
         timeoutMs: 60_000,
+        // A stdio server is declared Sampling as an HTTP one is (its definition says `ask` by default).
+        sampling: true,
       },
     ]);
     // The Registry was told the Workspace, whose Repos it answers.
@@ -635,6 +637,44 @@ describe("a call", () => {
       start: true,
     });
     expect(sent?.request).toMatchObject({ ctx: { workspace: WORKSPACE } });
+  });
+
+  it("says which process answered a resume, completed or failed, so the Session can tell a restart", async () => {
+    const host = await discovered(["search"]);
+
+    const resume = (answers: Record<string, Schema.Json>): typeof McpHostRequest.Encoded => ({
+      op: "resume",
+      server: "local",
+      params: {
+        tool: "search",
+        conn: "conn-local",
+        resume: { v: 1 },
+        answers: { q1: { action: "accept", ...answers } },
+      },
+      ctx: call("local", "search").ctx,
+    });
+
+    await host.scriptRequest(keyOf("local"), [
+      completed("done", { spawn: "spawn-2" }),
+      {
+        // SAFETY: a failed answer, encoded as the engine sends it, from the process that answered.
+        result: {
+          kind: "failed",
+          error: { _tag: "ServerError", message: "unknown request", code: -32602 },
+          state: {},
+          spawn: "spawn-3",
+        } as typeof McpEngineRequestResult.Encoded,
+      },
+    ]);
+
+    expect(await host.request(resume({}), {})).toMatchObject({
+      _tag: "Completed",
+      spawn: "spawn-2",
+    });
+    expect(await host.request(resume({}), {})).toMatchObject({
+      _tag: "CallFailed",
+      spawn: "spawn-3",
+    });
   });
 
   it("is offered an MCP task like an HTTP server's call, which comes back with its spawn", async () => {

@@ -57,6 +57,7 @@ import {
   pageIdentityOf,
   questionId,
   refusedBy,
+  restartedSinceAsked,
 } from "./question-records.ts";
 import { samplingRecords } from "./sampling-records.ts";
 import * as Arr from "effect/Array";
@@ -179,6 +180,8 @@ type DeferredRecord = {
     readonly sampled?: number;
     /** Whether its cards show: set once `mcp.wait.<r>` is written. */
     readonly shown?: boolean;
+    /** The stdio process that asked it (`McpDeferredRound.spawn`); absent for an HTTP server and in a round stored before it. */
+    readonly spawn?: string;
   };
 };
 
@@ -267,8 +270,22 @@ export type McpDeferredRound = {
   readonly tool: string;
   /** The state the host gave, as the request that follows is built from it. */
   readonly state: McpRoundState;
+  /**
+   * A stdio server's process (its spawn id) that asked the round: a resume answered by another one, with an error, says
+   * the process restarted while the questions waited (#569, #388 D15).
+   */
+  readonly spawn?: string;
+  /** The process that asked this round is not the one that asked the round before: its cards say it restarted. */
+  readonly restarted?: true;
   /** What became of the call's questions so far, for its `details`: never a value. */
   readonly asked: ReadonlyArray<McpElicitationDetail>;
+};
+
+/** A round of questions kept for later that waits for the owner: whose call, which server, on which connection key. */
+export type McpWaitingRound = {
+  readonly callId: string;
+  readonly server: string;
+  readonly conn: string;
 };
 
 export type McpDeferredQuestionsOptions = {
@@ -661,19 +678,35 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       // The record, with its chunk count, first: a chunk whose write fails is dropped with the record (`removeRecord`).
       yield* Effect.try(() => {
-        writeRecord({
-          ...record,
-          round: {
-            n: round.round,
-            conn: round.conn,
-            tool: round.tool,
-            chunks,
-            asked: round.asked,
-            count: asked,
-            sampled: basics.callOf(callId).sampled,
-            state: stateOf[round.state._tag],
-          },
-        });
+        const kept: Mutable<NonNullable<DeferredRecord["round"]>> = {
+          n: round.round,
+          conn: round.conn,
+          tool: round.tool,
+          chunks,
+          asked: round.asked,
+          count: asked,
+          sampled: basics.callOf(callId).sampled,
+          state: stateOf[round.state._tag],
+        };
+
+        if (round.spawn !== undefined) kept.spawn = round.spawn;
+
+        writeRecord({ ...record, round: kept });
+
+        // The server's process is not the one that asked before: each form and page of the round says so.
+        if (round.restarted === true) {
+          for (const question of questionsOf(record)) {
+            if (isElicitation(question)) {
+              storage.put(questionKey(question.id), {
+                ...question,
+                request: {
+                  ...question.request,
+                  notes: [...question.request.notes, restartedSinceAsked(record.server)],
+                },
+              });
+            }
+          }
+        }
 
         for (let n = 0; n < chunks; n += 1) {
           storage.put(chunkKey(callId, n), text.slice(n * RESUME_CHUNK, (n + 1) * RESUME_CHUNK));
@@ -772,7 +805,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       active.add(callId);
 
-      return {
+      const stored: Mutable<McpDeferredRound> = {
         callId,
         round: round.n,
         conn: round.conn,
@@ -783,7 +816,11 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           Match.orElse(() => McpRoundState.Resume({ state: resume.value })),
         ),
         asked: round.asked,
-      } satisfies McpDeferredRound;
+      };
+
+      if (round.spawn !== undefined) stored.spawn = round.spawn;
+
+      return stored;
     });
 
   /**
@@ -1145,13 +1182,16 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       return true;
     });
 
-  /** Server `server`'s deferred questions, answered `cancel` by cloudpid for `reason`, and their calls woken. */
-  const withdrawServer = (server: string, reason: string) =>
+  /** The deferred questions of the calls `wanted` picks, answered `cancel` by cloudpid for `reason`, and their calls woken. */
+  const withdrawCalls = (
+    wanted: (callId: string, record: DeferredRecord) => boolean,
+    reason: string,
+  ) =>
     Effect.gen(function* () {
       for (const callId of yield* listed) {
         const record = yield* recordOf(callId);
 
-        if (record?.server !== server) continue;
+        if (record === undefined || !wanted(callId, record)) continue;
 
         yield* Effect.try(() => {
           for (const question of questionsOf(record)) {
@@ -1173,7 +1213,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           }
         }).pipe(
           Effect.catch((cause) =>
-            Effect.logWarning("Could not withdraw an MCP server's deferred questions", cause),
+            Effect.logWarning("Could not withdraw an MCP call's deferred questions", cause),
           ),
         );
         yield* wake(callId);
@@ -1182,6 +1222,44 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       yield* tell;
       yield* tellSampling;
     });
+
+  /** Server `server`'s deferred questions, withdrawn for `reason` (`withdrawCalls`). */
+  const withdrawServer = (server: string, reason: string) =>
+    withdrawCalls((_callId, record) => record.server === server, reason);
+
+  /**
+   * The calls the `codemode` call `scriptCallId` made (`<scriptCallId>/<key>`) ended with the script: their rounds are
+   * settled for `reason`, and their records read it. The calls are not woken: the script's end aborts its nested calls
+   * (pi-durable's cleanup), which stops the wait of each (`resumeOf` races the abort signal), and the record is gone by
+   * then, so no resume is sent.
+   */
+  const withdrawScript = (scriptCallId: string, reason: string) =>
+    Effect.gen(function* () {
+      for (const callId of yield* listed) {
+        if (!callId.startsWith(`${scriptCallId}/`)) continue;
+
+        yield* settle(callId, reason);
+      }
+    });
+
+  /** One call's deferred questions, withdrawn for `reason` (`withdrawCalls`). */
+  const withdrawRound = (wanted: string, reason: string) =>
+    withdrawCalls((callId) => callId === wanted, reason);
+
+  /** The rounds shown and waiting for the owner: the call, its server and the connection key the server asked on. */
+  const waitingRounds = Effect.gen(function* () {
+    const found: Array<McpWaitingRound> = [];
+
+    for (const callId of yield* listed) {
+      const record = yield* recordOf(callId);
+
+      if (record?.round?.shown === true) {
+        found.push({ callId, server: record.server, conn: record.round.conn });
+      }
+    }
+
+    return found;
+  });
 
   /** The shown, unanswered Sampling request `id` (its record id), as its card answers it. */
   const samplingHeld = (id: string) => {
@@ -1383,6 +1461,9 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         ),
       ),
     withdrawServer,
+    withdrawScript,
+    withdrawRound,
+    waitingRounds,
     /** Withdraw every deferred round no call in this instance waits for: their calls ended with an earlier instance. */
     dropAbandoned: Effect.gen(function* () {
       for (const callId of yield* listed) {

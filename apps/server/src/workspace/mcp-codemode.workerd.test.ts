@@ -15,6 +15,7 @@ import {
   ASK,
   asked,
   evict,
+  evictAndLeave,
   idle,
   pending,
   pendingSampling,
@@ -72,6 +73,7 @@ describe("a script's MCP call whose server asks a question", () => {
     await idle(stub);
 
     expect(await pending(stub)).toEqual([]);
+    // The script's end settled the round, and its abort ended the call: no resume was sent.
     expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
 
     const results = await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
@@ -81,7 +83,44 @@ describe("a script's MCP call whose server asks a question", () => {
     expect(results[0]).toContain("Script timed out");
     expect(
       await runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.mcpRecords()),
-    ).toEqual([expect.objectContaining({ action: "cancel", by: "cloudpid" })]);
+    ).toEqual([
+      expect.objectContaining({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "the script timed out",
+      }),
+    ]);
+  }, 30_000);
+
+  it("withdraws the question as the script's too when the deadline passed while no instance ran, and resumes nothing", async () => {
+    const { stub, workspace } = session();
+
+    await asked(stub, workspace, `// @options: {"timeout_ms": 3000}\n${ASK}`);
+    await evictAndLeave(stub);
+
+    // The deadline passes with no instance; the alarm that follows reruns the script after it, and the sandbox's own
+    // words for that are not the live timeout's ("its deadline passed while it was interrupted").
+    await new Promise((resolve) => setTimeout(resolve, 3500));
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await idle(stub);
+
+    expect(await pending(stub)).toEqual([]);
+    expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
+
+    const results = await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results[0]).toContain("Script timed out");
+    expect(
+      await runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.mcpRecords()),
+    ).toEqual([
+      expect.objectContaining({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "the script timed out",
+      }),
+    ]);
   }, 30_000);
 });
 
@@ -165,6 +204,36 @@ describe("a script's MCP call whose Modern server also asks to use a model", () 
     expect(results[0]).toContain("docs asked for a model reply, which was refused by you");
     // The script reads a failed call's text only, so the code is in it.
     expect(results[0]).toContain("(sampling_refused)");
+    expect(
+      await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+        instance.samplingUsage(),
+      ),
+    ).toMatchObject({ requests: 0 });
+  }, 30_000);
+
+  it("withdraws the form and the Sampling request as the script's when the deadline passed while no instance ran", async () => {
+    const { stub, workspace } = session();
+
+    await asked(stub, workspace, `// @options: {"timeout_ms": 3000}\n${ASK}`, false, true);
+    await settles(async () => expect(await pendingSampling(stub)).toHaveLength(1));
+    await evictAndLeave(stub);
+    await new Promise((resolve) => setTimeout(resolve, 3500));
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await idle(stub);
+
+    expect(await pending(stub)).toEqual([]);
+    expect(await pendingSampling(stub)).toEqual([]);
+    expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
+    expect(
+      await runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.mcpRecords()),
+    ).toEqual([
+      expect.objectContaining({ action: "cancel", by: "cloudpid", reason: "the script timed out" }),
+    ]);
+    expect(
+      await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+        instance.mcpSamplingRecords(),
+      ),
+    ).toEqual([expect.objectContaining({ status: "refused", reason: "the script timed out" })]);
     expect(
       await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
         instance.samplingUsage(),

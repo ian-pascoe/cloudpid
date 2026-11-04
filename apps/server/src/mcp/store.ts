@@ -10,6 +10,7 @@ import { type Migration, migrate, type MigrationStorage } from "@cloudpid/effect
 import * as Context from "effect/Context";
 import { type AppStore, appStore } from "./app-store.ts";
 import { type DeprecationNotes, deprecationNotes } from "./deprecation-notes.ts";
+import { type WaitingQuestions, waitingQuestions } from "./waiting-questions.ts";
 import { type InventoryStore, inventoryStore } from "./inventory-store.ts";
 import { type LogStore, logStore } from "./log-store.ts";
 import { type SetStore, setStore } from "./set-store.ts";
@@ -173,7 +174,8 @@ export type McpHostStoreService = SetStore &
   LogStore &
   AppStore &
   WatchStore &
-  DeprecationNotes & {
+  DeprecationNotes &
+  WaitingQuestions & {
     /**
      * Wipe the storage: every table's rows, and the tables, which are made again empty, keeping `revision` as the
      * floor of the sets that may fill it again. Rejects when the storage cannot.
@@ -212,6 +214,7 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
     ...appStore(storage),
     ...watchStore(storage),
     ...deprecationNotes(),
+    ...waitingQuestions(),
 
     destroy: async (revision) => {
       await storage.deleteAll();

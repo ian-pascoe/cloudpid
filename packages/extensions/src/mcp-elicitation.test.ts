@@ -3,8 +3,17 @@
 // enters is ever kept. A scripted model on a Harness, and an in-memory host that asks through the call's hooks.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
-import { type JsonObject, McpHostCompleted, type McpInputAnswer } from "@cloudpid/mcp/types";
+import {
+  Cut,
+  type JsonObject,
+  MCP_CONTAINER_STOPPED_CUT,
+  McpHostCallFailed,
+  McpHostCompleted,
+  type McpInputAnswer,
+} from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf, open, startOf } from "./mcp.fixture.ts";
@@ -98,7 +107,7 @@ const setup = (
 
   const session = open((request) => (request.text === "go" ? call(tool) : answer("ok")));
 
-  return { host, tools, questions, dump, told, session, answerWhenAsked };
+  return { host, tools, questions, dump, told, session, answerWhenAsked, storage };
 };
 
 /** A host that asks `schema` through the call's hooks, records what the server was answered, then completes. */
@@ -296,6 +305,38 @@ describe("a Legacy server's elicitation", () => {
     );
   });
 
+  it("is declined unseen once the owner chose to decline the server in this Session, and asked again once they take it back", async () => {
+    const { host, tools, questions, told, session: opening, storage } = setup();
+    const seen: Answer[] = [];
+
+    host.answer(asking(NAME_FORM, seen));
+    storage.put("mcp-question:declined", ["Docs-Site"]);
+
+    const session = await opening;
+
+    await session.start(tools);
+    await session.prompt("go");
+
+    expect(seen).toEqual([{ kind: "answered", result: { action: "decline" } }]);
+    expect(told).toEqual([]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+
+    const [details] = await detailsOf(session);
+
+    expect(details).toMatchObject({
+      elicitation: [
+        {
+          action: "decline",
+          by: "cloudpid",
+          reason: "the owner chose to decline this server's requests in this Session",
+        },
+      ],
+    });
+
+    await Effect.runPromise(questions.revokeDeclined("Docs-Site"));
+    expect(questions.isDeclined("Docs-Site")).toBe(false);
+  });
+
   it("names a credential in the words the model reads without letting the server shape them", async () => {
     const { host, tools, session: opening } = setup();
     const seen: Answer[] = [];
@@ -434,6 +475,34 @@ describe("a Legacy server's elicitation", () => {
     }
   });
 
+  it("withdraws a card at a request start when its server is not in the inventory at all", async () => {
+    const { tools, questions, session: opening } = setup();
+
+    await (await opening).start(tools);
+
+    const waiting = Effect.runFork(
+      questions.ask({
+        key: "1",
+        callId: "call-ghost",
+        conversationId: ROOT_CONVERSATION_ID,
+        server: "Ghost",
+        tool: "mcp__ghost__ask",
+        message: "Who are you?",
+        form: { fields: [] },
+        notes: [],
+      }),
+    );
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(await Fiber.join(waiting).pipe(Effect.runPromise)).toMatchObject({
+      action: "cancel",
+      by: "cloudpid",
+    });
+  });
+
   it("is refused with -32602 when the form is malformed", async () => {
     const { host, tools, session: opening } = setup();
     const seen: Answer[] = [];
@@ -519,6 +588,109 @@ describe("a Legacy server's elicitation", () => {
           },
         ],
       }),
+    ]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+  });
+
+  it("reads cancelled when the host says the server changed after the owner answered, and the server was not given the answer", async () => {
+    const { host, tools, questions, session: opening, answerWhenAsked } = setup();
+
+    host.answer(async (_input, hooks) => {
+      await hooks.onInput?.(ask(NAME_FORM));
+
+      // The host's word that a set change ended the question reached it after the owner's answer did.
+      await hooks.onInputEnded?.(ask(NAME_FORM).key, "Docs-Site was changed");
+
+      return DONE;
+    });
+
+    const session = await opening;
+
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await answerWhenAsked({ action: "accept", content: { name: SENTINEL } });
+    await submitted.wait(context);
+
+    const line = {
+      server: "Docs-Site",
+      mode: "form",
+      action: "cancel",
+      by: "cloudpid",
+      reason: "Docs-Site was changed",
+      fields: [],
+    };
+
+    expect(await detailsOf(session)).toEqual([expect.objectContaining({ elicitation: [line] })]);
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "Docs-Site was changed",
+        fields: [],
+      }),
+    ]);
+  });
+
+  it("reads that the Container stopped when a stdio server's call is cut so while its question waits", async () => {
+    const { host, tools, questions, session: opening } = setup();
+
+    host.answer(async (_input, hooks) => {
+      void hooks.onInput?.(ask(NAME_FORM)).catch(() => undefined);
+      await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+      return McpHostCallFailed.make({
+        error: Cut.make({ message: MCP_CONTAINER_STOPPED_CUT, mayHaveRun: true }),
+      });
+    });
+
+    const session = await opening;
+
+    await session.start(tools);
+    await session.prompt("go");
+
+    const reason = "Docs-Site's call ended (Container stopped)";
+
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ action: "cancel", by: "cloudpid", reason }),
+    ]);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        elicitation: [expect.objectContaining({ action: "cancel", by: "cloudpid", reason })],
+      }),
+    ]);
+  });
+
+  it('is withdrawn as "the script timed out" when the codemode script that made the call passes its timeout_ms', async () => {
+    const { host, tools, questions, session: opening } = setup();
+
+    host.answer(async (_input, hooks) => {
+      void hooks.onInput?.(ask(NAME_FORM)).catch(() => undefined);
+      await hooks.untilAborted?.();
+
+      return DONE;
+    });
+
+    const harness = await open((request) =>
+      request.text === "go"
+        ? call([
+            "codemode",
+            {
+              code: `// @options: {"timeout_ms": 300}\nawait tools.mcp__docs_site__search({}); text("done");`,
+            },
+          ])
+        : answer("ok"),
+    );
+
+    await harness.start(tools, startOf(1, { offered: ["codemode"] }));
+    await harness.prompt("go");
+    await opening;
+
+    const reason = "the script timed out";
+
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ action: "cancel", by: "cloudpid", reason }),
     ]);
     expect(await Effect.runPromise(questions.pending)).toEqual([]);
   });

@@ -718,6 +718,25 @@ interface Answered {
 }
 
 /**
+ * The host's answer to a `complete` result: the server's result, its structured output, and, for a `resume` or `resend`,
+ * the process that answered, so the caller can tell one that restarted since it asked.
+ */
+const completedOf = (
+  call: McpHostRequest,
+  result: Extract<McpEngineRequestResult, { readonly kind: "complete" }>,
+): McpHostCompleted => {
+  const completed: Mutable<McpHostCompleted> = McpHostCompleted.make({ result: result.result });
+
+  if (result.structuredOutput !== undefined) completed.structuredOutput = result.structuredOutput;
+
+  if (result.spawn !== undefined && (call.op === "resume" || call.op === "resend")) {
+    completed.spawn = result.spawn;
+  }
+
+  return completed;
+};
+
+/**
  * The host's answer to an engine result that is not a failure: what `call` asked for. A `tools/call` is answered with a
  * result, or a task when it could be offered one; a `tasks/get` with its state; a `tasks/update` or `tasks/cancel` with
  * an acknowledgement. Any other answer is an engine that misread the request: a protocol violation.
@@ -788,12 +807,7 @@ const answered = (
 
       if (result.kind !== "complete") return misread;
 
-      return result.structuredOutput === undefined
-        ? McpHostCompleted.make({ result: result.result })
-        : McpHostCompleted.make({
-            result: result.result,
-            structuredOutput: result.structuredOutput,
-          });
+      return completedOf(call, result);
 
     case "tasks/get": {
       if (result.kind !== "task_state") return misread;

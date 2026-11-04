@@ -53,7 +53,7 @@ import { type ApprovalAsk, Approvals, type ApprovalsError } from "@cloudpid/exte
 import {
   McpQuestions,
   McpSampling,
-  type McpQuestionsError,
+  McpQuestionsError,
   McpSignIns,
   type McpSignInsError,
 } from "@cloudpid/extensions/mcp";
@@ -208,10 +208,15 @@ export const ownerTabDriversMessage = (drivers: ReadonlyArray<OwnerTabDriver>): 
   drivers,
 });
 
-/** The `mcp_elicitation_requests` message for `requests`, which every client is sent. */
+/** The `mcp_elicitation_requests` message for `requests` and the servers declined for this Session, which every client is sent. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- builds a message, not a combinator.
 export const mcpElicitationRequests = (
   requests: ReadonlyArray<McpElicitationRequest>,
-): ServerMessage => ({ type: "mcp_elicitation_requests", requests });
+  declined: ReadonlyArray<string> = [],
+): ServerMessage =>
+  declined.length === 0
+    ? { type: "mcp_elicitation_requests", requests }
+    : { type: "mcp_elicitation_requests", requests, declined };
 
 /** The `mcp_sampling_requests` message for `requests` and the Session's `grants`, which every client is sent. */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- builds a message, not a combinator.
@@ -262,6 +267,17 @@ export const viewedMessage = (viewed: ReadonlyArray<ViewedFile>): ServerMessage 
   type: "viewed",
   viewed,
 });
+
+/** What every `hello` says this Session takes (a client gates the commands and requests on them). */
+const HELLO_FEATURES = {
+  appViews: true,
+  mcpTasks: true,
+  attachedResources: true,
+  resourcePreviews: true,
+  appMessages: true,
+  appContext: true,
+  mcpDecline: true,
+} as const;
 
 /** The `mcp_app_tools` message for `tools`, which every client is sent after `hello` and whenever the inventory changes them. */
 export const mcpAppToolsMessage = (tools: ReadonlyArray<McpAppTool>): ServerMessage => ({
@@ -1050,6 +1066,13 @@ export const sessionSocketsLayer = (
               })
               .pipe(Effect.as(null));
           case "mcp_elicitation_answer":
+            // The schema refuses a scope on any other action.
+            if (message.scope !== undefined) {
+              return mcpQuestions
+                .declineScoped(message.request, message.scope)
+                .pipe(Effect.as(null));
+            }
+
             return mcpQuestions
               .answer(
                 message.request,
@@ -1077,6 +1100,8 @@ export const sessionSocketsLayer = (
                 uri: message.uri,
               })
               .pipe(Effect.as(null));
+          case "mcp_elicitation_revoke":
+            return mcpQuestions.revokeDeclined(message.server).pipe(Effect.as(null));
           case "mcp_sampling_revoke":
             return mcpQuestions.revokeSampling(message.server).pipe(Effect.as(null));
           case "mcp_sign_in_answer":
@@ -1357,27 +1382,8 @@ export const sessionSocketsLayer = (
         yield* send(
           server,
           copying
-            ? {
-                type: "hello",
-                root,
-                copying,
-                appViews: true,
-                mcpTasks: true,
-                attachedResources: true,
-                resourcePreviews: true,
-                appMessages: true,
-                appContext: true,
-              }
-            : {
-                type: "hello",
-                root,
-                appViews: true,
-                mcpTasks: true,
-                attachedResources: true,
-                resourcePreviews: true,
-                appMessages: true,
-                appContext: true,
-              },
+            ? { type: "hello", root, copying, ...HELLO_FEATURES }
+            : { type: "hello", root, ...HELLO_FEATURES },
         );
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),
@@ -1400,7 +1406,10 @@ export const sessionSocketsLayer = (
 
         // MCP servers' questions live only as long as their calls wait; sent when none waits too, so a client clears the
         // cards it held.
-        yield* send(server, mcpElicitationRequests(yield* mcpQuestions.pending));
+        yield* send(
+          server,
+          mcpElicitationRequests(yield* mcpQuestions.pending, mcpQuestions.declinedServers()),
+        );
 
         // MCP servers' Sampling requests live only as long as their calls wait too, and the Session's grants survive;
         // sent when none waits too, so a client clears the cards and the grants it held.
@@ -1411,6 +1420,12 @@ export const sessionSocketsLayer = (
             yield* mcpQuestions.samplingGrants,
           ),
         );
+
+        // The cards of a round kept for later may be of a server that was removed or changed while nobody looked (a round
+        // holds no request on the host, which cannot tell the Session). Looked at in the background, as the client
+        // connects, and never on a timer, which would keep this instance awake; a withdrawal reaches the client as any
+        // answer does. A resume that follows a change the look misses is refused by the host, by the connection key.
+        yield* mcpQuestions.lookAtRounds.pipe(Effect.forkIn(scope));
 
         // Sign-in requests have no deadline and survive an eviction; sent when none waits too, so a client clears the
         // cards it held.

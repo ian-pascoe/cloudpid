@@ -14,7 +14,7 @@ import { ROLE_NAMES, type RoleName, sha256Hex } from "@cloudpid/config";
 import type { McpEra } from "@cloudpid/mcp/types";
 import { holdsPlaceholder } from "../secrets/references.ts";
 import type { McpSamplingWhy } from "./details.ts";
-import type { McpSamplingGrant } from "./sampling-records.ts";
+import type { McpSamplingGrant, McpSamplingRecord } from "./sampling-records.ts";
 import type {
   ElicitationContent,
   ElicitationForm,
@@ -58,8 +58,27 @@ export const MCP_QUESTION_UNRECORDED_REASON = "cloudpid could not record the que
 /** Why a page a call cannot wait for is cancelled: a Modern server asked for one the call never declared it could take. */
 export const MCP_PAGE_NOT_KEPT_REASON = "the call cannot wait for a page";
 
+/** Why a request is declined unseen once the owner chose "Decline in this Session" for its server. */
+export const MCP_DECLINED_IN_SESSION_REASON =
+  "the owner chose to decline this server's requests in this Session";
+
+/** What a call that was answered by another process than the one that asked says (a stdio server that restarted while its questions waited). */
+export const restartedWhileWaiting = (server: string): string =>
+  `${server}'s process restarted while it waited for your answer, so it may have lost track; calling it again starts over`;
+
+/** Why a stdio server's question is withdrawn when its Workspace's Container stopped under the call. */
+export const containerStoppedReason = (server: string): string =>
+  `${server}'s call ended (Container stopped)`;
+
+/** The note on a question a stdio server asks again from another process than the round's before. */
+export const restartedSinceAsked = (server: string): string =>
+  `${server} restarted since it last asked`;
+
 /** Why a question is cancelled when its call is over: it ended, or it went with an earlier instance. */
 export const MCP_CALL_ENDED_REASON = "the server's call ended";
+
+/** Why a question of a `codemode` script's nested call is withdrawn when the script's `timeout_ms` has passed. */
+export const MCP_SCRIPT_TIMED_OUT_REASON = "the script timed out";
 
 /** Why a question is cancelled when the Run is stopped. */
 export const MCP_RUN_STOPPED_REASON = "Run stopped";
@@ -117,6 +136,25 @@ export const decisionOf = (verdict: McpSamplingVerdict, own: string): McpSamplin
     ? { action: "allow", role }
     : { action: "allow", role, grant: verdict.grant };
 };
+
+/** The span of a question that ended (`docs/architecture/mcp-server-requests.md` → Telemetry and testing). */
+export const ELICITATION_SPAN = "mcp.elicitation.request";
+
+/**
+ * What the span of a question says of it: the server, the origin (an agent's call, the only one so far), the mode, the
+ * era, how it ended and who decided, how many fields were answered and how long it waited. Never the message, the form,
+ * the address (its origin is in the record, not here) or a value.
+ */
+export const spanOf = (record: McpQuestionRecord) => ({
+  "mcp.server": record.server,
+  "mcp.origin": "agent",
+  "mcp.elicitation.mode": record.mode,
+  "mcp.elicitation.era": record.era ?? eraDefault(record.mode === "url"),
+  "mcp.elicitation.action": record.action,
+  "mcp.elicitation.by": record.by,
+  "mcp.elicitation.fields": record.fields.length,
+  "mcp.elicitation.wait_ms": Math.max(0, record.settledAt - record.askedAt),
+});
 
 const SETTLED_KEY = "mcp-question:settled";
 const settledKey = (id: string) => `mcp-question:s:${id}`;
@@ -357,6 +395,56 @@ const stringsOf = (content: ElicitationContent): ReadonlyArray<readonly [string,
   return found;
 };
 
+/**
+ * The IDs a call's records are found under: the call's own, and for a `codemode` script's nested call
+ * (`<parent call>/<key>`, pi-durable's) every call it is nested in, which is the result an export or a Fork finds it by.
+ */
+export const callKeysOf = (callId: string): ReadonlyArray<string> => {
+  const keys = [callId];
+
+  for (let at = callId.indexOf("/"); at > 0; at = callId.indexOf("/", at + 1)) {
+    keys.push(callId.slice(0, at));
+  }
+
+  return keys;
+};
+
+/**
+ * A record of a server's request that a Fork or Clone carries: a question's settled record, or a Sampling request's (kept
+ * as it was, a stub if it was one).
+ */
+export type McpQuestionCopy =
+  | { readonly kind: "question"; readonly record: McpQuestionRecord }
+  | { readonly kind: "sampling"; readonly record: McpSamplingRecord };
+
+/** The records one entry of a page carries (`McpQuestionCopies.copier`). */
+export type McpQuestionCopier = (
+  callIds: ReadonlyArray<string>,
+  budget: number,
+) => ReadonlyArray<McpQuestionCopy>;
+
+/**
+ * What a Session does with the records of a Fork or Clone (`ExportPage.questions`): which are its calls', and keeping
+ * them.
+ */
+export type McpQuestionCopies = {
+  /**
+   * A copier for one page of a Fork or Clone: the settled records, of questions and of Sampling requests, of the calls
+   * whose result entry is among `callIds`, and of the calls nested in them, which fit in `budget` characters of JSON (the
+   * questions' always do, being bounded at 64 KiB and 100; a Sampling record past it is carried as its stub). The Session's
+   * Sampling records are read once, at the first entry that holds a call, and not at all for a page that holds none.
+   */
+  readonly copier: () => McpQuestionCopier;
+  /**
+   * Keep the records a Fork or Clone's source sent, as the calls of conversation `conversationId`; the bound of the
+   * newest 100 questions applies, and the Session's own bound of Sampling records.
+   */
+  readonly adopt: (
+    copies: ReadonlyArray<McpQuestionCopy>,
+    conversationId: McpQuestionRecord["conversationId"],
+  ) => void;
+};
+
 export type McpQuestionBasicsOptions = {
   readonly storage: McpQuestionStorage;
   /** `value` with every Secret the Session holds replaced by its reference: all the owner is shown, and all a record keeps. */
@@ -415,15 +503,73 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     Schema.encodeEffect(RecordText)(record).pipe(
       Effect.flatMap((text) => Effect.try(() => keepNow(record, text))),
       Effect.catch((cause) => Effect.logWarning("Could not keep an MCP question's record", cause)),
+      // One span per question that ended, whatever the storage did with its record (`docs/architecture/
+      // mcp-server-requests.md` → Telemetry and testing): what it asked and how it ended, never its content.
+      Effect.andThen(
+        Effect.void.pipe(Effect.withSpan(ELICITATION_SPAN, { attributes: spanOf(record) })),
+      ),
     );
 
-  const records = Effect.sync(() =>
+  /**
+   * Settled record `id` says `accept`, but the server was never given the answer (the host replaced it: the server
+   * changed while the owner answered): it reads cancelled by cloudpid with `reason`, and no field. The question's span
+   * was emitted when it settled, and is not again. A record that does not say `accept` is left as it is.
+   */
+  const overturn = (id: string, reason: string) =>
+    Effect.sync(() => storage.get<McpQuestionRecord>(settledKey(id))).pipe(
+      Effect.flatMap((record) => {
+        if (record === undefined || record.action !== "accept") return Effect.void;
+
+        const overturned: McpQuestionRecord = {
+          ...record,
+          action: "cancel",
+          by: "cloudpid",
+          reason,
+          fields: [],
+        };
+
+        return Schema.encodeEffect(RecordText)(overturned).pipe(
+          Effect.flatMap((text) => Effect.try(() => keepNow(overturned, text))),
+        );
+      }),
+      Effect.catch((cause) => Effect.logWarning("Could not amend an MCP question's record", cause)),
+    );
+
+  const settled = (): ReadonlyArray<McpQuestionRecord> =>
     Arr.filterMap(storage.get<string[]>(SETTLED_KEY) ?? [], (id) => {
       const record = storage.get<McpQuestionRecord>(settledKey(id));
 
       return record === undefined ? Result.failVoid : Result.succeed(record);
-    }),
-  );
+    });
+
+  const records = Effect.sync(settled);
+
+  /** The settled question records of the calls whose result entry is among `callIds`, and of the calls nested in them. */
+  const recordsFor = (callIds: ReadonlyArray<string>): ReadonlyArray<McpQuestionRecord> => {
+    if (callIds.length === 0) return [];
+
+    const wanted = new Set(callIds);
+
+    return Arr.filter(settled(), (record) =>
+      Arr.some(callKeysOf(record.callId), (key) => wanted.has(key)),
+    );
+  };
+
+  /** Keep `copied` as question records of conversation `conversationId`. */
+  const adoptRecords = (
+    copied: ReadonlyArray<McpQuestionRecord>,
+    conversationId: McpQuestionRecord["conversationId"],
+  ) => {
+    for (const each of copied) {
+      const record: McpQuestionRecord = { ...each, conversationId };
+
+      try {
+        keepNow(record, JSON.stringify(record));
+      } catch {
+        // A storage that cannot take a record loses that record, never the Fork.
+      }
+    }
+  };
 
   const callOf = (callId: string): McpCallState => {
     const held = calls.get(callId) ?? {
@@ -727,7 +873,10 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
   return {
     calls,
     keep,
+    overturn,
     records,
+    recordsFor,
+    adoptRecords,
     callOf,
     pagesOf,
     openedPages,

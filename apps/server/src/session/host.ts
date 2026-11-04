@@ -25,6 +25,7 @@ import {
   MCP_TASK_FOLLOWER,
   type McpNotices,
   mcpNotices,
+  type McpQuestionCopy,
   type McpSamplingBinding,
   McpTasksDoc,
   type OwnerCancel,
@@ -173,6 +174,7 @@ import {
   usageMessage,
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
+import type { SessionMcpRecords } from "./mcp-records.ts";
 import { contextUsageOf } from "./context-usage.ts";
 import type { ImportDefaults } from "./import-model.ts";
 import type { HeldStop } from "../workspace/idle.ts";
@@ -583,6 +585,12 @@ export type SessionHostOptions<R = never> = {
   /** What the Session lets go of for a conversation its active branch moved off: its Resource watches, silently. */
   readonly onBranchLeft?: ((conversation: ConversationId) => Effect.Effect<void>) | undefined;
   /**
+   * The Session's records of its MCP calls' questions (`docs/architecture/mcp-server-requests.md` → Elicitation requests,
+   * Records): `/export` writes a line for each, and a Fork or Clone carries the settled elicitation records of the calls it
+   * copies.
+   */
+  readonly records?: SessionMcpRecords | undefined;
+  /**
    * When the object must wake although no work is live, such as when a held Secret expires; the alarm is deleted when
    * this is undefined too.
    */
@@ -810,6 +818,7 @@ export type SessionHostService = {
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
+    questions?: ReadonlyArray<McpQuestionCopy>,
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents the plan carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
@@ -1430,6 +1439,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     pendingCompactions,
     picked,
     apps: options.apps,
+    questions: options.records?.copies,
     inArrivalOrder,
   });
 
@@ -3367,12 +3377,16 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    */
   const historyMarkdown = (conversation: Conversation) =>
     Effect.gen(function* () {
+      // The questions the calls asked are kept outside the History: a line for each follows its call's result.
+      const lines = options.records === undefined ? undefined : yield* options.records.exportLines;
+
       const built = markdownExport(
         conversation.id,
         DateTime.formatIso(yield* DateTime.now),
         MAX_EXPORT_BYTES,
         {
           appContext: (callId) => options.appContexts?.contextFor(callId, String(conversation.id)),
+          mcpLines: lines,
         },
       );
 

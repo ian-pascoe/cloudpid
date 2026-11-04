@@ -26,9 +26,11 @@ import { childrenOf } from "../session/agents.ts";
 import {
   conversationTodosAtom,
   endMcpWatchAtom,
+  mcpElicitationDeclinedAtom,
   mcpSamplingGrantsAtom,
   mcpTasksAtom,
   mcpWatchesAtom,
+  revokeMcpElicitationAtom,
   revokeMcpSamplingAtom,
   sessionStatusAtom,
   taskGraphAtom,
@@ -198,33 +200,46 @@ const grantText = (grant: McpSamplingSessionGrant): string => {
   }
 };
 
-/**
- * The Session's grants for MCP servers' Sampling requests (`docs/architecture/mcp-server-requests.md` → Sampling requests,
- * The card): "Allow in this Session" and "Refuse in this Session", each with a ✕ that takes it back, so the server's next
- * request asks again.
- */
-const SamplingGrantsSection = () => {
-  const sessionId = useShownSessionId();
-  const grants = useAtomValue(mcpSamplingGrantsAtom(sessionId));
-  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
-  const revoke = useAtomSet(revokeMcpSamplingAtom(sessionId));
+/** One choice the owner made for this Session about a server, which a ✕ takes back. */
+type TakeBackEntry = {
+  readonly server: string;
+  /** What the choice says. */
+  readonly text: string;
+  /** What the ✕ is for a screen reader. */
+  readonly label: string;
+  /** What the ✕'s tooltip says it does. */
+  readonly hint: string;
+};
 
-  if (grants.length === 0) return null;
+/** A list of the Session's choices for MCP servers under `title`, each with a ✕ that takes it back, and nothing when none. */
+const TakeBackSection = ({
+  title,
+  entries,
+  takeBack,
+}: {
+  title: string;
+  entries: readonly TakeBackEntry[];
+  takeBack: (server: string) => void;
+}) => {
+  const sessionId = useShownSessionId();
+  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
+
+  if (entries.length === 0) return null;
 
   return (
-    <section aria-label="Model use">
-      <h4 className="text-xs font-medium text-muted-foreground">Model use</h4>
+    <section aria-label={title}>
+      <h4 className="text-xs font-medium text-muted-foreground">{title}</h4>
       <ul className="mt-1 text-sm">
-        {Arr.map(grants, (grant) => (
-          <li key={grant.server} className="flex items-center justify-between gap-2">
-            <span className="min-w-0 break-words">{grantText(grant)}</span>
+        {Arr.map(entries, (entry) => (
+          <li key={entry.server} className="flex items-center justify-between gap-2">
+            <span className="min-w-0 break-words">{entry.text}</span>
             <button
               type="button"
               disabled={!live}
-              aria-label={`Take back this Session's choice for ${grant.server}`}
-              title="Take it back: the next request asks again"
+              aria-label={entry.label}
+              title={entry.hint}
               onClick={() => {
-                revoke(grant.server);
+                takeBack(entry.server);
               }}
               className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5"
             >
@@ -234,6 +249,54 @@ const SamplingGrantsSection = () => {
         ))}
       </ul>
     </section>
+  );
+};
+
+/**
+ * The Session's grants for MCP servers' Sampling requests (`docs/architecture/mcp-server-requests.md` → Sampling requests,
+ * The card): "Allow in this Session" and "Refuse in this Session", each with a ✕ that takes it back, so the server's next
+ * request asks again.
+ */
+const SamplingGrantsSection = () => {
+  const sessionId = useShownSessionId();
+  const grants = useAtomValue(mcpSamplingGrantsAtom(sessionId));
+  const revoke = useAtomSet(revokeMcpSamplingAtom(sessionId));
+
+  return (
+    <TakeBackSection
+      title="Model use"
+      entries={Arr.map(grants, (grant) => ({
+        server: grant.server,
+        text: grantText(grant),
+        label: `Take back this Session's choice for ${grant.server}`,
+        hint: "Take it back: the next request asks again",
+      }))}
+      takeBack={revoke}
+    />
+  );
+};
+
+/**
+ * The servers the owner chose to decline in this Session ("Decline in this Session",
+ * `docs/architecture/mcp-server-requests.md` → Elicitation requests, Several at once), each with a ✕ that takes it back,
+ * so the server's next question asks the owner again.
+ */
+const DeclinedServersSection = () => {
+  const sessionId = useShownSessionId();
+  const declined = useAtomValue(mcpElicitationDeclinedAtom(sessionId));
+  const revoke = useAtomSet(revokeMcpElicitationAtom(sessionId));
+
+  return (
+    <TakeBackSection
+      title="Questions declined"
+      entries={Arr.map(declined, (server) => ({
+        server,
+        text: `${server}'s requests for input are declined in this Session`,
+        label: `Ask for ${server}'s requests for input again`,
+        hint: "Take it back: the server's next question asks you again",
+      }))}
+      takeBack={revoke}
+    />
   );
 };
 
@@ -338,6 +401,7 @@ export const SessionDetails = () => {
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
   const changed = useAtomValue(changesTotalsAtom(useShownChanges()), (totals) => totals.files > 0);
   const granted = useAtomValue(mcpSamplingGrantsAtom(sessionId), (grants) => grants.length > 0);
+  const declined = useAtomValue(mcpElicitationDeclinedAtom(sessionId), (each) => each.length > 0);
   const tasked = useAtomValue(mcpTasksAtom(sessionId), (tasks) => tasks.length > 0);
   const watched = useAtomValue(mcpWatchesAtom(sessionId), (watches) => watches.length > 0);
 
@@ -363,14 +427,19 @@ export const SessionDetails = () => {
           Reconnecting: this may be out of date.
         </p>
       )}
-      {items.length === 0 && agents.length === 0 && !changed && !granted && !tasked && !watched && (
-        <p className="text-sm text-muted-foreground">Nothing to show yet.</p>
-      )}
+      {items.length === 0 &&
+        agents.length === 0 &&
+        !changed &&
+        !granted &&
+        !declined &&
+        !tasked &&
+        !watched && <p className="text-sm text-muted-foreground">Nothing to show yet.</p>}
       {items.length > 0 && <TodoList tasks={items} />}
       {agents.length > 0 && <SubagentsSection agents={agents} />}
       {changed && <ChangesSection />}
       <McpTasksSection />
       <SamplingGrantsSection />
+      <DeclinedServersSection />
       <WatchedResourcesSection />
     </aside>
   );

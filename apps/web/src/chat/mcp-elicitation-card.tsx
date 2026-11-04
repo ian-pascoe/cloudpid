@@ -13,19 +13,29 @@ import type {
   McpElicitationAction,
   McpElicitationPage,
   McpElicitationRequest,
+  McpElicitationScope,
 } from "@cloudpid/protocol";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
-import { ExternalLink, MessageCircleQuestion } from "lucide-react";
+import type { Mutable } from "effect/Types";
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  MessageCircleQuestion,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button, buttonVariants } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
+import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { exitFailure } from "../registry.ts";
 import { agentLabel } from "../session/agents.ts";
 import {
   answerMcpElicitationAtom,
+  type McpElicitationAnswerInput,
   mcpElicitationRequestsAtom,
   sessionStatusAtom,
   taskGraphAtom,
@@ -64,7 +74,20 @@ type CardProps = {
   now?: number;
   agent?: string | undefined;
   retryReady?: boolean;
-  onAnswer: (action: McpElicitationAction, content?: ElicitationContent) => Promise<string | null>;
+  /** Where the card stands among the questions its call has waiting, when it has more than one ("1 of 3 from <server>"). */
+  position?: CardPosition | undefined;
+  onAnswer: (
+    action: McpElicitationAction,
+    content?: ElicitationContent,
+    scope?: McpElicitationScope,
+  ) => Promise<string | null>;
+};
+
+/** Where a card stands among its call's waiting questions: its place from 1, how many there are, and how to move among them. */
+export type CardPosition = {
+  readonly at: number;
+  readonly of: number;
+  readonly move: (by: -1 | 1) => void;
 };
 
 const fieldClass =
@@ -278,12 +301,97 @@ export const useNow = (fixed: number | undefined) => {
 };
 
 /**
+ * "1 of 3 from <server>", with Previous and Next, for a card whose call has more than one question waiting: one is shown at
+ * a time, and a page that is open stays until its owner is done, so the owner moves among them here.
+ */
+const Position = ({ server, position }: { server: string; position: CardPosition | undefined }) =>
+  position === undefined || position.of < 2 ? null : (
+    <div className="mt-1 flex items-center gap-1 text-xs text-muted-foreground">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-6 px-1"
+        disabled={position.at <= 1}
+        aria-label="Previous question"
+        onClick={() => {
+          position.move(-1);
+        }}
+      >
+        <ChevronLeft className="size-3" aria-hidden />
+      </Button>
+      <span>
+        {position.at} of {position.of} from {server}
+      </span>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="h-6 px-1"
+        disabled={position.at >= position.of}
+        aria-label="Next question"
+        onClick={() => {
+          position.move(1);
+        }}
+      >
+        <ChevronRight className="size-3" aria-hidden />
+      </Button>
+    </div>
+  );
+
+/**
+ * "Decline all N" (when the call has several questions waiting) and, in a menu, "Decline in this Session": the server's
+ * later requests are declined unseen in every conversation, until the owner takes it back in the Session's details.
+ */
+const WiderDeclines = ({
+  server,
+  position,
+  off,
+  answer,
+}: {
+  server: string;
+  position: CardPosition | undefined;
+  off: boolean;
+  answer: (scope: McpElicitationScope) => void;
+}) => (
+  <>
+    {position === undefined || position.of < 2 ? null : (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={off}
+        onClick={() => {
+          answer("call");
+        }}
+      >
+        Decline all {position.of}
+      </Button>
+    )}
+    <Menu
+      label={`More ways to decline ${server}`}
+      icon={<ChevronDown className="size-4" aria-hidden />}
+      disabled={off}
+      className="h-8 w-7 border"
+    >
+      <MenuItem
+        onSelect={() => {
+          answer("session");
+        }}
+      >
+        Decline in this Session
+      </MenuItem>
+    </Menu>
+  </>
+);
+
+/**
  * The card for one MCP elicitation request: the server's message, a widget per field with its required mark and
  * description, Submit (or Accept, for a form with no fields), Decline and a quiet Cancel that "closes without answering;
  * <server> may ask again". Everything the server wrote is shown as plain text. While the Session is not live the inputs
  * and buttons are off and the card reads "Reconnecting…"; typed values stay in the tab.
  */
-const FormCard = ({ request, disabled, now: fixedNow, agent, onAnswer }: CardProps) => {
+const FormCard = ({ request, disabled, now: fixedNow, agent, position, onAnswer }: CardProps) => {
   const [values, setValues] = useState<FormValues>(() => initialValues(request.form));
   const [sent, setSent] = useState(false);
   const [refusal, setRefusal] = useState<ReturnType<typeof refusalOf> | null>(null);
@@ -293,10 +401,14 @@ const FormCard = ({ request, disabled, now: fixedNow, agent, onAnswer }: CardPro
   const gate = request.form.fields.length === 0;
 
   /** The answer, which stays on the card (every input and button back on, the reason shown) if the Session refuses it. */
-  const answer = (action: McpElicitationAction, content?: ElicitationContent) => {
+  const answer = (
+    action: McpElicitationAction,
+    content?: ElicitationContent,
+    scope?: McpElicitationScope,
+  ) => {
     setSent(true);
     setRefusal(null);
-    void onAnswer(action, content).then((refused) => {
+    void onAnswer(action, content, scope).then((refused) => {
       if (refused === null) return;
 
       setSent(false);
@@ -316,6 +428,7 @@ const FormCard = ({ request, disabled, now: fixedNow, agent, onAnswer }: CardPro
           {request.server} asks for your input
         </div>
         <McpOriginLine request={request} agent={agent} />
+        <Position server={request.server} position={position} />
       </div>
       <form
         className="flex min-h-0 flex-1 flex-col gap-3"
@@ -457,6 +570,14 @@ const FormCard = ({ request, disabled, now: fixedNow, agent, onAnswer }: CardPro
             >
               Decline
             </Button>
+            <WiderDeclines
+              server={request.server}
+              position={position}
+              off={off}
+              answer={(scope) => {
+                answer("decline", undefined, scope);
+              }}
+            />
             <Button type="submit" size="sm" disabled={off || Result.isFailure(checked)}>
               {gate ? "Accept" : "Submit"}
             </Button>
@@ -510,6 +631,7 @@ const PageCard = ({
   now: fixedNow,
   agent,
   retryReady = false,
+  position,
   onAnswer,
 }: CardProps & { page: McpElicitationPage }) => {
   const [sent, setSent] = useState(false);
@@ -519,10 +641,10 @@ const PageCard = ({
   const parts = addressParts(page);
   const goesOn = page.retry !== true;
 
-  const answer = (action: McpElicitationAction) => {
+  const answer = (action: McpElicitationAction, scope?: McpElicitationScope) => {
     setSent(true);
     setRefusal(null);
-    void onAnswer(action).then((refused) => {
+    void onAnswer(action, undefined, scope).then((refused) => {
       setSent(false);
 
       if (refused !== null) setRefusal(refused);
@@ -541,6 +663,7 @@ const PageCard = ({
           {request.server} asks you to open a page
         </div>
         <McpOriginLine request={request} agent={agent} />
+        <Position server={request.server} position={position} />
       </div>
       <div
         className="min-h-12 flex-1 overflow-y-auto"
@@ -621,6 +744,14 @@ const PageCard = ({
                   Decline
                 </Button>
               )}
+              <WiderDeclines
+                server={request.server}
+                position={position}
+                off={off}
+                answer={(scope) => {
+                  answer("decline", scope);
+                }}
+              />
             </>
           )}
           {page.finished === true ? null : off ? (
@@ -670,7 +801,30 @@ export const McpElicitationCard = (props: CardProps) =>
     <PageCard {...props} page={props.request.page} />
   );
 
-/** The cards for the MCP questions waiting for the owner in the Session shown, oldest first. */
+/**
+ * The requests grouped by call, the groups in the order their first request arrived and each group's requests in the order
+ * the Session lists them (key order on Modern, arrival order on Legacy): one call's questions are shown one at a time.
+ */
+export const groupByCall = (
+  requests: ReadonlyArray<McpElicitationRequest>,
+): ReadonlyArray<ReadonlyArray<McpElicitationRequest>> => {
+  const groups = new Map<string, McpElicitationRequest[]>();
+
+  for (const request of requests) {
+    const held = groups.get(request.callId);
+
+    if (held === undefined) groups.set(request.callId, [request]);
+    else held.push(request);
+  }
+
+  return [...groups.values()];
+};
+
+/**
+ * The cards for the MCP questions waiting for the owner in the Session shown. One call's questions are shown one at a time,
+ * "1 of 3 from <server>", with Previous and Next; the others stay mounted, hidden, so what was typed in a form is kept
+ * while the owner looks at another.
+ */
 export const McpElicitationRequests = () => {
   const sessionId = useShownSessionId();
   const requests = useAtomValue(mcpElicitationRequestsAtom(sessionId));
@@ -678,6 +832,8 @@ export const McpElicitationRequests = () => {
   // Answered only over a live socket; the cards stay, off, while it is not.
   const disabled = useAtomValue(sessionStatusAtom(sessionId), (status) => status !== "live");
   const answer = useAtomSet(answerMcpElicitationAtom(sessionId), { mode: "promiseExit" });
+  // The question each call shows, by its place among the call's questions; one that went reads as the next in line.
+  const [shownAt, setShownAt] = useState<Readonly<Record<string, number>>>({});
 
   // A page that is sent again is "Done" once every such page of its call is opened, from any client.
   const unopened = new Set(
@@ -686,20 +842,38 @@ export const McpElicitationRequests = () => {
     ),
   );
 
-  return Arr.map(requests, (request) => (
-    <McpElicitationCard
-      key={request.id}
-      request={request}
-      disabled={disabled}
-      retryReady={!unopened.has(request.callId)}
-      agent={agentLabel(graph, request.conversationId)}
-      onAnswer={(action, content) =>
-        answer(
-          content === undefined
-            ? { request: request.id, action }
-            : { request: request.id, action, content },
-        ).then(exitFailure)
-      }
-    />
-  ));
+  return Arr.map(groupByCall(requests), (group) => {
+    const [first] = group;
+    const shown = Math.min(shownAt[first?.callId ?? ""] ?? 0, group.length - 1);
+
+    return Arr.map(group, (request, index) => (
+      <div key={request.id} hidden={index !== shown}>
+        <McpElicitationCard
+          request={request}
+          disabled={disabled}
+          retryReady={!unopened.has(request.callId)}
+          agent={agentLabel(graph, request.conversationId)}
+          position={{
+            at: index + 1,
+            of: group.length,
+            move: (by) => {
+              setShownAt((held) => ({
+                ...held,
+                [request.callId]: Math.min(Math.max(index + by, 0), group.length - 1),
+              }));
+            },
+          }}
+          onAnswer={(action, content, scope) => {
+            const input: Mutable<McpElicitationAnswerInput> = { request: request.id, action };
+
+            if (content !== undefined) input.content = content;
+
+            if (scope !== undefined) input.scope = scope;
+
+            return answer(input).then(exitFailure);
+          }}
+        />
+      </div>
+    ));
+  });
 };

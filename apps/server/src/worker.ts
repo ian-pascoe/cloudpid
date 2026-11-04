@@ -304,8 +304,8 @@ export default class Server extends Cloudflare.Worker<Server>()(
       forkSource: (id, request) => Effect.orDie(sessions.getByName(id).forkSource(request)),
       exportEntries: (id, request) => Effect.orDie(sessions.getByName(id).exportEntries(request)),
       importStart: (id) => Effect.orDie(sessions.getByName(id).importStart()),
-      importEntries: (id, entries, apps) =>
-        Effect.orDie(sessions.getByName(id).importEntries(entries, apps)),
+      importEntries: (id, entries, apps, questions) =>
+        Effect.orDie(sessions.getByName(id).importEntries(entries, apps, questions)),
       importFinish: (id, plan) => Effect.orDie(sessions.getByName(id).importFinish(plan)),
       releaseFork: (id) => Effect.orDie(sessions.getByName(id).releaseFork()),
       deleteSubagent: (id, agent, workspace) =>

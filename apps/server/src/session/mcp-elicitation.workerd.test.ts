@@ -227,6 +227,15 @@ describe("a Legacy MCP server's form in a Session", () => {
     // The server got the owner's answer.
     expect(asked).toEqual([{ action: "accept", content: { name: SENTINEL } }]);
 
+    // `/export` says what the form came to under the call's result: the names of the fields, never a value.
+    const exported = await runInDurableObject(stub, async (instance: TestSession) => {
+      const result = await instance.command("export", "");
+
+      return "outcome" in result ? (result.outcome.file?.content ?? "") : result.failure;
+    });
+
+    expect(exported).toContain("Elicitation: docs · form · submitted (name)");
+
     // The owner was told once, never what is asked.
     const told = await inputPushes(stub);
 
@@ -280,6 +289,58 @@ describe("a Legacy MCP server's form in a Session", () => {
     }
   });
 
+  it("is declined in this Session: the server's next question is declined unseen, until the owner takes it back", async () => {
+    const { stub, asked } = await open([]);
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([ask(NAME_FORM), ask(NAME_FORM), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    // The Session says it takes a Decline's scope, so a client may send one.
+    expect(owner.received[0]).toMatchObject({ type: "hello", mcpDecline: true });
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "never",
+      request: owner.requests()[0]?.id ?? "",
+      action: "decline",
+      scope: "session",
+    });
+
+    // The second question is declined with no card: both are told `decline`.
+    await settles(async () =>
+      expect(asked).toEqual([{ action: "decline" }, { action: "decline" }]),
+    );
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+    expect(owner.requests()).toEqual([]);
+
+    const last = owner.received.findLast((message) => message.type === "mcp_elicitation_requests");
+
+    expect(last).toMatchObject({ requests: [], declined: ["docs"] });
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.join("\n")).toContain(
+      "cloudpid declined docs's request for input: the owner chose to decline this server's requests in this Session",
+    );
+
+    // The owner's ✕ takes it back, and the clients are told.
+    owner.send({ type: "mcp_elicitation_revoke", id: "back", server: "docs" });
+    await settles(async () =>
+      expect(
+        owner.received.findLast((message) => message.type === "mcp_elicitation_requests"),
+      ).toEqual({ type: "mcp_elicitation_requests", requests: [] }),
+    );
+    owner.close();
+  });
+
   it("is declined unseen when it asks for a credential: no card, no Notification", async () => {
     const { stub, asked } = await open([]);
     const owner = await connect(stub);
@@ -301,6 +362,63 @@ describe("a Legacy MCP server's form in a Session", () => {
     ).toBe(true);
     expect(await inputPushes(stub)).toEqual([]);
     owner.close();
+  });
+
+  it("leaves its record, and a Sampling request's, to a Fork, whose own Session keeps both as its root conversation's", async () => {
+    const { stub } = await open([]);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([ask(TOKEN_FORM), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    const [, kept] =
+      (await storageDump(stub)).find(([key]) => key.startsWith("mcp-question:s:")) ?? [];
+
+    // SAFETY: a settled question record is a JSON object with its call's `callId`.
+    const callId = (kept as { readonly callId: string }).callId;
+
+    // A Sampling request the same call made, as the Session keeps it (`mcp-sampling:*`).
+    const sampling = {
+      id: `${callId}:s1`,
+      server: "docs",
+      tool: "mcp__docs__ask",
+      origin: "agent",
+      conversationId: 1,
+      callId,
+      sequence: 1,
+      status: "refused",
+      by: "owner",
+      reason: "the owner refused",
+      notes: [],
+      askedAt: 1,
+      settledAt: 2,
+    };
+
+    await runInDurableObject(stub, (_instance: TestSession, state) => {
+      state.storage.kv.put(`mcp-sampling:r:${sampling.id}`, sampling);
+      state.storage.kv.put("mcp-sampling:index", [
+        { id: sampling.id, bytes: 1, at: 2, stub: false },
+      ]);
+    });
+
+    const target = `fork-${counter++}`;
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.forkInto(target, { quiet: "none" }),
+    );
+
+    const copy = await storageDump(env.SESSIONS.getByName(target));
+
+    expect(copy.filter(([key]) => key.startsWith("mcp-question:s:"))).toEqual([
+      [expect.any(String), expect.objectContaining({ callId, action: "decline", by: "cloudpid" })],
+    ]);
+    expect(copy.filter(([key]) => key.startsWith("mcp-sampling:r:"))).toEqual([
+      [`mcp-sampling:r:${sampling.id}`, expect.objectContaining({ callId, status: "refused" })],
+    ]);
   });
 
   it("is withdrawn from every client when Stop aborts the call", async () => {
@@ -421,6 +539,62 @@ describe("a Modern MCP server's form in a Session", () => {
     expect(JSON.stringify(owner.received)).not.toContain(SENTINEL);
     expect(logs.join("\n")).not.toContain(SENTINEL);
     owner.close();
+  });
+});
+
+describe("a Modern MCP server's form kept for later, while its server changes", () => {
+  it("is withdrawn from the cards when a client connects after the change, which a round kept for later holds no request to hear", async () => {
+    const environment = `env-${counter++}`;
+    const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+    const asked: Array<Schema.Json> = [];
+    const server = modernServer({ moreTools: [ASK_TOOL], asked });
+
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+      server.handle(new Request(input, init)),
+    );
+
+    await host.useRealEngine();
+    await host.apply(SET);
+
+    const stub = env.SESSIONS.getByName(`mcp-${environment}`);
+
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.mcpEnvironment(environment, 1);
+    });
+
+    const first = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([ask(NAME_FORM), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+    await settles(async () => expect(first.requests()).toHaveLength(1));
+
+    // The owner leaves; the server's connection changes while the round waits. The host holds no request for the round, so
+    // nothing tells the Session: its card stays.
+    first.close();
+    await host.apply({
+      ...SET,
+      hash: "h2",
+      revision: 2,
+      entries: SET.entries.map((entry) => ({ ...entry, hash: "hash-docs-2", conn: "conn-docs-2" })),
+    });
+
+    // The next client's connect makes the look, which finds the server on another connection and withdraws the card.
+    const second = await connect(stub);
+
+    await settles(async () =>
+      expect(second.received.filter((m) => m.type === "mcp_elicitation_requests")).toEqual(
+        expect.arrayContaining([expect.objectContaining({ requests: [] })]),
+      ),
+    );
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    // The call was sent once and never resumed: the question was answered `cancel` by cloudpid.
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(1);
+    second.close();
   });
 });
 

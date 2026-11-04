@@ -36,6 +36,7 @@ import {
   type McpServersRequest,
   type McpServersResult,
   type McpServerValuesAnswer,
+  type McpInputRequest,
 } from "@cloudpid/mcp/types";
 import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import { DurableObject } from "cloudflare:workers";
@@ -98,6 +99,8 @@ export type RequestScript = {
   readonly auth?: ReadonlyArray<boolean>;
   /** As `EngineScript.deprecated`. */
   readonly deprecated?: ReadonlyArray<string>;
+  /** Questions the server asks, one after another, through the caller's `onInput` before the call is answered. */
+  readonly asks?: ReadonlyArray<typeof McpInputRequest.Encoded>;
 };
 
 /**
@@ -491,6 +494,8 @@ export class TestMcpHost extends DurableObject {
       for (const stale of script.auth ?? []) tokens.push(await hooks.auth?.(stale));
 
       for (const feature of script.deprecated ?? []) await hooks.onDeprecated?.(feature);
+
+      for (const asked of script.asks ?? []) await hooks.onInput?.(asked);
 
       if (script.hold === true) await this.#holdUntilReleased(keyOf(target));
 

@@ -33,6 +33,7 @@ import {
   ElicitationContent,
   McpElicitationAction,
   McpElicitationRequest,
+  McpElicitationScope,
 } from "./mcp-elicitation.ts";
 import {
   McpSamplingChoice,
@@ -230,7 +231,10 @@ export const ApprovalAnswer = Schema.Struct({
  * records that the owner opened it (Open's click; a server that goes on by itself is told `accept` then) and `done` that
  * they finished there ("Done, try again": every page of the call's round must be opened first). Answered with `null`;
  * fails when no such request waits (answered, ended or withdrawn), and, for a bad `content`, with the fields to fix.
- * (`docs/architecture/mcp-server-requests.md` → Elicitation requests).
+ * `scope` widens a `decline` (it is refused on any other action): `call` ("Decline all") declines every question of the
+ * request's call that waits, and `session` ("Decline in this Session") declines this one and the server's later
+ * requests unseen, until the owner takes it back (`mcp_elicitation_revoke`). Sent only to a Session that says
+ * `mcpDecline` in `hello` (`docs/architecture/mcp-server-requests.md` → Elicitation requests).
  */
 export const McpElicitationAnswer = Schema.Struct({
   type: Schema.Literal("mcp_elicitation_answer"),
@@ -238,6 +242,24 @@ export const McpElicitationAnswer = Schema.Struct({
   request: Schema.String,
   action: McpElicitationAction,
   content: Schema.optionalKey(ElicitationContent),
+  scope: Schema.optionalKey(McpElicitationScope),
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (answer: { readonly action: string; readonly scope?: unknown }) =>
+        answer.scope === undefined || answer.action === "decline" || "Only a Decline has a scope",
+    ),
+  ),
+);
+
+/**
+ * Take back "Decline in this Session" for `server` (the Session's details list them): its next question is asked of the
+ * owner again. Answered with `null`, also when it was not declined. Sent only to a Session that says `mcpDecline` in `hello`.
+ */
+export const McpElicitationRevoke = Schema.Struct({
+  type: Schema.Literal("mcp_elicitation_revoke"),
+  id: CommandId,
+  server: Schema.String,
 });
 
 /**
@@ -864,6 +886,7 @@ export const ClientMessage = Schema.Union([
   McpSamplingAnswer,
   McpSamplingGet,
   McpSamplingRevoke,
+  McpElicitationRevoke,
   McpWatchEndCommand,
   McpSignInAnswer,
   AnnotationSave,
@@ -904,7 +927,8 @@ export type ClientMessage = typeof ClientMessage.Type;
  * client sends them only to a Session that says so, since one from before reads them as an unreadable message and
  * answers an error (`docs/architecture/mcp.md` → Deploys); `mcpTasks` says the same of `mcp_task_cancel` and
  * `container_keep`, and that it sends `mcp_tasks`. `attachedResources` says it takes `submit.resources` and
- * `mcp_resource_menu`, and `resourcePreviews` that it takes `mcp_resource_read`, which a client sends on the same terms.
+ * `mcp_resource_menu`, and `resourcePreviews` that it takes `mcp_resource_read`, which a client sends on the same terms; `mcpDecline` says it takes `scope` on
+ * `mcp_elicitation_answer` and `mcp_elicitation_revoke`.
  * `appMessages` says it takes `submit.app`, and `appContext` that it takes `mcp_app_context`: a client holds an App's
  * message, and forwards its context, only for a Session that says so.
  */
@@ -918,6 +942,7 @@ export const Hello = Schema.Struct({
   resourcePreviews: Schema.optionalKey(Schema.Boolean),
   appMessages: Schema.optionalKey(Schema.Boolean),
   appContext: Schema.optionalKey(Schema.Boolean),
+  mcpDecline: Schema.optionalKey(Schema.Boolean),
 });
 
 /**
@@ -1071,11 +1096,14 @@ export const ApprovalRequests = Schema.Struct({
  * requests), oldest first. A client shows a card for each outside the chat, and answers with `mcp_elicitation_answer`.
  * Sent after `hello` on every connect (an empty list too) and in full to every client whenever they change. A Legacy
  * server's question lives only as long as its call waits (ADR-0037): it does not outlive an eviction or a restart. A
- * Modern server's (`waits: "owner"`) is kept in the Session's storage, and does.
+ * Modern server's (`waits: "owner"`) is kept in the Session's storage, and does. `declined` lists the servers the owner
+ * chose to decline in this Session ("Decline in this Session"; the Session's details list them with a ✕); absent when
+ * there are none, and by a Session from before it.
  */
 export const McpElicitationRequests = Schema.Struct({
   type: Schema.Literal("mcp_elicitation_requests"),
   requests: Schema.Array(McpElicitationRequest),
+  declined: Schema.Array(Schema.String).pipe(Schema.optionalKey),
 });
 
 /**

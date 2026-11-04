@@ -51,7 +51,7 @@ import {
   type McpQuestionUnseen,
   originOf,
 } from "./questions.ts";
-import { MCP_PAGE_NOT_KEPT_REASON } from "./question-records.ts";
+import { MCP_DECLINED_IN_SESSION_REASON, MCP_PAGE_NOT_KEPT_REASON } from "./question-records.ts";
 
 /** What a form that asks for the credential `field` is declined with: the server is told, the agent reads why. */
 export const credentialReason = (field: string): string =>
@@ -102,7 +102,7 @@ export type Eliciting = {
   readonly onInput: (
     request: typeof McpInputRequest.Encoded,
   ) => Promise<typeof McpInputAnswer.Encoded>;
-  readonly onInputEnded: (key: string) => Promise<void>;
+  readonly onInputEnded: (key: string, reason?: string) => Promise<void>;
   /** The server says the owner finished at the page question `key` asked them to open: its card closes. */
   readonly onInputComplete: (key: string) => Promise<void>;
   /** Resolves once every question the call asked has been answered and noted, however it ended. */
@@ -141,6 +141,9 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   const pages = new Map<string, Mutable<McpElicitationDetail>>();
   const finished = new Set<string>();
 
+  /** The line of each question the owner answered `accept`, by its key: the host may say it did not reach the server. */
+  const accepted = new Map<string, Mutable<McpElicitationDetail>>();
+
   const note = (
     action: McpElicitationDetail["action"],
     by: McpElicitationDetail["by"],
@@ -167,6 +170,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     }
 
     asked.push(detail);
+
+    return detail;
   };
 
   /**
@@ -258,6 +263,13 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     }
 
     const { message, mode, requestedSchema } = params.value;
+
+    // "Decline in this Session": the server's requests are declined unseen, as a credential form is.
+    if (call.questions.isDeclined(call.server)) {
+      const capped = await endUnseen(message, "decline", MCP_DECLINED_IN_SESSION_REASON);
+
+      return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
+    }
 
     if (mode === "url") return answerPage(request, params.value);
 
@@ -364,7 +376,10 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     } else await Effect.runPromise(call.hold.resume);
 
     if (outcome.action === "accept") {
-      note("accept", "owner", [...fieldsOf(form, outcome.content)], undefined, seen);
+      accepted.set(
+        request.key,
+        note("accept", "owner", [...fieldsOf(form, outcome.content)], undefined, seen),
+      );
 
       return {
         kind: "answered",
@@ -454,8 +469,27 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   return {
     onInput,
     idle: () => Promise.allSettled(answering).then(() => undefined),
-    onInputEnded: (key) =>
-      Effect.runPromise(call.questions.withdraw(call.callId, key, stoppedWaiting(call.server))),
+    // The server's own cancellation, or the host's word that a set change ended the question (`reason`): then an answer
+    // the owner gave first never reached the server (the host replaced it with `cancel`), and its record and line say so.
+    onInputEnded: async (key, reason) => {
+      await Effect.runPromise(
+        call.questions.withdraw(call.callId, key, reason ?? stoppedWaiting(call.server)),
+      );
+
+      if (reason === undefined) return;
+
+      const detail = accepted.get(key);
+
+      if (detail !== undefined) {
+        detail.action = "cancel";
+        detail.by = "cloudpid";
+        detail.reason = reason;
+        detail.fields = [];
+        accepted.delete(key);
+      }
+
+      await Effect.runPromise(call.questions.overturn(call.callId, key, reason));
+    },
     onInputComplete: (key) => {
       // The record of the page says the owner finished there, whether the call's note of it came first or not.
       finished.add(key);

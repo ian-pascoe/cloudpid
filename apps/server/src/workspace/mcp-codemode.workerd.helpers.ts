@@ -73,6 +73,15 @@ export const evict = async (stub: Stub) => {
   expect(await runDurableObjectAlarm(stub)).toBe(true);
 };
 
+/**
+ * Shut the instance down as an eviction does and leave it down: no alarm runs, so a test can let a script's deadline pass
+ * while no instance exists, then run `runDurableObjectAlarm` to start the next one.
+ */
+export const evictAndLeave = async (stub: Stub) => {
+  await runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.closeSandbox());
+  await evictDurableObject(stub);
+};
+
 export const idle = (stub: Stub) =>
   settles(async () =>
     expect(

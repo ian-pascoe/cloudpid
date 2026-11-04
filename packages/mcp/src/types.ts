@@ -311,6 +311,9 @@ export class Unreachable extends Schema.TaggedError<
   signIn: Schema.optionalKey(Schema.Boolean),
 }) {}
 
+/** The message of the `Cut` a stdio call gets when its Workspace's Container stopped under it: the Session reads it to say so. */
+export const MCP_CONTAINER_STOPPED_CUT = "Container stopped";
+
 /**
  * The request's stream ended before its answer arrived; a `tools/call` may or may not have run. `lost` says where it
  * was lost when that was not the server's stream: `"engine"`, the host's RPC to the engine broke, which a Session shows
@@ -1472,8 +1475,13 @@ export interface McpHostRequestHooks {
   readonly onInput?: (
     request: typeof McpInputRequest.Encoded,
   ) => Promise<typeof McpInputAnswer.Encoded>;
-  /** The server stopped waiting for question `key` (its own cancellation): the caller withdraws its card. */
-  readonly onInputEnded?: (key: string) => void | Promise<void>;
+  /**
+   * The server stopped waiting for question `key` (its own cancellation): the caller withdraws its card. The host also
+   * calls it, with `reason`, for a question whose server a set change left changed, switched off or removed while the
+   * call waited (`docs/architecture/mcp-server-requests.md` → The waiting-question record, #569): a caller from before
+   * `reason` ignores it and says its own.
+   */
+  readonly onInputEnded?: (key: string, reason?: string) => void | Promise<void>;
   /**
    * The owner finished at the page URL question `key` asked them to open: the server said so on the call's own stream
    * (`notifications/elicitation/complete`), and the caller closes its card. The host keeps no `elicitationId`.
@@ -1503,6 +1511,12 @@ export const McpHostCompleted = Schema.TaggedStruct("Completed", {
   watch: Schema.optionalKey(
     Schema.Struct({ started: Schema.Boolean, reason: Schema.optionalKey(Schema.String) }),
   ),
+  /**
+   * A stdio server's process that answered a `resume` or `resend` (its spawn id, as a task's): another one than the
+   * `InputRequired` carried is a process that restarted while the questions waited. Gain-only; absent for an HTTP server
+   * and from a host from before it.
+   */
+  spawn: Schema.optionalKey(Schema.String),
 });
 
 export type McpHostCompleted = typeof McpHostCompleted.Type;
@@ -1597,6 +1611,8 @@ export type ServerChanged = typeof ServerChanged.Type;
 /** The request failed on the way to the server, or the server failed it: the core's failure. */
 export const McpHostCallFailed = Schema.TaggedStruct("CallFailed", {
   error: McpErrorWire,
+  /** As `McpHostCompleted.spawn`: the stdio process the failed `resume` or `resend` reached. Gain-only. */
+  spawn: Schema.optionalKey(Schema.String),
 });
 
 export type McpHostCallFailed = typeof McpHostCallFailed.Type;
