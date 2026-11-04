@@ -353,7 +353,7 @@ const DEFAULT_RESUME_MS = 1000;
  * for the next chunk to settle, unless the stream ended (`final`). The bytes of the event being read, and of each one
  * that ends, are counted against `limit`.
  */
-class EventSplitter {
+export class EventSplitter {
   /** Whether an event (the one being read, or one that ended) was over `limit` bytes. */
   over = false;
 
@@ -365,11 +365,6 @@ class EventSplitter {
 
   constructor(limit: number) {
     this.limit = limit;
-  }
-
-  /** Whether the last chunk ended in a CR not yet settled. */
-  get holdsCr() {
-    return this.heldCr;
   }
 
   /** Whether what is held of the event being read ends in a line ending (or may). */
@@ -408,7 +403,10 @@ class EventSplitter {
 
       if (segment !== "") this.lineEnd = segment.endsWith("\n");
 
-      if (this.bytes > this.limit) this.over = true;
+      // A line ending last in the event being read may be the first of its blank line, so it is not counted yet.
+      const last = index === segments.length - 1;
+
+      if (this.bytes - (last && this.lineEnd ? 1 : 0) > this.limit) this.over = true;
 
       if (index < segments.length - 1) events.push(this.finish());
     }
@@ -426,6 +424,17 @@ class EventSplitter {
     return event;
   }
 }
+
+/**
+ * Whether a CR follows the last LF of a stream, given whether one did before `text` arrived. The SDK's parser holds
+ * back a CR that ends a chunk, and appends to it, unparsed, every later chunk with no CR or LF; so the stream's end
+ * leaves it unfinished only if its last line ending is such a CR, which this over-reports.
+ */
+export const crFollowsLf = (before: boolean, text: string) => {
+  const lf = text.lastIndexOf("\n");
+
+  return (lf === -1 && before) || text.indexOf("\r", lf + 1) !== -1;
+};
 
 /** What opening a resumed stream came to: its body, or whether trying again could help. */
 type Reopened = Data.TaggedEnum<{
@@ -452,10 +461,14 @@ type Resumption = Data.TaggedEnum<{
 
 const Resumption = Data.taggedEnum<Resumption>();
 
-/** An SSE event's `id`, `retry` and `data`; the last `id` and `retry` win. `event` has LF line ends only. */
-const eventFields = (event: string) => {
+/**
+ * An SSE event's `id`, `retry`, `event` type and `data` (with how many `data` lines it had: one is enough to be
+ * dispatched); the last `id`, `retry` and `event` win. `event` has LF line ends only.
+ */
+export const eventFields = (event: string) => {
   let id: string | undefined;
   let retry: number | undefined;
+  let type: string | undefined;
   const data: Array<string> = [];
 
   for (const line of event.split("\n")) {
@@ -467,11 +480,12 @@ const eventFields = (event: string) => {
     const value = raw.startsWith(" ") ? raw.slice(1) : raw;
 
     if (name === "data") data.push(value);
+    else if (name === "event") type = value === "" ? undefined : value;
     else if (name === "id" && !value.includes("\u0000")) id = value;
     else if (name === "retry" && /^\d+$/.test(value)) retry = Number(value);
   }
 
-  return { id, retry, data: data.join("\n") };
+  return { id, retry, type, dataLines: data.length, data: data.join("\n") };
 };
 
 /**
@@ -600,6 +614,8 @@ const watchStream = (
   let splitter = new EventSplitter(Number.POSITIVE_INFINITY);
   let answered = false;
   let cancelled = false;
+  /** Whether a CR follows the last LF of the first stream so far (`crFollowsLf`). */
+  let crAfterLf = false;
   const resumer = new Resumer(request, resume, () => cancelled);
 
   /** The whole events of `text` the SDK may be given, or `undefined` when one is over the per-event cap. */
@@ -685,8 +701,18 @@ const watchStream = (
         if (cancelled) return;
 
         if (chunk.done) {
-          // A CR at the end was a line end: the events it finishes, which the resumed stream's reader is still owed.
-          const heldCr = splitter.holdsCr;
+          // The first stream is handed over as it came, and the SDK's parser holds a CR that ends a chunk for a LF
+          // that never comes, and with it the rest of the stream, dispatching nothing more. The SDK is given the LF,
+          // and the tap counts it too, so the answer it finds is one the SDK dispatches.
+          if (crAfterLf && !resumer.resumed) {
+            crAfterLf = false;
+            scan("\n");
+            controller.enqueue(encoder.encode("\n"));
+
+            return;
+          }
+
+          // A CR at the end of a resumed stream is a line end: the events it finishes are still owed to the SDK.
           const last = scan("", true);
 
           if (last === undefined) return end(eventTooLarge());
@@ -697,19 +723,11 @@ const watchStream = (
             return;
           }
 
-          // The first stream is handed over as it came, and the SDK's parser holds back a CR at the end of a chunk
-          // for a LF that will not come, never dispatching its event: it is given the LF, so it sees a CRLF.
-          if (heldCr && !resumer.resumed) {
-            controller.enqueue(encoder.encode("\n"));
-
-            return;
-          }
-
           if (answered) return controller.close();
 
           // The first stream is handed over as it came, so an event it left unfinished is cut off for the SDK.
           const unfinished =
-            resumer.resumed || splitter.unfinished.trim() === ""
+            resumer.resumed || /^\n*$/.test(splitter.unfinished)
               ? undefined
               : discardEvent(splitter.endsInLineEnd);
 
@@ -742,7 +760,11 @@ const watchStream = (
           return request.policy.probe ? controller.error(tooLarge(limit)) : end(tooLarge(limit));
         }
 
-        const kept = scan(decoder.decode(chunk.value, { stream: true }));
+        const text = decoder.decode(chunk.value, { stream: true });
+
+        crAfterLf = crFollowsLf(crAfterLf, text);
+
+        const kept = scan(text);
 
         if (kept === undefined) {
           await reader.cancel().catch(() => undefined);
