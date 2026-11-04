@@ -1,4 +1,5 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
+import { testTimeout } from "@cloudpid/config/vitest";
 import { defineConfig } from "vitest/config";
 
 /**
@@ -27,7 +28,11 @@ export class WorkspaceContainerPreviews extends WorkerEntrypoint {
 export default { fetch: () => new Response("Not found", { status: 404 }) };
 `;
 
-/** The Worker's tests run inside workerd, against its real entry and Durable Object. */
+/**
+ * The Worker's tests run inside workerd, against its real entry and Durable Object. They do not merge the shared base, so
+ * they take its timeout themselves: a test that runs a dozen calls in Worker Loader isolates took over Vitest's 5 s
+ * default on a loaded CI runner (#632).
+ */
 export default defineConfig({
   plugins: [
     cloudflareTest({
@@ -57,5 +62,5 @@ export default defineConfig({
       },
     }),
   ],
-  test: { include: ["src/**/*.test.ts"] },
+  test: { include: ["src/**/*.test.ts"], testTimeout },
 });
