@@ -15,4 +15,6 @@ export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
   "35478948f07bbf90",
   // 5: `mcp_app_ui`, `mcp_app_html_meta` and `mcp_app_html`, the App HTML by hash.
   "325ceb96ef159fca",
+  // 6: `mcp_watches` and `mcp_watch_ends`, the Resource watches and the ends not yet told.
+  "d49d9e178d13aa9a",
 ];

@@ -67,6 +67,7 @@ import { McpHostStore, type StatusRow, type StoredServer } from "./store.ts";
 import { type McpProcessEnded, processEnded, rootsOf } from "./stdio.ts";
 import { SECOND_MS } from "./time.ts";
 import type { McpTokens } from "./tokens.ts";
+import type { McpListens } from "./watches.ts";
 
 /** At most 3 discoveries at once per host. */
 export const MAX_DISCOVERIES = 3;
@@ -120,6 +121,7 @@ export type McpDiscoveryServices =
   | McpLoadCaps
   | McpListCache
   | McpProcessEnded
+  | McpListens
   | McpTokens;
 
 /** Stop new discoveries: a storage operation failed, so this instance's writes are refused from now on. */
