@@ -26,13 +26,13 @@ import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { Tooltip } from "../components/ui/tooltip.tsx";
 import { copyToClipboard } from "../lib/clipboard.ts";
 import { cn } from "../lib/utils.ts";
-import { exitFailure } from "../registry.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";
 import {
   branchThrough,
   entryIdOf,
   isFinalAnswer,
   isOwnerNode,
+  keptByBranch,
   latestAnswer,
   pointOf,
   siblingsOf,
@@ -42,6 +42,7 @@ import { useShownSessionId } from "./conversation.ts";
 import { messageText } from "./message-text.ts";
 import {
   TreeBarScope,
+  useBranchMove,
   useBusy,
   useFork,
   useMove,
@@ -72,6 +73,7 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
   const busy = useBusy(sessionId);
   const switchBranch = useCall(switchBranchAtom(sessionId));
   const show = useShowFailure();
+  const moveBranch = useBranchMove(sessionId);
   const place = siblingsOf(tree, id);
 
   if (scope === null || scope.archived || place === undefined || place.siblings.length < 2) {
@@ -86,9 +88,11 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
     const conversationId = branchThrough(tree, sibling.id) ?? sibling.conversationId;
 
     show(null);
-    void switchBranch(conversationId).then((exit) => {
-      show(exitFailure(exit));
-    });
+    moveBranch(
+      (all) => keptByBranch(all, conversationId),
+      () => switchBranch(conversationId),
+      show,
+    );
   };
 
   return (

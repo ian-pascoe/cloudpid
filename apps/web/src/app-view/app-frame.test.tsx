@@ -2,7 +2,8 @@
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true,"handleDisabledFileLoadingAsSuccess":true}}
 // docs/architecture/mcp-apps.md → App Views in the transcript (Teardown). The card's frame in a DOM: a View that is ended by its
 // card (eviction, a server gone or shadowed, another page, Retry) is told to tear down while its frame is still in the
-// document, and the frame leaves only once it has answered, or after 2 s.
+// document, and the frame leaves only once it has answered, or after 2 s; what is about to unmount a frame asks the registry
+// to tear its View down first; and a View asks for a display mode.
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-chained-type-assertions -- the traffic of a fake frame: JSON-RPC as a case posts it, cut down to the shape a case reads */
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off newPromise:off asyncFunction:off -- a DOM and its timers, driven by hand.
 import type { McpAppRecord, McpAppRequestAnswer } from "@cloudpid/protocol";
@@ -10,13 +11,13 @@ import * as Effect from "effect/Effect";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AppMount, type AppLoadedProps } from "./app-call.tsx";
 import { AppFrame, type AppFrameProps } from "./app-frame.tsx";
 import { TEARDOWN_TIMEOUT_MS } from "./bridge.ts";
+import { afterTeardown, appViews, EVERY_VIEW } from "./teardown.ts";
+import { installFakeFrames, ORIGIN, type Sent, viewOf } from "./frame-kit.testing.ts";
 import type { AppPage } from "./load.ts";
 import type { AppRequestClient } from "./requests.ts";
 
-const ORIGIN = "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app";
 const OTHER = "https://bbbbbbbbbbbbbbbbbbbbbbbbbb.ianpascoe.app";
 
 const record: McpAppRecord = {
@@ -36,37 +37,7 @@ const pageAt = (origin: string): AppPage => ({ html: "<p>view</p>", meta: {}, or
 const PAGE_A = pageAt(ORIGIN);
 const PAGE_B = pageAt(OTHER);
 
-type Sent = { readonly data: Record<string, unknown>; readonly target: string };
-
-/** A frame's window, which happy-dom does not make for a page it does not load: a stand-in that records what is posted to it. */
-interface FakeWindow {
-  readonly sent: Sent[];
-  readonly postMessage: (data: Record<string, unknown>, target: string) => void;
-}
-
-const windows = new WeakMap<HTMLIFrameElement, FakeWindow>();
-
-Object.defineProperty(HTMLIFrameElement.prototype, "contentWindow", {
-  configurable: true,
-  get(this: HTMLIFrameElement) {
-    const found = windows.get(this);
-
-    if (found !== undefined) return found;
-
-    const sent: Sent[] = [];
-
-    const made: FakeWindow = {
-      sent,
-      postMessage: (data, target) => {
-        sent.push({ data, target });
-      },
-    };
-
-    windows.set(this, made);
-
-    return made;
-  },
-});
+installFakeFrames();
 
 let host: HTMLDivElement;
 let root: Root;
@@ -93,40 +64,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** The frame in the card, with what the page posts to it recorded, and a way to answer as the View would. */
-const frameOf = () => {
-  const element = host.querySelector("iframe");
-  const win = element === null ? undefined : windows.get(element);
-
-  if (element === null || win === undefined) throw new Error("no frame");
-
-  const { sent } = win;
-
-  const say = (data: Record<string, unknown>, origin = ORIGIN) => {
-    act(() => {
-      window.dispatchEvent(
-        new MessageEvent("message", { data, origin, source: win as unknown as MessageEventSource }),
-      );
-    });
-  };
-
-  const handshake = () => {
-    say({ jsonrpc: "2.0", method: "ui/notifications/sandbox-proxy-ready", params: {} });
-    say({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "ui/initialize",
-      params: { protocolVersion: "2026-01-26", appInfo: { name: "v", version: "1" } },
-    });
-    say({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
-  };
-
-  // The answers carry no method: only what the page says on its own.
-  const methods = () =>
-    sent.flatMap((each) => (each.data["method"] === undefined ? [] : [each.data["method"]]));
-
-  return { element, sent, say, handshake, methods };
-};
+/** The frame in the card. */
+const frameOf = () => viewOf(host.querySelector("iframe"));
 
 const render = (props: Partial<AppFrameProps> = {}) => {
   act(() => {
@@ -286,77 +225,265 @@ describe("a View's frame in its card", () => {
   });
 });
 
-describe("a card's hold on a frame whose View is no longer live", () => {
-  const tool = {
-    name: "mcp__docs__page",
-    server: "docs",
-    tool: "page",
-    uri: "ui://docs/page",
-    visibility: ["model", "app"],
-  };
+/** What the page posted to the frame in answer to request `id`, when it has. */
+const answerTo = (sent: readonly Sent[], id: number) =>
+  sent.find((each) => each.data["id"] === id)?.data;
 
-  // What loads a View in the card, in place of the atoms: the record and page at once.
-  const Loaded = (props: AppLoadedProps) => (
-    <AppFrame
-      record={record}
-      page={PAGE_A}
-      tool={undefined}
-      badge={props.badge}
-      closing={props.closing}
-      onFramed={props.onFramed}
-      onClosed={props.onClosed}
-    />
-  );
+const settle = async () => {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+};
 
-  const mount = (live: boolean) => {
-    act(() => {
-      root.render(
-        <AppMount
-          sessionId="s1"
-          callId="c1"
-          tool={tool}
-          badge={null}
-          live={live}
-          note="App unavailable"
-          Loaded={Loaded}
-        />,
-      );
-    });
-  };
+describe("what asks a View to tear down before its frame is unmounted", () => {
+  it("asks every mounted View, and says when each has answered, leaving the frame in the document", async () => {
+    render();
 
-  it("shows the note, mounting nothing, for a call that was never live", () => {
-    mount(false);
-    expect(host.querySelector("iframe")).toBeNull();
-    expect(host.textContent).toContain("App unavailable");
+    const view = frameOf();
+
+    view.handshake();
+    view.sent.length = 0;
+
+    const done = vi.fn();
+
+    void appViews.tearDown(EVERY_VIEW).then(done);
+
+    expect(view.methods()).toEqual(["ui/resource-teardown"]);
+    expect(host.querySelector("iframe")).toBe(view.element);
+    expect(done).not.toHaveBeenCalled();
+
+    view.say({ jsonrpc: "2.0", id: view.sent[0]?.data["id"], result: {} });
+    await settle();
+
+    expect(done).toHaveBeenCalledTimes(1);
+    // The caller removes the frame; nothing remade it.
+    expect(host.querySelector("iframe")).toBe(view.element);
   });
 
-  it("keeps the frame while its View tears down, then shows the note, and a View that comes back is a new frame", async () => {
-    mount(true);
+  it("waits at most 2 s for a View that does not answer", async () => {
+    render();
+    frameOf().handshake();
 
-    const first = frameOf();
+    const done = vi.fn();
 
-    first.handshake();
-    first.sent.length = 0;
-
-    mount(false);
-
-    // Told to tear down, and still there to hear it; no note yet.
-    expect(first.methods()).toEqual(["ui/resource-teardown"]);
-    expect(host.querySelector("iframe")).toBe(first.element);
-    expect(host.textContent).not.toContain("App unavailable");
-
-    first.say({ jsonrpc: "2.0", id: first.sent[0]?.data["id"], result: {} });
+    void appViews.tearDown(EVERY_VIEW).then(done);
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(TEARDOWN_TIMEOUT_MS - 1);
+    });
+    expect(done).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(done).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks only the Views inside what is about to go", () => {
+    render();
+
+    const view = frameOf();
+
+    view.handshake();
+    view.sent.length = 0;
+
+    const elsewhere = document.createElement("div");
+
+    void appViews.tearDown(elsewhere);
+    expect(view.methods()).toEqual([]);
+
+    void appViews.tearDown(host);
+    expect(view.methods()).toEqual(["ui/resource-teardown"]);
+  });
+
+  it("runs the action at once when no View is mounted, and after the teardown when one is", async () => {
+    const action = vi.fn();
+
+    afterTeardown(action, EVERY_VIEW);
+    expect(action).toHaveBeenCalledTimes(1);
+
+    render();
+
+    const view = frameOf();
+
+    view.handshake();
+    view.sent.length = 0;
+    afterTeardown(action, host);
+
+    expect(action).toHaveBeenCalledTimes(1);
+    view.say({ jsonrpc: "2.0", id: view.sent[0]?.data["id"], result: {} });
+    await settle();
+
+    expect(action).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes a new frame for a retired View that is wanted after all (a move that did not happen), never before", async () => {
+    render();
+
+    const old = frameOf();
+
+    old.handshake();
+    old.sent.length = 0;
+
+    const [handle] = appViews.select(() => true);
+
+    void appViews.tearDown(host);
+    old.say({ jsonrpc: "2.0", id: old.sent[0]?.data["id"], result: {} });
+    await settle();
+
+    // Torn down, and the frame is the dead one until the caller says it is wanted.
+    expect(host.querySelector("iframe")).toBe(old.element);
+
+    handle?.restart();
+    await settle();
+
+    expect(host.querySelectorAll("iframe")).toHaveLength(1);
+    expect(host.querySelector("iframe")).not.toBe(old.element);
+  });
+
+  it("tells its place it has gone when the place ends a View a guard had already torn down", async () => {
+    const closed = vi.fn();
+
+    render({ onClosed: closed });
+
+    const view = frameOf();
+
+    view.handshake();
+    view.sent.length = 0;
+    void appViews.tearDown(host);
+    view.say({ jsonrpc: "2.0", id: view.sent[0]?.data["id"], result: {} });
+    await settle();
+    expect(closed).not.toHaveBeenCalled();
+
+    render({ onClosed: closed, closing: true });
+    await settle();
+
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(view.methods()).toEqual(["ui/resource-teardown"]);
+  });
+
+  it("asks a View once when its place ends it and a guard asks at the same time", () => {
+    const closed = vi.fn();
+
+    render({ onClosed: closed });
+
+    const view = frameOf();
+
+    view.handshake();
+    view.sent.length = 0;
+    // The place ends it, and a guard asks at the same time.
+    render({ onClosed: closed, closing: true });
+    void appViews.tearDown(EVERY_VIEW);
+
+    expect(view.methods()).toEqual(["ui/resource-teardown"]);
+  });
+});
+
+describe("a View's display modes", () => {
+  /** The host context the page answered `ui/initialize` with. */
+  const contextOf = (sent: readonly Sent[]) => {
+    const result = answerTo(sent, 1)?.["result"] as { hostContext: Record<string, unknown> };
+
+    return result.hostContext;
+  };
+
+  it("is told `inline` in a card, with both modes on offer, and its width fixed and height flexible", async () => {
+    render();
+
+    const view = frameOf();
+
+    view.handshake();
+    await settle();
+
+    expect(contextOf(view.sent)).toMatchObject({
+      displayMode: "inline",
+      availableDisplayModes: ["inline", "fullscreen"],
+    });
+    expect(contextOf(view.sent)["containerDimensions"]).toHaveProperty("maxHeight");
+    expect(contextOf(view.sent)).not.toHaveProperty("safeAreaInsets");
+  });
+
+  it("is told `fullscreen` in an App Pane, with both axes fixed, and fills the Pane", async () => {
+    render({ place: "app-pane" });
+
+    const view = frameOf();
+
+    view.handshake();
+    await settle();
+
+    expect(contextOf(view.sent)).toMatchObject({ displayMode: "fullscreen" });
+    expect(contextOf(view.sent)["containerDimensions"]).toHaveProperty("height");
+    expect(contextOf(view.sent)["containerDimensions"]).not.toHaveProperty("maxHeight");
+    expect(view.element.getAttribute("style")).toBeNull();
+    expect(host.querySelector("[data-app-view]")?.className).toContain("flex-1");
+  });
+
+  it("hands a request for `fullscreen` to its place, and answers the mode it will be in", async () => {
+    const request = vi.fn();
+
+    render({ onRequestMode: request });
+
+    const view = frameOf();
+
+    view.handshake();
+    view.say({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "ui/request-display-mode",
+      params: { mode: "fullscreen" },
+    });
+    await settle();
+
+    expect(request).toHaveBeenCalledWith("fullscreen");
+    expect(answerTo(view.sent, 7)?.["result"]).toEqual({ mode: "fullscreen" });
+  });
+
+  it("refuses `pip` with the mode it is in, and asks its place for nothing", async () => {
+    const request = vi.fn();
+
+    render({ onRequestMode: request });
+
+    const view = frameOf();
+
+    view.handshake();
+    view.say({
+      jsonrpc: "2.0",
+      id: 8,
+      method: "ui/request-display-mode",
+      params: { mode: "pip" },
+    });
+    await settle();
+
+    expect(request).not.toHaveBeenCalled();
+    expect(answerTo(view.sent, 8)?.["result"]).toEqual({ mode: "inline" });
+  });
+});
+
+describe("a frame's header", () => {
+  it("has the buttons its place gives it, and each does what it says", () => {
+    const controls = { onCollapse: vi.fn(), onPopOut: vi.fn(), onBack: vi.fn() };
+
+    render({ controls });
+
+    const button = (name: string) =>
+      Array.from(host.querySelectorAll("button")).find((each) => each.textContent === name);
+
+    act(() => {
+      button("Collapse")?.click();
+      button("Pop out")?.click();
+      button("Back to chat")?.click();
     });
 
-    expect(host.querySelector("iframe")).toBeNull();
-    expect(host.textContent).toContain("App unavailable");
+    expect(controls.onCollapse).toHaveBeenCalledTimes(1);
+    expect(controls.onPopOut).toHaveBeenCalledTimes(1);
+    expect(controls.onBack).toHaveBeenCalledTimes(1);
+  });
 
-    // The server is back: a frame of its own, never the dead one.
-    mount(true);
-    expect(host.querySelector("iframe")).not.toBeNull();
-    expect(host.querySelector("iframe")).not.toBe(first.element);
+  it("has none a place does not give", () => {
+    render({ controls: { onBack: vi.fn() } });
+
+    const labels = Array.from(host.querySelectorAll("button")).map((each) => each.textContent);
+
+    expect(labels).toEqual(["Back to chat", "Details"]);
   });
 });
 
@@ -402,6 +529,62 @@ describe("a View's requests of its server, and signing in", () => {
     await flush();
 
     expect(answerTo(view, 7)).toEqual({ jsonrpc: "2.0", id: 7, result: { content: [] } });
+  });
+
+  it('forwards only resources/read, and badges it "Read only", when its place says it may only read', async () => {
+    render({
+      client: answering({ status: "result", result: { contents: [] } }),
+      readOnly: true,
+    });
+
+    const view = frameOf();
+
+    view.handshake();
+    await flush();
+
+    const initialized = view.sent.find((each) => each.data["id"] === 1)?.data;
+
+    expect(initialized).toMatchObject({ result: { hostCapabilities: { serverResources: {} } } });
+    expect(JSON.stringify(initialized)).not.toContain("serverTools");
+    expect(host.textContent).toContain("Read only");
+
+    ask(view, 7);
+    ask(view, 8, "resources/read");
+    await flush();
+
+    expect(answerTo(view, 7)).toMatchObject({ error: { code: -32_601 } });
+    expect(answerTo(view, 8)).toEqual({ jsonrpc: "2.0", id: 8, result: { contents: [] } });
+  });
+
+  it("is made again with every call served, and no badge, when the Session is unarchived under a View that was reopened read only", async () => {
+    const client = answering({ status: "result", result: { content: [] } });
+
+    render({ client, readOnly: true });
+
+    const old = frameOf();
+
+    old.handshake();
+    old.sent.length = 0;
+
+    render({ client, readOnly: false });
+
+    // The read-only View is told to tear down first, and its frame is there to hear it; the badge goes with the frame.
+    expect(old.methods()).toEqual(["ui/resource-teardown"]);
+    expect(host.querySelector("iframe")).toBe(old.element);
+
+    old.say({ jsonrpc: "2.0", id: old.sent[0]?.data["id"], result: {} });
+    await flush();
+
+    const next = frameOf();
+
+    expect(next.element).not.toBe(old.element);
+    expect(host.textContent).not.toContain("Read only");
+
+    next.handshake();
+    ask(next, 7);
+    await flush();
+
+    expect(answerTo(next, 7)).toEqual({ jsonrpc: "2.0", id: 7, result: { content: [] } });
   });
 
   it("advertises no server calls, and answers them as not found, when it has no client to serve them", async () => {

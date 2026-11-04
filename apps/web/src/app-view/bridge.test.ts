@@ -885,7 +885,7 @@ describe("an ext-apps View (the real `App` runtime)", () => {
     expect(app.getHostContext()).toMatchObject({
       theme: "light",
       displayMode: "inline",
-      availableDisplayModes: ["inline"],
+      availableDisplayModes: ["inline", "fullscreen"],
       platform: "web",
       locale: "en-US",
       timeZone: "UTC",

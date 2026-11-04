@@ -29,6 +29,9 @@ export type AppRequestClient = Pick<SessionClient, "appRequest" | "appLog">;
 /** The methods a View may ask its server, which the bridge serves. */
 export const VIEW_REQUEST_METHODS = ["tools/call", "resources/read"] as const;
 
+/** The methods a View that may only read is served. */
+export const READ_ONLY_METHODS = ["resources/read"] as const;
+
 /** What the card is told as requests come to an end. */
 export interface ViewRequestReports {
   /** A request failed because the server needs a sign-in (`stepUp`: the one it has is not enough). */
@@ -92,6 +95,7 @@ export const viewRequestHandlers = (
   client: AppRequestClient,
   callId: string,
   reports: ViewRequestReports,
+  options: { readonly readOnly?: boolean } = {},
 ): Readonly<Record<string, RequestHandler>> => {
   const serve =
     (method: string): RequestHandler =>
@@ -114,7 +118,10 @@ export const viewRequestHandlers = (
       return answerOf(answer, reports);
     };
 
-  return Record.fromEntries(Arr.map(VIEW_REQUEST_METHODS, (method) => [method, serve(method)]));
+  // A View that may only read is served `resources/read`; `tools/call` is no handler, which the bridge answers as not found.
+  const methods = options.readOnly === true ? READ_ONLY_METHODS : VIEW_REQUEST_METHODS;
+
+  return Record.fromEntries(Arr.map(methods, (method) => [method, serve(method)]));
 };
 
 const LogLine = Schema.Struct({

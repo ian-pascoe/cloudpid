@@ -15,9 +15,9 @@ import { Dialog, DialogActions } from "../components/ui/dialog.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { cn } from "../lib/utils.ts";
 import { exitFailure } from "../registry.ts";
-import { ownerMessages, pointOf } from "../session/tree.ts";
+import { keptByPoint, ownerMessages, pointOf } from "../session/tree.ts";
 import { useShownSessionId } from "./conversation.ts";
-import { useFork, useTree } from "./tree-actions.ts";
+import { useBranchMove, useFork, useTree } from "./tree-actions.ts";
 import {
   forkChooserAtom,
   forkingAtom,
@@ -40,6 +40,7 @@ const SummaryChoices = ({ close }: { close: () => void }) => {
   const pending = useAtomValue(pendingMoveAtom);
   const [{ focus, running, failure }, setForm] = useAtom(SummaryForm.use());
   const navigate = useCall(navigateAtom(pending?.sessionId ?? ""));
+  const moveBranch = useBranchMove(pending?.sessionId ?? "");
 
   if (pending === null) return null;
 
@@ -49,13 +50,15 @@ const SummaryChoices = ({ close }: { close: () => void }) => {
 
   const go = (summary: { readonly instructions?: string } | undefined) => {
     setForm({ focus, running: true, failure: null });
-    void navigate({ point: pending.point, summary }).then((exit) => {
-      const why = exitFailure(exit);
+    moveBranch(
+      (tree) => keptByPoint(tree, pending.point),
+      () => navigate({ point: pending.point, summary }),
+      (why) => {
+        setForm({ focus, running: false, failure: why });
 
-      setForm({ focus, running: false, failure: why });
-
-      if (why === null) close();
-    });
+        if (why === null) close();
+      },
+    );
   };
 
   return (

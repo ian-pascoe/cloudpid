@@ -7,9 +7,12 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
 import { appRuntime } from "../runtime.ts";
-import { sessionClientAtom } from "../session/atoms.ts";
+import type { ConversationKey } from "../chat/conversation.ts";
+import { appEntries } from "../session/apps.ts";
+import { mcpAppsAtom, sessionClientAtom, sessionViewAtom, threadAtom } from "../session/atoms.ts";
 import { mcpStatusesAtom } from "../settings/mcp-state.ts";
 import { sessionListAtom } from "../sessions.ts";
+import { liveGeneration, NO_LIVE_CALLS } from "./generation.ts";
 import { type AppLoad, loadAppView } from "./load.ts";
 
 /** The key of one call's View: the Session it ran in, and the call. */
@@ -59,5 +62,39 @@ export const sessionEnvironmentAtom = Atom.family((sessionId: string) =>
 export const sessionMcpStatusesAtom = Atom.family((sessionId: string) =>
   Atom.readable((get) =>
     get(mcpStatusesAtom(get(sessionEnvironmentAtom(sessionId)) ?? GLOBAL_SCOPE)),
+  ),
+);
+
+/**
+ * The calls of the thread `key` whose App Views are in the newest generation of their server's (`liveGeneration`): the root
+ * thread's, or a subagent's, from its transcript and the Session's App calls. A thread with no App call is the same empty
+ * set each time, so a transcript's every token costs its cards nothing.
+ */
+export const appGenerationAtom = Atom.family((key: ConversationKey) =>
+  Atom.make((get): ReadonlySet<string> => {
+    const apps = appEntries(get(mcpAppsAtom(key.sessionId)));
+
+    if (apps.length === 0) return NO_LIVE_CALLS;
+
+    const view =
+      key.conversationId === undefined
+        ? get(sessionViewAtom(key.sessionId))
+        : get(threadAtom({ sessionId: key.sessionId, conversationId: key.conversationId }))?.view;
+
+    if (view === undefined) return NO_LIVE_CALLS;
+
+    return liveGeneration(
+      [...view.earlier, ...view.messages, ...(view.live !== null ? [view.live] : [])],
+      apps,
+    );
+  }),
+);
+
+/** Whether Session `sessionId` is archived, as the list last had it: its App Views are collapsed, and reopen read-only. */
+export const sessionArchivedAtom = Atom.family((sessionId: string) =>
+  Atom.readable((get) =>
+    Arr.findFirst(get(sessionListAtom) ?? [], (session) => session.id === sessionId).pipe(
+      Option.exists((session) => session.archivedAt !== null),
+    ),
   ),
 );

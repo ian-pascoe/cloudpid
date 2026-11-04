@@ -31,14 +31,24 @@
 // The old pages' addresses (`/environments`, `/skills…`) are replaced in the history by their Settings page equivalent
 // as the page opens or is navigated to (`legacyRedirect`), so a bookmark or an old link still lands.
 
+import { afterTeardown, appViews, EVERY_VIEW } from "./app-view/teardown.ts";
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Atom from "effect/reactivity/Atom";
 
 /** Show `path` as a new history entry; `pathAtom` hears of it like a back or forward. */
 export const navigate = (path: string): void => {
-  window.history.pushState(null, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  const go = () => {
+    window.history.pushState(null, "", path);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
+
+  // Another page unmounts what the page has, and an App View in it is told to tear down first (docs/architecture/mcp-apps.md →
+  // App Views in the transcript: Teardown). The browser's own Back and Forward cannot wait, and ask only as they unmount.
+  const samePage = path.split(/[?#]/)[0] === window.location.pathname;
+
+  if (samePage || !appViews.any()) go();
+  else afterTeardown(go, EVERY_VIEW);
 };
 
 /** Show `path` in place of the history entry's, as a page that leads elsewhere does; `pathAtom` hears of it. */

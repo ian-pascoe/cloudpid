@@ -14,6 +14,7 @@ import { subagentPath } from "../router.ts";
 import { agentOfConversation } from "../session/agents.ts";
 import { abortAtom, taskGraphAtom } from "../session/atoms.ts";
 import { subagentCardOpenAtom } from "../session-layout-state.ts";
+import { afterTeardown } from "../app-view/teardown.ts";
 import { ChildThread } from "./child-thread.tsx";
 import { useShownLayoutKey, useShownSessionId } from "./conversation.ts";
 import { keepClosedInView } from "./scroller.ts";
@@ -154,8 +155,18 @@ export const SubagentCard = ({ subagent, args, messages }: CardProps) => {
     <details
       open={open}
       onToggle={(event) => {
+        const details = event.currentTarget;
+
         // A `details` rendered open fires a toggle too; only a change is kept.
-        if (event.currentTarget.open !== open) setOpen(event.currentTarget.open);
+        if (details.open === open) return;
+
+        // Closing the card unmounts its thread, and an App View in it is told to tear down first (docs/architecture/mcp-apps.md
+        // → App Views in the transcript: Teardown); the card is closed to the eye meanwhile, as `details` does it.
+        if (details.open) setOpen(true);
+        else
+          afterTeardown(() => {
+            setOpen(details.open);
+          }, details);
       }}
       className="group/subagent my-2 rounded-md border"
     >

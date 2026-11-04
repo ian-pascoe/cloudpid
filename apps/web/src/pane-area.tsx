@@ -20,6 +20,8 @@ import {
   type PointerEvent,
   type RefObject,
 } from "react";
+import { AppPane } from "./app-view/app-pane.tsx";
+import { afterTeardown, paneElement } from "./app-view/teardown.ts";
 import { useShownLayoutKey, useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
 import { SubagentPane } from "./chat/subagent-pane.tsx";
@@ -41,7 +43,8 @@ import {
   type PaneTypeId,
 } from "./panes.ts";
 import { agentLabel } from "./session/agents.ts";
-import { taskGraphAtom } from "./session/atoms.ts";
+import { appEntryOf } from "./session/apps.ts";
+import { mcpAppsAtom, taskGraphAtom } from "./session/atoms.ts";
 import {
   DEFAULT_PANE_WIDTH,
   MAX_PANE_WIDTH,
@@ -63,6 +66,7 @@ const PANE_COMPONENTS = {
   browser: BrowserPane,
   "live-view": LiveViewPane,
   diff: DiffPane,
+  app: AppPane,
 } satisfies {
   readonly [Id in PaneTypeId]: ComponentType<PaneProps>;
 };
@@ -161,10 +165,12 @@ const usePaneLookups = (): PaneLookups => {
   const sessionId = useShownSessionId();
   const handoffAgents = useAtomValue(handoffAgentsAtom(sessionId));
   const graph = useAtomValue(taskGraphAtom(sessionId));
+  const apps = useAtomValue(mcpAppsAtom(sessionId));
 
   return {
     agentOfHandoff: (requestId) => handoffAgents.get(requestId),
     agentOfConversation: (conversationId) => agentLabel(graph, conversationId),
+    serverOfApp: (callId) => appEntryOf(apps, callId)?.server,
   };
 };
 
@@ -233,6 +239,14 @@ export const PaneArea = () => {
 
   const tabId = (key: string) => `${base}-tab-${open.indexOf(key)}`;
   const panelId = (key: string) => `${base}-panel-${open.indexOf(key)}`;
+
+  // Closing a Pane unmounts what is in it, and an App View in it is told to tear down first (docs/architecture/mcp-apps.md →
+  // App Views in the transcript: Teardown), which has `afterTeardown` wait for it, at most 2 s.
+  const closePane = (key: string) => {
+    afterTeardown(() => {
+      act({ type: "close", key });
+    }, paneElement(key));
+  };
 
   // Arrow keys, Home and End move between the tabs, as a tab list does; a tab shows its Pane as it takes the focus.
   const onTabKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -308,7 +322,7 @@ export const PaneArea = () => {
                   aria-label={`Close ${named}`}
                   title={`Close ${named}`}
                   onClick={() => {
-                    act({ type: "close", key });
+                    closePane(key);
                   }}
                   className="touch-target mr-1 flex size-7 items-center justify-center rounded-md hover:bg-accent [&_svg]:size-3.5"
                 >
@@ -358,6 +372,7 @@ export const PaneArea = () => {
             key={key}
             role="tabpanel"
             id={panelId(key)}
+            data-pane={key}
             aria-labelledby={tabId(key)}
             hidden={key !== shown}
             className="flex min-h-0 flex-1 flex-col"
@@ -366,7 +381,7 @@ export const PaneArea = () => {
               <Component
                 argument={pane.argument}
                 close={() => {
-                  act({ type: "close", key });
+                  closePane(key);
                 }}
               />
             )}

@@ -102,6 +102,14 @@ describe("a View's requests", () => {
     expect(Record.keys(handlers).sort()).toEqual(["resources/read", "tools/call"]);
   });
 
+  it("serves only resources/read to a View that may only read, and so answers tools/call as not found", () => {
+    const handlers = viewRequestHandlers(fakeClient(undefined).client, "c", reports().on, {
+      readOnly: true,
+    });
+
+    expect(Record.keys(handlers)).toEqual(["resources/read"]);
+  });
+
   it("answers params that are not an object of JSON with -32602, without asking the Session", async () => {
     const { client, asked } = fakeClient({ status: "result", result: {} });
     const handlers = viewRequestHandlers(client, "c", reports().on);

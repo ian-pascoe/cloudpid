@@ -1,5 +1,7 @@
+// @effect-diagnostics asyncFunction:off newPromise:off -- a test that holds a native promise open and lets it go.
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { appViews } from "./app-view/teardown.ts";
 import { stubWindow } from "./router.testing.ts";
 import {
   navigate,
@@ -390,6 +392,46 @@ describe("the page's path", () => {
     browser.back();
     browser.back();
     expect(registry.get(pageAtom)).toEqual({ kind: "empty" });
+  });
+
+  it("waits for a mounted App View to tear down before it moves to another page, and not for a change of query", async () => {
+    stubWindow("/sessions/a");
+    const registry = AtomRegistry.make();
+
+    registry.mount(pathAtom);
+
+    let answer: () => void = () => undefined;
+
+    const retire = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          answer = resolve;
+        }),
+    );
+
+    const forget = appViews.register({
+      callId: "c1",
+      place: "card",
+      element: () => null,
+      retire,
+      restart: () => undefined,
+    });
+
+    // The same page: nothing unmounts.
+    navigate("/sessions/a?pane=app:c1");
+    expect(registry.get(pathAtom)).toBe("/sessions/a");
+    expect(retire).not.toHaveBeenCalled();
+
+    // Another page: the View is told first, and the page changes when it has answered.
+    navigate(sessionPath("b"));
+    expect(retire).toHaveBeenCalledTimes(1);
+    expect(registry.get(sessionIdAtom)).toBe("a");
+
+    answer();
+    await vi.waitFor(() => {
+      expect(registry.get(sessionIdAtom)).toBe("b");
+    });
+    forget();
   });
 
   it("ignores the query", () => {

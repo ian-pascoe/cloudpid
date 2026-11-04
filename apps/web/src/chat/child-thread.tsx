@@ -12,6 +12,7 @@ import {
 } from "@assistant-ui/react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useRef, type ReactNode } from "react";
+import type { AppPlace } from "../app-view/places.ts";
 import { cn } from "../lib/utils.ts";
 import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
 import {
@@ -23,7 +24,12 @@ import {
 } from "../session/atoms.ts";
 import { type ThreadState } from "../session/state.ts";
 import { Composer } from "./composer.tsx";
-import { conversationKey, ThreadConversation, useShownSessionId } from "./conversation.ts";
+import {
+  conversationKey,
+  ThreadConversation,
+  ThreadPlace,
+  useShownSessionId,
+} from "./conversation.ts";
 import { EarlierHistory } from "./earlier-history.tsx";
 import { TreeBarScope } from "./tree-actions.ts";
 import { textOf } from "./queue-adapter.ts";
@@ -34,6 +40,13 @@ const identity = (message: ThreadMessageLike): ThreadMessageLike => message;
 
 /** How a subagent's conversation shows: in a card's box, filling a Subagent Pane, or as a Subagent page's chat. */
 export type ChildThreadLayout = "card" | "pane" | "page";
+
+/** Where an App View in the thread is mounted: a Subagent Pane's or page's thread takes it before a card's does. */
+const THREAD_PLACES = {
+  card: "card",
+  pane: "subagent-pane",
+  page: "subagent-page",
+} as const satisfies Record<ChildThreadLayout, AppPlace>;
 
 /**
  * What a Subagent page puts in its chat besides the conversation: the Session's requests, and whether it is read-only.
@@ -101,67 +114,69 @@ const LiveChildThread = ({
     <TreeBarScope.Provider value={null}>
       {/* Its disclosures are kept apart from the root thread's, whose messages' IDs it may share. */}
       <ThreadConversation value={conversationId}>
-        <AssistantRuntimeProvider runtime={runtime}>
-          <ThreadPrimitive.Root
-            ref={dropZone}
-            className={cn("flex flex-col", fill && "min-h-0 flex-1")}
-          >
-            <ThreadPrimitive.Viewport
-              className={cn(
-                "min-h-16 overflow-y-auto",
-                fill ? "flex-1 overscroll-y-contain" : "max-h-96",
-                wide && "relative",
-              )}
+        <ThreadPlace value={THREAD_PLACES[layout]}>
+          <AssistantRuntimeProvider runtime={runtime}>
+            <ThreadPrimitive.Root
+              ref={dropZone}
+              className={cn("flex flex-col", fill && "min-h-0 flex-1")}
             >
-              <div
+              <ThreadPrimitive.Viewport
                 className={cn(
-                  "flex flex-col",
-                  wide ? "mx-auto w-full max-w-3xl gap-6 px-4 py-6" : "gap-4 py-2",
+                  "min-h-16 overflow-y-auto",
+                  fill ? "flex-1 overscroll-y-contain" : "max-h-96",
+                  wide && "relative",
                 )}
               >
-                <ThreadPrimitive.Empty>
-                  <p className="py-4 text-center text-sm text-muted-foreground">Nothing yet.</p>
-                </ThreadPrimitive.Empty>
-                <EarlierHistory conversation={key} before={thread.view.before} />
-                {messages}
-              </div>
-            </ThreadPrimitive.Viewport>
-            {problem !== null && (
-              <p
-                role="alert"
-                className={cn(
-                  "text-sm text-destructive",
-                  wide ? "mx-auto w-full max-w-3xl px-4 pb-2" : "pb-2",
-                )}
-              >
-                {problem}
-              </p>
-            )}
-            {/* A Subagent page shows the Todo List in its Session details, as the Session page does the root's. */}
-            {!wide && <TodoList tasks={thread.todos} stale={!live} className="border-t pt-2" />}
-            {page?.requests}
-            {archived === undefined ? (
-              <Composer
-                compact={!wide}
-                who={agent?.id ?? "the agent"}
-                conversationId={conversationId}
-                dropZone={dropZone}
-                steerLane={thread.queue.steer}
-                followUpLane={thread.queue.followUp}
-                sending={thread.sending}
-                onStopAll={
-                  stopAll
-                    ? () => {
-                        abort({ conversationId, subagents: true });
-                      }
-                    : undefined
-                }
-              />
-            ) : (
-              archived
-            )}
-          </ThreadPrimitive.Root>
-        </AssistantRuntimeProvider>
+                <div
+                  className={cn(
+                    "flex flex-col",
+                    wide ? "mx-auto w-full max-w-3xl gap-6 px-4 py-6" : "gap-4 py-2",
+                  )}
+                >
+                  <ThreadPrimitive.Empty>
+                    <p className="py-4 text-center text-sm text-muted-foreground">Nothing yet.</p>
+                  </ThreadPrimitive.Empty>
+                  <EarlierHistory conversation={key} before={thread.view.before} />
+                  {messages}
+                </div>
+              </ThreadPrimitive.Viewport>
+              {problem !== null && (
+                <p
+                  role="alert"
+                  className={cn(
+                    "text-sm text-destructive",
+                    wide ? "mx-auto w-full max-w-3xl px-4 pb-2" : "pb-2",
+                  )}
+                >
+                  {problem}
+                </p>
+              )}
+              {/* A Subagent page shows the Todo List in its Session details, as the Session page does the root's. */}
+              {!wide && <TodoList tasks={thread.todos} stale={!live} className="border-t pt-2" />}
+              {page?.requests}
+              {archived === undefined ? (
+                <Composer
+                  compact={!wide}
+                  who={agent?.id ?? "the agent"}
+                  conversationId={conversationId}
+                  dropZone={dropZone}
+                  steerLane={thread.queue.steer}
+                  followUpLane={thread.queue.followUp}
+                  sending={thread.sending}
+                  onStopAll={
+                    stopAll
+                      ? () => {
+                          abort({ conversationId, subagents: true });
+                        }
+                      : undefined
+                  }
+                />
+              ) : (
+                archived
+              )}
+            </ThreadPrimitive.Root>
+          </AssistantRuntimeProvider>
+        </ThreadPlace>
       </ThreadConversation>
     </TreeBarScope.Provider>
   );
