@@ -163,7 +163,7 @@ describe("the rows a strip shows", () => {
   );
 
   it("shows the last rows, and counts the earlier ones behind an expander", () => {
-    const { shown, earlier } = stripRows(many, new Set(), false);
+    const { shown, earlier } = stripRows(many, new Set(), new Set(), false);
 
     expect(shown).toHaveLength(STRIP_ROWS);
     expect(shown[0]?.callId).toBe("n5");
@@ -178,14 +178,22 @@ describe("the rows a strip shows", () => {
     // `n24` is the last of its server and `first` the only one of its: both live, `first` far from the end.
     expect([...liveOnes].sort()).toEqual(["first", "n24"]);
 
-    const { shown, earlier } = stripRows(callsOfScript(apps, "script"), liveOnes, false);
+    const { shown, earlier } = stripRows(callsOfScript(apps, "script"), liveOnes, new Set(), false);
 
     expect(shown.map((each) => each.callId)).toContain("first");
     expect(earlier).toBe(apps.length - shown.length);
   });
 
+  it("shows a row the owner reopened on this device, so a reload does not hide a reopened early View", () => {
+    const { shown, earlier } = stripRows(many, new Set(), new Set(["n0"]), false);
+
+    expect(shown.map((each) => each.callId)).toContain("n0");
+    expect(shown).toHaveLength(STRIP_ROWS + 1);
+    expect(earlier).toBe(4);
+  });
+
   it("shows everything once expanded, and every row of a short strip", () => {
-    expect(stripRows(many, new Set(), true)).toEqual({ shown: many, earlier: 0 });
-    expect(stripRows(many.slice(0, 3), new Set(), false).earlier).toBe(0);
+    expect(stripRows(many, new Set(), new Set(), true)).toEqual({ shown: many, earlier: 0 });
+    expect(stripRows(many.slice(0, 3), new Set(), new Set(), false).earlier).toBe(0);
   });
 });

@@ -191,6 +191,22 @@ describe("a codemode script's card", () => {
     expect(html.match(/collapsed Reopen/g)).toHaveLength(19);
   });
 
+  it("keeps a row the owner reopened among the shown ones, however early it is", () => {
+    const calls = Array.from({ length: 30 }, (_, n) =>
+      entry(`n${n}`, { parentCall: "script", at: n + 1 }),
+    );
+
+    const registry = registryWith([assistant("1", "script")], calls);
+
+    registry.set(appChoiceAtom("s1", "n0"), "open");
+
+    // 20 last rows and the reopened one: 9 earlier remain; the reopened row is live (no row), the others collapsed.
+    const html = card(registry);
+
+    expect(html).toContain("9 earlier");
+    expect(html.match(/collapsed Reopen/g)).toHaveLength(19);
+  });
+
   it("shows no strip for a script that made no App call", () => {
     const registry = registryWith([assistant("1", "script")], []);
 

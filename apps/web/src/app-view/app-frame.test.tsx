@@ -13,7 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppFrame, type AppFrameProps } from "./app-frame.tsx";
 import { TEARDOWN_TIMEOUT_MS } from "./bridge.ts";
-import { afterTeardown, appViews } from "./teardown.ts";
+import { afterTeardown, appViews, EVERY_VIEW } from "./teardown.ts";
 import { installFakeFrames, ORIGIN, type Sent, viewOf } from "./frame-kit.testing.ts";
 import type { AppPage } from "./load.ts";
 import type { AppRequestClient } from "./requests.ts";
@@ -246,7 +246,7 @@ describe("what asks a View to tear down before its frame is unmounted", () => {
 
     const done = vi.fn();
 
-    void appViews.tearDown().then(done);
+    void appViews.tearDown(EVERY_VIEW).then(done);
 
     expect(view.methods()).toEqual(["ui/resource-teardown"]);
     expect(host.querySelector("iframe")).toBe(view.element);
@@ -266,7 +266,7 @@ describe("what asks a View to tear down before its frame is unmounted", () => {
 
     const done = vi.fn();
 
-    void appViews.tearDown().then(done);
+    void appViews.tearDown(EVERY_VIEW).then(done);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(TEARDOWN_TIMEOUT_MS - 1);
     });
@@ -298,7 +298,7 @@ describe("what asks a View to tear down before its frame is unmounted", () => {
   it("runs the action at once when no View is mounted, and after the teardown when one is", async () => {
     const action = vi.fn();
 
-    afterTeardown(action);
+    afterTeardown(action, EVERY_VIEW);
     expect(action).toHaveBeenCalledTimes(1);
 
     render();
@@ -372,7 +372,7 @@ describe("what asks a View to tear down before its frame is unmounted", () => {
     view.sent.length = 0;
     // The place ends it, and a guard asks at the same time.
     render({ onClosed: closed, closing: true });
-    void appViews.tearDown();
+    void appViews.tearDown(EVERY_VIEW);
 
     expect(view.methods()).toEqual(["ui/resource-teardown"]);
   });
@@ -554,6 +554,37 @@ describe("a View's requests of its server, and signing in", () => {
 
     expect(answerTo(view, 7)).toMatchObject({ error: { code: -32_601 } });
     expect(answerTo(view, 8)).toEqual({ jsonrpc: "2.0", id: 8, result: { contents: [] } });
+  });
+
+  it("is made again with every call served, and no badge, when the Session is unarchived under a View that was reopened read only", async () => {
+    const client = answering({ status: "result", result: { content: [] } });
+
+    render({ client, readOnly: true });
+
+    const old = frameOf();
+
+    old.handshake();
+    old.sent.length = 0;
+
+    render({ client, readOnly: false });
+
+    // The read-only View is told to tear down first, and its frame is there to hear it; the badge goes with the frame.
+    expect(old.methods()).toEqual(["ui/resource-teardown"]);
+    expect(host.querySelector("iframe")).toBe(old.element);
+
+    old.say({ jsonrpc: "2.0", id: old.sent[0]?.data["id"], result: {} });
+    await flush();
+
+    const next = frameOf();
+
+    expect(next.element).not.toBe(old.element);
+    expect(host.textContent).not.toContain("Read only");
+
+    next.handshake();
+    ask(next, 7);
+    await flush();
+
+    expect(answerTo(next, 7)).toEqual({ jsonrpc: "2.0", id: 7, result: { content: [] } });
   });
 
   it("advertises no server calls, and answers them as not found, when it has no client to serve them", async () => {

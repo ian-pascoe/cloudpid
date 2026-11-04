@@ -26,7 +26,6 @@ import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { Tooltip } from "../components/ui/tooltip.tsx";
 import { copyToClipboard } from "../lib/clipboard.ts";
 import { cn } from "../lib/utils.ts";
-import { exitFailure } from "../registry.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";
 import {
   branchThrough,
@@ -91,14 +90,8 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
     show(null);
     moveBranch(
       (all) => keptByBranch(all, conversationId),
-      () =>
-        switchBranch(conversationId).then((exit) => {
-          const why = exitFailure(exit);
-
-          show(why);
-
-          return why === null;
-        }),
+      () => switchBranch(conversationId),
+      show,
     );
   };
 

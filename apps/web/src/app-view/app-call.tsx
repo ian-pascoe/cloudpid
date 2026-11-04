@@ -6,7 +6,7 @@
 // Which place mounts a View is `places.ts`'s; whether a View is live is `generation.ts`'s, with what the owner chose of it
 // on this device. The frame itself is `app-frame.tsx`'s.
 // @effect-diagnostics missingPipeableSignature:off -- a hook over the Session's atoms, not a combinator.
-import { GLOBAL_SCOPE, type McpAppEntry, type McpAppTool } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, type McpAppTool } from "@cloudpid/protocol";
 import { useAtom, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   createContext,
@@ -20,7 +20,6 @@ import {
 import type { ComponentType, ReactNode } from "react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import * as Record from "effect/Record";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { Button } from "../components/ui/button.tsx";
 import {
@@ -32,8 +31,9 @@ import {
 } from "../chat/conversation.ts";
 import { appPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
-import { appChoiceAtom } from "../session-layout-state.ts";
+import { appChoiceAtom, sessionLayoutAtom } from "../session-layout-state.ts";
 import { sessionPath } from "../router.ts";
+import { appEntries, appEntryOf } from "../session/apps.ts";
 import { mcpAppsAtom, mcpAppToolsAtom, sessionClientAtom } from "../session/atoms.ts";
 import { mcpSignInStartHref } from "../settings/mcp-sign-in-model.ts";
 import { AppFailed, AppFrame, type AppControls } from "./app-frame.tsx";
@@ -287,7 +287,8 @@ export const AppPlaceMount = ({
         />
       );
     case "elsewhere":
-      return <ShownIn place={view.place} onBack={onBack} />;
+      // Only an App Pane is a place to bring a View back from: the others are the thread's own.
+      return <ShownIn place={view.place} onBack={view.place === "app-pane" ? onBack : undefined} />;
     case "waiting":
       return null;
     case "none":
@@ -306,10 +307,7 @@ export const useAppFacts = (callId: string, toolName: string | undefined): AppFa
   const statuses = useAtomValue(sessionMcpStatusesAtom(sessionId));
   const archived = useAtomValue(sessionArchivedAtom(sessionId));
 
-  const entry: McpAppEntry | undefined = Arr.findFirst(
-    Arr.flatten(Record.values(apps)),
-    (each) => each.callId === callId,
-  ).pipe(Option.getOrUndefined);
+  const entry = appEntryOf(apps, callId);
 
   // A call's tool as the model names it: the one a card was given, else the inventory's for the entry's server and tool.
   const named =
@@ -431,24 +429,27 @@ export const AppStrip = ({ parentId }: { parentId: string }) => {
   const apps = useAtomValue(mcpAppsAtom(sessionId));
   const [expanded, setExpanded] = useState(false);
 
-  const calls = callsOfScript(Arr.flatten(Record.values(apps)), parentId);
+  const calls = callsOfScript(appEntries(apps), parentId);
 
-  // Which of the script's calls are live, as the string it changes by: a token of the transcript does not redraw the strip.
-  const liveIds = useAtomValue(
+  // Which of the script's calls are live, as the set it changes by: a token of the transcript does not redraw the strip.
+  const live = useAtomValue(
     appGenerationAtom(conversationKey(sessionId, conversationId)),
-    (live) =>
-      Arr.join(
-        Arr.map(
-          Arr.filter(calls, (call) => live.has(call.callId)),
-          (call) => call.callId,
+    (generation) =>
+      new Set(
+        Arr.filter(
+          Arr.map(calls, (call) => call.callId),
+          (id) => generation.has(id),
         ),
-        "\0",
       ),
   );
 
+  // And which the owner reopened on this device.
+  const layoutKey = useShownLayoutKey();
+  const opened = useAtomValue(sessionLayoutAtom(layoutKey), (layout) => new Set(layout.openApps));
+
   if (calls.length === 0) return null;
 
-  const { shown, earlier } = stripRows(calls, new Set(liveIds.split("\0")), expanded);
+  const { shown, earlier } = stripRows(calls, live, opened, expanded);
 
   return (
     <div className="my-2" data-app-strip={parentId}>

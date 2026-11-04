@@ -7,6 +7,12 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a small registry over a native set.
 import type { AppPlace } from "./places.ts";
 
+/** Every View on the page: a page change or a reload ends them all. */
+export const EVERY_VIEW = "every-view";
+
+/** What an unmount takes with it: the Views inside an element, none (the element is not there), or all of them. */
+export type Within = Element | null | typeof EVERY_VIEW;
+
 /** A mounted View's frame, as the page can ask it to end. */
 export interface ViewHandle {
   readonly callId: string;
@@ -39,20 +45,23 @@ export class ViewRegistry {
   readonly select = (keep: (handle: ViewHandle) => boolean): ReadonlyArray<ViewHandle> =>
     [...this.handles].filter(keep);
 
+  /** The mounted Views inside `within`: no element is no place, so nothing is inside it. */
+  readonly inside = (within: Within): ReadonlyArray<ViewHandle> =>
+    this.select((handle) => {
+      if (within === EVERY_VIEW) return true;
+
+      if (within === null) return false;
+
+      const element = handle.element();
+
+      return element !== null && within.contains(element);
+    });
+
   /**
-   * Tear down the Views of every frame inside `within` (all of them without it) at once, and resolve when each has
-   * answered or 2 s have passed. The frames are asked together, so the wait is the slowest View's, not their sum.
+   * Tear down the Views inside `within` at once, and resolve when each has answered or 2 s have passed. The frames are asked
+   * together, so the wait is the slowest View's, not their sum.
    */
-  readonly tearDown = (within?: Element | null): Promise<void> =>
-    retireAll(
-      this.select((handle) => {
-        if (within === undefined || within === null) return true;
-
-        const element = handle.element();
-
-        return element !== null && within.contains(element);
-      }),
-    );
+  readonly tearDown = (within: Within): Promise<void> => retireAll(this.inside(within));
 }
 
 const retireAll = (handles: ReadonlyArray<ViewHandle>): Promise<void> =>
@@ -65,14 +74,18 @@ export const appViews = new ViewRegistry();
  * Run `action` once the Views inside `within` have torn down (at once when there are none): the owner's own action that
  * unmounts them. A second ask while the first waits does the same, and `action` runs for each.
  */
-export const afterTeardown = (action: () => void, within?: Element | null): void => {
-  if (!appViews.any()) {
+export const afterTeardown = (
+  action: () => void,
+  within: Within,
+  registry: ViewRegistry = appViews,
+): void => {
+  if (registry.inside(within).length === 0) {
     action();
 
     return;
   }
 
-  void appViews.tearDown(within).then(action, action);
+  void registry.tearDown(within).then(action, action);
 };
 
 /**

@@ -16,8 +16,9 @@ import type {
   TranscriptMessage,
 } from "@cloudpid/protocol";
 import { EMPTY_VIEW } from "@cloudpid/protocol";
-import { RegistryContext } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
@@ -27,7 +28,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ShownSession } from "../chat/conversation.ts";
+import { ShownSession, ThreadPlace } from "../chat/conversation.ts";
 import { useBranchMove } from "../chat/tree-actions.ts";
 import { sessionTreeAtom } from "../chat/tree-state.ts";
 import { keptByPoint } from "../session/tree.ts";
@@ -35,7 +36,7 @@ import { PaneArea } from "../pane-area.tsx";
 import { panesAtom } from "../panes-state.ts";
 import { RegistryClient } from "../registry.ts";
 import { fakeRegistryLayer } from "../registry.testing.ts";
-import { sessionClientAtom } from "../session/atoms.ts";
+import { sessionClientAtom, sessionViewAtom } from "../session/atoms.ts";
 import { INITIAL_SESSION_STATE, type SessionState } from "../session/state.ts";
 import { sessionListAtom } from "../sessions.ts";
 import { keyValueStoreLayer } from "../storage.ts";
@@ -174,14 +175,15 @@ const stateWith = (count: number): SessionState => {
     ...INITIAL_SESSION_STATE,
     view,
     mcpAppTools: [TOOL],
-    mcpApps: { "1": calls.map((call, index) => entryOf(call, index + 1)) },
+    // The Session keeps the App calls of every branch, whatever the transcript shown holds.
+    mcpApps: { "1": CALLS.map((call, index) => entryOf(call, index + 1)) },
   };
 };
 
 let state: SubscriptionRef.SubscriptionRef<SessionState>;
 
 /** The Session `s1` as the page holds it, with `count` of the calls in its transcript, and every call's View loaded. */
-const session = (options: { archived?: boolean; count?: number } = {}) => {
+const session = (options: { archived?: boolean; count?: number; tree?: boolean } = {}) => {
   state = Effect.runSync(SubscriptionRef.make(stateWith(options.count ?? 1)));
 
   registry = AtomRegistry.make({
@@ -196,7 +198,10 @@ const session = (options: { archived?: boolean; count?: number } = {}) => {
         options.archived === true ? ([{ id: "s1", archivedAt: 1 }] as never) : [],
       ),
       // The Session tree: message 1 (call c1) and message 2 (call c2), one after the other.
-      Atom.initialValue(sessionTreeAtom("s1"), AsyncResult.success(TREE)),
+      Atom.initialValue(
+        sessionTreeAtom("s1"),
+        options.tree === false ? AsyncResult.initial() : AsyncResult.success(TREE),
+      ),
       ...CALLS.map((call) =>
         Atom.initialValue(
           appLoadAtom(appKey("s1", call)),
@@ -232,6 +237,7 @@ beforeEach(() => {
   root = createRoot(host);
   places = new AppPlaces();
   asked.length = 0;
+  subagentPane = false;
 });
 
 afterEach(() => {
@@ -244,9 +250,21 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/** What moves the active branch to just after message 1, as the tree's actions do: `moved` is what the move answers. */
+/**
+ * What moves the active branch to just after message 1, as the tree's actions do: it changes the transcript to message 1
+ * alone, so the card of call c2 is gone, unless `moved` is false and the move is refused.
+ */
 let moved = true;
-const move = vi.fn(() => Promise.resolve(moved));
+
+const move = vi.fn(() => {
+  if (!moved) return Promise.resolve(Exit.fail("refused"));
+
+  Effect.runSync(SubscriptionRef.set(state, stateWith(1)));
+
+  return Promise.resolve(Exit.void);
+});
+
+const report = vi.fn();
 
 const Mover = () => {
   const moveBranch = useBranchMove("s1");
@@ -255,7 +273,7 @@ const Mover = () => {
     <button
       type="button"
       onClick={() => {
-        moveBranch((tree) => keptByPoint(tree, { entryId: 1, position: "at" }), move);
+        moveBranch((tree) => keptByPoint(tree, { entryId: 1, position: "at" }), move, report);
       }}
     >
       Move
@@ -263,16 +281,39 @@ const Mover = () => {
   );
 };
 
-const Page = (): ReactNode => (
-  <>
-    <Mover />
+/** Whether a Subagent Pane's thread shows the first call too, as one open on the Session's page does. */
+let subagentPane = false;
+
+/** The transcript's cards: a call's card is there while its message is. */
+const Thread = () => {
+  const view = useAtomValue(sessionViewAtom("s1"));
+
+  const calls = view.messages.flatMap((message) =>
+    message.parts.flatMap((part) => (part.type === "tool-call" ? [part.id] : [])),
+  );
+
+  return (
     <div data-testid="chat">
-      {CALLS.map((call) => (
+      {calls.map((call) => (
         <div key={call} data-call={call}>
           <AppCall callId={call} toolName="mcp__docs__page" />
         </div>
       ))}
     </div>
+  );
+};
+
+const Page = (): ReactNode => (
+  <>
+    <Mover />
+    <Thread />
+    {subagentPane && (
+      <div data-testid="subagent-pane">
+        <ThreadPlace.Provider value="subagent-pane">
+          <AppCall callId="c1" toolName="mcp__docs__page" />
+        </ThreadPlace.Provider>
+      </div>
+    )}
     <PaneArea />
   </>
 );
@@ -584,6 +625,7 @@ describe("moving to another Session branch", () => {
   beforeEach(() => {
     moved = true;
     move.mockClear();
+    report.mockClear();
   });
 
   const ready = async () => {
@@ -608,10 +650,14 @@ describe("moving to another Session branch", () => {
     dropped.answerTeardown();
     await settle();
 
+    // The move changed the transcript: the dropped call's card is gone, its frame with it, after its View had torn down; the
+    // kept call's card is the same, with the same frame, never told anything.
     expect(move).toHaveBeenCalledTimes(1);
-    // The kept View is the same frame, untouched; the dropped one is not made again before the move unmounts it.
+    expect(report).toHaveBeenCalledWith(null);
+    expect(host.querySelector('[data-call="c2"]')).toBeNull();
+    expect(dropped.element?.isConnected).toBe(false);
     expect(frames(chat("c1"))).toEqual([kept.element]);
-    expect(frames(chat("c2"))).toEqual([dropped.element]);
+    expect(kept.methods()).toEqual([]);
   });
 
   it("leaves an App Pane's View alone", async () => {
@@ -638,7 +684,42 @@ describe("moving to another Session branch", () => {
     dropped.answerTeardown();
     await settle();
 
+    expect(report).toHaveBeenCalledWith("refused");
     expect(frames(chat("c2"))).toHaveLength(1);
     expect(frames(chat("c2"))[0]).not.toBe(dropped.element);
+  });
+
+  it("tears nothing down while the tree is not known, and makes the move", async () => {
+    session({ count: 2, tree: false });
+    show();
+
+    const live = started(chat("c2"));
+
+    // Refused, so that no card is unmounted by it: what is asked of the View is only what the guard asked.
+    moved = false;
+    click(buttonIn(host, "Move"));
+    await settle();
+
+    expect(live.methods()).toEqual([]);
+    expect(move).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a call shown in a Subagent Pane", () => {
+  it('says so in its card without offering "Show here", which is the App Pane\'s way back and must not end any other View', async () => {
+    session({ count: 2 });
+    subagentPane = true;
+    show();
+
+    // The card's View is the newest generation's c2; c1 is older, collapsed in the card and live nowhere but the Pane.
+    const other = started(chat("c2"));
+
+    // The Pane's thread claims c1 and wants it live by its own rule (reopened).
+    click(buttonIn(chat("c1"), "Reopen"));
+    await settle();
+
+    expect(chat("c1").textContent).toContain("Shown in the Subagent Pane");
+    expect(buttonIn(chat("c1"), "Show here")).toBeUndefined();
+    expect(other.methods()).toEqual([]);
   });
 });

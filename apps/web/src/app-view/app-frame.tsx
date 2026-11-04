@@ -172,8 +172,21 @@ const BADGES = { offline: "Server offline", "sign-in": "Needs sign-in" } as cons
 export const AppFrame = (props: AppFrameProps) => {
   // What the frame is of. A page or call that differs from it is not swapped in at once: the View it holds is told to tear
   // down first, and the new frame mounts when it has answered (`epoch` makes it a new component, with new state).
-  const [shown, setShown] = useState({ record: props.record, page: props.page, epoch: 0 });
-  const differs = shown.page !== props.page || shown.record.callId !== props.record.callId;
+  // What the frame may do is part of what it is of: a View reopened read only that is let go of by an unarchive is made again
+  // with every call served, so that its badge and its handlers agree.
+  const readOnly = props.readOnly === true;
+
+  const [shown, setShown] = useState({
+    record: props.record,
+    page: props.page,
+    readOnly,
+    epoch: 0,
+  });
+
+  const differs =
+    shown.page !== props.page ||
+    shown.record.callId !== props.record.callId ||
+    shown.readOnly !== readOnly;
 
   return (
     <LiveFrame
@@ -181,10 +194,18 @@ export const AppFrame = (props: AppFrameProps) => {
       key={shown.epoch}
       record={shown.record}
       page={shown.page}
+      readOnly={shown.readOnly}
       closing={props.closing === true || differs}
       onClosed={() => {
         if (props.closing === true) props.onClosed?.();
-        else setShown((was) => ({ record: props.record, page: props.page, epoch: was.epoch + 1 }));
+        else {
+          setShown((was) => ({
+            record: props.record,
+            page: props.page,
+            readOnly,
+            epoch: was.epoch + 1,
+          }));
+        }
       }}
     />
   );

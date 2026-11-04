@@ -5,10 +5,10 @@ import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Record from "effect/Record";
 import * as Atom from "effect/reactivity/Atom";
 import { appRuntime } from "../runtime.ts";
 import type { ConversationKey } from "../chat/conversation.ts";
+import { appEntries } from "../session/apps.ts";
 import { mcpAppsAtom, sessionClientAtom, sessionViewAtom, threadAtom } from "../session/atoms.ts";
 import { mcpStatusesAtom } from "../settings/mcp-state.ts";
 import { sessionListAtom } from "../sessions.ts";
@@ -72,7 +72,7 @@ export const sessionMcpStatusesAtom = Atom.family((sessionId: string) =>
  */
 export const appGenerationAtom = Atom.family((key: ConversationKey) =>
   Atom.make((get): ReadonlySet<string> => {
-    const apps = Arr.flatten(Record.values(get(mcpAppsAtom(key.sessionId))));
+    const apps = appEntries(get(mcpAppsAtom(key.sessionId)));
 
     if (apps.length === 0) return NO_LIVE_CALLS;
 

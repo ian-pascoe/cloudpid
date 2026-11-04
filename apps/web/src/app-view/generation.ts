@@ -91,17 +91,20 @@ export interface StripRows {
 /**
  * The calls of a strip that are rows now, and how many earlier ones wait behind its "N earlier" button: the last
  * {@link STRIP_ROWS}, and any live call wherever it is, since which are live was decided over all the script's calls
- * (`liveGeneration`) and a bound on rows must not change that. Expanded, all of them.
+ * (`liveGeneration`) and a bound on rows must not change that; and any the owner reopened on this device (`opened`), so a
+ * reload does not hide a View they chose to have open. Expanded, all of them.
  */
 export const stripRows = (
   calls: ReadonlyArray<McpAppEntry>,
   live: ReadonlySet<string>,
+  opened: ReadonlySet<string>,
   expanded: boolean,
 ): StripRows => {
   if (expanded || calls.length <= STRIP_ROWS) return { shown: calls, earlier: 0 };
 
   const shown = calls.filter(
-    (entry, index) => index >= calls.length - STRIP_ROWS || live.has(entry.callId),
+    (entry, index) =>
+      index >= calls.length - STRIP_ROWS || live.has(entry.callId) || opened.has(entry.callId),
   );
 
   return { shown, earlier: calls.length - shown.length };

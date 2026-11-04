@@ -6,7 +6,6 @@
 // offers the Pane types, and hides and shows it after; the tab bar's + opens another New pane.
 
 import { useAtom, useAtomMount, useAtomValue } from "@effect/atom-react";
-import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import { PanelRightClose, PanelRightOpen, Plus, X } from "lucide-react";
@@ -44,6 +43,7 @@ import {
   type PaneTypeId,
 } from "./panes.ts";
 import { agentLabel } from "./session/agents.ts";
+import { appEntryOf } from "./session/apps.ts";
 import { mcpAppsAtom, taskGraphAtom } from "./session/atoms.ts";
 import {
   DEFAULT_PANE_WIDTH,
@@ -170,11 +170,7 @@ const usePaneLookups = (): PaneLookups => {
   return {
     agentOfHandoff: (requestId) => handoffAgents.get(requestId),
     agentOfConversation: (conversationId) => agentLabel(graph, conversationId),
-    serverOfApp: (callId) =>
-      Arr.findFirst(Arr.flatten(Record.values(apps)), (entry) => entry.callId === callId).pipe(
-        Option.map((entry) => entry.server),
-        Option.getOrUndefined,
-      ),
+    serverOfApp: (callId) => appEntryOf(apps, callId)?.server,
   };
 };
 

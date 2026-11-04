@@ -52,16 +52,12 @@ const SummaryChoices = ({ close }: { close: () => void }) => {
     setForm({ focus, running: true, failure: null });
     moveBranch(
       (tree) => keptByPoint(tree, pending.point),
-      () =>
-        navigate({ point: pending.point, summary }).then((exit) => {
-          const why = exitFailure(exit);
+      () => navigate({ point: pending.point, summary }),
+      (why) => {
+        setForm({ focus, running: false, failure: why });
 
-          setForm({ focus, running: false, failure: why });
-
-          if (why === null) close();
-
-          return why === null;
-        }),
+        if (why === null) close();
+      },
     );
   };
 

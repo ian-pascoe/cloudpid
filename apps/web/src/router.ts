@@ -31,7 +31,7 @@
 // The old pages' addresses (`/environments`, `/skills…`) are replaced in the history by their Settings page equivalent
 // as the page opens or is navigated to (`legacyRedirect`), so a bookmark or an old link still lands.
 
-import { afterTeardown, appViews } from "./app-view/teardown.ts";
+import { afterTeardown, appViews, EVERY_VIEW } from "./app-view/teardown.ts";
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Atom from "effect/reactivity/Atom";
@@ -48,7 +48,7 @@ export const navigate = (path: string): void => {
   const samePage = path.split(/[?#]/)[0] === window.location.pathname;
 
   if (samePage || !appViews.any()) go();
-  else afterTeardown(go);
+  else afterTeardown(go, EVERY_VIEW);
 };
 
 /** Show `path` in place of the history entry's, as a page that leads elsewhere does; `pathAtom` hears of it. */
