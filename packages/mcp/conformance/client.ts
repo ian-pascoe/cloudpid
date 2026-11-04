@@ -10,7 +10,7 @@
  * the core cannot drive yet exits 1, so it is a failure that `baseline.json` records and not a skip, and it passes
  * the day the core can drive it.
  *
- * Run by `run.ts` (`bun --cwd packages/mcp run conformance <mode>`).
+ * Run by `run.ts` (`bun run --cwd packages/mcp conformance <mode>`).
  */
 // @effect-diagnostics preferEffectArray:off processEnv:off missedPipeableOpportunity:off -- a scenario script over a few tools, driven by the runner's environment.
 import * as Cause from "effect/Cause";

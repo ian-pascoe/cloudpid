@@ -1,4 +1,4 @@
-// docs/architecture/mcp-endpoint.md → The Local agent's service token: what `bun --cwd infra run local-agent-token`
+// docs/architecture/mcp-endpoint.md → The Local agent's service token: what `bun run --cwd infra local-agent-token`
 // reads out of a stage's alchemy state.
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
