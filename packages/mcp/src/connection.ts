@@ -2395,7 +2395,12 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
    * questions, which the get's own rounds answer (`getPrompt`). A Legacy server's question during it is tied to the
    * call by the header (`withAsking`), and the get's clock stands still while it waits.
    */
-  const promptOnce = (params: PromptParams, ctx: McpCallContext, retry?: Retry) => {
+  const promptOnce = <Recovered = never>(
+    params: PromptParams,
+    ctx: McpCallContext,
+    retry?: Retry,
+    recover?: (error: Error) => Recovered | undefined,
+  ) => {
     const timeoutMs = readTimeoutMs();
 
     return withAsking(ctx, timeoutMs, (own) =>
@@ -2410,10 +2415,70 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
             { method: "prompts/get", params: { ...params, ...retry } },
             headers === undefined ? timing : { ...timing, headers },
           ),
+        ).then(
+          (value) => value,
+          (error: Error) => {
+            const recovered = recover?.(error);
+
+            return recovered === undefined ? Promise.reject(error) : recovered;
+          },
         );
       }, false),
     );
   };
+
+  /**
+   * Whether a Legacy server's `-32042` is waited at: the get can answer an elicitation, waits at pages live
+   * (`ctx.answers.livePages`) and has an `onInput` to ask. For any other get it is the server's error.
+   */
+  const mayWaitAtPages = (ctx: McpCallContext) =>
+    live.era === "legacy" &&
+    deps.onInput !== undefined &&
+    ctx.answers?.elicitation === true &&
+    ctx.answers.livePages === true;
+
+  /**
+   * A Legacy server's `-32042`, round `round` of a get: it ran nothing, so the get waits for the owner at each page it lists
+   * (shown together, each answered by its own `onInput`) and is sent again once every one is `accept`, which says the owner
+   * is done there. A page that is declined, cancelled, refused or kept for later, and the eleventh `-32042`, end the get with
+   * the server's own error, the latter saying the server kept asking (`deferPages`' words).
+   */
+  const waitAtPages = (answer: UrlRequired, round: number): Effect.Effect<void, McpError> =>
+    Effect.gen(function* () {
+      const { onInput } = deps;
+
+      if (round > MCP_INPUT_ROUNDS) {
+        return yield* ServerError.make({
+          message: `${answer.message}. ${target.name ?? "The server"} kept asking for the same page; stopped after ${MCP_INPUT_ROUNDS} tries`,
+          code: URL_REQUIRED_CODE,
+        });
+      }
+
+      const refused: McpInputAnswer = { kind: "refused", message: "The get cannot ask the owner" };
+
+      const answers = yield* Effect.forEach(
+        answer.elicitations,
+        ({ elicitationId, page }): Effect.Effect<McpInputAnswer> =>
+          onInput === undefined
+            ? Effect.succeed(refused)
+            : onInput({
+                key: elicitationId,
+                kind: "elicitation",
+                params: page,
+                mode: "deferrable",
+                era: "legacy",
+              }),
+        { concurrency: "unbounded" },
+      );
+
+      const done = Arr.every(
+        answers,
+        (each) => each.kind === "answered" && each.result.action === "accept",
+      );
+
+      if (!done)
+        return yield* ServerError.make({ message: answer.message, code: URL_REQUIRED_CODE });
+    });
 
   /**
    * Gets a prompt. A Modern server may answer with a round of questions (`input_required`), which the get answers at once,
@@ -2430,7 +2495,20 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       const sent = { name, arguments: { ...args } };
       const params: PromptParams = meta === undefined ? sent : { ...sent, _meta: meta };
 
-      let value: GetPromptResult | Result = yield* promptOnce(params, asking);
+      // A Legacy server's `-32042` is a page to wait at for a get that waits at pages live; to any other it is the server's
+      // error. The get is sent again once the owner is done, as the server asked.
+      const recover = mayWaitAtPages(asking) ? urlRequiredOf : undefined;
+
+      let first = yield* promptOnce(params, asking, undefined, recover);
+      let pages = 1;
+
+      while (isUrlRequired(first)) {
+        yield* waitAtPages(first, pages);
+        first = yield* promptOnce(params, asking, undefined, recover);
+        pages += 1;
+      }
+
+      let value: GetPromptResult | Result = first;
       let round = 1;
 
       while (value["resultType"] === "input_required") {

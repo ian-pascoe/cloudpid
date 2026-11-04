@@ -29,6 +29,7 @@ import {
   McpTasksDoc,
   type OwnerCancel,
   type OwnerKeep,
+  type PromptSummaries,
   type ResourceMenuInput,
   type SweepHarness,
   type TaskOwnerHarness,
@@ -433,13 +434,13 @@ export type SessionHostMcpPrompts = {
   readonly catalog: (values: SessionSettingsValues) => Effect.Effect<PromptCatalog>;
   /**
    * Get `call`'s prompt once, as its message is admitted, and run `use` over the server's `GetPromptResult` (a large
-   * one is read under the decode slot, which `use` holds until it is done). Fails with a `SessionError` that carries an
+   * one is read under the decode slot, which `use` holds until it is done) and what the server's questions came to. Fails with a `SessionError` that carries an
    * `MCP_PROMPT_*` code, never with the server's own words unredacted.
    */
   readonly get: <A>(
     values: SessionSettingsValues,
     call: SessionHostMcpPromptGet,
-    use: (result: Schema.Json) => Promise<A>,
+    use: (result: Schema.Json, asked: PromptSummaries) => Promise<A>,
   ) => Effect.Effect<A, SessionError>;
 };
 
@@ -2555,7 +2556,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       const { env, save } = yield* promptFiles(conversation, prompts.session);
       const { typed, beside } = typedAndBeside(input);
 
-      const made = yield* prompts
+      const got = yield* prompts
         .get(
           values,
           {
@@ -2568,8 +2569,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             workspace: workspace?.object,
             requestId: prompt.requestId,
           },
-          (result) =>
-            promptMessage({
+          async (result, asked) => ({
+            made: await promptMessage({
               server: ref.server,
               name: ref.name,
               title: entry.title,
@@ -2579,8 +2580,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
               redact,
               save,
             }),
+            asked,
+          }),
         )
         .pipe(Effect.mapError((error) => redactedError(error, redact)));
+
+      const { made, asked } = got;
 
       if (Result.isFailure(made)) {
         return yield* promptRefusal(made.failure.code, redact(made.failure.message), ref.server);
@@ -2600,7 +2605,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           entry: ownerEntry({
             display: typed,
             skills: [],
-            mcpPrompt: promptData(entry, redact(sent), message),
+            mcpPrompt: promptData(entry, redact(sent), message, redact(asked)),
           }),
         },
         from: promptPartCount(message),

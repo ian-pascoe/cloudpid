@@ -262,6 +262,10 @@ export const pageKeyOf = (key: string): string => key.slice(0, MCP_PAGE_KEY_CHAR
  */
 export const eraDefault = (page: boolean): McpEra => (page ? "legacy" : "modern");
 
+/** The era of the server that asked a question, for one whose core did not say. */
+export const eraOfAsk = (ask: McpQuestionAsk): McpEra =>
+  ask.era ?? eraDefault(ask.page !== undefined);
+
 /**
  * What names a page across a call's rounds, as `opened` keeps it. A Legacy server names its own page (`elicitationId`);
  * a Modern one does not (`2026-07-28` has no `elicitationId`), so the round's key for the question and the page's

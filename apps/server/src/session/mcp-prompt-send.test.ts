@@ -1,10 +1,12 @@
 // The pure parts of sending an MCP prompt: the order of the message's parts, and how the owner's input is split.
 // @effect-diagnostics preferEffectArray:off -- plain fixtures.
+import type { PromptSummaries } from "@cloudpid/extensions/mcp";
 import { UPLOADS_ROOT } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   imageCharacters,
   promptContent,
+  promptData,
   promptPartCount,
   typedAndBeside,
 } from "./mcp-prompt-send.ts";
@@ -41,5 +43,51 @@ describe("the owner's input beside an MCP prompt", () => {
 
     expect(typedAndBeside(paths)).toEqual({ typed: "", beside: paths });
     expect(imageCharacters([image("AAAA"), image("BB")])).toBe(6);
+  });
+});
+
+describe("what the entry keeps of an MCP prompt (`promptData`)", () => {
+  const entry = { server: "docs", command: "/mcp__docs__review", name: "review", title: "Review" };
+  const made = { description: undefined, parts: [], resources: [] };
+
+  const asked: PromptSummaries = {
+    elicitation: [
+      { server: "docs", mode: "form", action: "accept", by: "owner", fields: ["team"] },
+      {
+        server: "docs",
+        mode: "url",
+        action: "cancel",
+        by: "cloudpid",
+        reason: "x",
+        fields: [],
+        host: "login.example.com",
+      },
+    ],
+    sampling: [{ server: "docs", status: "answered", by: "owner", role: "small", tokens: 12 }],
+  };
+
+  it("adds what the server's questions came to, in order, and nothing for a get that asked none", () => {
+    expect(promptData(entry, {}, made)).not.toHaveProperty("elicitation");
+    expect(promptData(entry, {}, made)).not.toHaveProperty("sampling");
+    expect(promptData(entry, {}, made, { elicitation: [], sampling: [] })).not.toHaveProperty(
+      "sampling",
+    );
+
+    expect(promptData(entry, {}, made, asked)).toMatchObject({
+      elicitation: asked.elicitation,
+      sampling: asked.sampling,
+    });
+  });
+
+  it("keeps the first 20 of each kind", () => {
+    const many = {
+      elicitation: Array.from({ length: 25 }, () => asked.elicitation[0]!),
+      sampling: Array.from({ length: 25 }, () => asked.sampling[0]!),
+    };
+
+    const data = promptData(entry, {}, made, many);
+
+    expect(data.elicitation).toHaveLength(20);
+    expect(data.sampling).toHaveLength(20);
   });
 });

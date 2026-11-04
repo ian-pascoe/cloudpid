@@ -146,8 +146,10 @@ describe("the hooks of a prompt send's get", () => {
 
     const asking = tools.promptAsking(ask());
 
+    // Pages are waited at live (`livePages`), never kept (`defer`, `pages`).
     expect(asking?.answers).toEqual({
       elicitation: true,
+      livePages: true,
       inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + 15_000,
     });
   });
@@ -311,5 +313,155 @@ describe("a server's Sampling request during a get", () => {
 
     expect(await answered).toMatchObject({ kind: "refused" });
     expect(await Effect.runPromise(questions.pendingSampling)).toEqual([]);
+  });
+});
+
+const PAGE = "https://login.example.com/authorize?state=1";
+
+/** A page the server asks the owner to open: a Legacy `-32042`'s (its own `elicitationId`) or a Modern round's. */
+const pageAsk = (era: "legacy" | "modern") => {
+  const page = { mode: "url", message: "Sign in", url: PAGE };
+  const params = era === "legacy" ? { ...page, elicitationId: "page-1" } : page;
+
+  return {
+    key: era === "legacy" ? "page-1" : "q1",
+    kind: "elicitation" as const,
+    params,
+    mode: "deferrable" as const,
+    era,
+  };
+};
+
+describe.each(["legacy", "modern"] as const)("a %s server's page during a get", (era) => {
+  const shown = async (questions: Awaited<ReturnType<typeof setup>>["questions"]) => {
+    await vi.waitFor(async () => {
+      expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+    });
+
+    return (await Effect.runPromise(questions.pending))[0];
+  };
+
+  it("waits on a card with Open and Done, the clock stopped and nobody told; Done answers accept", async () => {
+    const { tools, questions, told, clock, ask } = await setup();
+    const answered = tools.promptAsking(ask())?.hooks.onInput?.(pageAsk(era));
+    const card = await shown(questions);
+
+    expect(card).toMatchObject({
+      prompt: "Review PR",
+      page: { url: PAGE, opened: false, retry: true, era },
+    });
+    expect(card?.waits).toBeUndefined();
+    expect(clock).toEqual(["pause"]);
+
+    // Done is for after Open.
+    await expect(
+      Effect.runPromise(questions.answer(card?.id ?? "", { action: "done" })),
+    ).rejects.toThrow();
+    await Effect.runPromise(questions.answer(card?.id ?? "", { action: "opened" }));
+    expect((await shown(questions))?.page?.opened).toBe(true);
+    // Open answers the server nothing: the get still waits.
+    expect(clock).toEqual(["pause"]);
+
+    await Effect.runPromise(questions.answer(card?.id ?? "", { action: "done" }));
+
+    expect(await answered).toEqual({ kind: "answered", result: { action: "accept" } });
+    expect(clock).toEqual(["pause", "resume"]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(told).toEqual([]);
+  });
+
+  it("is declined before Open, and cancelled after it", async () => {
+    const { tools, questions, ask } = await setup();
+    const declined = tools.promptAsking(ask())?.hooks.onInput?.(pageAsk(era));
+    const first = await shown(questions);
+
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "decline" }));
+    expect(await declined).toEqual({ kind: "answered", result: { action: "decline" } });
+
+    const cancelled = tools
+      .promptAsking(ask({ callId: "prompt-2" }))
+      ?.hooks.onInput?.(pageAsk(era));
+
+    const second = await shown(questions);
+
+    await Effect.runPromise(questions.answer(second?.id ?? "", { action: "opened" }));
+
+    // A Modern page that is open is left by Cancel, not Decline; a Legacy `-32042`'s Decline is offered throughout.
+    if (era === "modern") {
+      await expect(
+        Effect.runPromise(questions.answer(second?.id ?? "", { action: "decline" })),
+      ).rejects.toThrow();
+    }
+
+    await Effect.runPromise(questions.answer(second?.id ?? "", { action: "cancel" }));
+    expect(await cancelled).toEqual({ kind: "answered", result: { action: "cancel" } });
+  });
+
+  it('reads "Not finished" when the server asks for a page the owner was done at, which counts no new request', async () => {
+    const { tools, questions, ask } = await setup();
+    const asking = tools.promptAsking(ask());
+
+    for (const again of [false, true, true]) {
+      const answered = asking?.hooks.onInput?.(pageAsk(era));
+      const card = await shown(questions);
+
+      expect(card?.page?.again === true).toBe(again);
+      await Effect.runPromise(questions.answer(card?.id ?? "", { action: "opened" }));
+      await Effect.runPromise(questions.answer(card?.id ?? "", { action: "done" }));
+      await answered;
+    }
+
+    // One request counted, two repeats: the cap of 10 is not near.
+    expect(asking?.summaries().elicitation).toHaveLength(3);
+  });
+
+  it("is cancelled when the owner is not done within its own wait, and the get goes on", async () => {
+    const { tools, questions, clock, ask } = await setup({ promptWaitMs: 40 });
+
+    const answered = await tools.promptAsking(ask())?.hooks.onInput?.(pageAsk(era));
+
+    expect(answered).toEqual({ kind: "answered", result: { action: "cancel" } });
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(clock).toEqual(["pause", "resume"]);
+  });
+
+  it("is withdrawn with its card when Stop aborts the send", async () => {
+    const { tools, questions, controller, ask } = await setup();
+    const answered = tools.promptAsking(ask())?.hooks.onInput?.(pageAsk(era));
+
+    await shown(questions);
+    controller.abort();
+
+    expect(await answered).toEqual({ kind: "answered", result: { action: "cancel" } });
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+  });
+});
+
+describe("what a get's questions came to (`summaries`)", () => {
+  it("lists each question by what became of it, never a value", async () => {
+    const { tools, questions, ask } = await setup();
+    const asking = tools.promptAsking(ask());
+
+    expect(asking?.summaries()).toEqual({ elicitation: [], sampling: [] });
+
+    const form = asking?.hooks.onInput?.(formAsk("live"));
+
+    await vi.waitFor(async () => {
+      expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+    });
+
+    const [card] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(
+      questions.answer(card?.id ?? "", { action: "accept", content: { team: "core" } }),
+    );
+    await form;
+
+    expect(asking?.summaries()).toEqual({
+      elicitation: [
+        { server: DOCS.name, mode: "form", action: "accept", by: "owner", fields: ["team"] },
+      ],
+      sampling: [],
+    });
   });
 });

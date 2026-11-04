@@ -42,6 +42,9 @@ import {
   type McpQuestionUnseen,
   type McpSamplingDecision,
   type McpWaitingKind,
+  eraDefault,
+  eraOfAsk,
+  pageIdentityOf,
   questionId,
   waitsOf,
 } from "./question-records.ts";
@@ -315,6 +318,13 @@ type Waiting = {
   readonly closed: Deferred.Deferred<void>;
   /** A page question the owner opened: the server goes on, and the card stays until the page is finished. */
   readonly opened: boolean;
+  /**
+   * A page the call waits at to be sent again (`McpQuestionAsk.retry`: a Legacy `-32042`'s, or a Modern server's, in a
+   * prompt send's get): Open records the click and answers nothing, "Done, try again" answers `accept`.
+   */
+  readonly retry?: boolean | undefined;
+  /** For a `retry` page: the owner clicked Open (`request.page.opened` says so to the card). */
+  readonly clicked?: boolean | undefined;
   /** The Protocol era of the server that asked, for its settled record. */
   readonly era?: McpEra | undefined;
 };
@@ -410,14 +420,30 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
   const ask = (question: McpQuestionAsk): Effect.Effect<McpQuestionOutcome> =>
     Effect.gen(function* () {
-      const sequence = yield* basics.count(question);
+      const retrying = question.retry === true && question.page !== undefined;
+
+      // A page the owner was done at and the server asks for again is no new request: it does not count toward the call's
+      // cap, and its card reads "Not finished at <host> yet".
+      const again =
+        retrying &&
+        (yield* Effect.try(() =>
+          basics
+            .pagesOf(question.callId)
+            .opened.includes(pageIdentityOf(eraOfAsk(question), question.key, question.page?.url)),
+        ).pipe(Effect.orElseSucceed(() => false)));
+
+      const sequence = again
+        ? yield* Effect.try(() => `again${basics.repeatedPage(question.callId)}`).pipe(
+            Effect.orElseSucceed(() => undefined),
+          )
+        : yield* basics.count(question);
 
       if (sequence === undefined) return cancelled(MCP_ELICITATION_CAP_REASON);
 
       const id = questionId(question.callId, sequence);
       const now = yield* Clock.currentTimeMillis;
       const { waitMs: wait, quiet } = waitFor(question.prompt);
-      const request = yield* basics.requestOf(question, id, now + wait);
+      const request = yield* basics.requestOf(question, id, now + wait, again);
 
       const entry: WaitingEntry = {
         id,
@@ -456,6 +482,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         outcome,
         closed,
         opened: false,
+        retry: retrying,
         era: question.era,
       });
       yield* tell;
@@ -463,7 +490,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       if (question.page !== undefined) kind.page = true;
 
-      if (quiet) kind.quiet = true;
+      // A page asked for again tells the owner nothing: they were told of it.
+      if (quiet || again) kind.quiet = true;
 
       yield* basics.startWaiting(question.callId, question.server, 1, now, kind);
 
@@ -482,6 +510,57 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     });
 
   /**
+   * The owner's answer to a page the call waits at to be sent again (a prompt send's get: a Legacy `-32042`'s page, or a
+   * Modern server's): Open records the click and answers nothing; "Done, try again" answers `accept`, once the page is
+   * opened, and the get goes on; Cancel answers `cancel`. A Decline is offered until the page is opened, and for a Legacy
+   * `-32042` throughout, since sending the request again can change nothing then.
+   */
+  const answerRetryPage = (
+    id: string,
+    held: Waiting,
+    page: NonNullable<McpElicitationRequest["page"]>,
+    given: Exclude<McpQuestionAnswer, { readonly action: "accept" }>,
+  ) =>
+    Effect.gen(function* () {
+      if (given.action === "opened") {
+        if (held.clicked !== true) {
+          waiting.set(id, {
+            ...held,
+            clicked: true,
+            request: { ...held.request, page: { ...page, opened: true } },
+          });
+          yield* tell;
+        }
+
+        return;
+      }
+
+      if (given.action === "done") {
+        if (held.clicked !== true) {
+          return yield* McpQuestionsError.make({ message: "Open the page first" });
+        }
+
+        yield* Effect.try(() =>
+          basics.openedPages(held.request.callId, [
+            pageIdentityOf(held.era ?? eraDefault(true), held.key, page.url),
+          ]),
+        ).pipe(Effect.ignore);
+
+        const taken = yield* finish(id, { action: "accept", by: "owner", content: {} });
+
+        if (!taken) return yield* McpQuestionsError.make({ message: "This request ended" });
+
+        return;
+      }
+
+      if (given.action === "decline" && held.clicked === true && held.era === "modern") {
+        return yield* McpQuestionsError.make({ message: "This page is open: cancel it instead" });
+      }
+
+      yield* finish(id, { action: given.action, by: "owner" });
+    });
+
+  /**
    * The owner's answer to a page question that waits live (a Legacy server's, during its call). Open's click answers the
    * server `accept` at once and the card stays, reading "Opened", until the page is finished (`complete`), the server
    * stops waiting, or the call ends; there is no "Done" to press, since the server goes on by itself.
@@ -495,6 +574,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
           message: "This request is a page to open, not a form",
         });
       }
+
+      if (held.retry === true) return yield* answerRetryPage(id, held, page, given);
 
       if (given.action === "done") {
         return yield* McpQuestionsError.make({

@@ -83,6 +83,12 @@ export type ElicitingCall = {
   readonly keepsPages?: boolean | undefined;
   /** The call's own clock: stopped while a question waits, and started again. */
   readonly hold: ClockHold;
+  /**
+   * The call waits for the owner at a page live, with no resume (a prompt send's get): a Modern server's page, or a Legacy
+   * `-32042`'s, is shown with Open and "Done, try again" and answered `accept` once the owner is done there, for as long as
+   * the question's own wait. Otherwise such a page is turned away (`MCP_PAGE_NOT_KEPT_REASON`).
+   */
+  readonly livePages?: boolean | undefined;
 };
 
 /** What stops and starts a call's own clock. */
@@ -327,9 +333,9 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     }
 
     // A page of a Modern server's round answered on the spot would send the call again before the owner has been there:
-    // a call that keeps no questions is never offered one (`url` is declared only to a caller that defers), so a server
-    // that asks anyway is told `cancel`.
-    if (request.mode === "deferrable" && page !== undefined) {
+    // a call that keeps no questions and does not wait at pages live is never offered one (`url` is declared only to a
+    // caller that defers, or waits live), so a server that asks anyway is told `cancel`.
+    if (request.mode === "deferrable" && page !== undefined && call.livePages !== true) {
       note("cancel", "cloudpid", [], MCP_PAGE_NOT_KEPT_REASON, seen);
 
       return CANCELLED;
@@ -349,8 +355,9 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       }),
     );
 
-    // A page the owner opened: the server goes on, and the call's clock stays stopped until the page is finished.
-    if (page !== undefined && outcome.action === "accept") {
+    // A page the owner opened: the server goes on, and the call's clock stays stopped until the page is finished. A page the
+    // call waits at to send again (`retry`) is not: the owner's Done answers it, and the call goes on at once.
+    if (page !== undefined && outcome.action === "accept" && question.retry !== true) {
       void Effect.runPromise(call.questions.whileOpen(call.callId, question.key)).finally(() =>
         Effect.runPromise(call.hold.resume),
       );

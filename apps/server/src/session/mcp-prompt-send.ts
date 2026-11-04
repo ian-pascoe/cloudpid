@@ -9,7 +9,8 @@ import type {
   McpPromptErrorCode,
   UserInput,
 } from "@cloudpid/protocol";
-import { UPLOADS_ROOT } from "@cloudpid/protocol";
+import { MCP_PROMPT_QUESTIONS_KEPT, UPLOADS_ROOT } from "@cloudpid/protocol";
+import type { PromptSummaries } from "@cloudpid/extensions/mcp";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -70,11 +71,15 @@ export const promptContent = (
   ...beside,
 ];
 
-/** What the owner's entry keeps of the prompt that was sent (`UserEntryData.mcpPrompt`). */
+/** A get that asked nothing. */
+export const NO_SUMMARIES: PromptSummaries = { elicitation: [], sampling: [] };
+
+/** What the owner's entry keeps of the prompt that was sent (`UserEntryData.mcpPrompt`), with what its server asked. */
 export const promptData = (
   entry: Pick<McpPromptEntry, "server" | "command" | "name" | "title">,
   sent: Readonly<Record<string, string>>,
   made: Pick<PromptMessage, "description" | "parts" | "resources">,
+  asked: PromptSummaries = NO_SUMMARIES,
 ): McpPromptData => {
   const data: Mutable<McpPromptData> = {
     server: entry.server,
@@ -88,6 +93,14 @@ export const promptData = (
   if (entry.title !== undefined) data.title = entry.title;
 
   if (made.description !== undefined) data.description = made.description;
+
+  // What the server's questions came to while it was got: never a value, and the first of each kind only.
+  if (asked.sampling.length > 0)
+    data.sampling = Arr.take(asked.sampling, MCP_PROMPT_QUESTIONS_KEPT);
+
+  if (asked.elicitation.length > 0) {
+    data.elicitation = Arr.take(asked.elicitation, MCP_PROMPT_QUESTIONS_KEPT);
+  }
 
   return data;
 };

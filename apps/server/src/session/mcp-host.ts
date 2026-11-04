@@ -35,6 +35,7 @@ import {
   type McpWatchRecorder,
   type McpToolsService,
   type McpToolsStore,
+  type PromptSummaries,
   type SweepHarness,
 } from "@cloudpid/extensions/mcp";
 import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
@@ -82,6 +83,7 @@ import type {
 } from "./host.ts";
 import { type PromptCatalog, promptCatalog } from "./mcp-prompt-catalog.ts";
 import type { PromptRefusal } from "./mcp-prompt.ts";
+import { NO_SUMMARIES } from "./mcp-prompt-send.ts";
 import type { SessionSettingsValues } from "./settings.ts";
 
 /** What each of `McpHostClient`'s methods is answered on the wire, before the shared readers. */
@@ -546,7 +548,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   const getPrompt = <A>(
     values: SessionSettingsValues,
     call: SessionHostMcpPromptGet,
-    use: (result: Schema.Json) => Promise<A>,
+    use: (result: Schema.Json, asked: PromptSummaries) => Promise<A>,
   ): Effect.Effect<A, SessionError> => {
     const { environment } = values.mcp;
 
@@ -622,7 +624,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
             options.host(environment),
             request,
             AbortSignal.any([signal, stopped, clock.signal]),
-            use,
+            // What the server's questions came to is read once the result is here: every one of them has ended by then.
+            (result) => use(result, asking?.summaries() ?? NO_SUMMARIES),
             asking?.hooks,
           ),
         catch: (cause) =>
@@ -660,7 +663,17 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
         return yield* refused(refusalOf("MCP_PROMPT_FAILED", sunk));
       }
 
-      return got.ok ? got.value : yield* refused(got.refusal);
+      if (got.ok) return got.value;
+
+      // A refusal that follows an answer the owner (or cloudpid) gave to a question ends with it: "You declined docs's
+      // request for input."
+      const line = asking?.answerLine();
+
+      return yield* refused(
+        line === undefined || got.refusal.code !== "MCP_PROMPT_FAILED"
+          ? got.refusal
+          : refusalOf(got.refusal.code, `${got.refusal.message} ${line}`),
+      );
     }).pipe(Effect.scoped);
   };
 
