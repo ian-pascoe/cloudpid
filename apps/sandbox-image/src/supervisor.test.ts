@@ -80,11 +80,30 @@ const fakeComputerd = (behaviour: string) => {
 
 type Run = { readonly status: number | null; readonly stdout: string };
 
+/**
+ * A gate a fake computerd waits behind (`wait`, in bash) until the supervisor's output shows `line`, when the test opens
+ * it. The supervisor stops the guard and the bridge as soon as computerd exits, so a computerd that exits, or says it is
+ * ready, after a fixed sleep could beat a slow start of what the test reads (#632). The wait gives up after 10 s, under
+ * the tests' timeouts, and says what it never saw.
+ */
+type Gate = { readonly line: string; readonly opened: string; readonly wait: string };
+
+const gateOn = (line: string): Gate => {
+  const opened = join(mkdtempSync(join(tmpdir(), "gate-")), "opened");
+
+  return {
+    line,
+    opened,
+    wait: `until [ -e ${opened} ]; do (( SECONDS < 10 )) || { echo "never saw \\"${line.trim()}\\""; exit 99; }; sleep 0.05; done`,
+  };
+};
+
 const supervise = (
   computerd: string,
   port: number,
   signal?: NodeJS.Signals,
   env: Record<string, string> = {},
+  gate?: Gate,
 ) =>
   new Promise<Run>((resolve) => {
     const child = spawn("bash", [script], {
@@ -107,6 +126,8 @@ const supervise = (
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       stdout += chunk;
+
+      if (gate !== undefined && stdout.includes(gate.line)) writeFileSync(gate.opened, "");
 
       // Stop the supervisor once computerd is up, as the platform does.
       if (signal !== undefined && stdout.includes("ready")) child.kill(signal);
@@ -345,18 +366,18 @@ describe("the supervisor's memory guard", () => {
   it("runs the guard beside computerd, its lines where computerd's go, and stops it with computerd", async () => {
     const { reports, port } = await reportServer();
     const earlyoom = fakeEarlyoom();
-    // Long enough for the guard to have started.
-    const computerd = fakeComputerd('sleep 0.5; echo "computerd out"; exit 1');
+    const up = gateOn("earlyoom up\n");
+    const computerd = fakeComputerd(`${up.wait}; echo "computerd out"; exit 1`);
     const started = Date.now();
 
-    const run = await supervise(computerd, port, undefined, withGuard(earlyoom.path));
+    const run = await supervise(computerd, port, undefined, withGuard(earlyoom.path), up);
 
-    expect(run.status).toBe(1);
-    // earlyoom's arguments are the guard's (`memory-guard.test.ts`).
-    expect(readFileSync(earlyoom.args, "utf8")).toContain(`--avoid\n${MEMORY_GUARD_AVOID}\n`);
     // Its lines go where computerd's do: the Container's log and the exit report.
     expect(run.stdout).toContain("earlyoom up\n");
     expect(run.stdout).toContain("computerd out\n");
+    expect(run.status).toBe(1);
+    // earlyoom's arguments are the guard's (`memory-guard.test.ts`).
+    expect(readFileSync(earlyoom.args, "utf8")).toContain(`--avoid\n${MEMORY_GUARD_AVOID}\n`);
     expect(reports[0]?.body).toContain("earlyoom up\n");
     // Stopped with computerd, and nothing waited on its output.
     expect(alive(Number(readFileSync(earlyoom.pid, "utf8")))).toBe(false);
@@ -366,13 +387,15 @@ describe("the supervisor's memory guard", () => {
   it("stops the guard too when the supervisor is asked to stop", async () => {
     const { reports, port } = await reportServer();
     const earlyoom = fakeEarlyoom();
+    const up = gateOn("earlyoom up\n");
 
     const computerd = fakeComputerd(
-      'trap "exit 0" TERM; sleep 0.5; echo ready; while :; do sleep 0.1; done',
+      `trap "exit 0" TERM; ${up.wait}; echo ready; while :; do sleep 0.1; done`,
     );
 
-    const run = await supervise(computerd, port, "SIGTERM", withGuard(earlyoom.path));
+    const run = await supervise(computerd, port, "SIGTERM", withGuard(earlyoom.path), up);
 
+    expect(run.stdout).toContain("earlyoom up\n");
     expect(run.status).toBe(0);
     expect(reports).toEqual([]);
     expect(alive(Number(readFileSync(earlyoom.pid, "utf8")))).toBe(false);
@@ -409,19 +432,18 @@ describe("the supervisor's memory guard", () => {
 /**
  * A fake node for the bridge: it records its arguments, the token it was given and its pid, says it is up, and runs
  * until it is stopped, as the bridge does. The bridge's script is any file. The supervisor stops the bridge as soon as
- * computerd exits, so a test reads the records only after `computerd` has waited for `up`, the file written last.
+ * computerd exits, so a test's computerd waits behind `up`, which opens once the bridge has said so, after its records.
  */
 const fakeBridgeNode = () => {
   const dir = mkdtempSync(join(tmpdir(), "bridge-"));
   const node = join(dir, "node");
   const record = join(dir, "record");
   const pid = join(dir, "pid");
-  const up = join(dir, "up");
   const script = join(dir, "bridge.ts");
 
   writeFileSync(
     node,
-    `#!/bin/bash\nprintf '%s\\n' "$@" "token=$${MCP_BRIDGE_TOKEN_ENV}" >${record}\necho $$ >${pid}\n: >${up}\necho "bridge up"\nexec sleep 600\n`,
+    `#!/bin/bash\nprintf '%s\\n' "$@" "token=$${MCP_BRIDGE_TOKEN_ENV}" >${record}\necho $$ >${pid}\necho "bridge up"\nexec sleep 600\n`,
   );
   chmodSync(node, 0o755);
   writeFileSync(script, "// a bridge");
@@ -430,8 +452,7 @@ const fakeBridgeNode = () => {
     record,
     pid,
     script,
-    /** Bash for a fake computerd: waits (30 s at most) for the bridge to have written its records. */
-    untilUp: `for _ in $(seq 1 600); do [ -e ${up} ] && break; sleep 0.05; done; [ -e ${up} ] || { echo "the bridge never came up" >&2; exit 99; }`,
+    up: gateOn("bridge up\n"),
     env: { CLOUDPID_MCP_BRIDGE_NODE: node, CLOUDPID_MCP_BRIDGE: script },
   };
 };
@@ -445,19 +466,25 @@ describe("the supervisor's MCP bridge", () => {
   it("runs the bridge beside computerd when the launch has a token, its lines where computerd's go, and stops it with computerd", async () => {
     const { reports, port } = await reportServer();
     const bridge = fakeBridgeNode();
-    const computerd = fakeComputerd(`${bridge.untilUp}; echo "computerd out"; exit 1`);
+    const computerd = fakeComputerd(`${bridge.up.wait}; echo "computerd out"; exit 1`);
 
-    const run = await supervise(computerd, port, undefined, {
-      ...bridge.env,
-      [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
-    });
+    const run = await supervise(
+      computerd,
+      port,
+      undefined,
+      {
+        ...bridge.env,
+        [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
+      },
+      bridge.up,
+    );
 
+    expect(run.stdout).toContain("bridge up\n");
     expect(run.status).toBe(1);
     // Node runs the script with type stripping's warning off, and the token reaches it in its environment.
     expect(readFileSync(bridge.record, "utf8")).toBe(
       `--disable-warning=ExperimentalWarning\n${bridge.script}\ntoken=launch-token\n`,
     );
-    expect(run.stdout).toContain("bridge up\n");
     expect(reports[0]?.body).toContain("bridge up\n");
     expect(alive(Number(readFileSync(bridge.pid, "utf8")))).toBe(false);
   }, 15_000);
@@ -467,13 +494,19 @@ describe("the supervisor's MCP bridge", () => {
     const bridge = fakeBridgeNode();
 
     const computerd = fakeComputerd(
-      `${bridge.untilUp}; echo "token=[$${MCP_BRIDGE_TOKEN_ENV}]"; exit 0`,
+      `${bridge.up.wait}; echo "token=[$${MCP_BRIDGE_TOKEN_ENV}]"; exit 0`,
     );
 
-    const run = await supervise(computerd, port, undefined, {
-      ...bridge.env,
-      [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
-    });
+    const run = await supervise(
+      computerd,
+      port,
+      undefined,
+      {
+        ...bridge.env,
+        [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
+      },
+      bridge.up,
+    );
 
     expect(run.stdout).toContain("token=[]\n");
     // The bridge had it all the same.
@@ -485,13 +518,19 @@ describe("the supervisor's MCP bridge", () => {
     const bridge = fakeBridgeNode();
 
     const computerd = fakeComputerd(
-      `trap "exit 0" TERM; ${bridge.untilUp}; echo ready; while :; do sleep 0.1; done`,
+      `trap "exit 0" TERM; ${bridge.up.wait}; echo ready; while :; do sleep 0.1; done`,
     );
 
-    const run = await supervise(computerd, port, "SIGTERM", {
-      ...bridge.env,
-      [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
-    });
+    const run = await supervise(
+      computerd,
+      port,
+      "SIGTERM",
+      {
+        ...bridge.env,
+        [MCP_BRIDGE_TOKEN_ENV]: "launch-token",
+      },
+      bridge.up,
+    );
 
     expect(run.status).toBe(0);
     expect(reports).toEqual([]);
