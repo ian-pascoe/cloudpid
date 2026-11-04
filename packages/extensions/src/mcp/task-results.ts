@@ -189,6 +189,7 @@ const cancelledBy = (by: McpTaskBy | undefined): string =>
     Match.when("owner", () => "by the owner"),
     Match.when("stop", () => "by the owner"),
     Match.when("agent", () => "at your request"),
+    Match.when("cloudpid", () => "by cloudpid"),
     Match.orElse(() => "by the server"),
   );
 
@@ -223,7 +224,7 @@ export const endedResult = (
 
       return failedWith(
         `${who} was cancelled ${by} after ${after}.${end?.reason === undefined ? "" : ` (${end.reason})`}`,
-        { ...base, error: "mcp_task_cancelled" },
+        { ...base, error: end?.error ?? "mcp_task_cancelled" },
       );
     }
 

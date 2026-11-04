@@ -67,6 +67,11 @@ export type ElicitingCall = {
   readonly prompt?: string | undefined;
   /** The call is an App View's `tools/call`: its questions wait live for 5 min, tell the owner nothing and name the app. */
   readonly app?: true | undefined;
+  /**
+   * The handle of the MCP task whose questions these are: they are kept for the owner whatever the call does
+   * (`callId` is then the task's key, `taskOwner`), a page's Open answers the server at once, and nothing is sent again.
+   */
+  readonly task?: string | undefined;
   readonly callId: string;
   readonly conversationId: ConversationId;
   /** Where the server's definition is. */
@@ -247,6 +252,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     if (call.prompt !== undefined) question.prompt = call.prompt;
 
     if (call.app === true) question.app = true;
+
+    if (call.task !== undefined) question.task = call.task;
 
     if (request.era !== undefined) question.era = request.era;
 
@@ -452,7 +459,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     // A Legacy `-32042`, or a Modern server's page, is kept for later and the call is sent again once the owner is done:
     // "Done, try again".
-    if (request.mode === "deferrable") question.retry = true;
+    // A task's page is not sent again: its Open answers the server (`tasks/update`).
+    if (request.mode === "deferrable" && call.task === undefined) question.retry = true;
 
     return keepOrAsk(request, question, answeredFields);
   };

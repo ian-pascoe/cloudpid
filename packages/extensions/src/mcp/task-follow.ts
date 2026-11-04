@@ -32,6 +32,12 @@ import {
   taskSpan,
 } from "./task-host.ts";
 import { applyDecision, decide, type Decision } from "./task-poll.ts";
+import {
+  closeQuestions,
+  observeQuestions,
+  type TaskAsking,
+  taskStoreOf,
+} from "./task-questions.ts";
 import { endedRecord, endInDoc, markCancelSent } from "./task-end.ts";
 import {
   endedText,
@@ -85,6 +91,8 @@ export type FollowerDeps = {
   readonly origin: McpCallOrigin;
   readonly tasks: McpTasksOptions;
   readonly pool: McpResultPool;
+  /** What the task's questions are asked and answered with; absent, a task that asks is only polled. */
+  readonly asking?: TaskAsking | undefined;
 };
 
 /** Whether an end is one the owner or the agent caused: it leaves a notice and starts no Run. */
@@ -133,7 +141,7 @@ const endedTitle = (handle: string, status: string): string =>
 
 /** The follower task over the Session's host client, origin, options and result pool. */
 export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
-  const { client, origin, tasks, pool } = deps;
+  const { client, origin, tasks, pool, asking } = deps;
   const reporter = reporterToCreate();
   const timing = tasks.timing ?? {};
   const cancelGrace = timing.cancelGraceMs ?? MCP_TASK_CANCEL_GRACE_MS;
@@ -208,6 +216,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
     }, context);
 
     await taskSpan(ended);
+    await closeQuestions(asking, record.handle);
 
     return next;
   };
@@ -282,6 +291,8 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
         // Ended while this follower slept (a wait or an abort ended it): only the delivery is left.
         if (record.end !== undefined) {
+          await closeQuestions(asking, handle);
+
           await runtime.commit(
             () =>
               record?.delivery === "pending"
@@ -359,6 +370,41 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         }
 
         record = { ...structuredClone(record), ...decision.patch, failures: decision.failures };
+
+        // A task that waits on questions: the ones not asked are asked, and answers the owner gave are sent.
+        if (
+          asking !== undefined &&
+          outcome.kind === "state" &&
+          outcome.snapshot.status === "input_required"
+        ) {
+          const fresh = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle] ?? record;
+
+          await observeQuestions(
+            {
+              asking,
+              client,
+              origin,
+              store: taskStoreOf(
+                {
+                  snapshot: (token, at) => runtime.snapshot(token, at),
+                  // The follower's commit also settles its own state: an answer's write leaves that as it is.
+                  commit: (write, at) =>
+                    runtime.commit(async (tx) => {
+                      await write(tx);
+
+                      return undefined;
+                    }, at),
+                },
+                context,
+              ),
+              now: () => runtime.now(),
+              slowMs: timing.answerSlowMs,
+              signal: runtime.signal,
+            },
+            fresh,
+            outcome.snapshot,
+          );
+        }
 
         const delay =
           decision.retryInMs ??
@@ -538,6 +584,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         }, context);
 
         await taskSpan(ended);
+        await closeQuestions(asking, handle);
         await leaveNotice(ended, now, "ended: it was cancelled by the owner.");
 
         return;

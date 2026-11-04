@@ -28,7 +28,14 @@ import { requestCancel } from "./task-owner.ts";
 import { durationText, MCP_TASK_RESULT_KEPT_MS } from "./task-policy.ts";
 import { sleepUntilWoken } from "./task-port.ts";
 import { type McpResultPool, type StoredResult } from "./task-results.ts";
-import { EMPTY_TASKS, McpTasksDoc, type McpTaskRecord, type McpTasksState } from "./task-state.ts";
+import {
+  EMPTY_TASKS,
+  McpTasksDoc,
+  type McpTaskRecord,
+  type McpTasksState,
+  shownStatusMessage,
+  standingOf,
+} from "./task-state.ts";
 
 /** How long `mcp_task_wait` waits when it is not told: 5 minutes; at most 30. */
 const DEFAULT_WAIT_S = 300;
@@ -149,7 +156,7 @@ const listed = (record: McpTaskRecord, pool: McpResultPool) => {
     server: record.server,
     tool: record.modelTool,
     status: record.end?.status ?? record.status,
-    status_message: record.statusMessage ?? null,
+    status_message: shownStatusMessage(record) ?? null,
     started_at: new Date(record.createdAt).toISOString(),
     background: record.background,
     delivery: record.delivery,
@@ -289,10 +296,6 @@ export const taskTools = (
       return "waiting" as const;
     }, context);
 
-  /** How a task that has not ended stands, for a wait that stopped before it did. */
-  const standing = (record: McpTaskRecord) =>
-    record.status === "input_required" ? "waiting for input" : "working";
-
   /**
    * Wait for `handle` to end, until `until`: its result when it ends, where it stands when the time runs out or the owner
    * sends a message, an error when the wait is stopped.
@@ -316,7 +319,7 @@ export const taskTools = (
       if (left <= 0) {
         return {
           output: text(
-            `MCP task ${handle} is still ${standing(fresh)} after ${durationText(seconds * 1000)}. Wait again with mcp_task_wait, or stop it with mcp_task_cancel.`,
+            `MCP task ${handle} is still ${standingOf(fresh)} after ${durationText(seconds * 1000)}. Wait again with mcp_task_wait, or stop it with mcp_task_cancel.`,
           ),
           details: detailsFor(waitName, fresh),
           structuredOutput: { content: [] },
@@ -348,7 +351,7 @@ export const taskTools = (
       if (woke === "steered") {
         return {
           output: text(
-            `Stopped waiting for MCP task ${handle}: a message arrived. It is still ${standing(fresh)}; wait again with mcp_task_wait when you want.`,
+            `Stopped waiting for MCP task ${handle}: a message arrived. It is still ${standingOf(fresh)}; wait again with mcp_task_wait when you want.`,
           ),
           details: detailsFor(waitName, fresh),
           structuredOutput: { content: [] },

@@ -209,6 +209,11 @@ export const McpElicitationRequest = Schema.Struct({
    * View. A client from before it reads `tool`, the tool the View called.
    */
   app: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * The handle of the MCP task whose question this is ("MCP task <handle>"): the server asked it of a task that goes on
+   * after its call, so no call waits for the answer. A client from before it reads `tool`, the task's tool.
+   */
+  task: Schema.optionalKey(Schema.String),
   /** The server's message, cut and cleaned. */
   message: Schema.String,
   /** A page question's `form` has no fields: the card draws `page` instead. */

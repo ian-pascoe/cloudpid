@@ -87,6 +87,11 @@ export const McpSamplingRequest = Schema.Struct({
    * View's calls): the card's origin line reads "<server>'s app". A client from before it reads `tool`.
    */
   app: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * The handle of the MCP task whose request this is ("MCP task <handle>"): the server asked it of a task that goes on
+   * after its call, so no call waits for the answer. A client from before it reads `tool`, the task's tool.
+   */
+  task: Schema.optionalKey(Schema.String),
   /** The Role the request would run on unless the owner picks another, and its model. */
   role: McpSamplingRoleName,
   model: Schema.String,

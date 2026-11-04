@@ -491,6 +491,11 @@ export type SessionHostMcp<R> = {
    */
   readonly bind: (notices: McpNotices) => void;
   /**
+   * The open Harness, for the owner's answer to a question of an MCP task, which sends `tasks/update` itself since no call
+   * waits for it (`docs/architecture/mcp-server-requests.md` → MCP tasks, Questions in a task). Called once, with `bind`.
+   */
+  readonly bindTaskHarness?: (harness: Pick<TaskOwnerHarness, "snapshot" | "commit">) => void;
+  /**
    * What the Session's sampler works with, once the Harness is open: its models (held to the spend limit, as the Harness's
    * are), its Roles, the limit and where a sample's Usage goes (`docs/architecture/mcp-server-requests.md` → Sampling
    * requests). Called once, with `bind`. Absent: no server's Sampling request is answered.
@@ -1204,6 +1209,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   // The `mcp_servers` notices go to this Harness, before anything resumes or renders a section.
   options.mcp?.bind(mcpNotices(harness.harness));
+  options.mcp?.bindTaskHarness?.(harness.harness);
 
   // What the MCP tools were last built from, before anything resumes: a resumed Run or call finds the tools, and the
   // declarations, that its Context Window was shown. The conversations are told once the work is resumed (and only if

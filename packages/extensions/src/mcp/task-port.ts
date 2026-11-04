@@ -25,6 +25,8 @@ export type McpTasksTiming = McpTaskLimits & {
   readonly cancelGraceMs?: number;
   /** How long an App View's request waits for its MCP task, instead of 15 minutes. */
   readonly viewWindowMs?: number;
+  /** How long a task may wait on a key whose answer was sent before its status says so, instead of 10 minutes. */
+  readonly answerSlowMs?: number;
 };
 
 /** What the Session gives the `mcp` extension to follow MCP tasks. */

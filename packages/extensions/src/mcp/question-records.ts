@@ -141,13 +141,13 @@ export const decisionOf = (verdict: McpSamplingVerdict, own: string): McpSamplin
 export const ELICITATION_SPAN = "mcp.elicitation.request";
 
 /**
- * What the span of a question says of it: the server, the origin (an agent's call, the only one so far), the mode, the
+ * What the span of a question says of it: the server, the origin (an agent's call, or an MCP task's), the mode, the
  * era, how it ended and who decided, how many fields were answered and how long it waited. Never the message, the form,
  * the address (its origin is in the record, not here) or a value.
  */
 export const spanOf = (record: McpQuestionRecord) => ({
   "mcp.server": record.server,
-  "mcp.origin": "agent",
+  "mcp.origin": isTaskOwner(record.callId) ? "task" : "agent",
   "mcp.elicitation.mode": record.mode,
   "mcp.elicitation.era": record.era ?? eraDefault(record.mode === "url"),
   "mcp.elicitation.action": record.action,
@@ -196,6 +196,8 @@ export type McpQuestionAsk = {
    * View's calls): it waits live as a prompt send's does (5 minutes, no Notification), and its card names the app.
    */
   readonly app?: true;
+  /** The handle of the MCP task that asks it, when it is a question of a task (`callId` is then its owner key, `taskOwner`). */
+  readonly task?: string;
   readonly message: string;
   /** A page question has a form with no fields: the card draws its `page`. */
   readonly form: ElicitationForm;
@@ -299,6 +301,15 @@ export const MCP_PAGE_KEY_CHARS = 200;
 /** A page's key as the call's pages keep it: cut, so a server's long `elicitationId` cannot make the record large. */
 export const pageKeyOf = (key: string): string => key.slice(0, MCP_PAGE_KEY_CHARS);
 
+/** The prefix of the key an MCP task's questions are kept under: `mcp_task:<handle>` stands where a call's id does. */
+export const MCP_TASK_OWNER_PREFIX = "mcp_task:";
+
+/** The key an MCP task's questions are kept under (`docs/architecture/mcp-server-requests.md` → The waiting-question record). */
+export const taskOwner = (handle: string): string => `${MCP_TASK_OWNER_PREFIX}${handle}`;
+
+/** Whether `owner` is an MCP task's key rather than a call's id. */
+export const isTaskOwner = (owner: string): boolean => owner.startsWith(MCP_TASK_OWNER_PREFIX);
+
 /**
  * The era of a question whose record or request names none (from before the field): a page was a Legacy `-32042`'s, and
  * a form a Modern server's.
@@ -323,6 +334,21 @@ export const pageIdentityOf = (
     ? `${key.slice(0, MCP_PAGE_KEY_CHARS / 2)}#${sha256Hex(url).slice(0, 32)}`
     : pageKeyOf(key);
 
+/** The handle a task's question key names, when it is one's (`taskOwner`). */
+export const handleOfOwner = (owner: string): string | undefined =>
+  isTaskOwner(owner) ? owner.slice(MCP_TASK_OWNER_PREFIX.length) : undefined;
+
+/**
+ * `pageIdentityOf` for the question of `owner`. An MCP task's server asks a page again under a new key (a key it was
+ * answered is never asked again), so a task's page is named by its address alone.
+ */
+export const pageIdentityFor = (
+  owner: string,
+  era: McpEra | undefined,
+  key: string,
+  url: string | undefined,
+): string => pageIdentityOf(era, isTaskOwner(owner) ? "" : key, url);
+
 const pagesKey = (callId: string) => `mcp-question:pages:${callId}`;
 
 /** What a waiting question tells the owner of: the server, and what it waits on when that is not a form. */
@@ -342,11 +368,18 @@ export type McpWaitingKind = {
   readonly quiet?: true;
 };
 
-/** Whose question it is: an agent's call's, a prompt send's (`prompt` is its title) or an App View's call's (`app`). */
+/**
+ * Whose question it is: an agent's call's, a prompt send's (`prompt` is its title), an App View's call's (`app`) or an MCP
+ * task's (`task` is its handle). The one rule for a Sampling record's `origin` and span's `mcp.origin`, and for how long a question waits (an elicitation's
+ * record keeps no origin, so its span says `task` or `agent` by its owner, `spanOf`).
+ */
 export const askOriginOf = (origin: {
   readonly prompt?: string | undefined;
   readonly app?: true | undefined;
-}): "agent" | "prompt" | "app" => {
+  readonly task?: string | undefined;
+}): "agent" | "prompt" | "app" | "task" => {
+  if (origin.task !== undefined) return "task";
+
   if (origin.app === true) return "app";
 
   return origin.prompt === undefined ? "agent" : "prompt";
@@ -367,8 +400,10 @@ export const waitsOf = (waits: {
   return (origin: {
     readonly prompt?: string | undefined;
     readonly app?: true | undefined;
+    readonly task?: string | undefined;
   }): { readonly waitMs: number; readonly quiet: boolean } =>
-    askOriginOf(origin) === "agent"
+    // A task's questions are kept for the owner like an agent's call's, and tell the owner.
+    askOriginOf(origin) === "agent" || askOriginOf(origin) === "task"
       ? { waitMs: waits.waitMs, quiet: false }
       : { waitMs: promptWaitMs, quiet: true };
 };
@@ -805,6 +840,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       if (ask.prompt !== undefined) request.prompt = ask.prompt;
 
       if (ask.app === true) request.app = true;
+
+      if (ask.task !== undefined) request.task = ask.task;
 
       if (shown.page !== undefined) {
         const page: Mutable<McpElicitationPage> = { ...shown.page, opened: false };

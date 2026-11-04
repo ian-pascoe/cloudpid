@@ -13,7 +13,7 @@ import * as Match from "effect/Match";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import type { HostLost } from "./client.ts";
-import type { McpTaskRecord, McpTaskState } from "./task-state.ts";
+import { type McpTaskRecord, type McpTaskState, standingOf } from "./task-state.ts";
 
 /** The longest an agent's call waits for its MCP task: 10 minutes from the task's creation. */
 export const MCP_TASK_WINDOW_MAX_MS = 10 * 60 * 1000;
@@ -276,9 +276,7 @@ export const sizeText = (bytes: number): string =>
 
 /** What the model reads when a call detaches, after its window of `windowMs`. */
 export const detachedText = (record: McpTaskRecord): string => {
-  const standing = `${record.server}'s ${record.modelTool} runs as MCP task ${record.handle} and is still ${
-    record.status === "input_required" ? "waiting for input" : "working"
-  } after ${durationText(record.windowMs)}.`;
+  const standing = `${record.server}'s ${record.modelTool} runs as MCP task ${record.handle} and is still ${standingOf(record)} after ${durationText(record.windowMs)}.`;
 
   // A stdio server's task lives in its Workspace's Container, which stops when it has been idle for a while.
   const container =

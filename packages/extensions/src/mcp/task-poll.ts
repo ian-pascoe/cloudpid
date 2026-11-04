@@ -8,6 +8,8 @@ import type {
   McpHostRequestResult,
   McpHostTaskCancel,
   McpHostTaskGet,
+  McpHostTaskUpdate,
+  McpTaskInputResponses,
 } from "@cloudpid/mcp/types";
 import * as Predicate from "effect/Predicate";
 import type { HostLost } from "./client.ts";
@@ -27,6 +29,18 @@ export const taskGet = (record: McpTaskRecord, ctx: McpHostRequestContext): McpH
   params: { taskId: record.taskId, tool: record.tool, conn: record.conn },
   // What this Session last saw, so the host spans only a poll that changed it or failed.
   ctx: { ...ctx, lastStatus: record.status },
+});
+
+/** The `tasks/update` of `record`: the answers to the questions it waits on, by the server's key. */
+export const taskUpdate = (
+  record: Pick<McpTaskRecord, "server" | "taskId" | "tool" | "conn">,
+  ctx: McpHostRequestContext,
+  inputResponses: McpTaskInputResponses,
+): McpHostTaskUpdate => ({
+  op: "tasks/update",
+  server: record.server,
+  params: { taskId: record.taskId, tool: record.tool, conn: record.conn, inputResponses },
+  ctx,
 });
 
 /** The `tasks/cancel` of `record`; the host allows it for a server switched off since. */
@@ -122,9 +136,17 @@ const stateDecision = (
       return ended("failed", "server", extra);
     }
 
-    case "cancelled":
-      // Ours when cloudpid asked for it: the owner's, the agent's, Stop's.
-      return ended("cancelled", record.cancel?.by ?? "server");
+    case "cancelled": {
+      // Ours when cloudpid asked for it: the owner's, the agent's, Stop's, or cloudpid's own, with why.
+      const extra: Partial<McpTaskEnd> = {};
+
+      if (record.cancel?.reason !== undefined) extra.reason = record.cancel.reason;
+
+      if (record.cancel?.error !== undefined) extra.error = record.cancel.error;
+
+      return ended("cancelled", record.cancel?.by ?? "server", extra);
+    }
+
     default:
       return {
         patch: { ...patch, status: snapshot.status },
@@ -270,6 +292,13 @@ export const applyDecision = (record: McpTaskRecord, decision: Decision): void =
   const { patch } = decision;
 
   if (patch.status !== undefined) record.status = patch.status;
+
+  // The server went on: it no longer waits on the answers, and a lost update is not counted against the next. What is
+  // still being sent stays, for the next time the server lists those keys (`observeQuestions`).
+  if (patch.status === "working" && record.questions !== undefined) {
+    delete record.questions.tries;
+    delete record.questions.stuck;
+  }
 
   if (patch.statusMessage !== undefined) record.statusMessage = patch.statusMessage;
 

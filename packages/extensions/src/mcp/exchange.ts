@@ -68,6 +68,7 @@ import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
 import type { McpTaskFollower } from "./task-follow.ts";
+import type { TaskAsking } from "./task-questions.ts";
 import {
   followInline,
   recordOfCall,
@@ -384,6 +385,8 @@ export type McpTasking = {
   readonly tasks: McpTasksOptions;
   readonly follower: McpTaskFollower;
   readonly pool: McpResultPool;
+  /** What a task's questions are asked and answered with (`./task-questions.ts`). */
+  readonly asking?: TaskAsking | undefined;
 };
 
 /** Where a call keeps the place it holds among the task caps, for its end to give back. */
@@ -647,6 +650,7 @@ const sendHolding = async <A>(
           origin: { session: origin.session, workspace },
           follower: exchange.tasking.follower,
           pool: exchange.tasking.pool,
+          asking: exchange.tasking.asking,
           base,
         };
 

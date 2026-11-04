@@ -2,7 +2,8 @@
 // The line under a waiting MCP question's header that says who is waiting (`docs/architecture/mcp-server-requests.md` →
 // Questions, Elicitation requests): "during `mcp__github__create_issue` · the agent" (or "· subagent <name>") for a tool's
 // call, "getting prompt <title>" for the `prompts/get` of a prompt send, "<server>'s app" for a call an App View made (drawn in
-// the waiting area, never inside the View), with the badge of where the server's definition is.
+// the waiting area, never inside the View), "during `mcp__github__deploy` · MCP task mcp-task-3" for a question of an MCP
+// task that goes on after its call, with the badge of where the server's definition is.
 import type { McpElicitationSource } from "@cloudpid/protocol";
 import { countdown, sourceLabel } from "./mcp-elicitation-form.ts";
 
@@ -14,6 +15,8 @@ export type McpAsker = {
   readonly prompt?: string | undefined;
   /** Whether it was asked in a `tools/call` of an App View. */
   readonly app?: true | undefined;
+  /** The handle of the MCP task whose question it is, when it is one's ("MCP task <handle>"). */
+  readonly task?: string | undefined;
   readonly source?: McpElicitationSource | undefined;
 };
 
@@ -29,11 +32,12 @@ export const McpOriginLine = ({
 
   return (
     <p className="mt-1 text-xs text-muted-foreground">
-      {request.app === true ? (
+      {request.task === undefined && request.app === true ? (
         `${request.server}'s app`
-      ) : request.prompt === undefined ? (
+      ) : request.task !== undefined || request.prompt === undefined ? (
         <>
           during <span className="font-mono">{request.tool}</span> ·{" "}
+          {request.task === undefined ? null : `MCP task ${request.task} · `}
           {agent === undefined ? "the agent" : `subagent ${agent}`}
         </>
       ) : (
@@ -51,11 +55,12 @@ export const McpOriginLine = ({
  * without an answer.
  */
 export const endsLine = (request: McpAsker, deadline: number, now: number): string => {
-  if (request.app === true) {
+  // A task's is first, as in `askOriginOf`.
+  if (request.task === undefined && request.app === true) {
     return `${request.server}'s app goes on without an answer in ${countdown(deadline, now)}`;
   }
 
-  return request.prompt === undefined
+  return request.task !== undefined || request.prompt === undefined
     ? `${request.server}'s call ends in ${countdown(deadline, now)}`
     : `${request.server}'s prompt goes on without an answer in ${countdown(deadline, now)}`;
 };

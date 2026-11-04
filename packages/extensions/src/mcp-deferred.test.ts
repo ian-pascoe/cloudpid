@@ -760,6 +760,28 @@ describe("a deferred round in the Session's storage", () => {
     expect(told).toEqual(["Docs-Site"]);
   });
 
+  it("leaves a round whose state is a later build's alone: it is not resumed as a call's", async () => {
+    const { questions, memory } = await service();
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    expect(await Effect.runPromise(questions.deferredRound(ASK.callId))).toBeDefined();
+
+    // A later build stored the round under a state this one does not know.
+    const key = `mcp-question:d:${ASK.callId}`;
+    const stored = memory.storage.get<{ readonly round: object }>(key);
+
+    expect(stored).toBeDefined();
+    memory.storage.put(key, {
+      ...stored,
+      round: { ...stored?.round, state: "from-a-later-build" },
+    });
+
+    expect(await Effect.runPromise(questions.deferredRound(ASK.callId))).toBeUndefined();
+  });
+
   it("keeps each question under a key of its own, and the call's record holds no form or answer", async () => {
     const { questions, memory } = await service();
 

@@ -344,6 +344,9 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   /** Where the notices are written, once the host's Harness is open. */
   let notices: McpNotices | undefined;
 
+  /** The host's Harness, which an answer to an MCP task's question sends `tasks/update` with. */
+  let taskHarness: Parameters<McpToolsService["bindTaskHarness"]>[0] | undefined;
+
   /** What the host does when a follower of an MCP task starts a Run or moves (`settleOnFollowers`): it settles. */
   let settleHost: (() => void) | undefined;
 
@@ -414,6 +417,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     );
 
     if (notices !== undefined) tools.bindNotices(notices);
+
+    if (taskHarness !== undefined) tools.bindTaskHarness(taskHarness);
 
     held = { environment, tools };
 
@@ -508,6 +513,11 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   const bind = (next: McpNotices) => {
     notices = next;
     held?.tools.bindNotices(next);
+  };
+
+  const bindTaskHarness = (next: Parameters<McpToolsService["bindTaskHarness"]>[0]) => {
+    taskHarness = next;
+    held?.tools.bindTaskHarness(next);
   };
 
   const settleOnFollowers = (next: () => void) => {
@@ -732,6 +742,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     start,
     reinstall,
     bind,
+    bindTaskHarness,
     bindSampling,
     settleOnFollowers,
     sweep,

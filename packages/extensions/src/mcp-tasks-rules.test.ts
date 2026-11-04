@@ -422,6 +422,43 @@ describe("the span of a task that ended", () => {
     });
   });
 
+  it("clears the slow status and the count of lost updates when the task works again, and keeps what is still being sent", () => {
+    const record = recordIn(state(), { status: "input_required" });
+
+    record.questions = {
+      round: 1,
+      count: 1,
+      sampled: 0,
+      stuck: true,
+      tries: 1,
+      pending: { k: { roots: [] } },
+      keys: { k: { state: "sending", at: 5 } },
+    };
+
+    applyDecision(record, decide(record, polled({ status: "working" }), NOW));
+
+    expect(record.questions.stuck).toBeUndefined();
+    expect(record.questions.tries).toBeUndefined();
+    // A key the server may not have taken stays to be settled when it no longer lists it, or sent again while it does.
+    expect(record.questions.keys).toEqual({ k: { state: "sending", at: 5 } });
+    expect(record.questions.pending).toEqual({ k: { roots: [] } });
+  });
+
+  it("counts the rounds of questions the task asked, none for a task that asked nothing", () => {
+    const record = recordIn(state());
+
+    const asked = endedRecord(
+      { ...record, questions: { round: 3, count: 4, sampled: 0, keys: {} } },
+      { at: NOW, status: "completed", by: "server" },
+      {},
+    );
+
+    const none = endedRecord(record, { at: NOW, status: "completed", by: "server" }, {});
+
+    expect(taskAttributes(asked)["mcp.task.question_rounds"]).toBe(3);
+    expect(taskAttributes(none)["mcp.task.question_rounds"]).toBe(0);
+  });
+
   it("names a canceller only when there was one, and never holds the server's id or words", () => {
     const record = recordIn(state(), { statusMessage: "private words" });
 

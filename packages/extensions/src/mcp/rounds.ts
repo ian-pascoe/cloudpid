@@ -98,7 +98,10 @@ export type Resumed =
   | { readonly kind: "sunk"; readonly detail: McpSamplingDetail };
 
 /** What a round's requests are refused with when no sampler can run them. */
-const UNAVAILABLE = { reason: "cloudpid cannot run the request here", why: "internal" } as const;
+export const UNAVAILABLE = {
+  reason: "cloudpid cannot run the request here",
+  why: "internal",
+} as const;
 
 /** What a round's Sampling requests came to: their replies by key, or the refusal that sinks the round. */
 type Sampled =
@@ -110,7 +113,7 @@ type Sampled =
  * is refused or fails sinks the round: the requests after it are settled refused, never run, and the refusal that is
  * returned is the first that is not the round's own ending (a request another's refusal withdrew).
  */
-const sampled = async (
+export const sampled = async (
   samples: ReadonlyArray<McpDeferredSample>,
   sampling: Pick<Sampling, "resume"> | undefined,
   server: string,
@@ -249,6 +252,8 @@ export const resumeOf = async (
       Arr.every(Record.values(answers), (each) => each["action"] === "accept")
         ? { kind: "resume", request: call.read }
         : { kind: "refused" },
+    // An MCP task's round is answered by `tasks/update`, never by a call's resume (`./task-questions.ts`).
+    Task: (): Resumed => ({ kind: "withdrawn" }),
     Resend: ({ state }): Resumed => ({
       kind: "resume",
       request: {
