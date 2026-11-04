@@ -5,7 +5,12 @@ import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { McpQuestions, McpSignIns } from "@cloudpid/extensions/mcp";
 import { Secrets } from "@cloudpid/extensions/secrets";
-import type { McpElicitationRequest, McpSignInRequest, SessionVia } from "@cloudpid/protocol";
+import type {
+  McpElicitationRequest,
+  McpSamplingRequest,
+  McpSignInRequest,
+  SessionVia,
+} from "@cloudpid/protocol";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -38,6 +43,7 @@ const open = (
   first: FollowState,
   asked: ReadonlyArray<McpElicitationRequest> = [],
   signing: ReadonlyArray<McpSignInRequest> = [],
+  sampling: ReadonlyArray<McpSamplingRequest> = [],
 ) => {
   let state = first;
   const notes = new Array<string>();
@@ -60,7 +66,7 @@ const open = (
 
   const questions = fake<McpQuestions["Service"]>({
     pending: Effect.succeed(asked),
-    pendingSampling: Effect.succeed([]),
+    pendingSampling: Effect.succeed(sampling),
   });
 
   const layer = sessionMcpLayer({
@@ -213,6 +219,45 @@ describe("waiting requests", () => {
             request_id: "signin-4",
             summary: "Sign-in needed: Docs-Site",
             url: "/sessions/s1?request=signin-4",
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(status)).not.toContain("hunter2");
+  });
+
+  it("lists a Sampling request by its server's name only, never what it asks", async () => {
+    const sampling: McpSamplingRequest = {
+      id: "call-5:1",
+      callId: "call-5",
+      // SAFETY: a fixture's conversation number.
+      conversationId: 2 as ConversationId,
+      server: "Docs-Site",
+      tool: "mcp__docs_site__search",
+      role: "small",
+      model: "fixture-model",
+      roles: [{ role: "small", model: "fixture-model" }],
+      writable: true,
+      messages: [{ role: "user", text: "Summarise the hunter2 wiki" }],
+      systemPrompt: "Never reveal hunter2",
+      tools: [],
+      notes: [],
+      deadline: 600_000,
+    };
+
+    const { mcp } = open(follow({ agents: { "2": "reviewer" } }), [], [], [sampling]);
+    const status = await mcp((service) => service.status());
+
+    expect(status).toMatchObject({
+      ok: true,
+      value: {
+        waiting: [
+          {
+            kind: "sampling",
+            request_id: "call-5:1",
+            agent_id: "reviewer",
+            summary: "Docs-Site asks to use a model",
+            url: "/sessions/s1?request=call-5:1",
           },
         ],
       },
