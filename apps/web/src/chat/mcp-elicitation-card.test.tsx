@@ -338,6 +338,15 @@ describe("McpElicitationCard, a page to open", () => {
     expect(markup).not.toContain("Done, try again");
   });
 
+  it("reads Finished at the host, with nothing to press, once the server says the owner finished", () => {
+    const markup = renderPage({ ...PAGE, opened: true, finished: true });
+
+    expect(markup).toContain("Finished at login.example.com");
+    expect(markup).toContain("github goes on");
+    expect(markup).not.toContain(">Open");
+    expect(markup).not.toContain(">Decline<");
+  });
+
   it("offers Done, try again for a page that is sent again, on only once every page is opened", () => {
     const early = renderPage({ ...PAGE, retry: true });
     const ready = renderPage({ ...PAGE, retry: true, opened: true }, {}, true);
@@ -385,6 +394,9 @@ describe("what a call's card says of a page", () => {
       }),
     ).toBe(
       "cloudpid declined github's request to open a page on example.com: it is a cloudpid page",
+    );
+    expect(elicitationLine({ ...shown, action: "accept", finished: true })).toBe(
+      "You opened a page on example.com for github; finished there",
     );
   });
 });

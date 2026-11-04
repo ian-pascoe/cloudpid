@@ -162,6 +162,13 @@ const withSamplingAnswers = (answers: McpAnswers | undefined): McpAnswers => ({
   inputWaitMs: Math.max(answers?.inputWaitMs ?? 0, SAMPLING_ANSWERS.inputWaitMs ?? 0),
 });
 
+/** What a call says it can answer when it keeps a Legacy server's `-32042` pages for later too: `pages_required`. */
+const PAGING_ANSWERS: McpAnswers = { ...DEFERRING_ANSWERS, pages: true };
+
+/** What a call says it can answer: its questions, kept for later when it defers, and its pages too when the host resends. */
+const answersOf = (deferring: boolean, pages: boolean): McpAnswers =>
+  deferring ? (pages ? PAGING_ANSWERS : DEFERRING_ANSWERS) : ELICITATION_ANSWERS;
+
 /** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
 const SENT = "mcp.sent";
 
@@ -277,6 +284,8 @@ export type Exchange = {
   readonly defers?: boolean | undefined;
   /** Whether the host lists `sampling`: a call or read to a server that may sample says it can answer (`options.sampling`). */
   readonly samples?: boolean | undefined;
+  /** Whether the host also resends a Legacy `-32042` (its `resend` feature): the call then keeps its pages for later too. */
+  readonly pages?: boolean | undefined;
 };
 
 /**
@@ -415,7 +424,7 @@ export const send = async <A>(
   if (waiting !== undefined) asking?.asked.push(...waiting.asked);
 
   const questionAnswers =
-    questions === undefined ? undefined : deferring ? DEFERRING_ANSWERS : ELICITATION_ANSWERS;
+    questions === undefined ? undefined : answersOf(deferring, exchange.pages === true);
 
   const request = build(
     workspace,
@@ -553,7 +562,12 @@ export const send = async <A>(
 
       if (result === undefined) return failed(hostLostResult(base, subject));
 
-      if (!Predicate.isTagged(result, "InputRequired") || rounds === undefined) {
+      if (
+        !(
+          Predicate.isTagged(result, "InputRequired") || Predicate.isTagged(result, "PagesRequired")
+        ) ||
+        rounds === undefined
+      ) {
         return settled(result);
       }
 
@@ -563,7 +577,8 @@ export const send = async <A>(
         round: (round?.round ?? 0) + 1,
         conn: result.conn,
         tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
-        resume: result.resume,
+        resume: Predicate.isTagged(result, "PagesRequired") ? result.resend : result.resume,
+        resend: Predicate.isTagged(result, "PagesRequired") ? true : undefined,
         asked: [...(asking?.asked ?? [])],
       };
 

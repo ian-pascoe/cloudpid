@@ -126,10 +126,11 @@ export type McpElicitationSource = typeof McpElicitationSource.Type;
  * The page a URL-mode question asks the owner to open (`docs/architecture/mcp-server-requests.md` → Elicitation
  * requests, URL mode). `url` is the address as the browser will open it, `host` its host in ASCII (punycode) and
  * `domain` the registrable domain the card emphasizes; `warning` says the host is an internationalized one (`idn`) or
- * mixes scripts (`mixed_script`). `opened` is
- * whether the owner opened it (from any client). `retry` says the call ends and is sent again ("Done, try again", a
- * Legacy `-32042`); without it the server goes on by itself when the owner finishes there. `again` says the server
- * asked for this page before and it was opened ("Not finished at <host> yet").
+ * mixes scripts (`mixed_script`). `opened` is whether the owner opened it (from any client). `retry` says the call ends
+ * and is sent again ("Done, try again", a Legacy `-32042`); without it the server goes on by itself when the owner
+ * finishes there. `again` says the server asked for this page before and it was opened ("Not finished at <host> yet").
+ * `finished` says the server told cloudpid the owner finished there (`notifications/elicitation/complete`): the card
+ * reads "Finished at <host>" for a moment before it goes.
  */
 export const McpElicitationPage = Schema.Struct({
   url: Schema.String,
@@ -139,6 +140,7 @@ export const McpElicitationPage = Schema.Struct({
   opened: Schema.Boolean,
   retry: Schema.optionalKey(Schema.Literal(true)),
   again: Schema.optionalKey(Schema.Literal(true)),
+  finished: Schema.optionalKey(Schema.Literal(true)),
 });
 
 export type McpElicitationPage = typeof McpElicitationPage.Type;

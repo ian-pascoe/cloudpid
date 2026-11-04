@@ -45,10 +45,12 @@ import {
   MCP_ELICITATION_CAP_REASON,
   MCP_QUESTION_UNRECORDED_REASON,
   MCP_RUN_STOPPED_REASON,
+  type McpPageRef,
   type McpQuestionAsk,
   type McpQuestionOutcome,
   type McpQuestionsService,
   type McpQuestionUnseen,
+  originOf,
 } from "./questions.ts";
 
 /** What a form that asks for the credential `field` is declined with: the server is told, the agent reads why. */
@@ -117,16 +119,20 @@ export const mutableContent = (content: ElicitationContent) =>
 export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   const asked: Array<McpElicitationDetail> = [];
 
+  /** The line of each page question, by its key, and the keys the server said the owner finished at. */
+  const pages = new Map<string, Mutable<McpElicitationDetail>>();
+  const finished = new Set<string>();
+
   const note = (
     action: McpElicitationDetail["action"],
     by: McpElicitationDetail["by"],
     fields: Array<string>,
     reason?: string,
-    page?: { readonly host: string },
+    about?: { readonly page: McpPageRef; readonly key: string },
   ) => {
     const detail: Mutable<McpElicitationDetail> = {
       server: call.server,
-      mode: page === undefined ? "form" : "url",
+      mode: about === undefined ? "form" : "url",
       action,
       by,
       fields,
@@ -134,7 +140,13 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     if (reason !== undefined) detail.reason = reason;
 
-    if (page !== undefined) detail.host = page.host;
+    if (about !== undefined) {
+      detail.host = about.page.host;
+      pages.set(about.key, detail);
+
+      // The server said the owner finished there before the question's own answer was noted.
+      if (finished.has(about.key)) detail.finished = true;
+    }
 
     asked.push(detail);
   };
@@ -148,7 +160,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     action: "decline" | "cancel",
     reason: string,
     form?: ElicitationForm,
-    page?: { readonly host: string; readonly origin: string },
+    page?: McpPageRef,
+    key?: string,
   ): Promise<boolean> => {
     const unseen: Mutable<McpQuestionUnseen> = {
       callId: call.callId,
@@ -167,12 +180,24 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     return Effect.runPromise(call.questions.unseen(unseen)).then((recorded) => {
       if (recorded === "capped") {
-        note("cancel", "cloudpid", [], MCP_ELICITATION_CAP_REASON, page);
+        note(
+          "cancel",
+          "cloudpid",
+          [],
+          MCP_ELICITATION_CAP_REASON,
+          page === undefined ? undefined : { page, key: key ?? "" },
+        );
 
         return true;
       }
 
-      note(action, "cloudpid", [], reason, page);
+      note(
+        action,
+        "cloudpid",
+        [],
+        reason,
+        page === undefined ? undefined : { page, key: key ?? "" },
+      );
 
       return false;
     });
@@ -245,7 +270,11 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     fieldsOf: typeof answeredFields,
   ): Promise<typeof McpInputAnswer.Encoded> => {
     const { form, page } = question;
-    const seen = page === undefined ? undefined : { host: page.host };
+
+    const seen =
+      page === undefined
+        ? undefined
+        : { page: { host: page.host, origin: originOf(page.url) }, key: question.key };
 
     // A Modern server's question, or a Legacy `-32042`'s, is kept for later: the round ends, and the call waits for the
     // owner after it.
@@ -341,6 +370,7 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
         Option.isSome(where)
           ? { host: where.value.hostname, origin: where.value.origin }
           : undefined,
+        request.key,
       );
 
       return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
@@ -386,7 +416,16 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       Effect.runPromise(
         call.questions.withdraw(call.callId, key, `${call.server} stopped waiting`),
       ),
-    onInputComplete: (key) => Effect.runPromise(call.questions.complete(call.callId, key)),
+    onInputComplete: (key) => {
+      // The record of the page says the owner finished there, whether the call's note of it came first or not.
+      finished.add(key);
+
+      const detail = pages.get(key);
+
+      if (detail !== undefined) detail.finished = true;
+
+      return Effect.runPromise(call.questions.complete(call.callId, key));
+    },
     get asked() {
       return asked;
     },

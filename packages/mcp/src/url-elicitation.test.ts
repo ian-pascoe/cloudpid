@@ -32,7 +32,9 @@ const ASKING: McpCallContext = {
   answers: { elicitation: true, inputWaitMs: 600_000 },
 };
 
-const KEEPING: McpCallContext = { ...ASKING, answers: { ...ASKING.answers, defer: true } };
+const DEFERRING: McpCallContext = { ...ASKING, answers: { ...ASKING.answers, defer: true } };
+
+const KEEPING: McpCallContext = { ...DEFERRING, answers: { ...DEFERRING.answers, pages: true } };
 
 const ASKS = { elicitation: { form: {}, url: {} } };
 
@@ -234,7 +236,7 @@ const textsOf = (value: CallToolResult) =>
   value.content.map((block) => (block.type === "text" ? block.text : ""));
 
 describe("a Legacy server's -32042", () => {
-  it("is kept for the owner as input_required with a state that sends the call again, as it was", async () => {
+  it("is kept for the owner as pages_required with a state that sends the call again, as it was", async () => {
     const gate = { times: 1, calls: 0, pages: 2 };
     const server = legacyStatefulServer({ moreTools: [GATED_TOOL], gate });
     const seen: Array<McpInputRequest> = [];
@@ -249,7 +251,7 @@ describe("a Legacy server's -32042", () => {
       (connection) => connection.callTool({ tool: GATED_TOOL, arguments: { n: 1 } }, KEEPING),
     );
 
-    expect(Result.isSuccess(kept) && kept.success.kind).toBe("input_required");
+    expect(Result.isSuccess(kept) && kept.success.kind).toBe("pages_required");
     expect(seen.map((request) => [request.key, request.mode, request.params["mode"]])).toEqual([
       ["page-1", "deferrable", "url"],
       ["page-2", "deferrable", "url"],
@@ -262,7 +264,7 @@ describe("a Legacy server's -32042", () => {
     });
 
     const state =
-      Result.isSuccess(kept) && kept.success.kind === "input_required" ? kept.success : undefined;
+      Result.isSuccess(kept) && kept.success.kind === "pages_required" ? kept.success : undefined;
 
     expect(state?.requests.map((request) => request.key)).toEqual(["page-1", "page-2"]);
 
@@ -270,8 +272,8 @@ describe("a Legacy server's -32042", () => {
       server,
       () => Effect.succeed(DEFER),
       (connection) =>
-        connection.resume(
-          state?.resume ?? null,
+        connection.resend(
+          state?.resend ?? null,
           { "page-1": { action: "accept" }, "page-2": { action: "accept" } },
           GATED_TOOL,
           KEEPING,
@@ -306,8 +308,8 @@ describe("a Legacy server's -32042", () => {
           Effect.gen(function* () {
             const first = yield* connection.callTool({ tool: GATED_TOOL }, KEEPING);
 
-            return yield* connection.resume(
-              first.kind === "input_required" ? first.resume : null,
+            return yield* connection.resend(
+              first.kind === "pages_required" ? first.resend : null,
               { "page-1": { action: "accept" }, "page-2": { action } },
               GATED_TOOL,
               KEEPING,
@@ -322,23 +324,27 @@ describe("a Legacy server's -32042", () => {
     },
   );
 
-  it("is the server's error when the caller keeps no questions, or a page is not kept", async () => {
+  it("is the server's error when the caller keeps no pages, or a page is not kept", async () => {
     let asked = 0;
 
-    const withoutDefer = await gated(
-      legacyStatefulServer({ moreTools: [GATED_TOOL], gate: { times: 1, calls: 0 } }),
-      () => {
-        asked += 1;
+    // A caller from before pages (it defers, but sets no `pages`) is never answered the shape it cannot read.
+    for (const ctx of [ASKING, DEFERRING]) {
+      const without = await gated(
+        legacyStatefulServer({ moreTools: [GATED_TOOL], gate: { times: 1, calls: 0 } }),
+        () => {
+          asked += 1;
 
-        return Effect.succeed(DEFER);
-      },
-      (connection) => connection.callTool({ tool: GATED_TOOL }, ASKING),
-    );
+          return Effect.succeed(DEFER);
+        },
+        (connection) => connection.callTool({ tool: GATED_TOOL }, ctx),
+      );
+
+      expect(failureOf(without)).toEqual(
+        ServerError.make({ message: "Authorization needed", code: -32042 }),
+      );
+    }
 
     expect(asked).toBe(0);
-    expect(failureOf(withoutDefer)).toEqual(
-      ServerError.make({ message: "Authorization needed", code: -32042 }),
-    );
 
     const declined = await gated(
       legacyStatefulServer({ moreTools: [GATED_TOOL], gate: { times: 1, calls: 0 } }),
@@ -363,10 +369,10 @@ describe("a Legacy server's -32042", () => {
           let step = yield* connection.callTool({ tool: GATED_TOOL }, KEEPING);
 
           // Each resend is answered `-32042` again, until the eleventh attempt.
-          for (let resends = 1; step.kind === "input_required"; resends += 1) {
+          for (let resends = 1; step.kind === "pages_required"; resends += 1) {
             expect(resends).toBeLessThanOrEqual(MCP_INPUT_ROUNDS);
-            step = yield* connection.resume(
-              step.resume,
+            step = yield* connection.resend(
+              step.resend,
               { "page-1": { action: "accept" } },
               GATED_TOOL,
               KEEPING,
@@ -388,5 +394,59 @@ describe("a Legacy server's -32042", () => {
     );
     // The call was sent once, and again after each of the ten Dones: eleven sends, never a twelfth.
     expect(gate.calls).toBe(11);
+  });
+});
+
+describe("a ResendState and a ResumeState", () => {
+  it("are each refused by the other's op, as a state the core cannot read", async () => {
+    const server = legacyStatefulServer({
+      moreTools: [GATED_TOOL],
+      gate: { times: 1, calls: 0 },
+    });
+
+    const outcome = await gated(
+      server,
+      () => Effect.succeed(DEFER),
+      (connection) =>
+        Effect.gen(function* () {
+          const first = yield* connection.callTool({ tool: GATED_TOOL }, KEEPING);
+          const answers = { "page-1": { action: "accept" as const } };
+
+          return {
+            resumed: yield* Effect.result(
+              connection.resume(
+                first.kind === "pages_required" ? first.resend : null,
+                answers,
+                GATED_TOOL,
+                KEEPING,
+              ),
+            ),
+            resent: yield* Effect.result(
+              connection.resend(
+                {
+                  v: 1,
+                  method: "tools/call",
+                  name: "gated",
+                  arguments: {},
+                  answered: {},
+                  deferred: ["page-1"],
+                  round: 1,
+                },
+                answers,
+                GATED_TOOL,
+                KEEPING,
+              ),
+            ),
+          };
+        }),
+    );
+
+    expect(Result.isSuccess(outcome) && failureOf(outcome.success.resumed)?._tag).toBe(
+      "Unsupported",
+    );
+    expect(Result.isSuccess(outcome) && failureOf(outcome.success.resent)?._tag).toBe(
+      "Unsupported",
+    );
+    expect(server.received.filter((r) => r.rpc?.method === "tools/call")).toHaveLength(1);
   });
 });

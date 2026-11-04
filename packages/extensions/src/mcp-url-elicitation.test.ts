@@ -4,14 +4,24 @@
 // once they are done ("Done, try again"). The addresses cloudpid declines unseen, and what the agent and `details` read.
 // A scripted model on a Harness, and an in-memory host. pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
-import { McpHostCompleted, McpHostInputRequired, type McpInputAnswer } from "@cloudpid/mcp/types";
+import {
+  MCP_HOST_FEATURES,
+  McpHostCompleted,
+  McpHostPagesRequired,
+  type McpInputAnswer,
+} from "@cloudpid/mcp/types";
+import type { Context, JsonValue } from "@earendil-works/chord";
+import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { describe, expect, it } from "vitest";
-import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
+import { makeMcpTools, mcpExtension, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf, open } from "./mcp.fixture.ts";
 import { type FakeMcpAnswer, fakeMcpHost } from "./mcp.testing.ts";
 import {
   createMcpQuestions,
+  type McpQuestionAsk,
   type McpQuestionStorage,
   type McpQuestionVault,
 } from "./mcp/questions.ts";
@@ -27,10 +37,9 @@ const STATE = {
   method: "tools/call",
   name: "search",
   arguments: {},
-  answered: {},
   deferred: ["page-1"],
   round: 1,
-  urlRequired: { message: "Authorization needed" },
+  message: "Authorization needed",
 };
 
 const PAGE = "https://auth.example.com/authorize?state=abc";
@@ -122,6 +131,7 @@ describe("a Legacy server's page during its call", () => {
     const { host, questions, tools, session, pending } = await setup();
     const replies: Array<Answer> = [];
     const finished: Array<string> = [];
+    const cardSaid: Array<Array<string>> = [];
 
     host.answer(async (_input, hooks) => {
       const reply = await hooks.onInput?.(visit());
@@ -132,6 +142,10 @@ describe("a Legacy server's page during its call", () => {
       await until(async () => (await pending()).every((each) => each.page?.opened === true));
       await hooks.onInputComplete?.("page-1");
       finished.push("page-1");
+
+      // The card says so for a moment ("Finished at <host>") before it goes, and the call's clock is on again.
+      await until(async () => (await pending()).some((each) => each.page?.finished === true));
+      cardSaid.push((await pending()).map((each) => each.page?.host ?? ""));
 
       return DONE;
     });
@@ -169,6 +183,7 @@ describe("a Legacy server's page during its call", () => {
 
     expect(replies).toEqual([{ kind: "answered", result: { action: "accept" } }]);
     expect(finished).toEqual(["page-1"]);
+    expect(cardSaid).toEqual([["auth.example.com"]]);
     expect(await pending()).toEqual([]);
     expect(await detailsOf(session)).toEqual([
       expect.objectContaining({
@@ -180,6 +195,7 @@ describe("a Legacy server's page during its call", () => {
             by: "owner",
             fields: [],
             host: "auth.example.com",
+            finished: true,
           },
         ],
       }),
@@ -297,11 +313,11 @@ describe("a Legacy server's page during its call", () => {
   });
 });
 
-/** A host whose call is answered `-32042`: its pages are kept (`deferrable`), and the call is sent again by `resume`. */
+/** A host whose call is answered `-32042`: its pages are kept (`deferrable`), and the call is sent again by `resend`. */
 const gated =
   (resumes: Array<Sent>, pages: ReadonlyArray<string>, again?: () => boolean) =>
   async (input: Sent, hooks: Parameters<FakeMcpAnswer>[1]) => {
-    if (input.op === "resume") {
+    if (input.op === "resend") {
       resumes.push(input);
 
       if (again?.() === true) {
@@ -310,9 +326,9 @@ const gated =
         );
 
         return replies.every((reply) => reply?.kind === "defer")
-          ? McpHostInputRequired.make({
+          ? McpHostPagesRequired.make({
               requests: pages.map((key) => visit(PAGE, "deferrable", key)),
-              resume: { ...STATE, deferred: pages, round: 2 },
+              resend: { ...STATE, deferred: pages, round: 2 },
               conn: "conn-docs",
             })
           : DONE;
@@ -326,9 +342,9 @@ const gated =
     );
 
     return replies.every((reply) => reply?.kind === "defer")
-      ? McpHostInputRequired.make({
+      ? McpHostPagesRequired.make({
           requests: pages.map((key) => visit(PAGE, "deferrable", key)),
-          resume: { ...STATE, deferred: pages },
+          resend: { ...STATE, deferred: pages },
           conn: "conn-docs",
         })
       : DONE;
@@ -370,7 +386,7 @@ describe("a Legacy server's -32042", () => {
     // One resend, answering every page; nothing but the owner's accept goes with it.
     expect(resumes).toEqual([
       expect.objectContaining({
-        op: "resume",
+        op: "resend",
         params: expect.objectContaining({
           conn: "conn-docs",
           answers: {
@@ -467,5 +483,315 @@ describe("a Legacy server's -32042", () => {
 
     expect(resumes).toHaveLength(2);
     expect(await session.texts("toolResult")).toEqual(["done"]);
+  });
+});
+
+/** pi-durable's `memo` over a map: a read, or a write whose first value wins. */
+const memoryMemo = (memos: Map<string, JsonValue>) => {
+  async function memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
+  async function memo<T extends JsonValue>(
+    name: string,
+    candidate: T,
+    context: Context,
+  ): Promise<T>;
+  async function memo(
+    name: string,
+    ...rest: ReadonlyArray<JsonValue | Context>
+  ): Promise<JsonValue | undefined> {
+    if (rest.length === 1) return memos.get(name);
+
+    // SAFETY: a write's candidate is a `JsonValue`, as the overloads take it.
+    const candidate = rest[0] as JsonValue;
+
+    if (!memos.has(name)) memos.set(name, candidate);
+
+    return memos.get(name);
+  }
+
+  return memo;
+};
+
+/** The parts of a tool's api that `execute` reads, as the api. */
+const apiWith = (parts: Partial<ToolExecutionApi>): ToolExecutionApi =>
+  // SAFETY: only what the `mcp` tools read of the api is given: the call's ids, its memos, task, details and environment.
+  parts as ToolExecutionApi;
+
+/**
+ * A call's instances over one storage and one set of memos, the way a restart makes them: each `instance` is a Session
+ * instance's questions and the tool a rerun of the call executes (`docs/architecture/mcp-server-requests.md` → The
+ * waiting-question record, Phased replay). The host answers `-32042` to the call and `done` to its resend.
+ */
+const restartable = async () => {
+  const memory = memoryStorage();
+  const memos = new Map<string, JsonValue>();
+  const told: Array<{ server: string; page?: true }> = [];
+  const vault = await testVault();
+  const host = fakeMcpHost([DOCS]);
+  const sent: Array<Sent> = [];
+
+  host.answer(async (input, hooks) => {
+    sent.push(input);
+
+    // The resend's marker is durable before the resend leaves.
+    if (input.op === "resend") return DONE;
+
+    await hooks.onInput?.(visit(PAGE, "deferrable"));
+
+    return McpHostPagesRequired.make({
+      requests: [visit(PAGE, "deferrable")],
+      resend: STATE,
+      conn: "conn-docs",
+    });
+  });
+
+  const instance = () => {
+    const questions = createMcpQuestions({
+      storage: memory.storage,
+      announce: () => Effect.void,
+      notify: (who) =>
+        Effect.sync(() => {
+          told.push(who);
+        }),
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+      vault,
+    });
+
+    const extension = mcpExtension(
+      {
+        servers: [
+          {
+            name: "Docs-Site",
+            state: "connected",
+            discoveredAt: 1,
+            server: { exposure: "direct" },
+            tools: [{ name: "search", inputSchema: { type: "object" } }],
+          },
+        ],
+        offered: [],
+        features: MCP_HOST_FEATURES,
+      },
+      host.client,
+      {},
+      { slackMs: 0, questions },
+    );
+
+    const tool = Option.getOrThrow(Arr.head(extension.tools ?? []));
+
+    const api = apiWith({
+      callId: "call-1",
+      conversationId: ROOT_CONVERSATION_ID,
+      env: undefined,
+      getTask: async () => undefined,
+      details: async () => undefined,
+      memo: memoryMemo(memos),
+    });
+
+    return { questions, run: () => tool.execute({}, api, context) };
+  };
+
+  return { instance, memos, memory, sent, told };
+};
+
+describe("a -32042 round across a restart", () => {
+  it("waits again for the owner when the rerun finds the round stored and Done not yet given", async () => {
+    const { instance, memos, sent, told } = await restartable();
+    const first = instance();
+
+    // The first instance asks, stores the round and waits; it is then lost (its promise is never settled).
+    void first.run();
+    await until(async () => (await Effect.runPromise(first.questions.pending)).length === 1);
+    expect(memos.get("mcp.wait.1")).toBe(true);
+
+    // A new instance over the same storage: the rerun finds `mcp.sent` and the stored round, and waits for it.
+    const second = instance();
+    const rerun = second.run();
+    let settled = false;
+
+    void rerun.then(() => {
+      settled = true;
+    });
+    await until(async () => (await Effect.runPromise(second.questions.pending)).length === 1);
+    expect(settled).toBe(false);
+    // Not sent again, nor resent: one request in all, and the owner was told once.
+    expect(sent.map((each) => each.op)).toEqual(["tools/call"]);
+    expect(told).toHaveLength(1);
+
+    const [request] = await Effect.runPromise(second.questions.pending);
+
+    await Effect.runPromise(second.questions.answer(request?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(second.questions.answer(request?.id ?? "", { action: "done" }));
+    expect((await rerun).output).toEqual([{ type: "text", text: "done" }]);
+    expect(sent.map((each) => each.op)).toEqual(["tools/call", "resend"]);
+    expect(memos.get("mcp.resumed.1")).toBe(true);
+  });
+
+  it("takes the answer when Done was stored before the resend's marker, writes the marker and resends once", async () => {
+    const { instance, memos, sent } = await restartable();
+    const first = instance();
+
+    void first.run();
+    await until(async () => (await Effect.runPromise(first.questions.pending)).length === 1);
+
+    // Done is stored by another instance, as an owner's answer is while the call's instance is going: the call's own
+    // instance is not woken, and it is lost before it writes `mcp.resumed.1`.
+    const answering = instance();
+    const [request] = await Effect.runPromise(answering.questions.pending);
+
+    await Effect.runPromise(answering.questions.answer(request?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(answering.questions.answer(request?.id ?? "", { action: "done" }));
+    expect(memos.has("mcp.resumed.1")).toBe(false);
+
+    // The rerun takes the stored answer, writes the marker, and sends the resend with the owner's accept.
+    const rerun = await instance().run();
+
+    expect(rerun.output).toEqual([{ type: "text", text: "done" }]);
+    expect(memos.get("mcp.resumed.1")).toBe(true);
+    expect(sent).toEqual([
+      expect.objectContaining({ op: "tools/call" }),
+      expect.objectContaining({
+        op: "resend",
+        params: expect.objectContaining({
+          answers: { "page-1": { action: "accept", content: {} } },
+        }),
+      }),
+    ]);
+
+    // A rerun after the marker never sends the resend again.
+    const later = await instance().run();
+
+    expect(later.isError).toBe(true);
+    expect(sent.map((each) => each.op)).toEqual(["tools/call", "resend"]);
+  });
+});
+
+describe("a page the owner was done at, when the server asks for it again", () => {
+  const ASK: McpQuestionAsk = {
+    key: "page-1",
+    callId: "call-9",
+    conversationId: ROOT_CONVERSATION_ID,
+    server: "Docs-Site",
+    tool: "mcp__docs_site__search",
+    message: "Authorize the app",
+    form: { fields: [] },
+    notes: [],
+    page: { url: PAGE, host: "auth.example.com", domain: "example.com" },
+    retry: true,
+  };
+
+  const ROUND = {
+    callId: ASK.callId,
+    round: 1,
+    conn: "conn-docs",
+    tool: "search",
+    resume: STATE,
+    resend: true as const,
+    asked: [],
+  };
+
+  const instance = async (memory: ReturnType<typeof memoryStorage>, told: Array<string>) =>
+    createMcpQuestions({
+      storage: memory.storage,
+      announce: () => Effect.void,
+      notify: ({ server }) =>
+        Effect.sync(() => {
+          told.push(server);
+        }),
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+      vault: await testVault(),
+    });
+
+  /** The question `ask` is kept for round `round`, stored and shown. */
+  const shown = async (questions: Awaited<ReturnType<typeof instance>>, ask: McpQuestionAsk) => {
+    expect(await Effect.runPromise(questions.defer(ask))).toBe("deferred");
+    await Effect.runPromise(questions.commitRound({ ...ROUND, callId: ask.callId }));
+    await Effect.runPromise(questions.showRound(ask.callId));
+  };
+
+  it("is brought back as not finished after a restart, with no new Notification and no count toward the cap", async () => {
+    const memory = memoryStorage();
+    const told: Array<string> = [];
+    const before = await instance(memory, told);
+
+    await shown(before, ASK);
+
+    const [first] = await Effect.runPromise(before.pending);
+
+    await Effect.runPromise(before.answer(first?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(before.answer(first?.id ?? "", { action: "done" }));
+    await Effect.runPromise(before.endRound(ASK.callId));
+    await until(async () => told.length === 1);
+    expect(told).toEqual(["Docs-Site"]);
+    expect(memory.keys().some((key) => key.startsWith("mcp-question:pages:"))).toBe(true);
+
+    // The Session instance is gone; a new one over the same storage runs the call's rerun, which counts on from the round.
+    const after = await instance(memory, told);
+
+    await Effect.runPromise(after.deferredRound(ASK.callId));
+    await shown(after, ASK);
+
+    const [again] = await Effect.runPromise(after.pending);
+
+    expect(again?.page).toMatchObject({ opened: false, retry: true, again: true });
+    expect(again?.id).not.toEqual(first?.id);
+    // Brought back quietly: the owner was told of this page once (the push is sent in the background).
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(told).toEqual(["Docs-Site"]);
+
+    // It counted for nothing: the call still has all ten of its requests for other pages.
+    await Effect.runPromise(after.answer(again?.id ?? "", { action: "decline" }));
+    await Effect.runPromise(after.endRound(ASK.callId));
+
+    for (const n of Arr.range(1, 10)) {
+      expect(await Effect.runPromise(after.defer({ ...ASK, key: `other-${n}` }))).toBe("deferred");
+    }
+
+    // The call's end takes what it came to with it.
+    await Effect.runPromise(after.settleCall(ASK.callId));
+    expect(memory.keys().some((key) => key.startsWith("mcp-question:pages:"))).toBe(false);
+  });
+});
+
+describe("a page the server says is finished", () => {
+  it("reads Finished for a moment, then closes", async () => {
+    const memory = memoryStorage();
+
+    const questions = createMcpQuestions({
+      storage: memory.storage,
+      announce: () => Effect.void,
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+      finishedShownMs: 40,
+    });
+
+    const ask = {
+      key: "page-1",
+      callId: "call-9",
+      conversationId: ROOT_CONVERSATION_ID,
+      server: "Docs-Site",
+      tool: "mcp__docs_site__search",
+      message: "Authorize the app",
+      form: { fields: [] },
+      notes: [],
+      page: { url: PAGE, host: "auth.example.com", domain: "example.com" },
+    } satisfies McpQuestionAsk;
+
+    const outcome = Effect.runPromise(questions.ask(ask));
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length === 1);
+
+    const [request] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "opened" }));
+    expect(await outcome).toMatchObject({ action: "accept" });
+    await Effect.runPromise(questions.complete(ask.callId, ask.key));
+
+    const [finished] = await Effect.runPromise(questions.pending);
+
+    expect(finished?.page).toMatchObject({ opened: true, finished: true });
+    // The call's clock is not held for it any more.
+    await Effect.runPromise(questions.whileOpen(ask.callId, ask.key));
+    await until(async () => (await Effect.runPromise(questions.pending)).length === 0);
   });
 });

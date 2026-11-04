@@ -72,7 +72,7 @@ export class McpQuestionsError extends Schema.TaggedError<
 >()("McpQuestionsError", { message: Schema.String }) {}
 
 /** The page a URL-mode question asks the owner to open, as the call that asks it knows it: plain text, already checked. */
-export type McpQuestionPage = Omit<McpElicitationPage, "opened" | "retry" | "again">;
+export type McpQuestionPage = Omit<McpElicitationPage, "opened" | "retry" | "again" | "finished">;
 
 /** A question as the call that gets it asks it: what the owner is shown, already plain text. */
 export type McpQuestionAsk = {
@@ -105,6 +105,12 @@ export type McpQuestionOutcome =
       readonly reason?: string;
     };
 
+/**
+ * Which page a note, a record of an unseen request or a `details` line is about: the address's host (ASCII) and its
+ * origin, never the rest of it.
+ */
+export type McpPageRef = { readonly host: string; readonly origin: string };
+
 /** A form or page cloudpid ended before showing it: a credential, an address it declines, or a malformed request. */
 export type McpQuestionUnseen = Omit<
   McpQuestionAsk,
@@ -112,7 +118,7 @@ export type McpQuestionUnseen = Omit<
 > & {
   readonly form?: ElicitationForm;
   /** The host of the page it was, when it was a page question (URL mode). */
-  readonly page?: { readonly host: string; readonly origin: string };
+  readonly page?: McpPageRef;
   readonly notes?: ReadonlyArray<string>;
   readonly action: "decline" | "cancel";
   readonly reason: string;
@@ -160,10 +166,23 @@ export type McpCallState = {
   waiting: number;
   notified: boolean;
   idleSince: number;
-  /** The keys of the pages the owner opened and was done at: a server that asks for one again is told so ("Not finished"). */
-  readonly pagesOpened: Set<string>;
-  /** Pages asked for again, to give their questions an id. */
-  repeated: number;
+};
+
+/**
+ * What a call's pages come to, kept in the Session's storage beside its questions so a restart does not forget them
+ * (`mcp-question:pages:<callId>`, gone with the call): the keys of the pages the owner was done at, so a server that asks
+ * for one again is told "Not finished", and how many it asked for again, which gives their questions an id.
+ */
+export type McpCallPages = { readonly opened: ReadonlyArray<string>; readonly repeated: number };
+
+const pagesKey = (callId: string) => `mcp-question:pages:${callId}`;
+
+/** How a question that waits tells the owner: the first of a call does, a later one only after a pause. */
+export type McpWaitingKind = {
+  /** It asks the owner to open a page, which the Notification says. */
+  readonly page?: true;
+  /** The owner is not told at all: a page the server asks for again, which they were told of already. */
+  readonly quiet?: true;
 };
 
 /** A question's id: unique within the Session, and within its call whatever the server's own request ids are. */
@@ -275,8 +294,6 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       waiting: 0,
       notified: false,
       idleSince: 0,
-      pagesOpened: new Set<string>(),
-      repeated: 0,
     };
 
     calls.set(callId, held);
@@ -302,6 +319,34 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     }
   };
 
+  /** What the call's pages come to, as the storage keeps it (throws as the storage does). */
+  const pagesOf = (callId: string): McpCallPages =>
+    storage.get<McpCallPages>(pagesKey(callId)) ?? { opened: [], repeated: 0 };
+
+  /** The owner was done at pages `keys` of the call. */
+  const openedPages = (callId: string, keys: ReadonlyArray<string>) => {
+    const held = pagesOf(callId);
+
+    storage.put(pagesKey(callId), {
+      ...held,
+      opened: Arr.dedupe([...held.opened, ...keys]),
+    } satisfies McpCallPages);
+  };
+
+  /** The server asked for a page of the call again: how many times so far, this one counted. */
+  const repeatedPage = (callId: string): number => {
+    const held = pagesOf(callId);
+
+    storage.put(pagesKey(callId), { ...held, repeated: held.repeated + 1 } satisfies McpCallPages);
+
+    return held.repeated + 1;
+  };
+
+  /** The call is over: what it came to goes. */
+  const forgetPages = (callId: string) => {
+    storage.delete(pagesKey(callId));
+  };
+
   /** `count` of the call's questions stopped waiting at `now`. */
   const stopWaiting = (callId: string, count: number, now: number) => {
     const state = calls.get(callId);
@@ -318,21 +363,28 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
    * only after `MCP_QUESTION_RENOTIFY_MS` with none waiting. In the background: the push may take seconds, and the
    * question must not wait on it.
    */
-  const startWaiting = (callId: string, server: string, count: number, now: number, page = false) =>
+  const startWaiting = (
+    callId: string,
+    server: string,
+    count: number,
+    now: number,
+    kind: McpWaitingKind = {},
+  ) =>
     Effect.suspend(() => {
       const state = callOf(callId);
 
       const notifies =
-        !state.notified ||
-        (state.waiting === 0 && now - state.idleSince >= MCP_QUESTION_RENOTIFY_MS);
+        kind.quiet !== true &&
+        (!state.notified ||
+          (state.waiting === 0 && now - state.idleSince >= MCP_QUESTION_RENOTIFY_MS));
 
       state.waiting += count;
       state.notified = true;
 
       return notifies && options.notify !== undefined
-        ? Effect.forkDetach(options.notify(page ? { server, page: true } : { server })).pipe(
-            Effect.asVoid,
-          )
+        ? Effect.forkDetach(
+            options.notify(kind.page === true ? { server, page: true } : { server }),
+          ).pipe(Effect.asVoid)
         : Effect.void;
     });
 
@@ -524,6 +576,10 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     keep,
     records,
     callOf,
+    pagesOf,
+    openedPages,
+    repeatedPage,
+    forgetPages,
     restoreCall,
     count,
     startWaiting,

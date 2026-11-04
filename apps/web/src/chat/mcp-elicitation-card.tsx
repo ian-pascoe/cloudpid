@@ -569,6 +569,9 @@ const PageCard = ({
             {note}
           </p>
         ))}
+        {page.finished === true ? (
+          <p className="mt-2 text-sm font-medium">Finished at {page.host}</p>
+        ) : null}
         {page.again === true ? (
           <p className="mt-2 text-sm font-medium">Not finished at {page.host} yet</p>
         ) : null}
@@ -595,16 +598,18 @@ const PageCard = ({
         <span className="text-xs text-muted-foreground">
           {disabled
             ? "Reconnecting…"
-            : page.opened && goesOn
-              ? `Opened · ${request.server} goes on when you finish there`
-              : page.opened
-                ? `Opened · press Done when you have finished at ${page.host}`
-                : request.waits === "owner"
-                  ? `${request.server} waits for you`
-                  : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
+            : page.finished === true
+              ? `${request.server} goes on`
+              : page.opened && goesOn
+                ? `Opened · ${request.server} goes on when you finish there`
+                : page.opened
+                  ? `Opened · press Done when you have finished at ${page.host}`
+                  : request.waits === "owner"
+                    ? `${request.server} waits for you`
+                    : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
         </span>
         <div className="flex gap-2">
-          {page.opened && goesOn ? null : (
+          {page.finished === true || (page.opened && goesOn) ? null : (
             <>
               <Button
                 type="button"
@@ -631,7 +636,7 @@ const PageCard = ({
               </Button>
             </>
           )}
-          {off ? (
+          {page.finished === true ? null : off ? (
             <Button size="sm" disabled>
               {page.opened ? "Open again" : "Open"}
             </Button>

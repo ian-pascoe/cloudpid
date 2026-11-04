@@ -18,7 +18,11 @@
 // - **A kind per question:** `elicitation`, and `sampling` once Sampling requests are deferred too
 //   ([#486](https://github.com/ian-pascoe/cloudpid/issues/486)); a question stored without one is an elicitation. This
 //   build shows and answers elicitations only: a round with any other kind is not waited for again.
-import { ElicitationContent, type McpElicitationRequest } from "@cloudpid/protocol";
+import {
+  ElicitationContent,
+  type McpElicitationPage,
+  type McpElicitationRequest,
+} from "@cloudpid/protocol";
 import type { SealedValue, SecretVaultError } from "../secrets/vault.ts";
 import type { McpElicitationDetail } from "./details.ts";
 import {
@@ -30,6 +34,7 @@ import {
   type McpQuestionAnswer,
   type McpQuestionAsk,
   type McpQuestionBasics,
+  type McpWaitingKind,
   type McpQuestionOutcome,
   McpQuestionsError,
   type McpQuestionStorage,
@@ -42,6 +47,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type { Mutable } from "effect/Types";
 
 const DEFERRED_KEY = "mcp-question:deferred";
 const deferredKey = (callId: string) => `mcp-question:d:${callId}`;
@@ -104,6 +110,8 @@ type DeferredRecord = {
     readonly tool: string;
     /** How many chunks the `ResumeState` is stored in. */
     readonly chunks: number;
+    /** The state is a `ResendState`: a round of pages. */
+    readonly resend?: true | undefined;
     readonly asked: ReadonlyArray<McpElicitationDetail>;
     /** The requests the call had made, toward its cap, so a rerun counts on from them. */
     readonly count: number;
@@ -139,8 +147,10 @@ export type McpDeferredRound = {
   readonly conn: string;
   /** The server's own name for the tool. */
   readonly tool: string;
-  /** The `ResumeState`, as the host gave it. */
+  /** The `ResumeState`, as the host gave it; for a round of pages (`resend`), the `ResendState`. */
   readonly resume: Schema.Json;
+  /** The round is a Legacy `-32042`'s pages: the call is sent again with `resend`, not `resume`. */
+  readonly resend?: true | undefined;
   /** What became of the call's questions so far, for its `details`: never a value. */
   readonly asked: ReadonlyArray<McpElicitationDetail>;
 };
@@ -238,6 +248,10 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       );
     });
 
+  /** The call's pages are forgotten: a storage that cannot do it leaves them for the storage's own bound. */
+  const forgetPages = (callId: string) =>
+    Effect.ignore(Effect.try(() => basics.forgetPages(callId)));
+
   /** Wake the call that waits for `callId`'s round, if one does in this instance: it reads the record again. */
   const wake = (callId: string) =>
     Effect.suspend(() => {
@@ -302,15 +316,22 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
    */
   const defer = (ask: McpQuestionAsk) =>
     Effect.gen(function* () {
-      // A page the owner opened and the server asks for again is no new request: it does not count toward the call's cap.
-      const state = basics.callOf(ask.callId);
-      const again = ask.page !== undefined && state.pagesOpened.has(ask.key);
+      // A page the owner was done at and the server asks for again is no new request: it does not count toward the call's
+      // cap. The pages the owner was done at are kept, so this holds across a restart.
+      const again =
+        ask.page !== undefined &&
+        (yield* Effect.try(() => basics.pagesOf(ask.callId).opened.includes(ask.key)).pipe(
+          Effect.orElseSucceed(() => false),
+        ));
 
       let sequence: number | string | undefined;
 
       if (again) {
-        state.repeated += 1;
-        sequence = `again${state.repeated}`;
+        const repeated = yield* Effect.try(() => basics.repeatedPage(ask.callId)).pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+
+        sequence = repeated === undefined ? undefined : `again${repeated}`;
       } else sequence = yield* basics.count(ask);
 
       if (sequence === undefined) return "capped" as const;
@@ -403,6 +424,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
             chunks,
             asked: round.asked,
             count: asked,
+            resend: round.resend,
           },
         });
 
@@ -433,12 +455,28 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       yield* tell;
 
-      const pages = yield* Effect.try(() => questionsOf(record)).pipe(
-        Effect.map(Arr.some((each) => each.request.page !== undefined)),
-        Effect.orElseSucceed(() => false),
+      const shownPages = yield* Effect.try(() => questionsOf(record)).pipe(
+        Effect.map(
+          Arr.filterMap((each) =>
+            each.request.page === undefined ? Result.failVoid : Result.succeed(each.request.page),
+          ),
+        ),
+        Effect.orElseSucceed((): ReadonlyArray<McpElicitationPage> => []),
       );
 
-      yield* basics.startWaiting(callId, record.server, record.questions.length, now, pages);
+      // A round that is all pages the server asks for again tells the owner nothing: they were told of those already.
+      const kind: Mutable<McpWaitingKind> = {};
+
+      if (shownPages.length > 0) kind.page = true;
+
+      if (
+        shownPages.length === record.questions.length &&
+        shownPages.every((page) => page.again === true)
+      ) {
+        kind.quiet = true;
+      }
+
+      yield* basics.startWaiting(callId, record.server, record.questions.length, now, kind);
     });
 
   /** The round the call stored, when it did and this build can answer it: a rerun of the call waits for it again. */
@@ -480,6 +518,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         tool: round.tool,
         resume: resume.value,
         asked: round.asked,
+        resend: round.resend,
       } satisfies McpDeferredRound;
     });
 
@@ -645,10 +684,12 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
           if (unopened.length > 0) return "unopened" as const;
 
-          const state = basics.callOf(callId);
+          basics.openedPages(
+            callId,
+            Arr.map(open, (each) => each.key),
+          );
 
           for (const each of open) {
-            state.pagesOpened.add(each.key);
             storage.put(questionKey(each.id), {
               ...each,
               answer: { action: "accept", by: "owner", page: true },
@@ -799,16 +840,22 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     settleCall: (callId: string, reason: string) =>
       Effect.andThen(
         settle(callId, reason),
-        Effect.sync(() => {
-          active.delete(callId);
-          rounds.delete(callId);
-        }),
+        Effect.andThen(
+          Effect.sync(() => {
+            active.delete(callId);
+            rounds.delete(callId);
+          }),
+          forgetPages(callId),
+        ),
       ),
     withdrawServer,
     /** Withdraw every deferred round no call in this instance waits for: their calls ended with an earlier instance. */
     dropAbandoned: Effect.gen(function* () {
       for (const callId of yield* listed) {
-        if (!active.has(callId)) yield* settle(callId, MCP_CALL_ENDED_REASON);
+        if (active.has(callId)) continue;
+
+        yield* settle(callId, MCP_CALL_ENDED_REASON);
+        yield* forgetPages(callId);
       }
     }),
   };

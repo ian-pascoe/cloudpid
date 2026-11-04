@@ -74,6 +74,16 @@ export const extensionName = "mcp";
 export const MCP_RESUME_FEATURE = "resume";
 
 /**
+ * The host feature a call keeps a Legacy server's `-32042` pages for later with: a host that lists it answers a call
+ * with `ctx.answers.pages` `PagesRequired`, and resends it (`docs/architecture/mcp-server-requests.md` → Elicitation
+ * requests, URL mode). Without it, a `-32042` is the server's error.
+ */
+export const MCP_RESEND_FEATURE = "resend";
+
+/** What the host can keep for later for a call: a Modern round of questions, and a Legacy `-32042`'s pages. */
+type HostKeeps = { readonly defers: boolean; readonly pages: boolean };
+
+/**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
  * build reads (`timeout`, `description` and the Exposure keys), so what a Session keeps of a build never holds the
  * entry's URL, headers, `env` or OAuth, where a literal credential may be. Decoding an inventory's server drops the rest.
@@ -156,7 +166,7 @@ const toolFor = (
   options: McpToolOptions,
   readServer: string | undefined,
   appHtml: boolean,
-  defers: boolean,
+  keeps: HostKeeps,
   samples: boolean,
 ): ToolRegistration => {
   const base = baseDetails(server.name, tool);
@@ -170,7 +180,8 @@ const toolFor = (
     tool: name,
     details: base,
     subject: "tool",
-    defers,
+    defers: keeps.defers,
+    pages: keeps.pages,
     samples,
   };
 
@@ -282,7 +293,10 @@ export const mcpExtension = (
       : undefined;
 
   // A Modern server's questions wait for the owner past their round only on a host that resumes the call.
-  const defers = build.features?.includes(MCP_RESUME_FEATURE) === true;
+  const keeps: HostKeeps = {
+    defers: build.features?.includes(MCP_RESUME_FEATURE) === true,
+    pages: build.features?.includes(MCP_RESEND_FEATURE) === true,
+  };
 
   // A Legacy server's Sampling requests are answered only on a host that lists `sampling` (it declares them to the server).
   const samples = samplesOf(build);
@@ -322,7 +336,7 @@ export const mcpExtension = (
               options,
               readServerOf(server),
               appHtml,
-              defers,
+              keeps,
               samples,
             ),
           );

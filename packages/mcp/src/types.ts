@@ -60,6 +60,13 @@ export const McpAnswers = Schema.Struct({
    * Questions).
    */
   defer: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The caller keeps a Legacy server's `-32042` (URL elicitation required) for later, as it does a Modern round with
+   * `defer` (which it sets too): the request may be answered `pages_required` with a `ResendState`, and `resend` sends
+   * it again once the owner has opened the pages. Without it a `-32042` is the server's error, as before. A new success
+   * shape, so asked for apart from `defer` (`docs/architecture/mcp.md` → Deploys).
+   */
+  pages: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpAnswers = typeof McpAnswers.Type;
@@ -178,15 +185,29 @@ export const ResumeStateV1 = Schema.Struct({
   deferred: Schema.Array(Schema.String),
   /** Which round of questions this is, from 1. */
   round: Schema.Int,
-  /**
-   * A Legacy server's `-32042` (URL elicitation required) rather than a Modern round: the call ran nothing, so a resume
-   * sends it again as it was, with nothing added (`answered` is empty), once every page is answered `accept`; any other
-   * answer fails it with the server's own error, `message`. Absent from a Modern round's.
-   */
-  urlRequired: Schema.optionalKey(Schema.Struct({ message: Schema.String })),
 });
 
 export type ResumeStateV1 = typeof ResumeStateV1.Type;
+
+/**
+ * A `ResendState`, format 1 (`docs/architecture/mcp-server-requests.md` → Elicitation requests, URL mode): what the
+ * core needs to send a Legacy request again once the owner has opened the pages its `-32042` listed. The call ran
+ * nothing, so it goes again as it was, with nothing added. `deferred` are the keys (`elicitationId`s) of the pages, which
+ * `resend` takes an `accept` for each of; any other answer fails the call with the server's own error, `message`. JSON,
+ * at most `MCP_RESUME_STATE_MAX_BYTES`, opaque to everyone but the core, like a `ResumeState`.
+ */
+export const ResendStateV1 = Schema.Struct({
+  v: Schema.Literal(1),
+  method: Schema.Literal("tools/call"),
+  name: Schema.String,
+  arguments: JsonObject,
+  deferred: Schema.Array(Schema.String),
+  /** Which `-32042` of the call this is, from 1. */
+  round: Schema.Int,
+  message: Schema.String,
+});
+
+export type ResendStateV1 = typeof ResendStateV1.Type;
 
 /**
  * The era row (`mcp_eras`), format 1: the Protocol era a server was found to speak, its negotiated version and, for a
@@ -771,6 +792,17 @@ export const McpEngineRequest = Schema.Union([
     answers: McpTaskInputResponses,
     ctx: McpCallContext,
   }),
+  /**
+   * The `tools/call` that answered `pages_required` (a Legacy `-32042`), sent again from its `ResendState` (`resend`,
+   * opaque here) with an answer for each page it listed. Answered as a `tools/call` is, `pages_required` again included.
+   */
+  Schema.Struct({
+    op: Schema.Literal("resend"),
+    tool: McpToolDefinition,
+    resend: Schema.Json,
+    answers: McpTaskInputResponses,
+    ctx: McpCallContext,
+  }),
 ]);
 
 export type McpEngineRequest = typeof McpEngineRequest.Type;
@@ -880,6 +912,23 @@ export const McpEngineInputRequired = Schema.Struct({
 
 export type McpEngineInputRequired = typeof McpEngineInputRequired.Type;
 
+/**
+ * A Legacy `tools/call` (or its `resend`) whose server answered `-32042`, returned only to a call whose
+ * `ctx.answers.pages` is set: the pages as `requests`, scrubbed of the call's tokens, and the `ResendState` a `resend`
+ * goes on from, as the core made it.
+ */
+export const McpEnginePagesRequired = Schema.Struct({
+  kind: Schema.Literal("pages_required"),
+  requests: Schema.Array(McpInputRequest),
+  resend: Schema.Json,
+  ...RefreshedTools,
+  ...EngineLogs,
+  ...EngineSpawn,
+  state: McpEngineState,
+});
+
+export type McpEnginePagesRequired = typeof McpEnginePagesRequired.Type;
+
 /** A `tasks/update` or `tasks/cancel` the server took. */
 export const McpEngineTaskAck = Schema.Struct({
   kind: Schema.Literal("task_ack"),
@@ -903,6 +952,7 @@ export const McpEngineRequestResult = Schema.Union([
   McpEngineTaskState,
   McpEngineTaskAck,
   McpEngineInputRequired,
+  McpEnginePagesRequired,
 ]);
 
 export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
@@ -1092,6 +1142,25 @@ export const McpHostResume = Schema.Struct({
 
 export type McpHostResume = typeof McpHostResume.Type;
 
+/**
+ * `request({ op: "resend" })`: a `tools/call` answered `PagesRequired`, sent again with an answer for each page it
+ * listed (`docs/architecture/mcp-server-requests.md` → Elicitation requests, URL mode). Like `McpHostResume`, with the
+ * `ResendState` the `PagesRequired` carried as `resend`.
+ */
+export const McpHostResend = Schema.Struct({
+  op: Schema.Literal("resend"),
+  server: Schema.String,
+  params: Schema.Struct({
+    tool: Schema.String,
+    conn: Schema.String,
+    resend: Schema.Json,
+    answers: McpTaskInputResponses,
+  }),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostResend = typeof McpHostResend.Type;
+
 /** The MIME type of an MCP App's HTML, which a `ui://` resource's one content item must have exactly. */
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
@@ -1223,6 +1292,7 @@ export const McpHostRequest = Schema.Union([
   McpHostTaskUpdate,
   McpHostTaskCancel,
   McpHostResume,
+  McpHostResend,
 ]);
 
 export type McpHostRequest = typeof McpHostRequest.Type;
@@ -1346,6 +1416,21 @@ export const McpHostInputRequired = Schema.TaggedStruct("InputRequired", {
 
 export type McpHostInputRequired = typeof McpHostInputRequired.Type;
 
+/**
+ * A `tools/call` (or its `resend`) whose Legacy server answered `-32042`, returned only to a call whose
+ * `ctx.answers.pages` is set: the pages as questions, and the `ResendState` a `resend` sends with their answers, opaque
+ * to the caller, who keeps it. The rest is as `InputRequired`'s.
+ */
+export const McpHostPagesRequired = Schema.TaggedStruct("PagesRequired", {
+  requests: Schema.Array(McpInputRequest),
+  resend: Schema.Json,
+  conn: Schema.String,
+  identity: Schema.optionalKey(Schema.String),
+  ...McpHostTaskOrigin,
+});
+
+export type McpHostPagesRequired = typeof McpHostPagesRequired.Type;
+
 /** The server took a `tasks/update` or a `tasks/cancel`. */
 export const McpHostTaskAck = Schema.TaggedStruct("TaskAck", McpHostTaskOrigin);
 
@@ -1408,6 +1493,7 @@ export const McpHostRequestResult = Schema.Union([
   McpHostTaskAck,
   ServerChanged,
   McpHostInputRequired,
+  McpHostPagesRequired,
   ...McpHostFailure.members,
 ]);
 

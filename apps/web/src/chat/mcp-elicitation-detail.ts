@@ -16,6 +16,7 @@ export const ShownElicitation = Schema.Struct({
   reason: Schema.optionalKey(Schema.String),
   mode: Schema.optionalKey(Schema.String),
   host: Schema.optionalKey(Schema.String),
+  finished: Schema.optionalKey(Schema.Boolean),
   fields: Schema.Array(Schema.String),
 });
 
@@ -60,7 +61,7 @@ const pageLine = (question: ShownElicitation): string => {
 
   if (question.by === "owner") {
     return question.action === "accept"
-      ? `You opened ${where} for ${question.server}`
+      ? `You opened ${where} for ${question.server}${question.finished === true ? "; finished there" : ""}`
       : `You ${verb(question.action)} ${question.server}'s request to open ${where}`;
   }
 

@@ -538,4 +538,59 @@ describe("a Legacy MCP server's page in a Session", () => {
     expect(results.join("\n")).toContain("opened");
     owner.close();
   });
+
+  it("stops at the 11th -32042 of a call: the agent reads that the server kept asking for the same page", async () => {
+    const gate = { times: 1000, calls: 0, url: PAGE_URL };
+    const { stub } = await open([], [], "mcp", { gate });
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["call:mcp__docs__gated:{}", "done"]);
+      await instance.submit({ requestId: "turn-1", text: "gated" });
+    });
+
+    // Each time the page is opened and Done is pressed, the server asks for the same page again: the tenth Done is the last.
+    for (let round = 1; round <= 10; round += 1) {
+      await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+      const [request] = owner.requests();
+
+      expect(request?.page?.again === true).toBe(round > 1);
+      owner.send({
+        type: "mcp_elicitation_answer",
+        id: `open-${round}`,
+        request: request?.id ?? "",
+        action: "opened",
+      });
+      await settles(async () => expect(owner.requests()[0]?.page?.opened).toBe(true));
+      owner.send({
+        type: "mcp_elicitation_answer",
+        id: `done-${round}`,
+        request: request?.id ?? "",
+        action: "done",
+      });
+      await settles(async () => expect(gate.calls).toBe(round + 1));
+
+      if (round < 10) {
+        await settles(async () => expect(owner.requests()[0]?.page?.again).toBe(true));
+      }
+    }
+
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    // Sent once, and again after each of the ten Dones: eleven in all, never a twelfth.
+    expect(gate.calls).toBe(11);
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.join("\n")).toContain(
+      "Authorization needed. docs kept asking for the same page; stopped after 10 tries",
+    );
+    owner.close();
+  });
 });

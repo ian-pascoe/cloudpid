@@ -41,6 +41,8 @@ export type McpElicitationDetail = {
   readonly fields: Array<string>;
   /** The host of the page a URL-mode question asked the owner to open; never the address. */
   readonly host?: string;
+  /** The server said the owner finished at the page (`notifications/elicitation/complete`). */
+  readonly finished?: true;
 };
 
 /**

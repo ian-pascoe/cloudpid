@@ -63,6 +63,7 @@ import { MCP_RESOURCE_FEATURE } from "./mcp/resources.ts";
 import { appToolsOf } from "./mcp/app-tools.ts";
 import { appHtmlOf, MCP_APP_FEATURE, type McpAppHtmlInput } from "./mcp/apps.ts";
 import {
+  MCP_RESEND_FEATURE,
   MCP_RESUME_FEATURE,
   MCP_SAMPLING_FEATURE,
   McpBuildServer,
@@ -140,6 +141,7 @@ export { type McpCheckResult, type McpNotices, mcpNotices } from "./mcp/notices.
 export {
   extensionName,
   MCP_CALL_SLACK_MS,
+  MCP_RESEND_FEATURE,
   MCP_RESUME_FEATURE,
   MCP_SAMPLING_FEATURE,
   type McpBuild,
@@ -161,13 +163,15 @@ export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
  * `resources` (`./mcp/resources.ts`), and a host without it gets every other tool as before, none of these; an App
  * tool's call reads `app.htmlHash` of its answer, and `mcp_app_html` is served, only with `app_html` (`./mcp/apps.ts`);
  * a call keeps its Modern server's questions for later with `resume` (`./mcp/exchange.ts`), and without it answers
- * them live; a Legacy server whose definition says `sampling: "allow"` is answered its Sampling requests with
- * `sampling` (`./mcp/sample.ts`), and none is declared without it.
+ * them live; it keeps a Legacy server's `-32042` pages with `resend`, and without it that is the server's error; a
+ * Legacy server whose definition says `sampling: "allow"` is answered its Sampling requests with `sampling`
+ * (`./mcp/sample.ts`), and none is declared without it.
  */
 export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESOURCE_FEATURE,
   MCP_APP_FEATURE,
   MCP_RESUME_FEATURE,
+  MCP_RESEND_FEATURE,
   MCP_SAMPLING_FEATURE,
 ];
 

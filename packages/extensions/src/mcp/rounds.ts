@@ -1,5 +1,5 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- pi-durable's Promise-based tool seam.
-// A Modern call's rounds of questions kept for later (`docs/architecture/mcp-server-requests.md` → The waiting-question
+// A call's rounds of questions kept for later (a Modern call's, or a Legacy server's `-32042` pages) (`docs/architecture/mcp-server-requests.md` → The waiting-question
 // record, Phased replay): how `send` (`./exchange.ts`) stores a round and marks it, finds one on a rerun, and waits for
 // the owner's answers to build the round's resume. The markers are pi-durable memos: `mcp.wait.<r>` once round _r_ is
 // stored, and only then are its cards shown; `mcp.resumed.<r>` before its resume leaves, so it leaves at most once.
@@ -132,11 +132,19 @@ export const resumeOf = async (
 
   return {
     kind: "resume",
-    request: {
-      op: "resume",
-      server: call.server,
-      params: { tool: round.tool, conn: round.conn, resume: round.resume, answers },
-      ctx: call.ctx,
-    },
+    request:
+      round.resend === true
+        ? {
+            op: "resend",
+            server: call.server,
+            params: { tool: round.tool, conn: round.conn, resend: round.resume, answers },
+            ctx: call.ctx,
+          }
+        : {
+            op: "resume",
+            server: call.server,
+            params: { tool: round.tool, conn: round.conn, resume: round.resume, answers },
+            ctx: call.ctx,
+          },
   };
 };

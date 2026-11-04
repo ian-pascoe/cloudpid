@@ -130,7 +130,7 @@ export const resolve = (
     const asked =
       task !== undefined
         ? { conn: task.params.conn, since: "the task was started" }
-        : call?.op === "resume"
+        : call?.op === "resume" || call?.op === "resend"
           ? { conn: call.params.conn, since: "it asked" }
           : undefined;
 

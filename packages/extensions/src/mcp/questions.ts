@@ -66,14 +66,22 @@ export {
   MCP_RUN_STOPPED_REASON,
   McpQuestionsError,
   type McpQuestionAnswer,
+  type McpPageRef,
   type McpQuestionAsk,
   type McpQuestionOutcome,
   type McpQuestionRecord,
   type McpQuestionStorage,
   type McpQuestionUnseen,
+  originOf,
 } from "./question-records.ts";
 
 const WAITING_KEY = "mcp-question:waiting";
+
+/** How long a page the server says is finished reads "Finished at <host>" before its card goes, in ms. */
+export const MCP_PAGE_FINISHED_SHOWN_MS = 4000;
+
+/** What a page the owner opened came to for the server: accepted. */
+const ACCEPTED: McpQuestionOutcome = { action: "accept", by: "owner", content: {} };
 
 /** A question waiting, as the storage keeps it: who asks and when, so a new instance can expire it. */
 type WaitingEntry = {
@@ -106,7 +114,9 @@ export type McpQuestionsService = {
   readonly withdraw: (callId: string, key: string, reason: string) => Effect.Effect<void>;
   /**
    * The server says the owner finished at the page question `key` of call `callId` asked them to open (its
-   * `notifications/elicitation/complete` on the call's own stream): the card closes ("Finished at <host>").
+   * `notifications/elicitation/complete` on the call's own stream). A page the owner opened reads "Finished at <host>"
+   * for a moment (`McpQuestionsOptions.finishedShownMs`) and then closes, and the call's clock goes on at once; any other
+   * closes.
    */
   readonly complete: (callId: string, key: string) => Effect.Effect<void>;
   /**
@@ -200,6 +210,8 @@ export type McpQuestionsOptions = {
   readonly holdsSecret: (text: string) => Effect.Effect<boolean>;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
+  /** How long a page the server says is finished reads "Finished at <host>" before its card goes, `MCP_PAGE_FINISHED_SHOWN_MS` unless a test shortens it. */
+  readonly finishedShownMs?: number | undefined;
   /**
    * Where an accepted Modern form's content is sealed until its resume. Without one, nothing is deferred: a Modern
    * server's form is answered live, as a Legacy one.
@@ -222,6 +234,7 @@ type Waiting = {
 export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsService => {
   const { storage, announce } = options;
   const waitMs = options.waitMs ?? MCP_ELICITATION_WAIT_MS;
+  const finishedShownMs = options.finishedShownMs ?? MCP_PAGE_FINISHED_SHOWN_MS;
   const waiting = new Map<string, Waiting>();
   const basics = questionBasics(options);
   const { keep } = basics;
@@ -264,9 +277,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       );
 
       // A page the owner opened was answered `accept` when it was opened, whatever ended it.
-      const ended: McpQuestionOutcome = held.opened
-        ? { action: "accept", by: "owner", content: {} }
-        : outcome;
+      const ended: McpQuestionOutcome = held.opened ? ACCEPTED : outcome;
 
       yield* keep(
         basics.settledOf(
@@ -337,7 +348,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         question.server,
         1,
         now,
-        question.page !== undefined,
+        question.page === undefined ? {} : { page: true },
       );
 
       yield* Deferred.await(outcome).pipe(
@@ -448,13 +459,32 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   const complete = (callId: string, key: string) =>
     Option.match(waitingFor(callId, key), {
       onNone: () => Effect.void,
-      onSome: ([id, held]) =>
-        finish(
+      onSome: ([id, held]) => {
+        const { page } = held.request;
+
+        // A page the owner opened is finished: its card says so for a moment, and the call's clock goes on now.
+        if (held.opened && page !== undefined && page.finished !== true) {
+          waiting.set(id, {
+            ...held,
+            request: { ...held.request, page: { ...page, finished: true } },
+          });
+
+          return Deferred.succeed(held.closed, undefined).pipe(
+            Effect.andThen(tell),
+            Effect.andThen(
+              Effect.forkDetach(
+                Effect.sleep(finishedShownMs).pipe(Effect.andThen(finish(id, ACCEPTED))),
+              ),
+            ),
+            Effect.asVoid,
+          );
+        }
+
+        return finish(
           id,
-          held.opened
-            ? { action: "accept", by: "owner", content: {} }
-            : cancelled(`${held.request.server} says the page is finished`),
-        ).pipe(Effect.asVoid),
+          held.opened ? ACCEPTED : cancelled(`${held.request.server} says the page is finished`),
+        ).pipe(Effect.asVoid);
+      },
     });
 
   const whileOpen = (callId: string, key: string) =>
