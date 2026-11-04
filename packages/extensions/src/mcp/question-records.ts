@@ -470,6 +470,31 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       ),
     );
 
+  /**
+   * Settled record `id` says `accept`, but the server was never given the answer (the host replaced it: the server
+   * changed while the owner answered): it reads cancelled by cloudpid with `reason`, and no field. The question's span
+   * was emitted when it settled, and is not again. A record that does not say `accept` is left as it is.
+   */
+  const overturn = (id: string, reason: string) =>
+    Effect.sync(() => storage.get<McpQuestionRecord>(settledKey(id))).pipe(
+      Effect.flatMap((record) => {
+        if (record === undefined || record.action !== "accept") return Effect.void;
+
+        const overturned: McpQuestionRecord = {
+          ...record,
+          action: "cancel",
+          by: "cloudpid",
+          reason,
+          fields: [],
+        };
+
+        return Schema.encodeEffect(RecordText)(overturned).pipe(
+          Effect.flatMap((text) => Effect.try(() => keepNow(overturned, text))),
+        );
+      }),
+      Effect.catch((cause) => Effect.logWarning("Could not amend an MCP question's record", cause)),
+    );
+
   const settled = (): ReadonlyArray<McpQuestionRecord> =>
     Arr.filterMap(storage.get<string[]>(SETTLED_KEY) ?? [], (id) => {
       const record = storage.get<McpQuestionRecord>(settledKey(id));
@@ -803,6 +828,7 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
   return {
     calls,
     keep,
+    overturn,
     records,
     copiesFor,
     adopt,

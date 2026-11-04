@@ -1,5 +1,5 @@
-// The live questions a Legacy server is asking while a call waits (`docs/architecture/mcp-server-requests.md` → The waiting
-// question record, #569): only that a question of server `name` on connection `conn` is waiting, under which key, and the
+// The live questions a Legacy server is asking while a call waits (`docs/architecture/mcp-server-requests.md` → The
+// waiting-question record, #569): only that a question of server `name` on connection `conn` is waiting, under which key, and the
 // caller's `onInputEnded` that withdraws its card. Never the question, its form or the answer (ADR-0041). They are in
 // memory only and live as long as the question's `onInput` is pending: an eviction takes them with the call.
 //
@@ -29,18 +29,23 @@ export type WaitingQuestions = {
 
 type Waiting = WaitingServer & {
   readonly key: string;
-  readonly end: (reason: string) => void;
-  told: boolean;
+  /** Tell the caller its question is over, for `reason`; resolves once it heard, or could not be told. */
+  readonly end: (reason: string) => Promise<void>;
+  /** Why the caller was told its question is over, once it was. */
+  endedFor?: string;
 };
 
+/** The JSON-RPC code a Sampling request is refused with when its server changed while it waited: no protocol code, cloudpid's own. */
+const SERVER_CHANGED_CODE = -1;
+
 /** What a server whose question was ended by a set change is answered if the owner's answer arrived anyway. */
-const CHANGED_ANSWER = (kind: "elicitation" | "sampling"): McpInputAnswerEncoded =>
+const answerForChangedServer = (kind: "elicitation" | "sampling"): McpInputAnswerEncoded =>
   kind === "elicitation"
     ? { kind: "answered", result: { action: "cancel" } }
     : {
         kind: "refused",
         message: "The server changed while the request waited, so it was not answered",
-        code: -1,
+        code: SERVER_CHANGED_CODE,
       };
 
 export const waitingQuestions = (): WaitingQuestions => {
@@ -52,17 +57,15 @@ export const waitingQuestions = (): WaitingQuestions => {
 
       if (onInput === undefined || onInputEnded === undefined) return hooks;
 
-      const watched: McpEngineHooks["onInput"] = async (request) => {
+      const withWaiting: McpEngineHooks["onInput"] = async (request) => {
         const entry: Waiting = {
           ...server,
           key: request.key,
-          told: false,
-          end: (reason) => {
-            // A stub that is gone, or a hook that throws, leaves the question to its own end.
-            void Promise.resolve()
+          // A stub that is gone, or a hook that throws, leaves the question to its own end.
+          end: (reason) =>
+            Promise.resolve()
               .then(() => onInputEnded(request.key, reason))
-              .catch(() => undefined);
-          },
+              .catch(() => undefined),
         };
 
         waiting.add(entry);
@@ -70,25 +73,33 @@ export const waitingQuestions = (): WaitingQuestions => {
         try {
           const answer = await onInput(request);
 
+          if (
+            entry.endedFor === undefined ||
+            (answer.kind !== "answered" && answer.kind !== "sampled")
+          ) {
+            return answer;
+          }
+
           // The owner's answer that beat the host's word to the caller is not sent on to a server that has changed: what
-          // the owner entered was for the one that asked.
-          return entry.told && (answer.kind === "answered" || answer.kind === "sampled")
-            ? CHANGED_ANSWER(request.kind)
-            : answer;
+          // the owner entered was for the one that asked. The caller hears again, before the server does, that it was
+          // not sent, so the record of the answer it kept says so (its first word may have come before the answer).
+          await entry.end(entry.endedFor);
+
+          return answerForChangedServer(request.kind);
         } finally {
           waiting.delete(entry);
         }
       };
 
-      return { ...hooks, onInput: watched };
+      return { ...hooks, onInput: withWaiting };
     },
     endWhere: (reasonOf) => {
       for (const entry of waiting) {
-        const reason = entry.told ? undefined : reasonOf(entry);
+        const reason = entry.endedFor === undefined ? reasonOf(entry) : undefined;
 
         if (reason !== undefined) {
-          entry.told = true;
-          entry.end(reason);
+          entry.endedFor = reason;
+          void entry.end(reason);
         }
       }
     },

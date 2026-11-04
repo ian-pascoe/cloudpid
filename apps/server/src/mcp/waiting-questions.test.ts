@@ -27,8 +27,8 @@ const waiting = () => {
     },
   };
 
-  const watched = questions.watchInput({ name: "docs", conn: "c1" }, hooks);
-  const result = watched.onInput?.(FORM);
+  const withWaiting = questions.watchInput({ name: "docs", conn: "c1" }, hooks);
+  const result = withWaiting.onInput?.(FORM);
 
   return { questions, ended, result, answer: (given: Answer) => answer(given) };
 };
@@ -52,12 +52,17 @@ describe("waitingQuestions", () => {
   });
 
   it("does not send on an answer that came after the question was ended", async () => {
-    const { questions, result, answer } = waiting();
+    const { questions, ended, result, answer } = waiting();
 
     questions.endWhere(() => "docs was changed");
     answer(ACCEPT);
 
     expect(await result).toEqual({ kind: "answered", result: { action: "cancel" } });
+    // The caller is told again, before the server is answered: its record of the answer may have come after the first word.
+    expect(ended).toEqual([
+      ["q1", "docs was changed"],
+      ["q1", "docs was changed"],
+    ]);
   });
 
   it("passes an answer on when nothing ended the question, and forgets the question once answered", async () => {

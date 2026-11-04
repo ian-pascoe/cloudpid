@@ -153,6 +153,12 @@ export type McpQuestionsService = {
   /** The server stopped waiting for question `key` of call `callId`: withdraw its card. */
   readonly withdraw: (callId: string, key: string, reason: string) => Effect.Effect<void>;
   /**
+   * The host did not give question `key` of call `callId`'s answer to its server (it changed while the owner answered):
+   * the question's record, if the owner had answered it, says cancelled by cloudpid with `reason`. Nothing for a
+   * question that did not end in an answer.
+   */
+  readonly overturn: (callId: string, key: string, reason: string) => Effect.Effect<void>;
+  /**
    * The server says the owner finished at the page question `key` of call `callId` asked them to open (its
    * `notifications/elicitation/complete` on the call's own stream). A page the owner opened reads "Finished at <host>"
    * for a moment (`McpQuestionsOptions.finishedShownMs`) and then closes, and the call's clock goes on at once; any other
@@ -360,6 +366,9 @@ type Waiting = {
   readonly era?: McpEra | undefined;
 };
 
+/** What names a question of a call in `answeredIds`. */
+const answeredKey = (callId: string, key: string) => `${callId}\u0000${key}`;
+
 /** The Session's MCP questions over its storage. Synchronous: the tools that ask are built before the runtime. */
 export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsService => {
   const { storage, announce } = options;
@@ -367,6 +376,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   const waitFor = waitsOf({ waitMs, promptWaitMs: options.promptWaitMs });
   const finishedShownMs = options.finishedShownMs ?? MCP_PAGE_FINISHED_SHOWN_MS;
   const waiting = new Map<string, Waiting>();
+  /** The id of each question of a running call that ended in an answer, by call and key: `overturn` finds its record. */
+  const answeredIds = new Map<string, string>();
   const basics = questionBasics(options);
   const { keep } = basics;
 
@@ -425,6 +436,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       // A page the owner opened was answered `accept` when it was opened, whatever ended it.
       const ended: McpQuestionOutcome = held.acceptedAtOpen ? ACCEPTED : outcome;
+
+      if (ended.action === "accept") answeredIds.set(answeredKey(request.callId, held.key), id);
 
       yield* keep(
         basics.settledOf(
@@ -758,6 +771,11 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       );
       yield* sampling.settleCall(callId);
       yield* deferred.settleCall(callId, MCP_CALL_ENDED_REASON);
+
+      for (const key of Arr.fromIterable(answeredIds.keys())) {
+        if (key.startsWith(`${callId}\u0000`)) answeredIds.delete(key);
+      }
+
       basics.calls.delete(callId);
     });
 
@@ -877,6 +895,11 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     ask,
     pending,
     answer,
+    overturn: (callId, key, reason) => {
+      const id = answeredIds.get(answeredKey(callId, key));
+
+      return id === undefined ? Effect.void : basics.overturn(id, reason);
+    },
     withdraw: (callId, key, reason) =>
       Effect.andThen(
         endWhere((held) => held.request.callId === callId && held.key === key, reason),

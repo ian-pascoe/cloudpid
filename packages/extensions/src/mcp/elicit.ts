@@ -141,6 +141,9 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   const pages = new Map<string, Mutable<McpElicitationDetail>>();
   const finished = new Set<string>();
 
+  /** The line of each question the owner answered `accept`, by its key: the host may say it did not reach the server. */
+  const accepted = new Map<string, Mutable<McpElicitationDetail>>();
+
   const note = (
     action: McpElicitationDetail["action"],
     by: McpElicitationDetail["by"],
@@ -167,6 +170,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     }
 
     asked.push(detail);
+
+    return detail;
   };
 
   /**
@@ -371,7 +376,10 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     } else await Effect.runPromise(call.hold.resume);
 
     if (outcome.action === "accept") {
-      note("accept", "owner", [...fieldsOf(form, outcome.content)], undefined, seen);
+      accepted.set(
+        request.key,
+        note("accept", "owner", [...fieldsOf(form, outcome.content)], undefined, seen),
+      );
 
       return {
         kind: "answered",
@@ -461,11 +469,27 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   return {
     onInput,
     idle: () => Promise.allSettled(answering).then(() => undefined),
-    // The server's own cancellation, or the host's word that a set change ended the question (`reason`).
-    onInputEnded: (key, reason) =>
-      Effect.runPromise(
+    // The server's own cancellation, or the host's word that a set change ended the question (`reason`): then an answer
+    // the owner gave first never reached the server (the host replaced it with `cancel`), and its record and line say so.
+    onInputEnded: async (key, reason) => {
+      await Effect.runPromise(
         call.questions.withdraw(call.callId, key, reason ?? stoppedWaiting(call.server)),
-      ),
+      );
+
+      if (reason === undefined) return;
+
+      const detail = accepted.get(key);
+
+      if (detail !== undefined) {
+        detail.action = "cancel";
+        detail.by = "cloudpid";
+        detail.reason = reason;
+        detail.fields = [];
+        accepted.delete(key);
+      }
+
+      await Effect.runPromise(call.questions.overturn(call.callId, key, reason));
+    },
     onInputComplete: (key) => {
       // The record of the page says the owner finished there, whether the call's note of it came first or not.
       finished.add(key);

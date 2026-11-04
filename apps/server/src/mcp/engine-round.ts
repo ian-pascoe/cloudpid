@@ -351,12 +351,12 @@ export const sendToEngine = (
 
     // A question the server asks while the call waits is known to the host until it is answered, so a set change that
     // leaves the server changed, off or gone can end it (`waiting-questions.ts`).
-    const watched = store.watchInput({ name: server.name, conn: server.conn }, hooks);
+    const withWaiting = store.watchInput({ name: server.name, conn: server.conn }, hooks);
 
     const engineHooks: McpEngineHooks =
       auth === undefined
-        ? { ...watched, ...noting }
-        : { ...watched, ...noting, auth: (stale) => run(auth(stale)) };
+        ? { ...withWaiting, ...noting }
+        : { ...withWaiting, ...noting, auth: (stale) => run(auth(stale)) };
 
     /** Whether the engine was given the call: an abort before it was cannot have run anything. */
     let sent = false;

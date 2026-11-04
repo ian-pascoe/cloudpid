@@ -585,6 +585,47 @@ describe("a Legacy server's elicitation", () => {
     expect(await Effect.runPromise(questions.pending)).toEqual([]);
   });
 
+  it("reads cancelled when the host says the server changed after the owner answered, and the server was not given the answer", async () => {
+    const { host, tools, questions, session: opening, answerWhenAsked } = setup();
+
+    host.answer(async (_input, hooks) => {
+      await hooks.onInput?.(ask(NAME_FORM));
+
+      // The host's word that a set change ended the question reached it after the owner's answer did.
+      await hooks.onInputEnded?.(ask(NAME_FORM).key, "Docs-Site was changed");
+
+      return DONE;
+    });
+
+    const session = await opening;
+
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await answerWhenAsked({ action: "accept", content: { name: SENTINEL } });
+    await submitted.wait(context);
+
+    const line = {
+      server: "Docs-Site",
+      mode: "form",
+      action: "cancel",
+      by: "cloudpid",
+      reason: "Docs-Site was changed",
+      fields: [],
+    };
+
+    expect(await detailsOf(session)).toEqual([expect.objectContaining({ elicitation: [line] })]);
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "Docs-Site was changed",
+        fields: [],
+      }),
+    ]);
+  });
+
   it("is withdrawn when Stop aborts the call", async () => {
     const { host, tools, questions, session: opening } = setup();
     let ended = false;
