@@ -355,34 +355,118 @@ describe("MCP sampling on a definition that says ask", () => {
       });
     }));
 
-  test("allows for this call alone, and says so in the record, when Always allow cannot be written", () =>
+  test("releases the request and fails the answer, saying why, when Always allow cannot be written", () =>
     Effect.gen(function* () {
-      const { sampler, questions, announced, faux } = open({
-        remember: () => McpQuestionsError.make({ message: "The definition changed meanwhile" }),
+      let failing = true;
+
+      const { sampler, questions, announced, faux, written } = open({
+        remember: () =>
+          failing
+            ? McpQuestionsError.make({ message: "The definition changed meanwhile" })
+            : Effect.void,
       });
 
-      faux.setResponses([fauxAssistantMessage("once"), fauxAssistantMessage("twice")]);
+      faux.setResponses([fauxAssistantMessage("always")]);
 
       const sampling = yield* Effect.forkChild(sampler.sample(ask()));
 
       yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+
+      const failed = yield* questions
+        .answerSampling("call-1:1", { choice: "allow_always" })
+        .pipe(Effect.flip);
+
+      // Nothing was settled: the card stays and the owner may pick another answer, or this one again.
+      expect(failed.message).toBe("The definition changed meanwhile");
+      expect(yield* questions.pendingSampling).toHaveLength(1);
+      expect(announced.at(-1)?.requests).toHaveLength(1);
+
+      failing = false;
       yield* questions.answerSampling("call-1:1", { choice: "allow_always" });
 
       expect(yield* Fiber.join(sampling)).toMatchObject({
         kind: "sampled",
         detail: { by: "owner" },
       });
-      expect(yield* questions.pendingSampling).toEqual([]);
+      expect(written).toHaveLength(2);
+    }));
 
-      const record = (yield* sampler.records).find((each) => each.id === "call-1:1");
+  test("releases the request and fails the answer when Never cannot be written, refusing nothing", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced } = open({
+        remember: () => McpQuestionsError.make({ message: "no" }),
+      });
 
-      expect(record).toMatchObject({ status: "answered", grant: "call" });
-      expect(record?.notes).toContain(
-        "Always allow could not be saved (The definition changed meanwhile); allowed for this call only",
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+      const other = yield* Effect.forkChild(sampler.sample(ask({ callId: "call-2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(2));
+
+      const failed = yield* questions
+        .answerSampling("call-1:1", { choice: "refuse_never" })
+        .pipe(Effect.flip);
+
+      expect(failed.message).toBe("no");
+      expect(yield* questions.pendingSampling).toHaveLength(2);
+
+      // The owner picks another answer, and the second call's request was never touched.
+      yield* questions.answerSampling("call-1:1", { choice: "refuse" });
+      expect(refusedWith(yield* Fiber.join(first))?.message).toBe("refused by the owner");
+      expect(yield* questions.pendingSampling).toHaveLength(1);
+      yield* questions.answerSampling("call-2:1", { choice: "refuse" });
+      yield* Fiber.join(other);
+    }));
+
+  test("fails the answer and releases the request when the write takes too long", () =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+
+      const { sampler, questions, announced } = open({ remember: () => Deferred.await(held) });
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+
+      const answering = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }).pipe(Effect.flip),
       );
 
-      // The call's next request is let through; another call's asks again.
-      expect(yield* sampler.sample(ask({ key: "2" }))).toMatchObject({ kind: "sampled" });
+      yield* settle;
+      yield* TestClock.adjust(30_001);
+
+      expect((yield* Fiber.join(answering)).message).toBe("The definition was not saved in time");
+      expect(yield* questions.pendingSampling).toHaveLength(1);
+      yield* questions.answerSampling("call-1:1", { choice: "refuse" });
+      yield* Fiber.join(sampling);
+    }));
+
+  test("says a request is being answered before it checks anything else of a second answer", () =>
+    Effect.gen(function* () {
+      const held = yield* Deferred.make<void>();
+
+      const { sampler, questions, announced } = open({
+        writable: () => true,
+        remember: () => Deferred.await(held),
+      });
+
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+
+      const first = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }),
+      );
+
+      yield* settle;
+
+      // SAFETY: a Role no card offers, as an out-of-date client might name one; the claim is checked before the Role is read.
+      const second = yield* questions
+        .answerSampling("call-1:1", { choice: "allow_call", role: "xxlarge" as never })
+        .pipe(Effect.flip);
+
+      expect(second.message).toBe("This request is being answered");
+      yield* Deferred.succeed(held, undefined);
+      yield* Fiber.join(first);
+      yield* Fiber.join(sampling);
     }));
 
   test("lets the first answer win: a second Always or a Refuse finds the request taken, and writes once", () =>
@@ -470,6 +554,12 @@ describe("MCP sampling on a definition that says ask", () => {
       expect(refusedWith(yield* Fiber.join(other))?.code).toBe(-1);
       expect(written).toEqual([{ server: "demo", value: "off", source: { kind: "global" } }]);
 
+      // The other call's next request is refused with no card too, before the definition reloads.
+      expect(yield* sampler.sample(ask({ callId: "call-2", key: "2" }))).toMatchObject({
+        kind: "refused",
+        detail: { by: "grant" },
+      });
+
       // The same call's next request is refused with no card; the Session keeps no grant, so another call asks.
       const later = yield* sampler.sample(ask({ key: "2" }));
 
@@ -477,20 +567,6 @@ describe("MCP sampling on a definition that says ask", () => {
       expect(yield* questions.pendingSampling).toEqual([]);
       expect(yield* questions.samplingGrants).toEqual([]);
       expect(faux.state.callCount).toBe(0);
-    }));
-
-  test("Never still refuses when the definition cannot be written", () =>
-    Effect.gen(function* () {
-      const { sampler, questions, announced } = open({
-        remember: () => McpQuestionsError.make({ message: "no" }),
-      });
-
-      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
-
-      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
-      yield* questions.answerSampling("call-1:1", { choice: "refuse_never" });
-
-      expect(refusedWith(yield* Fiber.join(sampling))?.code).toBe(-1);
     }));
 
   test("does not offer Always allow or Never when the write cannot succeed here, and refuses it", () =>

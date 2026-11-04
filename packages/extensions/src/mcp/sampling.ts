@@ -627,12 +627,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
             );
           }
 
-          record = {
-            ...record,
-            by: "owner",
-            grant: decided.grant,
-            notes: decided.note === undefined ? record.notes : [...record.notes, decided.note],
-          };
+          record = { ...record, by: "owner", grant: decided.grant };
 
           if (decided.role !== prepared.role) {
             const model = modelOf(bound.models, roles, decided.role);

@@ -5,7 +5,7 @@
 // of its Workspace. An icon button in the page's header opens and closes it, whatever there is to show; whether it is
 // open is kept in the page's layout.
 
-import type { GraphAgent, TodoTask } from "@cloudpid/protocol";
+import type { GraphAgent, McpSamplingSessionGrant, TodoTask } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import { PanelRightOpen, SquareMenu, X } from "lucide-react";
@@ -167,6 +167,18 @@ const SubagentsSection = ({ agents }: { agents: readonly GraphAgent[] }) => {
   );
 };
 
+/** What a Session grant says; an action a later build adds reads neutrally, since this build cannot tell what it does. */
+const grantText = (grant: McpSamplingSessionGrant): string => {
+  switch (grant.action) {
+    case "allow":
+      return `${grant.server} may use your models in this Session`;
+    case "refuse":
+      return `${grant.server} is refused your models in this Session`;
+    default:
+      return `${grant.server} has a choice for models in this Session`;
+  }
+};
+
 /**
  * The Session's grants for MCP servers' Sampling requests (`docs/architecture/mcp-server-requests.md` → Sampling requests,
  * The card): "Allow in this Session" and "Refuse in this Session", each with a ✕ that takes it back, so the server's next
@@ -186,11 +198,7 @@ const SamplingGrantsSection = () => {
       <ul className="mt-1 text-sm">
         {Arr.map(grants, (grant) => (
           <li key={grant.server} className="flex items-center justify-between gap-2">
-            <span className="min-w-0 break-words">
-              {grant.action === "allow"
-                ? `${grant.server} may use your models in this Session`
-                : `${grant.server} is refused your models in this Session`}
-            </span>
+            <span className="min-w-0 break-words">{grantText(grant)}</span>
             <button
               type="button"
               disabled={!live}

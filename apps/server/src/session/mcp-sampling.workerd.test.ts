@@ -20,6 +20,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TestRegistry } from "../registry/store.fixture.ts";
 import { REQUEST_COST, type TestSession } from "./host.fixture.ts";
 
 const decode = Schema.decodeUnknownEffect(ServerMessageJson);
@@ -56,6 +57,8 @@ const open = async (
   server: Record<string, Schema.Json>,
   sampled: Array<Schema.Json>,
   name = "mcp-sampling",
+  /** Whether the test Registry lists the Session, as the owner's Always allow and Never need to write a definition. */
+  registered = true,
 ) => {
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
@@ -68,13 +71,50 @@ const open = async (
   await host.useRealEngine();
   await host.apply(setOf(server));
 
-  const stub = env.SESSIONS.getByName(`${name}-${environment}`);
+  const session = `${name}-${environment}`;
+  const stub = env.SESSIONS.getByName(session);
+
+  // The Registry the owner's Always allow and Never write to: Global holds the server's definition, and the Session is one
+  // of an Environment, unless the test says it is not.
+  const registry = env.REGISTRIES.getByName(`registry-${environment}`);
+  const id = (counter++).toString(16).padStart(8, "0");
+
+  await runInDurableObject(registry, (instance: TestRegistry) => {
+    instance.createEnvironment(environment, "Docs", 1);
+    instance.updateSettings(
+      { mcp: { servers: { docs: { url: "https://docs.example/mcp", ...server } } } },
+      2,
+    );
+
+    if (registered) {
+      instance.createSession(
+        {
+          id: session,
+          title: null,
+          workspace: { kind: "new", id, environment, branch: `cloudpid/${id}`, base: null },
+          origin: null,
+          marks: null,
+          requestId: undefined,
+        },
+        3,
+      );
+    }
+  });
 
   await runInDurableObject(stub, (instance: TestSession) => {
     instance.mcpEnvironment(environment, 1);
+    instance.samplingRegistry(`registry-${environment}`);
   });
 
-  return { stub };
+  return { stub, registry };
+};
+
+/** What the owner's choices left in the Registry: Global's `docs` entry, and the Settings' Agent changes, oldest first. */
+const registryOf = async (registry: DurableObjectStub<TestRegistry>) => {
+  const settings = await registry.getSettings();
+  const changes = await registry.listSettingsChanges();
+
+  return { docs: settings.settings.mcp.servers.docs, changes: [...changes].reverse() };
 };
 
 const sample = (rounds: number) => `call:mcp__docs__sample:${JSON.stringify({ rounds })}`;
@@ -408,7 +448,7 @@ describe("a Legacy MCP server whose definition says ask, in a Session", () => {
 
   it("writes the definition on Always allow and Never", async () => {
     const sampled: Array<Schema.Json> = [];
-    const { stub } = await open({}, sampled);
+    const { stub, registry } = await open({}, sampled);
     const owner = await connect(stub);
 
     await start(stub, [sample(1), "always", "done"]);
@@ -432,11 +472,25 @@ describe("a Legacy MCP server whose definition says ask, in a Session", () => {
     });
     await idle(stub);
 
-    expect(
-      await runInDurableObject(stub, (instance: TestSession) => instance.samplingWrites()),
-    ).toEqual([
-      { server: "docs", value: "allow" },
-      { server: "docs", value: "off" },
+    // Written as the owner's own changes, in order, to the Settings Global holds: Always allow, then Never.
+    const left = await registryOf(registry);
+
+    expect(left.docs).toMatchObject({ sampling: "off" });
+    expect(left.changes).toMatchObject([
+      {
+        actor: "owner",
+        session: null,
+        tool: null,
+        field: "mcp.servers.docs",
+        after: { sampling: "allow" },
+      },
+      {
+        actor: "owner",
+        session: null,
+        tool: null,
+        field: "mcp.servers.docs",
+        after: { sampling: "off" },
+      },
     ]);
   });
 
@@ -510,7 +564,7 @@ describe("a Legacy MCP server whose definition says ask, in a Session", () => {
 
   it("offers no Always allow or Never where the Session cannot write a definition, and refuses to", async () => {
     const sampled: Array<Schema.Json> = [];
-    const { stub } = await open({}, sampled, "mcp-unwritable-sampling");
+    const { stub, registry } = await open({}, sampled, "mcp-unwritable-sampling", false);
     const owner = await connect(stub);
 
     await start(stub, [sample(1), "never sampled", "done"]);
@@ -527,9 +581,7 @@ describe("a Legacy MCP server whose definition says ask, in a Session", () => {
       expect(owner.received.some((message) => message.type === "error")).toBe(true),
     );
     expect(owner.requests()).toHaveLength(1);
-    expect(
-      await runInDurableObject(stub, (instance: TestSession) => instance.samplingWrites()),
-    ).toEqual([]);
+    expect(await registryOf(registry)).toMatchObject({ changes: [] });
 
     owner.send({
       type: "mcp_sampling_answer",
@@ -538,5 +590,43 @@ describe("a Legacy MCP server whose definition says ask, in a Session", () => {
       choice: "refuse",
     });
     await idle(stub);
+  });
+
+  it("keeps the card and tells the owner why when Always allow cannot be saved, so they can pick another answer", async () => {
+    const sampled: Array<Schema.Json> = [];
+    const { stub, registry } = await open({}, sampled);
+    const owner = await connect(stub);
+
+    // The definition the card is for is gone from the Settings the Registry holds.
+    await runInDurableObject(registry, (instance: TestRegistry) => {
+      instance.updateSettings({}, 9);
+    });
+    await start(stub, [sample(1), "never sampled", "done"]);
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+    owner.send({
+      type: "mcp_sampling_answer",
+      id: "always",
+      request: owner.requests()[0]?.id ?? "",
+      choice: "allow_always",
+    });
+    await settles(async () =>
+      expect(owner.received).toContainEqual({
+        type: "error",
+        id: "always",
+        message: "The Settings have no definition of docs to change",
+      }),
+    );
+
+    // Nothing was settled or written: the card stays, and the owner refuses it instead.
+    expect(owner.requests()).toHaveLength(1);
+    expect(await registryOf(registry)).toMatchObject({ changes: [] });
+    owner.send({
+      type: "mcp_sampling_answer",
+      id: "no",
+      request: owner.requests()[0]?.id ?? "",
+      choice: "refuse",
+    });
+    await idle(stub);
+    expect(sampled).toEqual([{ error: "refused by the owner", code: -1 }]);
   });
 });

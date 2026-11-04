@@ -38,7 +38,10 @@ import { Approvals } from "@cloudpid/extensions/approvals";
 import { Instructions, InstructionsSettings } from "@cloudpid/extensions/instructions";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { SettingsAccess, type SettingsReload, SettingsTools } from "@cloudpid/extensions/settings";
-import { SettingsMcpAccess } from "@cloudpid/extensions/settings-mcp";
+import {
+  SettingsMcpAccess,
+  type SettingsMcpAccessService,
+} from "@cloudpid/extensions/settings-mcp";
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
@@ -82,6 +85,7 @@ import {
   emptyMcpExtension,
   type McpHostClientService,
   type McpQuestionsService,
+  rememberSampling,
 } from "@cloudpid/extensions/mcp";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
@@ -707,15 +711,16 @@ export class TestSession extends DurableObject {
       // The 10-minute bound, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`).
       waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
       samplingWaitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
-      // *Always allow* and *Never* on a Sampling card: noted, never written to a Registry the fixture does not have.
-      remember: {
-        // A Session the Registry does not list (`mcp-unwritable-*`) has nowhere to write, so its card offers no Always or Never.
-        writable: () => Effect.succeed(this.ctx.id.name?.startsWith("mcp-unwritable-") !== true),
-        write: ({ server, value }) =>
-          Effect.sync(() => {
-            this.#samplingWrites.push({ server, value });
-          }),
-      },
+      // *Always allow* and *Never* on a Sampling card, written to the test Registry the test names (`samplingRegistry`) as a
+      // Session writes them. The Session is the Registry's own only when the test registers it there, as a Session of an
+      // Environment: until then (or never) it has nowhere to write, and its card offers no Always or Never.
+      remember: rememberSampling({
+        settings: sessionSettingsAccess({
+          registry: this.#settingsRegistry("sampling-registry"),
+          session: this.ctx.id.name,
+        }),
+        mcp: this.#samplingMcpAccess(),
+      }),
       encryptionKey: SECRETS_KEY,
       session: this.ctx.id.toString(),
     });
@@ -1740,13 +1745,6 @@ export class TestSession extends DurableObject {
     return samplingTotals(this.ctx.storage.kv);
   }
 
-  readonly #samplingWrites: Array<{ server: string; value: "allow" | "off" }> = [];
-
-  /** What the Sampling card's *Always allow* and *Never* wrote to the servers' definitions, in order. */
-  samplingWrites() {
-    return [...this.#samplingWrites];
-  }
-
   /** The records of the Sampling requests, oldest first. */
   samplingRecords() {
     return Effect.runPromise(this.#mcpSampling().service.records);
@@ -2634,10 +2632,48 @@ export class TestSession extends DurableObject {
     return JSON.stringify([...this.ctx.storage.kv.list()]);
   }
 
+  /**
+   * The MCP side of the owner's write on a Sampling card: the Session's own Environment as the test Registry lists it, and
+   * no host to push to (the tests read the Settings the write left in the Registry).
+   */
+  #samplingMcpAccess(): SettingsMcpAccessService {
+    const session = this.ctx.id.name ?? "";
+    const registry = this.#settingsRegistry("sampling-registry");
+    const unused = () => Effect.die("A Sampling card's write reads no more of the MCP set");
+
+    return {
+      view: unused,
+      // None while the test names no Registry: the Session is then not one it lists.
+      own: Effect.suspend(() =>
+        this.ctx.storage.kv.get<string>("sampling-registry") === undefined
+          ? Effect.succeed(null)
+          : registry
+              .sessionSettings({ session })
+              .pipe(Effect.map(({ environment }) => environment)),
+      ),
+      check: unused,
+      reload: unused,
+      pushes: () => Effect.succeed([]),
+      pushed: () => Effect.void,
+      host: () => ({
+        requestStart: unused,
+        servers: unused,
+        apply: unused,
+        request: unused,
+      }),
+      workspace: Effect.succeed(null),
+    };
+  }
+
+  /** Name the test Registry that `rememberSampling` writes to: the Settings and Agent changes a Sampling card's choice leaves. */
+  samplingRegistry(name: string): void {
+    this.ctx.storage.kv.put("sampling-registry", name);
+  }
+
   /** The Registry's Settings as the `settings_*` tools reach them: the test Registry the Session reports to. */
-  #settingsRegistry(): SettingsRegistry {
+  #settingsRegistry(key = "registry"): SettingsRegistry {
     const registry = () => {
-      const name = this.ctx.storage.kv.get<string>("registry");
+      const name = this.ctx.storage.kv.get<string>(key);
 
       if (name === undefined) throw new Error("No Registry is set");
 

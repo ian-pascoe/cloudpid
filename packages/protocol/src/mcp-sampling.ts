@@ -115,9 +115,6 @@ export const McpSamplingGrantAction = Schema.String;
 
 export type McpSamplingGrantAction = typeof McpSamplingGrantAction.Type;
 
-/** The actions of a grant that this build knows. */
-export const MCP_SAMPLING_GRANT_ACTIONS = ["allow", "refuse"] as const;
-
 /** A Session grant: the owner's choice for a server, for every conversation of the Session, until the Session ends. */
 export const McpSamplingSessionGrant = Schema.Struct({
   server: Schema.String,
