@@ -73,15 +73,39 @@ export const liveGeneration = (
   return live;
 };
 
-/** The most App Views a `codemode` script's strip lists: the last ones it made. */
-export const MAX_STRIP = 20;
-
-/** The App calls a `codemode` script made (`parentCall` is its call), oldest first, at most the last {@link MAX_STRIP}. */
+/** The App calls a `codemode` script made (`parentCall` is its call), oldest first: every one, each a row of its strip. */
 export const callsOfScript = (
   apps: ReadonlyArray<McpAppEntry>,
   scriptCallId: string,
-): ReadonlyArray<McpAppEntry> =>
-  apps.filter((entry) => entry.parentCall === scriptCallId).slice(-MAX_STRIP);
+): ReadonlyArray<McpAppEntry> => apps.filter((entry) => entry.parentCall === scriptCallId);
+
+/** The rows a strip shows before the owner asks for the earlier ones. */
+export const STRIP_ROWS = 20;
+
+/** The rows of a strip, and how many earlier calls it holds back. */
+export interface StripRows {
+  readonly shown: ReadonlyArray<McpAppEntry>;
+  readonly earlier: number;
+}
+
+/**
+ * The calls of a strip that are rows now, and how many earlier ones wait behind its "N earlier" button: the last
+ * {@link STRIP_ROWS}, and any live call wherever it is, since which are live was decided over all the script's calls
+ * (`liveGeneration`) and a bound on rows must not change that. Expanded, all of them.
+ */
+export const stripRows = (
+  calls: ReadonlyArray<McpAppEntry>,
+  live: ReadonlySet<string>,
+  expanded: boolean,
+): StripRows => {
+  if (expanded || calls.length <= STRIP_ROWS) return { shown: calls, earlier: 0 };
+
+  const shown = calls.filter(
+    (entry, index) => index >= calls.length - STRIP_ROWS || live.has(entry.callId),
+  );
+
+  return { shown, earlier: calls.length - shown.length };
+};
 
 /** What decides whether an App View is live. */
 export interface LiveFacts {

@@ -122,6 +122,16 @@ describe("hostCapabilities", () => {
       logging: {},
     });
   });
+
+  it("advertises only reads, no tool calls, to a View that may only read", () => {
+    expect(hostCapabilities(undefined, true, true)).toEqual({
+      sandbox: {},
+      serverResources: {},
+      logging: {},
+    });
+    // With no client there is nothing to read with, whatever the View may do.
+    expect(hostCapabilities(undefined, false, true)).toEqual({ sandbox: {} });
+  });
 });
 
 describe("changedContext", () => {

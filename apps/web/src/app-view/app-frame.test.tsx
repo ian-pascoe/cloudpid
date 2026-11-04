@@ -316,7 +316,7 @@ describe("what asks a View to tear down before its frame is unmounted", () => {
     expect(action).toHaveBeenCalledTimes(2);
   });
 
-  it("makes a new frame for a place that stays (a branch switch), once its View has torn down", async () => {
+  it("makes a new frame for a retired View that is wanted after all (a move that did not happen), never before", async () => {
     render();
 
     const old = frameOf();
@@ -324,12 +324,41 @@ describe("what asks a View to tear down before its frame is unmounted", () => {
     old.handshake();
     old.sent.length = 0;
 
-    void appViews.tearDown(host, true);
+    const [handle] = appViews.select(() => true);
+
+    void appViews.tearDown(host);
     old.say({ jsonrpc: "2.0", id: old.sent[0]?.data["id"], result: {} });
+    await settle();
+
+    // Torn down, and the frame is the dead one until the caller says it is wanted.
+    expect(host.querySelector("iframe")).toBe(old.element);
+
+    handle?.restart();
     await settle();
 
     expect(host.querySelectorAll("iframe")).toHaveLength(1);
     expect(host.querySelector("iframe")).not.toBe(old.element);
+  });
+
+  it("tells its place it has gone when the place ends a View a guard had already torn down", async () => {
+    const closed = vi.fn();
+
+    render({ onClosed: closed });
+
+    const view = frameOf();
+
+    view.handshake();
+    view.sent.length = 0;
+    void appViews.tearDown(host);
+    view.say({ jsonrpc: "2.0", id: view.sent[0]?.data["id"], result: {} });
+    await settle();
+    expect(closed).not.toHaveBeenCalled();
+
+    render({ onClosed: closed, closing: true });
+    await settle();
+
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(view.methods()).toEqual(["ui/resource-teardown"]);
   });
 
   it("asks a View once when its place ends it and a guard asks at the same time", () => {
@@ -500,6 +529,31 @@ describe("a View's requests of its server, and signing in", () => {
     await flush();
 
     expect(answerTo(view, 7)).toEqual({ jsonrpc: "2.0", id: 7, result: { content: [] } });
+  });
+
+  it('forwards only resources/read, and badges it "Read only", when its place says it may only read', async () => {
+    render({
+      client: answering({ status: "result", result: { contents: [] } }),
+      readOnly: true,
+    });
+
+    const view = frameOf();
+
+    view.handshake();
+    await flush();
+
+    const initialized = view.sent.find((each) => each.data["id"] === 1)?.data;
+
+    expect(initialized).toMatchObject({ result: { hostCapabilities: { serverResources: {} } } });
+    expect(JSON.stringify(initialized)).not.toContain("serverTools");
+    expect(host.textContent).toContain("Read only");
+
+    ask(view, 7);
+    ask(view, 8, "resources/read");
+    await flush();
+
+    expect(answerTo(view, 7)).toMatchObject({ error: { code: -32_601 } });
+    expect(answerTo(view, 8)).toEqual({ jsonrpc: "2.0", id: 8, result: { contents: [] } });
   });
 
   it("advertises no server calls, and answers them as not found, when it has no client to serve them", async () => {

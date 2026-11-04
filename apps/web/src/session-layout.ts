@@ -9,8 +9,8 @@
 // open, which of the transcript's subagent cards are open, which of the transcript's disclosures (tool cards,
 // thinking, Skills, notices) are open, which App Views the owner reopened or collapsed (docs/architecture/mcp-apps.md →
 // App Views in the transcript), and the Session tree Pane's filter. A subagent open in a Pane of its own is one of the
-// Panes, and so is an App View popped out (`app:<callId>`). Only the Sessions shown last are kept (`MAX_LAYOUTS`): a Session not opened for that long starts
-// afresh.
+// Panes, and so is an App View popped out (`app:<callId>`). Only the Sessions shown last are kept (`MAX_LAYOUTS`): a
+// Session not opened for that long starts afresh.
 
 import * as Schema from "effect/Schema";
 import { NO_PANES, paneAreaOf, searchWithPaneArea, type PaneArea } from "./panes.ts";

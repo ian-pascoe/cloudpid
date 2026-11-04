@@ -409,7 +409,13 @@ describe("the page's path", () => {
         }),
     );
 
-    const forget = appViews.register({ callId: "c1", element: () => null, retire });
+    const forget = appViews.register({
+      callId: "c1",
+      place: "card",
+      element: () => null,
+      retire,
+      restart: () => undefined,
+    });
 
     // The same page: nothing unmounts.
     navigate("/sessions/a?pane=app:c1");
@@ -418,7 +424,7 @@ describe("the page's path", () => {
 
     // Another page: the View is told first, and the page changes when it has answered.
     navigate(sessionPath("b"));
-    expect(retire).toHaveBeenCalledWith(false);
+    expect(retire).toHaveBeenCalledTimes(1);
     expect(registry.get(sessionIdAtom)).toBe("a");
 
     answer();

@@ -47,15 +47,15 @@ import {
 } from "./atoms.ts";
 import { appAvailability, type AppAvailability } from "./availability.ts";
 import type { DisplayMode } from "./host-context.ts";
-import { callsOfScript, isAppLive } from "./generation.ts";
+import { callsOfScript, isAppLive, stripRows } from "./generation.ts";
 import { appPlaces, PLACE_NAMES, type AppPlace, type AppPlaces } from "./places.ts";
-import { afterTeardown, appPaneElement } from "./teardown.ts";
+import { afterTeardown, paneElement } from "./teardown.ts";
 
 /** The places of this page: one for the app. A test gives its own. */
 export const AppPlacesContext = createContext<AppPlaces>(appPlaces);
 
 /** A line of the card where there is no View: an App that is gone, whose data is, or that is shown elsewhere. */
-const AppNote = ({ children }: { children: ReactNode }) => (
+export const AppNote = ({ children }: { children: ReactNode }) => (
   <div className="my-2 flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
     {children}
   </div>
@@ -72,6 +72,14 @@ const ShownIn = ({ place, onBack }: { place: AppPlace; onBack: (() => void) | un
     )}
   </AppNote>
 );
+
+/** What a place says where it has no View: a collapsed row with Reopen, or the note that says why there is no App. */
+export const AppIdle = ({ facts, onReopen }: { facts: AppFacts; onReopen: () => void }) =>
+  facts.mountable ? (
+    <AppCollapsed server={facts.server} archived={facts.archived} onReopen={onReopen} />
+  ) : (
+    <AppNote>{noteOf(facts.availability)}</AppNote>
+  );
 
 /** What a card says of a View that is collapsed: whose it is, and Reopen. */
 const AppCollapsed = ({
@@ -104,12 +112,24 @@ const AppCollapsed = ({
   </div>
 );
 
-/** What a place hands the component that loads and frames a call's View. */
-export interface AppLoadedProps {
+/** What a call's card knows of it: its tool, its entry among the Session's App calls, and what its server's state allows. */
+export interface AppFacts {
   readonly sessionId: string;
   readonly callId: string;
   readonly tool: McpAppTool | undefined;
+  readonly server: string | undefined;
+  readonly availability: AppAvailability;
+  /** The server's state as a badge, when the View can mount. */
   readonly badge: "offline" | "sign-in" | null;
+  /** The View can be mounted: the call is an App's, its record is kept and its server is on. */
+  readonly mountable: boolean;
+  /** The Session is archived: its Views are collapsed until reopened, and a reopened one may only read. */
+  readonly archived: boolean;
+}
+
+/** What a place hands the component that loads and frames a call's View. */
+export interface AppLoadedProps {
+  readonly facts: AppFacts;
   readonly place: AppPlace;
   readonly controls: AppControls;
   readonly onRequestMode: (mode: DisplayMode) => void;
@@ -120,10 +140,7 @@ export interface AppLoadedProps {
 
 /** The View of call `callId`, loaded when this mounts: it shows nothing while it loads (the card has the call's state). */
 const AppLoaded = ({
-  sessionId,
-  callId,
-  tool,
-  badge,
+  facts: { sessionId, callId, tool, badge, archived },
   place,
   controls,
   onRequestMode,
@@ -149,6 +166,7 @@ const AppLoaded = ({
           page={load.page}
           tool={tool}
           badge={badge}
+          readOnly={archived}
           {...(AsyncResult.isSuccess(client) ? { client: client.value } : {})}
           signInHref={(stepUp) =>
             environment === undefined
@@ -181,12 +199,9 @@ const AppLoaded = ({
 };
 
 export interface AppPlaceMountProps {
-  readonly sessionId: string;
-  readonly callId: string;
+  readonly facts: AppFacts;
   /** Where this mounts the View: its card, a Subagent Pane or page's thread, or an App Pane. */
   readonly place: AppPlace;
-  readonly tool: McpAppTool | undefined;
-  readonly badge: "offline" | "sign-in" | null;
   /** This place wants the View mounted. When it stops wanting it, the frame stays until its View has torn down. */
   readonly live: boolean;
   /** What this shows when it wants no View and has none: a collapsed row, or the note that says why there is no App. */
@@ -208,11 +223,8 @@ export interface AppPlaceMountProps {
  * back) is a new frame, never the dead one.
  */
 export const AppPlaceMount = ({
-  sessionId,
-  callId,
+  facts,
   place,
-  tool,
-  badge,
   live,
   idle,
   controls,
@@ -223,6 +235,7 @@ export const AppPlaceMount = ({
 }: AppPlaceMountProps) => {
   const places = use(AppPlacesContext);
   const id = useId();
+  const { callId } = facts;
 
   // The claim lives as long as this place; what it wants is told after every render, which costs nothing when it is the same.
   useLayoutEffect(() => {
@@ -262,10 +275,7 @@ export const AppPlaceMount = ({
       return (
         <Loaded
           key={view.key}
-          sessionId={sessionId}
-          callId={callId}
-          tool={tool}
-          badge={badge}
+          facts={facts}
           place={place}
           controls={controls}
           onRequestMode={onRequestMode}
@@ -288,12 +298,13 @@ export const AppPlaceMount = ({
 
 const noFocus = (): void => undefined;
 
-/** What a call's card knows of it: its tool, its entry among the Session's App calls, and what its server's state allows. */
-export const useAppFacts = (callId: string, toolName: string | undefined) => {
+/** What a call's card knows of it (`AppFacts`), from the Session's inventory, App calls and server chips. */
+export const useAppFacts = (callId: string, toolName: string | undefined): AppFacts => {
   const sessionId = useShownSessionId();
   const tools = useAtomValue(mcpAppToolsAtom(sessionId));
   const apps = useAtomValue(mcpAppsAtom(sessionId));
   const statuses = useAtomValue(sessionMcpStatusesAtom(sessionId));
+  const archived = useAtomValue(sessionArchivedAtom(sessionId));
 
   const entry: McpAppEntry | undefined = Arr.findFirst(
     Arr.flatten(Record.values(apps)),
@@ -324,11 +335,20 @@ export const useAppFacts = (callId: string, toolName: string | undefined) => {
     serverState: server === undefined ? undefined : statuses.chips[server]?.state,
   });
 
-  return { sessionId, tool, server, availability };
+  return {
+    sessionId,
+    callId,
+    tool,
+    server,
+    availability,
+    badge: availability.kind === "mount" ? availability.badge : null,
+    mountable: availability.kind === "mount",
+    archived,
+  };
 };
 
 /** Why a call has no View when it cannot mount. */
-const noteOf = (availability: AppAvailability): string =>
+export const noteOf = (availability: AppAvailability): string =>
   availability.kind === "evicted" ? "App data no longer kept" : "App unavailable";
 
 /**
@@ -340,25 +360,23 @@ const noteOf = (availability: AppAvailability): string =>
  * it, or they are using it, unless they collapsed it; in an archived Session it is collapsed until reopened.
  */
 export const AppCall = ({ callId, toolName }: { callId: string; toolName?: string }) => {
-  const { sessionId, tool, server, availability } = useAppFacts(callId, toolName);
+  const facts = useAppFacts(callId, toolName);
   const conversationId = useThreadConversation();
   const place = useThreadPlace();
   const layoutKey = useShownLayoutKey();
 
   const newest = useAtomValue(
-    appGenerationAtom(conversationKey(sessionId, conversationId)),
+    appGenerationAtom(conversationKey(facts.sessionId, conversationId)),
     (calls) => calls.has(callId),
   );
 
-  const archived = useAtomValue(sessionArchivedAtom(sessionId));
   const [choice, choose] = useAtom(appChoiceAtom(layoutKey, callId));
   const actOnPanes = useAtomSet(panesAtom);
   const [focused, setFocused] = useState(false);
 
-  if (availability.kind === "none") return null;
+  if (facts.availability.kind === "none") return null;
 
-  const mountable = availability.kind === "mount";
-  const live = mountable && isAppLive({ newest, choice, archived, focused });
+  const live = facts.mountable && isAppLive({ newest, choice, archived: facts.archived, focused });
 
   const popOut = () => {
     actOnPanes({ type: "open", key: appPaneKey(callId) });
@@ -366,24 +384,16 @@ export const AppCall = ({ callId, toolName }: { callId: string; toolName?: strin
 
   return (
     <AppPlaceMount
-      sessionId={sessionId}
-      callId={callId}
+      facts={facts}
       place={place}
-      tool={tool}
-      badge={availability.kind === "mount" ? availability.badge : null}
       live={live}
       idle={
-        mountable ? (
-          <AppCollapsed
-            server={server}
-            archived={archived}
-            onReopen={() => {
-              choose("open");
-            }}
-          />
-        ) : (
-          <AppNote>{noteOf(availability)}</AppNote>
-        )
+        <AppIdle
+          facts={facts}
+          onReopen={() => {
+            choose("open");
+          }}
+        />
       }
       controls={{
         onCollapse: () => {
@@ -397,9 +407,12 @@ export const AppCall = ({ callId, toolName }: { callId: string; toolName?: strin
       onFocused={setFocused}
       onBack={() => {
         // The App Pane's View is torn down before the Pane goes, as when its own button closes it.
-        afterTeardown(() => {
-          actOnPanes({ type: "close", key: appPaneKey(callId) });
-        }, appPaneElement(callId));
+        afterTeardown(
+          () => {
+            actOnPanes({ type: "close", key: appPaneKey(callId) });
+          },
+          paneElement(appPaneKey(callId)),
+        );
       }}
     />
   );
@@ -407,20 +420,50 @@ export const AppCall = ({ callId, toolName }: { callId: string; toolName?: strin
 
 /**
  * The App Views of the calls a `codemode` script made, in a strip under its card and outside its disclosure: each is live by
- * the same rule as a direct call's (the last call per server of the newest generation), and the rest are collapsed rows with
- * Reopen. Nothing when the script made no App call.
+ * the same rule as a direct call's (the last call per server of the newest generation, decided over all the script's calls),
+ * and the rest are collapsed rows with Reopen. A script with very many shows the last rows and its live ones, and "N earlier"
+ * for the rest, which opens them all and stays open: closing it again would unmount a View the owner reopened. Nothing when
+ * the script made no App call.
  */
 export const AppStrip = ({ parentId }: { parentId: string }) => {
   const sessionId = useShownSessionId();
+  const conversationId = useThreadConversation();
   const apps = useAtomValue(mcpAppsAtom(sessionId));
+  const [expanded, setExpanded] = useState(false);
 
   const calls = callsOfScript(Arr.flatten(Record.values(apps)), parentId);
 
+  // Which of the script's calls are live, as the string it changes by: a token of the transcript does not redraw the strip.
+  const liveIds = useAtomValue(
+    appGenerationAtom(conversationKey(sessionId, conversationId)),
+    (live) =>
+      Arr.join(
+        Arr.map(
+          Arr.filter(calls, (call) => live.has(call.callId)),
+          (call) => call.callId,
+        ),
+        "\0",
+      ),
+  );
+
   if (calls.length === 0) return null;
+
+  const { shown, earlier } = stripRows(calls, new Set(liveIds.split("\0")), expanded);
 
   return (
     <div className="my-2" data-app-strip={parentId}>
-      {Arr.map(calls, (call) => (
+      {earlier > 0 && (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            setExpanded(true);
+          }}
+        >
+          {earlier} earlier
+        </Button>
+      )}
+      {Arr.map(shown, (call) => (
         <AppCall key={call.callId} callId={call.callId} />
       ))}
     </div>

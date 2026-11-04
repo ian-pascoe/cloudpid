@@ -138,6 +138,23 @@ export const branchThrough = (tree: SessionTree, id: number): number | undefined
   return best?.conversationId;
 };
 
+/**
+ * The entries the active branch holds after `navigate` to `point`: the path through its entry for a point just after it,
+ * up to its parent for one just before it (an owner's message, which goes back to the composer).
+ */
+export const keptByPoint = (tree: SessionTree, point: TreePoint): ReadonlySet<number> => {
+  const path = pathTo(tree, point.entryId);
+
+  return new Set(point.position === "at" ? path : path.slice(0, -1));
+};
+
+/** The entries the active branch holds once Session branch `conversationId` is made active: the path to its tip. */
+export const keptByBranch = (tree: SessionTree, conversationId: number): ReadonlySet<number> => {
+  const own = tree.nodes.filter((node) => node.conversationId === conversationId);
+
+  return new Set(pathTo(tree, own.at(-1)?.id ?? null));
+};
+
 /** The pi entry ID a transcript message's ID names, or undefined for a message of no entry (one being streamed). */
 export const entryIdOf = (messageId: string): number | undefined =>
   /^\d+$/u.test(messageId) ? Number(messageId) : undefined;

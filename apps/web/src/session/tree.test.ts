@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   branchThrough,
   entryIdOf,
+  keptByBranch,
+  keptByPoint,
   latestAnswer,
   ownerMessages,
   pathTo,
@@ -144,5 +146,20 @@ describe("a transcript message's entry", () => {
   it("is the pi entry ID it names, and none for a message being streamed", () => {
     expect(entryIdOf("42")).toBe(42);
     expect(entryIdOf("streaming-1")).toBeUndefined();
+  });
+});
+
+describe("the entries a move keeps", () => {
+  it("keeps the path through the entry for a point just after it, and up to its parent for one just before", () => {
+    expect([...keptByPoint(tree, { entryId: 4, position: "at" })]).toEqual([1, 2, 3, 4]);
+    expect([...keptByPoint(tree, { entryId: 8, position: "before" })]).toEqual([1, 2, 3, 4]);
+    expect([...keptByPoint(tree, { entryId: 1, position: "before" })]).toEqual([]);
+  });
+
+  it("keeps the path to the tip of the Session branch made active", () => {
+    // SAFETY: test IDs; the brand is for the type system only.
+    expect([...keptByBranch(tree, 1 as SessionTree["active"])]).toEqual([1, 2, 3, 4, 5, 6]);
+    // SAFETY: test IDs; the brand is for the type system only.
+    expect([...keptByBranch(tree, 7 as SessionTree["active"])]).toEqual([1, 2, 3, 4, 8, 9]);
   });
 });

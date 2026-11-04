@@ -6,7 +6,6 @@
 // Session branch that has siblings, and the bar under the owner's messages and the answers of the active branch
 // (Copy, Branch, and Fork or Clone).
 
-import { afterTeardown } from "../app-view/teardown.ts";
 import { useAuiState } from "@assistant-ui/react";
 import type { SessionTree, TreeNode } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
@@ -34,6 +33,7 @@ import {
   entryIdOf,
   isFinalAnswer,
   isOwnerNode,
+  keptByBranch,
   latestAnswer,
   pointOf,
   siblingsOf,
@@ -43,6 +43,7 @@ import { useShownSessionId } from "./conversation.ts";
 import { messageText } from "./message-text.ts";
 import {
   TreeBarScope,
+  useBranchMove,
   useBusy,
   useFork,
   useMove,
@@ -73,6 +74,7 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
   const busy = useBusy(sessionId);
   const switchBranch = useCall(switchBranchAtom(sessionId));
   const show = useShowFailure();
+  const moveBranch = useBranchMove(sessionId);
   const place = siblingsOf(tree, id);
 
   if (scope === null || scope.archived || place === undefined || place.siblings.length < 2) {
@@ -87,15 +89,16 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
     const conversationId = branchThrough(tree, sibling.id) ?? sibling.conversationId;
 
     show(null);
-    // The Views of the thread are torn down first, and those whose calls the branch keeps are mounted again after.
-    afterTeardown(
-      () => {
-        void switchBranch(conversationId).then((exit) => {
-          show(exitFailure(exit));
-        });
-      },
-      undefined,
-      true,
+    moveBranch(
+      (all) => keptByBranch(all, conversationId),
+      () =>
+        switchBranch(conversationId).then((exit) => {
+          const why = exitFailure(exit);
+
+          show(why);
+
+          return why === null;
+        }),
     );
   };
 

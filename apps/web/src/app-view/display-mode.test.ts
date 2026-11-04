@@ -2,7 +2,7 @@
 /* oxlint-disable anti-slop/no-unknown-parameters -- a View's own `params`, as a case sends them */
 // @effect-diagnostics asyncFunction:off -- the handler answers a promise.
 import { describe, expect, it, vi } from "vitest";
-import { displayModeHandler, modeOfPlace } from "./display-mode.ts";
+import { displayModeHandler, displayOf, isFullscreen, modeOfPlace } from "./display-mode.ts";
 
 const context = { signal: new AbortController().signal };
 
@@ -56,5 +56,35 @@ describe("a View's request for a display mode", () => {
     await expect(handler({ mode: 3 }, context)).resolves.toEqual({ mode: "inline" });
     await expect(handler(undefined, context)).resolves.toEqual({ mode: "inline" });
     expect(move).not.toHaveBeenCalled();
+  });
+});
+
+describe("what a place gives the View it shows", () => {
+  const insets = { top: 1, right: 2, bottom: 3, left: 4 };
+
+  it("fixes both axes of an App Pane's View and flexes a card's height, from the one place that says which is which", () => {
+    expect(isFullscreen("app-pane")).toBe(true);
+    expect(isFullscreen("subagent-pane")).toBe(false);
+    expect(displayOf("card", { height: 500, mobile: false, insets: () => insets })).toEqual({
+      mode: "inline",
+      height: undefined,
+      safeAreaInsets: undefined,
+    });
+    expect(displayOf("app-pane", { height: 500, mobile: false, insets: () => insets })).toEqual({
+      mode: "fullscreen",
+      height: 500,
+      safeAreaInsets: undefined,
+    });
+  });
+
+  it("gives the safe-area insets only to an App Pane on a phone, which is a sheet there", () => {
+    expect(
+      displayOf("app-pane", { height: 500, mobile: true, insets: () => insets }),
+    ).toMatchObject({
+      safeAreaInsets: insets,
+    });
+    expect(displayOf("card", { height: 500, mobile: true, insets: () => insets })).toMatchObject({
+      safeAreaInsets: undefined,
+    });
   });
 });

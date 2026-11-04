@@ -22,7 +22,7 @@ import {
   type RefObject,
 } from "react";
 import { AppPane } from "./app-view/app-pane.tsx";
-import { afterTeardown } from "./app-view/teardown.ts";
+import { afterTeardown, paneElement } from "./app-view/teardown.ts";
 import { useShownLayoutKey, useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
 import { SubagentPane } from "./chat/subagent-pane.tsx";
@@ -247,12 +247,9 @@ export const PaneArea = () => {
   // Closing a Pane unmounts what is in it, and an App View in it is told to tear down first (docs/architecture/mcp-apps.md →
   // App Views in the transcript: Teardown), which has `afterTeardown` wait for it, at most 2 s.
   const closePane = (key: string) => {
-    afterTeardown(
-      () => {
-        act({ type: "close", key });
-      },
-      document.getElementById(panelId(key)),
-    );
+    afterTeardown(() => {
+      act({ type: "close", key });
+    }, paneElement(key));
   };
 
   // Arrow keys, Home and End move between the tabs, as a tab list does; a tab shows its Pane as it takes the focus.
@@ -379,6 +376,7 @@ export const PaneArea = () => {
             key={key}
             role="tabpanel"
             id={panelId(key)}
+            data-pane={key}
             aria-labelledby={tabId(key)}
             hidden={key !== shown}
             className="flex min-h-0 flex-1 flex-col"

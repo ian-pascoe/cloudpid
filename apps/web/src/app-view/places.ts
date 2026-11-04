@@ -65,7 +65,6 @@ export class AppPlaces {
   private readonly listeners = new Set<() => void>();
   private seq = 0;
   private count = 0;
-  private revision = 0;
 
   /** Hold a claim on `callId` for a place; it wants no View until `update` says so. */
   readonly claim = (id: string, callId: string, place: AppPlace): void => {
@@ -152,9 +151,6 @@ export class AppPlaces {
     };
   };
 
-  /** Changes whenever a claim or a host does: what a snapshot of a place's view depends on. */
-  readonly version = (): number => this.revision;
-
   private drop(claim: Claim): void {
     this.claims.delete(claim.id);
 
@@ -207,8 +203,6 @@ export class AppPlaces {
       // The place no longer wants it, or a higher one does: its View is told to tear down, and the frame stays until it has.
       this.hosts.set(callId, { ...host, closing: true });
     }
-
-    this.revision += 1;
 
     for (const listener of this.listeners) listener();
   }

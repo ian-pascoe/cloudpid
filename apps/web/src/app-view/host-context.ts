@@ -191,10 +191,16 @@ export const hostContextOf = (
 export const hostCapabilities = (
   csp: McpUiResourceCsp | undefined,
   serverCalls = false,
+  readOnly = false,
 ): McpUiHostCapabilities => {
   const sandbox = csp === undefined ? {} : { csp };
 
-  return serverCalls ? { sandbox, serverTools: {}, serverResources: {}, logging: {} } : { sandbox };
+  if (!serverCalls) return { sandbox };
+
+  // A View that may only read (an archived Session's reopened View) is not offered the server's tools.
+  return readOnly
+    ? { sandbox, serverResources: {}, logging: {} }
+    : { sandbox, serverTools: {}, serverResources: {}, logging: {} };
 };
 
 /**

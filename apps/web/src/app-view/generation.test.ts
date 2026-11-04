@@ -2,7 +2,7 @@
 // @effect-diagnostics preferEffectArray:off -- messages and entries in native lists.
 import type { McpAppEntry, TranscriptMessage } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { callsOfScript, isAppLive, liveGeneration, MAX_STRIP } from "./generation.ts";
+import { callsOfScript, isAppLive, liveGeneration, STRIP_ROWS, stripRows } from "./generation.ts";
 
 const assistant = (...calls: string[]): TranscriptMessage => ({
   id: calls.join(),
@@ -148,14 +148,44 @@ describe("a codemode script's strip", () => {
     expect(callsOfScript(apps, "none")).toEqual([]);
   });
 
-  it("keeps the last ones of a script that made very many", () => {
-    const apps = Array.from({ length: MAX_STRIP + 5 }, (_, n) =>
+  it("lists every call of a script that made very many, none cut off", () => {
+    const apps = Array.from({ length: STRIP_ROWS + 5 }, (_, n) =>
       entry(`n${n}`, "docs", { parentCall: "script" }),
     );
 
-    const listed = callsOfScript(apps, "script");
+    expect(callsOfScript(apps, "script")).toHaveLength(STRIP_ROWS + 5);
+  });
+});
 
-    expect(listed).toHaveLength(MAX_STRIP);
-    expect(listed.at(-1)?.callId).toBe(`n${MAX_STRIP + 4}`);
+describe("the rows a strip shows", () => {
+  const many = Array.from({ length: STRIP_ROWS + 5 }, (_, n) =>
+    entry(`n${n}`, "docs", { parentCall: "script" }),
+  );
+
+  it("shows the last rows, and counts the earlier ones behind an expander", () => {
+    const { shown, earlier } = stripRows(many, new Set(), false);
+
+    expect(shown).toHaveLength(STRIP_ROWS);
+    expect(shown[0]?.callId).toBe("n5");
+    expect(earlier).toBe(5);
+  });
+
+  it("shows a live call whatever its place, liveness having been decided over all the calls", () => {
+    const messages = [assistant("script")];
+    const apps = [...many, entry("first", "maps", { parentCall: "script", at: 0 })];
+    const liveOnes = liveGeneration(messages, apps);
+
+    // `n24` is the last of its server and `first` the only one of its: both live, `first` far from the end.
+    expect([...liveOnes].sort()).toEqual(["first", "n24"]);
+
+    const { shown, earlier } = stripRows(callsOfScript(apps, "script"), liveOnes, false);
+
+    expect(shown.map((each) => each.callId)).toContain("first");
+    expect(earlier).toBe(apps.length - shown.length);
+  });
+
+  it("shows everything once expanded, and every row of a short strip", () => {
+    expect(stripRows(many, new Set(), true)).toEqual({ shown: many, earlier: 0 });
+    expect(stripRows(many.slice(0, 3), new Set(), false).earlier).toBe(0);
   });
 });

@@ -4,15 +4,19 @@
 // last sent it, whether the active branch can be left, and the moves and Forks the bar, the Pane, the dialogs and the
 // Slash commands make.
 
-import { afterTeardown } from "../app-view/teardown.ts";
+import { callsDroppedBy } from "../app-view/branch.ts";
+import { afterBranchTeardown } from "../app-view/teardown.ts";
 import type { SessionTree, TreePoint } from "@cloudpid/protocol";
-import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
+import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-import { createContext } from "react";
+import { createContext, use } from "react";
 import { pageProblemAtom } from "../app-state.ts";
 import { useCall } from "../calls.ts";
 import { exitFailure } from "../registry.ts";
-import { sessionStateAtom, sessionViewAtom } from "../session/atoms.ts";
+import { mcpAppsAtom, sessionStateAtom, sessionViewAtom } from "../session/atoms.ts";
+import { keptByPoint } from "../session/tree.ts";
 import { useShownSessionId } from "./conversation.ts";
 import {
   forkingAtom,
@@ -50,6 +54,33 @@ export const useBusy = (sessionId: string): boolean =>
 /** Show `failure` on the page, or clear what it shows. */
 export const useShowFailure = () => useAtomSet(pageProblemAtom);
 
+/**
+ * What a move of the active branch does about App Views: it unmounts the ones whose calls the branch does not hold, so it
+ * first asks those to tear down and waits (`afterBranchTeardown`), and leaves the ones it keeps alone. `keep` names the
+ * entries the branch will hold from the tree; with no tree yet, none are known and every View of the thread goes first.
+ * `move` answers whether the branch moved.
+ */
+export const useBranchMove = (
+  sessionId: string,
+): ((keep: (tree: SessionTree) => ReadonlySet<number>, move: () => Promise<boolean>) => void) => {
+  const registry = use(RegistryContext);
+
+  return (keep, move) => {
+    const tree = AsyncResult.getOrElse(registry.get(sessionTreeAtom(sessionId)), () => null);
+    const view = registry.get(sessionViewAtom(sessionId));
+    const apps = Arr.flatten(Record.values(registry.get(mcpAppsAtom(sessionId))));
+
+    afterBranchTeardown(
+      callsDroppedBy(
+        [...view.earlier, ...view.messages],
+        apps,
+        tree === null ? new Set() : keep(tree),
+      ),
+      move,
+    );
+  };
+};
+
 /** Move the active branch to `point`, through the summary prompt unless the settings skip it. */
 export const useMove = (): ((point: TreePoint) => void) => {
   const sessionId = useShownSessionId();
@@ -57,6 +88,7 @@ export const useMove = (): ((point: TreePoint) => void) => {
   const setPending = useAtomSet(pendingMoveAtom);
   const navigate = useCall(navigateAtom(sessionId));
   const show = useShowFailure();
+  const moveBranch = useBranchMove(sessionId);
 
   return (point) => {
     if (!skip) {
@@ -66,15 +98,16 @@ export const useMove = (): ((point: TreePoint) => void) => {
     }
 
     show(null);
-    // The Views of the thread are torn down first, and those whose calls the branch keeps are mounted again after.
-    afterTeardown(
-      () => {
-        void navigate({ point }).then((exit) => {
-          show(exitFailure(exit));
-        });
-      },
-      undefined,
-      true,
+    moveBranch(
+      (tree) => keptByPoint(tree, point),
+      () =>
+        navigate({ point }).then((exit) => {
+          const why = exitFailure(exit);
+
+          show(why);
+
+          return why === null;
+        }),
     );
   };
 };

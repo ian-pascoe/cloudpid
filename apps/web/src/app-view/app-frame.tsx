@@ -11,7 +11,8 @@ import { Button } from "../components/ui/button.tsx";
 import { copyToClipboard } from "../lib/clipboard.ts";
 import { cn } from "../lib/utils.ts";
 import { createBridge, retire, type Bridge } from "./bridge.ts";
-import { displayModeHandler, modeOfPlace } from "./display-mode.ts";
+import { displayModeHandler, displayOf, isFullscreen } from "./display-mode.ts";
+import { focusWatch } from "./focus.ts";
 import { declaredCsp, frameUrl } from "./frame-url.ts";
 import {
   type DisplayMode,
@@ -137,6 +138,8 @@ export interface AppFrameProps {
   readonly onRequestMode?: (mode: DisplayMode) => void;
   /** The View has, or no longer has, the keyboard focus: a View in use is not collapsed for a newer generation. */
   readonly onFocused?: (focused: boolean) => void;
+  /** The View may only read (an archived Session's reopened View): `resources/read` is served, `tools/call` is not. */
+  readonly readOnly?: boolean;
   /** The Session's client, which serves the View's requests of its server (`requests.ts`); none, and the View is served none. */
   readonly client?: AppRequestClient;
   /** The link that signs in to the call's server (a step-up, for more access), or none while the Environment is unknown. */
@@ -198,6 +201,7 @@ const LiveFrame = ({
   onFocused,
   client,
   signInHref,
+  readOnly = false,
   closing = false,
   cancelled,
   onClosed,
@@ -219,10 +223,10 @@ const LiveFrame = ({
   const frameKey = `${src}\0${attempt}`;
 
   // The page's latest context, which a bridge reads when it answers `ui/initialize`, read again whenever it is needed.
-  const latest = useRef({ record, tool, csp, place, onRequestMode, client });
+  const latest = useRef({ record, tool, csp, place, onRequestMode, client, readOnly });
 
-  latest.current = { record, tool, csp, place, onRequestMode, client };
-  const inPane = place === "app-pane";
+  latest.current = { record, tool, csp, place, onRequestMode, client, readOnly };
+  const inPane = isFullscreen(place);
 
   useLayoutEffect(() => {
     const element = frame.current;
@@ -245,16 +249,33 @@ const LiveFrame = ({
           title: now.tool?.title,
           inputSchema: now.tool?.inputSchema,
         },
-        {
-          mode: modeOfPlace(now.place),
-          // An App Pane's height is fixed as its width is, and on a phone it is a sheet.
-          height: now.place === "app-pane" ? element.clientHeight : undefined,
-          safeAreaInsets: now.place === "app-pane" && env.mobile ? readSafeAreaInsets() : undefined,
-        },
+        displayOf(now.place, {
+          height: element.clientHeight,
+          mobile: env.mobile,
+          insets: readSafeAreaInsets,
+        }),
       );
     };
 
     let sent = contextNow();
+
+    // What the View may ask its server, when the Session's client is there to serve it.
+    const served =
+      latest.current.client === undefined
+        ? undefined
+        : viewRequestHandlers(
+            latest.current.client,
+            record.callId,
+            {
+              onSignIn: (need) => {
+                setSignIn((was) => ({ stepUp: need.stepUp || was?.stepUp === true }));
+              },
+              onAudit: (entry) => {
+                setAudited((was) => auditLog(was, [entry]));
+              },
+            },
+            { readOnly: latest.current.readOnly },
+          );
 
     const bridge: Bridge = createBridge({
       frame: target,
@@ -277,19 +298,14 @@ const LiveFrame = ({
         return sent;
       },
       // Only a frame with a Session's client serves the View's calls, so it is the only one that says it does.
-      capabilities: hostCapabilities(csp, latest.current.client !== undefined),
+      capabilities: hostCapabilities(
+        csp,
+        latest.current.client !== undefined,
+        latest.current.readOnly,
+      ),
       hostInfo: HOST_INFO,
       handlers: {
-        ...(latest.current.client === undefined
-          ? {}
-          : viewRequestHandlers(latest.current.client, record.callId, {
-              onSignIn: (need) => {
-                setSignIn((was) => ({ stepUp: need.stepUp || was?.stepUp === true }));
-              },
-              onAudit: (entry) => {
-                setAudited((was) => auditLog(was, [entry]));
-              },
-            })),
+        ...served,
         "ui/request-display-mode": displayModeHandler(latest.current.place, (mode) => {
           latest.current.onRequestMode?.(mode);
         }),
@@ -364,24 +380,32 @@ const LiveFrame = ({
   // closing) must not retire it, or say `onClosed`, again. It is the same promise.
   const retiring = useRef<Promise<void> | undefined>(undefined);
 
-  const closeOnce = (restart: boolean): Promise<void> => {
-    retiring.current ??= (
+  const closeOnce = (): Promise<void> => {
+    retiring.current ??=
       bridgeRef.current === undefined
         ? Promise.resolve()
-        : retire(bridgeRef.current, cancelReason.current)
-    ).then(() => {
-      if (restart) latestClosed.current?.();
-    });
+        : retire(bridgeRef.current, cancelReason.current);
 
     return retiring.current;
   };
 
-  const closeRef = useRef(closeOnce);
+  // The place is told once that the frame has gone, and it makes the next one (or the note), however the closing began: its
+  // own, or a guard's that found the frame already dead.
+  const told = useRef(false);
 
-  closeRef.current = closeOnce;
+  const tell = () => {
+    if (told.current) return;
+
+    told.current = true;
+    latestClosed.current?.();
+  };
+
+  const ending = useRef({ closeOnce, tell });
+
+  ending.current = { closeOnce, tell };
 
   useEffect(() => {
-    if (closing) void closeRef.current(true);
+    if (closing) void ending.current.closeOnce().then(ending.current.tell);
   }, [closing]);
 
   // An unmount the page drives (leaving it, a subagent's card closed, a branch switched) removes the frame at once, which
@@ -391,27 +415,29 @@ const LiveFrame = ({
       appViews.register({
         callId: record.callId,
         element: () => frame.current,
-        retire: (restart) => closeRef.current(restart),
+        place,
+        retire: () => ending.current.closeOnce(),
+        // A frame that was retired and is wanted after all: the place is told, and makes a new one.
+        restart: () => {
+          void ending.current.closeOnce().then(ending.current.tell);
+        },
       }),
-    [record.callId],
+    [record.callId, place],
   );
 
-  // Whether the View has the keyboard focus: the window blurs when it moves into the frame, which is then the active element.
+  // Whether the View has the keyboard focus: its frame is the document's active element (`focus.ts`, which also sees focus
+  // pass from one frame to another).
   const latestFocused = useRef(onFocused);
 
   latestFocused.current = onFocused;
 
   useEffect(() => {
-    const check = () => {
-      latestFocused.current?.(document.activeElement === frame.current);
-    };
-
-    window.addEventListener("blur", check);
-    window.addEventListener("focus", check);
+    const stop = focusWatch().subscribe((active) => {
+      latestFocused.current?.(active !== null && active === frame.current);
+    });
 
     return () => {
-      window.removeEventListener("blur", check);
-      window.removeEventListener("focus", check);
+      stop();
       latestFocused.current?.(false);
     };
   }, []);
@@ -449,6 +475,7 @@ const LiveFrame = ({
         {shownBadge !== null && (
           <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5">{BADGES[shownBadge]}</span>
         )}
+        {readOnly && <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5">Read only</span>}
         {signInLink !== undefined && (
           <a
             href={signInLink}
@@ -462,16 +489,14 @@ const LiveFrame = ({
         )}
         <span className="ml-auto flex shrink-0 items-center gap-1">
           <AppControlButtons controls={controls} />
-          <button
-            type="button"
-            className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
-            aria-expanded={details}
+          <HeaderButton
+            expanded={details}
             onClick={() => {
               setDetails((open) => !open);
             }}
           >
             Details
-          </button>
+          </HeaderButton>
         </span>
       </div>
       {details && <AppDetails page={page} audit={auditLog(record.audit, audited)} />}
@@ -489,35 +514,37 @@ const LiveFrame = ({
   );
 };
 
+/** One of the header's text buttons. */
+const HeaderButton = ({
+  onClick,
+  expanded,
+  children,
+}: {
+  onClick: () => void;
+  expanded?: boolean;
+  children: string;
+}) => (
+  <button
+    type="button"
+    className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
+    aria-expanded={expanded}
+    onClick={onClick}
+  >
+    {children}
+  </button>
+);
+
 /** What the owner can do about a View from its header: collapse it, pop it out, or put it back in the chat. */
 const AppControlButtons = ({ controls }: { controls: AppControls | undefined }) => (
   <>
     {controls?.onCollapse !== undefined && (
-      <button
-        type="button"
-        className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
-        onClick={controls.onCollapse}
-      >
-        Collapse
-      </button>
+      <HeaderButton onClick={controls.onCollapse}>Collapse</HeaderButton>
     )}
     {controls?.onPopOut !== undefined && (
-      <button
-        type="button"
-        className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
-        onClick={controls.onPopOut}
-      >
-        Pop out
-      </button>
+      <HeaderButton onClick={controls.onPopOut}>Pop out</HeaderButton>
     )}
     {controls?.onBack !== undefined && (
-      <button
-        type="button"
-        className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
-        onClick={controls.onBack}
-      >
-        Back to chat
-      </button>
+      <HeaderButton onClick={controls.onBack}>Back to chat</HeaderButton>
     )}
   </>
 );

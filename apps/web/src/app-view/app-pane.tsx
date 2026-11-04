@@ -1,14 +1,18 @@
 // docs/architecture/mcp-apps.md → App Panes. One App View popped out into a Pane of its own (`app:<callId>`), a sheet on a
 // phone (the Pane area is one there). The View is mounted here instead of in its card, which says "Shown in the App Pane":
 // the card's frame tears down first and this Pane's mounts once it has. In a Pane both axes of the View's container are
-// fixed, and a resize reaches the View as a debounced `host-context-changed`. Escape here returns the focus to the chat.
-import { useShownSessionId } from "../chat/conversation.ts";
+// fixed, and a resize reaches the View as a debounced `host-context-changed`. Escape in the Pane's own chrome returns the
+// focus to the chat.
+import { useAtom } from "@effect/atom-react";
+import { useShownLayoutKey } from "../chat/conversation.ts";
 import type { PaneProps } from "../panes.ts";
-import { AppPlaceMount, useAppFacts } from "./app-call.tsx";
+import { appChoiceAtom } from "../session-layout-state.ts";
+import { AppIdle, AppNote, AppPlaceMount, useAppFacts } from "./app-call.tsx";
 
 /**
- * Escape in the Pane returns the focus to the chat: the composer's input. (Escape inside the View is the View's own: its
- * frame takes the key, and the page never sees it.)
+ * Escape in the Pane returns the focus to the chat: the composer's input. It is a key pressed in the Pane's own chrome (its
+ * header and buttons): a key pressed inside the View's frame never reaches the page, and ext-apps has no message for a View
+ * to hand Escape back with, so from inside a View the way out is Tab, or the Pane's "Back to chat".
  */
 export const focusChatOnEscape = (event: {
   readonly key: string;
@@ -23,35 +27,34 @@ export const focusChatOnEscape = (event: {
 
 /**
  * The App Pane of the call named by `argument`. A Pane is the owner's choice, so its View is live whatever generation its
- * call is in; one that cannot mount (its record evicted, its server off) says so, and the Pane stays to be closed.
+ * call is in, except in an archived Session, where App Views are collapsed until reopened here or in the card, and then
+ * read only. One that cannot mount (its record evicted, its server off) says so, and the Pane stays to be closed.
  */
 export const AppPane = ({ argument, close }: PaneProps) => {
-  const sessionId = useShownSessionId();
   // A key without a call is no Pane the Pane types open.
   const callId = argument ?? "";
-  const { tool, availability } = useAppFacts(callId, undefined);
+  const facts = useAppFacts(callId, undefined);
+  const [choice, choose] = useAtom(appChoiceAtom(useShownLayoutKey(), callId));
 
-  if (availability.kind === "none") {
-    return <p className="p-4 text-sm text-muted-foreground">This App is not in this Session.</p>;
+  if (facts.availability.kind === "none") {
+    return <AppNote>This App is not in this Session.</AppNote>;
   }
 
+  const live = facts.mountable && (!facts.archived || choice === "open");
+
   return (
-    <div
-      data-app-pane={callId}
-      className="flex min-h-0 flex-1 flex-col p-2"
-      onKeyDown={focusChatOnEscape}
-    >
+    <div className="flex min-h-0 flex-1 flex-col p-2" onKeyDown={focusChatOnEscape}>
       <AppPlaceMount
-        sessionId={sessionId}
-        callId={callId}
+        facts={facts}
         place="app-pane"
-        tool={tool}
-        badge={availability.kind === "mount" ? availability.badge : null}
-        live={availability.kind === "mount"}
+        live={live}
         idle={
-          <p className="p-2 text-sm text-muted-foreground">
-            {availability.kind === "evicted" ? "App data no longer kept" : "App unavailable"}
-          </p>
+          <AppIdle
+            facts={facts}
+            onReopen={() => {
+              choose("open");
+            }}
+          />
         }
         controls={{ onBack: close }}
         onRequestMode={(mode) => {

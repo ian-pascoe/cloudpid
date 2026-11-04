@@ -172,6 +172,25 @@ describe("a codemode script's card", () => {
     expect(html.match(/collapsed Reopen/g)).toHaveLength(2);
   });
 
+  it("shows every call of a script as a row, the live one wherever it is, and counts the earlier rows of one that made very many", () => {
+    // 30 calls to `docs`, and one to `maps` first: the last `docs` call and the `maps` call are live, in the newest message.
+    const calls = Array.from({ length: 30 }, (_, n) =>
+      entry(`n${n}`, { parentCall: "script", at: n + 2 }),
+    );
+
+    const registry = registryWith(
+      [assistant("1", "script")],
+      [entry("first", { parentCall: "script", server: "maps", at: 1 }), ...calls],
+    );
+
+    const html = card(registry);
+
+    // 31 calls: the last 20 rows, and `first` which is live, with 10 earlier behind the button.
+    expect(html).toContain("10 earlier");
+    // Live Views mount after the claim, so a server render has the collapsed rows of the others: 19 of the last 20.
+    expect(html.match(/collapsed Reopen/g)).toHaveLength(19);
+  });
+
   it("shows no strip for a script that made no App call", () => {
     const registry = registryWith([assistant("1", "script")], []);
 
