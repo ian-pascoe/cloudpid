@@ -1295,7 +1295,8 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         ),
       );
 
-      yield* answered(woken);
+      // Nothing is told when nothing was answered: this runs at every request start.
+      if (woken.size > 0) yield* answered(woken);
     });
 
   /**

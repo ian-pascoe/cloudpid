@@ -16,16 +16,21 @@ import {
   MCP_HOST_FEATURES,
   Unsupported,
 } from "@cloudpid/mcp/types";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID, type ToolExecutionApi } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import type { Mutable } from "effect/Types";
 import { describe, expect, it } from "vitest";
-import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
+import { makeMcpTools, type McpToolOptions, mcpExtension, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf, open, startOf } from "./mcp.fixture.ts";
 import { fakeMcpHost, type FakeMcpAnswer } from "./mcp.testing.ts";
 import {
   createMcpQuestions,
   MCP_DEFERRED_DEADLINE_MS,
+  McpQuestionsError,
   McpRoundState,
   type McpQuestionStorage,
   type McpSamplingCard,
@@ -121,7 +126,12 @@ const until = async (check: () => Promise<boolean>) => {
  * none of either is answered, and the resume is kept.
  */
 const setup = async (
-  options: { readonly asks?: ReadonlyArray<Request>; readonly over?: string } = {},
+  options: {
+    readonly asks?: ReadonlyArray<Request>;
+    readonly over?: string;
+    /** What writing the definition does, for a test that holds it or fails it. */
+    readonly write?: Effect.Effect<void, McpQuestionsError>;
+  } = {},
 ) => {
   const asks = options.asks ?? [FORM, SAMPLE];
   const host = fakeMcpHost([DOCS]);
@@ -140,6 +150,7 @@ const setup = async (
     redact: (shown) => Effect.succeed(shown),
     holdsSecret: () => Effect.succeed(false),
     vault,
+    remember: { writable: () => Effect.succeed(true), write: () => options.write ?? Effect.void },
   });
 
   const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-haiku-5-5" }] });
@@ -428,6 +439,51 @@ describe("a Modern server's Sampling request that asks the owner", () => {
 
     expect(await Effect.runPromise(questions.pendingSampling)).toHaveLength(1);
     expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+  });
+
+  it("refuses a request at the next start that finds the definition off, when the switch had to yield to an answer that then failed", async () => {
+    const gate = Promise.withResolvers<void>();
+    const writing = Promise.withResolvers<void>();
+
+    const { host, tools, questions, session, faux, resumes, run } = await setup({
+      write: Effect.promise(() => {
+        writing.resolve();
+
+        return gate.promise;
+      }).pipe(Effect.andThen(McpQuestionsError.make({ message: "no write" }))),
+    });
+
+    const submitted = await run();
+
+    await waitingFor(questions, 1);
+
+    const [card] = await Effect.runPromise(questions.pendingSampling);
+
+    // The owner's Always allow is writing the definition when the Session learns it says off: the switch yields to it.
+    const answering = Effect.runPromise(
+      questions
+        .answerSampling(card?.id ?? "", { choice: "allow_always" })
+        .pipe(Effect.match({ onSuccess: () => "answered", onFailure: (error) => error.message })),
+    );
+
+    await writing.promise;
+    host.set([{ ...DOCS, entry: { sampling: "off" } }]);
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+    expect(await Effect.runPromise(questions.pendingSampling)).toHaveLength(1);
+
+    // The answer fails and the request waits on, though the definition says off.
+    gate.resolve();
+    expect(await answering).toContain("no write");
+    expect(await Effect.runPromise(questions.pendingSampling)).toHaveLength(1);
+
+    // The next start finds the same inventory, and the definition still off: the request is refused.
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([]);
+    expect(faux.state.callCount).toBe(0);
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([]);
+    expect((await session.texts("toolResult"))[0]).toContain("no longer lets it use a model");
   });
 
   it("ends the call with the definition's off, not an internal failure, when it goes off after the owner allowed the request", async () => {
@@ -794,10 +850,15 @@ describe("the owner's choices on a Modern server's Sampling request", () => {
   it("lets the owner's answer in flight win over the definition's switch, and takes one claim for the call", async () => {
     const memory = memoryStorage();
     const gate = Promise.withResolvers<void>();
+    const writing = Promise.withResolvers<void>();
 
     const { questions } = await keepRound(memory, "call-1", {
       samples: ["small", "medium"],
-      write: Effect.promise(() => gate.promise),
+      write: Effect.promise(() => {
+        writing.resolve();
+
+        return gate.promise;
+      }),
     });
 
     await keepRound(memory, "call-2");
@@ -807,7 +868,7 @@ describe("the owner's choices on a Modern server's Sampling request", () => {
       questions.answerSampling("call-1:1", { choice: "allow_always" }),
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writing.promise;
 
     // Another answer on the call's other request yields to it; the switch refuses the other call's request only.
     await expect(
@@ -883,5 +944,218 @@ describe("the owner's choices on a Modern server's Sampling request", () => {
     );
 
     expect(big).toBe("unrecorded");
+  });
+});
+
+const memoryMemo = (memos: Map<string, JsonValue>) => {
+  async function memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
+  async function memo<T extends JsonValue>(
+    name: string,
+    candidate: T,
+    context: Context,
+  ): Promise<T>;
+  async function memo(
+    name: string,
+    ...rest: ReadonlyArray<JsonValue | Context>
+  ): Promise<JsonValue | undefined> {
+    if (rest.length === 1) return memos.get(name);
+
+    // SAFETY: a write's candidate is a `JsonValue`, as the overloads take it.
+    const candidate = rest[0] as JsonValue;
+
+    if (!memos.has(name)) memos.set(name, candidate);
+
+    return memos.get(name);
+  }
+
+  return memo;
+};
+
+/** The parts of a tool's api that `execute` reads, as the api. */
+const apiWith = (parts: Partial<ToolExecutionApi>): ToolExecutionApi =>
+  // SAFETY: only what the `mcp` tools read of the api is given: the call's ids, its memos, task, details and environment.
+  parts as ToolExecutionApi;
+
+/**
+ * A call's instances over one storage and one set of memos, the way an eviction makes them: each `instance` is a Session
+ * instance's questions and sampler and the tool a rerun of the call executes, over a definition that reads `sampling`.
+ */
+const restartable = async () => {
+  const memory = memoryStorage();
+  const memos = new Map<string, JsonValue>();
+  const vault = await testVault();
+  const host = fakeMcpHost([DOCS]);
+  const sent: Array<Sent> = [];
+
+  host.answer(async (input, hooks) => {
+    sent.push(input);
+
+    if (input.op === "resume") return DONE;
+
+    for (const request of [FORM, SAMPLE]) await hooks.onInput?.(request);
+
+    return McpHostInputRequired.make({
+      requests: [FORM, SAMPLE],
+      resume: STATE,
+      conn: "conn-docs",
+    });
+  });
+
+  const instance = (sampling: "ask" | "off", sampled = true) => {
+    const questions = createMcpQuestions({
+      storage: memory.storage,
+      announce: () => Effect.void,
+      announceSampling: () => Effect.void,
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+      vault,
+    });
+
+    const sampler = createMcpSampling({
+      storage: memory.storage,
+      redact: Effect.succeed,
+      questions,
+    });
+
+    const faux = fauxProvider({ provider: "anthropic", models: [{ id: "claude-haiku-5-5" }] });
+    const models = createModels();
+
+    models.setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage("a summary")]);
+    sampler.bind({
+      models,
+      roles: () => ({ small: { provider: "anthropic", modelId: "claude-haiku-5-5" } }),
+      overLimit: () => Promise.resolve(undefined),
+      usage: () => undefined,
+    });
+
+    const toolOptions: Mutable<McpToolOptions> = { slackMs: 0, questions };
+
+    if (sampled) toolOptions.sampling = sampler;
+
+    const extension = mcpExtension(
+      {
+        servers: [
+          {
+            name: "Docs-Site",
+            state: "connected",
+            discoveredAt: 1,
+            server: { exposure: "direct", sampling },
+            tools: [{ name: "search", inputSchema: { type: "object" } }],
+          },
+        ],
+        offered: [],
+        features: MCP_HOST_FEATURES,
+      },
+      host.client,
+      {},
+      toolOptions,
+    );
+
+    const tool = Option.getOrThrow(Arr.head(extension.tools ?? []));
+
+    const api = apiWith({
+      callId: "call-1",
+      conversationId: ROOT_CONVERSATION_ID,
+      env: undefined,
+      getTask: async () => undefined,
+      details: async () => undefined,
+      memo: memoryMemo(memos),
+    });
+
+    return { questions, faux, run: () => tool.execute({}, api, context) };
+  };
+
+  return { instance, sent };
+};
+
+describe("a kept Sampling request resumed after an eviction, in a definition that reads off by then", () => {
+  const evicted = async () => {
+    const world = await restartable();
+    const first = world.instance("ask");
+
+    // The first instance asks, keeps the round (a form and a Sampling request) and waits; it is then lost.
+    void first.run();
+    await until(
+      async () => (await Effect.runPromise(first.questions.pendingSampling)).length === 1,
+    );
+
+    return { ...world, first };
+  };
+
+  it("ends the call with the definition's off when the owner had allowed the request, and sends nothing", async () => {
+    const { instance, sent, first } = await evicted();
+    const [card] = await Effect.runPromise(first.questions.pendingSampling);
+
+    await Effect.runPromise(
+      first.questions.answerSampling(card?.id ?? "", { choice: "allow_call" }),
+    );
+
+    // The rerun's instance finds the definition off: it has no sampler for the allowed request, and says why.
+    const second = instance("off");
+    const rerun = second.run();
+
+    await until(async () => (await Effect.runPromise(second.questions.pending)).length === 1);
+
+    const [form] = await Effect.runPromise(second.questions.pending);
+
+    await Effect.runPromise(
+      second.questions.answer(form?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+    );
+
+    const result = await rerun;
+    const text = JSON.stringify(result.output);
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain("no longer lets it use a model");
+    expect(text).not.toContain("cannot run the request here");
+    expect(second.faux.state.callCount).toBe(0);
+    expect(sent.map((each) => each.op)).toEqual(["tools/call"]);
+  });
+
+  it("ends the call with the owner's refusal when the owner had refused the request, whatever the definition reads", async () => {
+    const { instance, sent, first } = await evicted();
+    const [card] = await Effect.runPromise(first.questions.pendingSampling);
+
+    // Another instance takes the owner's refusal, which sinks the round.
+    await Effect.runPromise(
+      instance("ask").questions.answerSampling(card?.id ?? "", { choice: "refuse" }),
+    );
+
+    const result = await instance("off").run();
+    const text = JSON.stringify(result.output);
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain("refused by you");
+    expect(text).not.toContain("cannot run the request here");
+    expect(text).not.toContain("no longer lets it use a model");
+    expect(sent.map((each) => each.op)).toEqual(["tools/call"]);
+  });
+
+  it("says cloudpid cannot run an allowed request when there is no sampler and the definition does not read off", async () => {
+    const { instance, sent, first } = await evicted();
+    const [card] = await Effect.runPromise(first.questions.pendingSampling);
+
+    await Effect.runPromise(
+      first.questions.answerSampling(card?.id ?? "", { choice: "allow_call" }),
+    );
+
+    // An instance whose Session has no sampler, over a definition that reads `ask`: nothing says `off`.
+    const second = instance("ask", false);
+    const rerun = second.run();
+
+    await until(async () => (await Effect.runPromise(second.questions.pending)).length === 1);
+
+    const [form] = await Effect.runPromise(second.questions.pending);
+
+    await Effect.runPromise(
+      second.questions.answer(form?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+    );
+
+    const text = JSON.stringify((await rerun).output);
+
+    expect(text).toContain("cannot run the request here");
+    expect(text).not.toContain("no longer lets it use a model");
+    expect(sent.map((each) => each.op)).toEqual(["tools/call"]);
   });
 });

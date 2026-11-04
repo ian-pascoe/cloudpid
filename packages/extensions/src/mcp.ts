@@ -642,18 +642,15 @@ export const makeMcpTools = (
     });
 
   /**
-   * The servers of `after` whose definition's `sampling` became `allow` or `off` since `before`, which the Sampling
-   * requests waiting for the owner are answered by (`samplingSwitched`).
+   * What each server of `after` reads for its definition's `sampling` (`allow`, `ask` or `off`; a stdio server has none),
+   * which the Sampling requests waiting for the owner are answered by (`samplingSwitched`). Not only what changed since
+   * the last start: a switch that had to yield to an answer in flight is made again at the next one.
    */
-  const samplingSwitched = (before: McpInventory | undefined, after: McpInventory | undefined) =>
+  const samplingRead = (after: McpInventory | undefined) =>
     Arr.filterMap(after?.servers ?? [], (server) => {
-      const was = Arr.findFirst(before?.servers ?? [], (each) => each.name === server.name);
-
-      if (Option.isNone(was)) return Result.failVoid;
-
       const mode = samplingOf(server.server);
 
-      return mode !== samplingOf(was.value.server) && (mode === "allow" || mode === "off")
+      return mode === "allow" || mode === "ask" || mode === "off"
         ? Result.succeed({ name: server.name, mode })
         : Result.failVoid;
     });
@@ -675,9 +672,9 @@ export const makeMcpTools = (
         if (signIns !== undefined) yield* signIns.withdrawServer(name, why);
       }
 
-      // A Sampling request a server waits on is run, or refused, as the definition now says.
+      // A Sampling request a server waits on is run, or refused, as the definition now reads.
       if (questions !== undefined) {
-        for (const { name, mode } of samplingSwitched(before, latest)) {
+        for (const { name, mode } of samplingRead(latest)) {
           yield* questions.samplingSwitched(name, mode);
         }
       }

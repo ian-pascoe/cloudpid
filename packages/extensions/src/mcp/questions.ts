@@ -189,11 +189,12 @@ export type McpQuestionsService = {
     given: McpSamplingGiven,
   ) => Effect.Effect<void, McpQuestionsError>;
   /**
-   * The server's definition says `allow` or `off` now (`mode`): the Sampling requests of it waiting for the owner, live
-   * or kept with a Modern call's round, are run as `allow` says, with no card, or refused as `off` says, which sinks their
-   * rounds (`docs/architecture/mcp-server-requests.md` → The server changes while a question waits).
+   * The server's definition reads `mode` now, told at every request start: the Sampling requests of it waiting for the
+   * owner, live or kept with a Modern call's round, are run as `allow` says, with no card, or refused as `off` says, which
+   * sinks their rounds; `ask` decides nothing (`docs/architecture/mcp-server-requests.md` → The server changes while a
+   * question waits).
    */
-  readonly samplingSwitched: (server: string, mode: "allow" | "off") => Effect.Effect<void>;
+  readonly samplingSwitched: (server: string, mode: "allow" | "ask" | "off") => Effect.Effect<void>;
   /** Take back the Session's grant for `server`. */
   readonly revokeSampling: (server: string) => Effect.Effect<void>;
   /**

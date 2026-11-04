@@ -664,7 +664,8 @@ export const send = async <A>(
           asked: asking?.asked,
           read: paging && request.op === "resources/read" ? request : undefined,
           sampling,
-          // A definition switched to `off` since the call started has no sampler to run what the owner allowed.
+          // `server` is the definition when `send` (re)started, so one that reads `off` then (a rerun after an eviction) has
+          // no sampler to run what the owner allowed.
           samplingOff: declaresSampling(server.server)
             ? undefined
             : { reason: MCP_SAMPLING_OFF_REASON },

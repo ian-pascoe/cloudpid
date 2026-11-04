@@ -56,6 +56,8 @@ const open = (
     readonly writable?: (source: McpElicitationSource | undefined) => boolean;
     readonly over?: () => string | undefined;
     readonly waitMs?: number;
+    /** Runs whenever the clients are told what waits, for a test that holds the announcing. */
+    readonly onAnnounce?: () => Effect.Effect<void>;
   } = {},
 ) => {
   const storage = options.storage ?? memory();
@@ -74,7 +76,7 @@ const open = (
     announceSampling: (message) =>
       Effect.sync(() => {
         announced.push(message);
-      }),
+      }).pipe(Effect.andThen(Effect.suspend(() => options.onAnnounce?.() ?? Effect.void))),
     notify: (who) =>
       Effect.sync(() => {
         told.push(who);
@@ -496,6 +498,199 @@ describe("MCP sampling on a definition that says ask", () => {
         kind: "sampled",
         detail: { by: "owner", grant: "call", role: "medium" },
       });
+    }));
+
+  test("tells the clients nothing when the definition's reading finds nothing of the server waiting", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced } = open();
+
+      yield* Effect.forkChild(sampler.sample(ask()));
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+
+      const told = announced.length;
+
+      // Another server's reading, and a reading that decides nothing: no request ends, so nothing is announced.
+      yield* questions.samplingSwitched("other", "off");
+      yield* questions.samplingSwitched("other", "allow");
+      yield* questions.samplingSwitched("demo", "ask");
+      expect(announced).toHaveLength(told);
+      expect(yield* questions.pendingSampling).toHaveLength(1);
+    }));
+
+  test("lets go of the call when an answer is interrupted, so another answer takes it", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+
+      const { sampler, questions, announced } = open({ remember: () => Deferred.await(gate) });
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+
+      const answering = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }),
+      );
+
+      yield* settle;
+
+      const taken = yield* questions
+        .answerSampling("call-1:1", { choice: "refuse" })
+        .pipe(Effect.flip);
+
+      expect(taken.message).toBe("This request is being answered");
+      yield* Fiber.interrupt(answering);
+      yield* questions.answerSampling("call-1:1", { choice: "refuse" });
+      expect(yield* Fiber.join(sampling)).toMatchObject({
+        kind: "refused",
+        detail: { by: "owner" },
+      });
+    }));
+
+  test("drops the call's claim when the call ends under an answer in flight", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+
+      const { sampler, questions, faux, announced } = open({
+        remember: () => Deferred.await(gate),
+      });
+
+      faux.setResponses([fauxAssistantMessage("again")]);
+
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+
+      const answering = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }),
+      );
+
+      yield* settle;
+      yield* questions.settleCall("call-1");
+      yield* Fiber.join(first);
+
+      // The call is over, though its answer has not come back; a later request under the id is the owner's to answer.
+      const next = yield* Effect.forkChild(sampler.sample(ask({ key: "2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+      yield* questions.answerSampling("call-1:2", { choice: "allow_call" });
+      expect((yield* Fiber.join(next)).kind).toBe("sampled");
+      yield* Deferred.succeed(gate, undefined);
+      yield* Fiber.await(answering);
+    }));
+
+  test("lets go of the call when an answer is interrupted after it took its first request", () =>
+    Effect.gen(function* () {
+      let holding = false;
+      const gate = yield* Deferred.make<void>();
+
+      const { sampler, questions, faux, announced } = open({
+        onAnnounce: () => (holding ? Deferred.await(gate) : Effect.void),
+      });
+
+      faux.setResponses([fauxAssistantMessage("one")]);
+
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+      const second = yield* Effect.forkChild(sampler.sample(ask({ key: "2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(2));
+      holding = true;
+
+      // The answer is telling the clients of the first request when it is interrupted: the second still waits.
+      const answering = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_call" }),
+      );
+
+      yield* settle;
+      yield* Fiber.interrupt(answering);
+      holding = false;
+      yield* questions.answerSampling("call-1:2", { choice: "refuse" });
+
+      expect((yield* Fiber.join(first)).kind).toBe("sampled");
+      expect(yield* Fiber.join(second)).toMatchObject({
+        kind: "refused",
+        detail: { by: "owner" },
+      });
+    }));
+
+  test("refuses an allow the definition's off was left waiting out, as the switch would have", () =>
+    Effect.gen(function* () {
+      let holding = false;
+      const gate = yield* Deferred.make<void>();
+
+      const { sampler, questions, faux, announced } = open({
+        onAnnounce: () => (holding ? Deferred.await(gate) : Effect.void),
+      });
+
+      faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two")]);
+
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+      const second = yield* Effect.forkChild(sampler.sample(ask({ key: "2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(2));
+      holding = true;
+
+      // The owner's allow has run the first request and is telling the clients when the Session learns the server is off:
+      // the switch yields to the answer, which then reaches the second request.
+      const answering = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_call" }),
+      );
+
+      yield* settle;
+      yield* questions.samplingSwitched("demo", "off");
+      expect(yield* questions.pendingSampling).toHaveLength(1);
+      holding = false;
+      yield* Deferred.succeed(gate, undefined);
+      yield* Fiber.join(answering);
+
+      expect(yield* Fiber.join(first)).toMatchObject({ kind: "sampled", detail: { by: "owner" } });
+      expect(yield* Fiber.join(second)).toMatchObject({
+        kind: "refused",
+        message: expect.any(String),
+        detail: { by: "cloudpid", reason: "the server's definition no longer lets it use a model" },
+      });
+    }));
+
+  test("ends the wait of a sibling that ran out while an answer was taking its call, when that answer fails", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+
+      const { sampler, questions, announced } = open({
+        waitMs: 1000,
+        remember: () =>
+          Deferred.await(gate).pipe(
+            Effect.andThen(McpQuestionsError.make({ message: "The definition was not saved" })),
+          ),
+      });
+
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+      const second = yield* Effect.forkChild(sampler.sample(ask({ key: "2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(2));
+
+      const answering = yield* Effect.forkChild(
+        questions.answerSampling("call-1:1", { choice: "allow_always" }),
+      );
+
+      yield* settle;
+
+      // Both waits run out while the answer holds the call: the clock yields to it.
+      yield* TestClock.adjust(1000);
+      yield* settle;
+      expect(yield* questions.pendingSampling).toHaveLength(2);
+
+      // The answer fails: nothing is decided, and neither request is left waiting with no clock.
+      yield* Deferred.succeed(gate, undefined);
+      expect((yield* Fiber.join(answering).pipe(Effect.flip)).message).toBe(
+        "The definition was not saved",
+      );
+
+      for (const outcome of [yield* Fiber.join(first), yield* Fiber.join(second)]) {
+        expect(outcome).toMatchObject({
+          kind: "refused",
+          detail: { by: "cloudpid", why: "unanswered" },
+        });
+      }
+
+      expect(yield* questions.pendingSampling).toEqual([]);
     }));
 
   test("writes the definition on Always allow, then runs the request and the server's other waiting ones", () =>
