@@ -20,7 +20,7 @@ import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
 import { accessProps } from "./access-props.ts";
 import { bypassAccessProps } from "./bypass-access.ts";
 import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
-import { webBuild } from "./web-build.ts";
+import { webBuildProps } from "./web-build.ts";
 import { SERVER_COMPATIBILITY } from "./worker-shape.ts";
 import { IMAGES_BINDING } from "./session/images.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
@@ -49,7 +49,7 @@ const webAssets = Effect.gen(function* () {
   // Alchemy runs from `infra/`, so the app's directory is resolved from this file, not from a relative path.
   const webDirectory = fileURLToPath(new URL("../../web/", import.meta.url).href);
 
-  const build = yield* Command.Build("WebBuild", webBuild(webDirectory));
+  const build = yield* Command.Build("WebBuild", webBuildProps(webDirectory));
 
   return {
     directory: build.outdir,

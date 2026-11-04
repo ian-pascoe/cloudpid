@@ -1,8 +1,8 @@
 // @effect-diagnostics strictEffectProvide:off asyncFunction:off nodeBuiltinImport:off preferEffectRecord:off anyUnknownInErrorContext:off -- each test is its own entry point, on real files in a temporary directory, through alchemy's provider, whose failures are untyped.
-// The WebBuild step's plan (docs/development/infra.md → CI): alchemy's own `Command.Build` diff, given `webBuild`'s
+// The WebBuild step's plan (docs/development/infra.md → CI): alchemy's own `Command.Build` diff, given `webBuildProps`'
 // props and the state the last deploy stored, decides whether a deploy rebuilds the web app, and so whether `Server`,
 // whose assets are the step's outputs, can plan a noop (#626).
-import { execFileSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -14,11 +14,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import { afterEach, describe, expect, it } from "vitest";
-import { webBuild } from "./web-build.ts";
+import { webBuildProps } from "./web-build.ts";
 
 /**
  * Stands in for Vite: `dist` holds what the app bundles (its page, its source, the protocol's and the config package's),
- * never a test.
+ * never a test. That the real build's bytes do not depend on a test, Markdown or the build info either (Tailwind scans
+ * every file of the app for class names) is `apps/web/src/build.test.ts`'s.
  */
 const BUILD_SCRIPT = `
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -26,6 +27,9 @@ const bundled = ["index.html", "src/app.tsx", "../../packages/protocol/src/sessi
 mkdirSync("dist", { recursive: true });
 writeFileSync("dist/index.html", bundled.map((file) => readFileSync(file, "utf8")).join("\\n"));
 `;
+
+/** The fixture's build, in place of `bun run build`: the step runs it, and so does CI before the plan. */
+const BUILD_COMMAND = "node build.mjs";
 
 /** A checkout in miniature, laid out as the repository is: the app, the protocol package it imports, the lockfile. */
 const FILES = {
@@ -37,6 +41,7 @@ const FILES = {
   "apps/web/src/app.test.tsx": "it('renders', () => {});\n",
   "apps/web/src/view.test.ts": "it('views', () => {});\n",
   "apps/web/DESIGN.md": "# Design\n",
+  "apps/web/tsconfig.tsbuildinfo": '{"root":["./src/app.tsx","./src/app.test.tsx"]}\n',
   // Written by tools, never read by the build: the `.gitignore` rules the step's `exclude` restates.
   "apps/web/node_modules/.vite/deps.json": "{}\n",
   "apps/web/.turbo/turbo-build.log": "built\n",
@@ -66,13 +71,12 @@ const checkout = () => {
   const web = join(root, "apps/web");
 
   return {
-    // `webBuild`'s props, with the fixture's build command in place of `bun run build`.
-    props: { ...webBuild(web), command: "node build.mjs" },
+    props: { ...webBuildProps(web), command: BUILD_COMMAND },
     // The next deploy runs on a new checkout, without the `dist` the last one built.
     fresh: () => rmSync(join(web, "dist"), { recursive: true, force: true }),
     edit: (path: CheckoutFile) => appendFileSync(join(root, path), "// edited\n"),
     // What CI does before the plan (`ci.yml`, `deploy` and `preview`): build the app as the step would.
-    build: () => execFileSync("node", ["build.mjs"], { cwd: web }),
+    build: () => execSync(BUILD_COMMAND, { cwd: web }),
   };
 };
 
@@ -164,6 +168,7 @@ describe("the WebBuild step's plan", { timeout: 30_000 }, () => {
     "apps/web/src/view.test.ts",
     "packages/protocol/src/session.test.ts",
     "apps/web/DESIGN.md",
+    "apps/web/tsconfig.tsbuildinfo",
     "apps/web/node_modules/.vite/deps.json",
     "apps/web/.turbo/turbo-build.log",
   ])("plans a noop when only %s changed", async (changed) => {
