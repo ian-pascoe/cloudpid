@@ -18,6 +18,7 @@ import { declaresSampling, samplingOf } from "@cloudpid/config";
 import {
   isJsonObject,
   MCP_CONNECT_TIMEOUT_MS,
+  MCP_CONTAINER_STOPPED_CUT,
   MCP_ELICITATION_WAIT_MS,
   MCP_INPUT_ROUNDS,
   MCP_SAMPLING_WAIT_MS,
@@ -60,7 +61,7 @@ import {
   interruptedResult,
   streamFailure,
 } from "./result.ts";
-import { restartedWhileWaiting } from "./question-records.ts";
+import { containerStoppedReason, restartedWhileWaiting } from "./question-records.ts";
 import { type McpDeferredRound, McpRoundState, type McpQuestionsService } from "./questions.ts";
 import { MCP_ROUND_WATCH_MS, resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
@@ -662,6 +663,19 @@ export const send = async <A>(
       const refused = sampling?.sunk();
 
       if (refused !== undefined) return failed(samplingRefusedResult(refused, base));
+
+      // A stdio server whose Container stopped under the call: what it waited on for the owner reads that, not only that
+      // its call ended.
+      if (
+        questions !== undefined &&
+        Predicate.isTagged(result, "CallFailed") &&
+        Predicate.isTagged(result.error, "Cut") &&
+        result.error.message === MCP_CONTAINER_STOPPED_CUT
+      ) {
+        await Effect.runPromise(
+          questions.settleCall(api.callId, containerStoppedReason(server.name)),
+        );
+      }
 
       return failed(
         failureResult(result, base, subject, { subagent: await isSubagentCall(api, context) }),

@@ -66,6 +66,10 @@ export const MCP_DECLINED_IN_SESSION_REASON =
 export const restartedWhileWaiting = (server: string): string =>
   `${server}'s process restarted while it waited for your answer, so it may have lost track; calling it again starts over`;
 
+/** Why a stdio server's question is withdrawn when its Workspace's Container stopped under the call. */
+export const containerStoppedReason = (server: string): string =>
+  `${server}'s call ended (Container stopped)`;
+
 /** The note on a question a stdio server asks again from another process than the round's before. */
 export const restartedSinceAsked = (server: string): string =>
   `${server} restarted since it last asked`;

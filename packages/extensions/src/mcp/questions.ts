@@ -183,8 +183,11 @@ export type McpQuestionsService = {
    * wait on, `reason` being the one the owner and the agent read, and withdraw the cards.
    */
   readonly withdrawScript: (scriptCallId: string, reason: string) => Effect.Effect<void>;
-  /** The call is done, however it ended: withdraw every question it still waits on, and forget its count. */
-  readonly settleCall: (callId: string) => Effect.Effect<void>;
+  /**
+   * The call is done, however it ended: withdraw every question it still waits on, and forget its count. `reason` is
+   * what they read when it was known why (`MCP_CALL_ENDED_REASON` otherwise).
+   */
+  readonly settleCall: (callId: string, reason?: string) => Effect.Effect<void>;
   /**
    * Record a form cloudpid declined or cancelled unseen (a credential, a malformed form). It counts toward the call's
    * cap of `MCP_ELICITATIONS_PER_CALL` like any request: `"capped"` says the call was past it, and the record says so.
@@ -810,16 +813,16 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       }
     });
 
-  const settleCall = (callId: string) =>
+  const settleCall = (callId: string, reason: string = MCP_CALL_ENDED_REASON) =>
     Effect.gen(function* () {
       // A page the server said is finished is left to its own timer, so the card reads "Finished at <host>" after the
       // call that usually ends right behind `complete` (`complete`).
       yield* endWhere(
         (held) => held.request.callId === callId && held.request.page?.finished !== true,
-        MCP_CALL_ENDED_REASON,
+        reason,
       );
-      yield* sampling.settleCall(callId);
-      yield* deferred.settleCall(callId, MCP_CALL_ENDED_REASON);
+      yield* sampling.settleCall(callId, reason);
+      yield* deferred.settleCall(callId, reason);
 
       for (const key of Arr.fromIterable(answeredIds.keys())) {
         if (key.startsWith(`${callId}\u0000`)) answeredIds.delete(key);

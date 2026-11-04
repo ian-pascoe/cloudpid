@@ -21,7 +21,13 @@
  */
 // @effect-diagnostics asyncFunction:off globalFetch:off newPromise:off preferSchemaOverJson:off missingPipeableSignature:off preferEffectArray:off globalTimers:off -- the bridge is reached with Promises, over Requests and Responses, and a status read is bounded by a timer.
 import type { McpDeps } from "@cloudpid/mcp";
-import { Cut, type McpEngineStdioTarget, Unreachable, Unsupported } from "@cloudpid/mcp/types";
+import {
+  Cut,
+  MCP_CONTAINER_STOPPED_CUT,
+  type McpEngineStdioTarget,
+  Unreachable,
+  Unsupported,
+} from "@cloudpid/mcp/types";
 import {
   MCP_BRIDGE_CONFIG_HEADER,
   MCP_BRIDGE_CONTAINER_HEADER,
@@ -304,7 +310,7 @@ export const stdioBridge = (
     if (response.headers.get(MCP_BRIDGE_CONTAINER_HEADER) === "stopped") {
       void response.body?.cancel().catch(() => undefined);
 
-      return Cut.make({ message: "Container stopped", mayHaveRun: true });
+      return Cut.make({ message: MCP_CONTAINER_STOPPED_CUT, mayHaveRun: true });
     }
 
     if (levelOf(response) === undefined || !response.ok) {

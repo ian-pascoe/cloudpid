@@ -3,7 +3,14 @@
 // enters is ever kept. A scripted model on a Harness, and an in-memory host that asks through the call's hooks.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
-import { type JsonObject, McpHostCompleted, type McpInputAnswer } from "@cloudpid/mcp/types";
+import {
+  Cut,
+  type JsonObject,
+  MCP_CONTAINER_STOPPED_CUT,
+  McpHostCallFailed,
+  McpHostCompleted,
+  type McpInputAnswer,
+} from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -622,6 +629,35 @@ describe("a Legacy server's elicitation", () => {
         by: "cloudpid",
         reason: "Docs-Site was changed",
         fields: [],
+      }),
+    ]);
+  });
+
+  it("reads that the Container stopped when a stdio server's call is cut so while its question waits", async () => {
+    const { host, tools, questions, session: opening } = setup();
+
+    host.answer(async (_input, hooks) => {
+      void hooks.onInput?.(ask(NAME_FORM)).catch(() => undefined);
+      await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+      return McpHostCallFailed.make({
+        error: Cut.make({ message: MCP_CONTAINER_STOPPED_CUT, mayHaveRun: true }),
+      });
+    });
+
+    const session = await opening;
+
+    await session.start(tools);
+    await session.prompt("go");
+
+    const reason = "Docs-Site's call ended (Container stopped)";
+
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ action: "cancel", by: "cloudpid", reason }),
+    ]);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        elicitation: [expect.objectContaining({ action: "cancel", by: "cloudpid", reason })],
       }),
     ]);
   });

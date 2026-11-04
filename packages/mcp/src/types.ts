@@ -311,6 +311,9 @@ export class Unreachable extends Schema.TaggedError<
   signIn: Schema.optionalKey(Schema.Boolean),
 }) {}
 
+/** The message of the `Cut` a stdio call gets when its Workspace's Container stopped under it: the Session reads it to say so. */
+export const MCP_CONTAINER_STOPPED_CUT = "Container stopped";
+
 /**
  * The request's stream ended before its answer arrived; a `tools/call` may or may not have run. `lost` says where it
  * was lost when that was not the server's stream: `"engine"`, the host's RPC to the engine broke, which a Session shows
