@@ -226,6 +226,8 @@ export type AttachedReadInput<A> = {
   readonly use: (contents: ReadonlyArray<AttachedContent>) => Promise<A>;
 };
 
+const APP_RESOURCE_MESSAGE = "An App's resource cannot be attached";
+
 const gone = (message: string): AttachedReadResult<never> => ({ status: "gone", message });
 
 const failed = (message: string): AttachedReadResult<never> => ({ status: "failed", message });
@@ -242,6 +244,11 @@ const usedBy = <A>(
     if (contents === undefined) return failed("The server's answer to the read was not a resource");
 
     if (contents.length === 0) return failed("The server gave no content for it");
+
+    // An App's resource by its MIME type, whatever its URI: the menu leaves it out, and a template's values could make it.
+    if (Arr.some(contents, (each) => isAppResource(each.uri, each.mimeType))) {
+      return gone(APP_RESOURCE_MESSAGE);
+    }
 
     try {
       return { status: "read", value: await input.use(contents) };
@@ -319,7 +326,7 @@ export const readAttachedResource = <A>(
 ): Effect.Effect<AttachedReadResult<A>> => {
   // The menu leaves an App's resources out, but a template's values can make one: it is never attached.
   if (isAppResourceUri(input.uri)) {
-    return Effect.succeed(gone("An App's resource cannot be attached"));
+    return Effect.succeed(gone(APP_RESOURCE_MESSAGE));
   }
 
   const server = Arr.findFirst(deps.servers, (each) => each.name === input.server);

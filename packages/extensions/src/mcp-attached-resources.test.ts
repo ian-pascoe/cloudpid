@@ -155,6 +155,7 @@ describe("the @ menu's listing", () => {
         page({
           resources: [
             { uri: "ui://docs/page", name: "view", mimeType: "text/html;profile=mcp-app" },
+            { uri: "UI://docs/other", name: "shouting" },
             { uri: "file:///a.md", name: "a" },
           ],
         }),
@@ -409,6 +410,22 @@ describe("the read at send", () => {
     }
 
     expect(requests(host)).toEqual([]);
+  });
+
+  it("is gone for what the server answers with an App's MIME type, whatever the URI a template made", async () => {
+    const { host, tools } = await started([store("Docs")]);
+
+    host.answer(() =>
+      Promise.resolve(
+        contents({
+          uri: "https://docs.test/page",
+          text: "<html>",
+          mimeType: "text/html;profile=mcp-app",
+        }),
+      ),
+    );
+
+    expect((await read(tools, "Docs", "https://docs.test/page")).status).toBe("gone");
   });
 
   it("is gone for a resource the server does not have, and for a server that left", async () => {

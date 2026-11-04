@@ -565,6 +565,9 @@ const fakeRegistries = () => {
     request: { _tag: "HostUnsupported", message: "not under test", op: "" },
   };
 
+  /** Whether the fake MCP hosts leave a `request` unanswered, as a host that does not answer does. */
+  const mcpHostHangs = { request: false };
+
   /** The requests the fake MCP hosts were sent, as they crossed the edge. */
   const mcpHostRequests: Array<unknown> = [];
 
@@ -1560,6 +1563,7 @@ const fakeRegistries = () => {
     mcpHostCalls,
     mcpHostAnswers,
     mcpHostRequests,
+    mcpHostHangs,
     /** The sign-ins' reads and sign-out are `mcp/sign-in-manage.test.ts`'s: here they answer nothing. */
     mcpSignIns: {
       list: () => Effect.succeed(McpUnavailable.make({ message: "not under test" })),
@@ -1568,6 +1572,7 @@ const fakeRegistries = () => {
     /** The status reads over the fake Registry and the fake hosts, which record what they were asked. */
     mcpStatus: mcpStatus({
       registry: () => registry,
+      completionBoundMs: 20,
       host: (name) =>
         scriptedMcpHost({
           servers: (request) =>
@@ -1591,11 +1596,11 @@ const fakeRegistries = () => {
               return mcpHostAnswers.apply;
             }),
           request: (input) =>
-            Effect.sync(() => {
+            Effect.suspend(() => {
               mcpHostCalls.push(`${name} request ${input.op}`);
               mcpHostRequests.push(input);
 
-              return mcpHostAnswers.request;
+              return mcpHostHangs.request ? Effect.never : Effect.succeed(mcpHostAnswers.request);
             }),
         }),
     }),
@@ -6266,7 +6271,7 @@ describe("the MCP status reads", () => {
     const completing = (extra: Readonly<Record<string, Schema.Json>> = {}) => {
       const fake = fakeRegistries();
 
-      fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear", "files"]);
+      fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear", "plain", "files"]);
       fake.mcpHostAnswers.servers = {
         version: "v1",
         promptsVersion: "p1",
@@ -6344,10 +6349,24 @@ describe("the MCP status reads", () => {
     it("never asks a server that does not declare completions, one the Environment does not have, or a stdio one, which has no Container to ask", async () => {
       const fake = completing();
 
+      // The Environment has "plain": its inventory not declaring `completions` is what refuses it.
       expect((await ask(fake, "plain")).status).toBe("unsupported");
+      expect(fake.mcpHostCalls).toEqual([`mcp:${DEFAULT_ENVIRONMENT} servers `]);
+
+      // A name the Environment's set does not hold never reaches the host.
+      fake.mcpHostCalls.length = 0;
       expect((await ask(fake, "nobody")).status).toBe("unsupported");
+      expect(fake.mcpHostCalls).toEqual([]);
       expect((await ask(fake, "files")).status).toBe("not_running");
       expect(fake.mcpHostRequests).toEqual([]);
+    });
+
+    it("answers `failed` when the host does not answer within the draft's own bound", async () => {
+      const fake = completing();
+
+      fake.mcpHostHangs.request = true;
+      expect((await ask(fake, "linear")).status).toBe("failed");
+      expect(fake.mcpHostRequests).toHaveLength(1);
     });
 
     it("answers `unsupported` for a host from before the op, `sign_in` for a server that wants it, and `failed` when the host breaks", async () => {

@@ -14,8 +14,9 @@ import {
   mcpToolNames,
   resolveExposure,
 } from "@cloudpid/config";
-import { completionAnswerOf } from "@cloudpid/extensions/mcp";
+import { completionAnswerOf, MCP_CALL_SLACK_MS } from "@cloudpid/extensions/mcp";
 import {
+  MCP_COMPLETION_TIMEOUT_MS,
   readMcpApplyResult,
   type McpHostRequestInput,
   McpServerLogResult,
@@ -64,6 +65,8 @@ type StatusRegistry = Pick<RegistryMethods, "mcpServerNames" | "getSettingsOverr
 /** The Registry object and the host objects, by name, as the main Worker reaches them. */
 export type McpStatusObjects = {
   readonly registry: () => StatusRegistry;
+  /** How long a draft's completion waits for its host before it answers `failed`; `MCP_COMPLETION_TIMEOUT_MS` and the call slack unless a test shortens it. */
+  readonly completionBoundMs?: number | undefined;
   readonly host: (
     name: string,
   ) => Pick<McpHostMethods, "servers" | "serverLog" | "apply" | "request">;
@@ -336,7 +339,15 @@ export const mcpStatus = (objects: McpStatusObjects): McpStatus => ({
         ctx: { origin: "owner", start: false },
       };
 
-      return completionAnswerOf(yield* host.request(request, {}));
+      // The host's own bound is `MCP_COMPLETION_TIMEOUT_MS`; this is the draft's, for a host that does not answer (an RPC that
+      // is interrupted does not cancel the request at the server).
+      return yield* host.request(request, {}).pipe(
+        Effect.map(completionAnswerOf),
+        Effect.timeoutOrElse({
+          duration: objects.completionBoundMs ?? MCP_COMPLETION_TIMEOUT_MS + MCP_CALL_SLACK_MS,
+          orElse: () => Effect.succeed(noCompletion(MCP_COMPLETION_STATUS.failed)),
+        }),
+      );
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning(`Environment ${environment}'s MCP completion failed`, cause).pipe(

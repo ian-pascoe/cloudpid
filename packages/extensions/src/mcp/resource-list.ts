@@ -12,6 +12,7 @@ import { type JsonObject, MCP_APP_PROFILE } from "@cloudpid/mcp/types";
 import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import type { ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
+import { isAppResourceUri } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -53,7 +54,7 @@ type ListArgs = { readonly server?: string; readonly cursor?: string };
 
 /** `ui://` and `profile=mcp-app` resources are an App's, which the lists leave out (`docs/architecture/mcp-apps.md`). */
 export const isAppResource = (uri: string, mimeType: string | undefined): boolean =>
-  uri.startsWith("ui://") ||
+  isAppResourceUri(uri) ||
   (mimeType?.toLowerCase().replaceAll(" ", "").includes(MCP_APP_PROFILE) ?? false);
 
 const Annotated = {
