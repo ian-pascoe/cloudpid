@@ -20,6 +20,7 @@ import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
 declare global {
@@ -48,16 +49,21 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   const answer = async (id: string) => {
-    for (let attempt = 0; attempt < 1000; attempt++) {
-      const found = received.find(
+    const find = () =>
+      received.find(
         (message) => (message.type === "result" || message.type === "error") && message.id === id,
       );
 
-      if (found !== undefined) return found;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => find() !== undefined,
+      () => `No answer to ${id}: ${JSON.stringify(received)}`,
+    );
 
-    throw new Error(`No answer to ${id}: ${JSON.stringify(received)}`);
+    const found = find();
+
+    if (found === undefined) throw new Error("Unreachable: the wait held");
+
+    return found;
   };
 
   return {
@@ -67,14 +73,11 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   };
 };
 
-const idle = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 1000; attempt++) {
-    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Never idle");
-};
+const idle = (stub: DurableObjectStub<TestSession>) =>
+  poll(
+    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
+    () => "Never idle",
+  );
 
 const SHOWN = {
   ownerTabId: "tab-1",

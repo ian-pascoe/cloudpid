@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Comparison, WORKSPACE_ROOT } from "@cloudpid/protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import type { ChangesFiles } from "./changes.ts";
 import { graphqlList, type JsonObject } from "./github-pulls.fixtures.ts";
 import { WorkspaceComparisonModule } from "./comparison.ts";
@@ -491,12 +492,8 @@ describe("the open pull requests of a repo", () => {
   });
 });
 
-/** Wait for `done`: the deletion of refs runs after the picker's list was answered. */
-const eventually = async (done: () => boolean) => {
-  for (let attempt = 0; attempt < 500 && !done(); attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-};
+/** Wait for `done`: the deletion of refs runs after the picker's list was answered. The assertions after it check it. */
+const eventually = (done: () => boolean) => poll(done);
 
 describe("a pull request too big to keep whole", () => {
   it("is cut to fit and kept, so a page return finds it and does not follow the head by itself", async () => {

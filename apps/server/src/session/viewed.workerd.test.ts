@@ -20,6 +20,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
 const decode = Schema.decodeUnknownEffect(ServerMessageJson);
@@ -41,13 +42,12 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   const until = async (done: (messages: readonly ServerMessage[]) => boolean) => {
-    // 10 s: a loaded runner answers slowly.
-    for (let attempt = 0; attempt < 1_000; attempt++) {
-      if (done(received)) return received;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => done(received),
+      () => `Never received the expected messages: ${JSON.stringify(received)}`,
+    );
 
-    throw new Error(`Never received the expected messages: ${JSON.stringify(received)}`);
+    return received;
   };
 
   const lists = () =>
@@ -393,10 +393,8 @@ describe("drafts on a pull request", () => {
     });
     await client.answer("send");
 
-    for (let attempt = 0; attempt < 300; attempt++) {
-      if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    // The assertions after it say what is missing if it never settles.
+    await poll(() => runInDurableObject(stub, (instance: TestSession) => instance.idle()));
 
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),

@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { NAVIGATE_WHILE_PREPARING } from "./branches.ts";
+import { poll } from "../poll.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -23,17 +24,14 @@ declare global {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Poll `check` inside the object until it holds. */
-const eventually = async (
+const eventually = (
   stub: DurableObjectStub<TestSubagentSession>,
   check: (instance: TestSubagentSession) => Promise<boolean>,
-): Promise<void> => {
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (await runInDurableObject(stub, check)) return;
-    await sleep(10);
-  }
-
-  throw new Error("Condition not reached");
-};
+): Promise<void> =>
+  poll(
+    () => runInDurableObject(stub, check),
+    () => "Condition not reached",
+  );
 
 /**
  * A Session whose root has started a subagent and whose subagent has answered, so both conversations are idle, with the

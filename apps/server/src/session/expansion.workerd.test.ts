@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { FakeWorkspace } from "./fake-workspace.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -34,17 +35,14 @@ const block = skillBlock({ name: "deploy", location: DEPLOY, body: "Ship it." })
 const fresh = () => env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
 
 /** Poll `check` inside the object until it holds. */
-const eventually = async (
+const eventually = (
   stub: DurableObjectStub<TestSubagentSession>,
   check: (instance: TestSubagentSession) => Promise<boolean>,
-): Promise<void> => {
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (await runInDurableObject(stub, check)) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Condition not reached");
-};
+): Promise<void> =>
+  poll(
+    () => runInDurableObject(stub, check),
+    () => "Condition not reached",
+  );
 
 /** Submit `text` to the root of a Session on `workspace`, and the kinds and texts of the root's owner messages after. */
 const submitted = async (workspace: FakeWorkspace, text: string) => {

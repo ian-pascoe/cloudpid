@@ -21,6 +21,7 @@ import { modernServer } from "@cloudpid/mcp/testing";
 import { MCP_LARGE_RESULT_BYTES } from "@cloudpid/mcp/types";
 import type { Mutable } from "effect/Types";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 import { DAY_MS, MINUTE_MS } from "./time.ts";
 
@@ -149,15 +150,7 @@ const scriptReads = (
   );
 
 /** Wait until `done` holds: the host's background work (a listen, a gap check) is not awaited by its caller. */
-const until = async (done: () => Promise<boolean>) => {
-  for (let tries = 0; tries < 200; tries++) {
-    if (await done()) return;
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("The host did not get there");
-};
+const until = (done: () => Promise<boolean>) => poll(done, () => "The host did not get there");
 
 const FILE = "file:///a.txt";
 
@@ -464,16 +457,15 @@ describe("a gap", () => {
     // At most 6 are asked at once; the engine's background queue (3) holds the rest for a slot.
     expect(await host.heldCount(URL_OF_DOCS)).toBe(3);
 
-    for (let round = 0; round < 3; round++) {
+    // Each release lets the queue send the next re-reads, which are held in turn: release until all are read.
+    await until(async () => {
       await host.release(URL_OF_DOCS);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
 
-    await until(
-      async () =>
+      return (
         (await host.engineRequests()).filter((each) => each.request.op === "resources/read")
-          .length === 16,
-    );
+          .length === 16
+      );
+    });
   });
 });
 

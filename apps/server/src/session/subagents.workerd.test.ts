@@ -5,6 +5,7 @@ import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { expect, it, vi } from "vitest";
 import { REQUEST_COST } from "./priced.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -17,17 +18,14 @@ declare global {
 }
 
 /** Poll `check` inside the object until it holds. */
-const eventually = async (
+const eventually = (
   stub: DurableObjectStub<TestSubagentSession>,
   check: (instance: TestSubagentSession) => Promise<boolean>,
-): Promise<void> => {
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (await runInDurableObject(stub, check)) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Condition not reached");
-};
+): Promise<void> =>
+  poll(
+    () => runInDurableObject(stub, check),
+    () => "Condition not reached",
+  );
 
 it("keeps a working subagent and the wait blocked on it through an eviction, and hands the wait the answer", async () => {
   const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());

@@ -19,6 +19,7 @@ import { BROWSER_IDLE_MS } from "@cloudpid/extensions/browser";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import { describeEvent } from "../push/notification.ts";
 import {
   LIVE_VIEW_LINKS,
@@ -60,14 +61,19 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
     match: (message: ServerMessage) => message is A,
     from = 0,
   ): Promise<A> => {
-    for (let attempt = 0; attempt < 1000; attempt++) {
-      const found = received.slice(from).find(match);
+    const find = () => received.slice(from).find(match);
 
-      if (found !== undefined) return found;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => find() !== undefined,
+      () => `Never received the expected message: ${JSON.stringify(received)}`,
+    );
 
-    throw new Error(`Never received the expected message: ${JSON.stringify(received)}`);
+    // Messages are only ever added, so the first match after `from` stays the first.
+    const found = find();
+
+    if (found === undefined) throw new Error("Unreachable: the wait held");
+
+    return found;
   };
 
   return {
@@ -103,14 +109,11 @@ const only = (message: Requests): BrowserHandoffRequest => {
 };
 
 /** Wait until `stub`'s Session has no work live. */
-const idle = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 1000; attempt++) {
-    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Never idle");
-};
+const idle = (stub: DurableObjectStub<TestSession>) =>
+  poll(
+    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
+    () => "Never idle",
+  );
 
 const SCRIPT = [
   `call:browser_handoff:${JSON.stringify({ instructions: "Log in, then press Done" })}`,
@@ -378,9 +381,7 @@ describe("Browser Handoffs over the Session socket", () => {
       runInDurableObject(stub, (instance: TestSession) => instance.endedHandoffs());
 
     // The new instance settles with no work live.
-    for (let attempt = 0; attempt < 1000 && (await ended()).length === 0; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(async () => (await ended()).length > 0);
 
     expect(await ended()).toEqual(["99"]);
 
