@@ -20,6 +20,7 @@ import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
 import { accessProps } from "./access-props.ts";
 import { bypassAccessProps } from "./bypass-access.ts";
 import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
+import { SERVER_COMPATIBILITY } from "./worker-shape.ts";
 import { IMAGES_BINDING } from "./session/images.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
@@ -195,7 +196,7 @@ const props = Effect.gen(function* () {
 
   return {
     main: import.meta.url,
-    compatibility: { date: "2026-08-31" },
+    compatibility: SERVER_COMPATIBILITY,
     ...workerProps,
     ...accessGuardProps.props,
     observability: WORKER_OBSERVABILITY,

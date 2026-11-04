@@ -19,25 +19,28 @@ import { fileURLToPath } from "node:url";
 import { WorkerBundle } from "@alchemy.run/cloudflare/Workers/Sources/Rolldown";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import {
+  getCompatibility,
+  getToolingCompatibility,
+} from "@alchemy.run/cloudflare/Workers/Compatibility";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
+import { SERVER_COMPATIBILITY, SERVER_DURABLE_OBJECTS } from "../src/worker-shape.ts";
 
-/** The startup modules' bytes. The Server was at 3.7 MB before its init became a module of its own (#614); now 0.54 MB. */
+/** The startup modules' bytes: the guard that does not depend on the machine (the figures are in `workers.md` → Startup). */
 const BYTES_BUDGET = 1024 * 1024;
 
-/**
- * The startup's CPU time, median, in ms. 210–250 ms on an M-series laptop before #614 and 50–60 ms after; the platform's
- * limit is 1 s, on machines this cannot see. A runner slower than the laptop has room to spare.
- */
-const CPU_BUDGET_MS = 250;
+/** The startup's CPU time, median, in ms: about 2.5 times the Server's on a laptop. The platform's limit is 1 s. */
+const CPU_BUDGET_MS = 120;
 
 const RUNS = Number(process.env.RUNS ?? 5);
 
-/** The Server's compatibility settings, as alchemy hands them to its bundler and the deploy sets them. */
-const COMPATIBILITY = { date: "2026-08-31", flags: ["new_module_registry", "nodejs_compat"] };
+const main = new URL("../src/worker.ts", import.meta.url).href;
+
+/** The compatibility the deploy uploads (`getCompatibility`: alchemy's default flags added) and the one it bundles with. */
+const deployed = getCompatibility({ compatibility: SERVER_COMPATIBILITY, main });
+const tooling = getToolingCompatibility(deployed, main);
 
 const out = fileURLToPath(new URL("../node_modules/.cache/startup/", import.meta.url));
-
-const durableObject = { kind: "durableObject" };
 
 const bundle = await Effect.runPromise(
   Effect.gen(function* () {
@@ -45,12 +48,14 @@ const bundle = await Effect.runPromise(
 
     return yield* bundler.build({
       id: "Server",
-      main: new URL("../src/worker.ts", import.meta.url).href,
-      compatibility: COMPATIBILITY,
-      // The generated entry exports the Worker's Durable Object classes (`worker-init.ts`'s Layers).
+      main,
+      compatibility: tooling,
+      // The generated entry exports the Worker's Durable Object classes (`worker-init.ts`'s Layers), as a plan finds them.
       entry: {
         kind: "effect",
-        exports: { Session: durableObject, Registry: durableObject, McpHost: durableObject },
+        exports: Object.fromEntries(
+          SERVER_DURABLE_OBJECTS.map((name) => [name, { kind: "durableObject" }]),
+        ),
       },
       stack: { name: "cloudpid", stage: "prod" },
       extraOptions: undefined,
@@ -106,8 +111,8 @@ const profileStartup = async () => {
   const mf = new Miniflare(
     convertV4MiniflareOptions({
       name: "profiler",
-      compatibilityDate: COMPATIBILITY.date,
-      compatibilityFlags: COMPATIBILITY.flags,
+      compatibilityDate: deployed.date,
+      compatibilityFlags: deployed.flags,
       modulesRoot: "/",
       modules: [
         {
@@ -201,6 +206,7 @@ const kib = (n) => `${(n / 1024).toFixed(0)} KiB`;
 
 const report = [
   `Server Worker startup (${out})`,
+  `  compatibility: ${deployed.date}, ${deployed.flags.join(", ")}`,
   `  bundle: ${modules.length} modules, ${kib(bytes(modules))}`,
   `  startup modules: ${[...startupModules.keys()].join(", ")}: ${kib(startupBytes)} (budget ${kib(BYTES_BUDGET)})`,
   `  startup CPU: median ${median.toFixed(1)} ms of ${runs.map((ms) => ms.toFixed(1)).join(", ")} (budget ${CPU_BUDGET_MS} ms)`,

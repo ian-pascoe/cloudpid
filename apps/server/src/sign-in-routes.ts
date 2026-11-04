@@ -15,9 +15,6 @@ import { flow } from "effect/Function";
 import { type AccessGuard, guardAccess } from "./access.ts";
 import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";
 
-/** The two public paths this router answers, kept beside the URLs made of them (`mcp/sign-in-origin.ts`). */
-export { CALLBACK_PATH, CLIENT_DOCUMENT_PATH };
-
 /** The start's path: behind Access, so it is no sign-in route here and goes on to the guard. */
 export const START_PATH = "/oauth/mcp/start";
 

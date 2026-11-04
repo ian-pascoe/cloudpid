@@ -54,6 +54,16 @@ import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
 import { MCP_CALLS_BINDING } from "./mcp-access.ts";
 import { type RateLimiter, serveMcpRoute } from "./mcp/endpoint.ts";
+import type { ServerDurableObject } from "./worker-shape.ts";
+
+/**
+ * The Durable Object classes the init yields and provides, by the name alchemy's generated entry exports each under:
+ * exactly `SERVER_DURABLE_OBJECTS` (`worker-shape.ts`), which the startup budget bundles with, since a key missing or
+ * extra here fails the typecheck. A Durable Object added to the Layers below is added here and there.
+ */
+const durableObjects = { Session, Registry, McpHost } satisfies {
+  readonly [Name in ServerDurableObject]: typeof Session | typeof Registry | typeof McpHost;
+};
 
 /**
  * The Server Worker's init (`worker.ts`): its routes, over the Session, Registry and McpHost objects, whose Layers it
@@ -61,9 +71,9 @@ import { type RateLimiter, serveMcpRoute } from "./mcp/endpoint.ts";
  * module's graph is evaluated in the Worker's global scope (`docs/development/workers.md` → Startup).
  */
 export const serverInit = Effect.gen(function* () {
-  const sessions = yield* Session;
-  const registries = yield* Registry;
-  const mcpHosts = yield* McpHost;
+  const sessions = yield* durableObjects.Session;
+  const registries = yield* durableObjects.Registry;
+  const mcpHosts = yield* durableObjects.McpHost;
   // The raw environment: the Workspace DO's own stub, as the Session DOs take it.
   const worker = yield* Cloudflare.WorkerEnvironment;
   // What runs after an answer: the wipe of what is left from before Environments, and the upkeep of the spares and
