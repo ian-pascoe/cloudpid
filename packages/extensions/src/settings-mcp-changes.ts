@@ -368,6 +368,8 @@ export const McpChanges = Effect.gen(function* () {
     readonly extra?: ReadonlyArray<string>;
     /** Wait for the server's status afterwards (the server was switched on). */
     readonly status?: boolean;
+    /** Ask whatever the Registry's check says: a change that always widens. */
+    readonly always?: boolean;
   }): Effect.Effect<Prepared<ReturnType<typeof unchanged>>, SettingsAccessError> =>
     Effect.gen(function* () {
       const name = input.located.server.server.name;
@@ -399,8 +401,7 @@ export const McpChanges = Effect.gen(function* () {
           check,
           reason: input.reason,
           texts: input.texts ?? [],
-          always: false,
-          rerun: false,
+          always: input.always ?? false,
           card: {
             change: `MCP server ${JSON.stringify(name)}: ${input.card}`,
             before: settingsFieldValue(input.view.settings, input.field.field),
@@ -560,6 +561,8 @@ export const McpChanges = Effect.gen(function* () {
               card: "switch on",
               lead: `Switched on MCP server ${input.name} ${where(view)}. It connects at the next demand, and its tools are registered once discovered.`,
               status: true,
+              // Switching on always widens: it asks even where no Environment is reached.
+              always: true,
             });
           }),
       });
@@ -848,7 +851,6 @@ export const McpChanges = Effect.gen(function* () {
                 reason: input.reason,
                 texts: [],
                 always: false,
-                rerun: false,
                 card: {
                   change: `MCP server ${JSON.stringify(name)}: reset ${MCP_KEY_LABELS[key]}`,
                   before: settingsFieldValue(view.settings, input.field),

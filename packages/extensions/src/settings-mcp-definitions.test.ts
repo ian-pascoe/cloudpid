@@ -3,7 +3,7 @@
 // Repo's server), `settings_mcp_update`, `settings_mcp_remove` and `settings_mcp_enable`. The world is the shared fixture's
 // (`./settings-mcp.fixture.ts`): Settings at two Scopes, the owner's resolver, the real widening check, a fake host, and
 // Approvals that answer as the test says.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import { MAX_APPROVAL_NOTE, MAX_APPROVAL_NOTES } from "./approvals.ts";
@@ -376,6 +376,9 @@ describe("settings_mcp_add with an entry", () => {
     expect(notes.length).toBeLessThanOrEqual(MAX_APPROVAL_NOTES);
 
     for (const note of notes) expect(note.length).toBeLessThanOrEqual(MAX_APPROVAL_NOTE);
+
+    // What the owner must see most is never the line that is cut.
+    expect(notes.join("\n")).toContain("Model use");
   });
 
   it("applies exactly what the owner saw, and refuses when the Scope changed since they were asked", async () => {
@@ -405,6 +408,54 @@ describe("settings_mcp_add with an entry", () => {
     });
   });
 
+  it("words the Notification as what changes and where", async () => {
+    const { tool, asked } = await setup();
+
+    await run(tool("settings_mcp_add"), {
+      scope: DEFAULT,
+      name: "files",
+      entry: ENTRY,
+      reason: REASON,
+    });
+
+    await run(tool("settings_mcp_add"), {
+      scope: GLOBAL_SETTINGS_SCOPE,
+      name: "docs",
+      entry: REMOTE,
+      reason: REASON,
+    });
+
+    expect(asked[0]?.notice).toBe('MCP server files, Environment "Default"');
+    expect(asked[1]?.notice).toBe("MCP server docs, Global");
+  });
+
+  it("on a rerun that finds the change made already reports the status without waiting (waitMs 0)", async () => {
+    const { tool, asked, recorded, host } = await setup({
+      overrides: { [DEFAULT]: { mcp: { servers: { files: ENTRY } } } },
+      hostServers: [connected("files")],
+      held: [7],
+      // The request the call asked before the eviction: nothing was there, and the entry was to be added.
+      answers: [{ approve: true, expected: { value: null, after: ENTRY } }],
+    });
+
+    const result = await run(
+      tool("settings_mcp_add"),
+      { scope: DEFAULT, name: "files", entry: ENTRY, reason: REASON },
+      7,
+    );
+
+    expect(result.isError).not.toBe(true);
+    // The request it had made is waited for again, and nothing is recorded a second time.
+    expect(asked).toHaveLength(1);
+    expect(recorded).toEqual([]);
+
+    const asks = host.calls.filter((call) => call.method === "servers");
+
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({ input: { waitMs: 0 } });
+    expect(text(result)).toContain("connected");
+  });
+
   it("on a rerun after an eviction waits for the request it made and makes the change once", async () => {
     const { tool, asked, recorded } = await setup({ held: [7] });
 
@@ -417,6 +468,167 @@ describe("settings_mcp_add with an entry", () => {
     expect(result.isError).not.toBe(true);
     expect(asked).toHaveLength(1);
     expect(recorded).toHaveLength(1);
+  });
+});
+
+describe("settings_mcp_add's name rules (#391 D16)", () => {
+  it("refuses at an Environment a twin of one of Global's names, before asking (a save would refuse it)", async () => {
+    const { tool, asked, world } = await setup({
+      global: { mcp: { servers: { Linear: REMOTE } } },
+    });
+
+    const shown = await failure(
+      run(tool("settings_mcp_add"), {
+        scope: DEFAULT,
+        name: "linear",
+        entry: REMOTE,
+        reason: REASON,
+      }),
+    );
+
+    expect(shown).toContain('clashes with the server "Linear" at Global');
+    expect(shown).toContain("only in case or in - and _");
+    expect(asked).toEqual([]);
+    expect(world.environments[DEFAULT]?.overrides).toEqual({});
+  });
+
+  it("refuses the - and _ twin too, and still lets an Environment's entry replace Global's of the same name", async () => {
+    const { tool, asked } = await setup({ global: { mcp: { servers: { my_files: ENTRY } } } });
+
+    expect(
+      await failure(
+        run(tool("settings_mcp_add"), {
+          scope: DEFAULT,
+          name: "my-files",
+          entry: ENTRY,
+          reason: REASON,
+        }),
+      ),
+    ).toContain('clashes with the server "my_files"');
+
+    const replaced = await run(tool("settings_mcp_add"), {
+      scope: DEFAULT,
+      name: "my_files",
+      entry: { command: "other" },
+      reason: REASON,
+    });
+
+    expect(replaced.isError).not.toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.notes?.join("\n")).toContain("Replaces Global's");
+  });
+
+  it("refuses at Global a twin of an Environment's own name, naming the Environment, before asking", async () => {
+    const { tool, asked, world } = await setup({
+      overrides: { [STAGING]: { mcp: { servers: { Linear: REMOTE } } } },
+    });
+
+    const shown = await failure(
+      run(tool("settings_mcp_add"), {
+        scope: GLOBAL_SETTINGS_SCOPE,
+        name: "linear",
+        entry: REMOTE,
+        reason: REASON,
+      }),
+    );
+
+    expect(shown).toContain('clashes with the server "Linear"');
+    expect(shown).toContain('Environment "Staging"');
+    expect(asked).toEqual([]);
+    expect(world.global).toEqual({});
+  });
+
+  it("records Global's entry as the inherited value before an Environment's entry of the same name", async () => {
+    const { tool, recorded, asked } = await setup({
+      global: { mcp: { servers: { files: ENTRY } } },
+    });
+
+    await run(tool("settings_mcp_add"), {
+      scope: DEFAULT,
+      name: "files",
+      entry: { command: "mine" },
+      reason: REASON,
+    });
+
+    expect(asked[0]?.before).toContain("server.js");
+    expect(recorded[0]).toMatchObject({
+      field: entryField("files"),
+      before: ENTRY,
+      after: { command: "mine" },
+      beforeInherited: true,
+    });
+  });
+});
+
+describe("the order of refusals before anything is asked (#391 D16)", () => {
+  it("names the name clash before a credential literal in the same entry", async () => {
+    const { tool, asked } = await setup({ global: { mcp: { servers: { Linear: REMOTE } } } });
+
+    const shown = await failure(
+      run(tool("settings_mcp_add"), {
+        scope: DEFAULT,
+        name: "linear",
+        entry: { ...REMOTE, headers: { Authorization: "Bearer literal-value" } },
+        reason: REASON,
+      }),
+    );
+
+    expect(shown).toContain("clashes");
+    expect(shown).not.toContain("Authorization");
+    expect(asked).toEqual([]);
+  });
+
+  it("names the credential literal before an unknown ${NAME} in the same entry", async () => {
+    const { tool, asked } = await setup();
+
+    const shown = await failure(
+      run(tool("settings_mcp_add"), {
+        scope: DEFAULT,
+        name: "docs",
+        entry: { ...REMOTE, headers: { Authorization: "Bearer literal-value", "X-Org": "${ORG}" } },
+        reason: REASON,
+      }),
+    );
+
+    expect(shown).toContain("headers.Authorization");
+    expect(shown).not.toContain("ORG");
+    expect(asked).toEqual([]);
+  });
+
+  it("names a reason that holds a Secret Reference before a bad entry, as having asked and saved nothing", async () => {
+    const { tool, asked } = await setup();
+
+    const shown = await failure(
+      run(tool("settings_mcp_add"), {
+        scope: DEFAULT,
+        name: "docs",
+        entry: { enabled: false },
+        // A placeholder, written in two parts so that nothing here is one.
+        reason: `uses ${"{{"}secret:ABC${"}}"}`,
+      }),
+    );
+
+    expect(shown).toContain("Nothing was asked or saved");
+    expect(shown).toContain("Secret Reference");
+    expect(asked).toEqual([]);
+  });
+
+  it("names a key update may not set (a parameter rule) before a reason that holds a Secret Reference", async () => {
+    const { tool } = await setup({
+      overrides: { [DEFAULT]: { mcp: { servers: { files: ENTRY } } } },
+    });
+
+    const shown = await failure(
+      run(tool("settings_mcp_update"), {
+        scope: DEFAULT,
+        name: "files",
+        set: { enabled: false },
+        reason: `uses ${"{{"}secret:ABC${"}}"}`,
+      }),
+    );
+
+    expect(shown).toContain("settings_mcp_disable");
+    expect(shown).not.toContain("Secret Reference");
   });
 });
 
@@ -624,6 +836,24 @@ describe("settings_mcp_remove", () => {
     expect(text(result)).toContain("sign-in");
   });
 
+  it("names in the card the tools a removal makes reachable, from the Session's own Environment's inventory", async () => {
+    const { tool, asked } = await setup({
+      global: { mcp: { servers: { files: ENTRY } } },
+      overrides: {
+        [DEFAULT]: { mcp: { servers: { files: { ...ENTRY, exposure: "hidden" } } } },
+      },
+      hostServers: [{ ...connected("files"), exposure: "hidden" }],
+    });
+
+    await run(tool("settings_mcp_remove"), { scope: DEFAULT, name: "files", reason: REASON });
+
+    const notes = asked[0]?.notes ?? [];
+
+    expect(notes.find((note) => note.includes("takes the server out of hidden"))).toBeDefined();
+    expect(notes.join("\n")).toContain("read_file");
+    expect(notes.join("\n")).toContain("write_file");
+  });
+
   it("asks when the removal falls back to a server that is reachable where the entry's was hidden", async () => {
     const { tool, asked, world } = await setup({
       global: { mcp: { servers: { files: ENTRY } } },
@@ -686,6 +916,24 @@ describe("settings_mcp_enable", () => {
     });
 
     expect(text(result)).toContain("connected");
+  });
+
+  it("always asks, even at Global where no Environment is reached", async () => {
+    const { tool, asked, world } = await setup({
+      global: { mcp: { servers: { files: { ...FILES, enabled: false } } } },
+      environments: [],
+    });
+
+    const result = await run(tool("settings_mcp_enable"), {
+      scope: GLOBAL_SETTINGS_SCOPE,
+      name: "files",
+      reason: REASON,
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.notes?.join("\n")).toContain("no Environment");
+    expect(world.global).toEqual({ mcp: { servers: { files: FILES } } });
   });
 
   it("changes nothing when the user declines", async () => {

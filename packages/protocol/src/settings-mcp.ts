@@ -140,7 +140,16 @@ export type SettingsMcpView = {
    * Registry from before it.
    */
   readonly definedIn?: ReadonlyArray<SettingsMcpEnvironment> | undefined;
+  /**
+   * At Global, with a name asked for: the Environments that have an entry of their own whose name differs from it only in
+   * case or in `-`/`_` (with that name), which a new Global entry of the name would clash with. Absent when there are none,
+   * and from a Registry from before it.
+   */
+  readonly twinsIn?: ReadonlyArray<SettingsMcpTwin> | undefined;
 };
+
+/** An Environment's own server whose name is the case or `-`/`_` twin of another. */
+export type SettingsMcpTwin = SettingsMcpEnvironment & { readonly twin: string };
 
 /** One field of a server given a new value, or reset (Global: back to its default; an Environment: inheriting again). */
 export type McpFieldChange = {

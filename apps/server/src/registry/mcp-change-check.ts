@@ -8,6 +8,7 @@ import {
   checkMcpWidening,
   DEFAULT_SETTINGS,
   type McpResolvedServer,
+  normalizeMcpName,
   type OverrideFieldChange,
   overridesWithFields,
   settingsFieldValue,
@@ -149,6 +150,30 @@ export const mcpDefinedIn = (
     return mcpServerNamed(resolvedMcpServers(layers), name) === undefined
       ? Result.failVoid
       : Result.succeed({ id: each.id, name: each.name });
+  });
+
+/**
+ * The Environments with an entry of their own whose name is a twin of `name` (it differs only in case or in `-`/`_`), which a
+ * Global entry of `name` would clash with: the Environment's own name wins and Global's is left out.
+ */
+export const mcpTwinsIn = (
+  store: McpSetStore,
+  name: string,
+): ReadonlyArray<{ readonly id: string; readonly name: string; readonly twin: string }> =>
+  Arr.flatMap(store.listEnvironments(), (each) => {
+    const layers = mcpLayersOf(
+      store,
+      store.getSettingsOverrides(each.id) ?? {},
+      mcpRepoLayers(store, each.id),
+    );
+
+    return Arr.filterMap(resolvedMcpServers(layers), (server) =>
+      server.source.kind === "environment" &&
+      server.name !== name &&
+      normalizeMcpName(server.name) === normalizeMcpName(name)
+        ? Result.succeed({ id: each.id, name: each.name, twin: server.name })
+        : Result.failVoid,
+    );
   });
 
 /**

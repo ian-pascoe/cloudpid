@@ -50,7 +50,7 @@ import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { environmentSettingsOf, readGlobal } from "./global.ts";
 import type { McpSetStore } from "./mcp-registry.ts";
-import { mcpDefinedIn } from "./mcp-change-check.ts";
+import { mcpDefinedIn, mcpTwinsIn } from "./mcp-change-check.ts";
 import { mcpRepoFileViews, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { hostOf } from "./mcp-sign-in-flow.ts";
 import { signInTargetOf, signInUseOf } from "./mcp-sign-in-registry.ts";
@@ -467,6 +467,13 @@ export const mcpSettingsView = (
   // A name Global has no entry of may be defined in an Environment (its own entry, or a Repo's): which ones.
   if (global && asked !== undefined && shown.length === 0) {
     view.definedIn = mcpDefinedIn(store, asked);
+  }
+
+  // A new Global entry of a name clashes with an Environment's own entry of a twin name.
+  if (global && asked !== undefined) {
+    const twins = mcpTwinsIn(store, asked);
+
+    if (twins.length > 0) view.twinsIn = twins;
   }
 
   return view;

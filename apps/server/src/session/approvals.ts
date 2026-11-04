@@ -33,8 +33,8 @@ export const sessionApprovalsLayer = (options: SessionApprovalsOptions): Layer.L
         : options.notify({
             kind: "input",
             names: [],
-            // "Size limit, Environment "Default"": the push says what changes where; the card says the rest.
-            approval: `${request.change}, ${request.target}`,
+            // "Size limit, Environment "Default"": the push says what changes where; the card says the rest. A request may word it.
+            approval: request.notice ?? `${request.change}, ${request.target}`,
             reason: request.reason,
           }),
   });

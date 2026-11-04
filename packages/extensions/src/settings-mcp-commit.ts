@@ -58,6 +58,7 @@ import { settingsChangeOutput } from "./settings-outputs.ts";
 import {
   agentChangeDetails,
   GLOBAL_SETTINGS_SCOPE,
+  isGlobalView,
   SettingsAccess,
   SettingsAccessError,
   SettingsChanges,
@@ -65,7 +66,13 @@ import {
   settingsTarget,
   type SettingsView,
 } from "./settings.ts";
-import { type McpStatus, notChecked, serverStatus, STATUS_WAIT_MS } from "./settings-mcp-status.ts";
+import {
+  detailsOf,
+  type McpStatus,
+  notChecked,
+  serverStatus,
+  STATUS_WAIT_MS,
+} from "./settings-mcp-status.ts";
 
 /** The call that changes an MCP server: its task and conversation, and, in a Session, the running details it may send. */
 export type McpCall = ApprovalCall & { readonly details?: ToolExecutionApi["details"] | undefined };
@@ -267,8 +274,6 @@ export type McpCommitInput = {
   readonly texts: ReadonlyArray<string>;
   /** Always ask: a definition (an add, a copy, an update). Otherwise only a widening change asks. */
   readonly always: boolean;
-  /** A rerun whose call asked already. */
-  readonly rerun: boolean;
   /** The card: its change, the value now, and its notes. */
   readonly card: {
     readonly change: string;
@@ -442,12 +447,7 @@ export const McpCommit = Effect.gen(function* () {
           },
           details: {
             ...result.details,
-            mcp: {
-              server: status.server,
-              status: status.status,
-              tools: status.tools,
-              error: status.error,
-            },
+            mcp: detailsOf(status),
           },
         };
   };
@@ -456,14 +456,14 @@ export const McpCommit = Effect.gen(function* () {
    * Make the change: apply it at once when it asks nobody (the Registry checking again that it widens nothing), or ask the owner
    * and apply what they approve. The result says what changed, whom it reaches and when, and the status of the server.
    */
-  const commit = (input: McpCommitInput) =>
+  const commit = (input: McpCommitInput, rerunning = false) =>
     Effect.gen(function* () {
       const { api, check } = input;
 
       const widens =
         check !== null && Arr.some(check.environments, (each) => each.widening.length > 0);
 
-      const asks = input.always || widens || input.rerun || check === null;
+      const asks = input.always || widens || rerunning || check === null;
       const held: HeldStatus = { status: null };
 
       /** The details of the call while the status is waited for: the change made, and the server connecting. */
@@ -481,12 +481,7 @@ export const McpCommit = Effect.gen(function* () {
                 unchanged: [],
                 agentChanges: agentChangeDetails(input.view, made),
                 ...approvedDetails,
-                mcp: {
-                  server: starting.server,
-                  status: starting.status,
-                  tools: starting.tools,
-                  error: starting.error,
-                },
+                mcp: detailsOf(starting),
               },
               context,
             ),
@@ -583,6 +578,7 @@ export const McpCommit = Effect.gen(function* () {
         after: pretty(expected.after),
         reason: input.reason,
         notes: boundedNotes(input.card.notes),
+        notice: `MCP server ${input.name}, ${isGlobalView(input.view) ? "Global" : `Environment ${JSON.stringify(input.view.name)}`}`,
         expected,
       };
 
@@ -668,7 +664,6 @@ export const McpCommit = Effect.gen(function* () {
         reason: resumed.reason,
         texts: resumed.texts,
         always: true,
-        rerun: true,
         card: { change: "", before: null, notes: [] },
         was: undefined,
         wording: () => [`Made the change the user approved to MCP server ${resumed.name}.`],
@@ -699,10 +694,10 @@ export const McpCommit = Effect.gen(function* () {
       const prepared = yield* Effect.option(call.prepare);
 
       if (Option.isSome(prepared) && prepared.value.kind === "commit") {
-        return yield* commit({ ...prepared.value.input, rerun: true });
+        return yield* commit(prepared.value.input, true);
       }
 
-      return yield* commit(yield* call.resume);
+      return yield* commit(yield* call.resume, true);
     });
 
   /** The tools of `name` this Session's own Environment's host holds, or null where it holds none or there is no own Environment. */
@@ -781,7 +776,11 @@ export const McpCommit = Effect.gen(function* () {
       return [reaches, ...widening];
     });
 
-  return { access, settings, plain, commit, rerun, resumeOf, run, reachNotes };
+  /** The plain-value check of a call that refuses before it asks: every refusal says nothing was asked either. */
+  const plainBeforeAsking = (reason: string, texts: ReadonlyArray<string>) =>
+    plain(reason, texts, "Nothing was asked or saved");
+
+  return { access, settings, plain: plainBeforeAsking, commit, rerun, resumeOf, run, reachNotes };
 });
 
 export type McpCommitService = Effect.Success<typeof McpCommit>;

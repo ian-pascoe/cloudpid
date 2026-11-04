@@ -34,6 +34,14 @@ export type McpStatus = {
   readonly note: string;
 };
 
+/** A status as a call's `details.mcp` records it (what the card's chip shows). */
+export const detailsOf = (status: McpStatus) => ({
+  server: status.server,
+  status: status.status,
+  tools: status.tools,
+  error: status.error,
+});
+
 const NOT_CHECKED_OTHER =
   "not checked: the change does not reach this Session's Environment, and no other Environment's host is woken to ask";
 

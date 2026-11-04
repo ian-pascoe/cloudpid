@@ -192,6 +192,13 @@ describe("toolSummary", () => {
     expect(
       toolSummary("settings_mcp_add", { scope: "env-1", name: "linear", from_repo: "app" }),
     ).toBe("linear from app in env-1");
+    expect(
+      toolSummary("settings_mcp_update", {
+        scope: "env-1",
+        name: "linear",
+        set: { url: "https://x.example/mcp", headers: null },
+      }),
+    ).toBe("linear: url, headers in env-1");
     expect(toolSummary("settings_mcp_update", { scope: "env-1", name: "linear", set: {} })).toBe(
       "linear in env-1",
     );

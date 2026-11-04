@@ -173,7 +173,7 @@ const spendLimit = (args: Args): Option.Option<string> =>
 
 /**
  * What a `settings_mcp_*` call changes: the server, its tool (key) when the call names one, what it is set to, and where:
- * `linear at Global`, `linear: direct in <id>`, `linear · delete_*: hidden in <id>`, `linear from app in <id>`.
+ * `linear at Global`, `linear: direct in <id>`, `linear · delete_*: hidden in <id>`, `linear from app in <id>`, `linear: url, headers in <id>`.
  */
 const mcpChange = (args: Args): Option.Option<string> =>
   Option.map(text(args, "name"), (name) => {
@@ -188,6 +188,12 @@ const mcpChange = (args: Args): Option.Option<string> =>
       onSome: (exposure) => `: ${exposure}`,
     });
 
+    // An update names the keys it sets.
+    const keys =
+      Predicate.isObject(args.set) && !Arr.isArray(args.set) && Record.size(args.set) > 0
+        ? `: ${Arr.join(Record.keys(args.set), ", ")}`
+        : "";
+
     // A copy of a Repo's server names the Repo.
     const copy = Option.match(text(args, "from_repo"), {
       onNone: () => "",
@@ -199,7 +205,7 @@ const mcpChange = (args: Args): Option.Option<string> =>
       onSome: (scope) => (scope === "*" ? " at Global" : ` in ${scope}`),
     });
 
-    return `${name}${tool}${set}${copy}${place}`;
+    return `${name}${tool}${set}${keys}${copy}${place}`;
   });
 
 /** What a `settings_subagent_depth_set` call asks to set: the levels of subagents below the root. */

@@ -10,7 +10,7 @@
 // "already so"; an unknown `${NAME}` at an Environment; and then widening decides whether to ask. The card's notes say what
 // the server runs or connects to, what it sends and where, whom it reaches, what it replaces, its sign-in, its prompt and
 // its model use. The change is one field, `mcp.servers.<name>`, with `expected` the entry in force and `after` the entry kept.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off globalDate:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off
 import {
   decodeMcpServerValue,
   isJsonObject,
@@ -25,8 +25,10 @@ import {
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
   readMcpRepoFileState,
+  type SettingsMcpReadKind,
   type SettingsMcpRepo,
   type SettingsMcpServer,
+  type SettingsMcpView,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
@@ -113,7 +115,7 @@ const KIND_WORDS = {
   missing: "missing",
 } as const;
 
-const kindWords = (kind: "secret" | "variable" | "missing"): string => KIND_WORDS[kind];
+const kindWords = (kind: SettingsMcpReadKind): string => KIND_WORDS[kind];
 
 /** Where the server in force now comes from, for the line that says a removal fell back to it. */
 const sourceWords = (source: SettingsMcpServer["server"]["source"]): string => {
@@ -164,7 +166,7 @@ const ownLayer = (view: SettingsView, servers: ReadonlyArray<SettingsMcpServer>)
 
 type Reads = ReadonlyArray<{
   readonly name: string;
-  readonly kind: "secret" | "variable" | "missing";
+  readonly kind: SettingsMcpReadKind;
 }>;
 
 /** The lines of the card's `Sends` note: each `${NAME}` as a Secret or a Variable, where it goes, and where it is missing. */
@@ -248,6 +250,154 @@ const signInNote = (entry: McpServerValue, was: SettingsMcpServer | undefined): 
     : "Sign-in: needs its own MCP sign-in with the oauth settings written here: you sign in separately (never the agent).";
 };
 
+/** The card's first line: what the server runs, or where it connects (and what the URL was, for an update). */
+const runsNote = (entry: McpServerValue, was: Schema.JsonObject | undefined): string => {
+  if (entry.command !== undefined) {
+    return `Runs: ${Arr.join([entry.command, ...(entry.args ?? [])], " ")} in ${entry.cwd ?? "the Session's directory"}, in each Workspace's Container of the Environments it reaches.`;
+  }
+
+  const before = was?.url;
+
+  return `Connects: from cloudpid (not the Container) to ${entry.url ?? ""}${
+    before !== undefined && before !== entry.url ? ` (it was ${textOf(before)})` : ""
+  }.`;
+};
+
+/** The note for a description a server gets or changes, and for sampling that widens to `allow`. */
+const promptNote = (description: "set" | "changed") =>
+  description === "set"
+    ? "Prompt: its description is shown to the model in every conversation of the Environments it reaches."
+    : "Prompt: the description changes, and it is shown to the model in every conversation of the Environments it reaches.";
+
+const SAMPLING_NOTE = 'Model use: sampling "allow" lets the server use your models without asking.';
+
+/** The card's notes for a new server, and the lines its result adds: what it runs, what it replaces or shadows, sign-in, prompt, model use, copy. */
+const addNotes = (input: {
+  readonly name: string;
+  readonly view: SettingsView;
+  readonly decoded: McpServerValue;
+  readonly existing: SettingsMcpServer | undefined;
+  readonly definedIn: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+  readonly provenance: { readonly repo: SettingsMcpRepo; readonly cwd: string | null } | undefined;
+  readonly now: number;
+}) => {
+  const { decoded, existing, provenance, name } = input;
+  const replaces = existing?.server.source.kind === "global" && !isGlobalView(input.view);
+  const notes: Array<string> = [runsNote(decoded, undefined)];
+
+  if (replaces) {
+    notes.push(
+      `Replaces Global's ${JSON.stringify(name)} in this Environment: its own entry wins here.`,
+    );
+  } else if (existing?.server.source.kind === "repo") {
+    notes.push(
+      `Shadows ${existing.server.source.directory}'s ${JSON.stringify(name)} (a Repo's file), which stays in the file.`,
+    );
+  } else if (isGlobalView(input.view) && input.definedIn.length > 0) {
+    notes.push(
+      `Shadows the Repo entries of ${JSON.stringify(name)} in ${Arr.join(
+        Arr.map(input.definedIn, (each) => JSON.stringify(each.name)),
+        ", ",
+      )}.`,
+    );
+  }
+
+  notes.push(signInNote(decoded, existing));
+
+  if (decoded.description !== undefined) notes.push(promptNote("set"));
+
+  if (decoded.sampling === "allow") notes.push(SAMPLING_NOTE);
+
+  const extra: Array<string> = [];
+
+  if (provenance !== undefined) {
+    notes.push(
+      `Copy: ${provenance.repo.repo}${provenance.repo.slug === undefined ? "" : ` (${provenance.repo.slug})`} ${provenance.repo.path}, commit ${provenance.repo.blob ?? "unknown"}, ${ageWords(input.now, provenance.repo.readAt)}${
+        provenance.cwd === null ? "" : `, cwd made absolute: ${provenance.cwd}`
+      }.`,
+    );
+
+    extra.push(
+      `The copy is the user's server now: it needs its own MCP sign-in if it asks for one, and it no longer follows ${provenance.repo.repo}'s commits (the Repo's entry shows as shadowed).`,
+    );
+  }
+
+  if (replaces) {
+    extra.push("It replaces Global's server of that name for this Environment's Sessions.");
+  }
+
+  return { notes, extra };
+};
+
+/** The card's notes for an edited server: what it runs, sign-in, and the prompt and model use only where they change. */
+const updateNotes = (input: {
+  readonly decoded: McpServerValue;
+  readonly stored: Schema.JsonObject;
+  readonly was: SettingsMcpServer;
+}): ReadonlyArray<string> => {
+  const { decoded, stored } = input;
+  const notes = [runsNote(decoded, stored), signInNote(decoded, input.was)];
+
+  if (decoded.description !== stored.description) notes.push(promptNote("changed"));
+
+  if (decoded.sampling === "allow" && stored.sampling !== "allow") notes.push(SAMPLING_NOTE);
+
+  return notes;
+};
+
+/**
+ * Why `name` clashes with an owner's name, or undefined (#391 D16): a name that differs from one of this layer's only in case or
+ * in `-`/`_`; at an Environment, from one of Global's; at Global, from an Environment's own entry (the Registry's `twinsIn`).
+ * The same name is no clash here: `add` refuses it where it is defined, and an Environment's own entry replaces Global's.
+ */
+const nameClash = (input: {
+  readonly view: SettingsView;
+  readonly name: string;
+  readonly same: ReadonlyArray<SettingsMcpServer>;
+  readonly others: ReadonlyArray<SettingsMcpServer>;
+  readonly named: SettingsMcpView;
+}): string | undefined => {
+  const twinOf = (names: ReadonlyArray<string>) =>
+    Arr.findFirst(
+      names,
+      (held) => held !== input.name && normalizeMcpName(held) === normalizeMcpName(input.name),
+    );
+
+  const clashes = (twin: string, where: string) =>
+    `${JSON.stringify(input.name)} clashes with the server ${JSON.stringify(twin)} ${where}: names that differ only in case or in - and _ are one server (a tool is mcp__<name>__<tool>).`;
+
+  const own = twinOf(Arr.map(input.same, (each) => each.server.name));
+
+  if (Option.isSome(own)) {
+    return clashes(
+      own.value,
+      isGlobalView(input.view)
+        ? "at Global"
+        : `for Environment ${JSON.stringify(input.view.name)} (${input.view.scope})`,
+    );
+  }
+
+  if (!isGlobalView(input.view)) {
+    const global = twinOf(
+      Arr.map(
+        Arr.filter(input.others, (each) => each.server.source.kind === "global"),
+        (each) => each.server.name,
+      ),
+    );
+
+    return Option.isSome(global) ? clashes(global.value, "at Global") : undefined;
+  }
+
+  const environment = Arr.head(input.named.twinsIn ?? []);
+
+  return Option.isSome(environment)
+    ? clashes(
+        environment.value.twin,
+        `of Environment ${JSON.stringify(environment.value.name)} (${environment.value.id}), whose own entry wins there`,
+      )
+    : undefined;
+};
+
 /** The tools of the definition tools, over the shared ending of the changing tools. */
 export const McpDefinitions = Effect.gen(function* () {
   const engine = yield* McpCommit;
@@ -271,13 +421,7 @@ export const McpDefinitions = Effect.gen(function* () {
     readonly texts: ReadonlyArray<string>;
   }) =>
     Effect.gen(function* () {
-      yield* engine
-        .plain(input.reason, input.texts)
-        .pipe(
-          Effect.mapError((error) =>
-            refuse(error.message.replace("Nothing was saved:", "Nothing was asked or saved:")),
-          ),
-        );
+      yield* engine.plain(input.reason, input.texts);
 
       const literals = credentialLiterals(input.entry, input.base);
 
@@ -348,7 +492,6 @@ export const McpDefinitions = Effect.gen(function* () {
     readonly notes: ReadonlyArray<string>;
     readonly extra: ReadonlyArray<string>;
     readonly status: boolean;
-    readonly checked?: Effect.Effect<Effect.Success<ReturnType<typeof access.check>>, never>;
   }) =>
     Effect.gen(function* () {
       const field = entryField(input.name);
@@ -379,8 +522,6 @@ export const McpDefinitions = Effect.gen(function* () {
         view: undefined,
       });
 
-      const reach = Arr.take(reached, 1);
-
       const sends =
         input.entry === undefined
           ? []
@@ -399,11 +540,10 @@ export const McpDefinitions = Effect.gen(function* () {
           reason: input.reason,
           texts: [],
           always: input.after !== null,
-          rerun: false,
           card: {
             change: `MCP server ${JSON.stringify(input.name)}: ${input.card}`,
             before: stored,
-            notes: [...input.notes.slice(0, 1), ...sends, ...reach, ...input.notes.slice(1)],
+            notes: [...input.notes.slice(0, 1), ...sends, ...reached, ...input.notes.slice(1)],
           },
           was: input.was,
           wording: (now: SettingsMcpServer | undefined) => [
@@ -497,13 +637,7 @@ export const McpDefinitions = Effect.gen(function* () {
       }
 
       // 2. A reason that holds a Secret.
-      yield* engine
-        .plain(input.reason, [])
-        .pipe(
-          Effect.mapError((error) =>
-            refuse(error.message.replace("Nothing was saved:", "Nothing was asked or saved:")),
-          ),
-        );
+      yield* engine.plain(input.reason, []);
 
       // 3. An unknown scope, and `from_repo` at `*`.
       if (copy && input.scope === GLOBAL_SETTINGS_SCOPE) {
@@ -530,18 +664,9 @@ export const McpDefinitions = Effect.gen(function* () {
           const existing = Option.getOrUndefined(Arr.head(named.servers));
           const same = ownLayer(view, all.servers);
 
-          const twin = Arr.findFirst(
-            same,
-            (each) =>
-              each.server.name !== input.name &&
-              normalizeMcpName(each.server.name) === normalizeMcpName(input.name),
-          );
+          const clash = nameClash({ view, name: input.name, same, others: all.servers, named });
 
-          if (Option.isSome(twin)) {
-            return yield* refuse(
-              `${ASKED}${JSON.stringify(input.name)} clashes with the server ${JSON.stringify(twin.value.server.name)} ${where(view)}: names that differ only in case or in - and _ are one server (a tool is mcp__<name>__<tool>).`,
-            );
-          }
+          if (clash !== undefined) return yield* refuse(`${ASKED}${clash}`);
 
           if (existing !== undefined && Arr.some(same, (each) => each.server.name === input.name)) {
             return yield* refuse(
@@ -618,83 +743,22 @@ export const McpDefinitions = Effect.gen(function* () {
             );
           }
 
-          const replaces = existing?.server.source.kind === "global" && !isGlobalView(view);
-          const shadows = existing?.server.source.kind === "repo";
-          const lines: Array<string> = [];
-
-          const first =
-            candidate.command !== undefined
-              ? `Runs: ${Arr.join([textOf(candidate.command), ...(Array.isArray(candidate.args) ? candidate.args.map(textOf) : [])], " ")} in ${
-                  Predicate.isString(candidate.cwd) ? candidate.cwd : "the Session's directory"
-                }, in each Workspace's Container of the Environments it reaches.`
-              : `Connects: from cloudpid (not the Container) to ${textOf(candidate.url)}.`;
-
-          lines.push(first);
-
-          const second: Array<string> = [];
-
-          if (replaces)
-            second.push(
-              `Replaces Global's ${JSON.stringify(input.name)} in this Environment: its own entry wins here.`,
-            );
-          else if (shadows && existing !== undefined && existing.server.source.kind === "repo") {
-            second.push(
-              `Shadows ${existing.server.source.directory}'s ${JSON.stringify(input.name)} (a Repo's file), which stays in the file.`,
-            );
-          } else if (
-            isGlobalView(view) &&
-            named.definedIn !== undefined &&
-            named.definedIn.length > 0
-          ) {
-            second.push(
-              `Shadows the Repo entries of ${JSON.stringify(input.name)} in ${Arr.join(
-                Arr.map(named.definedIn, (each) => JSON.stringify(each.name)),
-                ", ",
-              )}.`,
-            );
-          }
-
-          second.push(signInNote(decoded, existing));
-
-          if (decoded.description !== undefined) {
-            second.push(
-              `Prompt: its description is shown to the model in every conversation of the Environments it reaches.`,
-            );
-          }
-
-          if (decoded.sampling === "allow") {
-            second.push(
-              'Model use: sampling "allow" lets the server use your models without asking.',
-            );
-          }
-
-          if (provenance !== undefined) {
-            const now = yield* Clock.currentTimeMillis;
-
-            second.push(
-              `Copy: ${provenance.repo.repo}${provenance.repo.slug === undefined ? "" : ` (${provenance.repo.slug})`} ${provenance.repo.path}, commit ${provenance.repo.blob ?? "unknown"}, ${ageWords(now, provenance.repo.readAt)}${
-                provenance.cwd === null ? "" : `, cwd made absolute: ${provenance.cwd}`
-              }.`,
-            );
-          }
-
-          const extra: Array<string> = [];
-
-          if (provenance !== undefined) {
-            extra.push(
-              `The copy is the user's server now: it needs its own MCP sign-in if it asks for one, and it no longer follows ${provenance.repo.repo}'s commits (the Repo's entry shows as shadowed).`,
-            );
-          }
-
-          if (replaces)
-            extra.push("It replaces Global's server of that name for this Environment's Sessions.");
+          const { notes, extra } = addNotes({
+            name: input.name,
+            view,
+            decoded,
+            existing,
+            definedIn: named.definedIn ?? [],
+            provenance,
+            now: yield* Clock.currentTimeMillis,
+          });
 
           return yield* entryChange({
             tool,
             api: input.api,
             view,
             name: input.name,
-            after: decoded === undefined ? candidate : entryJson(decoded),
+            after: entryJson(decoded),
             entry: decoded,
             was: existing,
             reason: input.reason,
@@ -703,7 +767,7 @@ export const McpDefinitions = Effect.gen(function* () {
               provenance === undefined
                 ? `Added MCP server ${input.name} ${where(view)}.`
                 : `Copied MCP server ${input.name} from ${provenance.repo.repo} ${where(view)}.`,
-            notes: [...lines, ...second],
+            notes,
             extra,
             status: true,
           });
@@ -732,17 +796,12 @@ export const McpDefinitions = Effect.gen(function* () {
     Effect.gen(function* () {
       const tool = "settings_mcp_update";
 
-      yield* engine
-        .plain(input.reason, [])
-        .pipe(
-          Effect.mapError((error) =>
-            refuse(error.message.replace("Nothing was saved:", "Nothing was asked or saved:")),
-          ),
-        );
-
+      // 1. A parameter that breaks a rule of its own (a key `set` may not name); 2. a reason that holds a Secret.
       const settingProblem = setProblem(input.set);
 
       if (settingProblem !== undefined) return yield* refuse(`${ASKED}${settingProblem}.`);
+
+      yield* engine.plain(input.reason, []);
 
       const rerun = yield* engine.rerun(input.api);
 
@@ -784,33 +843,6 @@ export const McpDefinitions = Effect.gen(function* () {
             } as const;
           }
 
-          const lines: Array<string> = [];
-          const storedObject = stored;
-
-          lines.push(
-            decoded.command !== undefined
-              ? `Runs: ${Arr.join([decoded.command, ...(decoded.args ?? [])], " ")} in ${decoded.cwd ?? "the Session's directory"}, in each Workspace's Container of the Environments it reaches.`
-              : `Connects: from cloudpid (not the Container) to ${decoded.url ?? ""}${
-                  storedObject.url !== undefined && storedObject.url !== decoded.url
-                    ? ` (it was ${textOf(storedObject.url)})`
-                    : ""
-                }.`,
-          );
-
-          const second: Array<string> = [signInNote(decoded, located.server)];
-
-          if (decoded.description !== storedObject.description) {
-            second.push(
-              "Prompt: the description changes, and it is shown to the model in every conversation of the Environments it reaches.",
-            );
-          }
-
-          if (decoded.sampling === "allow" && storedObject.sampling !== "allow") {
-            second.push(
-              'Model use: sampling "allow" lets the server use your models without asking.',
-            );
-          }
-
           return yield* entryChange({
             tool,
             api: input.api,
@@ -825,7 +857,7 @@ export const McpDefinitions = Effect.gen(function* () {
               Arr.map(Record.toEntries(input.set), ([key]) => key),
               ", ",
             )}.`,
-            notes: [...lines, ...second],
+            notes: updateNotes({ decoded, stored, was: located.server }),
             extra: [],
             status: true,
           });
@@ -890,13 +922,7 @@ export const McpDefinitions = Effect.gen(function* () {
     Effect.gen(function* () {
       const tool = "settings_mcp_remove";
 
-      yield* engine
-        .plain(input.reason, [])
-        .pipe(
-          Effect.mapError((error) =>
-            refuse(error.message.replace("Nothing was saved:", "Nothing was asked or saved:")),
-          ),
-        );
+      yield* engine.plain(input.reason, []);
 
       const rerun = yield* engine.rerun(input.api);
 
@@ -1002,7 +1028,7 @@ export const McpDefinitionTools = Effect.gen(function* () {
 
   const remove = yield* defineEffectTool({
     name: "settings_mcp_remove",
-    description: `Remove an MCP server where it is defined: Global's at "*" (every Environment loses it, but those with an entry of their own), an Environment's own entry at its id (the server then falls back to Global's of the name, or the Repo's it shadowed). A Global server at an Environment is not removed there: settings_mcp_disable switches it off for that Environment. Its MCP sign-in stays, listed as unused, until the user signs out. Removing makes no Approval necessary, unless it falls back to a server that is switched on or a tool that is not hidden (then it waits for the user's Approval as ${"settings_mcp_enable"} does). A rename is an add (which waits for the user's Approval) and a remove, so an MCP sign-in never follows a new name without the user's yes. The change is recorded with your reason, and the user can see and revert it on the Settings page. A Repo's .pi/mcp.json is edited as a file in a pull request.`,
+    description: `Remove an MCP server where it is defined: Global's at "*" (every Environment loses it, but those with an entry of their own), an Environment's own entry at its id (the server then falls back to Global's of the name, or the Repo's it shadowed). A Global server at an Environment is not removed there: settings_mcp_disable switches it off for that Environment. Its MCP sign-in stays, listed as unused, until the user signs out. Removing makes no Approval necessary, unless it falls back to a server that is switched on or a tool that is not hidden (then it waits for the user's Approval as settings_mcp_enable does). A rename is an add (which waits for the user's Approval) and a remove, so an MCP sign-in never follows a new name without the user's yes. The change is recorded with your reason, and the user can see and revert it on the Settings page. A Repo's .pi/mcp.json is edited as a file in a pull request.`,
     parameters: Schema.Struct({ scope: SettingsScope, name: ServerName, reason: Reason }),
     structuredOutputSchema: outputSchema(ChangeOutput),
     executionMode: "sequential",

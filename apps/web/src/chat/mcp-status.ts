@@ -16,21 +16,20 @@ export const ShownMcpStatus = Schema.Struct({
 
 export type ShownMcpStatus = typeof ShownMcpStatus.Type;
 
-const decodeDetails = Schema.decodeUnknownOption(Schema.Struct({ mcp: ShownMcpStatus }));
+/** Reads the status of a result's details and of a card's artifact, which keep it under the same key. */
+const decodeStatus = Schema.decodeUnknownOption(Schema.Struct({ mcp: ShownMcpStatus }));
 
 /** The status a result's details record; none for a call that waited for no host. */
 export const mcpStatusOf = (
   details: Extract<TranscriptPart, { type: "tool-result" }>["details"],
 ): ShownMcpStatus | undefined =>
-  Option.getOrUndefined(Option.map(decodeDetails(details), (found) => found.mcp));
-
-const decodeArtifact = Schema.decodeUnknownOption(Schema.Struct({ mcp: ShownMcpStatus }));
+  Option.getOrUndefined(Option.map(decodeStatus(details), (found) => found.mcp));
 
 /** The status a card's artifact holds, if it holds one. */
 export const shownMcpStatus = (
   artifact: ToolCallMessagePartProps["artifact"],
 ): ShownMcpStatus | undefined =>
-  Option.getOrUndefined(Option.map(decodeArtifact(artifact), (found) => found.mcp));
+  Option.getOrUndefined(Option.map(decodeStatus(artifact), (found) => found.mcp));
 
 const MAX_ERROR = 80;
 

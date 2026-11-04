@@ -2,10 +2,11 @@
 // plain JSON), the server set resolved by the owner's resolver, the real widening check, the in-memory fake host, and Approvals
 // that answer as the test says. Shared by the tests of the tools that change servers (`settings-mcp-changes.test.ts`,
 // `settings-mcp-definitions.test.ts`).
-// @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off globalDate:off
+// @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import {
   checkMcpWidening,
   type McpResolvedServer,
+  normalizeMcpName,
   overridesFrom,
   resolveMcpServerSet,
   resolveOverridesLeniently,
@@ -77,10 +78,17 @@ export const setup = async (
     readonly global?: Schema.Json;
     readonly overrides?: Readonly<Record<string, Schema.Json>>;
     readonly own?: string;
+    /** The Environments that exist: both by default. */
+    readonly environments?: ReadonlyArray<string>;
     readonly hostServers?: ReadonlyArray<FakeMcpServer>;
     readonly offered?: ReadonlyArray<string>;
     /** The owner's answers to the requests, in order; the rest are approved. */
-    readonly answers?: ReadonlyArray<{ readonly approve: boolean; readonly reason?: string }>;
+    readonly answers?: ReadonlyArray<{
+      readonly approve: boolean;
+      readonly reason?: string;
+      /** What the owner was shown, when the request was asked by the call before an eviction: the rerun's request is not it. */
+      readonly expected?: Schema.Json | null;
+    }>;
     /** Runs when a request is asked, before the owner answers: what changes in the world meanwhile. */
     readonly onAsk?: (request: ApprovalAsk) => void;
     /** Task ids whose requests an eviction left waiting: those calls are reruns. */
@@ -97,10 +105,12 @@ export const setup = async (
 ) => {
   const world: World = {
     global: start.global ?? {},
-    environments: {
-      [DEFAULT]: { name: "Default", overrides: start.overrides?.[DEFAULT] ?? {} },
-      [STAGING]: { name: "Staging", overrides: start.overrides?.[STAGING] ?? {} },
-    },
+    environments: Record.fromEntries(
+      Arr.map(start.environments ?? [DEFAULT, STAGING], (id) => [
+        id,
+        { name: id === DEFAULT ? "Default" : "Staging", overrides: start.overrides?.[id] ?? {} },
+      ]),
+    ),
   };
 
   const own = start.own ?? DEFAULT;
@@ -278,6 +288,21 @@ export const setup = async (
 
         if (definedIn !== undefined) view.definedIn = definedIn;
 
+        if (global && name !== undefined) {
+          // The Environments whose own entry is a twin of the name (it differs only in case or in - and _).
+          const twins = Arr.flatMap(Record.toEntries(world.environments), ([id, each]) =>
+            Arr.filterMap(setOf(id).servers, (server) =>
+              server.source.kind === "environment" &&
+              server.name !== name &&
+              normalizeMcpName(server.name) === normalizeMcpName(name)
+                ? Result.succeed({ id, name: each.name, twin: server.name })
+                : Result.failVoid,
+            ),
+          );
+
+          if (twins.length > 0) view.twinsIn = twins;
+        }
+
         if (!global && name !== undefined) {
           view.layers = {
             global: null,
@@ -408,9 +433,11 @@ export const setup = async (
 
             answered += 1;
 
+            const expected = given?.expected === undefined ? request.expected : given.expected;
+
             return given?.approve === false
-              ? { approved: false, reason: given.reason, expected: request.expected }
-              : { approved: true, expected: request.expected };
+              ? { approved: false, reason: given.reason, expected }
+              : { approved: true, expected };
           }),
         settle: () => Effect.void,
         holds: (id) => Effect.succeed(held.has(Number(id))),

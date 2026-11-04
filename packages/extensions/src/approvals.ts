@@ -49,6 +49,8 @@ export const ApprovalAsk = Schema.Struct({
   after: Schema.String,
   /** Why the agent makes it. */
   reason: Schema.String,
+  /** The Notification's words for the request, "what, where" (`Approval needed: …`), when `change` and `target` do not read well there. */
+  notice: Schema.optionalKey(Schema.String),
   /** What the change does that the values do not say, at most `MAX_APPROVAL_NOTES` lines of `MAX_APPROVAL_NOTE` characters. */
   notes: Schema.String.pipe(Schema.Array, Schema.optionalKey),
   /**

@@ -585,10 +585,10 @@ const jsonText = (value: Schema.Json | null): string =>
 
 /** Why a text that holds a Secret Reference is refused: the tools resolve none, so the Settings would hold its text. */
 const REFUSED_PLACEHOLDER =
-  "Nothing was saved: the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference.";
+  "the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference.";
 
 const REFUSED_SECRET =
-  "Nothing was saved: the text holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Settings are plain and the user reads them. Say it without the value.";
+  "the text holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Settings are plain and the user reads them. Say it without the value.";
 
 /** Whether a change reaches this Session, field by field, and what a result says of it. */
 export type SettingsReach = {
@@ -701,16 +701,21 @@ export const SettingsChanges = Effect.gen(function* () {
    * Refuse, asking nobody, a `reason` or any of `texts` that holds a Secret the Session holds, a deploy-time credential or a
    * Secret Reference's placeholder (the Settings are plain, and the user reads them).
    */
-  const plain = (reason: string, texts: ReadonlyArray<string>) =>
+  const plain = (
+    reason: string,
+    texts: ReadonlyArray<string>,
+    /** How the refusal begins: what the tool did not do. */
+    outcome = "Nothing was saved",
+  ) =>
     Effect.gen(function* () {
       const kept = Arr.join([reason, ...texts], "\n");
 
       if (holdsPlaceholder(kept)) {
-        return yield* SettingsAccessError.make({ message: REFUSED_PLACEHOLDER });
+        return yield* SettingsAccessError.make({ message: `${outcome}: ${REFUSED_PLACEHOLDER}` });
       }
 
       if (yield* holdsSecret(kept)) {
-        return yield* SettingsAccessError.make({ message: REFUSED_SECRET });
+        return yield* SettingsAccessError.make({ message: `${outcome}: ${REFUSED_SECRET}` });
       }
     });
 

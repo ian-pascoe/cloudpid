@@ -1,10 +1,11 @@
-// The `settings_mcp` tools that change servers without the owner's Approval (`docs/architecture/mcp-configuration.md` → The
-// agent's changes → The tools, Scopes and layers, Records and revert, Results): `settings_mcp_disable`, the narrowing
-// `settings_mcp_exposure_set` and `settings_mcp_tool_exposure_set`, and `settings_reset` of an adjustment's key. The Settings
-// at two Scopes are the fixture's (`./settings.fixture.ts`, the Registry's rules over plain JSON), the set is resolved by the
-// owner's resolver (`resolveMcpServerSet`) and the widening check is the real `checkMcpWidening`, so what the tools find is
-// what the Registry would; the hosts are the in-memory fake.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off
+// The `settings_mcp` tools that change a server's keys (`docs/architecture/mcp-configuration.md` → The agent's changes → The
+// tools, Scopes and layers, Approval, Records and revert, Results): `settings_mcp_disable`, `settings_mcp_exposure_set`,
+// `settings_mcp_tool_exposure_set` and `settings_reset` of an adjustment's key. A change that narrows is made at once; one that
+// widens waits for the owner's Approval (the fixture's Approvals answer as a test says). The world is the shared fixture's
+// (`./settings-mcp.fixture.ts`): Settings at two Scopes (`./settings.fixture.ts`, the Registry's rules over plain JSON), the
+// set resolved by the owner's resolver, the real widening check and the in-memory fake host, so what the tools find is what
+// the Registry would.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import type { FakeMcpServer } from "./mcp.testing.ts";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";

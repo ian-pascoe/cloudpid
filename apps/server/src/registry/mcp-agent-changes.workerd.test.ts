@@ -586,3 +586,86 @@ describe("the guard of an agent's MCP change", () => {
       );
     }));
 });
+
+describe("the owner's revert of an approved whole-entry change", () => {
+  const approved: AgentChangeAuthor = { ...author, tool: "settings_mcp_add", approved: true };
+  const ENTRY = { command: "node", args: ["server.js"] };
+
+  it("never waits for an Approval, whether the change it undoes was an add, an update or a remove", () =>
+    inRegistry(({ storage, store, changes, setOverrides, revertAt }) => {
+      const at = (changes_: ReadonlyArray<SettingsFieldChange>) =>
+        changeSettingsOverrides(
+          storage,
+          store,
+          changes,
+          { environment: STAGING, changes: changes_, author: approved },
+          1_000,
+        );
+
+      // An add: the revert removes the entry, which narrows.
+      const added = changed(at([{ field: "mcp.servers.docs", value: ENTRY }])).changes[0];
+
+      expect(added).toMatchObject({ approved: true, field: "mcp.servers.docs", before: null });
+      expect(revertAt(STAGING, added?.id ?? 0).status).toBe("reverted");
+
+      // An update, then its revert, which puts the old definition back.
+      setOverrides(STAGING, { mcp: { servers: { docs: ENTRY } } });
+
+      const edited = changed(
+        at([{ field: "mcp.servers.docs", value: { ...ENTRY, args: ["other.js"] } }]),
+      ).changes[0];
+
+      expect(revertAt(STAGING, edited?.id ?? 0).status).toBe("reverted");
+      expect(store.getSettingsOverrides(STAGING)).toEqual({ mcp: { servers: { docs: ENTRY } } });
+
+      // A remove, then its revert, which puts the entry back.
+      const removed = changed(at([{ field: "mcp.servers.docs", value: null, reset: true }]))
+        .changes[0];
+
+      expect(removed).toMatchObject({ approved: true, after: null });
+      expect(revertAt(STAGING, removed?.id ?? 0).status).toBe("reverted");
+      expect(store.getSettingsOverrides(STAGING)).toEqual({ mcp: { servers: { docs: ENTRY } } });
+    }));
+
+  it("restores a hidden entry's definition over a Global server that is on, whatever it widened", () =>
+    inRegistry(({ storage, store, changes, setGlobal, setOverrides, revertAt }) => {
+      const hidden = { ...ENTRY, exposure: "hidden" };
+
+      setGlobal({ mcp: { servers: { docs: ENTRY } } });
+      setOverrides(STAGING, { mcp: { servers: { docs: hidden } } });
+
+      // The agent's approved remove un-hides the server (it falls back to Global's, which is on).
+      const removed = changed(
+        changeSettingsOverrides(
+          storage,
+          store,
+          changes,
+          {
+            environment: STAGING,
+            changes: [{ field: "mcp.servers.docs", value: null, reset: true }],
+            author: { ...author, tool: "settings_mcp_remove", approved: true },
+          },
+          1_000,
+        ),
+      ).changes[0];
+
+      expect(revertAt(STAGING, removed?.id ?? 0).status).toBe("reverted");
+      expect(store.getSettingsOverrides(STAGING)).toEqual({ mcp: { servers: { docs: hidden } } });
+    }));
+});
+
+describe("mcpSettingsView's twinsIn", () => {
+  it("at Global names the Environments whose own entry is a case or - and _ twin of the name, never the same name", () =>
+    inRegistry(({ store, setOverrides }) => {
+      setOverrides(STAGING, { mcp: { servers: { My_Files: FILES, other: FILES } } });
+
+      const view = (name: string) =>
+        mcpSettingsView(store, { get: () => null }, { environment: undefined, name }, 1_000);
+
+      expect(view("my-files")?.twinsIn).toEqual([
+        { id: STAGING, name: "Staging", twin: "My_Files" },
+      ]);
+      expect(view("My_Files")?.twinsIn).toBeUndefined();
+      expect(view("unrelated")?.twinsIn).toBeUndefined();
+    }));
+});
