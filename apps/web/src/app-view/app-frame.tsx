@@ -14,7 +14,15 @@ import { copyToClipboard } from "../lib/clipboard.ts";
 import { cn } from "../lib/utils.ts";
 import { AppContextChip } from "./app-context-chip.tsx";
 import { refusingSpeech, speechHandlers, type AppSpeech } from "./app-messages.ts";
-import { createBridge, retire, type Bridge, type BridgeOptions } from "./bridge.ts";
+import {
+  createBridge,
+  HOST_REFUSED,
+  retire,
+  RpcError,
+  type Bridge,
+  type BridgeOptions,
+  type RequestHandler,
+} from "./bridge.ts";
 import { createPartialFeed, type PartialFeed, type ToolArguments } from "./partial-input.ts";
 import { displayModeHandler, displayOf, isFullscreen } from "./display-mode.ts";
 import { focusWatch } from "./focus.ts";
@@ -244,6 +252,24 @@ export const AppFrame = (props: AppFrameProps) => {
   );
 };
 
+/** What a View is answered when it asks for a server's or the conversation's before its call has a record. */
+const NOT_RECORDED = "The host serves this once the call has finished";
+
+/** `handlers`, each refusing (`-32000`) until `recorded` says the frame has its call's record. */
+const untilRecorded = (
+  handlers: Readonly<Record<string, RequestHandler>>,
+  recorded: () => boolean,
+): Readonly<Record<string, RequestHandler>> =>
+  Object.fromEntries(
+    Object.entries(handlers).map(([method, handler]): [string, RequestHandler] => [
+      method,
+      (params, context) =>
+        recorded()
+          ? handler(params, context)
+          : Promise.reject(new RpcError(HOST_REFUSED, NOT_RECORDED)),
+    ]),
+  );
+
 /** Why a View is told its call is over when it is torn down before the call has a result and nothing else says why. */
 const UNSHOWN_REASON = "The call is no longer shown";
 
@@ -311,6 +337,7 @@ const LiveFrame = ({
     speech,
     onOpenInPane,
     unfinished,
+    recorded: record !== undefined,
   });
 
   latest.current = {
@@ -325,6 +352,7 @@ const LiveFrame = ({
     speech,
     onOpenInPane,
     unfinished,
+    recorded: record !== undefined,
   };
   const inPane = isFullscreen(place);
 
@@ -423,8 +451,10 @@ const LiveFrame = ({
       ),
       hostInfo: HOST_INFO,
       handlers: {
-        ...served,
-        ...speechHandlers(speaking),
+        // What a View says to its server or the conversation goes by its call's record, which names the server: until the
+        // frame has it (a View made as its call streamed) there is none to name, and what could reach another server than
+        // the page's (a shadowed one, whose record never comes) is refused.
+        ...untilRecorded({ ...served, ...speechHandlers(speaking) }, () => latest.current.recorded),
         "ui/open-link": openLinkHandler({
           show: setLink,
           open: (url) => {

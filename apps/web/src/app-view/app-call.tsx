@@ -7,13 +7,7 @@
 // on this device. The frame itself is `app-frame.tsx`'s.
 // @effect-diagnostics missingPipeableSignature:off globalTimers:off -- a hook over the Session's atoms, not a combinator; the grace for a record is a native timer.
 import { GLOBAL_SCOPE, isKeptApp, type McpAppContext, type McpAppTool } from "@cloudpid/protocol";
-import {
-  RegistryContext,
-  useAtom,
-  useAtomRefresh,
-  useAtomSet,
-  useAtomValue,
-} from "@effect/atom-react";
+import { RegistryContext, useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   createContext,
   use,
@@ -238,18 +232,21 @@ const AppLoaded = ({
     wantsRunning ? appRunningAtom(runningKey(sessionId, callId, tool.name)) : NO_RUNNING_PAGE,
   );
 
-  const retryRecord = useAtomRefresh(appLoadAtom(key));
-
-  const retryRunning = useAtomRefresh(
-    appRunningAtom(runningKey(sessionId, callId, tool?.name ?? "")),
-  );
-
-  const retry = wantsRunning ? retryRunning : retryRecord;
   const client = useAtomValue(sessionClientAtom(sessionId));
   const environment = useAtomValue(sessionEnvironmentAtom(sessionId));
 
   // What the View may say to the conversation is read where the View is shown when it says it, not as of this render.
   const registry = use(RegistryContext);
+
+  // Retry loads again the one that failed. It is not a hook of either atom: reading one here would load it for a card that
+  // wants the other (a call that runs has no record to mount yet, and the answer, `none`, would be kept for when it has).
+  const retry = () => {
+    registry.refresh(
+      wantsRunning && tool !== undefined
+        ? appRunningAtom(runningKey(sessionId, callId, tool.name))
+        : appLoadAtom(key),
+    );
+  };
 
   // "Open in Browser Pane": the Pane is opened, and the Owner tab goes to the link on the Pane's own connection.
   const actOnPanes = useAtomSet(panesAtom);

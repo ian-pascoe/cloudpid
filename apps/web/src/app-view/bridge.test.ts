@@ -974,6 +974,21 @@ describe("an ext-apps View (the real `App` runtime)", () => {
     ]);
   });
 
+  it("sends nothing of the call after tool-cancelled: it is the end of it", async () => {
+    const { bridge, handlers } = await mounted();
+
+    bridge.toolInputPartial({ city: "O" });
+    bridge.toolCancelled("Stopped");
+    bridge.toolInput({ city: "Oslo" });
+    bridge.toolResult({ content: [{ type: "text", text: "12 C" }] });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(handlers.partial).toHaveBeenCalledTimes(1);
+    expect(handlers.cancelled).toHaveBeenCalledWith({ reason: "Stopped" });
+    expect(handlers.input).not.toHaveBeenCalled();
+    expect(handlers.result).not.toHaveBeenCalled();
+  });
+
   it("delivers an error result too, as the View's own", async () => {
     const { bridge, handlers } = await mounted();
 

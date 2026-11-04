@@ -15,7 +15,14 @@ import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import type { McpAppEntry, McpAppRecord, McpAppTool, SessionView } from "@cloudpid/protocol";
+import type {
+  McpAppEntry,
+  McpAppHtmlAnswer,
+  McpAppMounted,
+  McpAppRecord,
+  McpAppTool,
+  SessionView,
+} from "@cloudpid/protocol";
 import { EMPTY_VIEW, reduceEvents } from "@cloudpid/protocol";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
@@ -38,9 +45,7 @@ import { toThreadMessages } from "../session/thread-messages.ts";
 import { sessionListAtom } from "../sessions.ts";
 import { keyValueStoreLayer } from "../storage.ts";
 import { AppPlacesContext } from "./app-call.tsx";
-import { appKey, appLoadAtom, appRunningAtom, runningKey } from "./atoms.ts";
 import { installFakeFrames, ORIGIN, viewOf } from "./frame-kit.testing.ts";
-import type { AppPage } from "./load.ts";
 import { AppPlaces } from "./places.ts";
 
 const NAME = "mcp__docs__page";
@@ -52,8 +57,6 @@ const TOOL: McpAppTool = {
   uri: "ui://docs/page",
   visibility: ["model", "app"],
 };
-
-const PAGE: AppPage = { html: "<p>view</p>", meta: {}, origin: ORIGIN };
 
 const record: McpAppRecord = {
   callId: "c1",
@@ -154,9 +157,53 @@ const memoryStorage = (): Storage => {
   };
 };
 
-const clientOf = () => {
+/** What the Session was asked for the Views of this test's calls. */
+const asked = { mount: 0, page: 0, toolPages: [] as string[] };
+
+/** The page of a server's View, as the Session answers `mcp_app_html`: at the origin its `view` names. */
+const htmlOf = (viewHash: string): McpAppHtmlAnswer => ({
+  status: "html",
+  hash: "h1",
+  html: "<p>view</p>",
+  meta: {},
+  view: viewHash,
+  origin: ORIGIN,
+});
+
+/**
+ * The Session's client: its state, and the three commands that load a View, as a Session answers them: no record to mount
+ * until the call has one (`apps` lists it), a page by the tool for a call that runs and by the call for one that has a record.
+ */
+const clientOf = (seed: Seed, pinned: McpAppRecord) => {
   const takes = () => ({ appMessages: false, appContext: false });
-  const own = new Map<string, unknown>(Object.entries({ state, takes }));
+
+  const mountApp = () => {
+    asked.mount += 1;
+
+    return Effect.succeed<McpAppMounted>(
+      apps.length > 0 ? { status: "record", record: pinned } : { status: "none" },
+    );
+  };
+
+  const appPage = () => {
+    asked.page += 1;
+
+    return Effect.succeed<McpAppHtmlAnswer>(
+      seed.recordPage === "unavailable"
+        ? { status: "unavailable", message: "shadowed" }
+        : htmlOf(seed.recordView ?? seed.pageView ?? "v-docs"),
+    );
+  };
+
+  const appToolPage = (tool: string) => {
+    asked.toolPages.push(tool);
+
+    return Effect.succeed(htmlOf(seed.pageView ?? "v-docs"));
+  };
+
+  const own = new Map<string, unknown>(
+    Object.entries({ state, takes, mountApp, appPage, appToolPage }),
+  );
 
   return new Proxy(
     {},
@@ -204,6 +251,10 @@ beforeEach(() => {
   vi.spyOn(window.console, "error").mockImplementation(() => undefined);
   vi.spyOn(globalThis.console, "error").mockImplementation(() => undefined);
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  // The runtime built for the load atoms probes the Session's socket when time passes: nothing is there to answer.
+  vi.spyOn(window, "fetch").mockImplementation(() =>
+    Promise.resolve(new Response(null, { status: 200 })),
+  );
   window.history.replaceState(null, "", "/sessions/s1");
   host = document.createElement("div");
   document.body.append(host);
@@ -215,6 +266,10 @@ interface Seed {
   readonly pageView?: string;
   readonly recordView?: string;
   readonly recordServer?: string;
+  /** The Session answers the record's page `unavailable`. */
+  readonly recordPage?: "unavailable";
+  /** The call finished before the page was opened: its message, result and record are all there from the start. */
+  readonly finished?: boolean;
 }
 
 /** The Session as the page holds it, with the user's message; and the page of the call's tool and its record, as loads would give. */
@@ -233,6 +288,44 @@ const start = async (seed: Seed = {}) => {
   ]);
 
   apps = [];
+
+  if (seed.finished === true) {
+    view = reduceEvents(view, [
+      event({
+        type: "entry_appended",
+        entry: entryOf({
+          id: 2,
+          conversationId: 1,
+          kind: "pi.assistant",
+          model: [message([call({ title: "Hello", rows: ["abc"] })])],
+        }),
+      }),
+      event({
+        type: "entry_appended",
+        entry: entryOf({
+          id: 3,
+          conversationId: 1,
+          kind: "pi.tool",
+          model: [
+            {
+              role: "toolResult",
+              toolCallId: "c1",
+              toolName: NAME,
+              content: [{ type: "text", text: "done" }],
+              isError: false,
+              timestamp: 3,
+            },
+          ],
+        }),
+      }),
+      event({ type: "run_end", inputs: [1] }),
+    ]);
+    apps = [entry];
+  }
+
+  asked.mount = 0;
+  asked.page = 0;
+  asked.toolPages = [];
   state = Effect.runSync(SubscriptionRef.make(INITIAL_SESSION_STATE));
   publish();
 
@@ -249,30 +342,14 @@ const start = async (seed: Seed = {}) => {
       Atom.initialValue(keyValueStoreLayer, KeyValueStore.layerStorage(memoryStorage)),
       Atom.initialValue(RegistryClient.runtime.layer, fakeRegistryLayer({})),
       // SAFETY: a stand-in for the client, which a page reads its state through.
-      Atom.initialValue(sessionClientAtom("s1"), AsyncResult.success(clientOf() as never)),
+      Atom.initialValue(
+        sessionClientAtom("s1"),
+        AsyncResult.success(clientOf(seed, pinned) as never),
+      ),
       // SAFETY: the list is read for `archivedAt` and the Environment, which is all this gives.
       Atom.initialValue(sessionListAtom, [] as never),
-      // The page of the tool's View, for a call that runs; the call's record, once it has one.
-      Atom.initialValue(
-        appRunningAtom(runningKey("s1", "c1", NAME)),
-        AsyncResult.success({
-          status: "running" as const,
-          page: seed.pageView === undefined ? PAGE : { ...PAGE, view: seed.pageView },
-        }),
-      ),
-      Atom.initialValue(
-        appLoadAtom(appKey("s1", "c1")),
-        // The record's page is another object, as a load of its own would make it: the frame is not swapped for it.
-        AsyncResult.success({
-          status: "view" as const,
-          record: pinned,
-          page: { ...PAGE },
-        }),
-      ),
     ],
   });
-  registry.mount(appRunningAtom(runningKey("s1", "c1", NAME)));
-  registry.mount(appLoadAtom(appKey("s1", "c1")));
 
   act(() => {
     root.render(
@@ -609,5 +686,95 @@ describe("an App call as it streams", () => {
     await tick(2500);
     expect(shown.methods().at(-1)).toBe("ui/notifications/tool-result");
     expect(shown.methods()).not.toContain("ui/notifications/tool-cancelled");
+  });
+
+  it("reads a running call's page by its tool once and its record when the call has one, and a finished card asks for the record only", async () => {
+    await start({ pageView: "v-docs", recordView: "v-docs" });
+
+    const { shown } = await running();
+
+    expect(asked.toolPages).toEqual([NAME]);
+    // A call that runs has no record to mount: it is not asked for one.
+    expect(asked.mount).toBe(0);
+
+    await ends(true);
+    expect(asked.toolPages).toEqual([NAME]);
+    expect(asked.mount).toBe(1);
+    expect(shown.methods().at(-1)).toBe("ui/notifications/tool-result");
+
+    // Another card of a call that finished before the page was opened: no page by the tool, the record's own.
+    act(() => {
+      root.unmount();
+    });
+    registry.dispose();
+    root = createRoot(host);
+    await start({ finished: true });
+    expect(asked.toolPages).toEqual([]);
+    expect(asked.mount).toBe(1);
+
+    const methods = viewOf(frames()[0] ?? null);
+
+    methods.handshake();
+    expect(methods.methods().slice(-2)).toEqual([
+      "ui/notifications/tool-input",
+      "ui/notifications/tool-result",
+    ]);
+  });
+
+  it("never delivers a record whose page the Session answers unavailable to the View made before it", async () => {
+    await start({ pageView: "v-repo", recordView: "v-repo", recordPage: "unavailable" });
+
+    const { shown } = await running();
+
+    await ends(true);
+    expect(shown.methods()).not.toContain("ui/notifications/tool-result");
+    expect(shown.methods().slice(-2)).toEqual([
+      "ui/notifications/tool-cancelled",
+      "ui/resource-teardown",
+    ]);
+  });
+
+  it("sends a shadowed View no more of the call when its record arrives while the call still streams", async () => {
+    await start({ pageView: "v-repo", recordView: "v-owner" });
+
+    await happens(event({ type: "message_start", message: message([]) }));
+    await happens(
+      update({ type: "toolcall_start", contentIndex: 0, block: call({ title: "He", rows: [] }) }),
+    );
+
+    const shown = viewOf(frames()[0] ?? null);
+
+    shown.handshake();
+
+    // The Session keeps the record while the model is still emitting the call (the server named is another's).
+    apps = [entry];
+    await happens(
+      update({ type: "toolcall_delta", contentIndex: 0, path: ["title"], delta: "llo" }),
+    );
+    await tick(300);
+
+    expect(shown.methods().slice(-2)).toEqual([
+      "ui/notifications/tool-cancelled",
+      "ui/resource-teardown",
+    ]);
+    expect(shown.methods()).not.toContain("ui/notifications/tool-input");
+    expect(shown.methods()).not.toContain("ui/notifications/tool-result");
+    expect(partials(shown).at(-1)).not.toEqual({ title: "Hello", rows: [] });
+  });
+
+  it("sends nothing of the call after the cancel for a record that arrives after the grace", async () => {
+    await start({ pageView: "v-docs", recordView: "v-docs" });
+
+    const { shown } = await running();
+
+    await ends(false);
+    await tick(2100);
+    expect(shown.methods().at(-1)).toBe("ui/notifications/tool-cancelled");
+
+    apps = [entry];
+    publish();
+    await tick(500);
+    expect(shown.methods().at(-1)).toBe("ui/notifications/tool-cancelled");
+    expect(shown.methods()).not.toContain("ui/notifications/tool-result");
   });
 });

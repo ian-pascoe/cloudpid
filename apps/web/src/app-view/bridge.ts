@@ -477,13 +477,14 @@ export const createBridge = (options: BridgeOptions): Bridge => {
       send(TOOL_INPUT_PARTIAL, { arguments: args });
     },
     toolInput: (args) => {
-      if (inputSent) return;
+      // `tool-cancelled` is the end of the call: nothing follows it.
+      if (inputSent || cancelSent) return;
 
       inputSent = true;
       send(TOOL_INPUT, { arguments: args });
     },
     toolResult: (result) => {
-      if (resultSent) return;
+      if (resultSent || cancelSent) return;
 
       resultSent = true;
       send(TOOL_RESULT, result);

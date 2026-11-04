@@ -643,6 +643,49 @@ describe("a View's requests of its server, and signing in", () => {
     expect(answerTo(view, 7)).toEqual({ jsonrpc: "2.0", id: 7, result: { content: [] } });
   });
 
+  it("refuses a View's server calls and messages until its call has a record, and serves them once it has", async () => {
+    const appRequest = vi.fn(() =>
+      Effect.succeed<McpAppRequestAnswer>({ status: "result", result: { content: [] } }),
+    );
+
+    const client: AppRequestClient = { appRequest, appLog: () => undefined };
+    const speech = { message: vi.fn(() => Promise.resolve("held" as const)) };
+
+    render({
+      client,
+      speech,
+      record: undefined,
+      running: { callId: "c1", server: "docs", tool: "page", arguments: { a: "b" }, final: true },
+    });
+
+    const view = frameOf();
+
+    view.handshake();
+    await flush();
+
+    ask(view, 7);
+    ask(view, 8, "resources/read");
+    view.say({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "ui/message",
+      params: { role: "user", content: [{ type: "text", text: "hi" }] },
+    });
+    await flush();
+
+    for (const id of [7, 8, 9])
+      expect(answerTo(view, id)).toMatchObject({ error: { code: -32_000 } });
+    expect(appRequest).not.toHaveBeenCalled();
+    expect(speech.message).not.toHaveBeenCalled();
+
+    // The record is there: the same frame's handlers serve.
+    render({ client, speech, record, running: undefined });
+    ask(view, 10);
+    await flush();
+    expect(answerTo(view, 10)).toEqual({ jsonrpc: "2.0", id: 10, result: { content: [] } });
+    expect(appRequest).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards only resources/read, and badges it "Read only", when its place says it may only read', async () => {
     render({
       client: answering({ status: "result", result: { contents: [] } }),
