@@ -183,6 +183,7 @@ export const hostServicesOver = (store: McpHostStoreService) =>
     engine: mcpEngineClient({
       discover: async (target) => unscripted(keyOf(target)),
       request: () => Promise.reject(new Error("Nothing scripted")),
+      listen: () => Promise.reject(new Error("Nothing scripted")),
     }),
   });
 
@@ -337,6 +338,11 @@ export class TestMcpHost extends DurableObject {
   }
 
   readonly #engine: McpEngineMethods = {
+    listen: async (target, prior, filter, hooks, stop) => {
+      if (this.#real !== undefined) return this.#real.listen(target, prior, filter, hooks, stop);
+
+      throw new Error("No listen is scripted");
+    },
     request: async (target, prior, request, hooks) => {
       if (this.#real !== undefined) return this.#real.request(target, prior, request, hooks);
 

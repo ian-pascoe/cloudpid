@@ -21,10 +21,13 @@ import {
   MCP_LIST_WALK_TIMEOUT_MS,
   McpEngineDiscoverResult,
   type McpEngineHooks,
+  McpEngineListenResult,
   type McpEngineMethods,
   McpEngineRequest,
   McpEngineRequestResult,
   McpEngineTarget,
+  McpListenFilter,
+  MCP_LISTEN_ACK_MS,
 } from "@cloudpid/mcp/types";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -49,6 +52,9 @@ export class McpEngineUnreachable extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("McpEngineUnreachable", { message: Schema.String }) {}
 
+/** What the host waits for a listen's acknowledgement past the engine's own 10 s: the RPC's way there and back, a connect that may be needed first. */
+export const LISTEN_TIMEOUT_MS = 3 * MCP_CONNECT_TIMEOUT_MS + MCP_LISTEN_ACK_MS + DISCOVER_SLACK_MS;
+
 export type McpEngineClientService = {
   /** Discover the server `target` names, from the rows the host keeps for it. */
   readonly discover: (
@@ -67,6 +73,18 @@ export type McpEngineClientService = {
     request: McpEngineRequest,
     hooks: McpEngineHooks,
   ) => Effect.Effect<McpEngineRequestResult, McpEngineUnreachable>;
+  /**
+   * Open a listen on the server `target` names, from the rows the host keeps for it (`docs/architecture/mcp-connections.md`
+   * → Requests and Legacy sessions → Listens). It answers once the server acknowledged: what it honors, and the events as
+   * a stream of lines. `stop` is the stream the host closes to end the listen at once. The call passes the engine no hook
+   * of the caller's: a listen outlives the invocation that opened it, and a function stub does not (#409 answer 2).
+   */
+  readonly listen: (
+    target: McpEngineTarget,
+    prior: PriorRows,
+    filter: McpListenFilter,
+    stop?: ReadableStream<Uint8Array>,
+  ) => Effect.Effect<McpEngineListenResult, McpEngineUnreachable>;
 };
 
 /** The engine, as the host sees it: `McpEngine` over the `MCP_ENGINE` binding, or a fake. */
@@ -82,12 +100,41 @@ const encodeRequest = Schema.encodeEffect(McpEngineRequest);
 
 const decodeRequested = Schema.decodeUnknownEffect(McpEngineRequestResult);
 
+const encodeFilter = Schema.encodeEffect(McpListenFilter);
+
+const decodeListened = Schema.decodeUnknownEffect(McpEngineListenResult);
+
 const unreachable = (message: string) => McpEngineUnreachable.make({ message });
 
 /** The engine over `engine`, the `MCP_ENGINE` binding's stub or a fake that answers as one. */
 export const mcpEngineClient = (
-  engine: Pick<McpEngineMethods, "discover" | "request">,
+  engine: Pick<McpEngineMethods, "discover" | "request" | "listen">,
 ): McpEngineClientService => ({
+  listen: (target, prior, filter, stop) =>
+    Effect.gen(function* () {
+      const encoded = yield* Effect.all([encodeTarget(target), encodeFilter(filter)]).pipe(
+        Effect.mapError(() => unreachable("The listen could not be encoded")),
+      );
+
+      const answer = yield* Effect.tryPromise({
+        try: () => engine.listen(encoded[0], prior, encoded[1], {}, stop),
+        catch: (error) =>
+          unreachable(
+            `The MCP engine could not be reached: ${error instanceof Error ? error.message : "no answer"}`,
+          ),
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.millis(LISTEN_TIMEOUT_MS),
+          orElse: () => Effect.fail(unreachable("The MCP engine did not answer in time")),
+        }),
+      );
+
+      return yield* decodeListened(answer).pipe(
+        Effect.mapError(() =>
+          unreachable("The MCP engine answered with something this build cannot read"),
+        ),
+      );
+    }),
   request: (target, prior, request, hooks) =>
     Effect.gen(function* () {
       const encoded = yield* Effect.all([encodeTarget(target), encodeRequest(request)]).pipe(

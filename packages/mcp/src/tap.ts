@@ -436,7 +436,7 @@ const EVENT_END = /\r\n\r\n|\n\n|\r\r/g;
  * A GET stream's `body`, ended (and let go of) at an event over 1 MiB, so no event the client must hold whole outgrows
  * the limit. Bytes are counted from the last event's end.
  */
-const capEvents = (body: ReadableStream<Uint8Array>) => {
+const capEvents = (body: ReadableStream<Uint8Array>, ended?: () => void) => {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let open = 0;
@@ -448,6 +448,7 @@ const capEvents = (body: ReadableStream<Uint8Array>) => {
 
       if (chunk.done) {
         controller.close();
+        ended?.();
 
         return;
       }
@@ -466,6 +467,7 @@ const capEvents = (body: ReadableStream<Uint8Array>) => {
       if (open > EVENT_LIMIT) {
         await reader.cancel().catch(() => undefined);
         controller.close();
+        ended?.();
 
         return;
       }
@@ -520,6 +522,11 @@ export interface TapObserver {
   readonly response: (status: number) => void;
   /** A request is sent again after a 408, 429 or 5xx. */
   readonly retried: () => void;
+  /**
+   * A GET stream (a Legacy session's): the status the server answered with, and later `ended` when its body ended or was
+   * cut at an event over 1 MiB (never when the reader cancelled it).
+   */
+  readonly get?: (event: { readonly status: number } | { readonly ended: true }) => void;
 }
 
 /** `init` without the core's own headers, the token the call header carried, and whether the request is an App's read. */
@@ -616,13 +623,18 @@ export const tapFetch = (
       });
     }
 
+    if (init?.method === "GET") observer?.get?.({ status: response.status });
+
     if (
       init?.method === "GET" &&
       response.ok &&
       response.body !== null &&
       mediaType(response) === "text/event-stream"
     ) {
-      return new Response(capEvents(response.body), response);
+      return new Response(
+        capEvents(response.body, () => observer?.get?.({ ended: true })),
+        response,
+      );
     }
 
     if (
