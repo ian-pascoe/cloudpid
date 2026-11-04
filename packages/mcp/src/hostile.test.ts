@@ -345,11 +345,8 @@ type Json =
   | ReadonlyArray<Json>
   | { readonly [key: string]: Json };
 
-/** What an event carries: a JSON-RPC message, or a batch of them. */
-type Message = Json;
-
-/** One SSE `message` event carrying `data`, with an event id and a `retry` when given. */
-const event = (data: Message, options: { id?: string; retry?: number } = {}) =>
+/** One SSE `message` event carrying `data` (a JSON-RPC message, or a batch of them), with an event id and a `retry` when given. */
+const event = (data: Json, options: { id?: string; retry?: number } = {}) =>
   `${options.id === undefined ? "" : `id: ${options.id}\n`}${options.retry === undefined ? "" : `retry: ${options.retry}\n`}event: message\ndata: ${JSON.stringify(data)}\n\n`;
 
 /** A priming event: an event id and a `retry`, no data (what a server that polls sends first). */
@@ -487,6 +484,24 @@ describe.each(legacyBases)("a %s server that ends a call's stream early", (_name
         stream(
           priming("a-1"),
           `id: a-2\nevent: message\ndata: ${JSON.stringify(progress(rpc)).slice(0, 30)}`,
+        ),
+      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
+    expect(resumedAfter(server)).toEqual(["a-1"]);
+  });
+
+  it("keeps an event the early end left unfinished after a line ending from the first resumed one", async () => {
+    // The unfinished event is a whole answer short of its blank line: dispatched, it would answer the call.
+    const server = resumable(
+      base(),
+      (rpc) =>
+        stream(
+          priming("a-1"),
+          `id: a-2\nevent: message\ndata: ${JSON.stringify(answerOf(rpc, "premature"))}\n`,
         ),
       (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
     );
@@ -640,11 +655,11 @@ describe("a Modern server that ends a call's stream early", () => {
 });
 
 describe("the tap's resumed stream", () => {
-  const URL_ = "https://example.test/mcp";
+  const ENDPOINT = "https://example.test/mcp";
   const call = { jsonrpc: "2.0", id: 7, method: "tools/call", params: {} };
 
   const post = (wire: ReturnType<typeof tapFetch>, signal: AbortSignal | null = null) =>
-    wire(URL_, {
+    wire(ENDPOINT, {
       method: "POST",
       body: JSON.stringify(call),
       headers: {
@@ -696,6 +711,21 @@ describe("the tap's resumed stream", () => {
     expect(resumeHeaders[0]?.get("authorization")).toBe("Bearer token");
     expect(resumeHeaders[0]?.get("mcp-session-id")).toBe("session-1");
     expect(resumeHeaders[0]?.get("content-type")).toBeNull();
+  });
+
+  it("reads events whichever way their lines end", async () => {
+    const answer = JSON.stringify({ jsonrpc: "2.0", id: 7, result: { own: true } });
+
+    const wire = tapFetch(
+      async (_input, init) =>
+        init?.method === "GET" ? stream(`id: a-2\r\rdata: ${answer}\r\r`) : stream("id: a-1\r\r"),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const response = await post(wire);
+
+    expect(await response.text()).toContain('"own":true');
   });
 
   it("is not opened once the request is aborted while it waits", async () => {

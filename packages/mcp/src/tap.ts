@@ -26,6 +26,7 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, not combinators.
 // @effect-diagnostics preferEffectArray:off -- byte chunks and stream events, in place.
 import type { FetchLike } from "@modelcontextprotocol/client";
+import * as Data from "effect/Data";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { MODERN_PROTOCOL_VERSION } from "./protocol.ts";
@@ -286,6 +287,9 @@ const retryAfter = (response: Response, now: number) => {
     : DEFAULT_RETRY_AFTER_MS;
 };
 
+/** A status that may pass if tried again. */
+const transientStatus = (status: number) => status === 408 || status === 429 || status >= 500;
+
 const shouldRetry = (request: Outgoing | undefined, status: number) => {
   if (request === undefined) {
     return false;
@@ -295,7 +299,7 @@ const shouldRetry = (request: Outgoing | undefined, status: number) => {
     return status === 408 || status === 429;
   }
 
-  return request.policy.readOnly && (status === 408 || status === 429 || status >= 500);
+  return request.policy.readOnly && transientStatus(status);
 };
 
 const redirectedAway = (request: string | URL, response: Response) => {
@@ -342,8 +346,35 @@ const MIN_RESUME_MS = 500;
 const MAX_RESUME_MS = 10_000;
 const DEFAULT_RESUME_MS = 1000;
 
+/**
+ * `text`'s whole SSE events, and what follows the last one. A blank line ends an event, whichever of CRLF, LF and CR
+ * ends its lines (WHATWG HTML, server-sent events), so the events come back with LF only. A CR at the end may be the
+ * start of a CRLF, so it stays in the rest, for the next chunk to settle, unless `final`: the stream ended.
+ */
+const splitEvents = (text: string, final = false) => {
+  const carry = !final && text.endsWith("\r") ? "\r" : "";
+
+  const events = text
+    .slice(0, text.length - carry.length)
+    .replace(/\r\n?/g, "\n")
+    .split("\n\n");
+
+  const rest = (events.pop() ?? "") + carry;
+
+  return { events, rest };
+};
+
+/** Whether `text`, one event or the start of one, is over the per-event cap, in bytes. */
+const overEventLimit = (text: string) =>
+  text.length * 3 > EVENT_LIMIT && encoder.encode(text).byteLength > EVENT_LIMIT;
+
 /** What opening a resumed stream came to: its body, or whether trying again could help. */
-type Reopened = { readonly body: ReadableStream<Uint8Array> } | { readonly transient: boolean };
+type Reopened = Data.TaggedEnum<{
+  Stream: { readonly body: ReadableStream<Uint8Array> };
+  Failed: { readonly transient: boolean };
+}>;
+
+const Reopened = Data.taggedEnum<Reopened>();
 
 /** How the tap reopens a Legacy request's stream with `GET` and `Last-Event-ID` (D15). */
 interface Resume {
@@ -353,13 +384,22 @@ interface Resume {
   readonly aborted: () => boolean;
 }
 
-/** An SSE event's `id`, `retry` and `data`; the last `id` and `retry` win (WHATWG HTML, server-sent events). */
+/** What a stream that ended without its answer comes to. */
+type Resumption = Data.TaggedEnum<{
+  Resumed: { readonly body: ReadableStream<Uint8Array> };
+  Stopped: {};
+  Cut: { readonly error: McpError };
+}>;
+
+const Resumption = Data.taggedEnum<Resumption>();
+
+/** An SSE event's `id`, `retry` and `data`; the last `id` and `retry` win. `event` has LF line ends only. */
 const eventFields = (event: string) => {
   let id: string | undefined;
   let retry: number | undefined;
   const data: Array<string> = [];
 
-  for (const line of event.split(/\r\n|\n|\r/)) {
+  for (const line of event.split("\n")) {
     if (line.startsWith(":")) continue;
 
     const colon = line.indexOf(":");
@@ -375,21 +415,108 @@ const eventFields = (event: string) => {
   return { id, retry, data: data.join("\n") };
 };
 
-/** Whether `text` is over the per-event cap, in bytes. */
-const overEventLimit = (text: string) =>
-  text.length * 3 > EVENT_LIMIT && encoder.encode(text).byteLength > EVENT_LIMIT;
-
 /**
- * Written to the SDK where a stream's unfinished last event is left behind to resume: its own `event` type overrides
- * the unfinished event's, so the SDK ignores that event instead of joining it to the first resumed one.
+ * What is written to the SDK where a stream's unfinished last event is left behind to resume: an `event` type of its
+ * own, which overrides the unfinished event's, so the SDK ignores that event instead of joining it to the first
+ * resumed one. A line ending first, unless the unfinished event already ends in one: a blank line would make the SDK
+ * dispatch it.
  */
-const DISCARD_EVENT = "\nevent: cloudpid-discard\n\n";
+const discardEvent = (unfinished: string) =>
+  `${/[\r\n]$/.test(unfinished) ? "" : "\n"}event: cloudpid-discard\n\n`;
 
 const eventTooLarge = () =>
   TooLarge.make({
     message: `An event on the resumed stream is over ${EVENT_LIMIT / MiB} MiB; the answer was dropped`,
     limit: EVENT_LIMIT,
   });
+
+/**
+ * Where a Legacy request's stream stands, over the streams resumed so far: the last event id and `retry` the server
+ * sent, and the resumes that failed in a row. A resume fails when it cannot be opened, or when the stream it opens ends
+ * with no event id newer than the one it was asked from; so a server that polls is resumed for as long as it makes
+ * progress.
+ */
+class Resumer {
+  /** Whether the stream being read is a resumed one. */
+  resumed = false;
+
+  private readonly request: Outgoing;
+  private readonly resume: Resume | undefined;
+  private readonly stopped: () => boolean;
+  private lastEventId: string | undefined;
+  private retryMs: number | undefined;
+  private resumedFrom: string | undefined;
+  private failures = 0;
+
+  /** `stopped` says the reader let go of the stream, so nothing more is wanted. */
+  constructor(request: Outgoing, resume: Resume | undefined, stopped: () => boolean) {
+    this.request = request;
+    this.resume = resume;
+    this.stopped = stopped;
+  }
+
+  /** An event of the stream carried these fields. */
+  see(fields: { readonly id: string | undefined; readonly retry: number | undefined }) {
+    if (fields.id !== undefined) this.lastEventId = fields.id === "" ? undefined : fields.id;
+
+    if (fields.retry !== undefined) this.retryMs = fields.retry;
+  }
+
+  /** The stream ended (`broke` says it broke) without its answer: resume it, or give the cut. */
+  async next(broke: boolean): Promise<Resumption> {
+    if (this.resumed) {
+      this.failures = this.lastEventId === this.resumedFrom ? this.failures + 1 : 0;
+    }
+
+    const { request, resume } = this;
+    const lastEventId = this.lastEventId;
+
+    if (resume === undefined || lastEventId === undefined) {
+      return Resumption.Cut({
+        error: cut(
+          request,
+          broke
+            ? "The stream broke before its answer arrived"
+            : "The stream ended before its answer arrived",
+        ),
+      });
+    }
+
+    const failed = () =>
+      Resumption.Cut({
+        error: cut(request, "The stream ended before its answer arrived, and resuming it failed"),
+      });
+
+    for (;;) {
+      if (this.failures >= MAX_RESUME_FAILURES) return failed();
+
+      await resume.sleep(
+        Math.min(Math.max(this.retryMs ?? DEFAULT_RESUME_MS, MIN_RESUME_MS), MAX_RESUME_MS),
+      );
+
+      if (this.stopped() || resume.aborted()) return Resumption.Stopped();
+
+      const opened = await resume.open(lastEventId);
+
+      if (this.stopped() || resume.aborted()) {
+        if (Reopened.$is("Stream")(opened)) await drain(opened.body);
+
+        return Resumption.Stopped();
+      }
+
+      if (Reopened.$is("Stream")(opened)) {
+        this.resumed = true;
+        this.resumedFrom = lastEventId;
+
+        return Resumption.Resumed({ body: opened.body });
+      }
+
+      if (!opened.transient) return failed();
+
+      this.failures += 1;
+    }
+  }
+}
 
 /**
  * `body` as it arrives, counted against the request's limit, watched for the answer to `request`. A stream that ends
@@ -413,32 +540,24 @@ const watchStream = (
   let pending = "";
   let answered = false;
   let cancelled = false;
-  /** The last event id and `retry` the server sent, over every stream so far. */
-  let lastEventId: string | undefined;
-  let retryMs: number | undefined;
-  /** Whether the reader is a resumed stream, the event id it was asked from, and the resumes failed in a row. */
-  let resumed = false;
-  let resumedFrom: string | undefined;
-  let failures = 0;
+  const resumer = new Resumer(request, resume, () => cancelled);
 
   /** The whole events of `text` the SDK may be given, or `undefined` when one is over the per-event cap. */
-  const scan = (text: string) => {
-    const events = (pending + text).split(/\r?\n\r?\n/);
+  const scan = (text: string, final = false) => {
+    const { events, rest } = splitEvents(pending + text, final);
 
-    pending = events.pop() ?? "";
+    pending = rest;
 
     const kept: Array<string> = [];
 
     for (const event of events) {
-      if (resumed && overEventLimit(event)) return undefined;
+      if (resumer.resumed && overEventLimit(event)) return undefined;
 
-      const { id, retry, data } = eventFields(event);
+      const fields = eventFields(event);
 
-      if (id !== undefined) lastEventId = id === "" ? undefined : id;
+      resumer.see(fields);
 
-      if (retry !== undefined) retryMs = retry;
-
-      const messages = Option.match(decodeStreamMessages(data), {
+      const messages = Option.match(decodeStreamMessages(fields.data), {
         onNone: () => [],
         onSome: (decoded) => (Array.isArray(decoded) ? decoded : [decoded]),
       });
@@ -477,60 +596,7 @@ const watchStream = (
       if (!foreign) kept.push(event);
     }
 
-    return resumed && overEventLimit(pending) ? undefined : kept;
-  };
-
-  /**
-   * The stream ended or broke without its answer: `resumed` once a resumed stream is the reader, `stop` when nothing
-   * more is wanted (the stream was cancelled or the request aborted), else the cut.
-   */
-  const resumeOrCut = async (broke: boolean): Promise<McpError | "resumed" | "stop"> => {
-    if (resumed) {
-      failures = lastEventId === resumedFrom ? failures + 1 : 0;
-    }
-
-    if (resume === undefined || lastEventId === undefined) {
-      return cut(
-        request,
-        broke
-          ? "The stream broke before its answer arrived"
-          : "The stream ended before its answer arrived",
-      );
-    }
-
-    const failed = () =>
-      cut(request, "The stream ended before its answer arrived, and resuming it failed");
-
-    for (;;) {
-      if (failures >= MAX_RESUME_FAILURES) return failed();
-
-      await resume.sleep(
-        Math.min(Math.max(retryMs ?? DEFAULT_RESUME_MS, MIN_RESUME_MS), MAX_RESUME_MS),
-      );
-
-      if (cancelled || resume.aborted()) return "stop";
-
-      const opened = await resume.open(lastEventId);
-
-      if (cancelled || resume.aborted()) {
-        if ("body" in opened) await drain(opened.body);
-
-        return "stop";
-      }
-
-      if ("body" in opened) {
-        resumed = true;
-        resumedFrom = lastEventId;
-        reader = opened.body.getReader();
-        decoder = new TextDecoder();
-
-        return "resumed";
-      }
-
-      if (!opened.transient) return failed();
-
-      failures += 1;
-    }
+    return resumer.resumed && overEventLimit(pending) ? undefined : kept;
   };
 
   return new ReadableStream<Uint8Array>({
@@ -561,22 +627,35 @@ const watchStream = (
         if (cancelled) return;
 
         if (chunk.done) {
+          // A CR at the end was a line end: the events it finishes, which the resumed stream's reader is still owed.
+          const last = scan("", true);
+
+          if (last === undefined) return end(eventTooLarge());
+
+          if (resumer.resumed && last.length > 0) {
+            controller.enqueue(encoder.encode(last.map((event) => `${event}\n\n`).join("")));
+
+            return;
+          }
+
           if (answered) return controller.close();
 
           // The first stream is handed over as it came, so an event it left unfinished is cut off for the SDK.
-          const unfinished = !resumed && pending.trim() !== "";
-          const next = await resumeOrCut(broke);
+          const unfinished = resumer.resumed || pending.trim() === "" ? undefined : pending;
+          const next = await resumer.next(broke);
 
           if (cancelled) return;
 
-          if (next === "stop") return controller.close();
+          if (Resumption.$is("Stopped")(next)) return controller.close();
 
-          if (next !== "resumed") return end(next);
+          if (Resumption.$is("Cut")(next)) return end(next.error);
 
+          reader = next.body.getReader();
+          decoder = new TextDecoder();
           pending = "";
 
-          if (unfinished) {
-            controller.enqueue(encoder.encode(DISCARD_EVENT));
+          if (unfinished !== undefined) {
+            controller.enqueue(encoder.encode(discardEvent(unfinished)));
 
             return;
           }
@@ -600,7 +679,7 @@ const watchStream = (
           return end(eventTooLarge());
         }
 
-        if (!resumed) {
+        if (!resumer.resumed) {
           controller.enqueue(chunk.value);
 
           return;
@@ -621,18 +700,14 @@ const watchStream = (
   });
 };
 
-/** A blank line, which ends an SSE event. */
-const EVENT_END = /\r\n\r\n|\n\n|\r\r/g;
-
 /**
  * A GET stream's `body`, ended (and let go of) at an event over 1 MiB, so no event the client must hold whole outgrows
- * the limit. Bytes are counted from the last event's end.
+ * the limit.
  */
 const capEvents = (body: ReadableStream<Uint8Array>, ended?: () => void) => {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  let open = 0;
-  let tail = "";
+  let pending = "";
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -645,18 +720,11 @@ const capEvents = (body: ReadableStream<Uint8Array>, ended?: () => void) => {
         return;
       }
 
-      // The tail keeps an event end split across chunks findable.
-      const text = tail + decoder.decode(chunk.value, { stream: true });
-      const ends = [...text.matchAll(EVENT_END)];
-      const last = ends.at(-1);
+      const { events, rest } = splitEvents(pending + decoder.decode(chunk.value, { stream: true }));
 
-      open =
-        last === undefined
-          ? open + chunk.value.byteLength
-          : encoder.encode(text.slice((last.index ?? 0) + last[0].length)).byteLength;
-      tail = text.slice(-3);
+      pending = rest;
 
-      if (open > EVENT_LIMIT) {
+      if (overEventLimit(rest) || events.some(overEventLimit)) {
         await reader.cancel().catch(() => undefined);
         controller.close();
         ended?.();
@@ -814,11 +882,8 @@ export const tapFetch = (
         try {
           response = await fetch(input, { ...init, method: "GET", headers, body: null });
         } catch {
-          return { transient: true };
+          return Reopened.Failed({ transient: true });
         }
-
-        const transient =
-          response.status === 408 || response.status === 429 || response.status >= 500;
 
         if (
           !response.ok ||
@@ -828,10 +893,10 @@ export const tapFetch = (
         ) {
           await drain(response.body);
 
-          return { transient };
+          return Reopened.Failed({ transient: transientStatus(response.status) });
         }
 
-        return { body: response.body };
+        return Reopened.Stream({ body: response.body });
       },
     };
   };
