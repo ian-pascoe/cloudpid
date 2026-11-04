@@ -4,7 +4,8 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off
 import { McpHostTaskAck, McpHostTaskStarted, McpHostTaskState } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import * as Fiber from "effect/Fiber";
+import { describe, expect, it, vi } from "vitest";
 import { DOCS } from "./mcp.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";
 import { followViewTask, type ViewTask } from "./mcp/task-view.ts";
@@ -74,5 +75,42 @@ describe("an App View's MCP task whose question cannot be asked", () => {
 
     expect(await Effect.runPromise(followViewTask(task))).toMatchObject({ kind: "refused" });
     expect(sent()).toEqual(["tasks/get", "tasks/cancel"]);
+  });
+});
+
+describe("an App View's MCP task the follower is interrupted on", () => {
+  it("is cancelled at the server, though the poll that would have found it ending never came", async () => {
+    const host = fakeMcpHost([DOCS]);
+
+    host.answer(async (input) =>
+      input.op === "tasks/get"
+        ? McpHostTaskState.make({ task: { ...FIELDS, status: "working" } })
+        : McpHostTaskAck.make({}),
+    );
+
+    const task: ViewTask = {
+      client: host.client,
+      started: McpHostTaskStarted.make({ task: { ...FIELDS, status: "working" }, conn: "c" }),
+      server: DOCS.name,
+      tool: "report",
+      modelTool: "mcp__docs__report",
+      ctx: { origin: "app", callId: "c1", conversation: "1" },
+      // SAFETY: the follower only carries the conversation id into a record it never stores.
+      conversation: 1 as ViewTask["conversation"],
+      transport: "http",
+      signal: new AbortController().signal,
+      timing: { pollMs: 600_000 },
+    };
+
+    const ops = () =>
+      host.calls.flatMap((each) => (each.method === "request" ? [each.input.op] : []));
+
+    const fiber = Effect.runFork(followViewTask(task));
+
+    await vi.waitFor(() => expect(ops()).toEqual(["tasks/get"]));
+    // Between two polls: the next is ten minutes away.
+    await Effect.runPromise(fiber.pipe(Fiber.interrupt));
+
+    expect(ops()).toEqual(["tasks/get", "tasks/cancel"]);
   });
 });

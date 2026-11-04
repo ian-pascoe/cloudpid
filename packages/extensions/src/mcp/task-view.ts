@@ -7,9 +7,9 @@
 // entry (`./task-view-store.ts`) is all that outlives the request, and it counts toward the same caps.
 //
 // A task that waits for input (`input_required`) is asked live, as the call itself would have been (`./app-asking.ts`): a
-// form or a Sampling request waits on its card, the answers go with `tasks/update`, and a refusal (a form cloudpid cannot
-// take, a Sampling request refused, a question of another kind) ends the task with `tasks/cancel`. Nothing is kept for
-// later: a View's task lives as long as its request.
+// form or a Sampling request waits on its card, and the answers go with `tasks/update`. A page, or a form cloudpid cannot
+// take, is answered `cancel`; a refused Sampling request, a question of another kind, or a failed hook cancels the task
+// with `tasks/cancel`. Nothing is kept for later: a View's task lives as long as its request.
 import {
   isJsonObject,
   type JsonObject,
@@ -138,8 +138,8 @@ const recordOf = (task: ViewTask, now: number): McpTaskRecord => {
 /**
  * The question of one `inputRequests` entry, as the call's `onInput` reads it: `deferrable`, as the core labels a Modern
  * round's, so a page is answered `cancel` (a live caller declares no `url`) and a form cloudpid cannot take is a `cancel`
- * too, never a refusal; none for a method the View's call said it
- * cannot answer (`roots/list` among them: a View's task has no roots to give).
+ * too, never a refusal; none for a method the View's call said it cannot answer (`roots/list` among them: a View's task has
+ * no roots to give).
  */
 const questionOf = (key: string, entry: JsonObject, answers: McpAnswers) => {
   const method = entry["method"];

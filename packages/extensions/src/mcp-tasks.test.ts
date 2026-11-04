@@ -15,6 +15,7 @@ import {
 } from "@cloudpid/mcp/types";
 import type { TaskId, ToolExecutionApi } from "@earendil-works/pi-durable";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import { describe, expect, it, vi } from "vitest";
 import { open } from "./mcp.fixture.ts";
@@ -787,6 +788,50 @@ describe("which calls are offered a task", () => {
       ...Array.from({ length: 8 }, () => true),
       false,
     ]);
+    await session.root.abort(context, { background: true });
+  });
+});
+
+describe("the task caps shared with an App View", () => {
+  const VIEWED: FakeMcpServer = {
+    ...SERVER,
+    tools: [...(SERVER.tools ?? []), { name: "panel", _meta: { ui: { visibility: ["app"] } } }],
+  };
+
+  it("gives each place back, so the ninth call in a row to one server is offered a task too", async () => {
+    const { session, taskServer } = await setup(1);
+
+    for (let n = 0; n < 9; n += 1) await turn(session, "go");
+
+    expect(offers(taskServer)).toEqual(Array(9).fill(true));
+    await session.root.abort(context, { background: true });
+  });
+
+  it("offers the agent none while View requests hold the server's 8 places with their tasks in flight", async () => {
+    const { session, taskServer, tools } = await setup(100_000, TIMING, scripted(), {
+      servers: [VIEWED],
+    });
+
+    const stop = new AbortController();
+
+    for (let n = 0; n < 8; n += 1) {
+      Effect.runFork(
+        tools.appRequest({
+          method: "tools/call",
+          name: "panel",
+          server: "docs",
+          callId: `view-${n}`,
+          conversation: "1",
+          signal: stop.signal,
+        }),
+      );
+    }
+
+    await vi.waitFor(() => expect(offers(taskServer)).toHaveLength(8));
+    await turn(session, "go");
+
+    expect(offers(taskServer)).toEqual([...Array(8).fill(true), false]);
+    stop.abort();
     await session.root.abort(context, { background: true });
   });
 });

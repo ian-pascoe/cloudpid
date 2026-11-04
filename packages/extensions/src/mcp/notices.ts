@@ -31,7 +31,7 @@ import {
   type McpListing,
   mcpServersNotice,
 } from "./servers.ts";
-import { liveTasks, McpTasksDoc } from "./task-state.ts";
+import { McpTasksDoc, serversOfLive } from "./task-state.ts";
 import { MCP_WATCHES_KIND, MCP_WATCHES_NOTICE } from "./watches.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -307,7 +307,7 @@ export const mcpNotices = (harness: Harness): McpNotices => {
     taskServers: async () => {
       const state = await harness.snapshot(McpTasksDoc, context).catch(() => undefined);
 
-      return state === undefined ? [] : Arr.map(liveTasks(state), (task) => task.server);
+      return state === undefined ? [] : serversOfLive(state);
     },
     conversations: () =>
       harness.commit(async (tx) => {

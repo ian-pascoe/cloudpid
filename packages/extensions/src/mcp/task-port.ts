@@ -59,7 +59,7 @@ export type McpTasksOptions = {
    * The App Views' tasks and the places held for calls offered one, which count toward the caps beside the agent's: an
    * agent's offer takes a place from it too (`./task-view-store.ts`). Present when the Session follows Views' tasks.
    */
-  readonly views?: Pick<ViewTaskStore, "held" | "offer"> | undefined;
+  readonly views?: Pick<ViewTaskStore, "offer"> | undefined;
 };
 
 /**
