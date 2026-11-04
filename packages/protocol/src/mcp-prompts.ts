@@ -116,6 +116,55 @@ export const McpPromptResource = Schema.Struct({
 export type McpPromptResource = typeof McpPromptResource.Type;
 
 /**
+ * One question the prompt's server asked during its `prompts/get`, as the owner's entry keeps it
+ * (`McpPromptData.elicitation`; `docs/architecture/mcp-server-requests.md` → Elicitation requests, Records): the one
+ * `details.elicitation` of an agent's call holds, never a value, only the names of the fields answered. The enumerated
+ * strings are open sets, so a value a later build adds is kept and not a decode failure for the whole entry.
+ */
+export const McpPromptElicitation = Schema.Struct({
+  server: Schema.String,
+  /** `form` or `url`. */
+  mode: Schema.String,
+  /** `accept`, `decline` or `cancel`. */
+  action: Schema.String,
+  /** `owner` or `cloudpid`. */
+  by: Schema.String,
+  reason: Schema.optionalKey(Schema.String),
+  fields: Schema.Array(Schema.String),
+  /** The host of the page a URL-mode question asked the owner to open; never the address. */
+  host: Schema.optionalKey(Schema.String),
+  finished: Schema.optionalKey(Schema.Boolean),
+});
+
+export type McpPromptElicitation = typeof McpPromptElicitation.Type;
+
+/**
+ * One Sampling request the prompt's server made during its `prompts/get`, as the owner's entry keeps it
+ * (`McpPromptData.sampling`): the one `details.sampling` of an agent's call holds, never its content.
+ */
+export const McpPromptSampling = Schema.Struct({
+  server: Schema.String,
+  /** `answered`, `refused` or `failed`. */
+  status: Schema.String,
+  /** Who decided: `definition`, `owner`, `grant` or `cloudpid`. */
+  by: Schema.String,
+  grant: Schema.optionalKey(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
+  why: Schema.optionalKey(Schema.String),
+  role: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  tokens: Schema.optionalKey(Schema.Finite),
+  cost: Schema.optionalKey(Schema.Finite),
+  /** The record's id, which `mcp_sampling_get` reads. */
+  id: Schema.optionalKey(Schema.String),
+});
+
+export type McpPromptSampling = typeof McpPromptSampling.Type;
+
+/** The most of each kind of question an entry keeps of a get. */
+export const MCP_PROMPT_QUESTIONS_KEPT = 20;
+
+/**
  * What the owner's `cloudpid.user` entry keeps of an MCP prompt that was sent (`UserEntryData.mcpPrompt`): the
  * configured `server`, the Slash `command`, the prompt's `name` and `title`, its `arguments` (redacted of Secrets), the
  * result's `description` (cut at 1,000 characters, never sent to the model), its `parts` and at most 20 `resources`.
@@ -129,6 +178,10 @@ export const McpPromptData = Schema.Struct({
   description: Schema.optionalKey(Schema.String),
   parts: Schema.Array(McpPromptPart),
   resources: Schema.Array(McpPromptResource),
+  /** The Sampling requests its server made while it was got, in order; absent when it made none (or from before the key). */
+  sampling: McpPromptSampling.pipe(Schema.Array, Schema.optionalKey),
+  /** The questions its server asked while it was got, in order; absent when it asked none (or from before the key). */
+  elicitation: McpPromptElicitation.pipe(Schema.Array, Schema.optionalKey),
 });
 
 export type McpPromptData = typeof McpPromptData.Type;

@@ -104,7 +104,7 @@ import {
 
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 
-export type { PromptAsk, PromptAsking } from "./mcp/prompt-asking.ts";
+export type { PromptAsk, PromptAsking, PromptSummaries } from "./mcp/prompt-asking.ts";
 
 export { mayBeDirect } from "./mcp/exposure.ts";
 

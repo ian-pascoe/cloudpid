@@ -14,12 +14,16 @@ import {
   plainLine,
 } from "@cloudpid/mcp/types";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type { Mutable } from "effect/Types";
-import { type ClockHold, elicitingHooks } from "./elicit.ts";
+import type { McpElicitationDetail, McpSamplingDetail } from "./details.ts";
+import { type ClockHold, elicitingHooks, notAcceptedWords, stoppedWaiting } from "./elicit.ts";
 import { samplingHooks, wordsOf } from "./sample.ts";
 import { type McpSamplingService, SAMPLING_SAMPLE_MS } from "./sampling.ts";
 import type { McpQuestionsService } from "./questions.ts";
+import { MCP_CALL_ENDED_REASON } from "./question-records.ts";
 import type { McpBuildServer } from "./tools.ts";
 
 /** The longest a prompt's title is, as the card says it, in characters. */
@@ -56,21 +60,50 @@ export type PromptAsking = {
    * none was.
    */
   readonly sunk: () => string | undefined;
+  /**
+   * What the get's questions came to, in the order they were asked: what `mcpPrompt.elicitation` and `mcpPrompt.sampling`
+   * of the owner's entry keep (`docs/architecture/mcp-in-a-session.md` → Getting a prompt at send). Never a value. Read from
+   * this get's own hooks, never from the stored records, which a repeated `callId` (a send resent before it was admitted)
+   * would make another get's too.
+   */
+  readonly summaries: () => PromptSummaries;
+  /**
+   * What the failure of a get says of the owner's answer, when its last question was not accepted, for the send's refusal
+   * to end with ("You declined docs's request for input."). Absent when none was.
+   */
+  readonly answerLine: () => string | undefined;
+};
+
+/** The questions of one prompt get, by what became of each. */
+export type PromptSummaries = {
+  readonly elicitation: ReadonlyArray<McpElicitationDetail>;
+  readonly sampling: ReadonlyArray<McpSamplingDetail>;
 };
 
 /**
+ * Whether a prompt send's get waits at a page live: what its `answers` say (`McpAnswers.livePages`) and what its question
+ * hooks do with a page (`ElicitingCall.livePages`), declared once so the two cannot part.
+ */
+const LIVE_PAGES = true;
+
+/**
  * What a get says it can answer: a form, for as long as the owner has to answer it and a little more, so the Session's own
- * end of the wait comes first; and a Sampling request, which may run (`SAMPLING_SAMPLE_MS`) after the owner has said yes.
- * Neither is kept for later (no `defer`, no `pages`): a prompt send has no resume.
+ * end of the wait comes first; a Sampling request, which may run (`SAMPLING_SAMPLE_MS`) after the owner has said yes; and a
+ * page, waited at live (`livePages`). None is kept for later (no `defer`, no `pages`): a prompt send has no resume.
  */
 const answersOf = (samples: boolean): McpAnswers =>
   samples
     ? {
         elicitation: true,
         sampling: true,
+        livePages: LIVE_PAGES,
         inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + SAMPLING_SAMPLE_MS + 15_000,
       }
-    : { elicitation: true, inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + 15_000 };
+    : {
+        elicitation: true,
+        livePages: LIVE_PAGES,
+        inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + 15_000,
+      };
 
 /** The hooks of a prompt send whose Session can show questions, or none without them. */
 export const promptAsking = (
@@ -102,6 +135,7 @@ export const promptAsking = (
     signal: ask.signal,
     source: server.source,
     hold,
+    livePages: LIVE_PAGES,
   });
 
   // A server whose definition says `off` (or a stdio one) is declared no sampling, so none is asked.
@@ -155,6 +189,26 @@ export const promptAsking = (
     settle: async () => {
       await Effect.runPromise(questions.settleCall(ask.callId));
       await sampler?.settle();
+    },
+    summaries: () => ({
+      elicitation: [...asking.asked],
+      sampling: [...(sampler?.asked ?? [])],
+    }),
+    answerLine: () => {
+      // The answer that ended the get is the last one that was not an accept: another page's Done may have reached the
+      // Session after the decline, and a card the round's settling withdrew (the core's notice, or the get's end if it
+      // came late) is not an answer at all.
+      const last = Arr.findLast(
+        asking.asked,
+        (detail) =>
+          detail.action !== "accept" &&
+          detail.reason !== stoppedWaiting(server.name) &&
+          detail.reason !== MCP_CALL_ENDED_REASON,
+      );
+
+      const words = Option.flatMapNullishOr(last, (detail) => notAcceptedWords(detail, "You"));
+
+      return Option.getOrUndefined(Option.map(words, (line) => `${line}.`));
     },
     sunk: () => {
       const detail = sampler?.sunk();

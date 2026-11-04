@@ -53,6 +53,7 @@ import {
   type McpSamplingDecision,
   type McpSamplingVerdict,
   eraDefault,
+  eraOfAsk,
   pageIdentityOf,
   questionId,
   refusedBy,
@@ -183,9 +184,6 @@ type DeferredRecord = {
 
 /** How a round's state is named in its record: a `ResumeState` is not, as before pages. */
 const stateOf = { Resume: undefined, Resend: "resend", Read: "read" } as const;
-
-/** The era an ask names, or the default of one from a core that named none. */
-const eraOfAsk = (ask: McpQuestionAsk): McpEra => ask.era ?? eraDefault(ask.page !== undefined);
 
 const kindOf = (question: StoredQuestion): DeferredKind => question.kind ?? "elicitation";
 

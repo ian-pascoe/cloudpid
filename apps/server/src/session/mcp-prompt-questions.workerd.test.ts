@@ -10,6 +10,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
+  type FakeOptions,
   type FakePrompt,
   legacyStatefulServer,
   modernServer,
@@ -127,14 +128,15 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
  * first turn has the host discover the server.
  */
 const open = async (
-  make: (options: { readonly prompts: ReadonlyArray<FakePrompt> }) => FakeServer,
+  make: (options: FakeOptions) => FakeServer,
   prompt: FakePrompt,
   name = "mcp",
   server: Record<string, Schema.Json> = {},
+  more: Omit<FakeOptions, "prompts"> = {},
 ) => {
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
-  const fake = make({ prompts: [prompt] });
+  const fake = make({ ...more, prompts: [prompt] });
 
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
     fake.handle(new Request(input, init)),
@@ -549,6 +551,417 @@ describe("a Legacy server's page during a prompt send", () => {
     // After the bound (6 s from the ask) and before the server was done (12 s).
     expect(Date.now() - started).toBeGreaterThanOrEqual(6000);
     expect(Date.now() - started).toBeLessThan(11_000);
+    owner.close();
+  });
+});
+
+const Summaries = Schema.Unknown.pipe(Schema.Array, Schema.optional);
+
+const SummariesData = Schema.Struct({
+  mcpPrompt: Schema.optional(Schema.Struct({ elicitation: Summaries, sampling: Summaries })),
+});
+
+/** What the owner's entry of the sent prompt keeps of the server's questions: `mcpPrompt.elicitation` and `.sampling`. */
+const summariesOf = async (stub: DurableObjectStub<TestSession>) => {
+  const [, picked] = await ownerMessages(stub);
+  const data = picked?.data;
+  const mcpPrompt = Schema.is(SummariesData)(data) ? data.mcpPrompt : undefined;
+
+  return { elicitation: mcpPrompt?.elicitation, sampling: mcpPrompt?.sampling };
+};
+
+/** Open the page of the only card, then press Done; the card that follows (if any) is another one. */
+const finishPage = async (owner: Awaited<ReturnType<typeof connect>>) => {
+  const [card] = owner.forms();
+
+  owner.send({
+    type: "mcp_elicitation_answer",
+    id: `open-${card?.id}`,
+    request: card?.id ?? "",
+    action: "opened",
+  });
+  await settles(async () => expect(owner.forms()[0]?.page?.opened).toBe(true));
+  owner.send({
+    type: "mcp_elicitation_answer",
+    id: `done-${card?.id}`,
+    request: card?.id ?? "",
+    action: "done",
+  });
+
+  return card;
+};
+
+describe("a Modern server's page during a prompt send", () => {
+  it("waits on a card with Open and Done, tells nobody, and the get goes on once the owner is done", async () => {
+    const { stub } = await open(modernServer, pagePrompt(0));
+    const owner = await connect(stub);
+    let finished = false;
+
+    const sending = send(stub).then((outcome) => {
+      finished = true;
+
+      return outcome;
+    });
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+
+    const [card] = owner.forms();
+
+    expect(card).toMatchObject({
+      server: "docs",
+      prompt: "Review PR",
+      callId: mcpPromptCallId("pick-1"),
+      page: { url: PAGE_URL, host: "login.example.com", opened: false, retry: true, era: "modern" },
+    });
+    expect(card?.waits).toBeUndefined();
+
+    // Open answers the server nothing: the get still waits for Done.
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "open",
+      request: card?.id ?? "",
+      action: "opened",
+    });
+    await settles(async () => expect(owner.forms()[0]?.page?.opened).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(finished).toBe(false);
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "done",
+      request: card?.id ?? "",
+      action: "done",
+    });
+
+    expect(await sending).toHaveProperty("submission");
+    await settles(async () => expect(owner.forms()).toEqual([]));
+    await idle(stub);
+
+    const [, picked] = await ownerMessages(stub);
+
+    // The server was answered `accept` by Done, which its prompt's message repeats.
+    expect(picked?.text).toContain("accept");
+    expect(await inputPushes(stub)).toEqual([]);
+    expect(await summariesOf(stub)).toEqual({
+      elicitation: [
+        {
+          server: "docs",
+          mode: "url",
+          action: "accept",
+          by: "owner",
+          fields: [],
+          host: "login.example.com",
+        },
+      ],
+      sampling: undefined,
+    });
+    owner.close();
+  });
+
+  it('reads "Not finished" when the server asks again, and goes on after the next Done', async () => {
+    const asking: FakePrompt = { ...pagePrompt(0), asks: { url: PAGE_URL, again: 1 } };
+    const { stub } = await open(modernServer, asking);
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    expect(owner.forms()[0]?.page?.again).toBeUndefined();
+
+    const first = await finishPage(owner);
+
+    await settles(async () => expect(owner.forms()[0]?.id).not.toBe(first?.id));
+    expect(owner.forms()[0]?.page).toMatchObject({ again: true, opened: false });
+
+    await finishPage(owner);
+
+    expect(await sending).toHaveProperty("submission");
+    await idle(stub);
+    expect(await inputPushes(stub)).toEqual([]);
+    expect((await summariesOf(stub)).elicitation).toHaveLength(2);
+    owner.close();
+  });
+
+  it("is cancelled after its own wait, and the get goes on", async () => {
+    const { stub } = await open(modernServer, pagePrompt(0), "mcp-short-wait");
+    const owner = await connect(stub);
+
+    expect(await send(stub)).toHaveProperty("submission");
+    await idle(stub);
+
+    const [, picked] = await ownerMessages(stub);
+
+    expect(picked?.text).toContain("cancel");
+    expect(owner.forms()).toEqual([]);
+    expect((await summariesOf(stub)).elicitation).toMatchObject([
+      { mode: "url", action: "cancel", by: "cloudpid" },
+    ]);
+    owner.close();
+  });
+
+  it("is withdrawn with its card when the owner stops", async () => {
+    const { stub } = await open(modernServer, pagePrompt(0));
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    await runInDurableObject(stub, (instance: TestSession) => instance.abortRoot());
+
+    expect(await sending).toEqual({ withdrawn: true });
+    await settles(async () => expect(owner.forms()).toEqual([]));
+    owner.close();
+  });
+});
+
+describe("a Legacy server's -32042 during a prompt send", () => {
+  const VISIT: FakePrompt = {
+    name: "review",
+    title: "Review PR",
+    arguments: [{ name: "pr", required: true }],
+    get: () => ({
+      messages: [{ role: "assistant", content: { type: "text", text: "opened after the page" } }],
+    }),
+  };
+
+  const gated = (times: number, name = "mcp", pages = 1) => {
+    const gatePrompts = { times, calls: 0, pages, url: PAGE_URL };
+
+    return { gatePrompts, opened: open(legacyStatefulServer, VISIT, name, {}, { gatePrompts }) };
+  };
+
+  it("waits on a card, and Done sends the get again once, which completes", async () => {
+    const { gatePrompts, opened } = gated(1);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    expect(owner.forms()[0]).toMatchObject({
+      server: "docs",
+      prompt: "Review PR",
+      callId: mcpPromptCallId("pick-1"),
+      message: "Authorize first",
+      page: { url: PAGE_URL, opened: false, retry: true, era: "legacy" },
+    });
+
+    await finishPage(owner);
+
+    expect(await sending).toHaveProperty("submission");
+    await settles(async () => expect(owner.forms()).toEqual([]));
+    await idle(stub);
+
+    const [, picked] = await ownerMessages(stub);
+
+    expect(picked?.text).toContain("opened after the page");
+    expect(gatePrompts.calls).toBe(2);
+    expect(await inputPushes(stub)).toEqual([]);
+    expect((await summariesOf(stub)).elicitation).toMatchObject([
+      { mode: "url", action: "accept", by: "owner", host: "login.example.com" },
+    ]);
+    owner.close();
+  });
+
+  it('reads "Not finished" when the resend is a -32042 for the same page, and goes on after the next Done', async () => {
+    const { gatePrompts, opened } = gated(2);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+
+    const first = await finishPage(owner);
+
+    await settles(async () => expect(owner.forms()[0]?.id).not.toBe(first?.id));
+    expect(owner.forms()[0]?.page).toMatchObject({ again: true, opened: false });
+
+    await finishPage(owner);
+
+    expect(await sending).toHaveProperty("submission");
+    expect(gatePrompts.calls).toBe(3);
+    owner.close();
+  });
+
+  it("fails with the server's error and the owner's answer when they decline", async () => {
+    const { gatePrompts, opened } = gated(1);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "no",
+      request: owner.forms()[0]?.id ?? "",
+      action: "decline",
+    });
+
+    expect(await sending).toMatchObject({
+      failure: {
+        code: "MCP_PROMPT_FAILED",
+        server: "docs",
+        message: expect.stringMatching(
+          /Authorization needed.*You declined docs's request for input/,
+        ),
+      },
+    });
+    expect(gatePrompts.calls).toBe(1);
+    // Nothing was placed beyond the first turn's message, and no card is left.
+    expect(await ownerMessages(stub)).toHaveLength(1);
+    await settles(async () => expect(owner.forms()).toEqual([]));
+    owner.close();
+  });
+
+  it("shows every page of a round together, and Done at each sends the get again once", async () => {
+    const { gatePrompts, opened } = gated(1, "mcp", 2);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(2));
+    await finishPage(owner);
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    await finishPage(owner);
+
+    expect(await sending).toHaveProperty("submission");
+    expect(gatePrompts.calls).toBe(2);
+    owner.close();
+  });
+
+  it("settles a round of two pages when one is declined: the other's card is withdrawn, and the get is not sent again", async () => {
+    const { gatePrompts, opened } = gated(1, "mcp", 2);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(2));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "no",
+      request: owner.forms()[1]?.id ?? "",
+      action: "decline",
+    });
+
+    // Without waiting out the first page's own 5 min.
+    expect(await sending).toMatchObject({
+      failure: {
+        code: "MCP_PROMPT_FAILED",
+        message: expect.stringMatching(
+          /Authorization needed.*You declined docs's request for input\.$/,
+        ),
+      },
+    });
+    expect(gatePrompts.calls).toBe(1);
+    await settles(async () => expect(owner.forms()).toEqual([]));
+    owner.close();
+  });
+
+  it("fails with the server's error when the owner does not answer within its wait", async () => {
+    const { gatePrompts, opened } = gated(1, "mcp-short-wait");
+    const { stub } = await opened;
+    const owner = await connect(stub);
+
+    expect(await send(stub)).toMatchObject({
+      failure: {
+        code: "MCP_PROMPT_FAILED",
+        message: expect.stringMatching(/Authorization needed.*cloudpid cancelled docs's request/),
+      },
+    });
+    expect(gatePrompts.calls).toBe(1);
+    expect(owner.forms()).toEqual([]);
+    owner.close();
+  });
+
+  it("stops at the 11th -32042: the server kept asking for the same page", async () => {
+    const { gatePrompts, opened } = gated(1000);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    let lastId: string | undefined;
+
+    for (let round = 1; round <= 10; round += 1) {
+      await settles(async () => {
+        expect(owner.forms()).toHaveLength(1);
+        expect(owner.forms()[0]?.id).not.toBe(lastId);
+      });
+      lastId = owner.forms()[0]?.id;
+      await finishPage(owner);
+    }
+
+    expect(await sending).toMatchObject({
+      failure: {
+        code: "MCP_PROMPT_FAILED",
+        message: expect.stringContaining("kept asking for the same page; stopped after 10 tries"),
+      },
+    });
+    expect(gatePrompts.calls).toBe(11);
+    owner.close();
+  });
+
+  it("keeps only its own questions in the entry of a get sent again under the same requestId", async () => {
+    const { opened } = gated(1);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const first = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "no",
+      request: owner.forms()[0]?.id ?? "",
+      action: "decline",
+    });
+    expect(await first).toHaveProperty("failure");
+
+    // The same `requestId` again: the server asks nothing this time, so the entry holds no question, not the first's.
+    expect(await send(stub)).toHaveProperty("submission");
+    await idle(stub);
+    expect(await summariesOf(stub)).toEqual({ elicitation: undefined, sampling: undefined });
+    owner.close();
+  });
+});
+
+describe("what the entry of a sent prompt keeps of a form and a Sampling request", () => {
+  it("lists the form the owner answered, never a value", async () => {
+    const { stub } = await open(modernServer, FORM_PROMPT);
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "yes",
+      request: owner.forms()[0]?.id ?? "",
+      action: "accept",
+      content: {},
+    });
+    expect(await sending).toHaveProperty("submission");
+    await idle(stub);
+
+    expect(await summariesOf(stub)).toEqual({
+      elicitation: [{ server: "docs", mode: "form", action: "accept", by: "owner", fields: [] }],
+      sampling: undefined,
+    });
+    owner.close();
+  });
+
+  it.each(eras)("lists the Sampling request a %s server made", async (_era, make) => {
+    const { stub } = await open(make, SAMPLE_PROMPT);
+    const owner = await connect(stub);
+    const sending = send(stub, ["a sampled reply", "reviewed"]);
+
+    await settles(async () => expect(owner.samples()).toHaveLength(1));
+    owner.send({
+      type: "mcp_sampling_answer",
+      id: "yes",
+      request: owner.samples()[0]?.id ?? "",
+      choice: "allow_call",
+    });
+    expect(await sending).toHaveProperty("submission");
+    await idle(stub);
+
+    expect((await summariesOf(stub)).sampling).toMatchObject([
+      { server: "docs", status: "answered", by: "owner" },
+    ]);
     owner.close();
   });
 });

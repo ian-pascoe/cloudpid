@@ -327,7 +327,15 @@ export interface FakePrompt {
   readonly asks?:
     | { readonly message: string }
     | { readonly sample: string }
-    | { readonly url: string; readonly holdMs?: number };
+    | {
+        readonly url: string;
+        /** A Legacy server goes on for this long after the page's answer. */
+        readonly holdMs?: number;
+        /** A Modern server asks the same page again this many times (the owner was not done there). */
+        readonly again?: number;
+        /** A Modern server asks this many pages in one round (`q1`, `q2`, ...; default 1). */
+        readonly pages?: number;
+      };
   /** The get never answers until the call is cancelled (a server that does not answer in time). */
   readonly hangs?: true;
 }
@@ -358,6 +366,13 @@ export interface FakeOptions {
    * the `elicitationId` `page-1`, … unless `sameId`, `page-1` each time); `calls` counts what it was sent.
    */
   readonly gate?: {
+    readonly times: number;
+    calls: number;
+    readonly pages?: number;
+    readonly url?: string;
+  };
+  /** Like `gate`, for `prompts/get`: it answers `-32042` for its first `times` gets (each listing `pages` pages), and counts them in `calls`. */
+  readonly gatePrompts?: {
     readonly times: number;
     calls: number;
     readonly pages?: number;
@@ -610,6 +625,24 @@ const fakeMcp = (
 
       if (found === undefined) throw new Error(`No prompt ${request.params.name}`);
 
+      const { gatePrompts } = options;
+
+      if (gatePrompts !== undefined) {
+        gatePrompts.calls += 1;
+
+        if (gatePrompts.calls <= gatePrompts.times) {
+          throw new UrlElicitationRequiredError(
+            Array.from({ length: gatePrompts.pages ?? 1 }, (_unused, index) => ({
+              mode: "url" as const,
+              elicitationId: `page-${index + 1}`,
+              url: gatePrompts.url ?? "https://example.com/authorize",
+              message: "Authorize first",
+            })),
+            "Authorization needed",
+          );
+        }
+      }
+
       if (found.hangs === true) {
         return untilAborted(ctx.mcpReq.signal, () => options.cancelled?.push(request.params.name));
       }
@@ -626,9 +659,25 @@ const fakeMcp = (
         // A Modern server asks in its answer: `input_required` first, then the get answered with the round's responses.
         if (modern) {
           const responses = ctx.mcpReq.inputResponses;
+          const round = Number(ctx.mcpReq.requestState<string>()?.slice("prompt-".length) ?? "0");
 
-          if (responses === undefined) {
-            return inputRequired({
+          const morePages = (): Record<string, ReturnType<typeof inputRequired.elicitUrl>> => {
+            const more: Record<string, ReturnType<typeof inputRequired.elicitUrl>> = {};
+
+            if ("url" in asks) {
+              for (let page = 2; page <= (asks.pages ?? 1); page += 1) {
+                more[`q${page}`] = inputRequired.elicitUrl({
+                  url: asks.url,
+                  message: "Open the page",
+                });
+              }
+            }
+
+            return more;
+          };
+
+          const ask = (next: number) =>
+            inputRequired({
               inputRequests: {
                 q1:
                   "message" in asks
@@ -644,17 +693,22 @@ const fakeMcp = (
                           ],
                           maxTokens: 100,
                         }),
+                ...morePages(),
               },
-              requestState: "prompt-1",
+              requestState: `prompt-${next}`,
             });
-          }
+
+          if (responses === undefined) return ask(1);
 
           // SAFETY: the client's answers are JSON.
           options.asked?.push({
-            round: 1,
+            round,
             state: ctx.mcpReq.requestState<string>() ?? "",
             responses: { ...responses } as Json,
           });
+
+          // The owner was not done at the page: the server asks for it once more.
+          if ("url" in asks && round <= (asks.again ?? 0)) return ask(round + 1);
 
           // SAFETY: the client's answers are JSON.
           return answered(responses["q1"] as Json);

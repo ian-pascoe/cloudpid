@@ -85,6 +85,62 @@ describe("an MCP prompt in the owner's message", () => {
     expect(markup).toContain("link · file:///repo/notes.md");
   });
 
+  it("tells of each question cloudpid ended unseen, in the call card's words, and not of what the owner answered", () => {
+    const markup = render({
+      ...PROMPT,
+      elicitation: [
+        {
+          server: "docs",
+          mode: "form",
+          action: "decline",
+          by: "cloudpid",
+          reason: "it asked for a credential ('API token')",
+          fields: [],
+        },
+        { server: "docs", mode: "form", action: "accept", by: "owner", fields: ["team"] },
+        { server: "docs", mode: "url", action: "decline", by: "owner", fields: [] },
+      ],
+      sampling: [
+        { server: "docs", status: "refused", by: "cloudpid", reason: "over the budget" },
+        { server: "docs", status: "refused", by: "grant", grant: "session" },
+        { server: "docs", status: "refused", by: "owner" },
+        { server: "docs", status: "answered", by: "owner" },
+        { server: "docs", status: "answered", by: "grant", grant: "call" },
+        { server: "docs", status: "answered", by: "definition" },
+        { server: "docs", status: "failed", by: "cloudpid", reason: "the model failed" },
+      ],
+    });
+
+    expect(markup).toContain(
+      "cloudpid declined docs&#x27;s form: it asked for a credential (&#x27;API token&#x27;)",
+    );
+    expect(markup).toContain(
+      "cloudpid refused docs&#x27;s request to use a model: over the budget",
+    );
+    // A refusal by the owner's standing choice for the Session is told too: they were not there for this request.
+    expect(markup).toContain(
+      "You refused docs&#x27;s request to use a model, as you chose for this Session",
+    );
+    expect(markup).not.toContain("used a model");
+    expect(markup).not.toContain("failed");
+    expect(markup).not.toContain("You answered");
+    expect(markup).not.toContain("You declined");
+    // The owner's own refusal at a card is not repeated: only the standing choice's line has "You refused".
+    expect(markup.split("You refused")).toHaveLength(2);
+  });
+
+  it("shows no line for the questions of a prompt that asked none, or only the owner answered", () => {
+    expect(render(PROMPT)).not.toContain("Questions cloudpid ended");
+    expect(
+      render({
+        ...PROMPT,
+        elicitation: [
+          { server: "docs", mode: "form", action: "accept", by: "owner", fields: ["team"] },
+        ],
+      }),
+    ).not.toContain("Questions cloudpid ended");
+  });
+
   it("shows no arguments list for a prompt that took none", () => {
     expect(render({ ...PROMPT, arguments: {} })).not.toContain("Prompt arguments");
   });

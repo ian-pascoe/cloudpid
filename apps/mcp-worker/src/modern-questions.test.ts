@@ -183,6 +183,43 @@ describe("a Modern server's questions through the engine", () => {
     expect(JSON.stringify(read?.rpc?.params?.["_meta"])).toContain('"elicitation":{"form":{}}');
   });
 
+  it("declares the URL mode on a prompt get that waits at pages live, which keeps nothing, and not on one that does not", async () => {
+    const visit = {
+      name: "visit",
+      get: () => ({ messages: [] }),
+    };
+
+    const waiting = modernServer({ prompts: [visit] });
+    const asking = modernServer({ prompts: [visit] });
+
+    const prompt = (ctx: McpCallContext): McpEngineRequestEncoded => ({
+      op: "prompts/get",
+      name: "visit",
+      arguments: {},
+      ctx,
+    });
+
+    const owner: McpCallContext = { origin: "owner", conversation: "c1" };
+
+    await send(
+      waiting,
+      prompt({ ...owner, answers: { elicitation: true, livePages: true } }),
+      deferring,
+    );
+    await send(asking, prompt({ ...owner, answers: { elicitation: true } }), deferring);
+
+    const metaOf = (server: FakeServer) =>
+      JSON.stringify(
+        server.received.find((received) => received.rpc?.method === "prompts/get")?.rpc?.params?.[
+          "_meta"
+        ],
+      );
+
+    expect(metaOf(waiting)).toContain('"elicitation":{"form":{},"url":{}}');
+    expect(metaOf(asking)).toContain('"elicitation":{"form":{}}');
+    expect(metaOf(asking)).not.toContain('"url"');
+  });
+
   it("refuses to resume a state of a format it does not know, sending nothing", async () => {
     const server = modernServer({ moreTools: [ASK_TOOL] });
 

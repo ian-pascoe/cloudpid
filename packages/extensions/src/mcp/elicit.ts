@@ -83,6 +83,12 @@ export type ElicitingCall = {
   readonly keepsPages?: boolean | undefined;
   /** The call's own clock: stopped while a question waits, and started again. */
   readonly hold: ClockHold;
+  /**
+   * The call waits for the owner at a page live, with no resume (a prompt send's get): a Modern server's page, or a Legacy
+   * `-32042`'s, is shown with Open and "Done, try again" and answered `accept` once the owner is done there, for as long as
+   * the question's own wait. Otherwise such a page is turned away (`MCP_PAGE_NOT_KEPT_REASON`).
+   */
+  readonly livePages?: boolean | undefined;
 };
 
 /** What stops and starts a call's own clock. */
@@ -327,9 +333,9 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     }
 
     // A page of a Modern server's round answered on the spot would send the call again before the owner has been there:
-    // a call that keeps no questions is never offered one (`url` is declared only to a caller that defers), so a server
-    // that asks anyway is told `cancel`.
-    if (request.mode === "deferrable" && page !== undefined) {
+    // a call that keeps no questions and does not wait at pages live is never offered one (`url` is declared only to a
+    // caller that defers, or waits live), so a server that asks anyway is told `cancel`.
+    if (request.mode === "deferrable" && page !== undefined && call.livePages !== true) {
       note("cancel", "cloudpid", [], MCP_PAGE_NOT_KEPT_REASON, seen);
 
       return CANCELLED;
@@ -349,8 +355,9 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       }),
     );
 
-    // A page the owner opened: the server goes on, and the call's clock stays stopped until the page is finished.
-    if (page !== undefined && outcome.action === "accept") {
+    // A page the owner opened: the server goes on, and the call's clock stays stopped until the page is finished. A page the
+    // call waits at to send again (`retry`) is not: the owner's Done answers it, and the call goes on at once.
+    if (page !== undefined && outcome.action === "accept" && question.retry !== true) {
       void Effect.runPromise(call.questions.whileOpen(call.callId, question.key)).finally(() =>
         Effect.runPromise(call.hold.resume),
       );
@@ -448,9 +455,7 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     onInput,
     idle: () => Promise.allSettled(answering).then(() => undefined),
     onInputEnded: (key) =>
-      Effect.runPromise(
-        call.questions.withdraw(call.callId, key, `${call.server} stopped waiting`),
-      ),
+      Effect.runPromise(call.questions.withdraw(call.callId, key, stoppedWaiting(call.server))),
     onInputComplete: (key) => {
       // The record of the page says the owner finished there, whether the call's note of it came first or not.
       finished.add(key);
@@ -467,15 +472,36 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   };
 };
 
-/** What the model is told of one question that was not answered by the owner's submit. */
-const lineOf = (detail: McpElicitationDetail): string | undefined => {
+/** Why a question's card was withdrawn when its server stopped waiting for the answer (`onInputEnded`). */
+export const stoppedWaiting = (server: string) => `${server} stopped waiting`;
+
+/**
+ * What became of a question that was not accepted, in `voice`'s words ("The user" to the model, "You" to the owner), with
+ * no closing mark; absent for one that was accepted. Whatever the server wrote in the reason is cut to a line and kept
+ * from reading as markup.
+ */
+export const notAcceptedWords = (
+  detail: McpElicitationDetail,
+  voice: "You" | "The user",
+): string | undefined => {
   if (detail.action === "accept") return undefined;
 
-  if (detail.by === "owner") {
-    return `The user ${detail.action === "decline" ? "declined" : "cancelled"} ${detail.server}'s request for input. Don't repeat the call unless the user asks.`;
-  }
+  const ended = detail.action === "decline" ? "declined" : "cancelled";
 
-  return `cloudpid ${detail.action === "decline" ? "declined" : "cancelled"} ${detail.server}'s request for input: ${plainLine(detail.reason ?? "no reason given", 400).replace(/[<>]/g, "")}`;
+  if (detail.by === "owner") return `${voice} ${ended} ${detail.server}'s request for input`;
+
+  const why = plainLine(detail.reason ?? "no reason given", 400).replace(/[<>]/g, "");
+
+  return `cloudpid ${ended} ${detail.server}'s request for input: ${why}`;
+};
+
+/** What the model is told of one question that was not answered by the owner's submit. */
+const lineOf = (detail: McpElicitationDetail): string | undefined => {
+  const words = notAcceptedWords(detail, "The user");
+
+  if (words === undefined) return undefined;
+
+  return detail.by === "owner" ? `${words}. Don't repeat the call unless the user asks.` : words;
 };
 
 /**

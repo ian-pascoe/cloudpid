@@ -68,6 +68,15 @@ export const McpAnswers = Schema.Struct({
    * the owner is done there, as `resume` does for any Modern round (a read, which has no `resume`, declares none).
    */
   pages: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The caller waits for the owner at a page, live, with no resume (a prompt send's `prompts/get`, which keeps nothing for
+   * later): a Modern request declares the elicitation's `url` mode, and its page reaches `onInput` as a `deferrable`
+   * question the caller answers once the owner is done there; a Legacy server's `-32042` reaches it the same way, once per
+   * resend of the request, at most `MCP_INPUT_ROUNDS` times. Without it a get has neither (`docs/architecture/
+   * mcp-server-requests.md` → Questions, Elicitation requests). A new key, so a core from before it ignores it and the
+   * request is as it was.
+   */
+  livePages: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpAnswers = typeof McpAnswers.Type;
