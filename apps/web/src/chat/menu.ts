@@ -11,6 +11,7 @@ import {
   type McpCatalogServer,
   type McpMenuResource,
   type McpMenuServer,
+  type McpMenuTemplate,
   type McpPromptEntry,
   type McpResourceMenu,
   MENU_STATE,
@@ -31,6 +32,16 @@ export type MenuPick =
   | { readonly kind: "prompt"; readonly prompt: McpPromptEntry }
   /** An MCP resource of the `@` menu: it leaves the text, and the composer holds it as a chip to attach. */
   | { readonly kind: "resource"; readonly server: string; readonly resource: McpMenuResource }
+  /**
+   * An MCP resource template of the `@` menu: it leaves the text, and the composer opens the form for its variables, or holds
+   * the resource as a chip at once when it has none. `completions` says its server completes them (`ref/resource`).
+   */
+  | {
+      readonly kind: "template";
+      readonly server: string;
+      readonly template: McpMenuTemplate;
+      readonly completions: boolean;
+    }
   /** A muted row (a server whose prompts are not there yet): it cannot be picked. */
   | { readonly kind: "none" };
 
@@ -173,6 +184,29 @@ const resourceRow = (server: McpMenuServer, resource: McpMenuResource): MenuEntr
   pick: { kind: "resource", server: server.server, resource },
 });
 
+/** One resource template as a row: its title or name, its URI template muted after it, and the first line of its description. */
+const templateRow = (server: McpMenuServer, template: McpMenuTemplate): MenuEntry => ({
+  id: `template:${server.server}:${template.uriTemplate}`,
+  label: template.title ?? template.name,
+  detail: template.uriTemplate,
+  description: firstLine(template.description ?? "") || template.mimeType,
+  pick: {
+    kind: "template",
+    server: server.server,
+    template,
+    completions: server.completions === true,
+  },
+});
+
+/** The templates `query` matches in `server`, best first: by name or title, then by URI template. */
+const rankedTemplates = (query: string, server: McpMenuServer): readonly McpMenuTemplate[] =>
+  rankedInPasses(
+    query,
+    server.templates ?? [],
+    [(template) => template.title ?? template.name, (template) => template.uriTemplate],
+    () => 0,
+  );
+
 /** The row of a server whose resources are not listed: muted, with why. */
 const mutedServerRow = (server: McpMenuServer): MenuEntry => ({
   id: `resource-server:${server.server}`,
@@ -225,11 +259,30 @@ const resourceSections = (
     ({ resource }) => priorityOf(resource),
   );
 
-  const servers = [...new Set(rows.map(({ server }) => server))];
+  // A server's templates follow its resources in its section: they match by name or title, else by URI template, else by server.
+  const templates = rankedInPasses(
+    query,
+    listed.flatMap((server) => (server.templates ?? []).map((template) => ({ server, template }))),
+    [
+      ({ template }) => template.title ?? template.name,
+      ({ template }) => template.uriTemplate,
+      ({ server }) => server.server,
+    ],
+    () => 0,
+  );
+
+  const servers = [
+    ...new Set([...rows.map(({ server }) => server), ...templates.map(({ server }) => server)]),
+  ];
 
   const sections = servers.map((server) => ({
     label: `MCP · ${server.server}${sourceNote(server.source)}`,
-    rows: rows.flatMap((row) => (row.server === server ? [resourceRow(server, row.resource)] : [])),
+    rows: [
+      ...rows.flatMap((row) => (row.server === server ? [resourceRow(server, row.resource)] : [])),
+      ...templates.flatMap((row) =>
+        row.server === server ? [templateRow(server, row.template)] : [],
+      ),
+    ],
   }));
 
   const muted = rank(
@@ -260,7 +313,12 @@ const mentionMenu = (
 
     const rows: readonly MenuEntry[] =
       server.state === MENU_STATE.ok
-        ? rankedResources(rest, server.resources).map((resource) => resourceRow(server, resource))
+        ? [
+            ...rankedResources(rest, server.resources).map((resource) =>
+              resourceRow(server, resource),
+            ),
+            ...rankedTemplates(rest, server).map((template) => templateRow(server, template)),
+          ]
         : [mutedServerRow(server)];
 
     return rows.length > 0

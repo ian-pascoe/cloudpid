@@ -30,6 +30,10 @@ import {
   McpAppContextAnswer,
   McpAppRequestAnswer,
   McpAppMounted,
+  McpCompleteArgument,
+  McpCompleteContext,
+  McpCompleteRef,
+  McpCompletion,
   McpResourcePreviewAnswer,
   resourceUnavailable,
   OwnerTabLinks,
@@ -514,6 +518,25 @@ export interface SessionClient {
     path?: string,
   ) => Effect.Effect<McpResourcePreviewAnswer, SessionCommandError>;
   /**
+   * The suggestions for `argument` of the prompt or resource template `ref` names, of MCP server `server`, for the form in
+   * the composer of conversation `conversationId` (the active branch's when none): `field` names the form's field, so a newer
+   * request for it cancels the older at the Session, and `requestId` names this one. Interrupting it sends
+   * `mcp_complete_cancel`, so the Session cancels the request at the server. The answer is the suggestions or why there are
+   * none (an answer, not a failure: a Session from before it, whose `hello` did not say `mcpCompletions`, is answered
+   * `unsupported` here, with nothing sent); fails as `catalog` does when the socket is down.
+   */
+  readonly complete: (
+    conversationId: number | undefined,
+    request: {
+      readonly requestId: string;
+      readonly field: string;
+      readonly server: string;
+      readonly ref: McpCompleteRef;
+      readonly argument: McpCompleteArgument;
+      readonly context?: McpCompleteContext | undefined;
+    },
+  ) => Effect.Effect<McpCompletion, SessionCommandError>;
+  /**
    * An App View's log line (`notifications/message`) for call `callId`, which the Session puts on a telemetry span. Sent
    * to a Session that takes it (its `hello` said `appViews`) and dropped otherwise; nothing is answered.
    */
@@ -646,6 +669,8 @@ const decodeMcpAppContextAnswer = Schema.decodeUnknownOption(McpAppContextAnswer
 const decodeMcpAppRequestAnswer = Schema.decodeUnknownOption(McpAppRequestAnswer);
 
 const decodeMcpResourcePreviewAnswer = Schema.decodeUnknownOption(McpResourcePreviewAnswer);
+
+const decodeMcpCompletion = Schema.decodeUnknownOption(McpCompletion);
 
 const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
 
@@ -780,6 +805,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   let attachedResources: boolean | null = null;
   // Whether it takes `mcp_resource_read` (`hello.resourcePreviews`), on the same terms.
   let resourcePreviews = false;
+  // Whether it takes `mcp_complete` and `mcp_complete_cancel` (`hello.mcpCompletions`), on the same terms.
+  let mcpCompletions = false;
   // Whether it takes `submit.app` (`hello.appMessages`) and `mcp_app_context` (`hello.appContext`), on the same terms.
   let appMessages = false;
   let appContext = false;
@@ -1163,6 +1190,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     appContext = false;
     resourcePreviews = false;
     mcpDecline = false;
+    mcpCompletions = false;
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of pending) submit.sent = false;
@@ -1210,6 +1238,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         appMessages = message.appMessages === true;
         appContext = message.appContext === true;
         mcpDecline = message.mcpDecline === true;
+        mcpCompletions = message.mcpCompletions === true;
         update({
           activeBranch: root,
           copying: message.copying === true,
@@ -2319,6 +2348,37 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
               "This Session cannot read resources for a preview yet",
             ),
           ),
+    complete: (conversationId, asking) =>
+      mcpCompletions
+        ? request((id) => {
+            const message: Types.Mutable<Extract<ClientMessage, { type: "mcp_complete" }>> = {
+              type: "mcp_complete",
+              id,
+              requestId: asking.requestId,
+              field: asking.field,
+              server: asking.server,
+              ref: asking.ref,
+              argument: asking.argument,
+            };
+
+            if (conversationId !== undefined) message.conversationId = conversation(conversationId);
+
+            if (asking.context !== undefined) message.context = asking.context;
+
+            return message;
+          }, decodeMcpCompletion).pipe(
+            // The form asked for another value, or closed: the Session ends the request, and the host's with it.
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                send({
+                  type: "mcp_complete_cancel",
+                  id: nextCommandId(),
+                  requestId: asking.requestId,
+                });
+              }),
+            ),
+          )
+        : Effect.succeed({ status: "unsupported", values: [], hasMore: false }),
     appRequest: (callId, requestId, method, params) =>
       request((id) => {
         const message: Extract<ClientMessage, { type: "mcp_app_request" }> = {

@@ -4,7 +4,12 @@
 
 // @effect-diagnostics preferEffectArray:off -- the menu's rows are native arrays.
 
-import type { McpMenuResource, McpPromptEntry, McpResourceMenu } from "@cloudpid/protocol";
+import type {
+  McpMenuResource,
+  McpMenuTemplate,
+  McpPromptEntry,
+  McpResourceMenu,
+} from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { type KeyboardEvent, useId } from "react";
 import type { ComposerCommand } from "./commands.ts";
@@ -37,6 +42,8 @@ export type CompletionOptions = {
   readonly pickPrompt?: (prompt: McpPromptEntry) => void;
   /** An MCP resource picked from the `@` menu: the composer holds it as a chip to attach. */
   readonly pickResource?: (server: string, resource: McpMenuResource) => void;
+  /** An MCP resource template picked from the `@` menu: the composer asks for its variables, or holds the resource as a chip. */
+  readonly pickTemplate?: (server: string, template: McpMenuTemplate, completions: boolean) => void;
 };
 
 export type CompletionMenuState = {
@@ -73,6 +80,7 @@ export const useCompletion = ({
   run,
   pickPrompt,
   pickResource,
+  pickTemplate,
 }: CompletionOptions): CompletionMenuState => {
   const id = useId();
   const text = useAtomValue(state.text);
@@ -117,6 +125,10 @@ export const useCompletion = ({
       // The `@query` typed so far leaves the text: the resource is a chip above it, never text.
       edit(replaceTrigger(text, trigger, "", { space: false }));
       pickResource?.(picked.server, picked.resource);
+    } else if (picked.kind === "template") {
+      // The `@query` typed so far leaves the text: the template is a form above it, and then a chip, never text.
+      edit(replaceTrigger(text, trigger, "", { space: false }));
+      pickTemplate?.(picked.server, picked.template, picked.completions);
     } else if (picked.kind === "insert") {
       edit(replaceTrigger(text, trigger, picked.text, { space: picked.continues !== true }));
     }

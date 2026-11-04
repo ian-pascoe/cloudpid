@@ -200,9 +200,95 @@ describe("the @ menu's listing", () => {
       ["Files", "unavailable"],
       ["Docs", "ok"],
     ]);
-    expect(requests(host).map((input) => input.server)).toEqual(["Docs"]);
+    expect(requests(host).map((input) => input.server)).toEqual(["Docs", "Docs"]);
     // An HTTP server has no Container: its pages say nothing of `start`.
     expect(requests(host).every((input) => input.ctx.start === undefined)).toBe(true);
+  });
+
+  it("lists a server's resource templates beside its resources, bounded and cleaned, and leaves an App's out", async () => {
+    const { host, tools } = await started([store("Docs", { completions: true })]);
+
+    host.answer((input) =>
+      Promise.resolve(
+        input.op === "resources/templates/list"
+          ? !("cursor" in input.params)
+            ? page({
+                resourceTemplates: [
+                  {
+                    uriTemplate: "repo://{owner}/{name}",
+                    name: "repo",
+                    title: "A\nrepo",
+                    description: "Any\nrepo",
+                    mimeType: "text/plain",
+                  },
+                  { uriTemplate: "ui://app/{id}", name: "app" },
+                  { name: "no template" },
+                ],
+                nextCursor: "more",
+              })
+            : page({ resourceTemplates: [{ uriTemplate: "log://{day}", name: "log" }] })
+          : page({ resources: [{ uri: "file:///a.md", name: "a" }] }),
+      ),
+    );
+
+    const [row] = (await menu(tools)).servers;
+
+    expect(row?.templates).toEqual([
+      {
+        uriTemplate: "repo://{owner}/{name}",
+        name: "repo",
+        title: "A repo",
+        description: "Any repo",
+        mimeType: "text/plain",
+      },
+      { uriTemplate: "log://{day}", name: "log" },
+    ]);
+    expect(row?.completions).toBe(true);
+    expect(
+      requests(host)
+        .filter((input) => input.op === "resources/templates/list")
+        .every((input) => input.ctx.origin === "owner"),
+    ).toBe(true);
+  });
+
+  it("says a server's templates complete only when it declares it and the host lists `completions`", async () => {
+    const answer = () => Promise.resolve(page({ resources: [{ uri: "file:///a.md", name: "a" }] }));
+    const declared = await started([store("Docs", { completions: true })]);
+
+    declared.host.answer(answer);
+    expect((await menu(declared.tools)).servers[0]).toHaveProperty("completions", true);
+
+    const silent = await started([store("Docs")]);
+
+    silent.host.answer(answer);
+    expect((await menu(silent.tools)).servers[0]).not.toHaveProperty("completions");
+
+    const old = await started([store("Docs", { completions: true })], {}, [
+      "inventory",
+      "call",
+      "resources",
+    ]);
+
+    old.host.answer(answer);
+    expect((await menu(old.tools)).servers[0]).not.toHaveProperty("completions");
+  });
+
+  it("keeps the row as it is when its templates cannot be listed", async () => {
+    const { host, tools } = await started([store("Docs")]);
+
+    host.answer((input) =>
+      Promise.resolve(
+        input.op === "resources/templates/list"
+          ? McpHostCallFailed.make({ error: ServerError.make({ message: "no", code: -32601 }) })
+          : page({ resources: [{ uri: "file:///a.md", name: "a" }] }),
+      ),
+    );
+
+    const [row] = (await menu(tools)).servers;
+
+    expect(row?.state).toBe("ok");
+    expect(row?.resources).toHaveLength(1);
+    expect(row).not.toHaveProperty("templates");
   });
 
   it("mutes a server that needs a sign-in, and one that fails", async () => {

@@ -22,6 +22,10 @@
 //   (`resources.ts`).
 // - **`prompts/get`** (#463): the owner's pick of a prompt of a server whose inventory lists it, a read through the engine
 //   with the checks of a call, bounded at 30 s (or the entry's lower `timeout`), its questions answered live (#492).
+// - **`completion/complete`** (#485): the owner's suggestions for a prompt's or a resource template's argument, a read through
+//   the engine of a server whose inventory says it declares `completions` (any other is `Unsupported`, nothing sent). It
+//   never starts a Container, whatever `ctx.start` says, declares nothing a server could ask a question with, is bounded at
+//   5 s (`MCP_COMPLETION_TIMEOUT_MS`) and never sent again; the caller's abort cancels it at the server.
 // - **`resume`** (#480): a `tools/call` answered `InputRequired` (only to a caller with `ctx.answers.defer`), sent
 //   again with the answers to its deferred questions. It carries the tool, the `conn` the server asked on (another one
 //   now is `ServerChanged`, nothing sent) and the `ResumeState`, which the host passes on unread and never keeps; it is
@@ -40,12 +44,14 @@ import {
   HostUnsupported,
   isMcpHostRequestOp,
   isMcpHostTaskRequest,
+  MCP_COMPLETION_TIMEOUT_MS,
   MCP_PROMPT_GET_TIMEOUT_MS,
   MCP_TASK_TIMEOUT_MS,
   MCP_UNASKED_TASK_MESSAGE,
   McpHostAppHtml,
   McpHostAppHtmlRequest,
   McpHostCompleted,
+  McpHostCompletion,
   McpHostPromptGet,
   McpHostInputRequired,
   McpHostPagesRequired,
@@ -63,6 +69,7 @@ import {
   NoAppHtml,
   NotAllowed,
   ProtocolViolation,
+  Unsupported,
   UnknownServer,
   visibilityOfMeta,
 } from "@cloudpid/mcp/types";
@@ -109,6 +116,8 @@ const decodeRequest = Schema.decodeUnknownOption(McpHostRequest);
 const decodeAppHtml = Schema.decodeUnknownOption(McpHostAppHtmlRequest);
 
 const decodePromptGet = Schema.decodeUnknownOption(McpHostPromptGet);
+
+const decodeCompletion = Schema.decodeUnknownOption(McpHostCompletion);
 
 const decodeDefinition = Schema.decodeUnknownOption(McpToolDefinition);
 
@@ -589,6 +598,78 @@ const promptGet = (
   });
 
 /**
+ * `request({ op: "completion/complete" })`: suggestions for an argument of a prompt or a resource template, for the form the
+ * owner is filling in (`docs/architecture/mcp-in-a-session.md` → Arguments and completions). A server that may be called
+ * and whose inventory says it declares `completions`; one that does not is `Unsupported` and is sent nothing. Never starts a
+ * Container (a stopped stdio server is `Unreachable` with `stopped`), and no question of the server's is answered: the
+ * request declares no `answers`.
+ */
+const completion = (
+  environment: string | undefined,
+  input: typeof McpHostRequestInput.Encoded,
+  hooks: McpHostRequestHooks,
+): Effect.Effect<McpHostRequestResult, never, McpDiscoveryServices> =>
+  Effect.gen(function* () {
+    const asked = decodeCompletion(input);
+
+    if (Option.isNone(asked)) {
+      return NotAllowed.make({ message: "The completion/complete is malformed" });
+    }
+
+    const { server: name, params, ctx } = asked.value;
+    const resolved = yield* resolve(environment, name, ctx);
+
+    if (Result.isFailure(resolved)) return resolved.failure;
+
+    const declares = Option.exists(resolved.success.view.inventory, (held) =>
+      Predicate.hasProperty(held.meta.capabilities, "completions"),
+    );
+
+    if (!declares) {
+      return callFailed(
+        Unsupported.make({ message: `MCP server ${name} does not offer completions` }),
+      );
+    }
+
+    const reached = yield* reachServer(resolved.success, { start: false });
+
+    if (Result.isFailure(reached)) return reached.failure;
+
+    // Where it came from, and nothing else: `callContextOf` carries no `answers`, so the server's questions are refused.
+    const sending: Mutable<Extract<McpEngineRequest, { readonly op: "completion/complete" }>> = {
+      op: "completion/complete",
+      ref: params.ref,
+      argument: params.argument,
+      ctx: callContextOf(ctx),
+    };
+
+    if (params.context !== undefined) sending.context = params.context;
+
+    const sent = yield* sendToEngine({
+      resolved: resolved.success,
+      reached: reached.success,
+      request: sending,
+      hooks,
+      mayHaveRun: false,
+      timeoutMs: Math.min(
+        MCP_COMPLETION_TIMEOUT_MS,
+        reached.success.target.timeoutMs ?? MCP_COMPLETION_TIMEOUT_MS,
+      ),
+      what: "The completion",
+    });
+
+    if (Result.isFailure(sent)) return sent.failure;
+
+    return sent.success.result.kind === "complete"
+      ? McpHostCompleted.make({ result: sent.success.result.result })
+      : callFailed(
+          ProtocolViolation.make({
+            message: `The engine answered completion/complete with ${sent.success.result.kind}`,
+          }),
+        );
+  });
+
+/**
  * `request`: the request `input` asks for, to the server it names, with the caller's `hooks`. Never fails: a server not in
  * the set is `UnknownServer`, one that may not be called (switched off or `hidden`, not discovered, a tool its inventory
  * does not list) is `NotAllowed`, and what the engine or the server failed with is `CallFailed`. Without an
@@ -623,6 +704,8 @@ export const request = (
     if (op === "ui/html") return yield* appHtml(environment, input, hooks);
 
     if (op === "prompts/get") return yield* promptGet(environment, input, hooks);
+
+    if (op === "completion/complete") return yield* completion(environment, input, hooks);
 
     return op === "resources/list" || op === "resources/templates/list" || op === "resources/read"
       ? yield* resourceRequest(environment, op, input, hooks)

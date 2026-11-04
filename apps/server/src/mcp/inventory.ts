@@ -345,6 +345,17 @@ const isToolProblem = (problem: McpInventoryProblem) => problem.prompt === undef
 
 const isPromptProblem = (problem: McpInventoryProblem) => problem.tool === undefined;
 
+/**
+ * Only when declared, so the hash of a server without completions is the one it had before the key: what a Session builds
+ * its menu's templates from changes with the capability, and nothing else is rebuilt for it.
+ */
+const completionsProjection = (inventory: Inventory): Record<string, Schema.Json> => {
+  if (!Predicate.hasProperty(inventory.meta.capabilities, "completions")) return {};
+
+  // oxlint-disable-next-line anti-slop/no-known-value-widening -- spread into a JSON projection, which is a dictionary
+  return { completions: true };
+};
+
 /** The server's own problems and its tools', which its `toolsHash` covers. */
 const toolsProjection = (server: VersionedServer): Schema.Json => ({
   entry: server.entryHash,
@@ -356,6 +367,7 @@ const toolsProjection = (server: VersionedServer): Schema.Json => ({
       instructions: inventory.meta.instructions ?? null,
       problems: Arr.filter(inventory.meta.problems, isToolProblem),
       resources: Predicate.hasProperty(inventory.meta.capabilities, "resources"),
+      ...completionsProjection(inventory),
     }),
   }),
 });

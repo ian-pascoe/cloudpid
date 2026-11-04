@@ -24,6 +24,7 @@ const pickedAs = (pick: MenuPick): string =>
       run: ({ command }) => `run ${command.name}`,
       prompt: () => "prompt",
       resource: ({ server, resource }) => `attach ${server} ${resource.uri}`,
+      template: ({ server, template }) => `template ${server} ${template.uriTemplate}`,
       none: () => "none",
     }),
   );
@@ -461,5 +462,85 @@ describe("the MCP resources in the @ menu", () => {
   it("is the files menu alone until the Session has answered, or when it has no resources", () => {
     expect(menuFor("@", null)?.notice).toBe(menuFor("@", { servers: [] })?.notice);
     expect(menuFor("@", null)?.entries.some((entry) => entry.pick.kind === "resource")).toBe(false);
+  });
+});
+
+describe("the MCP resource templates in the @ menu", () => {
+  const listed: McpResourceMenu = {
+    servers: [
+      {
+        server: "repos",
+        source: "owner",
+        state: "ok",
+        completions: true,
+        resources: [{ name: "readme", uri: "file:///readme.md" }],
+        templates: [
+          {
+            uriTemplate: "repo://{owner}/{name}",
+            name: "repo",
+            title: "A repository",
+            description: "One repo\nmore",
+          },
+          { uriTemplate: "issue://{number}", name: "issue" },
+        ],
+      },
+      {
+        server: "plain",
+        source: "owner",
+        state: "ok",
+        resources: [],
+        templates: [{ uriTemplate: "doc://{id}", name: "doc" }],
+      },
+    ],
+  };
+
+  const none: FileResults = { query: "", paths: [], searching: false, failed: false };
+
+  const menuFor = (text: string) => {
+    const trigger = detectTrigger(text, text.length);
+
+    return trigger === null ? null : completionFor(trigger, commands, catalog, none, listed);
+  };
+
+  it("lists a server's templates after its resources, in its section, with the URI template muted", () => {
+    const completion = menuFor("@");
+
+    expect(completion?.entries.map((entry) => entry.id)).toEqual([
+      "resource:repos:file:///readme.md",
+      "template:repos:repo://{owner}/{name}",
+      "template:repos:issue://{number}",
+      "template:plain:doc://{id}",
+    ]);
+
+    const row = completion?.entries.find((entry) => entry.id.startsWith("template:repos:repo"));
+
+    expect(row).toMatchObject({
+      label: "A repository",
+      detail: "repo://{owner}/{name}",
+      description: "One repo",
+    });
+  });
+
+  it("picks a template with whether its server completes its variables", () => {
+    const picks = menuFor("@")
+      ?.entries.filter((entry) => entry.pick.kind === "template")
+      .map((entry) => pickedAs(entry.pick));
+
+    expect(picks).toEqual([
+      "template repos repo://{owner}/{name}",
+      "template repos issue://{number}",
+      "template plain doc://{id}",
+    ]);
+    expect(
+      menuFor("@")?.entries.map((entry) =>
+        entry.pick.kind === "template" ? entry.pick.completions : undefined,
+      ),
+    ).toEqual([undefined, true, true, false]);
+  });
+
+  it("matches templates by title, name or URI template, and narrows to a server after @server:", () => {
+    expect(menuFor("@repository")?.entries.map((entry) => entry.label)).toEqual(["A repository"]);
+    expect(menuFor("@issue://")?.entries.map((entry) => entry.label)).toEqual(["issue"]);
+    expect(menuFor("@plain:")?.entries.map((entry) => entry.label)).toEqual(["doc"]);
   });
 });

@@ -687,6 +687,9 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
     answer.discoveredAt = meta.discoveredAt;
 
     if (meta.discoveredIn !== undefined) answer.discoveredIn = meta.discoveredIn;
+
+    // Only a server that declares it says so: absent reads as `false`, as it does for a host from before the key.
+    if ("completions" in meta.capabilities) answer.completions = true;
   }
 
   if (inventory !== undefined && parts.includes("tools")) answer.tools = inventory.tools;

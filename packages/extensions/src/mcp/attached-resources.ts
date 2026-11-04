@@ -5,7 +5,9 @@
 //
 // - **The listing never starts a Container.** A stdio server's pages are asked with `ctx.start: false` (only with the host's
 //   `no_start` feature: without it a stdio server is a muted row), so a Container that is not running answers `stopped` and
-//   nothing is woken; an HTTP server has no Container. The menu holds a listing for 30 s on the client.
+//   nothing is woken; an HTTP server has no Container. The menu holds a listing for 30 s on the client. A server's resource
+//   templates are listed beside its resources, a failure of that list leaving the row as it is (`ref/resource` completions
+//   of a template's variables are asked through `completion.ts`).
 // - **The read at send may start the Container** ("the owner sending a message is real activity", `mcp-connections.md` →
 //   Who may start a Container): it says nothing of `start`.
 // - **A read has no conversation to ask in.** It declares nothing that invites a server's own request (no `ctx.answers`, no
@@ -25,12 +27,14 @@ import {
   ATTACHED_RESOURCE_READ_MS,
   boundedText,
   MAX_MENU_PAGES,
+  MAX_MENU_TEMPLATES,
   MENU_STATE,
   MAX_MENU_RESOURCES,
   MAX_RESOURCE_NAME,
   MAX_RESOURCE_URI,
   type McpMenuResource,
   type McpMenuServer,
+  type McpMenuTemplate,
   type McpResourceMenu,
   oneLine as flatLine,
 } from "@cloudpid/protocol";
@@ -67,6 +71,8 @@ export type AttachedResourcesDeps = {
   readonly origin: McpCallOrigin;
   /** Whether the host lists `no_start`. */
   readonly noStart: boolean;
+  /** Whether the host lists `completions`: only then does the menu say a server's template variables complete. */
+  readonly completions?: boolean | undefined;
   /** How long past the server's timeout the Session waits for the host, `MCP_CALL_SLACK_MS` unless a test shortens it. */
   readonly slackMs?: number | undefined;
   /** How long a streamed result waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
@@ -383,9 +389,20 @@ const decodeListed = Schema.decodeUnknownOption(ListedResource);
 const decodePage = Schema.decodeUnknownOption(
   Schema.Struct({
     resources: Schema.Json.pipe(Schema.Array, Schema.optionalKey),
+    resourceTemplates: Schema.Json.pipe(Schema.Array, Schema.optionalKey),
     nextCursor: Schema.optionalKey(Schema.String),
   }),
 );
+
+const ListedTemplate = Schema.Struct({
+  uriTemplate: Schema.String,
+  name: Schema.optionalKey(Schema.String),
+  title: Schema.optionalKey(Schema.String),
+  description: Schema.optionalKey(Schema.String),
+  mimeType: Schema.optionalKey(Schema.String),
+});
+
+const decodeTemplate = Schema.decodeUnknownOption(ListedTemplate);
 
 /** The longest description a menu row keeps, in characters. */
 const MAX_MENU_DESCRIPTION = 300;
@@ -437,6 +454,40 @@ const menuResourceOf = (entry: Schema.Json): ReadonlyArray<McpMenuResource> => {
   return [resource];
 };
 
+/** What the menu keeps of a listed resource template: bounded and cleaned, or nothing for an App's or one with no usable template. */
+const menuTemplateOf = (entry: Schema.Json): ReadonlyArray<McpMenuTemplate> => {
+  const listed = decodeTemplate(entry);
+
+  if (Option.isNone(listed)) return [];
+
+  const { uriTemplate, mimeType } = listed.value;
+
+  if (
+    uriTemplate === "" ||
+    uriTemplate.length > MAX_RESOURCE_URI ||
+    isAppResource(uriTemplate, mimeType)
+  ) {
+    return [];
+  }
+
+  const template: Mutable<McpMenuTemplate> = {
+    uriTemplate,
+    name: oneLineOf(listed.value.name ?? listed.value.title ?? uriTemplate, MAX_RESOURCE_NAME),
+  };
+
+  if (listed.value.title !== undefined) {
+    template.title = oneLineOf(listed.value.title, MAX_RESOURCE_NAME);
+  }
+
+  if (listed.value.description !== undefined) {
+    template.description = oneLineOf(listed.value.description, MAX_MENU_DESCRIPTION);
+  }
+
+  if (mimeType !== undefined) template.mimeType = oneLineOf(mimeType, 100);
+
+  return [template];
+};
+
 /** Where a server's definition is, as the menu names it: `owner`, or `repo:<owner/repo>`. */
 const sourceOf = (server: McpBuildServer): string =>
   server.source?.kind === "repo" && server.source.slug !== undefined
@@ -478,9 +529,10 @@ const failedState = (answer: Asked): string =>
       ),
   });
 
-/** One page of a server's list: its resources (as the server wrote them) and the cursor of the next, or the state it mutes the row for. */
+/** One page of a server's list: its entries (as the server wrote them) and the cursor of the next, or the state it mutes the row for. */
 const pageOf = (
   answer: Asked,
+  key: "resources" | "resourceTemplates" = "resources",
 ): Result.Result<
   { readonly entries: ReadonlyArray<Schema.Json>; readonly cursor: string | undefined },
   string
@@ -507,8 +559,55 @@ const pageOf = (
 
   return Option.isNone(read)
     ? Result.fail(MENU_STATE.unavailable)
-    : Result.succeed({ entries: read.value.resources ?? [], cursor: read.value.nextCursor });
+    : Result.succeed({ entries: read.value[key] ?? [], cursor: read.value.nextCursor });
 };
+
+/**
+ * One server's resource templates, page by page, bounded: what it lists, and whether the list stopped short. A page that
+ * fails ends the list there (a server may list resources and no templates), and the row keeps what it has.
+ */
+const listTemplates = (
+  deps: AttachedResourcesDeps,
+  server: McpBuildServer,
+  conversation: string,
+  workspace: string | undefined,
+  signal: AbortSignal,
+): Effect.Effect<ReadonlyArray<McpMenuTemplate>> =>
+  Effect.gen(function* () {
+    const templates: Array<McpMenuTemplate> = [];
+    let cursor: string | undefined;
+
+    for (let page = 0; page < MAX_MENU_PAGES && templates.length < MAX_MENU_TEMPLATES; page++) {
+      const request: McpHostRequestInput = {
+        op: "resources/templates/list",
+        server: server.name,
+        params: cursor === undefined ? {} : { cursor },
+        ctx: ownerContext(
+          deps,
+          { callId: "resource-menu", conversation },
+          workspace,
+          !isStdio(server),
+        ),
+      };
+
+      const got = pageOf(
+        yield* asked(deps, server, signal, request, MENU_PAGE_MS),
+        "resourceTemplates",
+      );
+
+      if (Result.isFailure(got)) break;
+
+      for (const entry of got.success.entries) {
+        if (templates.length < MAX_MENU_TEMPLATES) templates.push(...menuTemplateOf(entry));
+      }
+
+      cursor = got.success.cursor;
+
+      if (cursor === undefined || cursor === "") break;
+    }
+
+    return templates;
+  });
 
 /** One server's resources, page by page: what the menu lists, bounded, or the state it is muted for. */
 const listServer = (
@@ -565,9 +664,17 @@ const listServer = (
       if (page === MAX_MENU_PAGES - 1) truncated = true;
     }
 
-    return truncated
-      ? { ...base, state: MENU_STATE.ok, resources, truncated }
-      : { ...base, state: MENU_STATE.ok, resources };
+    const templates = yield* listTemplates(deps, server, conversation, workspace, signal);
+    const row: Mutable<McpMenuServer> = { ...base, state: MENU_STATE.ok, resources };
+
+    if (templates.length > 0) row.templates = templates;
+
+    // Whether the template's variables complete: the server declares it, and the host answers `completion/complete`.
+    if (server.completions === true && deps.completions === true) row.completions = true;
+
+    if (truncated) row.truncated = true;
+
+    return row;
   });
 
 /** What the menu is listing for. */

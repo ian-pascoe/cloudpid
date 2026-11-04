@@ -23,6 +23,7 @@ import {
   useContext,
   useId,
   useRef,
+  useState,
 } from "react";
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { cn } from "../lib/utils.ts";
@@ -33,7 +34,6 @@ import { sessionListAtom } from "../sessions.ts";
 import { mcpSignInStartHref } from "../settings/mcp-sign-in-model.ts";
 import type { QueuedEntry, SendingEntry } from "../session/state.ts";
 import { useCall } from "../calls.ts";
-import { ArgumentForm } from "./argument-form.tsx";
 import { AttachmentTiles } from "./attachment-tiles.tsx";
 import {
   type AttachedMessage,
@@ -80,7 +80,6 @@ import {
 import {
   conversationPromptAtoms,
   type PromptChip,
-  promptTitle,
   refusalOfCause,
   refusalOutcome,
   sendGate,
@@ -89,6 +88,13 @@ import {
 } from "./mcp-prompt-state.ts";
 import { ComposerNote } from "./composer-note.tsx";
 import { PromptChipView } from "./prompt-chip.tsx";
+import {
+  PromptFormView,
+  type TemplateForm,
+  TemplateFormView,
+  templateFields,
+  templateResource,
+} from "./template-form.tsx";
 import { usePromptChip } from "./use-prompt-chip.ts";
 import { type ConversationKey, conversationKey, useShownSessionId } from "./conversation.ts";
 import { fileDragAtom, useFileDropZone } from "./file-drop.ts";
@@ -215,6 +221,8 @@ const ComposerBox = ({
   const removeResource = useAtomSet(removeResourceAtom(key));
   const removeAppMessage = useAtomSet(removeAppMessageAtom(key));
   const resources = useAtomValue(resourceMenuAtom(key));
+  // The form open on a resource template picked from the `@` menu: Done attaches the resource its values make.
+  const [templateForm, setTemplateForm] = useState<TemplateForm | null>(null);
   const sendAttached = useCall(sendAttachedAtom(key));
   const allDrafts = useAtomValue(annotationsAtom(key.sessionId));
   const deleteDraft = useCall(deleteAnnotationAtom(key.sessionId));
@@ -410,6 +418,21 @@ const ComposerBox = ({
     pickResource: (server, resource) => {
       addResource({ server, uri: resource.uri, name: resource.title ?? resource.name });
     },
+    pickTemplate: (server, template, completions) => {
+      const form: TemplateForm = { server, template, completions, values: {} };
+
+      // A template with no variables is a resource already.
+      if (templateFields(template).length === 0) {
+        const resource = templateResource(form);
+
+        addResource(resource);
+
+        return;
+      }
+
+      setNote(null);
+      setTemplateForm(form);
+    },
   });
 
   /**
@@ -589,17 +612,38 @@ const ComposerBox = ({
       <Lane label="Steering" hint="joins the run after its tool calls" entries={steerLane} />
       <Lane label="Next up" hint="starts after this run" entries={followUpLane} />
       {form !== null && (
-        <ArgumentForm
-          title={promptTitle(form.prompt)}
-          server={form.prompt.server}
-          fields={form.prompt.arguments}
-          values={form.values}
-          problem={form.problem}
+        <PromptFormView
+          conversation={key}
+          form={form}
+          signInHref={signInHref}
           onChange={(values) => {
             setForm({ ...form, values, problem: undefined });
           }}
           onDone={finishForm}
           onCancel={cancelForm}
+        />
+      )}
+      {templateForm !== null && (
+        <TemplateFormView
+          conversation={key}
+          form={templateForm}
+          signInHref={signInHref}
+          onChange={(values) => {
+            setTemplateForm({ ...templateForm, values });
+          }}
+          onDone={() => {
+            addResource(templateResource(templateForm));
+            setTemplateForm(null);
+            requestAnimationFrame(() => {
+              input.current?.focus();
+            });
+          }}
+          onCancel={() => {
+            setTemplateForm(null);
+            requestAnimationFrame(() => {
+              input.current?.focus();
+            });
+          }}
         />
       )}
       <div className="relative">

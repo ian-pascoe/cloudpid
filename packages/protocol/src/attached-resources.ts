@@ -197,17 +197,38 @@ export const McpMenuResource = Schema.Struct({
 
 export type McpMenuResource = typeof McpMenuResource.Type;
 
+/** The most resource templates of one server the menu lists. */
+export const MAX_MENU_TEMPLATES = 100;
+
+/**
+ * One resource template the menu offers (`resources/templates/list`): the RFC 6570 `uriTemplate` the owner fills in an
+ * argument form, and what the server called it. Picking it makes an Attached resource of the URI the values make.
+ */
+export const McpMenuTemplate = Schema.Struct({
+  uriTemplate: Schema.String,
+  name: Schema.String,
+  title: Schema.optionalKey(Schema.String),
+  description: Schema.optionalKey(Schema.String),
+  mimeType: Schema.optionalKey(Schema.String),
+});
+
+export type McpMenuTemplate = typeof McpMenuTemplate.Type;
+
 /**
  * One server in the menu: its configured name, where its definition is (`owner`, or `repo:<owner/repo>`), and either its
  * `resources` (`state: "ok"`) or why it has none to show: `stopped` (a stdio server whose Container is not running, which
  * the menu never starts), `sign_in`, `connecting` or `unavailable`. `state` is a string so a state a later build adds reaches an
- * older client, which reads one it does not know as `unavailable`. `truncated` says the listing stopped short.
+ * older client, which reads one it does not know as `unavailable`. `truncated` says the listing stopped short. `templates`
+ * are its resource templates (absent from a Session from before them, and for a muted row), and `completions` says the server
+ * declares the capability, so a template's variables may be completed (`ref/resource`).
  */
 export const McpMenuServer = Schema.Struct({
   server: Schema.String,
   source: Schema.String,
   state: Schema.String,
   resources: Schema.Array(McpMenuResource),
+  templates: Schema.Array(McpMenuTemplate).pipe(Schema.optionalKey),
+  completions: Schema.optionalKey(Schema.Boolean),
   truncated: Schema.optionalKey(Schema.Boolean),
 });
 

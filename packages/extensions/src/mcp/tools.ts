@@ -130,6 +130,8 @@ export const McpBuildServer = Schema.Struct({
   tools: Schema.Record(Schema.String, Schema.Json).pipe(Schema.Array, Schema.optionalKey),
   instructions: Schema.optionalKey(Schema.String),
   resources: Schema.optionalKey(Schema.Boolean),
+  /** Whether the server declares `completions`: the composer's forms may ask it for suggestions. */
+  completions: Schema.optionalKey(Schema.Boolean),
   /** Whether the entry can need an owner's sign-in (`signsIn`): `mcp_sign_in_ask` is registered when one can. */
   signIn: Schema.optionalKey(Schema.Boolean),
 });

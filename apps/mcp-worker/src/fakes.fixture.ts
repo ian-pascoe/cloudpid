@@ -143,10 +143,22 @@ const resourcesServer = (options: FakeOptions) =>
     ],
   });
 
-/** A Modern server with a `review` prompt, whose message echoes a token its server must not leak. */
+/**
+ * A Modern server with a `review` prompt, whose message echoes a token its server must not leak, and completions for its
+ * argument that echo it too.
+ */
 const promptServer = (options: FakeOptions) =>
   modernServer({
     ...options,
+    completions: {
+      complete: (params) => ({
+        values: [
+          `${params.argument.value}-${params.context?.arguments?.["owner"] ?? ""}`,
+          ECHOED_SECRET,
+        ],
+        total: 2,
+      }),
+    },
     prompts: [
       {
         name: "review",

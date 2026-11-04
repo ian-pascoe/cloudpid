@@ -33,6 +33,18 @@ const undiscovered = (name: string, state: string): McpServerInventory => {
 };
 
 describe("the catalog's prompts", () => {
+  it("says a prompt's arguments complete only for a server that declares completions", () => {
+    const { prompts } = promptCatalog([
+      server("github", { completions: true, prompts: [{ name: "review_pr" }] }),
+      server("docs", { prompts: [{ name: "explain" }] }),
+    ]);
+
+    expect(prompts.map((prompt) => [prompt.server, prompt.completions])).toEqual([
+      ["github", true],
+      ["docs", false],
+    ]);
+  });
+
   it("lists each prompt of an enabled server as a command, with its arguments, in the set's order", () => {
     const { prompts, mcpServers } = promptCatalog([
       server("github", {

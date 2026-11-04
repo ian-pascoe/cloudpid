@@ -51,6 +51,8 @@ export type FakeMcpServer = {
   readonly timeout?: number;
   /** Whether the server offers resources (the inventory's `resources`). */
   readonly resources?: boolean;
+  /** Whether the server declares `completions` (the inventory's `completions`). */
+  readonly completions?: boolean;
   /** What the server says of itself at `initialize`. */
   readonly instructions?: string;
   /** More keys of the entry, as a definition spells them (`headers`, `oauth`, ...). */
@@ -159,6 +161,8 @@ const inventoryOf = (
       resources: server.resources === true,
       problems: [],
     };
+
+    if (server.completions === true) inventory.completions = true;
 
     if (server.description !== undefined) {
       inventory.server = { ...inventory.server, description: server.description };

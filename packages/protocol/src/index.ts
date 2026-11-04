@@ -27,6 +27,8 @@ export * from "./mcp-apps.ts";
 
 export * from "./mcp-elicitation.ts";
 
+export * from "./mcp-completion.ts";
+
 export * from "./mcp-prompts.ts";
 
 export * from "./mcp-repo-files.ts";
@@ -64,6 +66,8 @@ export * from "./settings-mcp.ts";
 export * from "./skills.ts";
 
 export * from "./transcript.ts";
+
+export * from "./uri-template.ts";
 
 export * from "./user-entry.ts";
 
