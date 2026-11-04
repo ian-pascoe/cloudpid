@@ -1059,13 +1059,20 @@ describe("against a fixture App server", () => {
 
     for (let at = 0; at < EVICTED; at++) {
       await callApp(host, `big${at}`);
-      await waitFor(async () =>
-        expect(await host.appUiRows()).toHaveLength(at + 1 > 16 ? 16 : at + 1),
-      );
 
+      // The call never waits for its read (`mcp-apps.md` → Declaring and reading Apps), so the page is waited for by its
+      // own row, not by a count of rows: past the bound there are sixteen before the read keeps it and after.
       hashes.push(
-        (await host.appUiRows()).find((row) => row.uri === `ui://docs/big${at}`)?.hash ?? "",
+        await waitFor(async () => {
+          const row = (await host.appUiRows()).find((each) => each.uri === `ui://docs/big${at}`);
+
+          if (row === undefined) throw new Error(`big${at} is not kept yet`);
+
+          return row.hash;
+        }),
       );
+      // The keeping evicted and pruned in the same write.
+      expect(await host.appUiRows()).toHaveLength(at + 1 > 16 ? 16 : at + 1);
     }
 
     // Sixteen pages of 4 MiB are the bound: the first one, mounted longest ago, went when the last came.
