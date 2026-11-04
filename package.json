@@ -1,0 +1,14 @@
+{
+  "name": "pi-cloudpid",
+  "version": "0.0.0",
+  "description": "pi extension: /cloudpid imports the active pi Session into cloudpid",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
