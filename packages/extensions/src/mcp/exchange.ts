@@ -62,7 +62,13 @@ import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
 import type { McpTaskFollower } from "./task-follow.ts";
-import { followInline, recordOfCall, startTask, type TaskCall } from "./task-inline.ts";
+import {
+  followInline,
+  recordOfCall,
+  startTask,
+  type TaskCall,
+  type TaskStart,
+} from "./task-inline.ts";
 import { windowMsOf } from "./task-policy.ts";
 import type { McpTasksOptions } from "./task-port.ts";
 import type { McpResultPool } from "./task-results.ts";
@@ -250,20 +256,25 @@ const workspaceOfCall = async (
   }
 };
 
+/** The agent the calling conversation is: `root` (any Session branch), or a subagent's ID. A read that fails is the root's. */
+const agentOfCall = async (
+  api: Parameters<ToolRegistration["execute"]>[1],
+  context: Parameters<ToolRegistration["execute"]>[2],
+): Promise<string> => {
+  try {
+    const state = await api.snapshot(SubagentsDoc, context);
+
+    return (state === undefined ? undefined : agentOf(state, api.conversationId)) ?? "root";
+  } catch {
+    return "root";
+  }
+};
+
 /** Whether the calling conversation is a subagent's: it reports a needed sign-in to its parent, since only the root asks. */
 const isSubagentCall = async (
   api: Parameters<ToolRegistration["execute"]>[1],
   context: Parameters<ToolRegistration["execute"]>[2],
-): Promise<boolean> => {
-  try {
-    const state = await api.snapshot(SubagentsDoc, context);
-    const agent = state === undefined ? undefined : agentOf(state, api.conversationId);
-
-    return agent !== undefined && agent !== "root";
-  } catch {
-    return false;
-  }
-};
+): Promise<boolean> => (await agentOfCall(api, context)) !== "root";
 
 /** The context of a request: who asks, for which call, and what the call can answer. */
 export const contextOf = (
@@ -325,9 +336,9 @@ export type McpTasking = {
 };
 
 /**
- * Whether this call is offered an MCP task (`allowTask`): the one place the line is drawn for #488. Only the root
- * conversation's own direct calls, to an HTTP server, while the Session and the server are under their caps; subagents,
- * `codemode` scripts, stdio and App Views come with #494.
+ * Whether this call is offered an MCP task (`allowTask`): the one place the line is drawn. An agent's call (the root's, a
+ * subagent's, or a `codemode` script's nested call) to an HTTP server or a stdio one, while the Session and the server are
+ * under their caps; an App View's call comes with #498.
  */
 export const followsTasks = async (
   exchange: Exchange,
@@ -335,10 +346,6 @@ export const followsTasks = async (
   context: Context,
 ): Promise<boolean> => {
   if (exchange.tasking === undefined || exchange.subject !== "tool") return false;
-
-  if (exchange.server.server.type === "stdio") return false;
-
-  if ((await isSubagentCall(api, context)) || (await isNested(api, context))) return false;
 
   const state = await api.snapshot(McpTasksDoc, context).catch(() => undefined);
 
@@ -521,11 +528,21 @@ export const send = async <A>(
     allowTask,
   );
 
-  /** What following an MCP task needs, for a call whose server answers with one. */
-  const taskCall = (): TaskCall | undefined =>
+  // Who the call is for, for a call that may be answered with an MCP task: its script or its model, and its agent.
+  const taskCaller =
     exchange.tasking === undefined
       ? undefined
       : {
+          caller: (await isNested(api, context)) ? ("script" as const) : ("model" as const),
+          agent: await agentOfCall(api, context),
+        };
+
+  /** What following an MCP task needs, for a call whose server answers with one. */
+  const taskCall = (): TaskCall | undefined =>
+    exchange.tasking === undefined || taskCaller === undefined
+      ? undefined
+      : {
+          ...taskCaller,
           api,
           context,
           client,
@@ -699,13 +716,21 @@ export const send = async <A>(
       const following = taskCall();
 
       if (Predicate.isTagged(result, "Task") && following !== undefined) {
-        const record = await startTask(following, result, {
+        const start: Mutable<TaskStart> = {
           server: server.name,
           tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
           modelTool: tool,
           windowMs: following.tasks.timing?.windowMs ?? windowMsOf(server.server.timeout),
           source: server.source,
-        });
+        };
+
+        // A stdio server's task is the Workspace's it was started in.
+        if (server.server.type === "stdio" && workspace !== undefined) {
+          start.transport = "stdio";
+          start.workspace = workspace;
+        }
+
+        const record = await startTask(following, result, start);
 
         return failed(await followInline(following, record));
       }

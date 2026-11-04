@@ -35,6 +35,8 @@ export * from "./mcp-status.ts";
 
 export * from "./mcp-sign-ins.ts";
 
+export * from "./mcp-tasks.ts";
+
 export * from "./mcp-tools.ts";
 
 export * from "./mcp-transcript.ts";

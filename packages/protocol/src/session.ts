@@ -22,6 +22,7 @@ import {
   McpAppToolsMessage,
 } from "./mcp-apps.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
+import { McpTask } from "./mcp-tasks.ts";
 import {
   ElicitationContent,
   McpElicitationAction,
@@ -699,6 +700,29 @@ export const McpAppCancel = Schema.Struct({
 });
 
 /**
+ * The owner's cancel of MCP task `task` (its handle, as `mcp_tasks` lists it): the Session asks the server to cancel it, as
+ * for the agent's `mcp_task_cancel` tool, and the task ends as the owner's cancel. Answered with `null`; fails for a task
+ * that is not the Session's or has ended. Sent only to a Session that says `mcpTasks` in `hello`
+ * (`docs/architecture/mcp-server-requests.md` → MCP tasks, Cancellation).
+ */
+export const McpTaskCancel = Schema.Struct({
+  type: Schema.Literal("mcp_task_cancel"),
+  id: CommandId,
+  task: Schema.String.check(Schema.isMaxLength(64)),
+});
+
+/**
+ * Keep the Container of the stdio server's MCP task `task` running: the Session notes owner activity in its Workspace, which
+ * resets the hour a Container is held for a task nobody else keeps awake (the hold cap). Answered with `null`; fails for a
+ * task that is not a stdio server's, or has ended. Sent only to a Session that says `mcpTasks` in `hello`.
+ */
+export const ContainerKeep = Schema.Struct({
+  type: Schema.Literal("container_keep"),
+  id: CommandId,
+  task: Schema.String.check(Schema.isMaxLength(64)),
+});
+
+/**
  * An App View's `notifications/message` (a log line), for the App View of call `callId`: the Session redacts it, cuts it to
  * `MAX_MCP_APP_LOG_CHARS`, and puts a `warning` or above on a telemetry span as a span event; the rest is dropped. Nothing
  * reaches the model, a transcript or the audit log. Answered with null; sent only to a Session that says `appViews` in `hello`.
@@ -758,6 +782,8 @@ export const ClientMessage = Schema.Union([
   McpAppRequest,
   McpAppCancel,
   McpAppLog,
+  McpTaskCancel,
+  ContainerKeep,
   PageVisible,
   WatchTaskGraph,
   UnwatchTaskGraph,
@@ -782,13 +808,15 @@ export type ClientMessage = typeof ClientMessage.Type;
  * of. `root` keeps the name it had before Session branches, when the root conversation was the only one, so a client
  * still open across the deploy reads it as it did. `appViews` says the Session takes `page_visible` and `mcp_app_log`: a
  * client sends them only to a Session that says so, since one from before reads them as an unreadable message and
- * answers an error (`docs/architecture/mcp.md` → Deploys).
+ * answers an error (`docs/architecture/mcp.md` → Deploys); `mcpTasks` says the same of `mcp_task_cancel` and
+ * `container_keep`, and that it sends `mcp_tasks`.
  */
 export const Hello = Schema.Struct({
   type: Schema.Literal("hello"),
   root: ConversationId,
   copying: Schema.optionalKey(Schema.Boolean),
   appViews: Schema.optionalKey(Schema.Boolean),
+  mcpTasks: Schema.optionalKey(Schema.Boolean),
 });
 
 /**
@@ -959,6 +987,17 @@ export const McpSamplingRequests = Schema.Struct({
   type: Schema.Literal("mcp_sampling_requests"),
   requests: Schema.Array(McpSamplingRequest),
   grants: Schema.Array(McpSamplingSessionGrant),
+});
+
+/**
+ * The Session's MCP tasks (`docs/architecture/mcp-server-requests.md` → MCP tasks): the ones that go on and the newest that
+ * ended, oldest first, never carrying the server's task id. Sent after `hello` on every connect (an empty list too) and in
+ * full to every client whenever one changes; a progress line (`statusMessage`) travels here, never in a running call's
+ * `details`. A Session from before it sends none.
+ */
+export const McpTasksMessage = Schema.Struct({
+  type: Schema.Literal("mcp_tasks"),
+  tasks: Schema.Array(McpTask),
 });
 
 /**
@@ -1558,6 +1597,7 @@ export const ServerMessage = Schema.Union([
   LastRunMessage,
   McpAppsMessage,
   McpAppToolsMessage,
+  McpTasksMessage,
 ]);
 
 export type ServerMessage = typeof ServerMessage.Type;

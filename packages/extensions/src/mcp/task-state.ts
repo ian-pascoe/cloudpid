@@ -98,8 +98,15 @@ export type McpTaskRecord = {
   conn: string;
   identity?: string;
   source?: { kind: string; slug?: string };
-  /** Only `http` yet: stdio tasks come with #494. */
-  transport: "http";
+  transport: "http" | "stdio";
+  /**
+   * A stdio server's task: the Workspace (`ws:<id>`) whose Container runs its process, which `tasks/*` requests go to
+   * (never the Session's), and the process's spawn id when the task started: another one is a process that ended.
+   */
+  workspace?: string;
+  spawn?: string;
+  /** Made by a `codemode` script's nested call: its end is delivered to the script's conversation like any other. */
+  nested?: boolean;
   /** The MCP sign-in id of the token the task was started with. */
   signIn?: string;
   conversation: ConversationId;
@@ -135,6 +142,8 @@ export type McpTaskRecord = {
   /** The follower, once there is one. */
   follower?: TaskId;
   delivery: McpTaskDelivery | null;
+  /** When the agent was told of the end: its `mcp_task_wait` claimed the result, or the follower posted the end. */
+  toldAt?: number;
   cancel?: McpTaskCancel;
   end?: McpTaskEnd;
   result?: McpTaskResultNote;

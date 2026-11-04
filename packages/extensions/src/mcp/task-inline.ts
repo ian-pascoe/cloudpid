@@ -10,7 +10,7 @@ import type { Context } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails } from "./details.ts";
-import type { McpCallOrigin } from "./exchange.ts";
+import type { Caller, McpCallOrigin } from "./exchange.ts";
 import { failedWith } from "./result.ts";
 import { spillTo } from "./spill.ts";
 import type { McpTaskFollower } from "./task-follow.ts";
@@ -47,6 +47,10 @@ export type TaskCall = {
   readonly pool: McpResultPool;
   /** The tool's `details` as every end of its calls starts from. */
   readonly base: McpDetails;
+  /** Who the call is for: a script's (`codemode`) gets its value whole, and no handle loaded with it. */
+  readonly caller: Caller;
+  /** The agent that made the call: `root`, or a subagent's id. */
+  readonly agent: string;
 };
 
 /** The marker that mirrors the record's creation, and the one that mirrors its detach. */
@@ -75,6 +79,9 @@ export type TaskStart = {
   readonly modelTool: string;
   readonly windowMs: number;
   readonly source?: McpTaskDraft["source"];
+  /** `stdio`, with the Workspace whose Container runs the server; absent for an HTTP server's. */
+  readonly transport?: "stdio";
+  readonly workspace?: string;
 };
 
 /**
@@ -95,9 +102,9 @@ export const startTask = async (
     tool: start.tool,
     modelTool: start.modelTool,
     conn: started.conn,
-    transport: "http",
+    transport: start.transport ?? "http",
     conversation: api.conversationId,
-    agent: "root",
+    agent: call.agent,
     callId: api.callId,
     callTask: api.taskId,
     windowMs: start.windowMs,
@@ -105,6 +112,12 @@ export const startTask = async (
     ttlMs: task.ttlMs,
     status: task.status,
   };
+
+  if (call.caller === "script") draft.nested = true;
+
+  if (start.workspace !== undefined) draft.workspace = start.workspace;
+
+  if (started.spawn !== undefined) draft.spawn = started.spawn;
 
   if (started.identity !== undefined) draft.identity = started.identity;
 
@@ -152,12 +165,28 @@ const cancelUnrecorded = async (call: TaskCall, draft: McpTaskDraft): Promise<vo
 };
 
 /** What the model reads when the call goes on without waiting: the handle and the three tools, loaded with it. */
-export const detachedResult = (record: McpTaskRecord, base: McpDetails): StoredResult => ({
-  output: [{ type: "text", text: detachedText(record) }],
-  details: taskDetails(record, base, true),
-  structuredOutput: { content: [] },
-  control: { addTools: [...MCP_TASK_TOOL_NAMES] },
-});
+export const detachedResult = (record: McpTaskRecord, base: McpDetails): StoredResult => {
+  const text = detachedText(record);
+  const details = taskDetails(record, base, true);
+
+  // A script's call gets an error value that names the handle (it resolves, as an MCP tool's `isError` result does), and
+  // pi-durable applies no `control` of a nested call.
+  if (record.nested === true) {
+    return {
+      output: [{ type: "text", text }],
+      isError: true,
+      details: { ...details, error: "mcp_task_background" },
+      structuredOutput: { content: [{ type: "text", text }], isError: true },
+    };
+  }
+
+  return {
+    output: [{ type: "text", text }],
+    details,
+    structuredOutput: { content: [] },
+    control: { addTools: [...MCP_TASK_TOOL_NAMES] },
+  };
+};
 
 /** Move the call's task to the background: the record, and the follower that owns the rest, in one commit. */
 const detach = async (call: TaskCall, record: McpTaskRecord): Promise<StoredResult> => {
@@ -235,7 +264,11 @@ const finish = async (
       ? await completedResult(
           ended,
           outcome.result,
-          { spill: spillTo(api.env, context), signal: context.abortSignal },
+          {
+            spill: spillTo(api.env, context),
+            signal: context.abortSignal,
+            script: call.caller === "script",
+          },
           false,
           call.base,
         )
@@ -332,6 +365,7 @@ export const followInline = async (call: TaskCall, first: McpTaskRecord): Promis
         pollIntervalMs: record.pollIntervalMs,
         background: false,
         ownerOnly: record.status === "input_required",
+        stdio: record.transport === "stdio",
         jitter: Math.random(),
       });
 

@@ -8,12 +8,14 @@
 //   and go on to the engine as they came. A question a Legacy server asks reaches the caller's `onInput` this way
 //   (`ctx.answers` says which kinds it takes), and the call's timeout, the engine's, is paused while it waits: the host
 //   holds no question state. It may be offered an MCP task (`ctx.allowTask`, an agent's or an App View's call to an
-//   HTTP server). For an App tool (#466) it also starts the read of the App's HTML when none is kept for the inventory
-//   (`app-reads.ts`), beside the call when the connection is established already and after it otherwise; the call never
-//   waits for it, and answers `app.htmlHash` only if the read has stored the page by then.
+//   HTTP server, or a stdio server run in the caller's Workspace). For an App tool (#466) it also starts the read of the
+//   App's HTML when none is kept for the inventory (`app-reads.ts`), beside the call when the connection is established
+//   already and after it otherwise; the call never waits for it, and answers `app.htmlHash` only if the read has stored
+//   the page by then.
 // - **`tasks/get`, `tasks/update`, `tasks/cancel`** (#455): follow a task. They carry the task's server and tool and the
 //   `conn` it was started on, and answer `ServerChanged` when the name's `conn` is another. The host keeps nothing of a
-//   task. A task on a stdio server is `HostUnsupported` until [#494](https://github.com/ian-pascoe/cloudpid/issues/494)
+//   task. On a stdio server they go to the Workspace the request names (`ctx.workspace`: the task's, not the Session's), and
+//   never start its Container (`start: false`): a stopped one answers `Unreachable` with `stopped`
 //   (`docs/architecture/mcp-server-requests.md` → MCP tasks).
 // - **`resources/list`, `resources/templates/list`, `resources/read`** (#471): a page of a server's resources or templates,
 //   from a cursor, kept in the list cache for a Modern server's `ttlMs`; and a read with the SHA-256 of its contents
@@ -260,9 +262,13 @@ const toolCall = (
         ),
       );
 
-    // A call (or its resume) is offered a task only when the caller can wait for one, for an HTTP server; a `tasks/*`
-    // request is a task's.
-    const offeredTask = !isMcpHostTaskRequest(call) && view.reach === "http" && mayWaitForTask(ctx);
+    // A call (or its resume) is offered a task only when the caller can wait for one, for an HTTP server or a stdio one; a
+    // `tasks/*` request is a task's.
+    const offeredTask =
+      !isMcpHostTaskRequest(call) &&
+      (view.reach === "http" || view.reach === "stdio") &&
+      mayWaitForTask(ctx);
+
     const callCtx: Mutable<McpEngineToolCall["ctx"]> = { ...callContextOf(ctx) };
 
     if (offeredTask || isMcpHostTaskRequest(call)) callCtx.allowTask = true;
@@ -292,7 +298,9 @@ const toolCall = (
       }
     }
 
-    const reached = yield* reachServer(resolved.success);
+    // A task's request never starts a stdio server's Container: the task lives in the process that was running, which a stop
+    // of the Container ended (`mcp-connections.md` → Uses and holds).
+    const reached = yield* reachServer(resolved.success, { start: !isMcpHostTaskRequest(call) });
 
     if (Result.isFailure(reached)) return reached.failure;
 
@@ -589,7 +597,7 @@ const promptGet = (
  * `tools/call` may be offered an MCP task (`ctx.allowTask`, an agent's or an App View's call to an HTTP server), and
  * `tasks/get`, `tasks/update` and `tasks/cancel` follow one: they carry the task's server and tool and the `conn` it was
  * started on, and answer `ServerChanged` when the name's `conn` is another. The host keeps nothing of a task. A task on a
- * stdio server is `HostUnsupported` until [#494](https://github.com/ian-pascoe/cloudpid/issues/494)
+ * stdio server goes to the request's Workspace
  * (`docs/architecture/mcp-server-requests.md` → MCP tasks). `ui/html` is App HTML for a View that mounts (#466).
  */
 export const request = (

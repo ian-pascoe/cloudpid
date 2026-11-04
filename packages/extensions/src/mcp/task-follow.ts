@@ -19,6 +19,9 @@ import {
 } from "@earendil-works/pi-durable";
 import type { McpHostClientService } from "./client.ts";
 import type { McpCallOrigin } from "./exchange.ts";
+import { reporterToCreate, startTurn } from "../subagents/tasks.ts";
+import { ROOT_AGENT } from "../subagents/ids.ts";
+import { runs, SubagentsDoc } from "../subagents/state.ts";
 import { spillTo } from "./spill.ts";
 import {
   cancelDue,
@@ -34,6 +37,7 @@ import {
   endedText,
   MCP_TASK_CANCEL_GRACE_MS,
   MCP_TASK_FOLLOW_MS,
+  MCP_TASK_RESULT_KEPT_MS,
   pollDelayMs,
   type PollOutcome,
 } from "./task-policy.ts";
@@ -51,6 +55,7 @@ import {
   McpTasksDoc,
   type McpTaskEnd,
   type McpTaskRecord,
+  type McpTasksState,
 } from "./task-state.ts";
 
 /** What a follower is created with: the handle of its task, whose record has the rest. */
@@ -111,9 +116,24 @@ const whenIdle = async (runtime: Runtime, id: ConversationId, context: Context) 
   }
 };
 
+/** Note, in the commit that tells the agent, when it was told: the first time, a restart that posts again keeps it. */
+const markTold = (doc: McpTasksState, handle: string, now: number): void => {
+  const current = doc.tasks[handle];
+
+  if (current !== undefined) current.toldAt ??= now;
+};
+
+/** The title of a task's entry in the owner's transcript (`data.notice`): where it stands, or that it ended. */
+const noticeTitle = (handle: string, status: string): string => `MCP task ${handle}: ${status}`;
+
+/** The title of the entry that tells the agent a task ended. */
+const endedTitle = (handle: string, status: string): string =>
+  `MCP task ${handle} ended: ${status}`;
+
 /** The follower task over the Session's host client, origin, options and result pool. */
 export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
   const { client, origin, tasks, pool } = deps;
+  const reporter = reporterToCreate();
   const timing = tasks.timing ?? {};
   const cancelGrace = timing.cancelGraceMs ?? MCP_TASK_CANCEL_GRACE_MS;
 
@@ -187,6 +207,14 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
     return next;
   };
 
+  /** What the agent is told of the end of `record`: with the day its result is kept until. */
+  const endedBody = (record: McpTaskRecord, now: number): string =>
+    endedText(
+      record,
+      now,
+      pool.keptUntil(record.handle) ?? (record.end?.at ?? now) + MCP_TASK_RESULT_KEPT_MS,
+    );
+
   /**
    * Leave the agent a model-visible note of `record` (`cloudpid.mcp-task-notice`): cloudpid's words only, written once for
    * the task, never starting a Run. It is best effort: a conversation that was archived or deleted takes none.
@@ -204,7 +232,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           timestamp: now,
         },
       ],
-      data: { task: record.handle, status, by },
+      data: { task: record.handle, status, by, notice: noticeTitle(record.handle, status) },
     };
 
     try {
@@ -335,6 +363,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
             pollIntervalMs: record.pollIntervalMs,
             background: true,
             ownerOnly: record.status === "input_required",
+            stdio: record.transport === "stdio",
             jitter: Math.random(),
           });
 
@@ -376,10 +405,39 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         }, context);
       }),
 
-      // The root conversation has no reporter of its own: the entry is submitted to it, once, by its request ID.
+      // The root conversation has no reporter of its own: the entry is submitted to it, once, by its request ID. A
+      // subagent's is a turn of its own, started in the commit that ends this phase, so a restart starts it once.
       post: noting(async (task, runtime, context) => {
         const { handle } = task.input;
         const record = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle];
+
+        if (record !== undefined && record.agent !== ROOT_AGENT) {
+          await runtime.commit(async (tx): Promise<Next> => {
+            const doc = await tx.doc(SubagentsDoc);
+
+            // Deleted since, or its ID taken by another agent (ADR-0040): the turn would not be the agent that started it.
+            if (!runs(doc, record.agent, record.conversation)) return done;
+
+            await startTurn(
+              tx,
+              doc,
+              {
+                agentId: record.agent,
+                content: endedBody(record, runtime.now()),
+                whenBusy: "followUp",
+                from: handle,
+              },
+              runtime.now(),
+              reporter,
+            );
+            // The agent is told by this very commit.
+            markTold(await tx.doc(McpTasksDoc), handle, runtime.now());
+
+            return done;
+          }, context);
+
+          return;
+        }
 
         const conversation =
           record === undefined
@@ -390,16 +448,14 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           const submission = await conversation.submit(
             {
               type: "input",
-              content: endedText(
-                record,
-                runtime.now(),
-                pool.keptUntil(handle) ?? (record.end?.at ?? runtime.now()) + 7 * 24 * 3600 * 1000,
-              ),
+              content: endedBody(record, runtime.now()),
               whenBusy: "followUp",
               requestId: `mcp-task:${handle}`,
               entry: {
                 kind: MCP_TASK_ENDED_KIND,
                 data: {
+                  // Its title in the owner's transcript, where it shows as a notice (the text is the agent's).
+                  notice: endedTitle(handle, record.end?.status ?? record.status),
                   task: handle,
                   server: record.server,
                   tool: record.modelTool,
@@ -413,8 +469,17 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
           // The Run it starts pushes `finished` or `failed` to the owner.
           tasks.submitted?.(submission.id);
+
+          await runtime.commit(async (tx): Promise<Next> => {
+            markTold(await tx.doc(McpTasksDoc), handle, runtime.now());
+
+            return done;
+          }, context);
+
+          return;
         }
 
+        // No conversation to tell (archived or deleted): nobody was.
         await runtime.commit(() => done, context);
       }),
 

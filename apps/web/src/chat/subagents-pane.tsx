@@ -21,8 +21,17 @@ import {
 import { AgentStatus, AgentStopButton, AgentSummary } from "./subagent-card.tsx";
 
 /** How a background task's kind reads; one the page does not know shows as it is. */
-const kindLabel = (kind: string): string =>
-  kind === "pi.compaction" ? "Compacting context" : kind;
+const kindLabel = (kind: string): string => {
+  switch (kind) {
+    case "pi.compaction":
+      return "Compacting context";
+    // A follower of an MCP task that went on in the background (`docs/architecture/mcp-server-requests.md` → MCP tasks).
+    case "cloudpid.mcp-task":
+      return "Following an MCP task";
+    default:
+      return kind;
+  }
+};
 
 /** How a background task's state reads: `sleeping` holds until a time, such as a retry backoff's end. */
 const stateLabel = (task: GraphBackgroundTask): string => {

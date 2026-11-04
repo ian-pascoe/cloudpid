@@ -28,6 +28,7 @@ import {
   type McpAppMounted,
   type McpAppRequestAnswer,
   type McpAppTool,
+  type McpTask,
   type McpElicitationRequest,
   type McpSamplingRequest,
   type McpSamplingSessionGrant,
@@ -260,6 +261,48 @@ export const mcpAppToolsMessage = (tools: ReadonlyArray<McpAppTool>): ServerMess
   type: "mcp_app_tools",
   tools,
 });
+
+/** The `mcp_tasks` message for `tasks`, which every client is sent after `hello` and whenever the list changes. */
+export const mcpTasksMessage = (tasks: ReadonlyArray<McpTask>): ServerMessage => ({
+  type: "mcp_tasks",
+  tasks,
+});
+
+/** Why an owner's cancel of an MCP task was not sent, by what it came to; `sent` and `already_sent` took. */
+const MCP_TASK_CANCEL_REFUSALS = {
+  failed: "The server could not be asked to cancel the task; try again",
+  ended: "The task has ended",
+  unknown: "The Session has no such MCP task",
+} as const;
+
+/** Why Keep the Container did not, by what it came to; `kept` took. */
+const CONTAINER_KEEP_REFUSALS = {
+  not_stdio: "Only a stdio server's task keeps a Container",
+  ended: "The task has ended",
+  unknown: "The Session has no such MCP task",
+  failed: "The Container could not be kept; try again",
+} as const;
+
+/**
+ * The answer to an owner's MCP task command that came to `outcome`: `null` when it is one of `took`, else the refusal's
+ * words. The refusals are keyed by every outcome that did not take, so a new outcome nobody mapped is a type error and
+ * never an answer of success.
+ */
+const ownerCommandAnswer = <Outcome extends string, Took extends Outcome>(
+  operation: string,
+  outcome: Outcome,
+  took: ReadonlyArray<Took>,
+  refusals: { readonly [Refused in Exclude<Outcome, Took>]: string },
+): Effect.Effect<null, SessionError> => {
+  const widened: ReadonlyArray<Outcome> = took;
+
+  if (widened.includes(outcome)) return Effect.succeed(null);
+
+  // SAFETY: `outcome` is none of `took`, which is what `refusals` is keyed by.
+  const refused = outcome as Exclude<Outcome, Took>;
+
+  return Effect.fail(SessionError.make({ operation, message: refusals[refused] }));
+};
 
 /** The `mcp_apps` message for `conversationId`'s App calls, which each client watching it is sent. */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a plain helper, not an Effect operator.
@@ -1002,6 +1045,27 @@ export const sessionSocketsLayer = (
               .pipe(Effect.as(null));
           case "mcp_app_cancel":
             return mcpApps.cancel(socket, message.callId, message.requestId).pipe(Effect.as(null));
+          case "mcp_task_cancel":
+            return host
+              .mcpTaskCancel(message.task)
+              .pipe(
+                Effect.flatMap((took) =>
+                  ownerCommandAnswer(
+                    "mcp_task_cancel",
+                    took,
+                    ["sent", "already_sent"],
+                    MCP_TASK_CANCEL_REFUSALS,
+                  ),
+                ),
+              );
+          case "container_keep":
+            return host
+              .mcpTaskKeep(message.task)
+              .pipe(
+                Effect.flatMap((kept) =>
+                  ownerCommandAnswer("container_keep", kept, ["kept"], CONTAINER_KEEP_REFUSALS),
+                ),
+              );
           case "viewed_set":
             return viewed
               .set({ repo: message.repo, pull: message.pull, path: message.path }, message.blob)
@@ -1102,6 +1166,34 @@ export const sessionSocketsLayer = (
         Effect.asVoid,
       );
 
+      /**
+       * Tell every connected client the Session's MCP tasks whenever they change: one watch for the whole Session, begun
+       * with the first client of an instance (a Session nobody looks at does not watch) and ended with its scope.
+       */
+      let followingMcpTasks = false;
+
+      const followMcpTasks = Effect.suspend(() => {
+        if (followingMcpTasks) return Effect.void;
+
+        followingMcpTasks = true;
+
+        return host.mcpTasks.pipe(
+          Stream.runForEach((tasks) =>
+            Effect.forEach(
+              state.getWebSockets(),
+              (socket) => send(socket, mcpTasksMessage(tasks)),
+              {
+                discard: true,
+              },
+            ),
+          ),
+          Effect.catch((error) => Effect.logWarning("Following the MCP tasks ended", error)),
+          Effect.ensuring(Effect.sync(() => (followingMcpTasks = false))),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        );
+      });
+
       const connect = Effect.gen(function* () {
         // The default in force, so the client's first view shows what the next request runs on.
         yield* host.sync.pipe(
@@ -1120,8 +1212,8 @@ export const sessionSocketsLayer = (
         yield* send(
           server,
           copying
-            ? { type: "hello", root, copying, appViews: true }
-            : { type: "hello", root, appViews: true },
+            ? { type: "hello", root, copying, appViews: true, mcpTasks: true }
+            : { type: "hello", root, appViews: true, mcpTasks: true },
         );
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),
@@ -1160,6 +1252,13 @@ export const sessionSocketsLayer = (
         // cards it held.
         yield* send(server, mcpSignInRequests(yield* mcpSignIns.pending));
 
+        // The Session's MCP tasks, an empty list too, so a client that reconnects drops one that ended meanwhile.
+        yield* send(
+          server,
+          mcpTasksMessage(yield* host.mcpTaskList.pipe(Effect.orElseSucceed(() => []))),
+        );
+        yield* followMcpTasks;
+
         // The draft Annotations, an empty list too, so a client that reconnects drops the drafts deleted meanwhile.
         yield* send(server, annotationsMessage(yield* annotations.list));
 
@@ -1176,6 +1275,8 @@ export const sessionSocketsLayer = (
       });
 
       // Sockets that outlived the last instance keep their watches, each from a fresh snapshot.
+      if (state.getWebSockets().length > 0) yield* followMcpTasks;
+
       for (const socket of state.getWebSockets()) {
         if (readAttachment(socket).taskGraph === true) yield* watchGraph(socket);
 

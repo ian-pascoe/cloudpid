@@ -37,6 +37,7 @@ import {
 import { SettingsNav, SettingsRailLinks } from "./settings/nav.tsx";
 import { listProblemAtom, noticeAtom } from "./app-state.ts";
 import { groupCollapsedAtom, groupKey, type ListSection } from "./collapsed-groups.ts";
+import { followingLabel } from "./chat/mcp-task.ts";
 import { subagentRows, subagentsExpandedAtom } from "./list-subagents.ts";
 import { SubagentList, SubagentsToggle } from "./sidebar-subagents.tsx";
 import { useSessionActions } from "./session-actions.ts";
@@ -103,6 +104,10 @@ export const SessionLink = ({
         <span className="tabular shrink-0 whitespace-nowrap">
           {relativeTime(session.updatedAt, Date.now())}
         </span>
+      )}
+      {session.mcpTasks !== undefined && (
+        // The Session follows MCP tasks in the background (`mcpTasks`, as it last reported them).
+        <span className="truncate">{followingLabel(session.mcpTasks)}</span>
       )}
     </span>
   </InAppLink>

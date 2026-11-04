@@ -9,6 +9,7 @@ import {
   type LastRun,
   type McpAppEntry,
   type McpAppTool,
+  type McpTask,
   type McpElicitationRequest,
   type McpSamplingRequest,
   type McpSamplingSessionGrant,
@@ -154,6 +155,11 @@ export interface SessionState {
   readonly mcpSamplingGrants: readonly McpSamplingSessionGrant[];
   /** The Sign-in requests waiting for the owner: an agent asked them to sign in to an MCP server. */
   readonly mcpSignInRequests: readonly McpSignInRequest[];
+  /**
+   * The Session's MCP tasks (`docs/architecture/mcp-server-requests.md` → MCP tasks), oldest first, as the last `mcp_tasks`
+   * listed them: the ones that go on and the newest that ended. Empty until the socket says, and for a Session from before.
+   */
+  readonly mcpTasks: readonly McpTask[];
   /** The Session's draft Annotations, oldest first, as of the last `annotations` message; every client has the same. */
   readonly annotations: readonly Annotation[];
   /** The Session's Viewed boxes on pull request files, as of the last `viewed` message; every client has the same. */
@@ -223,6 +229,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   mcpSamplingRequests: [],
   mcpSamplingGrants: [],
   mcpSignInRequests: [],
+  mcpTasks: [],
   annotations: [],
   viewed: [],
   browserHandoffRequests: null,

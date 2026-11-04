@@ -201,4 +201,10 @@ describe("a Session in the list", () => {
   it("shows no such mark once the import ended", () => {
     expect(row(session)).not.toContain("Importing");
   });
+
+  it("says how many MCP tasks the Session follows, and nothing when it follows none", () => {
+    expect(row({ ...session, mcpTasks: 1 })).toContain("Following 1 MCP task");
+    expect(row({ ...session, mcpTasks: 3 })).toContain("Following 3 MCP tasks");
+    expect(row(session)).not.toContain("Following");
+  });
 });

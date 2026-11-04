@@ -3120,6 +3120,67 @@ describe("the App calls on a Session connection", () => {
       }),
   );
 
+  it.effect("keeps the MCP tasks the Session lists, whole each time", () =>
+    Effect.gen(function* () {
+      const { latest, state } = yield* setup();
+
+      const task = {
+        task: "mcp-task-1",
+        server: "docs",
+        tool: "mcp__docs__index",
+        status: "working",
+        background: true,
+        callId: "c1",
+        conversationId: 1,
+        startedAt: 5,
+      };
+
+      yield* greeted(latest(), { mcpTasks: true });
+      expect(state().mcpTasks).toEqual([]);
+      yield* latest().say({ type: "mcp_tasks", tasks: [task] });
+      expect(state().mcpTasks).toEqual([task]);
+      yield* latest().say({ type: "mcp_tasks", tasks: [] });
+      expect(state().mcpTasks).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    "sends the owner's cancel and Keep the Container only to a Session that says it takes them",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { mcpTasks: true });
+
+        const cancel = yield* Effect.forkChild(client.cancelMcpTask("mcp-task-1"));
+        const keep = yield* Effect.forkChild(client.keepMcpContainer("mcp-task-1"));
+
+        yield* settle;
+        expect(latest().commands().slice(-2)).toEqual([
+          { type: "mcp_task_cancel", id: expect.any(String), task: "mcp-task-1" },
+          { type: "container_keep", id: expect.any(String), task: "mcp-task-1" },
+        ]);
+        yield* Fiber.interrupt(cancel);
+        yield* Fiber.interrupt(keep);
+      }),
+  );
+
+  it.effect("refuses the owner's cancel itself for a Session from before it, sending nothing", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* greeted(latest(), { appViews: true });
+
+      const before = latest().commands().length;
+      const failed = yield* client.cancelMcpTask("mcp-task-1").pipe(Effect.flip);
+      const kept = yield* client.keepMcpContainer("mcp-task-1").pipe(Effect.flip);
+
+      expect(failed.message).toContain("older version");
+      expect(kept.message).toContain("older version");
+      expect(latest().commands()).toHaveLength(before);
+    }),
+  );
+
   it.effect(
     "mounts a call by its ID and reads its page by it, each answered as the Session did",
     () =>

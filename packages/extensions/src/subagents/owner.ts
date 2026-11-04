@@ -94,29 +94,42 @@ export const stopConversation = async (
   // still running (the parent of the one being stopped) can start another. So read the state again after each pass and
   // stop whatever is new, until nothing is.
   const stopped = new Set<string>();
+  // The first abort that failed: every pass still runs, since the next may find agents this one's failure left running.
+  const failures = Arr.empty<unknown>();
 
   for (;;) {
     const state = await readState(harness, context);
     const target = agentOf(state, conversationId);
 
     // Deleted meanwhile: whatever runs under its ID now is another agent's (ADR-0040).
-    if (target === undefined) return;
+    if (target === undefined) break;
 
     const fresh = Arr.filter(below(state, target), (agent) => !stopped.has(agent.id));
 
-    if (fresh.length === 0) return;
+    if (fresh.length === 0) break;
 
-    for (const agent of fresh) {
-      stopped.add(agent.id);
+    for (const agent of fresh) stopped.add(agent.id);
 
-      await beforeAbort(agent.conversationId);
-      await (
-        await harness.conversation(agent.conversationId, context)
-      )?.abort(context, {
-        background: true,
-      });
+    // Side by side: an abort waits for its agent's followers' `tasks/cancel` (2 s at most each), so one after another a
+    // Session of n agents with servers that never answer would take n times that.
+    const results = await Promise.allSettled(
+      Arr.map(fresh, async (agent) => {
+        await beforeAbort(agent.conversationId);
+        await (
+          await harness.conversation(agent.conversationId, context)
+        )?.abort(context, {
+          background: true,
+        });
+      }),
+    );
+
+    for (const result of results) {
+      if (result.status === "rejected") failures.push(result.reason);
     }
   }
+
+  // All of it was tried; the stop fails with the first thing that went wrong.
+  if (failures.length > 0) throw failures[0];
 };
 
 /** What an owner's delete did: the agents deleted, and why a Subagent Workspace of theirs is still there. */

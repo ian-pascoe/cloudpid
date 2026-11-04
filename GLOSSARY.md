@@ -220,6 +220,10 @@ _Avoid_: Scaling, upgrade
 The Workspace stopping its Container, as an idle stop does (snapshot, unless nothing that may change its disk ran since its restore, then stop), because it was kept running an hour (or its idle time, when longer: the hold cap) after the last owner or agent activity in the Workspace, by a command handle never released or an open Container preview. Its Sessions show it as a notice.
 _Avoid_: Timeout, watchdog
 
+**Keep the Container**:
+The owner's button on an MCP task that went on in the background of a stdio server (`container_keep`): it notes owner activity in the task's Workspace, which resets the hold cap, so the Container (and the server's process, which the task lives in) is kept another hour. Viewing the Session and the task's polls do not do it; without it a held stop ends the task, `unknown`.
+_Avoid_: Keepalive, extend
+
 **Backend**:
 A place a Workspace runs commands: the Worker Shell or the Container.
 _Avoid_: Runtime, executor

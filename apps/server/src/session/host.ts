@@ -24,7 +24,12 @@ import {
   type McpNotices,
   mcpNotices,
   type McpSamplingBinding,
+  McpTasksDoc,
+  type OwnerCancel,
+  type OwnerKeep,
   type SweepHarness,
+  type TaskOwnerHarness,
+  viewOfTasks,
 } from "@cloudpid/extensions/mcp";
 import {
   discoverPrompts,
@@ -48,6 +53,7 @@ import {
   type ContainerUsage,
   type ContextUsage,
   type TaskGraphSummary,
+  type McpTask,
   type TodoTask,
   type Annotation,
   type AttachedPage,
@@ -443,6 +449,13 @@ export type SessionHostMcp<R> = {
    * Never fails.
    */
   readonly sweep?: (harness: SweepHarness) => Effect.Effect<void>;
+  /** The owner's cancel of MCP task `task` (`mcp_task_cancel`). Never fails. */
+  readonly cancelTask?: (harness: TaskOwnerHarness, task: string) => Effect.Effect<OwnerCancel>;
+  /** Keep the Container of the stdio server's MCP task `task` (`container_keep`). Never fails. */
+  readonly keepContainer?: (
+    harness: Pick<TaskOwnerHarness, "snapshot">,
+    task: string,
+  ) => Effect.Effect<OwnerKeep>;
   /**
    * Tell conversation `conversationId` that the `mcp_servers` listing changed, if its section was shown another one: run
    * after a request start's install, before its message is placed. Never fails.
@@ -815,6 +828,17 @@ export type SessionHostService = {
   readonly todos: (
     conversationId: ConversationId,
   ) => Stream.Stream<ReadonlyArray<TodoTask>, SessionError>;
+  /**
+   * The Session's MCP tasks (`docs/architecture/mcp-server-requests.md` → MCP tasks): how they stand, then each change that
+   * alters the list. Empty for a Session without MCP servers. Fails when the Harness ends the watch.
+   */
+  readonly mcpTasks: Stream.Stream<ReadonlyArray<McpTask>, SessionError>;
+  /** The Session's MCP tasks as they stand now. */
+  readonly mcpTaskList: Effect.Effect<ReadonlyArray<McpTask>, SessionError>;
+  /** The owner's cancel of MCP task `task`: what it came to. */
+  readonly mcpTaskCancel: (task: string) => Effect.Effect<OwnerCancel>;
+  /** Keep the Container of the stdio server's MCP task `task`: what it came to. */
+  readonly mcpTaskKeep: (task: string) => Effect.Effect<OwnerKeep>;
   /**
    * What the composer of the active branch, or of the subagent's that `conversationId` names, offers: the Session's
    * Slash commands, and the Prompt templates and Skills of the conversation's directory, nearest first.
@@ -3203,6 +3227,46 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
     );
 
+  const mcpTasks: SessionHostService["mcpTasks"] = Stream.callback<
+    ReadonlyArray<McpTask>,
+    SessionError
+  >((queue) =>
+    Effect.acquireRelease(
+      attempt("watchMcpTasks", async () => {
+        // The document exists once the first MCP task started; the first watch of a Session that has none makes it.
+        if ((await harness.harness.snapshot(McpTasksDoc, context)) === undefined) {
+          await harness.harness.commit(async (tx) => {
+            await tx.doc(McpTasksDoc);
+          }, context);
+        }
+
+        const watch = await harness.harness.watchDoc(McpTasksDoc, context);
+
+        if (watch === undefined) throw new Error("the MCP tasks document is missing");
+
+        Queue.offerUnsafe(queue, viewOfTasks(watch.value));
+        watch.start((state) => {
+          Queue.offerUnsafe(queue, viewOfTasks(state));
+
+          return Promise.resolve();
+        });
+        void watch.closed.then((end) =>
+          Queue.failCauseUnsafe(
+            queue,
+            Cause.fail(SessionError.make({ operation: "watchMcpTasks", message: watchEnded(end) })),
+          ),
+        );
+
+        return watch;
+      }),
+      (watch) => Effect.promise(() => watch.stop()),
+    ),
+  ).pipe(Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)));
+
+  const mcpTaskList = attempt("mcpTasks", async () =>
+    viewOfTasks(await harness.harness.snapshot(McpTasksDoc, context)),
+  );
+
   /**
    * Follow the task graph and the Subagents document, which does not exist until the first spawn and changes alone when
    * an idle agent is deleted or given a Workspace, for the Registry's summary of the subagents. Started before work
@@ -3382,10 +3446,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         activeBranch: current.id,
         copying,
         idle: working(tasks).length === 0 && submissions.length === 0 && !admission.anyPreparing(),
-        // The addressed conversation's own: what Stop all of it reaches (a branch that is not active is Archive's and Delete's).
+        // The addressed conversation's own and its subagents': what Stop all of it reaches (a branch that is not active is
+        // Archive's and Delete's).
         following: Arr.some(
           tasks,
-          (task) => isFollower(task) && task.record.conversationId === conversation.id,
+          (task) =>
+            isFollower(task) &&
+            (task.record.conversationId === conversation.id ||
+              String(task.record.conversationId) in (state?.conversations ?? {})),
         ),
         unsettled,
         stalled,
@@ -3575,6 +3643,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     usage: usageUpdates,
     events,
     todos,
+    mcpTasks: options.mcp === undefined ? Stream.empty : mcpTasks,
+    mcpTaskList: options.mcp === undefined ? Effect.succeed([]) : mcpTaskList,
+    mcpTaskCancel: (task) =>
+      options.mcp?.cancelTask?.(harness.harness, task) ?? Effect.succeed("unknown" as const),
+    mcpTaskKeep: (task) =>
+      options.mcp?.keepContainer?.(harness.harness, task) ?? Effect.succeed("unknown" as const),
     catalog: (conversationId) => addressed(conversationId).pipe(Effect.flatMap(catalogFor)),
     command: runCommand,
     directory: (conversationId) =>
