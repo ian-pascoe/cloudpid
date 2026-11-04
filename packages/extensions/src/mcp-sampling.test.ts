@@ -243,7 +243,9 @@ describe("MCP sampling", () => {
       const { sampler } = open({ over: () => "it has spent 2 of 1" });
       const outcome = yield* sampler.sample(ask(HI));
 
-      expect(outcome.detail).toMatchObject({ status: "refused", by: "cloudpid", why: "budget" });
+      expect(outcome).toMatchObject({
+        detail: { status: "refused", by: "cloudpid", why: "budget" },
+      });
     }));
 
   test("never puts an id or text the server wrote into the reason of a mispaired request", () =>
@@ -504,7 +506,7 @@ describe("MCP sampling", () => {
       const outcome = yield* sampler.sample(ask(HI));
 
       expect(refusedWith(outcome)).toEqual({ code: -32603, message: "overloaded" });
-      expect(outcome.detail).toMatchObject({ status: "failed" });
+      expect(outcome).toMatchObject({ detail: { status: "failed" } });
       expect(usages).toHaveLength(1);
     }));
 

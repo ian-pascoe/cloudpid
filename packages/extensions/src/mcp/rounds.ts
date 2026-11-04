@@ -13,12 +13,21 @@ import type { Context } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { Mutable } from "effect/Types";
-import type { McpElicitationDetail } from "./details.ts";
+import type { McpElicitationDetail, McpSamplingDetail } from "./details.ts";
 import { mutableContent } from "./elicit.ts";
-import { type McpDeferredRound, McpRoundState, type McpQuestionsService } from "./questions.ts";
+import {
+  MCP_CALL_ENDED_REASON,
+  type McpDeferredRound,
+  type McpDeferredSample,
+  McpRoundState,
+  type McpQuestionsService,
+} from "./questions.ts";
+import { refusedBy } from "./question-records.ts";
+import type { Sampling } from "./sample.ts";
 
 /** The marker written once round `round`'s questions are stored: a rerun that finds it waits for them again. */
 const waitMarker = (round: number) => `mcp.wait.${round}`;
@@ -76,7 +85,8 @@ export const storeRound = async (
 };
 
 /**
- * How the wait for a round's answers ended: the request to send, Stop, the round gone before it was answered, or (for a
+ * How the wait for a round's answers ended: the request to send, Stop, the round gone before it was answered, a Sampling
+ * request refused (the round is sunk, nothing is sent, and the call ends locally: `detail` is the refusal), or (for a
  * read's pages, which are sent again as the read was) an answer that is not an `accept`, which ends the read with the
  * server's own error.
  */
@@ -84,7 +94,67 @@ export type Resumed =
   | { readonly kind: "resume"; readonly request: McpHostRequest | McpHostResourceRequest }
   | { readonly kind: "refused" }
   | { readonly kind: "stopped" }
-  | { readonly kind: "withdrawn" };
+  | { readonly kind: "withdrawn" }
+  | { readonly kind: "sunk"; readonly detail: McpSamplingDetail };
+
+/** What a round's requests are refused with when no sampler can run them. */
+const UNAVAILABLE = { reason: "cloudpid cannot run the request here", why: "internal" } as const;
+
+/** What a round's Sampling requests came to: their replies by key, or the refusal that sinks the round. */
+type Sampled =
+  | { readonly kind: "replies"; readonly replies: Mutable<McpTaskInputResponses> }
+  | { readonly kind: "sunk"; readonly detail: McpSamplingDetail };
+
+/**
+ * Run the round's Sampling requests as they were kept (`Sampling.resume`), each on what the owner decided. The first that
+ * is refused or fails sinks the round: the requests after it are settled refused, never run, and the refusal that is
+ * returned is the first that is not the round's own ending (a request another's refusal withdrew).
+ */
+const sampled = async (
+  samples: ReadonlyArray<McpDeferredSample>,
+  sampling: Pick<Sampling, "resume"> | undefined,
+  server: string,
+  unavailable: Pick<McpSamplingDetail, "reason" | "why">,
+): Promise<Sampled> => {
+  const replies: Mutable<McpTaskInputResponses> = {};
+  const refusals: Array<McpSamplingDetail> = [];
+
+  for (const { key, sample } of samples) {
+    // Nothing is run for a round that is sunk; its requests are settled refused, which their records say.
+    const kept: McpDeferredSample["sample"] =
+      refusals.length > 0 && sample.decision.action === "allow"
+        ? { ...sample, decision: refusedBy("cloudpid", MCP_CALL_ENDED_REASON, "unanswered") }
+        : sample;
+
+    const outcome = await sampling?.resume(kept, key);
+
+    if (outcome?.kind === "sampled") replies[key] = { ...outcome.result };
+    else if (outcome?.kind === "refused") refusals.push(outcome.detail);
+    else {
+      // No sampler to run it: a refusal that was decided says so itself, an allowed request that the sampler is not there
+      // to run says why (the definition says `off` by now, or cloudpid has none).
+      const decided = kept.decision;
+
+      const detail: Mutable<McpSamplingDetail> =
+        decided.action === "refuse"
+          ? { server, status: "refused", by: decided.by, reason: decided.reason }
+          : { server, status: "refused", by: "cloudpid", ...unavailable };
+
+      if (decided.action === "refuse" && decided.why !== undefined) detail.why = decided.why;
+
+      refusals.push(detail);
+    }
+  }
+
+  const detail = Option.getOrUndefined(
+    Option.orElse(
+      Arr.findFirst(refusals, (each) => each.reason !== MCP_CALL_ENDED_REASON),
+      () => Arr.head(refusals),
+    ),
+  );
+
+  return detail === undefined ? { kind: "replies", replies } : { kind: "sunk", detail };
+};
 
 /**
  * Wait until the owner has answered every question of `round`, then build its resume: the answers are noted in
@@ -99,6 +169,10 @@ export const resumeOf = async (
     readonly asked: Array<McpElicitationDetail> | undefined;
     /** The read the round's pages are for: it has no state to resend, so it is sent again as it was. */
     readonly read?: McpHostResourceRequest | undefined;
+    /** The call's Sampling hook, which runs the round's Sampling requests as it resumes. */
+    readonly sampling?: Pick<Sampling, "resume"> | undefined;
+    /** Why there is none, when the server's definition says `off` by now: what the refused requests say. */
+    readonly samplingOff?: Pick<McpSamplingDetail, "reason" | "why"> | undefined;
   },
 ): Promise<Resumed> => {
   const { questions, api, context } = rounds;
@@ -113,8 +187,17 @@ export const resumeOf = async (
   if (answered === undefined) return { kind: "withdrawn" };
 
   const answers: Mutable<McpTaskInputResponses> = {};
+  const samples: Array<McpDeferredSample> = [];
 
-  for (const { key, outcome, fields, page } of answered) {
+  for (const each of answered) {
+    if (each.kind === "sample") {
+      samples.push(each);
+
+      continue;
+    }
+
+    const { key, outcome, fields, page } = each;
+
     const detail: Mutable<McpElicitationDetail> = {
       server: call.server,
       mode: page === undefined ? "form" : "url",
@@ -135,6 +218,24 @@ export const resumeOf = async (
       outcome.action === "accept" && page === undefined
         ? { action: "accept", content: mutableContent(outcome.content) }
         : { action: outcome.action };
+  }
+
+  // The round's Sampling requests are run now, on what the owner decided, so the replies are never kept: a restart in
+  // between runs them again (their record is the same one) rather than lose the call.
+  if (samples.length > 0) {
+    const ran = await sampled(samples, call.sampling, call.server, call.samplingOff ?? UNAVAILABLE);
+
+    // Stopped meanwhile: the call's end settles the round.
+    if (context.abortSignal?.aborted === true) return { kind: "stopped" };
+
+    // Sunk: nothing is sent, and the call ends here.
+    if (ran.kind === "sunk") {
+      await Effect.runPromise(questions.endRound(api.callId));
+
+      return { kind: "sunk", detail: ran.detail };
+    }
+
+    Object.assign(answers, ran.replies);
   }
 
   // Durable before the resume leaves, so a restart never sends it again; the sealed answers go once it is.

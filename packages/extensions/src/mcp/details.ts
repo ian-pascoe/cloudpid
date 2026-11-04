@@ -119,9 +119,14 @@ export type McpDetails = {
   readonly meta?: { readonly [key: string]: JsonValue };
   readonly full_output_path?: string;
   readonly progress?: McpProgress;
+  /**
+   * `sampling_refused`: a Modern server's Sampling request was refused, which ends the call locally (`InputResponse` has no
+   * error form): the call's own work may be partly done (`docs/architecture/mcp-server-requests.md` → Sampling requests).
+   */
   readonly error?:
     | "too_large"
     | "invalid_structured_output"
+    | "sampling_refused"
     | "mcp_task_failed"
     | "mcp_task_cancelled"
     | "mcp_task_unknown"

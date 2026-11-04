@@ -1483,9 +1483,53 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     });
 
   /**
+   * A Modern round's Sampling request, by `key` (`docs/architecture/mcp-server-requests.md` → Sampling requests): the
+   * call's `onInput` runs it (`sampled`) or keeps it for later (`defer`, only for a call that keeps questions). Anything
+   * else ends the call locally, since an `InputResponse` has no error form and a Sampling request has no `cancel`: a
+   * refusal, a request the call never offered to answer, and a deferral it cannot keep. The server is told nothing.
+   */
+  const answerSample = (
+    key: string,
+    params: JsonObject,
+    ctx: McpCallContext,
+  ): Effect.Effect<RoundAnswer, McpError> =>
+    Effect.gen(function* () {
+      const { onInput } = deps;
+
+      if (onInput === undefined || ctx.answers?.sampling !== true) {
+        return yield* ProtocolViolation.make({
+          message:
+            "The server asked for sampling/createMessage, which cloudpid did not offer on this call",
+        });
+      }
+
+      const input: McpInputRequest = {
+        key,
+        kind: "sampling",
+        params,
+        mode: "deferrable",
+        era: "modern",
+      };
+
+      const answer = yield* onInput(input);
+
+      if (answer.kind === "sampled") return { key, answer: { ...answer.result } };
+
+      if (answer.kind === "defer" && ctx.answers.defer === true) return { key, defer: input };
+
+      return yield* Unsupported.make({
+        message:
+          answer.kind === "refused"
+            ? answer.message
+            : "cloudpid could not answer the sampling request",
+      });
+    });
+
+  /**
    * Answers one question of a Modern round, by `key`: Roots from the connection's own, an elicitation through the
-   * call's `onInput` when the call offers it (else `cancel`, as for a question with nowhere to go). Anything else was
-   * never offered, and fails the call locally: the server is told nothing (`InputResponse` has no error form).
+   * call's `onInput` when the call offers it (else `cancel`, as for a question with nowhere to go), a Sampling request
+   * through it too (`answerSample`). Anything else was never offered, and fails the call locally: the server is told
+   * nothing (`InputResponse` has no error form).
    */
   const answerOne = (
     key: string,
@@ -1502,6 +1546,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           answer: { roots: Arr.map(deps.roots, (root) => ({ ...root })) },
         } satisfies RoundAnswer;
       }
+
+      if (method === "sampling/createMessage") return yield* answerSample(key, params, ctx);
 
       if (method !== "elicitation/create") {
         return yield* ProtocolViolation.make({

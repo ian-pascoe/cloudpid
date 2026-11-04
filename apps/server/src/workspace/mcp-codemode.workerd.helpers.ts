@@ -37,17 +37,29 @@ export type Stub = DurableObjectStub<TestMcpCodemodeSession>;
 export const pending = (stub: Stub) =>
   runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.mcpPending());
 
+export const pendingSampling = (stub: Stub) =>
+  runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.mcpSamplingPending());
+
 export const sent = (stub: Stub) =>
   runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.mcpSent());
 
 /** Start a Run whose script awaits the server's `ask` tool, and wait until its question is on a card. */
-export const asked = async (stub: Stub, workspace: string, code: string, legacy = false) => {
+export const asked = async (
+  stub: Stub,
+  workspace: string,
+  code: string,
+  legacy = false,
+  /** Whether the Modern server asks a Sampling request in the round too, which the Session's model answers. */
+  sampling = false,
+) => {
   await runInDurableObject(stub, async (instance: TestMcpCodemodeSession) => {
     instance.bindWorkspace(workspace);
 
     if (legacy) instance.mcpLegacy();
 
-    instance.script([script(code), "done"]);
+    if (sampling) instance.mcpSampling();
+
+    instance.script(sampling ? [script(code), "a sampled reply", "done"] : [script(code), "done"]);
     await instance.submit({ requestId: crypto.randomUUID(), text: "go" });
   });
 

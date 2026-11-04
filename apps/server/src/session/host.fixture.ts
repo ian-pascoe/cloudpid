@@ -87,6 +87,7 @@ import {
   emptyMcpExtension,
   type McpHostClientService,
   type McpQuestionsService,
+  type McpSamplingService,
   rememberSampling,
   McpTasksDoc,
   type McpTasksTiming,
@@ -815,6 +816,11 @@ export class TestSession extends DurableObject {
     });
 
     return this.#apps;
+  }
+
+  /** The Session's MCP sampler, for a subclass that builds MCP tools of its own. */
+  protected mcpSamplingService(): McpSamplingService {
+    return this.#mcpSampling().service;
   }
 
   #mcpTools: ReturnType<typeof sessionMcp> | undefined;

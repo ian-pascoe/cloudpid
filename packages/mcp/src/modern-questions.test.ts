@@ -512,3 +512,163 @@ describe("A Modern server's questions", () => {
     });
   });
 });
+
+/** A call whose caller answers Sampling requests and keeps questions for later. */
+const SAMPLING_DEFERRING: McpCallContext = {
+  ...AGENT,
+  answers: { elicitation: true, sampling: true, defer: true },
+};
+
+/** A call whose caller answers Sampling requests, but only at once. */
+const SAMPLING: McpCallContext = { ...AGENT, answers: { sampling: true } };
+
+const SAMPLED: McpInputAnswer = {
+  kind: "sampled",
+  result: { role: "assistant", content: { type: "text", text: "A reply" }, model: "small-1" },
+};
+
+/** Deps that declare sampling on a call that offers to answer it. */
+const sampler = (
+  server: FakeServer,
+  answer: (request: McpInputRequest) => McpInputAnswer,
+  seen: Array<McpInputRequest> = [],
+) =>
+  deps(server, answer, seen, {
+    capabilities: (ctx) => {
+      const elicits = ctx?.answers?.elicitation === true;
+      const samples = ctx?.answers?.sampling === true;
+
+      if (elicits && samples) return { elicitation: { form: {} }, sampling: { tools: {} } };
+
+      if (elicits) return { elicitation: { form: {} } };
+
+      return samples ? { sampling: { tools: {} } } : {};
+    },
+  });
+
+describe("A Modern server's Sampling requests", () => {
+  it("are run through onInput, and the call is sent again with the reply as the answer", async () => {
+    const options = { moreTools: [ASK_TOOL], asked: [] };
+    const server = modernServer(options);
+    const seen: Array<McpInputRequest> = [];
+
+    const outcome = valueOf(
+      await ask(
+        server,
+        sampler(server, () => SAMPLED, seen),
+        SAMPLING,
+        {
+          forms: 0,
+          samples: 1,
+        },
+      ),
+    );
+
+    expect(seen).toEqual([
+      {
+        key: "s1",
+        kind: "sampling",
+        mode: "deferrable",
+        era: "modern",
+        params: expect.objectContaining({ maxTokens: 100 }),
+      },
+    ]);
+    expect(answeredText(outcome)).toEqual({
+      s1: { role: "assistant", content: { type: "text", text: "A reply" }, model: "small-1" },
+    });
+    expect(calls(server)).toHaveLength(2);
+    expect(completed(outcome).cacheable).toBe(false);
+  });
+
+  it("are kept for later by a call that defers: input_required, then one resume with the reply", async () => {
+    const server = modernServer({ moreTools: [ASK_TOOL], asked: [] });
+
+    const deferred = inputRequired(
+      valueOf(
+        await ask(
+          server,
+          sampler(server, () => ({ kind: "defer" })),
+          SAMPLING_DEFERRING,
+          { forms: 0, samples: 1 },
+        ),
+      ),
+    );
+
+    expect(deferred.requests).toEqual([
+      expect.objectContaining({ key: "s1", kind: "sampling", mode: "deferrable" }),
+    ]);
+    expect(deferred.resume).toMatchObject({ requestState: "round-1", deferred: ["s1"] });
+    expect(calls(server)).toHaveLength(1);
+
+    const resumed = valueOf(
+      await resume(
+        sampler(server, () => ({ kind: "defer" })),
+        JSON.parse(JSON.stringify(deferred.resume)),
+        { s1: { ...SAMPLED.result } },
+        SAMPLING_DEFERRING,
+      ),
+    );
+
+    expect(answeredText(resumed)).toEqual({
+      s1: { role: "assistant", content: { type: "text", text: "A reply" }, model: "small-1" },
+    });
+    expect(calls(server)).toHaveLength(2);
+  });
+
+  it("sink the round when the caller refuses one: the call ends locally and the server is told nothing", async () => {
+    const server = modernServer({ moreTools: [ASK_TOOL] });
+    const seen: Array<McpInputRequest> = [];
+
+    const outcome = await ask(
+      server,
+      sampler(
+        server,
+        (request) =>
+          request.kind === "sampling"
+            ? { kind: "refused", message: "out of budget", code: -1 }
+            : { kind: "defer" },
+        seen,
+      ),
+      SAMPLING_DEFERRING,
+      { forms: 1, samples: 1 },
+    );
+
+    expect(outcome).toEqual(failedWith(Unsupported, { message: "out of budget" }));
+    // The form came first and was kept; the round is never sent, whole or in part.
+    expect(seen.map((request) => request.key)).toEqual(["q1", "s1"]);
+    expect(calls(server)).toHaveLength(1);
+  });
+
+  it("end the call when a caller that keeps nothing defers one: a Sampling request has no cancel", async () => {
+    const server = modernServer({ moreTools: [ASK_TOOL] });
+
+    const outcome = await ask(
+      server,
+      sampler(server, () => ({ kind: "defer" })),
+      SAMPLING,
+      { forms: 0, samples: 1 },
+    );
+
+    expect(outcome).toEqual(
+      failedWith(Unsupported, { message: "cloudpid could not answer the sampling request" }),
+    );
+    expect(calls(server)).toHaveLength(1);
+  });
+
+  it("fail the call when the caller never offered to answer one", async () => {
+    const server = modernServer({ moreTools: [ASK_TOOL] });
+    const seen: Array<McpInputRequest> = [];
+
+    // Declared to every request, so the server asks a call whose caller answers no Sampling request.
+    const outcome = await ask(
+      server,
+      deps(server, () => SAMPLED, seen, { capabilities: () => ({ sampling: { tools: {} } }) }),
+      ANSWERING,
+      { forms: 0, samples: 1 },
+    );
+
+    expect(outcome).toEqual(failedWith(ProtocolViolation));
+    expect(seen).toEqual([]);
+    expect(calls(server)).toHaveLength(1);
+  });
+});

@@ -7,7 +7,7 @@ import {
   createMcpSampling,
   McpSampling,
   type McpQuestionStorage,
-  type McpQuestionsService,
+  type McpSamplingOptions,
   type McpSamplingService,
 } from "@cloudpid/extensions/mcp";
 import { Secrets, type SecretsService } from "@cloudpid/extensions/secrets";
@@ -18,7 +18,7 @@ export type SessionMcpSamplingOptions = {
   /** The object's synchronous key-value storage. */
   readonly storage: McpQuestionStorage;
   /** The Session's questions, which ask the owner of a server whose definition says `ask`. */
-  readonly questions?: Pick<McpQuestionsService, "askSampling" | "samplingStanding"> | undefined;
+  readonly questions?: McpSamplingOptions["questions"];
 };
 
 /** The service the Session's MCP tools sample through, and the layer that provides it once the Secrets are built. */

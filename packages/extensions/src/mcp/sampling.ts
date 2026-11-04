@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off -- the Session's model seam is pi-ai's Promise streams, and these are plain functions over values.
-// A Legacy server's Sampling request, run on the owner's models (`docs/architecture/mcp-server-requests.md` → Sampling
+// A server's Sampling request, run on the owner's models (`docs/architecture/mcp-server-requests.md` → Sampling
 // requests; ADR-0039): a completion of its own through the Session's `Models` (`models.stream`), so the Secret scrubbing,
 // the Spend limit and the spans of every other model request apply, with nothing of cloudpid's in it. The server's system
 // prompt, messages and tools go in; the reply goes back only to the server.
@@ -9,7 +9,10 @@
 // bounds, the Spend limit), the Role and the model, the sample with its 2-minute bound, the Usage it cost, and the
 // record. A request is answered `-1` when it is turned down, `-32602` when it is invalid or cannot be served, and
 // `-32603` when the model fails. A server whose definition says `sampling: "allow"` is answered at once; one that says
-// `ask` (the default) is answered after the owner's yes on a card (`./sampling-questions.ts`), or a grant of theirs.
+// `ask` (the default) is answered after the owner's yes on a card (`./sampling-questions.ts`), or a grant of theirs. A
+// Modern server's request on a call that keeps its questions for later is checked, then kept with the call's round
+// (`deferred`) for the owner; when the round resumes the same request is run again with what the owner decided
+// (`resumed`): the checks again, the Role, the sample, the record as the same one.
 import { type McpSampledMode, ROLE_NAMES, type RoleName } from "@cloudpid/config";
 import type {
   McpElicitationSource,
@@ -45,7 +48,7 @@ import type * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import type { McpSamplingDetail, McpSamplingWhy } from "./details.ts";
-import type { McpQuestionStorage } from "./question-records.ts";
+import type { McpQuestionStorage, McpSamplingDecision } from "./question-records.ts";
 import type { McpQuestionsService } from "./questions.ts";
 import { cardMessages, recordView } from "./sampling-card.ts";
 import { type McpSamplingCard, stoppedBy } from "./sampling-questions.ts";
@@ -123,6 +126,22 @@ export type McpSamplingAsk = {
   readonly signal?: AbortSignal | undefined;
   /** What the server's definition says: `allow` answers without asking, `ask` asks the owner on a card first. */
   readonly decision: McpSampledMode;
+  /**
+   * The call keeps a Modern server's questions for later: an `ask` request the owner has not decided yet is kept with the
+   * call's round (`kind: "deferred"`) instead of waiting on a card here.
+   */
+  readonly defers?: boolean | undefined;
+  /**
+   * A request that was kept, run when its round resumes: the id and number it was kept under, and what the owner decided.
+   * Its card is not shown again, and its record goes on from the one written while it waited.
+   */
+  readonly resumed?:
+    | {
+        readonly id: string;
+        readonly sequence: number;
+        readonly decision: McpSamplingDecision;
+      }
+    | undefined;
   /** Where the server's definition is, for the card's badge. */
   readonly source?: McpElicitationSource | undefined;
   /** Stop the call's own clock while the owner decides, and start it again. */
@@ -131,8 +150,10 @@ export type McpSamplingAsk = {
     | undefined;
 };
 
-/** What a request came to: the reply for the server, or the refusal it is answered with. */
+/** What a request came to: the reply for the server, the refusal it is answered with, or its keeping for later. */
 export type McpSamplingOutcome =
+  /** A Modern server's request, kept with the call's round: its answer comes when the round resumes. */
+  | { readonly kind: "deferred" }
   | {
       readonly kind: "sampled";
       readonly result: McpSamplingResult;
@@ -169,7 +190,12 @@ export type McpSamplingOptions = {
   /** `value` with every Secret the Session holds replaced by its reference: what a record keeps, and the tools a model sees. */
   readonly redact: <A>(value: A) => Effect.Effect<A>;
   /** The Session's questions, which ask the owner of a server whose definition says `ask`; without them none is answered. */
-  readonly questions?: Pick<McpQuestionsService, "askSampling" | "samplingStanding"> | undefined;
+  readonly questions?:
+    | Pick<
+        McpQuestionsService,
+        "askSampling" | "samplingStanding" | "deferSampling" | "sampledCount" | "noteSampled"
+      >
+    | undefined;
 };
 
 /** A request prepared to run on a Role: what the sample needs of it. */
@@ -250,27 +276,37 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
   const sample = (ask: McpSamplingAsk): Effect.Effect<McpSamplingOutcome> =>
     Effect.gen(function* () {
-      const askedAt = yield* Clock.currentTimeMillis;
-      const sequence = (counts.get(ask.callId) ?? 0) + 1;
+      const now = yield* Clock.currentTimeMillis;
+      // A request run again after it was kept is the same one: its number, its record and when it was first asked.
+      const wasKept = ask.resumed === undefined ? undefined : store.get(ask.resumed.id);
+      const askedAt = wasKept?.askedAt ?? now;
 
-      counts.set(ask.callId, sequence);
+      // The call's count runs on from the rounds an earlier instance had, which a restart in between would forget.
+      const earlier = Math.max(counts.get(ask.callId) ?? 0, asking?.sampledCount(ask.callId) ?? 0);
+      const sequence = ask.resumed?.sequence ?? earlier + 1;
 
-      const id = `${ask.callId}:${sequence}`;
+      counts.set(ask.callId, Math.max(earlier, sequence));
+      asking?.noteSampled(ask.callId, sequence);
+
+      const id = ask.resumed?.id ?? `${ask.callId}:${sequence}`;
       const notes: Array<string> = [];
 
-      let record: McpSamplingRecord = {
-        id,
-        server: ask.server,
-        tool: ask.tool,
-        origin: "agent",
-        conversationId: ask.conversationId,
-        callId: ask.callId,
-        sequence,
-        status: "running",
-        by: "definition",
-        notes,
-        askedAt,
-      };
+      let record: McpSamplingRecord =
+        wasKept === undefined
+          ? {
+              id,
+              server: ask.server,
+              tool: ask.tool,
+              origin: "agent",
+              conversationId: ask.conversationId,
+              callId: ask.callId,
+              sequence,
+              status: "running",
+              by: "definition",
+              notes,
+              askedAt,
+            }
+          : { ...wasKept, status: "running", notes };
 
       /** Settle the record, redacted, and the request's outcome. */
       const end = (
@@ -345,6 +381,13 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         return detail;
       };
 
+      // What the owner decided of a request kept for later: a refusal is the request's end, whatever else is true of it.
+      if (ask.resumed?.decision.action === "refuse") {
+        const { reason, by, why } = ask.resumed.decision;
+
+        return yield* end("refused", MCP_SAMPLING_REFUSED, reason, why, by);
+      }
+
       if (sequence > MCP_SAMPLINGS_PER_CALL) {
         return yield* end(
           "refused",
@@ -378,10 +421,12 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
       const params: SamplingParams = decoded.value;
 
-      record = {
-        ...record,
-        ...(yield* summaryOf(params, taken.get(ask.callId), options.redact)),
-      };
+      // A request kept for later keeps the record it was kept with: its messages are the ones the owner saw.
+      if (wasKept === undefined)
+        record = {
+          ...record,
+          ...(yield* summaryOf(params, taken.get(ask.callId), options.redact)),
+        };
 
       const problem = pairingProblem(params.messages);
 
@@ -547,18 +592,13 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
       onRole(prepared);
 
-      // `ask`: the owner decides, unless they already did for this call or the Session (or the definition says `allow`).
-      if (ask.decision === "ask") {
-        const standing = asking?.samplingStanding(ask.callId, ask.server);
-
-        if (asking === undefined) {
-          return yield* end(
-            "refused",
-            MCP_SAMPLING_REFUSED,
-            "cloudpid cannot ask the owner here",
-            "internal",
-          );
-        }
+      // `ask`: the owner decides, unless they already did for this call or the Session (or the definition says `allow`). A
+      // request kept for later has been decided (the owner's, or the definition's switch to `allow`), and that decision and
+      // its Role stand though the definition reads `allow` by the resume (Always allow wrote it).
+      if (ask.decision === "ask" || ask.resumed !== undefined) {
+        // What the owner decided of a request kept for later is its answer, not a standing one.
+        const standing =
+          ask.resumed === undefined ? asking?.samplingStanding(ask.callId, ask.server) : undefined;
 
         if (standing?.action === "refuse") {
           record = { ...record, grant: standing.grant };
@@ -569,51 +609,88 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         if (standing?.action === "allow") {
           record = { ...record, by: "grant", grant: standing.grant };
         } else {
-          const roleOptions = Arr.filterMap(ROLE_NAMES, (each) => {
-            const held = modelOf(bound.models, roles, each);
+          let decided: McpSamplingDecision;
 
-            return held === undefined
-              ? Result.failVoid
-              : Result.succeed({ role: each, model: held.id });
-          });
+          if (ask.resumed !== undefined) decided = ask.resumed.decision;
+          else {
+            if (asking === undefined) {
+              return yield* end(
+                "refused",
+                MCP_SAMPLING_REFUSED,
+                "cloudpid cannot ask the owner here",
+                "internal",
+              );
+            }
 
-          // Kept as waiting before the owner is asked, so a card nobody can answer is a record a new instance can settle.
-          record = { ...record, status: "waiting" };
+            const roleOptions = Arr.filterMap(ROLE_NAMES, (each) => {
+              const held = modelOf(bound.models, roles, each);
 
-          if (!(yield* keep(record))) {
-            return yield* end("refused", MCP_SAMPLING_REFUSED, UNRECORDED_REASON, "internal");
+              return held === undefined
+                ? Result.failVoid
+                : Result.succeed({ role: each, model: held.id });
+            });
+
+            // Kept as waiting before the owner is asked, so a card nobody can answer is a record a new instance can settle.
+            record = { ...record, status: "waiting" };
+
+            if (!(yield* keep(record))) {
+              return yield* end("refused", MCP_SAMPLING_REFUSED, UNRECORDED_REASON, "internal");
+            }
+
+            const shown = cardMessages(record.messages);
+
+            const card: Mutable<McpSamplingCard> = {
+              callId: ask.callId,
+              conversationId: ask.conversationId,
+              server: ask.server,
+              tool: ask.tool,
+              role: prepared.role,
+              model: prepared.model.id,
+              roles: roleOptions,
+              messages: shown.messages,
+              tools: Arr.map(record.tools ?? [], (name) => ({ name })),
+              notes: record.notes,
+            };
+
+            if (ask.source !== undefined) card.source = ask.source;
+
+            if (record.systemPrompt !== undefined) card.systemPrompt = record.systemPrompt;
+
+            if (shown.omitted > 0) card.omitted = shown.omitted;
+
+            // A Modern server's request on a call that keeps its questions: stored with the call's round, answered when it
+            // resumes (the record stays `waiting`, which the question's settling ends if the round never resumes).
+            if (ask.defers === true) {
+              const keptFor = yield* asking.deferSampling({
+                id,
+                key: ask.key,
+                card,
+                sequence,
+                params: yield* options.redact(ask.params),
+              });
+
+              if (keptFor !== "deferred") {
+                return yield* end(
+                  "refused",
+                  MCP_SAMPLING_REFUSED,
+                  keptFor === "unrecorded" ? UNRECORDED_REASON : "the request cannot be kept",
+                  "internal",
+                );
+              }
+
+              return { kind: "deferred" } satisfies McpSamplingOutcome;
+            }
+
+            yield* ask.hold?.pause ?? Effect.void;
+
+            // Stop withdraws the card: the wait is raced against the call's signal, and the one that loses is interrupted.
+            decided = yield* asking
+              .askSampling({ id, key: ask.key, card })
+              .pipe(
+                Effect.raceFirst(stoppedBy(ask.signal)),
+                Effect.ensuring(ask.hold?.resume ?? Effect.void),
+              );
           }
-
-          const shown = cardMessages(record.messages);
-
-          const card: Mutable<McpSamplingCard> = {
-            callId: ask.callId,
-            conversationId: ask.conversationId,
-            server: ask.server,
-            tool: ask.tool,
-            role: prepared.role,
-            model: prepared.model.id,
-            roles: roleOptions,
-            messages: shown.messages,
-            tools: Arr.map(record.tools ?? [], (name) => ({ name })),
-            notes: record.notes,
-          };
-
-          if (ask.source !== undefined) card.source = ask.source;
-
-          if (record.systemPrompt !== undefined) card.systemPrompt = record.systemPrompt;
-
-          if (shown.omitted > 0) card.omitted = shown.omitted;
-
-          yield* ask.hold?.pause ?? Effect.void;
-
-          // Stop withdraws the card: the wait is raced against the call's signal, and the one that loses is interrupted.
-          const decided = yield* asking
-            .askSampling({ id, key: ask.key, card })
-            .pipe(
-              Effect.raceFirst(stoppedBy(ask.signal)),
-              Effect.ensuring(ask.hold?.resume ?? Effect.void),
-            );
 
           record = { ...record, status: "running" };
 
@@ -627,7 +704,11 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
             );
           }
 
-          record = { ...record, by: "owner", grant: decided.grant };
+          // No grant: the server's definition, switched to `allow` while the request waited, let it run.
+          record =
+            decided.grant === undefined
+              ? { ...record, by: "definition" }
+              : { ...record, by: "owner", grant: decided.grant };
 
           if (decided.role !== prepared.role) {
             const model = modelOf(bound.models, roles, decided.role);
@@ -732,7 +813,13 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         ),
       ),
       // The span says what it ended as and who decided, never what was asked or answered.
-      Effect.tap((outcome) => Effect.annotateCurrentSpan(spanAttributes(outcome.detail))),
+      Effect.tap((outcome) =>
+        Effect.annotateCurrentSpan(
+          outcome.kind === "deferred"
+            ? { "mcp.sampling.outcome": "deferred" }
+            : spanAttributes(outcome.detail),
+        ),
+      ),
       Effect.withSpan("mcp.sampling.sample", {
         attributes: { "mcp.server": ask.server, "mcp.origin": "agent" },
       }),

@@ -46,8 +46,9 @@ export type McpCallOrigin = typeof McpCallOrigin.Type;
 export const McpAnswers = Schema.Struct({
   elicitation: Schema.optionalKey(Schema.Boolean),
   /**
-   * The caller answers a Legacy server's Sampling request (`docs/architecture/mcp-server-requests.md` → Sampling
-   * requests). Only a Legacy connection asks: a Modern one declares no sampling yet, and this is read there as unset.
+   * The caller answers a server's Sampling request (`docs/architecture/mcp-server-requests.md` → Sampling requests): a
+   * Legacy server's, on the call's stream, and a Modern server's, in a round of questions, which `onInput` runs, or keeps
+   * for later when the caller also sets `defer`. A Modern request declares `sampling` only with it.
    */
   sampling: Schema.optionalKey(Schema.Boolean),
   inputWaitMs: Schema.optionalKey(Schema.Finite),

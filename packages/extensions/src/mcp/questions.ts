@@ -24,6 +24,7 @@ import {
   type McpDeferredRound,
   type McpQuestionVault,
 } from "./deferred-questions.ts";
+import type { JsonObject } from "@cloudpid/mcp/types";
 import {
   cancelled,
   modeOf,
@@ -39,6 +40,7 @@ import {
   McpQuestionsError,
   type McpQuestionStorage,
   type McpQuestionUnseen,
+  type McpSamplingDecision,
   questionId,
 } from "./question-records.ts";
 import type {
@@ -48,7 +50,6 @@ import type {
 } from "@cloudpid/protocol";
 import {
   createSamplingQuestions,
-  type McpSamplingDecision,
   type McpSamplingGiven,
   type McpSamplingQuestion,
   type McpSamplingRemember,
@@ -66,6 +67,7 @@ export {
   MCP_DEFERRED_DEADLINE_MS,
   type McpDeferredAnswer,
   type McpDeferredRound,
+  type McpDeferredSample,
   McpRoundState,
   type McpQuestionVault,
 } from "./deferred-questions.ts";
@@ -74,7 +76,6 @@ export {
   MCP_SAMPLING_ASK_WAIT_MS,
   MCP_SAMPLING_UNANSWERED_REASON,
   type McpSamplingCard,
-  type McpSamplingDecision,
   type McpSamplingGiven,
   type McpSamplingQuestion,
   type McpSamplingRemember,
@@ -84,6 +85,7 @@ export {
 export {
   MCP_CALL_ENDED_REASON,
   MCP_ELICITATION_CAP_REASON,
+  type McpSamplingDecision,
   MCP_QUESTION_RECORDS,
   MCP_QUESTION_RENOTIFY_MS,
   MCP_QUESTION_UNRECORDED_REASON,
@@ -186,8 +188,28 @@ export type McpQuestionsService = {
     id: string,
     given: McpSamplingGiven,
   ) => Effect.Effect<void, McpQuestionsError>;
+  /**
+   * The server's definition reads `mode` now, told at every request start: the Sampling requests of it waiting for the
+   * owner, live or kept with a Modern call's round, are run as `allow` says, with no card, or refused as `off` says, which
+   * sinks their rounds; `ask` decides nothing (`docs/architecture/mcp-server-requests.md` → The server changes while a
+   * question waits).
+   */
+  readonly samplingSwitched: (server: string, mode: "allow" | "ask" | "off") => Effect.Effect<void>;
   /** Take back the Session's grant for `server`. */
   readonly revokeSampling: (server: string) => Effect.Effect<void>;
+  /**
+   * Keep a Modern server's Sampling request, which the sampler checked, for the call's round: its card is stored beside the
+   * forms, shown once the round is (`showRound`), and answered by `answerSampling`; the sample is made when the round
+   * resumes, from `params` (redacted). `"unrecorded"`: the storage cannot take it (a replaced Session's) or it is too large,
+   * and the request is to be refused.
+   */
+  readonly deferSampling: (
+    question: McpSamplingQuestion & { readonly sequence: number; readonly params: JsonObject },
+  ) => Effect.Effect<"deferred" | "unrecorded">;
+  /** How many Sampling requests the call has made, kept with its rounds so a rerun after an eviction counts on from them. */
+  readonly sampledCount: (callId: string) => number;
+  /** The call made Sampling request number `sequence`. */
+  readonly noteSampled: (callId: string, sequence: number) => void;
   /** Whether a Modern server's form can be kept for later: the service has a vault for the answers. */
   readonly defers: boolean;
   /**
@@ -304,7 +326,13 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
   const tell: Effect.Effect<void> = Effect.suspend(() => pending.pipe(Effect.flatMap(announce)));
 
-  const deferred = createDeferredQuestions({ storage, vault: options.vault, basics, tell });
+  const deferred = createDeferredQuestions({
+    storage,
+    vault: options.vault,
+    basics,
+    tell,
+    tellSampling: Effect.suspend(() => sampling.tell),
+  });
 
   const sampling = createSamplingQuestions({
     storage,
@@ -312,6 +340,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     announce: options.announceSampling ?? (() => Effect.void),
     waitMs: options.samplingWaitMs,
     remember: options.remember,
+    deferred,
   });
 
   const pending = Effect.sync(() => [
@@ -640,6 +669,14 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     samplingGrants: sampling.grants,
     answerSampling: sampling.answer,
     revokeSampling: sampling.revoke,
+    samplingSwitched: sampling.switched,
+    deferSampling: sampling.defer,
+    sampledCount: (callId) => basics.callOf(callId).sampled,
+    noteSampled: (callId, sequence) => {
+      const state = basics.callOf(callId);
+
+      state.sampled = Math.max(state.sampled, sequence);
+    },
     settleCall,
     complete,
     whileOpen,

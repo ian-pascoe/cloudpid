@@ -34,6 +34,7 @@
 // resumed call and the next request see the declarations the Context Window was shown. The store also keeps each
 // conversation's last opened Context Window, so `windowOpened` is sent once per window across restarts.
 // @effect-diagnostics missingPipeableSignature:off -- builders over plain values.
+import { samplingOf } from "@cloudpid/config";
 import type { McpCaller, McpRequestStart } from "@cloudpid/mcp/types";
 import type { McpAppHtmlAnswer, McpAppRequestAnswer } from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
@@ -640,6 +641,20 @@ export const makeMcpTools = (
         : Result.succeed(server.name);
     });
 
+  /**
+   * What each server of `after` reads for its definition's `sampling` (`allow`, `ask` or `off`; a stdio server has none),
+   * which the Sampling requests waiting for the owner are answered by (`samplingSwitched`). Not only what changed since
+   * the last start: a switch that had to yield to an answer in flight is made again at the next one.
+   */
+  const samplingRead = (after: McpInventory | undefined) =>
+    Arr.filterMap(after?.servers ?? [], (server) => {
+      const mode = samplingOf(server.server);
+
+      return mode === "allow" || mode === "ask" || mode === "off"
+        ? Result.succeed({ name: server.name, mode })
+        : Result.failVoid;
+    });
+
   const requestStart: McpToolsService["requestStart"] = Effect.fn("mcp.tools.request_start")(
     function* (input: McpRequestStartInput) {
       const before = latest;
@@ -655,6 +670,13 @@ export const makeMcpTools = (
         if (questions !== undefined) yield* questions.withdrawServer(name, why);
 
         if (signIns !== undefined) yield* signIns.withdrawServer(name, why);
+      }
+
+      // A Sampling request a server waits on is run, or refused, as the definition now reads.
+      if (questions !== undefined) {
+        for (const { name, mode } of samplingRead(latest)) {
+          yield* questions.samplingSwitched(name, mode);
+        }
       }
 
       // A completion that was never carried here (an older deploy, a host's `working` report) is caught up now.

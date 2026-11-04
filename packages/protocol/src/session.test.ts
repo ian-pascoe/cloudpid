@@ -575,6 +575,33 @@ describe("the Session socket messages", () => {
     ).toEqual(Option.none());
   });
 
+  it("carry the elicitation requests, and keep a `waits` a later build adds", async () => {
+    const request = {
+      id: "call-1:e1",
+      callId: "call-1",
+      conversationId: 1,
+      server: "docs",
+      tool: "mcp__docs__ask",
+      message: "Which one?",
+      form: { fields: [] },
+      notes: [],
+      deadline: 1000,
+      waits: "later",
+    };
+
+    const text = JSON.stringify({ type: "mcp_elicitation_requests", requests: [request] });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+    expect(
+      await readServer(
+        JSON.stringify({
+          type: "mcp_elicitation_requests",
+          requests: [{ ...request, waits: "owner" }],
+        }),
+      ),
+    ).toMatchObject({ requests: [{ waits: "owner" }] });
+  });
+
   it("carry the Sampling requests and grants, and keep a Role, an action, a status or a deciding party a later build adds", async () => {
     const request = {
       id: "call-1:1",
@@ -593,6 +620,7 @@ describe("the Session socket messages", () => {
       notes: [],
       writable: true,
       deadline: 1000,
+      waits: "later",
     };
 
     const text = JSON.stringify({

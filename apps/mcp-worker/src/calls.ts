@@ -111,10 +111,13 @@ const withExtensions = (deps: McpDeps, named: McpEngineHttpTarget["extensions"])
 };
 
 /**
- * `deps` that also declare `sampling: { tools: {} }` to a Legacy server, which is told once, connection-wide, at
- * `initialize` (`docs/architecture/mcp-server-requests.md` → Questions): only when the host's target says the definition
- * lets it, and only for a remote server. A Modern request is given its `ctx`, which declares no sampling, whatever the
- * target says; a Legacy session that was initialized with another declaration is initialized again, once.
+ * `deps` that also declare `sampling: { tools: {} }`, only when the host's target says the definition lets it and only
+ * for a remote server (`docs/architecture/mcp-server-requests.md` → Questions). A Legacy server is told once,
+ * connection-wide, at `initialize`; a Legacy session that was initialized with another declaration is initialized again,
+ * once. A Modern request declares it per request, in its `_meta`, only for a call whose caller offers to answer a Sampling
+ * request (`ctx.answers.sampling`) and has an `onInput` to answer with; the round's request is answered by `onInput` (run,
+ * or kept for later when the call also defers). The ctx-less declaration (a Modern `server/discover` probe) is Legacy's,
+ * which a Modern server never acts on.
  */
 const withSampling = (deps: McpDeps, server: McpEngineTarget): McpDeps => {
   if (server.kind !== "http" || server.sampling !== true) return deps;
@@ -124,7 +127,11 @@ const withSampling = (deps: McpDeps, server: McpEngineTarget): McpDeps => {
     capabilities: (ctx) => {
       const base = deps.capabilities(ctx);
 
-      return ctx === undefined ? { ...base, sampling: { tools: {} } } : base;
+      if (ctx === undefined) return { ...base, sampling: { tools: {} } };
+
+      return ctx.answers?.sampling === true && deps.onInput !== undefined
+        ? { ...base, sampling: { tools: {} } }
+        : base;
     },
   };
 };

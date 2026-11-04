@@ -64,7 +64,8 @@ const Asked = {
 
 /**
  * One waiting Sampling request (`mcp_sampling_requests`). `deadline` is the moment, in epoch milliseconds, the Session
- * refuses it for the owner, so the countdown follows the Session's clock.
+ * refuses it for the owner, so the countdown follows the Session's clock; a request with `waits: "owner"` (a Modern
+ * server's, kept for later) has none, and its `deadline` is only for a client from before `waits` (a far one).
  */
 export const McpSamplingRequest = Schema.Struct({
   ...Asked,
@@ -87,6 +88,12 @@ export const McpSamplingRequest = Schema.Struct({
    */
   writable: Schema.Boolean,
   deadline: Schema.Finite,
+  /**
+   * `"owner"` for a Modern server's request, which waits for the owner with no deadline (it is answered in the call's
+   * resume); absent for a Legacy server's, whose call ends at `deadline`. A client from before it ignores the key. A
+   * string, so a value a later build adds does not drop the whole push in an older tab (_Sockets_).
+   */
+  waits: Schema.optionalKey(Schema.String),
 });
 
 export type McpSamplingRequest = typeof McpSamplingRequest.Type;
