@@ -62,16 +62,18 @@ export const draftOf = (call: McpAppCall, value: Schema.Json): McpAppDraft | und
   return draft;
 };
 
-/** What `mcp_app_html` asks the host for: the page under `hash`, of the call `callId` of `server`. */
+/**
+ * What `mcp_app_html` asks the host for, of the call `callId` of `server`: the page kept under `hash`, or, with `uri`, the
+ * `ui://` resource read now (for a record that pins no page, or one the host evicted).
+ */
 export type McpAppHtmlInput = {
   readonly server: string;
-  readonly hash: string;
   readonly callId: string;
   readonly conversation: string;
-};
+} & ({ readonly hash: string } | { readonly uri: string });
 
 /**
- * The page under `input.hash`, through the host's `request({ op: "ui/html" })` (`docs/architecture/mcp-apps.md` → Declaring
+ * The page under `input.hash`, or read from `input.uri`, through the host's `request({ op: "ui/html" })` (`docs/architecture/mcp-apps.md` → Declaring
  * and reading Apps): asked only when the host lists `app_html` (`listed`), so an older host is never sent it; its
  * `HostUnsupported` is the backstop for one that lists it and answers otherwise. The request is the App's own
  * (`origin: "app"`), which reads nothing remote.
@@ -95,7 +97,15 @@ export const appHtmlOf = (
   };
 
   return client
-    .request({ op: "ui/html", server: input.server, params: { hash: input.hash }, ctx }, {})
+    .request(
+      {
+        op: "ui/html",
+        server: input.server,
+        params: "hash" in input ? { hash: input.hash } : { uri: input.uri },
+        ctx,
+      },
+      {},
+    )
     .pipe(
       Effect.map((answer) =>
         Match.value(answer).pipe(
@@ -116,6 +126,14 @@ export const appHtmlOf = (
           Match.tag("HostUnsupported", (none): McpAppHtmlAnswer => ({
             status: "unsupported",
             message: none.message,
+          })),
+          Match.tag("CallFailed", (failed): McpAppHtmlAnswer => ({
+            status: "failed",
+            message: failed.error.message,
+          })),
+          Match.tag("UnknownServer", "NotAllowed", (refused): McpAppHtmlAnswer => ({
+            status: "failed",
+            message: refused.message,
           })),
           Match.orElse((): McpAppHtmlAnswer => ({
             status: "failed",

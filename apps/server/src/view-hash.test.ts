@@ -1,5 +1,6 @@
 // docs/architecture/mcp-apps.md → The App sandbox (Origins). The hash is the first 26 characters of the unpadded lowercase
 // base32 of SHA-256 over `"v1\0" + environmentId + "\0" + source + "\0" + normalizedName`.
+// @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off -- a reference implementation to check against.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { appOriginOf, viewHost } from "./view-host.ts";

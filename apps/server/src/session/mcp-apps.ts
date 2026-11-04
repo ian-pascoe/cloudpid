@@ -27,6 +27,11 @@ export type McpAppsService = McpAppRecorder &
     readonly mount: (callId: string) => Effect.Effect<McpAppMounted>;
     /** The page of `hash`, which some record pins, through the host; the record's server is the one asked. */
     readonly html: (hash: string) => Effect.Effect<McpAppHtmlAnswer>;
+    /**
+     * The page of `callId`'s record, for the record's own server: by its pinned hash, or, when it pins none or the host no
+     * longer keeps the page, by the `ui://` resource its tool declares, pinned to the record once the host has given it.
+     */
+    readonly pageOf: (callId: string) => Effect.Effect<McpAppHtmlAnswer>;
   };
 
 export class McpApps extends Context.Service<McpApps, McpAppsService>()(

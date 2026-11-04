@@ -34,6 +34,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -389,6 +390,72 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
             .pipe(Effect.map(withOrigin));
     });
 
+  /**
+   * Pin `hash` as the page of call `callId`'s record, as the first mount that read it by its URI found it (the host did
+   * not wait for the read when the call ended). The record is rewritten as it was kept, its mount time unchanged.
+   */
+  const pin = (callId: string, hash: string) =>
+    Effect.sync(() => {
+      const found = Arr.findFirst(index(), (entry) => entry.callId === callId);
+
+      if (Option.isNone(found) || found.value.state !== "kept") return;
+
+      const record = readRecord(found.value);
+
+      if (Option.isNone(record) || record.value.htmlHash === hash) return;
+
+      changed(keepRecord({ ...record.value, htmlHash: hash }, found.value.mountedAt));
+    });
+
+  const pageOf: McpAppsService["pageOf"] = (callId) =>
+    Effect.suspend(() => {
+      const found = Arr.findFirst(index(), (entry) => entry.callId === callId);
+
+      if (Option.isNone(found) || found.value.state !== "kept") {
+        return Effect.succeed<McpAppHtmlAnswer>({
+          status: "missing",
+          message: "No App record of this Session keeps that call",
+        });
+      }
+
+      const { server, tool, conversation, htmlHash } = found.value;
+
+      // Read by the resource the server's tool declares: the call's own server, whatever the page's hash was at.
+      const byUri = Effect.suspend(() => {
+        const declared = Arr.findFirst(
+          tools,
+          (each) => each.server === server && each.tool === tool,
+        );
+
+        if (Option.isNone(declared)) {
+          return Effect.succeed<McpAppHtmlAnswer>({
+            status: "missing",
+            message: `The server ${server} no longer declares an App for ${tool}`,
+          });
+        }
+
+        return options.html({ server, uri: declared.value.uri, callId, conversation }).pipe(
+          Effect.tap((answer) => {
+            const hash = answer.status === "html" && "hash" in answer ? answer.hash : undefined;
+
+            return Predicate.isString(hash) ? pin(callId, hash) : Effect.void;
+          }),
+        );
+      });
+
+      return (
+        htmlHash === undefined
+          ? byUri
+          : options.html({ server, hash: htmlHash, callId, conversation }).pipe(
+              // Evicted from the host, or never kept there: the mount reads it again.
+              Effect.filterOrElse(
+                (answer) => answer.status !== "missing",
+                () => byUri,
+              ),
+            )
+      ).pipe(Effect.map(withOrigin));
+    });
+
   const copiesFor: McpAppsService["copiesFor"] = (callIds) => {
     if (callIds.length === 0) return [];
 
@@ -488,6 +555,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     tools: Effect.sync(() => tools),
     mount,
     html,
+    pageOf,
     copiesFor,
     adopt,
   };
