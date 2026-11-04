@@ -507,19 +507,20 @@ const checkedStatus = (status: string): SessionStatus => {
 };
 
 /**
- * A stored status. One this build does not know (a row a later build wrote, read after a revert or before this
- * object's code update) reads as `idle`, not known to run, never as a failure that would drop the whole list
- * (`docs/development/workers.md` → Bindings: a stored state has a fallback member).
+ * A stored status as a record shows it. One this build does not know (a row a later build wrote, read after a revert
+ * or before this object's code update) falls back to `idle`, an existing member, since an `unknown` one would change
+ * the client protocol: a listing shows it not known to run, never a failure that drops the whole list. The running cap
+ * counts it as running all the same (`runningMarked`) (`docs/development/workers.md` → Bindings).
  */
-const readStatus = (status: string): SessionStatus => (isStatus(status) ? status : "idle");
+const statusOrIdle = (status: string): SessionStatus => (isStatus(status) ? status : "idle");
 
 const isTitleSource = Schema.is(TitleSource);
 
 /**
- * A stored title source. One this build does not know reads as the owner's: a title is there, and a generated one never
- * replaces it.
+ * A stored title source. One this build does not know falls back to the owner's, an existing member: a title is there,
+ * and a generated one never replaces it (`setGeneratedTitle` writes only where there is no source).
  */
-const readTitleSource = (source: string | null): TitleSource | null => {
+const titleSourceOrOwner = (source: string | null): TitleSource | null => {
   if (source === null) return null;
 
   return isTitleSource(source) ? source : "owner";
@@ -625,10 +626,10 @@ const toSession = (row: SessionRow): SessionRecord => {
   const record: SessionRecord = {
     id: row.id,
     title: row.title,
-    titleSource: readTitleSource(row.title_source),
+    titleSource: titleSourceOrOwner(row.title_source),
     environment: row.environment,
     workspace: row.workspace,
-    status: readStatus(row.status),
+    status: statusOrIdle(row.status),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archivedAt: row.archived_at,
@@ -1307,16 +1308,17 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
   };
 
   /**
-   * How many Sessions the MCP endpoint started or imported are running: those the Registry has as running, and those it
-   * made less than `STARTING_MS` ago whose first Run has not reported yet (still idle, status never changed). Archived
-   * ones are stopped, so they never count.
+   * How many Sessions the MCP endpoint started or imported are running: those the Registry has as anything but idle (a
+   * status this build does not know may be one that runs, so a start never passes the cap on it), and those it made less
+   * than `STARTING_MS` ago whose first Run has not reported yet (still idle, status never changed). Archived ones are
+   * stopped, so they never count.
    */
   const runningMarked = (now: number): number => {
     const [row] = sql
       .exec<{ count: number }>(
         `SELECT COUNT(*) AS count FROM sessions
           WHERE origin_kind IN ('mcp', 'import') AND archived_at IS NULL
-            AND (status = 'running' OR (${STILL_STARTING} AND created_at > ?))`,
+            AND (status != 'idle' OR (${STILL_STARTING} AND created_at > ?))`,
         now - STARTING_MS,
       )
       .toArray();

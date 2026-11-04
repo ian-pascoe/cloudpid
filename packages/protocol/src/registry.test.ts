@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { ForkKind, SessionRecord } from "./registry.ts";
+import { ForkKind, SessionAgent, SessionRecord } from "./registry.ts";
 import { userEntryData, USER_ENTRY_KIND } from "./user-entry.ts";
 
 /** `SessionRecord` as a bundle from before the MCP marks decodes it: a Session's origin is a Fork or Clone's alone. */
@@ -66,6 +66,23 @@ describe("SessionRecord", () => {
       kind: "unknown",
       auth: "unknown",
     });
+  });
+});
+
+describe("a Session's subagents", () => {
+  const decode = (agents: Schema.Json) =>
+    Effect.runSync(Schema.decodeUnknownEffect(Schema.Array(SessionAgent))(agents));
+
+  it("read a status this version does not know as idle, keeping the others", () => {
+    expect(
+      decode([
+        { id: "agent-1", parent: "root", role: null, status: "waiting" },
+        { id: "agent-2", parent: "root", role: "reviewer", status: "working" },
+      ]),
+    ).toEqual([
+      { id: "agent-1", parent: "root", role: null, status: "idle" },
+      { id: "agent-2", parent: "root", role: "reviewer", status: "working" },
+    ]);
   });
 });
 

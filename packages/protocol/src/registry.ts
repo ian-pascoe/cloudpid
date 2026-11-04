@@ -13,7 +13,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { AttachedResource } from "./attached-resources.ts";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
-import { MarkedOrigin } from "./mcp-api.ts";
+import { MarkedOrigin, open } from "./mcp-api.ts";
 import {
   McpCompletion,
   McpCompletionArgument,
@@ -125,8 +125,11 @@ export const SessionAgent = Schema.Struct({
   parent: Schema.String,
   /** The model role it was started with, if any. */
   role: Schema.NullOr(Schema.String),
-  /** `working` while its conversation has live work, otherwise `idle`. */
-  status: Schema.Literals(["working", "idle"]),
+  /**
+   * `working` while its conversation has live work, otherwise `idle`. A status this version does not know (a later
+   * build's Session reported it) falls back to `idle`, an existing member, so the rest of the summary still reads.
+   */
+  status: open(Schema.Literals(["working", "idle"]), "idle"),
   /** The branch of the Subagent Workspace it works in; absent for one that works in the Session's Workspace. */
   branch: Schema.optionalKey(Schema.String),
 });

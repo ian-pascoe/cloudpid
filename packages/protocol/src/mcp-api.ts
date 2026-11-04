@@ -85,7 +85,7 @@ export const PI_SESSION_FORMAT = "pi-session-jsonl";
  * member, and an older one decoding it (over RPC, or from storage) must still read the record, as the generic member
  * (`docs/architecture/mcp.md` → Deploys).
  */
-const open = <S extends Schema.Top>(literals: S, fallback: S["Type"]) =>
+export const open = <S extends Schema.Top>(literals: S, fallback: S["Type"]) =>
   literals.pipe(Schema.catchDecoding(() => Effect.succeedSome(fallback)));
 
 /**
