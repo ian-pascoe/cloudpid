@@ -27,6 +27,8 @@ export * from "./mcp-prompts.ts";
 
 export * from "./mcp-repo-files.ts";
 
+export * from "./mcp-sampling.ts";
+
 export * from "./mcp-sign-in-requests.ts";
 
 export * from "./mcp-status.ts";
