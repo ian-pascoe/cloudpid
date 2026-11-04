@@ -167,6 +167,15 @@ const Breakdown = ({
       <Row label="Cache read">{tokenCount(usage.cacheRead)} tokens</Row>
       <Row label="Cache write">{tokenCount(usage.cacheWrite)} tokens</Row>
     </Section>
+    {usage.sampling !== undefined && (
+      <Section title={`MCP sampling · ${dollars(usage.sampling.cost)}`}>
+        <Row label="Requests">{usage.sampling.requests}</Row>
+        <Row label="Tokens">{tokenCount(usage.sampling.totalTokens)}</Row>
+        <p className="mt-1 text-muted-foreground">
+          Model replies run for MCP servers; already counted in Models above.
+        </p>
+      </Section>
+    )}
     {usage.container !== undefined && container !== undefined && (
       <Section title={`Container · ${dollars(container.total)}`}>
         <Row label="Run time">

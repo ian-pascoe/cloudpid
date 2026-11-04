@@ -19,7 +19,7 @@ import {
 } from "@cloudpid/extensions/subagents";
 import { clearTodoList, TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
 import { MAX_ROLLOVER_FOCUS, ownerRollover } from "@cloudpid/extensions/context";
-import { type McpNotices, mcpNotices } from "@cloudpid/extensions/mcp";
+import { type McpNotices, mcpNotices, type McpSamplingBinding } from "@cloudpid/extensions/mcp";
 import {
   discoverPrompts,
   isPromptSource,
@@ -135,9 +135,14 @@ import {
 } from "./settings.ts";
 import {
   type Ledger,
+  isOverLimit,
+  ledgerGate,
   limitingModels,
+  recordSamplingUsage,
   recordUnledgeredUsage,
+  samplingTotals,
   sessionTotals,
+  spendReason,
   usageMessage,
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
@@ -366,6 +371,12 @@ export type SessionHostMcp<R> = {
    * `mcp_servers` section): the Session's open Harness. Called once, before anything resumes.
    */
   readonly bind: (notices: McpNotices) => void;
+  /**
+   * What the Session's sampler works with, once the Harness is open: its models (held to the spend limit, as the Harness's
+   * are), its Roles, the limit and where a sample's Usage goes (`docs/architecture/mcp-server-requests.md` → Sampling
+   * requests). Called once, with `bind`. Absent: no server's Sampling request is answered.
+   */
+  readonly bindSampling?: (binding: McpSamplingBinding) => void;
   /**
    * Tell conversation `conversationId` that the `mcp_servers` listing changed, if its section was shown another one: run
    * after a request start's install, before its message is placed. Never fails.
@@ -820,17 +831,20 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
   // the request. The title call is not: it goes through `options.models` as they are, and its cost is counted.
   const run = Effect.runForkWith(yield* Effect.context<never>());
 
-  const limited = limitingModels(models, {
-    // The limit is off while the ledgers cannot be read: say so, or it would be off without a trace.
-    failed: (reason) => {
-      run(
-        Effect.logWarning("Reading the Session's spend failed; the request goes through", reason),
-      );
-    },
-    limit: () => settings.current().spendLimit,
-    spent: async () =>
-      opened === undefined ? undefined : (await sessionTotals(opened, storage.kv)).cost,
-  });
+  const limited = limitingModels(
+    models,
+    ledgerGate({
+      // The limit is off while the ledgers cannot be read: say so, or it would be off without a trace.
+      failed: (reason) => {
+        run(
+          Effect.logWarning("Reading the Session's spend failed; the request goes through", reason),
+        );
+      },
+      limit: () => settings.current().spendLimit,
+      ledger: () => opened,
+      kv: storage.kv,
+    }),
+  );
 
   // What the Harness reports without failing a call (a task that faulted, one the restart limit parked, whose Run stays
   // busy until it is stopped, a hook or listener that threw) is otherwise dropped. `info` names the task, never content.
@@ -968,6 +982,38 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /** What watches of the Session's usage run when it or its limit changes outside the Harness's ledgers. */
   const usageListeners = new Set<() => void>();
+
+  // A server's Sampling requests run on these models under the same spend gate as the Harness's, and cost what they cost
+  // in the Session's usage (`docs/architecture/mcp-server-requests.md` → Sampling requests).
+  if (options.mcp?.bindSampling !== undefined) {
+    const gate = ledgerGate({
+      limit: () => settings.current().spendLimit,
+      ledger: () => harness.harness,
+      kv: storage.kv,
+    });
+
+    options.mcp.bindSampling({
+      models: limitingModels(models, gate),
+      roles: () => Record.map(settings.current().subagents.roles, (role) => role.model),
+      // Checked before the sample is made, so a refusal costs nothing and says why.
+      overLimit: async () => {
+        const limit = gate.limit();
+
+        if (limit === null) return undefined;
+
+        const spent = await gate.spent();
+
+        return spent !== undefined && isOverLimit(spent, limit)
+          ? spendReason(spent, limit)
+          : undefined;
+      },
+      usage: (who, usage) => {
+        recordSamplingUsage(storage.kv, who, usage);
+
+        for (const listener of usageListeners) listener();
+      },
+    });
+  }
 
   /** Read the settings, and install the extensions that follow them again when they changed. */
   const refreshSettings = settings.refresh.pipe(
@@ -2854,6 +2900,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
                           settings.current().spendLimit,
                           container,
                           contextUsage,
+                          samplingTotals(kv),
                         ),
                       );
                     }

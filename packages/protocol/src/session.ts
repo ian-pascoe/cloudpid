@@ -1037,7 +1037,8 @@ export type ContextUsage = typeof ContextUsage.Type;
 
 /**
  * What the Session has spent on model requests (`docs/architecture/operations.md` → Telemetry), as pi-durable's `pi.usage` counts it:
- * every conversation of the Session, subagents' included, and the title call, which has no conversation. Token counts
+ * every conversation of the Session, subagents' included, the title call, which has no conversation, and the Sampling
+ * requests of its MCP servers (`sampling` says how much of it they are). Token counts
  * are as the provider reported them; `cost` is in US dollars, as the model catalog prices the tokens. `container` is
  * what its Workspace's Containers have cost, absent when no Container has run or it could not be read; it is not part of
  * `cost`, and the spend limit holds `cost` only. `context` is how full the active branch's Context Window is, absent
@@ -1054,6 +1055,21 @@ export const SessionUsage = Schema.Struct({
   limit: Schema.NullOr(Schema.Finite),
   container: Schema.optionalKey(ContainerUsage),
   context: Schema.optionalKey(ContextUsage),
+  /**
+   * What the Sampling requests of MCP servers cost, a part of the totals above (never added to them): the model replies
+   * the Session ran for its servers' calls. Absent when none reached a model.
+   */
+  sampling: Schema.optionalKey(
+    Schema.Struct({
+      requests: Schema.Finite,
+      input: Schema.Finite,
+      output: Schema.Finite,
+      cacheRead: Schema.Finite,
+      cacheWrite: Schema.Finite,
+      totalTokens: Schema.Finite,
+      cost: Schema.Finite,
+    }),
+  ),
 });
 
 export type SessionUsage = typeof SessionUsage.Type;

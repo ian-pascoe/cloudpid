@@ -24,8 +24,12 @@ import {
   addTotals,
   limitingModels,
   NO_TOTALS,
+  recordSamplingUsage,
   recordUnledgeredUsage,
+  samplingTotals,
+  sessionTotals,
   spendMessage,
+  spendReason,
   unledgeredTotals,
   totalsOf,
   usageMessage,
@@ -131,6 +135,88 @@ describe("the usage of the Session's own model calls", () => {
       totalTokens: 18,
       cost: 0.03,
     });
+  });
+});
+
+describe("the usage of MCP servers' Sampling requests", () => {
+  const memory = () => {
+    const store = new Map<string, unknown>();
+
+    return {
+      // SAFETY: the test reads each key as the type it put there.
+      get: <T>(key: string) => store.get(key) as T | undefined,
+      put: <T>(key: string, value: T) => void store.set(key, value),
+    };
+  };
+
+  it("is kept by conversation and server, adds up, and counts the requests", () => {
+    const kv = memory();
+
+    recordSamplingUsage(
+      kv,
+      { conversationId: 1, server: "a" },
+      { input: 10, totalTokens: 10, cost: { total: 0.01 } },
+    );
+    recordSamplingUsage(
+      kv,
+      { conversationId: 1, server: "a" },
+      { input: 5, totalTokens: 5, cost: { total: 0.02 } },
+    );
+    recordSamplingUsage(
+      kv,
+      { conversationId: 2, server: "b" },
+      { output: 1, totalTokens: 1, cost: { total: 0.5 } },
+    );
+
+    expect(samplingTotals(kv)).toEqual({
+      input: 15,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 16,
+      cost: 0.53,
+      requests: 3,
+    });
+    expect(kv.get<unknown[]>("mcp-sampling-usage")).toHaveLength(2);
+  });
+
+  it("is part of what the Session has spent, so the limit holds it", async () => {
+    const kv = memory();
+
+    recordSamplingUsage(
+      kv,
+      { conversationId: 1, server: "a" },
+      { totalTokens: 3, cost: { total: 0.25 } },
+    );
+    recordUnledgeredUsage(kv, { cost: { total: 0.5 } });
+
+    const ledger = { usage: () => Promise.resolve({ models: {}, tools: {} }) };
+
+    expect((await sessionTotals(ledger, kv)).cost).toBeCloseTo(0.75);
+    expect(await sessionTotals(ledger, kv)).not.toHaveProperty("requests");
+  });
+
+  it("is shown as its own part of the usage only once a request reached a model", () => {
+    const kv = memory();
+
+    expect(usageMessage(NO_TOTALS, null, null, null, samplingTotals(kv))).not.toHaveProperty(
+      "sampling",
+    );
+
+    recordSamplingUsage(
+      kv,
+      { conversationId: 1, server: "a" },
+      { totalTokens: 3, cost: { total: 0.25 } },
+    );
+
+    expect(usageMessage(NO_TOTALS, null, null, null, samplingTotals(kv)).sampling).toMatchObject({
+      requests: 1,
+      cost: 0.25,
+    });
+  });
+
+  it("gives the limit as a clause the owner reads on the call", () => {
+    expect(spendReason(1.5, 1)).toBe("it has spent 1.50 US dollars of its 1.00 US dollars limit");
   });
 });
 
