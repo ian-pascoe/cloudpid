@@ -10,6 +10,7 @@ import type { Mutable } from "effect/Types";
 import type { McpCallOrigin } from "./exchange.ts";
 import type { McpAppRecorder } from "./apps.ts";
 import type { McpNotices } from "./notices.ts";
+import type { ViewTaskStore } from "./task-view-store.ts";
 import type { McpTaskLimits } from "./task-poll.ts";
 import type { McpTaskStorage } from "./task-results.ts";
 import type { McpTaskRecord } from "./task-state.ts";
@@ -55,10 +56,10 @@ export type McpTasksOptions = {
    */
   readonly apps?: McpAppRecorder | undefined;
   /**
-   * The servers of the App Views' tasks held now, which count toward the caps beside the agent's (`atCap`): present when
-   * the Session follows Views' tasks (`./task-view-store.ts`).
+   * The App Views' tasks and the places held for calls offered one, which count toward the caps beside the agent's: an
+   * agent's offer takes a place from it too (`./task-view-store.ts`). Present when the Session follows Views' tasks.
    */
-  readonly views?: { readonly held: () => ReadonlyArray<string> } | undefined;
+  readonly views?: Pick<ViewTaskStore, "held" | "offer"> | undefined;
 };
 
 /**

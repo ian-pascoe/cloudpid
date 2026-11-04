@@ -191,20 +191,18 @@ export const taskOfCall = (state: McpTasksState, callId: string): McpTaskRecord 
     Arr.findFirst(Record.values(state.tasks), (task) => task.callId === callId),
   );
 
+/** The server of each live task, one entry each: what the caps are counted over. */
+export const serversOfLive = (state: McpTasksState): ReadonlyArray<string> =>
+  Arr.map(liveTasks(state), (task) => task.server);
+
 /** Whether live tasks of `servers` (one entry each) are at a cap for a new one of `server`: 16 in all, 8 of the one. */
 export const atCapOf = (servers: ReadonlyArray<string>, server: string): boolean =>
   servers.length >= MCP_TASKS_PER_SESSION ||
   Arr.filter(servers, (each) => each === server).length >= MCP_TASKS_PER_SERVER;
 
-/**
- * Why a call goes out without offering a task: the Session or the server is at its cap. One set of caps for the agent's
- * tasks (`state`) and an App View's (`views`, the servers of those held): a View's task counts like any other.
- */
-export const atCap = (
-  state: McpTasksState,
-  server: string,
-  views: ReadonlyArray<string> = [],
-): boolean => atCapOf([...Arr.map(liveTasks(state), (task) => task.server), ...views], server);
+/** Why a call goes out without offering a task: the Session or the server is at its cap (the agent's tasks alone). */
+export const atCap = (state: McpTasksState, server: string): boolean =>
+  atCapOf(serversOfLive(state), server);
 
 /** What a record starts from, as the call that got the task writes it. */
 export type McpTaskDraft = Omit<

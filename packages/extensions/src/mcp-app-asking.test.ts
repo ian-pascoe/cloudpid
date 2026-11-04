@@ -9,8 +9,13 @@ import {
   MCP_PROMPT_QUESTION_WAIT_MS,
   McpHostCallFailed,
   McpHostCompleted,
+  McpHostTaskAck,
+  McpHostTaskStarted,
+  McpHostTaskState,
   ServerError,
 } from "@cloudpid/mcp/types";
+import type { Context } from "@earendil-works/chord";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";
 import type { Mutable } from "effect/Types";
@@ -25,6 +30,8 @@ import {
 import { fakeMcpHost } from "./mcp.testing.ts";
 import { createMcpQuestions } from "./mcp/questions.ts";
 import { createMcpSampling } from "./mcp/sampling.ts";
+import { followsTasks, type Exchange, type TaskOffer } from "./mcp/exchange.ts";
+import { MCP_TASKS_PER_SERVER, MCP_TASKS_PER_SESSION } from "./mcp/task-state.ts";
 import { viewTaskStore } from "./mcp/task-view-store.ts";
 
 const memory = () => {
@@ -156,6 +163,7 @@ const setup = async (
   return {
     host,
     tools,
+    storage,
     questions,
     told,
     notes,
@@ -373,6 +381,124 @@ describe("an App View's tools/call", () => {
     });
 
     expect(await run(call())).toMatchObject({ status: "error", reason: "refused" });
+  });
+});
+
+describe("an App View's place among the task caps", () => {
+  const FIELDS = {
+    taskId: "t1",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    lastUpdatedAt: "2026-01-01T00:00:00.000Z",
+    ttlMs: 60_000,
+  };
+
+  /** A server that answers every `tools/call` with a task that completes at its first poll. */
+  const tasked = (host: Awaited<ReturnType<typeof setup>>["host"]) =>
+    host.answer(async (input) => {
+      if (input.op === "tools/call") {
+        return McpHostTaskStarted.make({ task: { ...FIELDS, status: "working" }, conn: "c" });
+      }
+
+      return input.op === "tasks/get"
+        ? McpHostTaskState.make({
+            task: { ...FIELDS, status: "completed" },
+            result: { kind: "inline", value: { content: [] } },
+          })
+        : McpHostTaskAck.make({});
+    });
+
+  /** The agent's live tasks as the Session's Harness would say. */
+  const bindAgent = (tools: Awaited<ReturnType<typeof setup>>["tools"], servers: string[]) =>
+    tools.bindNotices({
+      check: () => Promise.resolve([]),
+      conversations: () => Promise.resolve([]),
+      taskServers: () => Promise.resolve(servers),
+    });
+
+  it("is given back when the call came to no task, so the ninth call to a server is offered one too", async () => {
+    const { host, run, call, storage } = await setup({ tasking: true });
+
+    host.answer(async () => completed);
+
+    for (let each = 0; each < 9; each += 1) await run(call("go", `r${each}`));
+
+    expect(sent(host).map((input) => input.ctx.allowTask)).toEqual(Array(9).fill(true));
+    expect(storage.get("mcp-task:app")).toBeUndefined();
+  });
+
+  it("is given back when the task ends, and its entry for the sweep goes", async () => {
+    const { host, run, call, storage } = await setup({ tasking: true });
+
+    tasked(host);
+
+    for (let each = 0; each < 9; each += 1) {
+      expect(await run(call("go", `r${each}`))).toMatchObject({ status: "result" });
+    }
+
+    expect(sent(host).filter((input) => input.op === "tools/call")).toHaveLength(9);
+
+    for (const input of sent(host).filter((each) => each.op === "tools/call")) {
+      expect(input.ctx.allowTask).toBe(true);
+    }
+
+    expect(storage.get("mcp-task:app")).toBeUndefined();
+  });
+
+  it("is refused when the agent's live tasks fill the server's cap", async () => {
+    const { host, run, call, tools } = await setup({ tasking: true });
+
+    host.answer(async () => completed);
+    bindAgent(tools, Array(MCP_TASKS_PER_SERVER - 1).fill(NAME));
+    await run(call("go", "r1"));
+    bindAgent(tools, Array(MCP_TASKS_PER_SERVER).fill(NAME));
+    await run(call("go", "r2"));
+
+    expect(sent(host).map((input) => input.ctx.allowTask)).toEqual([true, undefined]);
+  });
+
+  it("is refused when the agent's live tasks fill the Session's cap", async () => {
+    const { host, run, call, tools } = await setup({ tasking: true });
+
+    host.answer(async () => completed);
+    bindAgent(tools, Array(MCP_TASKS_PER_SESSION).fill("other"));
+    await run(call("go", "r1"));
+
+    expect(sent(host)[0]?.ctx.allowTask).toBeUndefined();
+  });
+
+  it("makes the agent's offer fail once the Views hold the server's cap, and gives it back", async () => {
+    const store = viewTaskStore(memory());
+    const places = Array.from({ length: MCP_TASKS_PER_SERVER }, () => store.offer(NAME, []));
+
+    const exchange = {
+      subject: "tool",
+      server: { name: NAME },
+      tasking: { tasks: { views: store } },
+    };
+
+    const api = { snapshot: () => Promise.resolve(undefined) };
+
+    // SAFETY: followsTasks reads only these fields of its three arguments.
+    const offer = (): Promise<TaskOffer> =>
+      followsTasks(
+        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: partial fakes; `followsTasks` reads only these members.
+        exchange as unknown as Exchange,
+        // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: as above.
+        api as unknown as ToolExecutionApi,
+        {} as Context,
+      );
+
+    expect(await offer()).toEqual({ allowed: false });
+
+    places[0]?.release();
+
+    const second = await offer();
+
+    expect(second.allowed).toBe(true);
+    // Its own place counts until it is given back: the next offer is over the cap again.
+    expect(await offer()).toEqual({ allowed: false });
+    second.place?.release();
+    expect((await offer()).allowed).toBe(true);
   });
 });
 

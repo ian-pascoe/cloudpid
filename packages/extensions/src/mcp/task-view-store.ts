@@ -42,7 +42,7 @@ export type ViewTaskStore = {
    * entries kept. Taken before the call goes out, so two calls cannot both take the last one.
    */
   readonly offer: (server: string, others: ReadonlyArray<string>) => ViewTaskPlace | undefined;
-  /** The server of each place held and each entry kept: what the agent's tasks count beside (`atCap`). */
+  /** The server of each place held and each entry kept: what the agent's offers count beside (`McpTasksOptions.views`). */
   readonly held: () => ReadonlyArray<string>;
   /** The task's request is over, however it ended. */
   readonly end: (id: string) => void;

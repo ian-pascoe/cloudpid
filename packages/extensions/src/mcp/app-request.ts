@@ -92,7 +92,7 @@ export type McpAppRequestDeps = {
     | {
         readonly store: ViewTaskStore;
         readonly timing?: McpTasksTiming | undefined;
-        /** The servers of the agent's live tasks, which a View's task counts beside (`atCap`). */
+        /** The servers of the agent's live tasks, which a View's task counts beside (`ViewTaskStore.offer`). */
         readonly others?: (() => Promise<ReadonlyArray<string>>) | undefined;
       }
     | undefined;

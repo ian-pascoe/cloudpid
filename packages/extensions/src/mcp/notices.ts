@@ -67,7 +67,7 @@ export type McpNotices = {
   readonly conversations: () => Promise<ReadonlyArray<ConversationId>>;
   /**
    * The server of each MCP task the agent has live: what an App View's task counts beside, so the caps are one set
-   * (`./task-state.ts` `atCap`). Absent: none is counted.
+   * (`./task-view-store.ts`). Absent: none is counted.
    */
   readonly taskServers?: () => Promise<ReadonlyArray<string>>;
   /**

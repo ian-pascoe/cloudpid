@@ -424,6 +424,41 @@ describe("an App View's call that its server answers with an MCP task", () => {
       expect((await audit()).join("\n")).toContain("form answered");
     });
 
+    it("answers a page its task asks for with cancel and no card, and the task goes on", async () => {
+      const { client, call, server } = await open();
+
+      const answer = await call("report", { page: true, region: "eu" }, "r1");
+
+      expect(answer).toMatchObject({
+        status: "result",
+        result: { content: [{ type: "text", text: "report:eu" }] },
+      });
+      expect(client.forms()).toEqual([]);
+      expect([...server.tasks.values()][0]?.answers).toEqual({ visit: { action: "cancel" } });
+    });
+
+    it("answers a form cloudpid cannot take with cancel, never a refusal, and the task goes on", async () => {
+      const { client, call, server } = await open();
+
+      const answer = await call("report", { unsupported: true, region: "eu" }, "r1");
+
+      expect(answer).toMatchObject({ status: "result" });
+      expect(client.forms()).toEqual([]);
+      expect([...server.tasks.values()][0]?.answers).toEqual({ which: { action: "cancel" } });
+      expect([...server.tasks.values()][0]?.status).not.toBe("cancelled");
+    });
+
+    it("asks a question once and sends one update, when the server is slow to move on", async () => {
+      const { client, call, server } = await open();
+      const calling = call("report", { ask: true, lag: 2, region: "eu" }, "r1");
+
+      await settles(async () => expect(client.forms()).toHaveLength(1));
+      answerForm(client);
+
+      expect(await calling).toMatchObject({ status: "result" });
+      expect([...server.tasks.values()][0]?.updates).toBe(1);
+    });
+
     it("stays when the page is hidden, and is cancelled at the server with the View's teardown", async () => {
       const { client, call, cancel, visible, server } = await open();
       const calling = call("report", { ask: true }, "r1");

@@ -78,7 +78,8 @@ import {
 import { windowMsOf } from "./task-policy.ts";
 import type { McpTasksOptions } from "./task-port.ts";
 import type { McpResultPool } from "./task-results.ts";
-import { atCap, McpTasksDoc, type McpTaskRecord } from "./task-state.ts";
+import { atCap, McpTasksDoc, type McpTaskRecord, serversOfLive } from "./task-state.ts";
+import type { ViewTaskPlace } from "./task-view-store.ts";
 import type { McpBuildServer } from "./tools.ts";
 
 /** A server's `timeout` when its entry has none, in seconds (`DEFAULT_MCP_TIMEOUT`). */
@@ -385,23 +386,39 @@ export type McpTasking = {
   readonly pool: McpResultPool;
 };
 
+/** Where a call keeps the place it holds among the task caps, for its end to give back. */
+type PlaceHolder = { place?: ViewTaskPlace | undefined };
+
+/** Whether a call is offered an MCP task, and the place among the caps it holds for it. */
+export type TaskOffer = {
+  readonly allowed: boolean;
+  /** Held from the offer until the task's record is written or the call returns, so two calls cannot take the last place. */
+  readonly place?: ViewTaskPlace | undefined;
+};
+
 /**
  * Whether this call is offered an MCP task (`allowTask`): the one place the line is drawn. An agent's call (the root's, a
  * subagent's, or a `codemode` script's nested call) to an HTTP server or a stdio one, while the Session and the server are
- * under their caps. An App View's call is offered one by its own path (`./app-request.ts`), with its own window.
+ * under their caps, which an App View's tasks share (`ViewTaskStore.offer`): the offer takes a place, which the caller
+ * gives back. An App View's call is offered one by its own path (`./app-request.ts`), with its own window.
  */
 export const followsTasks = async (
   exchange: Exchange,
   api: ToolExecutionApi,
   context: Context,
-): Promise<boolean> => {
-  if (exchange.tasking === undefined || exchange.subject !== "tool") return false;
+): Promise<TaskOffer> => {
+  if (exchange.tasking === undefined || exchange.subject !== "tool") return { allowed: false };
 
   const state = await api.snapshot(McpTasksDoc, context).catch(() => undefined);
+  const { views } = exchange.tasking.tasks;
 
-  return (
-    state === undefined || !atCap(state, exchange.server.name, exchange.tasking.tasks.views?.held())
-  );
+  if (views === undefined) {
+    return { allowed: state === undefined || !atCap(state, exchange.server.name) };
+  }
+
+  const place = views.offer(exchange.server.name, state === undefined ? [] : serversOfLive(state));
+
+  return { allowed: place !== undefined, place };
 };
 
 /**
@@ -447,6 +464,28 @@ export const send = async <A>(
     allowTask: boolean,
   ) => McpHostRequest | McpHostResourceRequest,
   onValue: OnValue<A>,
+): Promise<Sent<A>> => {
+  // The place the call holds among the task caps, given back when the task's record is written or the call returns.
+  const held: PlaceHolder = {};
+
+  try {
+    return await sendHolding(exchange, api, context, build, onValue, held);
+  } finally {
+    held.place?.release();
+  }
+};
+
+const sendHolding = async <A>(
+  exchange: Exchange,
+  api: ToolExecutionApi,
+  context: Context,
+  build: (
+    workspace: string | undefined,
+    answers: McpAnswers | undefined,
+    allowTask: boolean,
+  ) => McpHostRequest | McpHostResourceRequest,
+  onValue: OnValue<A>,
+  held: PlaceHolder,
 ): Promise<Sent<A>> => {
   const { client, origin, server, options, tool, subject } = exchange;
   const remember = remembers(subject);
@@ -495,8 +534,14 @@ export const send = async <A>(
     }
   }
 
-  const allowTask =
-    remember && resumedTask === undefined && (await followsTasks(exchange, api, context));
+  const offer: TaskOffer =
+    remember && resumedTask === undefined
+      ? await followsTasks(exchange, api, context)
+      : { allowed: false };
+
+  held.place = offer.place;
+
+  const { allowed: allowTask } = offer;
 
   // An HTTP server is called from the Session's Workspace, as it always was. A stdio server runs in the Container of the
   // Workspace that calls it: a conversation in a Subagent Workspace calls for it, not for the Session's, and the
@@ -826,6 +871,9 @@ export const send = async <A>(
         }
 
         const record = await startTask(following, result, start);
+
+        // The record counts now: the place is given back.
+        held.place?.release();
 
         return failed(await followInline(following, record));
       }

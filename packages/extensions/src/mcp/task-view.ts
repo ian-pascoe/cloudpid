@@ -24,6 +24,7 @@ import {
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Random from "effect/Random";
@@ -135,7 +136,9 @@ const recordOf = (task: ViewTask, now: number): McpTaskRecord => {
 };
 
 /**
- * The question of one `inputRequests` entry, as the call's `onInput` reads it; none for a method the View's call said it
+ * The question of one `inputRequests` entry, as the call's `onInput` reads it: `deferrable`, as the core labels a Modern
+ * round's, so a page is answered `cancel` (a live caller declares no `url`) and a form cloudpid cannot take is a `cancel`
+ * too, never a refusal; none for a method the View's call said it
  * cannot answer (`roots/list` among them: a View's task has no roots to give).
  */
 const questionOf = (key: string, entry: JsonObject, answers: McpAnswers) => {
@@ -143,11 +146,11 @@ const questionOf = (key: string, entry: JsonObject, answers: McpAnswers) => {
   const params = isJsonObject(entry["params"]) ? entry["params"] : {};
 
   if (method === "elicitation/create" && answers.elicitation === true) {
-    return { key, kind: "elicitation", params, mode: "live", era: "modern" } as const;
+    return { key, kind: "elicitation", params, mode: "deferrable", era: "modern" } as const;
   }
 
   if (method === "sampling/createMessage" && answers.sampling === true) {
-    return { key, kind: "sampling", params, mode: "live", era: "modern" } as const;
+    return { key, kind: "sampling", params, mode: "deferrable", era: "modern" } as const;
   }
 
   return undefined;
@@ -209,12 +212,22 @@ export const followViewTask = (task: ViewTask): Effect.Effect<ViewTaskEnd> =>
 
           const left = Math.max(0, deadline - (yield* Clock.currentTimeMillis));
 
-          const reply = yield* Effect.promise(
-            () => questions.hooks.onInput?.(question) ?? Promise.resolve(undefined),
-          ).pipe(
+          // A hook that fails is a question that cannot be asked: the task is cancelled, not left at the server.
+          const reply = yield* Effect.tryPromise({
+            try: () => questions.hooks.onInput?.(question) ?? Promise.resolve(undefined),
+            catch: () => "failed" as const,
+          }).pipe(
             Effect.timeoutOption(left),
             Effect.map(Option.getOrElse(() => "expired" as const)),
+            Effect.orElseSucceed(() => "failed" as const),
           );
+
+          if (reply === "failed") {
+            return {
+              kind: "refused",
+              message: "cloudpid could not ask the owner a question the task waits on",
+            } satisfies Answered;
+          }
 
           if (reply === "expired") {
             questions.expire();
@@ -235,122 +248,130 @@ export const followViewTask = (task: ViewTask): Effect.Effect<ViewTaskEnd> =>
         return { kind: "answers", responses } satisfies Answered;
       });
 
-    for (;;) {
-      if (signal.aborted) {
-        yield* cancel;
-
-        return { kind: "stopped" } satisfies ViewTaskEnd;
-      }
-
-      if ((yield* Clock.currentTimeMillis) >= deadline) {
-        yield* cancel;
-
-        return { kind: "bound" } satisfies ViewTaskEnd;
-      }
-
-      const answer = yield* client.request(taskGet(record, ctx), {
-        untilAborted: () => abortedBy([signal]),
-      });
-
-      if (signal.aborted) {
-        yield* cancel;
-
-        return { kind: "stopped" } satisfies ViewTaskEnd;
-      }
-
-      const outcome: PollOutcome = readPoll(answer, record);
-      const decision = decide(record, outcome, yield* Clock.currentTimeMillis, timing);
-
-      if (decision.cancel === true) yield* cancel;
-
-      if (decision.end !== undefined) {
-        const { status, reason, code } = decision.end;
-
-        if (
-          status === "completed" &&
-          outcome.kind === "state" &&
-          outcome.result.result !== undefined
-        ) {
-          return { kind: "completed", result: outcome.result.result } satisfies ViewTaskEnd;
-        }
-
-        return status === "completed"
-          ? ({
-              kind: "ended",
-              status: "failed",
-              reason: "the server's task completed with no result",
-            } satisfies ViewTaskEnd)
-          : ({ kind: "ended", status, reason, code } satisfies ViewTaskEnd);
-      }
-
-      applyDecision(record, decision);
-
-      if (outcome.kind === "state" && outcome.snapshot.status === "input_required") {
-        const done = yield* answerAll(outcome.snapshot.inputRequests);
-
-        if (done.kind === "expired") {
-          yield* cancel;
-
-          return { kind: "bound" } satisfies ViewTaskEnd;
-        }
-
-        // The View went while the owner was asked: whatever the card said, the task is not answered.
+    const loop = Effect.gen(function* () {
+      for (;;) {
         if (signal.aborted) {
           yield* cancel;
 
           return { kind: "stopped" } satisfies ViewTaskEnd;
         }
 
-        if (done.kind === "refused") {
+        if ((yield* Clock.currentTimeMillis) >= deadline) {
           yield* cancel;
 
-          return { kind: "refused", message: done.message } satisfies ViewTaskEnd;
+          return { kind: "bound" } satisfies ViewTaskEnd;
         }
 
-        if (Record.size(done.responses) > 0) {
-          const sent = yield* client
-            .request(taskUpdate(record, done.responses, ctx), {
-              untilAborted: () => abortedBy([signal]),
-            })
-            .pipe(Effect.race(stop.pipe(Effect.as(undefined))));
-
-          if (sent !== undefined && !isTaken(sent)) {
-            yield* cancel;
-
-            return {
-              kind: "ended",
-              status: "failed",
-              reason: "the server did not take the answers to its questions",
-            } satisfies ViewTaskEnd;
-          }
-        }
-      } else {
-        answered.clear();
-      }
-
-      const jitter = yield* Random.next;
-
-      const delay =
-        decision.retryInMs ??
-        timing.pollMs ??
-        pollDelayMs({
-          ageMs: (yield* Clock.currentTimeMillis) - record.createdAt,
-          pollIntervalMs: record.pollIntervalMs,
-          background: false,
-          // The owner is asked here and now, so the task is not left for a minute between polls.
-          ownerOnly: false,
-          stdio: record.transport === "stdio",
-          jitter,
+        const answer = yield* client.request(taskGet(record, ctx), {
+          untilAborted: () => abortedBy([signal]),
         });
 
-      // The wait for the next poll ends when the View goes.
-      yield* stop.pipe(
-        Effect.timeoutOption(
-          Math.min(delay, Math.max(0, deadline - (yield* Clock.currentTimeMillis))),
-        ),
-        Effect.asVoid,
-      );
-    }
+        if (signal.aborted) {
+          yield* cancel;
+
+          return { kind: "stopped" } satisfies ViewTaskEnd;
+        }
+
+        const outcome: PollOutcome = readPoll(answer, record);
+        const decision = decide(record, outcome, yield* Clock.currentTimeMillis, timing);
+
+        if (decision.cancel === true) yield* cancel;
+
+        if (decision.end !== undefined) {
+          const { status, reason, code } = decision.end;
+
+          if (
+            status === "completed" &&
+            outcome.kind === "state" &&
+            outcome.result.result !== undefined
+          ) {
+            return { kind: "completed", result: outcome.result.result } satisfies ViewTaskEnd;
+          }
+
+          return status === "completed"
+            ? ({
+                kind: "ended",
+                status: "failed",
+                reason: "the server's task completed with no result",
+              } satisfies ViewTaskEnd)
+            : ({ kind: "ended", status, reason, code } satisfies ViewTaskEnd);
+        }
+
+        applyDecision(record, decision);
+
+        if (outcome.kind === "state" && outcome.snapshot.status === "input_required") {
+          const done = yield* answerAll(outcome.snapshot.inputRequests);
+
+          if (done.kind === "expired") {
+            yield* cancel;
+
+            return { kind: "bound" } satisfies ViewTaskEnd;
+          }
+
+          // The View went while the owner was asked: whatever the card said, the task is not answered.
+          if (signal.aborted) {
+            yield* cancel;
+
+            return { kind: "stopped" } satisfies ViewTaskEnd;
+          }
+
+          if (done.kind === "refused") {
+            yield* cancel;
+
+            return { kind: "refused", message: done.message } satisfies ViewTaskEnd;
+          }
+
+          if (Record.size(done.responses) > 0) {
+            const sent = yield* client
+              .request(taskUpdate(record, done.responses, ctx), {
+                untilAborted: () => abortedBy([signal]),
+              })
+              .pipe(Effect.race(stop.pipe(Effect.as(undefined))));
+
+            if (sent !== undefined && !isTaken(sent)) {
+              yield* cancel;
+
+              return {
+                kind: "ended",
+                status: "failed",
+                reason: "the server did not take the answers to its questions",
+              } satisfies ViewTaskEnd;
+            }
+          }
+        } else {
+          answered.clear();
+        }
+
+        const jitter = yield* Random.next;
+
+        const delay =
+          decision.retryInMs ??
+          timing.pollMs ??
+          pollDelayMs({
+            ageMs: (yield* Clock.currentTimeMillis) - record.createdAt,
+            pollIntervalMs: record.pollIntervalMs,
+            background: false,
+            // The owner is asked here and now, so the task is not left for a minute between polls.
+            ownerOnly: false,
+            stdio: record.transport === "stdio",
+            jitter,
+          });
+
+        // The wait for the next poll ends when the View goes.
+        yield* stop.pipe(
+          Effect.timeoutOption(
+            Math.min(delay, Math.max(0, deadline - (yield* Clock.currentTimeMillis))),
+          ),
+          Effect.asVoid,
+        );
+      }
+    });
+
+    // A failure the loop did not plan for (a defect, an interrupt) still ends the task at the server: the request's end
+    // deletes the entry the sweep would cancel it by.
+    return yield* loop.pipe(
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? Effect.asVoid(cancel) : Effect.void)),
+    );
   });
 
 /** Whether the server took a `tasks/update`. */
