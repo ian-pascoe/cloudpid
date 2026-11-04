@@ -2,7 +2,7 @@
 // App records): the App tools of the inventory, and the draft of an App record for each completed call of an App tool.
 // The extension writes nothing itself: the Session hands it a recorder (`McpToolOptions.apps`), which redacts, bounds and
 // keeps what it is given in the Session's storage, outside History.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- builders over plain values.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off -- builders over plain values; the recorder is handed to pi-durable's Promise seam.
 import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
 import type { McpAppDraft, McpAppHtmlAnswer, McpAppTool } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
@@ -11,6 +11,8 @@ import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { McpHostClientService } from "./client.ts";
 import { type McpCallOrigin, contextOf } from "./exchange.ts";
+import type { McpTasksOptions } from "./task-port.ts";
+import type { McpTaskRecord } from "./task-state.ts";
 
 /**
  * The host feature that lists App HTML (`MCP_HOST_FEATURES`): a `tools/call` of an App tool answers `app.htmlHash`, and
@@ -146,4 +148,40 @@ export const appHtmlOf = (
         ),
       ),
     );
+};
+
+/**
+ * What records the App call of an MCP task when the task completes (`McpTaskRecord.app`): its whole result goes to the
+ * recorder, so the View of the original call gets it whenever it arrives. None for a task of another tool, or on a Session
+ * that keeps no App records.
+ */
+export const appRecorderOf = (
+  tasks: McpTasksOptions,
+  record: McpTaskRecord,
+): ((value: Schema.Json) => Promise<void>) | undefined => {
+  const apps = tasks.apps;
+
+  if (apps === undefined || record.app === undefined) return undefined;
+
+  const app = record.app;
+
+  return async (value) => {
+    const draft = draftOf(
+      {
+        callId: record.callId,
+        conversation: String(record.conversation),
+        parentCall: app.parentCall,
+        server: record.server,
+        tool: record.tool,
+        arguments: app.arguments,
+        htmlHash: undefined,
+        viewHash: app.viewHash,
+      },
+      value,
+    );
+
+    if (draft === undefined) return;
+
+    await Effect.runPromise(apps.put(draft)).catch(() => undefined);
+  };
 };

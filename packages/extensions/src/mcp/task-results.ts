@@ -276,6 +276,8 @@ export const completedResult = async (
     readonly signal?: AbortSignal | undefined;
     /** A `codemode` script's nested call: its value whole, and no spill. */
     readonly script?: boolean | undefined;
+    /** Told the server's whole result before it is converted: an App tool's record is made from it. */
+    readonly onValue?: ((value: Schema.Json) => Promise<void>) | undefined;
   },
   background: boolean,
   details?: McpDetails,
@@ -300,5 +302,9 @@ export const completedResult = async (
 
   const structured: McpStructuredOutput | undefined = state.structuredOutput;
 
-  return valueOf(state.result, base, call.signal, (value) => resultFor(value, structured, context));
+  return valueOf(state.result, base, call.signal, async (value) => {
+    await call.onValue?.(value);
+
+    return resultFor(value, structured, context);
+  });
 };

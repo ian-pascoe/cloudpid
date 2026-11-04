@@ -82,6 +82,11 @@ export const McpSamplingRequest = Schema.Struct({
    * its `prompts/get`, not a tool's call. A client from before it reads `tool`, the prompt's command.
    */
   prompt: Schema.optionalKey(Schema.String),
+  /**
+   * The request was made during a `tools/call` of an App View (`docs/architecture/mcp-apps.md` → Server requests from an App
+   * View's calls): the card's origin line reads "<server>'s app". A client from before it reads `tool`.
+   */
+  app: Schema.optionalKey(Schema.Literal(true)),
   /** The Role the request would run on unless the owner picks another, and its model. */
   role: McpSamplingRoleName,
   model: Schema.String,

@@ -46,6 +46,7 @@ import {
   type McpQuestionUnseen,
   type McpSamplingDecision,
   type McpWaitingKind,
+  askOriginOf,
   eraDefault,
   eraOfAsk,
   pageIdentityOf,
@@ -583,7 +584,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       const id = questionId(question.callId, sequence);
       const now = yield* Clock.currentTimeMillis;
-      const { waitMs: wait, quiet } = waitFor(question.prompt);
+      const { waitMs: wait, quiet } = waitFor(question);
       const request = yield* basics.requestOf(question, id, now + wait, again);
 
       const entry: WaitingEntry = {
@@ -922,9 +923,9 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       onSome: ([, held]) => {
         const open = Deferred.await(held.closed);
 
-        // A page of a prompt send is waited for no longer than its question was: the get's clock is not held for good by a
-        // page that is never finished (`deadline` is the ask's 5 min).
-        if (held.request.prompt === undefined) return open;
+        // A page of a prompt send or an App View's call is waited for no longer than its question was: the call's clock is
+        // not held for good by a page that is never finished (`deadline` is the ask's 5 min).
+        if (askOriginOf(held.request) === "agent") return open;
 
         return Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) =>

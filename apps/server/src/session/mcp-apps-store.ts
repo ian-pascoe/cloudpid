@@ -12,7 +12,7 @@
 // are bound when the runtime builds its layer, as the MCP questions' are (`./mcp-questions.ts`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain storage reads,
 // under Effect.sync.
-import type { McpAppHtmlInput, McpAppRequestInput } from "@cloudpid/extensions/mcp";
+import type { McpAppHtmlInput, McpAppReply, McpAppRequestInput } from "@cloudpid/extensions/mcp";
 import { Secrets, type SecretsService } from "@cloudpid/extensions/secrets";
 import {
   appRecordBytes,
@@ -24,7 +24,6 @@ import {
   type McpAppEntry,
   type McpAppHtmlAnswer,
   McpAppRecord,
-  type McpAppRequestAnswer,
   type McpAppMounted,
   type McpAppStub,
   type McpAppTool,
@@ -109,7 +108,7 @@ export type SessionMcpAppsOptions = {
    * An App View's request to its server, once the Session's checks pass (`McpTools.appRequest`): the MCP tools check it
    * against the inventory and send it to the host as an `app` request.
    */
-  readonly request?: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
+  readonly request?: (input: McpAppRequestInput) => Effect.Effect<McpAppReply>;
   /** Whether the Session is archived: its App Views may read, and call no tool. Absent: never. */
   readonly archived?: Effect.Effect<boolean>;
   /** The time in epoch milliseconds, `Date.now` unless a test sets it. */
@@ -664,9 +663,10 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     request:
       options.request ??
       (() =>
-        Effect.succeed<McpAppRequestAnswer>(
-          mcpAppError("failed", "This Session has no MCP tools", MCP_APP_INTERNAL_ERROR),
-        )),
+        Effect.succeed<McpAppReply>({
+          answer: mcpAppError("failed", "This Session has no MCP tools", MCP_APP_INTERNAL_ERROR),
+          notes: [],
+        })),
     audit,
     secrets,
     archived: options.archived,

@@ -165,13 +165,23 @@ const REFUSED_NEVER = "refused by the owner, who switched the server's sampling 
 /** Why a request is refused when the server's definition says `off`, as it was switched to while the request waited or was kept. */
 export const MCP_SAMPLING_OFF_REASON = "the server's definition no longer lets it use a model";
 
-/** The decision of a call that Stop reached, which an `abort` of `signal` ends a wait with; never when there is none. */
-export const stoppedBy = (signal: AbortSignal | undefined): Effect.Effect<McpSamplingDecision> =>
+/** Why a card is withdrawn when the page of the App View that is waiting for it is hidden. */
+export const MCP_APP_HIDDEN_REASON =
+  "the App's page was hidden, so the owner could not be shown the request";
+
+/**
+ * The decision of a call that Stop reached, which an `abort` of `signal` ends a wait with (`reason`, Stop's unless another
+ * is given); never when there is none.
+ */
+export const stoppedBy = (
+  signal: AbortSignal | undefined,
+  reason: string = MCP_RUN_STOPPED_REASON,
+): Effect.Effect<McpSamplingDecision> =>
   signal === undefined
     ? Effect.never
     : Effect.callback<McpSamplingDecision>((resume) => {
         const stopped = () => {
-          resume(Effect.succeed(refusedBy("cloudpid", MCP_RUN_STOPPED_REASON, "unanswered")));
+          resume(Effect.succeed(refusedBy("cloudpid", reason, "unanswered")));
         };
 
         if (signal.aborted) {
@@ -347,7 +357,7 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const { card } = question;
-      const { waitMs: wait, quiet } = waitFor(card.prompt);
+      const { waitMs: wait, quiet } = waitFor(card);
 
       const request: Mutable<McpSamplingRequest> = {
         ...card,

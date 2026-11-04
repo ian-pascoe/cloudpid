@@ -5,7 +5,13 @@
 // where a task stands, and the markers (`mcp.task`, `mcp.detached`) only mirror it. The server's `taskId` lives here and
 // in the follower's input, never in anything a model, a client, a log or a span is given: only the handle
 // (`mcp-task-<n>`, cloudpid's own) leaves this file.
-import { type ConversationId, defineDoc, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import {
+  type ConversationId,
+  defineDoc,
+  type JsonObject,
+  type TaskId,
+  type Tx,
+} from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
@@ -118,6 +124,11 @@ export type McpTaskRecord = {
    * written before it was kept, which the sweep never touches.
    */
   callTask?: TaskId;
+  /**
+   * The call was of an App tool (`docs/architecture/mcp-apps.md` → Results): the arguments and parent call its App record is
+   * made from when the task completes, so its View gets the result whenever it arrives, in the background too.
+   */
+  app?: { arguments: JsonObject; parentCall?: string; viewHash?: string };
   /** The server's `timeout` in effect at the call, in ms: the inline window is the smaller of it and 10 minutes. */
   windowMs: number;
   createdAt: number;
@@ -180,15 +191,18 @@ export const taskOfCall = (state: McpTasksState, callId: string): McpTaskRecord 
     Arr.findFirst(Record.values(state.tasks), (task) => task.callId === callId),
   );
 
-/** Why a call goes out without offering a task: the Session or the server is at its cap. */
-export const atCap = (state: McpTasksState, server: string): boolean => {
-  const live = liveTasks(state);
+/** The server of each live task, one entry each: what the caps are counted over. */
+export const serversOfLive = (state: McpTasksState): ReadonlyArray<string> =>
+  Arr.map(liveTasks(state), (task) => task.server);
 
-  return (
-    live.length >= MCP_TASKS_PER_SESSION ||
-    Arr.filter(live, (task) => task.server === server).length >= MCP_TASKS_PER_SERVER
-  );
-};
+/** Whether live tasks of `servers` (one entry each) are at a cap for a new one of `server`: 16 in all, 8 of the one. */
+export const atCapOf = (servers: ReadonlyArray<string>, server: string): boolean =>
+  servers.length >= MCP_TASKS_PER_SESSION ||
+  Arr.filter(servers, (each) => each === server).length >= MCP_TASKS_PER_SERVER;
+
+/** Why a call goes out without offering a task: the Session or the server is at its cap (the agent's tasks alone). */
+export const atCap = (state: McpTasksState, server: string): boolean =>
+  atCapOf(serversOfLive(state), server);
 
 /** What a record starts from, as the call that got the task writes it. */
 export type McpTaskDraft = Omit<

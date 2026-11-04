@@ -1284,7 +1284,9 @@ export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
  * The tool the task server answers with a task. Its arguments pick what the task does: `region` goes in an
  * `Mcp-Param-Region` header; `polls` is how many `tasks/get` it takes to complete (default 1); `bytes` makes the
  * result that much text; `inline` answers at once as a synchronous call does, even to a client that declared the
- * extension; `ask` makes the task wait for an answer (`tasks/update`) before it completes; `fail` ends it `failed`.
+ * extension; `ask` makes the task wait for an answer to a form (`tasks/update`) before it completes, `sample` for the answer to
+ * a Sampling request, `page` for a URL-mode page and `unsupported` for a form cloudpid cannot take; `lag` keeps it
+ * `input_required` for that many polls after the answer; `fail` ends it `failed`.
  */
 export const REPORT_TOOL = {
   name: "report",
@@ -1297,6 +1299,10 @@ export const REPORT_TOOL = {
       bytes: { type: "number" },
       inline: { type: "boolean" },
       ask: { type: "boolean" },
+      sample: { type: "boolean" },
+      page: { type: "boolean" },
+      unsupported: { type: "boolean" },
+      lag: { type: "number" },
       fail: { type: "boolean" },
     },
   },
@@ -1310,6 +1316,12 @@ export interface FakeTask {
   readonly text: string;
   /** The answers `tasks/update` brought, by key. */
   answers: { readonly [key: string]: Json } | undefined;
+  /** What it asks while `input_required`. */
+  readonly question: "form" | "sample" | "page" | "unsupported";
+  /** The polls it stays `input_required` after the answer. */
+  lag: number;
+  /** The `tasks/update` it was sent. */
+  updates: number;
   readonly fail: boolean;
 }
 
@@ -1322,6 +1334,8 @@ export interface TaskServerOptions extends FakeOptions {
   readonly alwaysTask?: boolean;
   /** `pollIntervalMs` in every task the server reports. */
   readonly pollIntervalMs?: number;
+  /** Make `report` a tool of an App (`_meta.ui.resourceUri`), which Views may call too. */
+  readonly appUri?: string;
 }
 
 export interface TaskServer extends FakeServer {
@@ -1348,6 +1362,10 @@ const ReportCall = Schema.Struct({
       bytes: Schema.optionalKey(Schema.Int),
       inline: Schema.optionalKey(Schema.Boolean),
       ask: Schema.optionalKey(Schema.Boolean),
+      sample: Schema.optionalKey(Schema.Boolean),
+      page: Schema.optionalKey(Schema.Boolean),
+      unsupported: Schema.optionalKey(Schema.Boolean),
+      lag: Schema.optionalKey(Schema.Int),
       fail: Schema.optionalKey(Schema.Boolean),
     }),
   ),
@@ -1401,7 +1419,12 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
   const base = modernServer({
     ...options,
     listMore: true,
-    moreTools: [...(options.moreTools ?? []), REPORT_TOOL],
+    moreTools: [
+      ...(options.moreTools ?? []),
+      options.appUri === undefined
+        ? REPORT_TOOL
+        : { ...REPORT_TOOL, _meta: { ui: { resourceUri: options.appUri } } },
+    ],
     extensions: options.unadvertised === true ? undefined : { [TASKS_EXTENSION]: {} },
   });
 
@@ -1419,20 +1442,63 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
     pollIntervalMs: options.pollIntervalMs,
   });
 
+  /** The `inputRequests` of a task that waits for input. */
+  const questionOf = (task: FakeTask) => {
+    switch (task.question) {
+      case "sample":
+        return {
+          summary: {
+            method: "sampling/createMessage",
+            params: {
+              messages: [{ role: "user", content: { type: "text", text: "Summarize" } }],
+              maxTokens: 100,
+            },
+          },
+        };
+      case "page":
+        return {
+          visit: {
+            method: "elicitation/create",
+            params: {
+              mode: "url",
+              message: "Sign in",
+              url: "https://login.example.com/go",
+              elicitationId: "e1",
+            },
+          },
+        };
+      case "unsupported":
+        return {
+          which: {
+            method: "elicitation/create",
+            params: {
+              message: "Which region?",
+              requestedSchema: {
+                type: "object",
+                properties: { nested: { type: "object", properties: {} } },
+              },
+            },
+          },
+        };
+      default:
+        return {
+          which: {
+            method: "elicitation/create",
+            params: {
+              message: "Which region?",
+              requestedSchema: { type: "object", properties: {} },
+            },
+          },
+        };
+    }
+  };
+
   const snapshot = (task: FakeTask) => {
     switch (task.status) {
       case "input_required":
         return {
           ...view(task),
-          inputRequests: {
-            which: {
-              method: "elicitation/create",
-              params: {
-                message: "Which region?",
-                requestedSchema: { type: "object", properties: {} },
-              },
-            },
-          },
+          inputRequests: questionOf(task),
         };
       case "completed":
         return {
@@ -1496,10 +1562,26 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
 
     const task: FakeTask = {
       id: `task-${next}`,
-      status: given.ask === true ? "input_required" : "working",
+      status:
+        given.ask === true ||
+        given.sample === true ||
+        given.page === true ||
+        given.unsupported === true
+          ? "input_required"
+          : "working",
       pollsLeft: given.polls ?? 1,
       text,
       answers: undefined,
+      question:
+        given.sample === true
+          ? "sample"
+          : given.page === true
+            ? "page"
+            : given.unsupported === true
+              ? "unsupported"
+              : "form",
+      lag: given.lag ?? 0,
+      updates: 0,
       fail: given.fail === true,
     };
 
@@ -1533,6 +1615,12 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
 
     switch (method) {
       case "tasks/get": {
+        // An answered task stays `input_required` for `lag` polls, as a server slow to move on does.
+        if (task.status === "input_required" && task.answers !== undefined) {
+          if (task.lag > 0) task.lag -= 1;
+          else task.status = "working";
+        }
+
         if (task.status === "working") {
           task.pollsLeft -= 1;
 
@@ -1544,8 +1632,10 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
 
       case "tasks/update": {
         if (task.status === "input_required" && call.inputResponses !== undefined) {
+          task.updates += 1;
           task.answers = call.inputResponses;
-          task.status = "working";
+
+          if (task.lag === 0) task.status = "working";
         }
 
         return rpcResult(id, { resultType: "complete" });

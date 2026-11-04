@@ -708,6 +708,8 @@ export type McpAppAuditSummary = {
   readonly outcome:
     | { readonly status: "result"; readonly result: JsonRecord }
     | { readonly status: "error"; readonly reason: string; readonly message: string };
+  /** What the server's questions during the call came to, one phrase each: never a value or what the server wrote. */
+  readonly notes?: ReadonlyArray<string> | undefined;
 };
 
 /**
@@ -738,5 +740,10 @@ export const appAuditSummary = (what: McpAppAuditSummary): string => {
         })()
       : `${outcome.reason}: ${oneLineCut(outcome.message, MCP_APP_AUDIT_TEXT_CHARS)}`;
 
-  return `${what.method} ${target}${sent} → ${text}`;
+  const asked =
+    what.notes === undefined || what.notes.length === 0
+      ? ""
+      : ` (${oneLineCut(what.notes.join("; "), MCP_APP_AUDIT_TEXT_CHARS)})`;
+
+  return `${what.method} ${target}${sent} → ${text}${asked}`;
 };

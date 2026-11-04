@@ -1151,11 +1151,14 @@ export const sessionSocketsLayer = (
                 })
               : mcpApps.html(message.hash);
           case "page_visible":
-            return setVisible(socket, message.visible).pipe(Effect.as(null));
+            return setVisible(socket, message.visible).pipe(
+              Effect.andThen(mcpApps.visibility(socket, message.visible)),
+              Effect.as(null),
+            );
           case "mcp_app_request":
             return mcpApps.request({
               view: socket,
-              visible: readAttachment(socket).visible === true,
+              visible: () => readAttachment(socket).visible === true,
               callId: message.callId,
               requestId: message.requestId,
               method: message.method,

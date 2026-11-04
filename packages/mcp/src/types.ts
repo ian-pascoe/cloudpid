@@ -1598,6 +1598,12 @@ export const McpHostTaskStarted = Schema.TaggedStruct("Task", {
   task: McpTaskCreated,
   conn: Schema.String,
   identity: Schema.optionalKey(Schema.String),
+  /**
+   * An App tool's call: the `viewHash` of the origin the server's Views are served on, as `Completed.app.viewHash`, so the
+   * App record the task makes when it completes pins it (`docs/architecture/mcp-apps.md` → Results). Absent when the host
+   * does not know the Environment and source, or from a host from before it.
+   */
+  viewHash: Schema.optionalKey(Schema.String),
   ...McpHostTaskOrigin,
 });
 

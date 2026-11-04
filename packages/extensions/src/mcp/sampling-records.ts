@@ -47,8 +47,11 @@ export type McpSamplingRecord = {
   readonly id: string;
   readonly server: string;
   readonly tool: string;
-  /** Whose request: an agent's call, or the `prompts/get` of a prompt send. A record from before it reads `agent`. */
-  readonly origin: "agent" | "prompt";
+  /**
+   * Whose request: an agent's call, the `prompts/get` of a prompt send, or a `tools/call` of an App View. A record from
+   * before it reads `agent`.
+   */
+  readonly origin: "agent" | "prompt" | "app";
   readonly conversationId: number;
   readonly callId: string;
   /** The request's number within its call, from 1. */

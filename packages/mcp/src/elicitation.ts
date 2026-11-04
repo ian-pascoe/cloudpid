@@ -29,8 +29,9 @@ import { isJsonObject, JsonObject } from "./json.ts";
 export const MCP_ELICITATION_WAIT_MS = 10 * 60 * 1000;
 
 /**
- * How long a question waits for the owner during a prompt send's `prompts/get`, from the ask: 5 minutes, in either era and
- * both kinds (`docs/architecture/mcp-server-requests.md` → Questions). The get's own bound pauses meanwhile.
+ * How long a question waits for the owner during a prompt send's `prompts/get`, or an App View's `tools/call`, from the ask:
+ * 5 minutes, in either era and both kinds (`docs/architecture/mcp-server-requests.md` → Questions). The get's or the call's
+ * own bound pauses meanwhile.
  */
 export const MCP_PROMPT_QUESTION_WAIT_MS = 5 * 60 * 1000;
 

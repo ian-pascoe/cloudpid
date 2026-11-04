@@ -8,7 +8,9 @@ import type { Context } from "@earendil-works/chord";
 import * as Arr from "effect/Array";
 import type { Mutable } from "effect/Types";
 import type { McpCallOrigin } from "./exchange.ts";
+import type { McpAppRecorder } from "./apps.ts";
 import type { McpNotices } from "./notices.ts";
+import type { ViewTaskStore } from "./task-view-store.ts";
 import type { McpTaskLimits } from "./task-poll.ts";
 import type { McpTaskStorage } from "./task-results.ts";
 import type { McpTaskRecord } from "./task-state.ts";
@@ -21,6 +23,8 @@ export type McpTasksTiming = McpTaskLimits & {
   readonly pollMs?: number;
   /** How long an ignored cancel is waited for before cloudpid stops following, instead of 2 minutes. */
   readonly cancelGraceMs?: number;
+  /** How long an App View's request waits for its MCP task, instead of 15 minutes. */
+  readonly viewWindowMs?: number;
 };
 
 /** What the Session gives the `mcp` extension to follow MCP tasks. */
@@ -46,6 +50,16 @@ export type McpTasksOptions = {
    * before it is stored or shown. Absent: nothing is held.
    */
   readonly redact?: ((text: string) => Promise<string>) | undefined;
+  /**
+   * Where the record of an App tool's call is kept when its MCP task completes (`McpToolOptions.apps`): the View of the
+   * original call gets the result whenever it arrives. Absent: none is kept.
+   */
+  readonly apps?: McpAppRecorder | undefined;
+  /**
+   * The App Views' tasks and the places held for calls offered one, which count toward the caps beside the agent's: an
+   * agent's offer takes a place from it too (`./task-view-store.ts`). Present when the Session follows Views' tasks.
+   */
+  readonly views?: Pick<ViewTaskStore, "offer"> | undefined;
 };
 
 /**

@@ -84,26 +84,28 @@ export type PromptSummaries = {
  * Whether a prompt send's get waits at a page live: what its `answers` say (`McpAnswers.livePages`) and what its question
  * hooks do with a page (`ElicitingCall.livePages`), declared once so the two cannot part.
  */
-const LIVE_PAGES = true;
+export const LIVE_PAGES = true;
 
 /**
- * What a get says it can answer: a form, for as long as the owner has to answer it and a little more, so the Session's own
- * end of the wait comes first; a Sampling request, which may run (`SAMPLING_SAMPLE_MS`) after the owner has said yes; and a
- * page, waited at live (`livePages`). None is kept for later (no `defer`, no `pages`): a prompt send has no resume.
+ * What a get (or an App View's call, `./app-asking.ts`) says it can answer: a form, for as long as the owner has to answer
+ * it and a little more, so the Session's own end of the wait comes first; a Sampling request, which may run
+ * (`SAMPLING_SAMPLE_MS`) after the owner has said yes; and, with `livePages`, a page, waited at live: only a prompt send's
+ * get declares it, since a live caller declares no `url` but that one (`docs/architecture/mcp-server-requests.md` →
+ * Elicitation requests). None is kept for later (no `defer`, no `pages`): neither has a resume.
  */
-const answersOf = (samples: boolean): McpAnswers =>
-  samples
+export const liveAnswers = (samples: boolean, livePages: boolean): McpAnswers => {
+  const answers: Mutable<McpAnswers> = samples
     ? {
         elicitation: true,
         sampling: true,
-        livePages: LIVE_PAGES,
         inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + SAMPLING_SAMPLE_MS + 15_000,
       }
-    : {
-        elicitation: true,
-        livePages: LIVE_PAGES,
-        inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + 15_000,
-      };
+    : { elicitation: true, inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + 15_000 };
+
+  if (livePages) answers.livePages = true;
+
+  return answers;
+};
 
 /** The hooks of a prompt send whose Session can show questions, or none without them. */
 export const promptAsking = (
@@ -184,7 +186,7 @@ export const promptAsking = (
   }
 
   return {
-    answers: answersOf(sampler !== undefined),
+    answers: liveAnswers(sampler !== undefined, LIVE_PAGES),
     hooks,
     settle: async () => {
       await Effect.runPromise(questions.settleCall(ask.callId));

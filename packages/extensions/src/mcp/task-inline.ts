@@ -11,6 +11,7 @@ import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails } from "./details.ts";
 import type { Caller, McpCallOrigin } from "./exchange.ts";
+import { appRecorderOf } from "./apps.ts";
 import { failedWith } from "./result.ts";
 import { spillTo } from "./spill.ts";
 import type { McpTaskFollower } from "./task-follow.ts";
@@ -82,6 +83,8 @@ export type TaskStart = {
   /** `stdio`, with the Workspace whose Container runs the server; absent for an HTTP server's. */
   readonly transport?: "stdio";
   readonly workspace?: string;
+  /** The call is of an App tool: its record is made when the task completes. */
+  readonly app?: McpTaskRecord["app"];
 };
 
 /**
@@ -116,6 +119,8 @@ export const startTask = async (
   if (call.caller === "script") draft.nested = true;
 
   if (start.workspace !== undefined) draft.workspace = start.workspace;
+
+  if (start.app !== undefined) draft.app = start.app;
 
   if (started.spawn !== undefined) draft.spawn = started.spawn;
 
@@ -268,6 +273,7 @@ const finish = async (
             spill: spillTo(api.env, context),
             signal: context.abortSignal,
             script: call.caller === "script",
+            onValue: appRecorderOf(call.tasks, record),
           },
           false,
           call.base,

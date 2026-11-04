@@ -28,6 +28,8 @@ const session = (
     readonly answer?: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
     readonly archived?: boolean;
     readonly records?: ReadonlyArray<string>;
+    /** What the request's questions came to. */
+    readonly notes?: ReadonlyArray<string>;
   } = {},
 ) => {
   let now = 1_000_000;
@@ -42,7 +44,10 @@ const session = (
     request: (input) => {
       sent.push(input);
 
-      return options.answer === undefined ? Effect.succeed(ok) : options.answer(input);
+      return Effect.map(
+        options.answer === undefined ? Effect.succeed(ok) : options.answer(input),
+        (answer) => ({ answer, notes: options.notes ?? [] }),
+      );
     },
     audit: (callId, entry) =>
       Effect.sync(() => {
@@ -77,7 +82,7 @@ const toolCall = (
   more: Partial<AppViewRequest> = {},
 ): AppViewRequest => ({
   view,
-  visible: true,
+  visible: () => true,
   callId: "c1",
   requestId,
   method: "tools/call",
@@ -134,7 +139,7 @@ describe("a request from an App View", () => {
   it("is refused while the page is hidden, and nothing is sent", async () => {
     const { calls, sent } = session();
 
-    expect(await run(calls, toolCall(socket(), "r1", { visible: false }))).toMatchObject({
+    expect(await run(calls, toolCall(socket(), "r1", { visible: () => false }))).toMatchObject({
       status: "error",
       reason: "hidden",
     });
@@ -379,12 +384,75 @@ describe("a request from an App View", () => {
     const view = socket();
 
     await run(calls, toolCall(view, "r1"));
-    await run(calls, toolCall(view, "r2", { visible: false }));
+    await run(calls, toolCall(view, "r2", { visible: () => false }));
     await run(calls, toolCall(view, "r3", { method: "tools/list" }));
 
     expect(audit.map(([, entry]) => entry.summary)).toEqual([
       expect.stringMatching(/^tools\/call echo .* → refused: Tool echo is not for App Views$/),
     ]);
+  });
+});
+
+describe("what an App View's questions come to", () => {
+  it("is noted in the audit line of the request", async () => {
+    const { calls, audit } = session({ notes: ["form answered", "model reply given"] });
+
+    await run(calls, toolCall(socket(), "r1"));
+
+    expect(audit[0]?.[1]).toMatchObject({ summary: expect.stringContaining("echo") });
+    expect(audit[0]?.[1].summary).toContain("(form answered; model reply given)");
+  });
+
+  it("is told the page's visibility at each question, and a hide aborts it for the questions waiting", async () => {
+    let view: McpAppRequestInput["view"];
+    let visible = true;
+
+    const { calls } = session({
+      answer: (input) => {
+        view = input.view;
+
+        return Effect.succeed(ok);
+      },
+    });
+
+    const page = socket();
+
+    await run(calls, toolCall(page, "r1", { visible: () => visible }));
+
+    const waiting = view?.hidden();
+
+    expect(waiting?.aborted).toBe(false);
+
+    await Effect.runPromise(calls.visibility(page, false));
+    visible = false;
+    expect(waiting?.aborted).toBe(true);
+    // Hidden now: a question asked now is withdrawn at once; shown again, it is not.
+    expect(view?.hidden().aborted).toBe(true);
+
+    await Effect.runPromise(calls.visibility(page, true));
+    visible = true;
+    expect(view?.hidden().aborted).toBe(false);
+  });
+
+  it("gives a View's call one elicitation slot at a time", async () => {
+    let view: McpAppRequestInput["view"];
+
+    const { calls } = session({
+      answer: (input) => {
+        view = input.view;
+
+        return Effect.succeed(ok);
+      },
+    });
+
+    await run(calls, toolCall(socket(), "r1"));
+
+    const release = view?.takeSlot();
+
+    expect(release).toBeDefined();
+    expect(view?.takeSlot()).toBeUndefined();
+    release?.();
+    expect(view?.takeSlot()).toBeDefined();
   });
 });
 

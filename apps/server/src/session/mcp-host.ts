@@ -21,6 +21,7 @@ import {
   readStreamed,
   type McpAppHtmlInput,
   type McpAppRecorder,
+  type McpAppReply,
   type McpAppRequestInput,
   type McpResourcePreviewInput,
   type McpHostClientService,
@@ -42,7 +43,6 @@ import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
 import {
   mcpAppError,
   type McpAppHtmlAnswer,
-  type McpAppRequestAnswer,
   type McpCompletion,
   MCP_COMPLETION_STATUS,
   noCompletion,
@@ -330,7 +330,7 @@ export type SessionMcp = SessionHostMcp<never> & {
   /** The page under an App record's `htmlHash`, through the host's `ui/html`, when it lists `app_html`. Never fails. */
   readonly appHtml: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
   /** An App View's request to its server, checked and sent as the View's own (`McpTools.appRequest`). Never fails. */
-  readonly appRequest: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
+  readonly appRequest: (input: McpAppRequestInput) => Effect.Effect<McpAppReply>;
   /** The owner's read of a resource a card links, which starts no Container (`McpTools.resourcePreview`). Never fails. */
   readonly resourcePreview: (
     input: McpResourcePreviewInput,
@@ -705,9 +705,10 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
 
   const appRequest: SessionMcp["appRequest"] = (input) =>
     held === undefined
-      ? Effect.succeed<McpAppRequestAnswer>(
-          mcpAppError("unavailable", "This Session has no MCP servers"),
-        )
+      ? Effect.succeed<McpAppReply>({
+          answer: mcpAppError("unavailable", "This Session has no MCP servers"),
+          notes: [],
+        })
       : held.tools.appRequest(input);
 
   const complete: NonNullable<SessionHostMcp<never>["complete"]> = (input) =>
