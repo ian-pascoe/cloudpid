@@ -30,6 +30,9 @@ import { type McpCallContext, type McpError, xMcpHeaderProblems } from "../src/t
 /** What every call here is made for: the owner's host, which has no conversation. */
 const HOST_CALL: McpCallContext = { origin: "host" };
 
+/** A call that answers a Modern server's form at once (`onInput` accepts every one): the core's own rounds drive it. */
+const ANSWERING_CALL: McpCallContext = { origin: "host", answers: { elicitation: true } };
+
 /** What stops a scenario short: one the core cannot drive yet, or one the server did not set up as expected. */
 class ScenarioError extends Schema.TaggedError<ScenarioError, { readonly brand: unique symbol }>()(
   "ScenarioError",
@@ -65,6 +68,12 @@ const deps = (): McpDeps => ({
   // What the SDK's own `request-metadata` client declares, so the per-request envelope carries a declaration.
   capabilities: () => ({ roots: { listChanged: true }, sampling: {}, elicitation: {} }),
   clientInfo: { name: "test-client", version: "1.0.0" },
+  // A form is confirmed: the MRTR scenario asks for `{ confirmed }` and checks only how the rounds are sent.
+  onInput: () =>
+    Effect.succeed({
+      kind: "answered",
+      result: { action: "accept", content: { confirmed: true } },
+    }),
 });
 
 /** The tool calls a scenario hands the client in `MCP_CONFORMANCE_CONTEXT`. */
@@ -197,6 +206,30 @@ const SCENARIOS = new Map<string, Scenario>([
         const schema = focal.inputSchema as Schema.Json;
 
         yield* connection.callTool({ tool: echo, arguments: { schema } }, HOST_CALL);
+      }),
+  ],
+
+  // SEP-2322's rounds: the core answers each `input_required` itself and sends the call again, with the server's
+  // `requestState` as it came (none when it sent none), on a new id; another tool's call carries none of it.
+  [
+    "sep-2322-client-request-state",
+    (connection) =>
+      Effect.gen(function* () {
+        const tools = yield* listTools(connection);
+
+        for (const name of ["test_mrtr_echo_state", "test_mrtr_unrelated", "test_mrtr_no_state"]) {
+          const tool = yield* toolNamed(tools, name);
+
+          yield* connection.callTool({ tool, arguments: {} }, ANSWERING_CALL);
+        }
+
+        // A result with no `resultType` is never answered as a round; the SDK refuses it from a server of this
+        // revision, which the scenario does not check.
+        const plain = yield* toolNamed(tools, "test_mrtr_no_result_type");
+
+        yield* connection
+          .callTool({ tool: plain, arguments: {} }, ANSWERING_CALL)
+          .pipe(Effect.ignore);
       }),
   ],
 

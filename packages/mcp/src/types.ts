@@ -46,6 +46,13 @@ export type McpCallOrigin = typeof McpCallOrigin.Type;
 export const McpAnswers = Schema.Struct({
   elicitation: Schema.optionalKey(Schema.Boolean),
   inputWaitMs: Schema.optionalKey(Schema.Finite),
+  /**
+   * The caller keeps a Modern server's questions for later (`onInput` may answer `defer`), so the request may be
+   * answered `input_required` with a `ResumeState`, and `resume` sends it again with the answers. Without it no request
+   * is ever answered `input_required`, and a `defer` reads as `cancel` (`docs/architecture/mcp-server-requests.md` →
+   * Questions).
+   */
+  defer: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpAnswers = typeof McpAnswers.Type;
@@ -131,6 +138,42 @@ export type McpTaskSnapshot = typeof McpTaskSnapshot.Type;
 export const McpTaskInputResponses = Schema.Record(Schema.String, JsonObject);
 
 export type McpTaskInputResponses = typeof McpTaskInputResponses.Type;
+
+/** The most a `ResumeState` may weigh, as JSON (ADR-0037). */
+export const MCP_RESUME_STATE_MAX_BYTES = 1024 * 1024;
+
+/** The most rounds of questions one request may take before it fails (ADR-0037). */
+export const MCP_INPUT_ROUNDS = 10;
+
+/**
+ * What a resume whose `ResumeState` this build cannot read says: a format `v` past its 30 days, or a state that is not
+ * one (`docs/architecture/mcp-server-requests.md` → Questions; `docs/architecture/mcp.md` → Deploys).
+ */
+export const MCP_RESUME_STATE_EXPIRED =
+  "The question was asked by an older version of cloudpid and can't be resumed; call the tool again";
+
+/**
+ * A `ResumeState`, format 1 (`docs/architecture/mcp-server-requests.md` → Questions; ADR-0037): what the core needs to
+ * send a Modern request again once its deferred questions are answered. JSON, at most `MCP_RESUME_STATE_MAX_BYTES`,
+ * opaque to everyone but the core: the Session keeps it in the question's record and hands it back to `resume`. A later
+ * format is a new `v`, and this one stays readable for 30 days after it (`docs/architecture/mcp.md` → Deploys).
+ */
+export const ResumeStateV1 = Schema.Struct({
+  v: Schema.Literal(1),
+  method: Schema.Literal("tools/call"),
+  name: Schema.String,
+  arguments: JsonObject,
+  /** The server's own state, echoed byte for byte. */
+  requestState: Schema.optionalKey(Schema.String),
+  /** The round's questions answered at once (Roots, or a question the caller answered then), sent with the rest. */
+  answered: McpTaskInputResponses,
+  /** The keys of the round's questions the caller deferred: a resume answers every one. */
+  deferred: Schema.Array(Schema.String),
+  /** Which round of questions this is, from 1. */
+  round: Schema.Int,
+});
+
+export type ResumeStateV1 = typeof ResumeStateV1.Type;
 
 /**
  * The era row (`mcp_eras`), format 1: the Protocol era a server was found to speak, its negotiated version and, for a
@@ -696,6 +739,18 @@ export const McpEngineRequest = Schema.Union([
     arguments: Schema.Record(Schema.String, Schema.String),
     ctx: McpCallContext,
   }),
+  /**
+   * The `tools/call` that answered `input_required`, sent again from its `ResumeState` (`resume`, opaque here) with the
+   * answers to the questions it deferred, by key; `tool` is its definition, as for `tools/call`. Answered as a
+   * `tools/call` is: a result, a task, or another round of questions.
+   */
+  Schema.Struct({
+    op: Schema.Literal("resume"),
+    tool: McpToolDefinition,
+    resume: Schema.Json,
+    answers: McpTaskInputResponses,
+    ctx: McpCallContext,
+  }),
 ]);
 
 export type McpEngineRequest = typeof McpEngineRequest.Type;
@@ -788,6 +843,23 @@ export const McpEngineTaskState = Schema.Struct({
 
 export type McpEngineTaskState = typeof McpEngineTaskState.Type;
 
+/**
+ * A Modern `tools/call` (or its `resume`) whose server asked questions the caller deferred, returned only to a call
+ * whose `ctx.answers.defer` is set: the deferred `requests`, scrubbed of the call's tokens, and the `ResumeState` a
+ * `resume` goes on from, as the core made it (`docs/architecture/mcp-server-requests.md` → Questions).
+ */
+export const McpEngineInputRequired = Schema.Struct({
+  kind: Schema.Literal("input_required"),
+  requests: Schema.Array(McpInputRequest),
+  resume: Schema.Json,
+  ...RefreshedTools,
+  ...EngineLogs,
+  ...EngineSpawn,
+  state: McpEngineState,
+});
+
+export type McpEngineInputRequired = typeof McpEngineInputRequired.Type;
+
 /** A `tasks/update` or `tasks/cancel` the server took. */
 export const McpEngineTaskAck = Schema.Struct({
   kind: Schema.Literal("task_ack"),
@@ -810,6 +882,7 @@ export const McpEngineRequestResult = Schema.Union([
   McpEngineTaskStarted,
   McpEngineTaskState,
   McpEngineTaskAck,
+  McpEngineInputRequired,
 ]);
 
 export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
@@ -967,6 +1040,27 @@ export const McpHostTaskCancel = Schema.Struct({
 
 export type McpHostTaskCancel = typeof McpHostTaskCancel.Type;
 
+/**
+ * `request({ op: "resume" })`: a `tools/call` answered `InputRequired`, sent again with the answers to the questions it
+ * deferred, by key (`docs/architecture/mcp-server-requests.md` → Questions). `tool` is the server's own name for the
+ * tool, `conn` the server's connection key when it asked (another one now is `ServerChanged`, nothing sent), and
+ * `resume` the `ResumeState` the `InputRequired` carried, as it came. Answered as a `tools/call` is, with the same
+ * `ctx`.
+ */
+export const McpHostResume = Schema.Struct({
+  op: Schema.Literal("resume"),
+  server: Schema.String,
+  params: Schema.Struct({
+    tool: Schema.String,
+    conn: Schema.String,
+    resume: Schema.Json,
+    answers: McpTaskInputResponses,
+  }),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostResume = typeof McpHostResume.Type;
+
 /** The MIME type of an MCP App's HTML, which a `ui://` resource's one content item must have exactly. */
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
@@ -1097,6 +1191,7 @@ export const McpHostRequest = Schema.Union([
   McpHostTaskGet,
   McpHostTaskUpdate,
   McpHostTaskCancel,
+  McpHostResume,
 ]);
 
 export type McpHostRequest = typeof McpHostRequest.Type;
@@ -1123,10 +1218,11 @@ const MCP_HOST_REQUEST_OPS: ReadonlyArray<string> = Arr.map(
 /** Whether `op` is one `request` takes; any other is `HostUnsupported`, an `op` a later build sends. */
 export const isMcpHostRequestOp = (op: string) => MCP_HOST_REQUEST_OPS.includes(op);
 
-/** A `tasks/*` request: everything `request` takes besides a `tools/call`. */
+/** A `tasks/*` request: one that follows an MCP task. */
 export const isMcpHostTaskRequest = (
   call: McpHostRequest,
-): call is Exclude<McpHostRequest, McpHostToolCall> => call.op !== "tools/call";
+): call is McpHostTaskGet | McpHostTaskUpdate | McpHostTaskCancel =>
+  call.op === "tasks/get" || call.op === "tasks/update" || call.op === "tasks/cancel";
 
 /** What a failure for an MCP task the request did not ask for says, in the core and at the host. */
 export const MCP_UNASKED_TASK_MESSAGE = "The server started an MCP task that was not asked for";
@@ -1198,6 +1294,22 @@ export const McpHostTaskState = Schema.TaggedStruct("TaskState", {
 
 export type McpHostTaskState = typeof McpHostTaskState.Type;
 
+/**
+ * A `tools/call` (or its `resume`) whose server asked questions the caller deferred, returned only to a call whose
+ * `ctx.answers.defer` is set: the questions, and the `ResumeState` a `resume` sends with their answers, opaque to the
+ * caller, who keeps it. `conn` and `identity` are the server's as it asked, for the caller's record; `signIn` and
+ * `spawn` as a task's (`docs/architecture/mcp-server-requests.md` → The waiting-question record).
+ */
+export const McpHostInputRequired = Schema.TaggedStruct("InputRequired", {
+  requests: Schema.Array(McpInputRequest),
+  resume: Schema.Json,
+  conn: Schema.String,
+  identity: Schema.optionalKey(Schema.String),
+  ...McpHostTaskOrigin,
+});
+
+export type McpHostInputRequired = typeof McpHostInputRequired.Type;
+
 /** The server took a `tasks/update` or a `tasks/cancel`. */
 export const McpHostTaskAck = Schema.TaggedStruct("TaskAck", McpHostTaskOrigin);
 
@@ -1259,6 +1371,7 @@ export const McpHostRequestResult = Schema.Union([
   McpHostTaskState,
   McpHostTaskAck,
   ServerChanged,
+  McpHostInputRequired,
   ...McpHostFailure.members,
 ]);
 

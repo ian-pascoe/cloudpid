@@ -4,12 +4,16 @@
 // mcp-in-a-session.md` → The `mcp` extension, Calls and results, Resource tools): the part a `tools/call` and a resource
 // list or read share, so they end alike.
 //
-// The request is awaited for its whole length with its `untilAborted` and `onProgress` hooks, so the stubs outlive it. Stop
-// aborts the call's context, which resolves `untilAborted`, and the host cancels. The Session waits at most the server's
-// `timeout` and `MCP_CALL_SLACK_MS` from the request's start or its last progress notice (progress resets the engine's
-// timeout too); past that, or when the RPC breaks, the request reads as `host_lost`. A stdio server runs in the Container
-// of the Workspace of the conversation that asks, which is marked used first. A Legacy server's question waits for the
-// owner while the clock stands still.
+// The request is awaited for its whole length with its `untilAborted` and `onProgress` hooks, so the stubs outlive it.
+// Stop aborts the call's context, which resolves `untilAborted`, and the host cancels. The Session waits at most the
+// server's `timeout` and `MCP_CALL_SLACK_MS` from the request's start or its last progress notice (progress resets the
+// engine's timeout too); past that, or when the RPC breaks, the request reads as `host_lost`. A stdio server runs in
+// the Container of the Workspace of the conversation that asks, which is marked used first. A Legacy server's question
+// waits for the owner while the clock stands still. A Modern server's questions, on a tool's call to a host that
+// resumes, are kept for later (`docs/architecture/mcp-server-requests.md` → The waiting-question record): the call's
+// round ends as `InputRequired`, is stored whole and marked (`mcp.wait.<r>`), and the call waits with no clock running;
+// once the owner has answered, `mcp.resumed.<r>` is written and the resume sent. A rerun after a restart waits again
+// for a round so marked, and settles any other call it finds sent as one that may have run.
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
@@ -19,6 +23,7 @@ import {
   type McpHostRequestContext,
   type McpHostRequestHooks,
   type McpHostResourceRequest,
+  type PausableDeadline,
   pausableDeadline,
 } from "@cloudpid/mcp/types";
 import type { Context, JsonValue } from "@earendil-works/chord";
@@ -46,7 +51,8 @@ import {
   interruptedResult,
   streamFailure,
 } from "./result.ts";
-import type { McpQuestionsService } from "./questions.ts";
+import type { McpDeferredRound, McpQuestionsService } from "./questions.ts";
+import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
 import type { McpBuildServer } from "./tools.ts";
@@ -114,6 +120,12 @@ const ELICITATION_ANSWERS: McpAnswers = {
   elicitation: true,
   inputWaitMs: MCP_ELICITATION_WAIT_MS + 15_000,
 };
+
+/**
+ * What a call says it can answer when its server's Modern questions are kept for later too: its round ends as
+ * `input_required`, and the call waits for the owner after it.
+ */
+const DEFERRING_ANSWERS: McpAnswers = { ...ELICITATION_ANSWERS, defer: true };
 
 /** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
 const SENT = "mcp.sent";
@@ -223,6 +235,11 @@ export type Exchange = {
   readonly details: McpDetails;
   /** A tool's call, which may have run when it was cut, or a resource's request, which never has. */
   readonly subject: Subject;
+  /**
+   * Whether the host resumes a Modern call (its `resume` feature): a tool's call then keeps its server's questions for
+   * later, when the Session's questions can (`McpQuestionsService.defers`).
+   */
+  readonly defers?: boolean | undefined;
 };
 
 /**
@@ -267,10 +284,28 @@ export const send = async <A>(
   const base = exchange.details;
   const noun = subject === "tool" ? "call" : "request";
   const failed = (result: ToolExecutionResult<JsonValue>): Sent<A> => ({ ok: false, result });
+  const { questions } = options;
 
-  // A rerun after a restart: the request was sent once, so the call may have run, and is never sent again.
+  // A Modern server's questions are kept for later on a tool's call, when the host resumes and the Session can keep
+  // them.
+  const deferring =
+    remember && exchange.defers === true && questions !== undefined && questions.defers;
+
+  const rounds: Rounds | undefined =
+    deferring && questions !== undefined ? { questions, api, context } : undefined;
+
+  let waiting: McpDeferredRound | undefined;
+
   if (remember && (await api.memo<boolean>(SENT, context)) !== undefined) {
-    return failed(interruptedResult(tool, base));
+    // A rerun after a restart: a round of questions stored and not yet resumed waits again. Anything else was sent
+    // once, so the call may have run, and is never sent again.
+    waiting = rounds === undefined ? undefined : await waitingRound(rounds);
+
+    if (waiting === undefined) {
+      if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
+
+      return failed(interruptedResult(tool, base));
+    }
   }
 
   // An HTTP server is called from the Session's Workspace, as it always was. A stdio server runs in the Container of the
@@ -294,16 +329,13 @@ export const send = async <A>(
   }
 
   const wait = waitOf(server, options.slackMs ?? MCP_CALL_SLACK_MS);
-
-  const lost = await Effect.runPromise(
-    pausableDeadline(wait, () => new Error("The Session gave up on the host")),
-  );
-
   const stopped = context.abortSignal === undefined ? [] : [context.abortSignal];
 
-  const { questions } = options;
+  // The clock of the request that is out: the Session gives up on the host when it passes.
+  let clock: PausableDeadline | undefined;
 
-  // A server's question waits for the owner while the call's clock stands still, and Stop withdraws it.
+  // A server's question waits for the owner while the call's clock stands still, and Stop withdraws it. A Modern one is
+  // kept for later instead when the call defers, and waited for between its rounds, with no clock running.
   const asking =
     questions === undefined
       ? undefined
@@ -315,41 +347,60 @@ export const send = async <A>(
           conversationId: api.conversationId,
           signal: context.abortSignal,
           source: server.source,
-          pause: lost.pause,
-          resume: lost.resume,
+          defers: deferring,
+          pause: Effect.suspend(() => clock?.pause ?? Effect.void),
+          resume: Effect.suspend(() => clock?.resume ?? Effect.void),
         });
 
-  const hooks: Mutable<McpHostRequestHooks> = {
-    // Stop, or the Session giving up on the host: either way the host cancels the request.
-    untilAborted: () => abortedBy([...stopped, lost.signal]),
-    // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
-    // output text, and gone from the settled call's `details`.
-    onProgress: (progress) =>
-      Effect.runPromise(lost.reset).then(() =>
-        api.details({ ...base, progress }, context).catch(() => undefined),
-      ),
-  };
+  // A rerun's call tells of the questions its earlier rounds were asked, as the instance that asked them would have.
+  if (waiting !== undefined) asking?.asked.push(...waiting.asked);
 
-  if (asking !== undefined) {
-    hooks.onInput = asking.onInput;
-    hooks.onInputEnded = asking.onInputEnded;
-  }
-
-  const request = build(workspace, questions === undefined ? undefined : ELICITATION_ANSWERS);
+  const request = build(
+    workspace,
+    questions === undefined ? undefined : deferring ? DEFERRING_ANSWERS : ELICITATION_ANSWERS,
+  );
 
   // Durable before the request leaves, so a restart finds the call sent.
-  if (remember) await api.memo(SENT, true, context);
+  if (remember && waiting === undefined) await api.memo(SENT, true, context);
 
-  const finished = async (): Promise<Sent<A>> => {
+  /** One request out to the host under its own clock: the host's answer, or `undefined` when it was lost. */
+  const once = async (input: McpHostRequest | McpHostResourceRequest) => {
+    const lost = await Effect.runPromise(
+      pausableDeadline(wait, () => new Error("The Session gave up on the host")),
+    );
+
+    clock = lost;
+
+    const hooks: Mutable<McpHostRequestHooks> = {
+      // Stop, or the Session giving up on the host: either way the host cancels the request.
+      untilAborted: () => abortedBy([...stopped, lost.signal]),
+      // Progress resets the timeout and rides in the running call's `details`, which the web does not draw: never
+      // output text, and gone from the settled call's `details`.
+      onProgress: (progress) =>
+        Effect.runPromise(lost.reset).then(() =>
+          api.details({ ...base, progress }, context).catch(() => undefined),
+        ),
+    };
+
+    if (asking !== undefined) {
+      hooks.onInput = asking.onInput;
+      hooks.onInputEnded = asking.onInputEnded;
+    }
+
     const result = await Promise.race([
-      Effect.runPromise(client.request(request, hooks)),
+      Effect.runPromise(client.request(input, hooks)),
       abortedBy([lost.signal]).then(() => undefined),
     ]).finally(() => Effect.runPromise(lost.clear));
 
-    if (result === undefined || lost.signal.aborted || Predicate.isTagged(result, "HostLost")) {
-      return failed(hostLostResult(base, subject));
-    }
+    return result === undefined || lost.signal.aborted || Predicate.isTagged(result, "HostLost")
+      ? undefined
+      : result;
+  };
 
+  /** What the host's last answer comes to: the value `onValue` makes of it, or the result that says why not. */
+  const settled = async (
+    result: Exclude<Awaited<ReturnType<typeof once>>, undefined>,
+  ): Promise<Sent<A>> => {
     if (!Predicate.isTagged(result, "Completed")) {
       return failed(
         failureResult(result, base, subject, { subagent: await isSubagentCall(api, context) }),
@@ -383,6 +434,67 @@ export const send = async <A>(
         ? done(streamed.value)
         : failed(streamFailure(streamed.kind, base, subject));
     });
+  };
+
+  /**
+   * The call's rounds: the request, and while its server's questions are kept for later, each round stored, waited for
+   * and resumed, until the host answers anything else. A rerun starts from the round it found waiting.
+   */
+  const finished = async (): Promise<Sent<A>> => {
+    let round = waiting;
+
+    let next: McpHostRequest | McpHostResourceRequest | undefined =
+      round === undefined ? request : undefined;
+
+    while (true) {
+      if (next === undefined) {
+        if (rounds === undefined || round === undefined)
+          return failed(interruptedResult(tool, base));
+
+        const resumed = await resumeOf(rounds, round, {
+          server: server.name,
+          ctx: request.ctx,
+          asked: asking?.asked,
+        });
+
+        if (resumed.kind === "stopped") return failed(failedWith(`The ${noun} was stopped`, base));
+
+        if (resumed.kind === "withdrawn") {
+          return failed(
+            failedWith(
+              `${server.name}'s questions ended before they were answered; the ${noun} was not sent again`,
+              base,
+            ),
+          );
+        }
+
+        next = resumed.request;
+      }
+
+      const result = await once(next);
+
+      if (result === undefined) return failed(hostLostResult(base, subject));
+
+      if (!Predicate.isTagged(result, "InputRequired") || rounds === undefined) {
+        return settled(result);
+      }
+
+      // The server asked questions the call keeps: the round is stored whole, then marked, and the call waits.
+      round = {
+        callId: api.callId,
+        round: (round?.round ?? 0) + 1,
+        conn: result.conn,
+        tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
+        resume: result.resume,
+        asked: [...(asking?.asked ?? [])],
+      };
+
+      // Nothing can record the round (a replaced Session): the call is dropped, and the instance after this one settles
+      // it as one that may have run.
+      if (!(await storeRound(rounds, round))) return failed(interruptedResult(tool, base));
+
+      next = undefined;
+    }
   };
 
   try {

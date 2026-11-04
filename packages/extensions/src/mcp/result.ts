@@ -325,7 +325,13 @@ export const failureResult = (
       : Predicate.isTagged(result, "AppHtml")
         ? // Only a `ui/html` request is answered so, and a tool call is never one.
           failedWith("The MCP host answered a call with App HTML", details)
-        : failedWith(result.message, details);
+        : Predicate.isTagged(result, "InputRequired")
+          ? // The host answers questions only to a call that keeps them (`ctx.answers.defer`).
+            failedWith(
+              "The MCP host answered with questions the call did not ask to keep.",
+              details,
+            )
+          : failedWith(result.message, details);
 
 const isTaskAnswer = (result: McpHostRequestResult) =>
   Predicate.isTagged(result, "Task") ||

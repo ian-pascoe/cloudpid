@@ -21,6 +21,7 @@ class Probe {
   handoffsDropped = 0;
   approvalsDropped = 0;
   signInsDropped = 0;
+  questionsDropped = 0;
   stored: number | undefined = undefined;
 }
 
@@ -88,7 +89,13 @@ const setup = (nextExpiry?: number) => {
     }),
   };
 
-  return { state, browser, secrets, handoffs, approvals, signIns };
+  const questions = {
+    dropAbandoned: Effect.sync(() => {
+      state.questionsDropped += 1;
+    }),
+  };
+
+  return { state, browser, secrets, handoffs, approvals, signIns, questions };
 };
 
 describe("earliest", () => {
@@ -129,12 +136,12 @@ describe("what wakes an idle Session", () => {
 });
 
 describe("what a Session does when it settles", () => {
-  test("closes the browser once the Session has been idle past its keep-alive, and clears abandoned Secret requests, Browser Handoffs, Approval requests and Sign-in requests", () =>
+  test("closes the browser once the Session has been idle past its keep-alive, and clears abandoned Secret requests, Browser Handoffs, Approval requests, Sign-in requests and MCP servers' deferred questions", () =>
     Effect.gen(function* () {
-      const { state, browser, secrets, handoffs, approvals, signIns } = setup();
+      const { state, browser, secrets, handoffs, approvals, signIns, questions } = setup();
 
       yield* browser.touch;
-      yield* onIdle(secrets, browser, handoffs, approvals, signIns);
+      yield* onIdle(secrets, browser, handoffs, approvals, signIns, questions);
 
       expect(state).toMatchObject({
         closes: 0,
@@ -142,10 +149,11 @@ describe("what a Session does when it settles", () => {
         handoffsDropped: 1,
         approvalsDropped: 1,
         signInsDropped: 1,
+        questionsDropped: 1,
       });
 
       yield* TestClock.adjust(BROWSER_IDLE_MS);
-      yield* onIdle(secrets, browser, handoffs, approvals, signIns);
+      yield* onIdle(secrets, browser, handoffs, approvals, signIns, questions);
 
       expect(state).toMatchObject({
         closes: 1,
@@ -153,6 +161,7 @@ describe("what a Session does when it settles", () => {
         handoffsDropped: 2,
         approvalsDropped: 2,
         signInsDropped: 2,
+        questionsDropped: 2,
       });
       expect(yield* wakeAt(secrets, browser)).toBeUndefined();
     }));

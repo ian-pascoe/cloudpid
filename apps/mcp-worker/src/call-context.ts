@@ -209,10 +209,12 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     sessions: sessions.store,
     // Roots are offered on a bridge connection only (`routeVia`). A Legacy connection declares the form of an
     // elicitation connection-wide, at `initialize`, whatever call opens it: a question on a call that cannot take it is
-    // cancelled (`docs/architecture/mcp-server-requests.md` → Questions). A Modern request declares per request, and
-    // none yet.
+    // cancelled (`docs/architecture/mcp-server-requests.md` → Questions). A Modern request declares per request: the
+    // form of an elicitation only on a call whose caller offers it (`ctx.answers`) and has an `onInput` to answer with.
     capabilities: (ctx?: McpCallContext) =>
-      ctx === undefined ? { elicitation: { form: {} } } : {},
+      ctx === undefined || (ctx.answers?.elicitation === true && hooks.onInput !== undefined)
+        ? { elicitation: { form: {} } }
+        : {},
     clientInfo: { name: "cloudpid", version: env.version },
     onLog: logs.hear,
   } satisfies McpDeps;

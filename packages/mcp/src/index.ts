@@ -9,6 +9,7 @@ export {
   type CallToolParams,
   type Complete,
   connect,
+  type InputRequired,
   type ListItems,
   type ListedPage,
   type ListKind,

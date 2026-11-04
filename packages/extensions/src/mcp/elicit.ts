@@ -7,7 +7,9 @@
 // whose wait is the call's: the call's own clock is stopped while it lasts (`pause`, `resume`) and Stop interrupts it
 // (`signal`), which withdraws the card. A form that asks for a credential is declined unseen, a malformed one refused
 // with `-32602`; the owner and the agent both learn of every one, in `details.elicitation` and a diagnostic line.
-// Nothing here keeps what the owner entered: the content goes from the answer to the server and nowhere else.
+// Nothing here keeps what the owner entered: the content goes from the answer to the server and nowhere else. A Modern
+// server's form, on a call that defers (`defers`), is kept for later instead (`McpQuestions.defer`): the hook answers
+// `defer`, and the call waits for the owner after its round (`./exchange.ts`).
 import {
   answeredFields,
   decodeElicitParams,
@@ -38,6 +40,8 @@ import type { Mutable } from "effect/Types";
 import type { McpElicitationDetail } from "./details.ts";
 import {
   MCP_ELICITATION_CAP_REASON,
+  MCP_QUESTION_UNRECORDED_REASON,
+  MCP_RUN_STOPPED_REASON,
   type McpQuestionAsk,
   type McpQuestionOutcome,
   type McpQuestionsService,
@@ -60,6 +64,11 @@ export type ElicitingCall = {
   readonly source?: McpElicitationSource | undefined;
   /** Aborts when Stop does: a question waiting then is withdrawn. */
   readonly signal: AbortSignal | undefined;
+  /**
+   * Whether a Modern server's form is kept for later (`ctx.answers.defer`): the call's round ends as `input_required`,
+   * and the call waits for the owner after it. Otherwise it is answered live, as a Legacy one.
+   */
+  readonly defers?: boolean | undefined;
   /** Stop the call's own clock while a question waits, and start it again. */
   readonly pause: Effect.Effect<void>;
   readonly resume: Effect.Effect<void>;
@@ -92,7 +101,7 @@ const cutNotes = (message: string): ReadonlyArray<string> =>
   messageIsCut(message) ? ["the message was cut at 4,000 characters"] : [];
 
 /** `content` for the wire, whose lists are mutable. */
-const mutableContent = (content: ElicitationContent) =>
+export const mutableContent = (content: ElicitationContent) =>
   Record.map(content, (value) =>
     Predicate.isString(value) || Predicate.isNumber(value) || Predicate.isBoolean(value)
       ? value
@@ -196,8 +205,6 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
     }
 
-    await Effect.runPromise(call.pause);
-
     const question: Mutable<McpQuestionAsk> = {
       key: request.key,
       callId: call.callId,
@@ -211,13 +218,35 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     if (call.source !== undefined) question.source = call.source;
 
+    // A Modern server's question is kept for later: the round ends, and the call waits for the owner after it.
+    if (request.mode === "deferrable" && call.defers === true) {
+      const kept = await Effect.runPromise(call.questions.defer(question));
+
+      if (kept === "deferred") return { kind: "defer" };
+
+      note(
+        "cancel",
+        "cloudpid",
+        [],
+        kept === "capped" ? MCP_ELICITATION_CAP_REASON : MCP_QUESTION_UNRECORDED_REASON,
+      );
+
+      return CANCELLED;
+    }
+
+    await Effect.runPromise(call.pause);
+
     const outcome: McpQuestionOutcome = await Effect.runPromise(
       call.questions.ask(question),
       call.signal === undefined ? undefined : { signal: call.signal },
     )
       .catch(
         // Stop interrupted the wait (the question is withdrawn): nobody answers, the server may ask again.
-        (): McpQuestionOutcome => ({ action: "cancel", by: "cloudpid", reason: "Run stopped" }),
+        (): McpQuestionOutcome => ({
+          action: "cancel",
+          by: "cloudpid",
+          reason: MCP_RUN_STOPPED_REASON,
+        }),
       )
       .finally(() => Effect.runPromise(call.resume));
 
@@ -236,7 +265,11 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   };
 
   const onInput: Eliciting["onInput"] = (request) => {
-    const running = answerInput(request);
+    // A Modern server's question has no error to be told: a form cloudpid cannot take is a `cancel` there, never a
+    // refusal, which would end the call (`docs/architecture/mcp-server-requests.md` → Elicitation requests, Answers).
+    const running = answerInput(request).then((answer) =>
+      request.mode === "deferrable" && answer.kind === "refused" ? CANCELLED : answer,
+    );
 
     answering.add(running);
     void running.finally(() => answering.delete(running)).catch(() => undefined);

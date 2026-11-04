@@ -37,11 +37,11 @@ const NAME_FORM: JsonObject = {
   required: ["name"],
 };
 
-const ask = (requestedSchema: JsonObject) => ({
+const ask = (requestedSchema: JsonObject, mode: "live" | "deferrable" = "live") => ({
   key: "7",
   kind: "elicitation" as const,
   params: { message: "Who are you?", requestedSchema },
-  mode: "live" as const,
+  mode,
 });
 
 const DONE = McpHostCompleted.make({
@@ -103,10 +103,10 @@ const setup = (
 
 /** A host that asks `schema` through the call's hooks, records what the server was answered, then completes. */
 const asking =
-  (schema: JsonObject, seen: Answer[]): FakeMcpAnswer =>
+  (schema: JsonObject, seen: Answer[], mode: "live" | "deferrable" = "live"): FakeMcpAnswer =>
   async (_input, hooks) => {
     const reply = await hooks
-      .onInput?.(ask(schema))
+      .onInput?.(ask(schema, mode))
       .catch(() => ({ kind: "refused", message: "rejected" }) as const);
 
     if (reply !== undefined) seen.push(reply);
@@ -452,6 +452,22 @@ describe("a Legacy server's elicitation", () => {
         message: expect.stringContaining("unsupported elicitation form: "),
       }),
     ]);
+  });
+
+  it("is cancelled, never refused, when a Modern server's form is malformed", async () => {
+    const { host, tools, session: opening } = setup();
+    const seen: Answer[] = [];
+
+    host.answer(
+      asking({ type: "object", properties: { nested: { type: "object" } } }, seen, "deferrable"),
+    );
+
+    const session = await opening;
+
+    await session.start(tools);
+    await session.prompt("go");
+
+    expect(seen).toEqual([{ kind: "answered", result: { action: "cancel" } }]);
   });
 
   it("stops the call's timeout while the owner answers", async () => {

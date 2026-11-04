@@ -818,7 +818,8 @@ export const ApprovalRequests = Schema.Struct({
  * The questions MCP servers wait on the owner to answer (`docs/architecture/mcp-server-requests.md` → Elicitation
  * requests), oldest first. A client shows a card for each outside the chat, and answers with `mcp_elicitation_answer`.
  * Sent after `hello` on every connect (an empty list too) and in full to every client whenever they change. A Legacy
- * server's question lives only as long as its call waits (ADR-0037): it does not outlive an eviction or a restart.
+ * server's question lives only as long as its call waits (ADR-0037): it does not outlive an eviction or a restart. A
+ * Modern server's (`waits: "owner"`) is kept in the Session's storage, and does.
  */
 export const McpElicitationRequests = Schema.Struct({
   type: Schema.Literal("mcp_elicitation_requests"),

@@ -13,7 +13,8 @@
 //
 // Every tool is `replay: "safe"` with the `mcp.sent` memo, written before the request leaves (`docs/architecture/
 // mcp-server-requests.md` → The waiting-question record): a rerun after a restart that finds it settles the call as
-// interrupted and never sends it again. The request and the wait are `./exchange.ts`'s, which the resource tools
+// interrupted and never sends it again, unless a Modern server's round of questions waits (`mcp.wait.<r>`), which the
+// rerun waits for again. The request and the wait are `./exchange.ts`'s, which the resource tools
 // (`./resources.ts`) share.
 import {
   type McpExposure,
@@ -62,6 +63,13 @@ export { MCP_CALL_SLACK_MS, MCP_STREAM_IDLE_MS } from "./exchange.ts";
 export type { McpCallOrigin, McpToolOptions } from "./exchange.ts";
 
 export const extensionName = "mcp";
+
+/**
+ * The host feature a call keeps its Modern server's questions for later with: a host that lists it answers a call that
+ * defers `InputRequired`, and resumes it (`docs/architecture/mcp-server-requests.md` → Questions). Without it, a Modern
+ * server's form is answered live.
+ */
+export const MCP_RESUME_FEATURE = "resume";
 
 /**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
@@ -144,6 +152,7 @@ const toolFor = (
   options: McpToolOptions,
   readServer: string | undefined,
   appHtml: boolean,
+  defers: boolean,
 ): ToolRegistration => {
   const base = baseDetails(server.name, tool);
   const app = options.apps !== undefined && appUriOfMeta(tool._meta) !== undefined;
@@ -156,6 +165,7 @@ const toolFor = (
     tool: name,
     details: base,
     subject: "tool",
+    defers,
   };
 
   return {
@@ -263,6 +273,9 @@ export const mcpExtension = (
       ? normalizeMcpName(server.name)
       : undefined;
 
+  // A Modern server's questions wait for the owner past their round only on a host that resumes the call.
+  const defers = build.features?.includes(MCP_RESUME_FEATURE) === true;
+
   const tools = Arr.flatMap(build.servers, (server) => {
     const listed = listedTools(server);
 
@@ -298,6 +311,7 @@ export const mcpExtension = (
               options,
               readServerOf(server),
               appHtml,
+              defers,
             ),
           );
     });

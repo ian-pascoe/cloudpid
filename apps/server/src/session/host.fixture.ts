@@ -77,7 +77,11 @@ import type {
   WaitRequest,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
-import { emptyMcpExtension, type McpHostClientService } from "@cloudpid/extensions/mcp";
+import {
+  emptyMcpExtension,
+  type McpHostClientService,
+  type McpQuestionsService,
+} from "@cloudpid/extensions/mcp";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
   createModels,
@@ -699,9 +703,16 @@ export class TestSession extends DurableObject {
       credentials: [],
       // The 10-minute bound, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`).
       waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
+      encryptionKey: SECRETS_KEY,
+      session: this.ctx.id.toString(),
     });
 
     return this.#questions;
+  }
+
+  /** The Session's MCP questions, for a subclass that builds MCP tools of its own. */
+  protected mcpQuestionsService(): McpQuestionsService {
+    return this.#mcpQuestions().service;
   }
 
   /**
@@ -1002,7 +1013,14 @@ export class TestSession extends DurableObject {
                   Effect.service(Approvals),
                 ]),
                 ([held, handoffs, approvals]) =>
-                  onIdle(held, browser, handoffs, approvals, this.#mcpSignIns().service),
+                  onIdle(
+                    held,
+                    browser,
+                    handoffs,
+                    approvals,
+                    this.#mcpSignIns().service,
+                    this.#mcpQuestions().service,
+                  ),
               ),
             }).pipe(
               Layer.provide(

@@ -6,6 +6,8 @@ export { CodemodeSandboxDurableObject as CodemodeSandbox } from "@earendil-works
 
 export { TestCodemodeSession } from "./codemode.fixture.ts";
 
+export { TestMcpCodemodeSession } from "./mcp-codemode.fixture.ts";
+
 export { TestWorkspaceSession } from "./session.fixture.ts";
 
 export { TestWorkspace, WorkspaceServiceProxy } from "./workerd.fixture.ts";

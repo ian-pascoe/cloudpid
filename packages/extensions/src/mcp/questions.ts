@@ -1,9 +1,10 @@
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 // The questions an MCP server asks the owner during a call (`docs/architecture/mcp-server-requests.md` → Questions, The
-// waiting-question record, Elicitation requests; ADR-0037, ADR-0041): what a Legacy server's elicitation form becomes
-// in the Session. A form waits here, in memory, for the owner's answer from any client: the first answer wins, a late
-// one is refused. It lives only as long as its call waits (ADR-0037), so nothing survives an eviction: a new instance
-// finds the records of the questions the old one left waiting and expires them ("the server's call ended").
+// waiting-question record, Elicitation requests; ADR-0037, ADR-0041). A Legacy server's elicitation form waits here,
+// in memory, for the owner's answer from any client: the first answer wins, a late one is refused. It lives only as
+// long as its call waits (ADR-0037), so nothing survives an eviction: a new instance finds the records of the questions
+// the old one left waiting and expires them ("the server's call ended"). A Modern server's form is kept for later
+// instead (`defer`, in `deferred-questions.ts`), and outlives the instance.
 //
 // - **Never a value.** The owner's answer goes from `answer` to the waiting call through a `Deferred`, in memory, and
 //   nowhere else: the waiting record holds the form the owner saw, and the settled record the names of the fields
@@ -11,120 +12,67 @@
 //   placeholder) is bounced to the card, nothing kept.
 // - **One record per question** in the Session's storage (an implementation word): `mcp-question:waiting` lists the
 //   questions waiting (small: who asks, which call, when), and each question that ended leaves a settled record
-//   `mcp-question:s:<id>`, the newest `MCP_QUESTION_RECORDS` kept, with the message and form the owner was shown
-//   (redacted of held Secrets). The full request is in memory only. Nothing reads the records yet: the call card and
-//   `/export` lines that will (#569) are their reader.
+//   (`question-records.ts`) with the message and form the owner was shown (redacted of held Secrets). The full request
+//   is in memory only. Nothing reads the records yet: the call card and `/export` lines that will (#569) are their
+//   reader.
 // - **The notification** is told of the first question a call waits on, and of a later one only after 2 min with none
 //   waiting for that call.
+import { MCP_ELICITATION_WAIT_MS } from "@cloudpid/mcp/types";
 import {
-  answeredFields,
-  MCP_ELICITATION_WAIT_MS,
-  MCP_ELICITATIONS_PER_CALL,
-  validateElicitation,
-} from "@cloudpid/mcp/types";
-import { holdsPlaceholder } from "../secrets/references.ts";
-import type {
-  ElicitationContent,
-  ElicitationForm,
-  McpElicitationRequest,
-  McpElicitationSource,
-} from "@cloudpid/protocol";
+  createDeferredQuestions,
+  type McpDeferredAnswer,
+  type McpDeferredRound,
+  type McpQuestionVault,
+} from "./deferred-questions.ts";
+import {
+  cancelled,
+  questionBasics,
+  MCP_CALL_ENDED_REASON,
+  MCP_ELICITATION_CAP_REASON,
+  MCP_QUESTION_UNRECORDED_REASON,
+  MCP_RUN_STOPPED_REASON,
+  type McpQuestionAnswer,
+  type McpQuestionAsk,
+  type McpQuestionOutcome,
+  type McpQuestionRecord,
+  McpQuestionsError,
+  type McpQuestionStorage,
+  type McpQuestionUnseen,
+  questionId,
+} from "./question-records.ts";
+import type { McpElicitationRequest } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
-import * as Record from "effect/Record";
-import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
-import * as Struct from "effect/Struct";
 import type { Mutable } from "effect/Types";
 
-/** The Durable Object's synchronous key-value storage, as the questions use it. */
-export type McpQuestionStorage = {
-  get<T>(key: string): T | undefined;
-  put<T>(key: string, value: T): void;
-  delete(key: string): boolean;
-};
+export {
+  MCP_DEFERRED_DEADLINE_MS,
+  type McpDeferredAnswer,
+  type McpDeferredRound,
+  type McpQuestionVault,
+} from "./deferred-questions.ts";
 
-/** How long a call's later question waits to be told to the owner: after this long with none waiting, in ms. */
-export const MCP_QUESTION_RENOTIFY_MS = 2 * 60 * 1000;
-
-/** How many settled records are kept; the oldest go first. */
-export const MCP_QUESTION_RECORDS = 100;
-
-/** The most bytes a settled record holds (past it, its form is left out). */
-const MAX_RECORD_BYTES = 64 * 1024;
-
-/** Why a request past the call's cap of `MCP_ELICITATIONS_PER_CALL` is cancelled. */
-export const MCP_ELICITATION_CAP_REASON = "elicitation limit for this call reached";
+export {
+  MCP_CALL_ENDED_REASON,
+  MCP_ELICITATION_CAP_REASON,
+  MCP_QUESTION_RECORDS,
+  MCP_QUESTION_RENOTIFY_MS,
+  MCP_QUESTION_UNRECORDED_REASON,
+  MCP_RUN_STOPPED_REASON,
+  McpQuestionsError,
+  type McpQuestionAnswer,
+  type McpQuestionAsk,
+  type McpQuestionOutcome,
+  type McpQuestionRecord,
+  type McpQuestionStorage,
+  type McpQuestionUnseen,
+} from "./question-records.ts";
 
 const WAITING_KEY = "mcp-question:waiting";
-const SETTLED_KEY = "mcp-question:settled";
-const settledKey = (id: string) => `mcp-question:s:${id}`;
-
-/** An answer could not be taken: the question ended, or the answer is not valid for its form. */
-export class McpQuestionsError extends Schema.TaggedError<
-  McpQuestionsError,
-  { readonly brand: unique symbol }
->()("McpQuestionsError", { message: Schema.String }) {}
-
-/** A question as the call that gets it asks it: what the owner is shown, already plain text. */
-export type McpQuestionAsk = {
-  /** The question's key within its call: the server's request. */
-  readonly key: string;
-  /** The call that waits for the answer. */
-  readonly callId: string;
-  readonly conversationId: McpElicitationRequest["conversationId"];
-  /** The server's configured name, and where its definition is. */
-  readonly server: string;
-  readonly source?: McpElicitationSource;
-  /** The model-facing name of the tool the call is to. */
-  readonly tool: string;
-  readonly message: string;
-  readonly form: ElicitationForm;
-  readonly notes: ReadonlyArray<string>;
-};
-
-/** How a question ended. An accepted form's `content` is in memory only: it goes to the server and nowhere else. */
-export type McpQuestionOutcome =
-  | { readonly action: "accept"; readonly by: "owner"; readonly content: ElicitationContent }
-  | {
-      readonly action: "decline" | "cancel";
-      readonly by: "owner" | "cloudpid";
-      readonly reason?: string;
-    };
-
-/** A form cloudpid ended before showing it: a credential, or a malformed form. */
-export type McpQuestionUnseen = Omit<McpQuestionAsk, "key" | "form" | "notes" | "source"> & {
-  readonly form?: ElicitationForm;
-  readonly notes?: ReadonlyArray<string>;
-  readonly action: "decline" | "cancel";
-  readonly reason: string;
-};
-
-/** The settled record of a question (`docs/architecture/mcp-server-requests.md` → Elicitation requests, Records). Never a value. */
-export type McpQuestionRecord = {
-  readonly id: string;
-  readonly callId: string;
-  readonly conversationId: McpElicitationRequest["conversationId"];
-  readonly server: string;
-  readonly tool: string;
-  readonly mode: "form";
-  /** The message as the owner was shown it: redacted of the Secrets the Session held. */
-  readonly message: string;
-  readonly form?: ElicitationForm;
-  readonly notes: ReadonlyArray<string>;
-  readonly action: "accept" | "decline" | "cancel";
-  readonly by: "owner" | "cloudpid";
-  readonly reason?: string;
-  /** The names of the fields the owner answered; no value. */
-  readonly fields: ReadonlyArray<string>;
-  readonly askedAt: number;
-  readonly settledAt: number;
-};
 
 /** A question waiting, as the storage keeps it: who asks and when, so a new instance can expire it. */
 type WaitingEntry = {
@@ -151,9 +99,7 @@ export type McpQuestionsService = {
    */
   readonly answer: (
     id: string,
-    answer:
-      | { readonly action: "accept"; readonly content: ElicitationContent }
-      | { readonly action: "decline" | "cancel" },
+    answer: McpQuestionAnswer,
   ) => Effect.Effect<void, McpQuestionsError>;
   /** The server stopped waiting for question `key` of call `callId`: withdraw its card. */
   readonly withdraw: (callId: string, key: string, reason: string) => Effect.Effect<void>;
@@ -173,6 +119,42 @@ export type McpQuestionsService = {
   readonly expireStale: Effect.Effect<void>;
   /** The settled records, newest last. */
   readonly records: Effect.Effect<ReadonlyArray<McpQuestionRecord>>;
+  /** Whether a Modern server's form can be kept for later: the service has a vault for the answers. */
+  readonly defers: boolean;
+  /**
+   * Keep `ask`, a Modern server's form, for the call's round: stored, and shown once the round is (`showRound`). It
+   * counts toward the call's cap like any request (`"capped"`); a storage that cannot take it (a replaced Session)
+   * leaves nothing kept (`"unrecorded"`), and the server is to be told `cancel`.
+   */
+  readonly defer: (ask: McpQuestionAsk) => Effect.Effect<"deferred" | "capped" | "unrecorded">;
+  /**
+   * Store the call's round whole: its `ResumeState` beside the questions `defer` kept, not shown yet. Fails when the
+   * storage cannot take it.
+   */
+  readonly commitRound: (round: McpDeferredRound) => Effect.Effect<void, McpQuestionsError>;
+  /**
+   * Show the call's stored round, once `mcp.wait.<r>` is written: its cards show, and the owner is told as `ask` tells
+   * (a rerun's round, shown before, is not told again). Fails when the storage cannot take it.
+   */
+  readonly showRound: (callId: string) => Effect.Effect<void, McpQuestionsError>;
+  /** The round the call stored, when it did: a rerun of the call waits for it again. */
+  readonly deferredRound: (callId: string) => Effect.Effect<McpDeferredRound | undefined>;
+  /**
+   * Wait until every question of the call's round has its answer, and give them, accepted content opened. An answer the
+   * owner gave while no call waited is taken at once. An interrupted wait (Stop) withdraws the questions and drops the
+   * round; one whose sealed answer cannot be opened is a `cancel` of cloudpid's own. `undefined`: the call has no round
+   * stored (it was settled meanwhile).
+   */
+  readonly awaitRound: (
+    callId: string,
+  ) => Effect.Effect<ReadonlyArray<McpDeferredAnswer> | undefined>;
+  /**
+   * The round's resume is on its way (`mcp.resumed.<r>` is written): its questions are settled, their sealed answers
+   * dropped, and the round forgotten.
+   */
+  readonly endRound: (callId: string) => Effect.Effect<void>;
+  /** Withdraw every deferred round no call in this instance waits for: their calls ended with an earlier instance. */
+  readonly dropAbandoned: Effect.Effect<void>;
 };
 
 /** The Session's MCP questions. */
@@ -198,17 +180,11 @@ export type McpQuestionsOptions = {
   readonly holdsSecret: (text: string) => Effect.Effect<boolean>;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
-};
-
-/** What a call has asked, and whether the owner was told. */
-type CallState = {
-  /** Requests the call made, counted toward its cap: a question, or a form cloudpid ended unseen. */
-  asked: number;
-  /** Requests turned away at the cap, to give their records an id. */
-  capped: number;
-  waiting: number;
-  notified: boolean;
-  idleSince: number;
+  /**
+   * Where an accepted Modern form's content is sealed until its resume. Without one, nothing is deferred: a Modern
+   * server's form is answered live, as a Legacy one.
+   */
+  readonly vault?: McpQuestionVault | undefined;
 };
 
 type Waiting = {
@@ -218,94 +194,28 @@ type Waiting = {
   readonly outcome: Deferred.Deferred<McpQuestionOutcome>;
 };
 
-/** A question's id: unique within the Session, and within its call whatever the server's own request ids are. */
-const questionId = (callId: string, sequence: number | string) => `${callId}:${sequence}`;
-
-/** The strings an accepted form's content holds, to check each against the Session's Secrets. */
-const stringsOf = (content: ElicitationContent): ReadonlyArray<readonly [string, string]> => {
-  const found: Array<readonly [string, string]> = [];
-
-  for (const [name, value] of Record.toEntries(content)) {
-    if (Predicate.isString(value)) found.push([name, value]);
-    else if (!Predicate.isNumber(value) && !Predicate.isBoolean(value)) {
-      for (const item of value) found.push([name, item]);
-    }
-  }
-
-  return found;
-};
-
-const cancelled = (reason: string): McpQuestionOutcome => ({
-  action: "cancel",
-  by: "cloudpid",
-  reason,
-});
-
 /** The Session's MCP questions over its storage. Synchronous: the tools that ask are built before the runtime. */
 export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsService => {
   const { storage, announce } = options;
   const waitMs = options.waitMs ?? MCP_ELICITATION_WAIT_MS;
   const waiting = new Map<string, Waiting>();
-  const calls = new Map<string, CallState>();
+  const basics = questionBasics(options);
+  const { keep } = basics;
 
-  const pending = Effect.sync(() => Arr.map([...waiting.values()], (held) => held.request));
+  const tell: Effect.Effect<void> = Effect.suspend(() => pending.pipe(Effect.flatMap(announce)));
 
-  const tell = Effect.suspend(() => pending.pipe(Effect.flatMap(announce)));
+  const deferred = createDeferredQuestions({ storage, vault: options.vault, basics, tell });
+
+  const pending = Effect.sync(() => [
+    ...Arr.map([...waiting.values()], (held) => held.request),
+    ...deferred.shown(),
+  ]);
 
   const entries = (): ReadonlyArray<WaitingEntry> => storage.get<WaitingEntry[]>(WAITING_KEY) ?? [];
 
   const putEntries = (next: ReadonlyArray<WaitingEntry>) => {
     if (next.length === 0) storage.delete(WAITING_KEY);
     else storage.put(WAITING_KEY, next);
-  };
-
-  /** Keep `record`, and drop the oldest past the bound. */
-  const keepNow = (record: McpQuestionRecord) => {
-    const bytes = JSON.stringify(record).length;
-
-    const stored: McpQuestionRecord =
-      bytes <= MAX_RECORD_BYTES || record.form === undefined
-        ? record
-        : {
-            ...Struct.omit(record, ["form"]),
-            notes: [...record.notes, "the form was left out: over 64 KiB"],
-          };
-
-    const ids = [
-      ...(storage.get<string[]>(SETTLED_KEY) ?? []).filter((id) => id !== record.id),
-      record.id,
-    ];
-
-    const dropped = ids.slice(0, Math.max(0, ids.length - MCP_QUESTION_RECORDS));
-
-    storage.put(settledKey(record.id), stored);
-
-    for (const id of dropped) storage.delete(settledKey(id));
-
-    storage.put(SETTLED_KEY, ids.slice(dropped.length));
-  };
-
-  /**
-   * Keep `record`. A storage that fails loses the record, never the answer, and leaves no card behind: it is logged
-   * (the cause holds no value, only storage's own error).
-   */
-  const keep = (record: McpQuestionRecord) =>
-    Effect.try(() => keepNow(record)).pipe(
-      Effect.catch((cause) => Effect.logWarning("Could not keep an MCP question's record", cause)),
-    );
-
-  const callOf = (callId: string): CallState => {
-    const held = calls.get(callId) ?? {
-      asked: 0,
-      capped: 0,
-      waiting: 0,
-      notified: false,
-      idleSince: 0,
-    };
-
-    calls.set(callId, held);
-
-    return held;
   };
 
   /** End question `id` with `outcome`: written to its record, withdrawn from the clients, handed to the waiting call. */
@@ -321,129 +231,45 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       const now = yield* Clock.currentTimeMillis;
       const { request, entry } = held;
 
-      const state = callOf(request.callId);
-
-      state.waiting = Math.max(0, state.waiting - 1);
-
-      if (state.waiting === 0) state.idleSince = now;
-
-      const record: Mutable<McpQuestionRecord> = {
-        id,
-        callId: request.callId,
-        conversationId: request.conversationId,
-        server: request.server,
-        tool: request.tool,
-        mode: "form",
-        message: request.message,
-        form: request.form,
-        notes: request.notes,
-        action: outcome.action,
-        by: outcome.by,
-        // The names of the fields answered: never a value.
-        fields: outcome.action === "accept" ? answeredFields(request.form, outcome.content) : [],
-        askedAt: entry.askedAt,
-        settledAt: now,
-      };
-
-      if (outcome.action !== "accept" && outcome.reason !== undefined) {
-        record.reason = outcome.reason;
-      }
+      basics.stopWaiting(request.callId, 1, now);
 
       yield* Effect.try(() => putEntries(entries().filter((other) => other.id !== id))).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("Could not update the waiting MCP questions", cause),
         ),
       );
-      yield* keep(record);
+      yield* keep(
+        basics.settledOf(
+          request,
+          {
+            action: outcome.action,
+            by: outcome.by,
+            reason: outcome.action === "accept" ? undefined : outcome.reason,
+            // The names of the fields answered: never a value.
+            fields:
+              outcome.action === "accept"
+                ? basics.answeredFields(request.form, outcome.content)
+                : [],
+          },
+          entry.askedAt,
+          now,
+        ),
+      );
       yield* Deferred.succeed(held.outcome, outcome);
       yield* tell;
 
       return true;
     });
 
-  /** What a record keeps of text the owner was shown or would have been: redacted of the Secrets the Session holds. */
-  const shownOf = (ask: {
-    readonly message: string;
-    readonly form?: ElicitationForm | undefined;
-    readonly notes?: ReadonlyArray<string> | undefined;
-    readonly reason?: string;
-  }) =>
-    options.redact({
-      message: ask.message,
-      form: ask.form,
-      notes: ask.notes ?? [],
-      reason: ask.reason,
-    });
-
-  /** A request turned away at the call's cap, recorded. */
-  const turnedAway = (
-    ask: Omit<McpQuestionAsk, "key" | "form" | "notes" | "source"> & {
-      readonly form?: ElicitationForm;
-      readonly notes?: ReadonlyArray<string>;
-    },
-  ) =>
-    Effect.gen(function* () {
-      const state = callOf(ask.callId);
-      const now = yield* Clock.currentTimeMillis;
-      const reason = MCP_ELICITATION_CAP_REASON;
-      const shown = yield* shownOf({ ...ask, reason });
-
-      state.capped += 1;
-
-      const record: Mutable<McpQuestionRecord> = {
-        id: questionId(ask.callId, `cap${state.capped}`),
-        callId: ask.callId,
-        conversationId: ask.conversationId,
-        server: ask.server,
-        tool: ask.tool,
-        mode: "form",
-        message: shown.message,
-        notes: shown.notes,
-        action: "cancel",
-        by: "cloudpid",
-        reason,
-        fields: [],
-        askedAt: now,
-        settledAt: now,
-      };
-
-      if (shown.form !== undefined) record.form = shown.form;
-
-      yield* keep(record);
-
-      return { action: "cancel", by: "cloudpid", reason } satisfies McpQuestionOutcome;
-    });
-
   const ask = (question: McpQuestionAsk): Effect.Effect<McpQuestionOutcome> =>
     Effect.gen(function* () {
-      const state = callOf(question.callId);
+      const sequence = yield* basics.count(question);
 
-      if (state.asked >= MCP_ELICITATIONS_PER_CALL) return yield* turnedAway(question);
+      if (sequence === undefined) return cancelled(MCP_ELICITATION_CAP_REASON);
 
-      state.asked += 1;
-
-      const id = questionId(question.callId, state.asked);
+      const id = questionId(question.callId, sequence);
       const now = yield* Clock.currentTimeMillis;
-
-      const shown = yield* options.redact({
-        message: question.message,
-        form: question.form,
-        notes: question.notes,
-      });
-
-      const request: Mutable<McpElicitationRequest> = {
-        id,
-        callId: question.callId,
-        conversationId: question.conversationId,
-        server: question.server,
-        tool: question.tool,
-        message: shown.message,
-        form: shown.form,
-        notes: shown.notes,
-        deadline: now + waitMs,
-      };
-
-      if (question.source !== undefined) request.source = question.source;
+      const request = yield* basics.requestOf(question, id, now + waitMs);
 
       const entry: WaitingEntry = {
         id,
@@ -458,45 +284,25 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       const stored = yield* Effect.try(() => putEntries([...entries(), entry])).pipe(Effect.option);
 
       if (Option.isNone(stored)) {
-        const reason = "cloudpid could not record the question";
+        const reason = MCP_QUESTION_UNRECORDED_REASON;
 
-        yield* keep({
-          id,
-          callId: question.callId,
-          conversationId: question.conversationId,
-          server: question.server,
-          tool: question.tool,
-          mode: "form",
-          message: shown.message,
-          form: shown.form,
-          notes: shown.notes,
-          action: "cancel",
-          by: "cloudpid",
-          reason,
-          fields: [],
-          askedAt: now,
-          settledAt: now,
-        });
+        yield* keep(
+          basics.settledOf(
+            request,
+            { action: "cancel", by: "cloudpid", reason, fields: [] },
+            now,
+            now,
+          ),
+        );
 
         return cancelled(reason);
       }
 
       const outcome = yield* Deferred.make<McpQuestionOutcome>();
 
-      const notifies =
-        options.notify !== undefined &&
-        (!state.notified ||
-          (state.waiting === 0 && now - state.idleSince >= MCP_QUESTION_RENOTIFY_MS));
-
-      state.waiting += 1;
-      state.notified = true;
       waiting.set(id, { key: question.key, request, entry, outcome });
       yield* tell;
-
-      // In the background: the push may take seconds, and the question must not wait on it.
-      if (notifies && options.notify !== undefined) {
-        yield* Effect.forkDetach(options.notify({ server: question.server }));
-      }
+      yield* basics.startWaiting(question.callId, question.server, 1, now);
 
       yield* Deferred.await(outcome).pipe(
         Effect.timeoutOption(waitMs),
@@ -506,7 +312,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
             onSome: () => Effect.void,
           }),
         ),
-        Effect.onInterrupt(() => finish(id, cancelled("Run stopped"))),
+        Effect.onInterrupt(() => finish(id, cancelled(MCP_RUN_STOPPED_REASON))),
       );
 
       return yield* Deferred.await(outcome);
@@ -517,6 +323,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       const held = waiting.get(id);
 
       if (held === undefined) {
+        if (yield* deferred.answer(id, given)) return;
+
         return yield* McpQuestionsError.make({ message: "This request ended" });
       }
 
@@ -526,29 +334,10 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         return;
       }
 
-      const checked = validateElicitation(held.request.form, given.content);
-
-      if (Result.isFailure(checked)) {
-        const [first] = Record.toEntries(checked.failure);
-
-        return yield* McpQuestionsError.make({
-          message:
-            first === undefined
-              ? "The answer does not fit the form"
-              : first[0] === ""
-                ? first[1]
-                : `${first[0]}: ${first[1]}`,
-        });
-      }
-
-      for (const [name, text] of stringsOf(checked.success)) {
-        if (holdsPlaceholder(text) || (yield* options.holdsSecret(text))) {
-          return yield* McpQuestionsError.make({ message: `${name}: matches one of your Secrets` });
-        }
-      }
+      const content = yield* basics.checkedContent(held.request.form, given.content);
 
       // The first answer wins: a question another client answered meanwhile is gone.
-      const taken = yield* finish(id, { action: "accept", by: "owner", content: checked.success });
+      const taken = yield* finish(id, { action: "accept", by: "owner", content });
 
       if (!taken) return yield* McpQuestionsError.make({ message: "This request ended" });
     });
@@ -562,27 +351,22 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
   const settleCall = (callId: string) =>
     Effect.gen(function* () {
-      yield* endWhere((held) => held.request.callId === callId, "the server's call ended");
-      calls.delete(callId);
+      yield* endWhere((held) => held.request.callId === callId, MCP_CALL_ENDED_REASON);
+      yield* deferred.settleCall(callId, MCP_CALL_ENDED_REASON);
+      basics.calls.delete(callId);
     });
 
   const unseen: McpQuestionsService["unseen"] = (form) =>
     Effect.gen(function* () {
-      const state = callOf(form.callId);
+      const sequence = yield* basics.count(form);
 
-      if (state.asked >= MCP_ELICITATIONS_PER_CALL) {
-        yield* turnedAway(form);
-
-        return "capped" as const;
-      }
-
-      state.asked += 1;
+      if (sequence === undefined) return "capped" as const;
 
       const now = yield* Clock.currentTimeMillis;
-      const shown = yield* shownOf(form);
+      const shown = yield* basics.shownOf(form);
 
       const record: Mutable<McpQuestionRecord> = {
-        id: questionId(form.callId, state.asked),
+        id: questionId(form.callId, sequence),
         callId: form.callId,
         conversationId: form.conversationId,
         server: form.server,
@@ -611,9 +395,21 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     answer,
     withdraw: (callId, key, reason) =>
       endWhere((held) => held.request.callId === callId && held.key === key, reason),
-    withdrawServer: (server, reason) => endWhere((held) => held.request.server === server, reason),
+    withdrawServer: (server, reason) =>
+      Effect.andThen(
+        endWhere((held) => held.request.server === server, reason),
+        deferred.withdrawServer(server, reason),
+      ),
     settleCall,
     unseen,
+    defers: options.vault !== undefined,
+    defer: deferred.defer,
+    commitRound: deferred.commitRound,
+    showRound: deferred.showRound,
+    deferredRound: deferred.deferredRound,
+    awaitRound: deferred.awaitRound,
+    endRound: deferred.endRound,
+    dropAbandoned: deferred.dropAbandoned,
     expireStale: Effect.gen(function* () {
       const stale = entries().filter((entry) => !waiting.has(entry.id));
 
@@ -633,7 +429,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
           notes: [],
           action: "cancel",
           by: "cloudpid",
-          reason: "expired: the server's call ended",
+          reason: `expired: ${MCP_CALL_ENDED_REASON}`,
           fields: [],
           askedAt: entry.askedAt,
           settledAt: now,
@@ -647,12 +443,6 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       );
       yield* tell;
     }),
-    records: Effect.sync(() =>
-      Arr.filterMap(storage.get<string[]>(SETTLED_KEY) ?? [], (id) => {
-        const record = storage.get<McpQuestionRecord>(settledKey(id));
-
-        return record === undefined ? Result.failVoid : Result.succeed(record);
-      }),
-    ),
+    records: basics.records,
   } satisfies McpQuestionsService;
 };

@@ -10,7 +10,7 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { ASK_TOOL, legacyStatefulServer } from "@cloudpid/mcp/testing";
+import { ASK_TOOL, legacyStatefulServer, modernServer, rpcMethods } from "@cloudpid/mcp/testing";
 import type { McpApplySet } from "@cloudpid/mcp/types";
 import {
   type ClientMessage,
@@ -324,6 +324,83 @@ describe("a Legacy MCP server's form in a Session", () => {
       "cloudpid cancelled docs's request for input: the owner did not answer in time",
     );
     expect(await inputPushes(stub)).toHaveLength(1);
+    owner.close();
+  });
+});
+
+describe("a Modern MCP server's form in a Session", () => {
+  it("is kept between the call's rounds, answered over the socket, and sent in one resume, sealed meanwhile", async () => {
+    spyOnLogs();
+
+    const environment = `env-${counter++}`;
+    const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+    const asked: Array<Schema.Json> = [];
+    const options = { moreTools: [ASK_TOOL], asked };
+    const server = modernServer(options);
+
+    vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+      server.handle(new Request(input, init)),
+    );
+
+    await host.useRealEngine();
+    await host.apply(SET);
+
+    const stub = env.SESSIONS.getByName(`mcp-${environment}`);
+
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.mcpEnvironment(environment, 1);
+    });
+
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([ask(NAME_FORM), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    const [request] = owner.requests();
+
+    // No countdown: the call waits as long as the owner takes. The far `deadline` is for a client from before `waits`.
+    expect(request).toMatchObject({
+      server: "docs",
+      tool: "mcp__docs__ask",
+      message: "Who?",
+      waits: "owner",
+    });
+    expect(request?.deadline).toBeGreaterThan(Date.now() + 24 * 60 * 60 * 1000);
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "yes",
+      request: request?.id ?? "",
+      action: "accept",
+      content: { name: SENTINEL },
+    });
+
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    // The call went out once, then its one resume with the owner's answer.
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(2);
+    expect(options.asked).toEqual([
+      expect.objectContaining({
+        round: 1,
+        responses: { q1: { action: "accept", content: { name: SENTINEL } } },
+      }),
+    ]);
+    expect(await inputPushes(stub)).toHaveLength(1);
+
+    // Never in the clear: only the server's reply, which the agent reads, repeats it.
+    const dump = await storageDump(stub);
+
+    expect(holders(dump)).toEqual(["request-messages"]);
+    expect(dump.map(([key]) => key).filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
+    expect(JSON.stringify(owner.received)).not.toContain(SENTINEL);
+    expect(logs.join("\n")).not.toContain(SENTINEL);
     owner.close();
   });
 });

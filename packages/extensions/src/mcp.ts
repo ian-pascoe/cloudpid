@@ -62,7 +62,13 @@ import { signsIn } from "./mcp/sign-in-tool.ts";
 import { MCP_RESOURCE_FEATURE } from "./mcp/resources.ts";
 import { appToolsOf } from "./mcp/app-tools.ts";
 import { appHtmlOf, MCP_APP_FEATURE, type McpAppHtmlInput } from "./mcp/apps.ts";
-import { McpBuildServer, mcpExtension, mcpNamespaces, type McpToolOptions } from "./mcp/tools.ts";
+import {
+  MCP_RESUME_FEATURE,
+  McpBuildServer,
+  mcpExtension,
+  mcpNamespaces,
+  type McpToolOptions,
+} from "./mcp/tools.ts";
 
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 
@@ -120,6 +126,7 @@ export { type McpCheckResult, type McpNotices, mcpNotices } from "./mcp/notices.
 export {
   extensionName,
   MCP_CALL_SLACK_MS,
+  MCP_RESUME_FEATURE,
   type McpBuild,
   McpBuildServer,
   type McpCallOrigin,
@@ -137,11 +144,14 @@ export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
 /**
  * The features the tools may use when the host lists them, and do without when it does not: the resource tools need
  * `resources` (`./mcp/resources.ts`), and a host without it gets every other tool as before, none of these; an App
- * tool's call reads `app.htmlHash` of its answer, and `mcp_app_html` is served, only with `app_html` (`./mcp/apps.ts`).
+ * tool's call reads `app.htmlHash` of its answer, and `mcp_app_html` is served, only with `app_html` (`./mcp/apps.ts`);
+ * a call keeps its Modern server's questions for later with `resume` (`./mcp/exchange.ts`), and without it answers
+ * them live.
  */
 export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESOURCE_FEATURE,
   MCP_APP_FEATURE,
+  MCP_RESUME_FEATURE,
 ];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */

@@ -30,10 +30,6 @@
           "auth/iss-normalized",
           "auth/metadata-issuer-mismatch"
         ]
-      },
-      {
-        "reason": "The core has no `input_required` or `resume` yet (the questions slice)",
-        "entries": ["sep-2322-client-request-state"]
       }
     ],
     "server": [

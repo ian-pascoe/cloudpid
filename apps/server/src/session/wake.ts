@@ -3,7 +3,7 @@
 // alarm serves a held Secret's expiry and the browser's keep-alive, so neither needs an alarm of its own.
 import type { ApprovalsService } from "@cloudpid/extensions/approvals";
 import type { BrowserSessionService, BrowserHandoffsService } from "@cloudpid/extensions/browser";
-import type { McpSignInsService } from "@cloudpid/extensions/mcp";
+import type { McpQuestionsService, McpSignInsService } from "@cloudpid/extensions/mcp";
 import type { SecretsService } from "@cloudpid/extensions/secrets";
 import * as Effect from "effect/Effect";
 
@@ -30,9 +30,9 @@ export const wakeAt = (
   });
 
 /**
- * What the object does whenever it settles with no work live: clears the Secret requests, Browser Handoffs and Approval
- * requests a call abandoned, and closes the browser if it fell idle past its keep-alive. Only now is it known that no
- * live run still drives the browser or waits for an answer.
+ * What the object does whenever it settles with no work live: clears the Secret requests, Browser Handoffs, Approval
+ * requests, Sign-in requests and MCP servers' deferred questions a call abandoned, and closes the browser if it fell
+ * idle past its keep-alive. Only now is it known that no live run still drives the browser or waits for an answer.
  */
 export const onIdle = (
   secrets: Pick<SecretsService, "dropAbandoned">,
@@ -40,6 +40,7 @@ export const onIdle = (
   handoffs: Pick<BrowserHandoffsService, "dropAbandoned">,
   approvals: Pick<ApprovalsService, "dropAbandoned">,
   signIns: Pick<McpSignInsService, "dropAbandoned">,
+  questions: Pick<McpQuestionsService, "dropAbandoned">,
 ): Effect.Effect<void> =>
   Effect.all(
     [
@@ -47,6 +48,7 @@ export const onIdle = (
       handoffs.dropAbandoned,
       approvals.dropAbandoned,
       signIns.dropAbandoned,
+      questions.dropAbandoned,
       browser.closeIfIdle,
     ],
     { discard: true },
