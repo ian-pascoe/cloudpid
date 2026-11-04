@@ -356,6 +356,36 @@ const priming = (id: string, retry?: number) =>
 const stream = (...parts: ReadonlyArray<string>) =>
   new Response(parts.join(""), { headers: { "content-type": "text/event-stream" } });
 
+/** An SSE response of `parts`, each its own chunk, or split into chunks of `size` bytes. */
+const chunked = (parts: ReadonlyArray<string>, size?: number) => {
+  const encoded = new TextEncoder();
+  const bytes = encoded.encode(parts.join(""));
+
+  const sizes = size === undefined ? parts.map((part) => encoded.encode(part).byteLength) : [];
+
+  let at = 0;
+  let index = 0;
+
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const length = size ?? sizes[index];
+
+        if (length === undefined || at >= bytes.byteLength) {
+          controller.close();
+
+          return;
+        }
+
+        controller.enqueue(bytes.slice(at, at + length));
+        at += length;
+        index += 1;
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+};
+
 const answerOf = (rpc: RpcBody, text: string) => ({
   jsonrpc: "2.0",
   id: rpc.id ?? null,
@@ -510,6 +540,28 @@ describe.each(legacyBases)("a %s server that ends a call's stream early", (_name
 
     expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
     expect(resumedAfter(server)).toEqual(["a-1"]);
+  });
+
+  it.each([
+    ["a CR after the line's LF", "\n\r"],
+    ["two CRs", "\r\r"],
+  ])("settles a stream whose answer ends in %s, event id or not", async (_what, ending) => {
+    // The SDK's parser holds a CR at the end of a chunk back for a LF, and has nothing to flush it with.
+    for (const id of ["a-1", undefined]) {
+      const server = resumable(
+        base(),
+        (rpc) =>
+          stream(
+            `${id === undefined ? "" : `id: ${id}\n`}event: message\ndata: ${JSON.stringify(answerOf(rpc, "bare CR"))}${ending}`,
+          ),
+        (rpc) => stream(event(answerOf(rpc, "never asked for"))),
+      );
+
+      const { called } = await attempt(server);
+
+      expect(called).toEqual({ content: [{ type: "text", text: "bare CR" }] });
+      expect(resumedAfter(server)).toEqual([]);
+    }
   });
 
   it("is cut when a resume fails twice in a row, and it may have run", async () => {
@@ -726,6 +778,79 @@ describe("the tap's resumed stream", () => {
     const response = await post(wire);
 
     expect(await response.text()).toContain('"own":true');
+  });
+
+  it("keeps a CRLF split between chunks from ending an event", async () => {
+    const wire = tapFetch(
+      async (_input, init) =>
+        init?.method === "GET"
+          ? chunked([
+              'id: a-2\r\ndata: {"jsonrpc":"2.0","id":7,\r',
+              '\ndata: "result":{"own":true}}\r\n\r\n',
+            ])
+          : stream(priming("a-1")),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const text = await (await post(wire)).text();
+
+    expect(text).toContain('"id":7,\ndata: "result":{"own":true}}\n\n');
+    expect(text).not.toContain("may or may not have run");
+  });
+
+  it("splits a stream fed in tiny chunks in time that does not grow with the event", async () => {
+    const big = `data: ${"x".repeat(MiB - 1024)}`;
+    const resumed = () => chunked([`${big}\n\n`, event(answerOf({ id: 7 }, "ok"))], 64);
+
+    const wire = tapFetch(
+      async (_input, init) => (init?.method === "GET" ? resumed() : stream(priming("a-1"))),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const started = performance.now();
+    const text = await (await post(wire)).text();
+    const took = performance.now() - started;
+
+    expect(text).toContain('"id":7');
+    expect(text).not.toContain("over 1 MiB");
+    // Splitting what is held again for every chunk takes seconds here; splitting what is new takes tens of ms.
+    expect(took).toBeLessThan(1500);
+  });
+
+  it("ends a GET stream at an event over 1 MiB that arrives whole in one chunk", async () => {
+    let ended = false;
+
+    const wire = tapFetch(
+      async () => chunked([`data: ${"x".repeat(MiB + 1)}\n\n`, "data: after\n\n"]),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+      {
+        response: () => undefined,
+        retried: () => undefined,
+        get: (e) => void ("ended" in e && (ended = true)),
+      },
+    );
+
+    const response = await wire(ENDPOINT, { method: "GET" });
+
+    expect(await response.text()).toBe("");
+    expect(ended).toBe(true);
+  });
+
+  it("holds a GET stream fed in tiny chunks to time that does not grow with the event", async () => {
+    const wire = tapFetch(
+      async () => chunked([`data: ${"x".repeat(MiB - 1024)}`], 64),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const started = performance.now();
+    const text = await (await wire(ENDPOINT, { method: "GET" })).text();
+
+    expect(text.length).toBeGreaterThan(MiB - 2048);
+    expect(performance.now() - started).toBeLessThan(1500);
   });
 
   it("is not opened once the request is aborted while it waits", async () => {

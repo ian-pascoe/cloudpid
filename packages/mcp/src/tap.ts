@@ -347,26 +347,85 @@ const MAX_RESUME_MS = 10_000;
 const DEFAULT_RESUME_MS = 1000;
 
 /**
- * `text`'s whole SSE events, and what follows the last one. A blank line ends an event, whichever of CRLF, LF and CR
- * ends its lines (WHATWG HTML, server-sent events), so the events come back with LF only. A CR at the end may be the
- * start of a CRLF, so it stays in the rest, for the next chunk to settle, unless `final`: the stream ended.
+ * Splits an SSE stream's text into its events as it arrives, doing work only for the new text (a stream may be fed in
+ * tiny chunks). A blank line ends an event, whichever of CRLF, LF and CR ends its lines (WHATWG HTML, server-sent
+ * events), so the events come back with LF only. A CR at the end of a chunk may be the start of a CRLF, so it is held
+ * for the next chunk to settle, unless the stream ended (`final`). The bytes of the event being read, and of each one
+ * that ends, are counted against `limit`.
  */
-const splitEvents = (text: string, final = false) => {
-  const carry = !final && text.endsWith("\r") ? "\r" : "";
+class EventSplitter {
+  /** Whether an event (the one being read, or one that ended) was over `limit` bytes. */
+  over = false;
 
-  const events = text
-    .slice(0, text.length - carry.length)
-    .replace(/\r\n?/g, "\n")
-    .split("\n\n");
+  private readonly limit: number;
+  private parts: Array<string> = [];
+  private bytes = 0;
+  private lineEnd = false;
+  private heldCr = false;
 
-  const rest = (events.pop() ?? "") + carry;
+  constructor(limit: number) {
+    this.limit = limit;
+  }
 
-  return { events, rest };
-};
+  /** Whether the last chunk ended in a CR not yet settled. */
+  get holdsCr() {
+    return this.heldCr;
+  }
 
-/** Whether `text`, one event or the start of one, is over the per-event cap, in bytes. */
-const overEventLimit = (text: string) =>
-  text.length * 3 > EVENT_LIMIT && encoder.encode(text).byteLength > EVENT_LIMIT;
+  /** Whether what is held of the event being read ends in a line ending (or may). */
+  get endsInLineEnd() {
+    return this.heldCr || this.lineEnd;
+  }
+
+  /** The event being read, so far. */
+  get unfinished() {
+    return this.parts.join("");
+  }
+
+  /** The events `text` finishes. */
+  push(text: string, final = false) {
+    let input = this.heldCr ? `\r${text}` : text;
+
+    this.heldCr = !final && input.endsWith("\r");
+
+    if (this.heldCr) input = input.slice(0, -1);
+
+    const lf = input.replace(/\r\n?/g, "\n");
+    const events: Array<string> = [];
+    let from = 0;
+
+    // The event being read ends in a line ending and this text starts with one: that is its blank line.
+    if (this.lineEnd && lf.startsWith("\n")) {
+      events.push(this.finish().slice(0, -1));
+      from = 1;
+    }
+
+    const segments = lf.slice(from).split("\n\n");
+
+    for (const [index, segment] of segments.entries()) {
+      this.parts.push(segment);
+      this.bytes += encoder.encode(segment).byteLength;
+
+      if (segment !== "") this.lineEnd = segment.endsWith("\n");
+
+      if (this.bytes > this.limit) this.over = true;
+
+      if (index < segments.length - 1) events.push(this.finish());
+    }
+
+    return events;
+  }
+
+  private finish() {
+    const event = this.parts.join("");
+
+    this.parts = [];
+    this.bytes = 0;
+    this.lineEnd = false;
+
+    return event;
+  }
+}
 
 /** What opening a resumed stream came to: its body, or whether trying again could help. */
 type Reopened = Data.TaggedEnum<{
@@ -421,8 +480,8 @@ const eventFields = (event: string) => {
  * resumed one. A line ending first, unless the unfinished event already ends in one: a blank line would make the SDK
  * dispatch it.
  */
-const discardEvent = (unfinished: string) =>
-  `${/[\r\n]$/.test(unfinished) ? "" : "\n"}event: cloudpid-discard\n\n`;
+const discardEvent = (endsInLineEnd: boolean) =>
+  `${endsInLineEnd ? "" : "\n"}event: cloudpid-discard\n\n`;
 
 const eventTooLarge = () =>
   TooLarge.make({
@@ -537,22 +596,21 @@ const watchStream = (
   let reader = body.getReader();
   let decoder = new TextDecoder();
   let bytes = 0;
-  let pending = "";
+  // A resumed stream's events are held to 1 MiB; the first's are not.
+  let splitter = new EventSplitter(Number.POSITIVE_INFINITY);
   let answered = false;
   let cancelled = false;
   const resumer = new Resumer(request, resume, () => cancelled);
 
   /** The whole events of `text` the SDK may be given, or `undefined` when one is over the per-event cap. */
   const scan = (text: string, final = false) => {
-    const { events, rest } = splitEvents(pending + text, final);
+    const events = splitter.push(text, final);
 
-    pending = rest;
+    if (splitter.over) return undefined;
 
     const kept: Array<string> = [];
 
     for (const event of events) {
-      if (resumer.resumed && overEventLimit(event)) return undefined;
-
       const fields = eventFields(event);
 
       resumer.see(fields);
@@ -596,7 +654,7 @@ const watchStream = (
       if (!foreign) kept.push(event);
     }
 
-    return resumer.resumed && overEventLimit(pending) ? undefined : kept;
+    return kept;
   };
 
   return new ReadableStream<Uint8Array>({
@@ -628,6 +686,7 @@ const watchStream = (
 
         if (chunk.done) {
           // A CR at the end was a line end: the events it finishes, which the resumed stream's reader is still owed.
+          const heldCr = splitter.holdsCr;
           const last = scan("", true);
 
           if (last === undefined) return end(eventTooLarge());
@@ -638,10 +697,22 @@ const watchStream = (
             return;
           }
 
+          // The first stream is handed over as it came, and the SDK's parser holds back a CR at the end of a chunk
+          // for a LF that will not come, never dispatching its event: it is given the LF, so it sees a CRLF.
+          if (heldCr && !resumer.resumed) {
+            controller.enqueue(encoder.encode("\n"));
+
+            return;
+          }
+
           if (answered) return controller.close();
 
           // The first stream is handed over as it came, so an event it left unfinished is cut off for the SDK.
-          const unfinished = resumer.resumed || pending.trim() === "" ? undefined : pending;
+          const unfinished =
+            resumer.resumed || splitter.unfinished.trim() === ""
+              ? undefined
+              : discardEvent(splitter.endsInLineEnd);
+
           const next = await resumer.next(broke);
 
           if (cancelled) return;
@@ -652,10 +723,10 @@ const watchStream = (
 
           reader = next.body.getReader();
           decoder = new TextDecoder();
-          pending = "";
+          splitter = new EventSplitter(EVENT_LIMIT);
 
           if (unfinished !== undefined) {
-            controller.enqueue(encoder.encode(discardEvent(unfinished)));
+            controller.enqueue(encoder.encode(unfinished));
 
             return;
           }
@@ -707,7 +778,7 @@ const watchStream = (
 const capEvents = (body: ReadableStream<Uint8Array>, ended?: () => void) => {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  let pending = "";
+  const splitter = new EventSplitter(EVENT_LIMIT);
 
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
@@ -720,11 +791,9 @@ const capEvents = (body: ReadableStream<Uint8Array>, ended?: () => void) => {
         return;
       }
 
-      const { events, rest } = splitEvents(pending + decoder.decode(chunk.value, { stream: true }));
+      splitter.push(decoder.decode(chunk.value, { stream: true }));
 
-      pending = rest;
-
-      if (overEventLimit(rest) || events.some(overEventLimit)) {
+      if (splitter.over) {
         await reader.cancel().catch(() => undefined);
         controller.close();
         ended?.();
