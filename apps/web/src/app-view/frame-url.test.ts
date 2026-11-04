@@ -2,11 +2,13 @@
 // and the proxy URL it builds.
 import { describe, expect, it } from "vitest";
 import {
+  LOCAL_APP_ORIGINS as SERVER_LOCAL_APP_ORIGINS,
   LOCAL_SANDBOX_ORIGIN as SERVER_LOCAL_ORIGIN,
   viewHost,
 } from "../../../server/src/view-host.ts";
 import {
   APP_DOMAIN,
+  LOCAL_APP_ORIGINS,
   LOCAL_SANDBOX_ORIGIN,
   declaredCsp,
   frameUrl,
@@ -14,20 +16,31 @@ import {
 } from "./frame-url.ts";
 
 const VIEW = "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app";
+const PROD_PAGE = "https://pi.ianpascoe.dev";
 
 describe("isSandboxOrigin", () => {
   it("accepts a View's host, with or without a stage label, and the local sandbox", () => {
-    expect(isSandboxOrigin(VIEW)).toBe(true);
-    expect(isSandboxOrigin("https://aaaaaaaaaaaaaaaaaaaaaaaaaa--pr-12.ianpascoe.app")).toBe(true);
-    expect(isSandboxOrigin("http://127.0.0.1:1338")).toBe(true);
+    expect(isSandboxOrigin(VIEW, PROD_PAGE)).toBe(true);
+    expect(
+      isSandboxOrigin("https://aaaaaaaaaaaaaaaaaaaaaaaaaa--pr-12.ianpascoe.app", PROD_PAGE),
+    ).toBe(true);
   });
 
-  it("accepts the local sandbox in a development build only", () => {
-    expect(isSandboxOrigin("http://127.0.0.1:1338", true)).toBe(true);
-    expect(isSandboxOrigin("http://127.0.0.1:1338", false)).toBe(false);
-    expect(isSandboxOrigin(VIEW, false)).toBe(true);
-    // The test build is a development one, as `alchemy dev` is.
-    expect(isSandboxOrigin("http://127.0.0.1:1338")).toBe(true);
+  it("accepts the local sandbox only for a page at a local app origin, whatever the build", () => {
+    // `alchemy dev` serves a production build at :1337 and Vite serves the page at :5173.
+    expect(isSandboxOrigin(LOCAL_SANDBOX_ORIGIN, "http://localhost:1337")).toBe(true);
+    expect(isSandboxOrigin(LOCAL_SANDBOX_ORIGIN, "http://localhost:5173")).toBe(true);
+    // A deployed page never frames a loopback address, nor does any page at another port or host.
+    expect(isSandboxOrigin(LOCAL_SANDBOX_ORIGIN, PROD_PAGE)).toBe(false);
+    expect(
+      isSandboxOrigin(
+        LOCAL_SANDBOX_ORIGIN,
+        "https://cloudpid-server-pr-1.ian-g-pascoe.workers.dev",
+      ),
+    ).toBe(false);
+    expect(isSandboxOrigin(LOCAL_SANDBOX_ORIGIN, "http://localhost:3000")).toBe(false);
+    expect(isSandboxOrigin(LOCAL_SANDBOX_ORIGIN, "http://127.0.0.1:1337")).toBe(false);
+    expect(isSandboxOrigin(LOCAL_SANDBOX_ORIGIN, "")).toBe(false);
   });
 
   it("refuses anything else: another domain, a path, a port, a lookalike, a short hash", () => {
@@ -46,7 +59,7 @@ describe("isSandboxOrigin", () => {
       "https://127.0.0.1:1338",
       "",
     ]) {
-      expect(isSandboxOrigin(origin), origin).toBe(false);
+      expect(isSandboxOrigin(origin, "http://localhost:1337"), origin).toBe(false);
     }
   });
 });
@@ -77,7 +90,7 @@ describe("frameUrl", () => {
   it("is the origin's root, carrying the declared CSP as JSON", () => {
     expect(frameUrl(VIEW, undefined, "https://app.example")).toBe(`${VIEW}/`);
 
-    const url = new URL(frameUrl(VIEW, { connectDomains: ["https://api.example"] }, "x"));
+    const url = new URL(frameUrl(VIEW, { connectDomains: ["https://api.example"] }, PROD_PAGE));
 
     expect(url.origin).toBe(VIEW);
     expect(JSON.parse(url.searchParams.get("csp") ?? "")).toEqual({
@@ -90,6 +103,16 @@ describe("frameUrl", () => {
     const url = new URL(frameUrl("http://127.0.0.1:1338", undefined, "http://localhost:5173"));
 
     expect(url.searchParams.get("host")).toBe("http://localhost:5173");
+  });
+
+  it("frames the local sandbox from a page at :1337 (the Worker's build) as at :5173, and from no deployed page", () => {
+    for (const page of ["http://localhost:1337", "http://localhost:5173"]) {
+      expect(
+        new URL(frameUrl(LOCAL_SANDBOX_ORIGIN, undefined, page)).searchParams.get("host"),
+      ).toBe(page);
+    }
+
+    expect(() => frameUrl(LOCAL_SANDBOX_ORIGIN, undefined, "https://pi.ianpascoe.dev")).toThrow();
   });
 
   it("leaves out a CSP too long for the Worker to read", () => {
@@ -105,14 +128,15 @@ describe("frameUrl", () => {
 
 describe("the copies of the server's sandbox constants", () => {
   // The page does not depend on the server's package, so it keeps its own copies; these hold them to the server's.
-  it("name the same local origin and the same domain", () => {
+  it("name the same local origin, local app origins and domain", () => {
     expect(LOCAL_SANDBOX_ORIGIN).toBe(SERVER_LOCAL_ORIGIN);
+    expect(LOCAL_APP_ORIGINS).toEqual(SERVER_LOCAL_APP_ORIGINS);
     expect(viewHost("a".repeat(26), "prod")).toBe(`${"a".repeat(26)}.${APP_DOMAIN}`);
   });
 
   it("accept every origin the server builds for a View, on prod and on any stage", () => {
     for (const stage of ["prod", "pr-12", "dev_ian", "preview-with-a-longer-label"]) {
-      expect(isSandboxOrigin(`https://${viewHost("a".repeat(26), stage)}`, false), stage).toBe(
+      expect(isSandboxOrigin(`https://${viewHost("a".repeat(26), stage)}`, PROD_PAGE), stage).toBe(
         true,
       );
     }

@@ -5,7 +5,7 @@
 // the card is always where the transcript puts it (placement in a codemode strip or a subagent's thread is #490's).
 import type { McpAppTool } from "@cloudpid/protocol";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
@@ -23,6 +23,17 @@ const AppNote = ({ children }: { children: string }) => (
   </div>
 );
 
+/** What a card hands the component that loads and frames a call's View. */
+export interface AppLoadedProps {
+  readonly sessionId: string;
+  readonly callId: string;
+  readonly tool: McpAppTool | undefined;
+  readonly badge: "offline" | "sign-in" | null;
+  readonly closing: boolean;
+  readonly onFramed: () => void;
+  readonly onClosed: () => void;
+}
+
 /** The View of call `callId`, loaded when this mounts: it shows nothing while it loads (the card has the call's state). */
 const AppLoaded = ({
   sessionId,
@@ -32,15 +43,7 @@ const AppLoaded = ({
   closing,
   onFramed,
   onClosed,
-}: {
-  sessionId: string;
-  callId: string;
-  tool: McpAppTool | undefined;
-  badge: "offline" | "sign-in" | null;
-  closing: boolean;
-  onFramed: () => void;
-  onClosed: () => void;
-}) => {
+}: AppLoadedProps) => {
   const key = appKey(sessionId, callId);
   const result = useAtomValue(appLoadAtom(key));
   const retry = useAtomRefresh(appLoadAtom(key));
@@ -79,13 +82,14 @@ const AppLoaded = ({
  * answered its teardown (`AppFrame`), and only then does the note replace it. `generation` makes a View that comes back
  * (the server reconnects) a new frame, never the dead one.
  */
-const AppMount = ({
+export const AppMount = ({
   sessionId,
   callId,
   tool,
   badge,
   live,
   note,
+  Loaded = AppLoaded,
 }: {
   sessionId: string;
   callId: string;
@@ -93,6 +97,8 @@ const AppMount = ({
   badge: "offline" | "sign-in" | null;
   live: boolean;
   note: string;
+  /** What loads and frames the View: the atoms' `AppLoaded`, or a stand-in in a test, which has no Session to load from. */
+  Loaded?: ComponentType<AppLoadedProps>;
 }) => {
   const [framed, setFramed] = useState(false);
   const [generation, setGeneration] = useState(0);
@@ -101,7 +107,7 @@ const AppMount = ({
   if (!live && !framed) return <AppNote>{note}</AppNote>;
 
   return (
-    <AppLoaded
+    <Loaded
       key={generation}
       sessionId={sessionId}
       callId={callId}

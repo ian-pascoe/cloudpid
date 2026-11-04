@@ -120,7 +120,7 @@ export interface AppToolInfo {
   readonly callId: string;
   readonly name: string;
   readonly title?: string | undefined;
-  /** The tool's `inputSchema` when the inventory carries it (bounded: `MAX_MCP_APP_SCHEMA_BYTES`); else a bare object schema. */
+  /** The tool's `inputSchema` when the inventory carries it (bounded: `MAX_MCP_APP_SCHEMA_CHARS`); else a bare object schema. */
   readonly inputSchema?: McpAppTool["inputSchema"] | undefined;
 }
 

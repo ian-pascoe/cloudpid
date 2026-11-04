@@ -9,6 +9,9 @@ import { forgetPages, loadAppView, type AppClient } from "./load.ts";
 
 const ORIGIN = "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app";
 
+/** The origin the page itself is served from. */
+const PAGE = "https://pi.ianpascoe.dev";
+
 const record = (over: Partial<McpAppRecord> = {}): McpAppRecord => ({
   callId: "c1",
   server: "docs",
@@ -66,7 +69,7 @@ describe("loadAppView", () => {
     Effect.gen(function* () {
       const { client } = fake({ status: "record", record: record() }, html());
 
-      expect(yield* loadAppView(client, "c1")).toEqual({
+      expect(yield* loadAppView(client, "c1", PAGE)).toEqual({
         status: "view",
         record: record(),
         page: { html: "<p>app</p>", meta: {}, origin: ORIGIN },
@@ -83,8 +86,8 @@ describe("loadAppView", () => {
           html(),
         );
 
-        yield* loadAppView(client, "c1");
-        yield* loadAppView(client, "c1");
+        yield* loadAppView(client, "c1", PAGE);
+        yield* loadAppView(client, "c1", PAGE);
         expect(calls).toEqual({ mount: 2, page: 1 });
       }),
   );
@@ -101,8 +104,8 @@ describe("loadAppView", () => {
           html({ origin: other }),
         );
 
-        const one = yield* loadAppView(first.client, "c1");
-        const two = yield* loadAppView(second.client, "c1");
+        const one = yield* loadAppView(first.client, "c1", PAGE);
+        const two = yield* loadAppView(second.client, "c1", PAGE);
 
         expect(second.calls.page).toBe(1);
         expect(one).toMatchObject({ status: "view", page: { origin: ORIGIN } });
@@ -114,8 +117,8 @@ describe("loadAppView", () => {
     Effect.gen(function* () {
       const { client, calls } = fake({ status: "record", record: record() }, html());
 
-      yield* loadAppView(client, "c1");
-      yield* loadAppView(client, "c1");
+      yield* loadAppView(client, "c1", PAGE);
+      yield* loadAppView(client, "c1", PAGE);
       expect(calls.page).toBe(2);
     }),
   );
@@ -131,11 +134,14 @@ describe("loadAppView", () => {
         yield* loadAppView(
           fake(mounted, { status: "unavailable", message: "Shadowed" }).client,
           "c1",
+          PAGE,
         ),
       ).toEqual({ status: "unavailable" });
 
       // A Session that sent the page of another server's anyway is not believed.
-      expect(yield* loadAppView(fake(mounted, html({ view: "now-this" })).client, "c1")).toEqual({
+      expect(
+        yield* loadAppView(fake(mounted, html({ view: "now-this" })).client, "c1", PAGE),
+      ).toEqual({
         status: "unavailable",
       });
     }),
@@ -145,14 +151,16 @@ describe("loadAppView", () => {
     Effect.gen(function* () {
       const stub = { callId: "c1", server: "docs", tool: "page", conversation: "1" };
 
-      expect(yield* loadAppView(fake({ status: "stub", stub }, html()).client, "c1")).toEqual({
-        status: "stub",
-        stub,
-      });
-      expect(yield* loadAppView(fake({ status: "none" }, html()).client, "c1")).toEqual({
+      expect(yield* loadAppView(fake({ status: "stub", stub }, html()).client, "c1", PAGE)).toEqual(
+        {
+          status: "stub",
+          stub,
+        },
+      );
+      expect(yield* loadAppView(fake({ status: "none" }, html()).client, "c1", PAGE)).toEqual({
         status: "none",
       });
-      expect(yield* loadAppView(fake({ status: "later" }, html()).client, "c1")).toEqual({
+      expect(yield* loadAppView(fake({ status: "later" }, html()).client, "c1", PAGE)).toEqual({
         status: "none",
       });
     }),
@@ -165,21 +173,29 @@ describe("loadAppView", () => {
         const mounted: McpAppMounted = { status: "record", record: record() };
 
         expect(
-          yield* loadAppView(fake(mounted, { status: "missing", message: "No page" }).client, "c1"),
+          yield* loadAppView(
+            fake(mounted, { status: "missing", message: "No page" }).client,
+            "c1",
+            PAGE,
+          ),
         ).toEqual({ status: "failed", reason: "No page" });
 
-        expect(yield* loadAppView(fake(mounted, { status: "later" }).client, "c1")).toEqual({
+        expect(yield* loadAppView(fake(mounted, { status: "later" }).client, "c1", PAGE)).toEqual({
           status: "failed",
           reason: "later",
         });
 
         const bare: McpAppHtmlAnswer = { status: "html", hash: "h1", html: "<p>app</p>", meta: {} };
 
-        expect(yield* loadAppView(fake(mounted, bare).client, "c1")).toMatchObject({
+        expect(yield* loadAppView(fake(mounted, bare).client, "c1", PAGE)).toMatchObject({
           status: "failed",
         });
         expect(
-          yield* loadAppView(fake(mounted, html({ origin: "https://evil.example" })).client, "c1"),
+          yield* loadAppView(
+            fake(mounted, html({ origin: "https://evil.example" })).client,
+            "c1",
+            PAGE,
+          ),
         ).toEqual({ status: "failed", reason: "The sandbox origin is not one the page frames" });
       }),
   );
@@ -188,12 +204,16 @@ describe("loadAppView", () => {
     Effect.gen(function* () {
       const refusal = refused("No such call");
 
-      expect(yield* loadAppView(fake(refusal, html()).client, "c1")).toEqual({
+      expect(yield* loadAppView(fake(refusal, html()).client, "c1", PAGE)).toEqual({
         status: "failed",
         reason: "No such call",
       });
       expect(
-        yield* loadAppView(fake({ status: "record", record: record() }, refusal).client, "c1"),
+        yield* loadAppView(
+          fake({ status: "record", record: record() }, refusal).client,
+          "c1",
+          PAGE,
+        ),
       ).toEqual({ status: "failed", reason: "No such call" });
     }),
   );

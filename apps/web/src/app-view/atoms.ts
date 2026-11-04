@@ -37,7 +37,11 @@ export const appLoadAtom = Atom.family((key: string) =>
 
     return get
       .result(sessionClientAtom(sessionId))
-      .pipe(Effect.flatMap((client): Effect.Effect<AppLoad> => loadAppView(client, callId)));
+      .pipe(
+        Effect.flatMap((client): Effect.Effect<AppLoad> =>
+          loadAppView(client, callId, window.location.origin),
+        ),
+      );
   }),
 );
 

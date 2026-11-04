@@ -74,7 +74,11 @@ const keyOf = (record: McpAppRecord, hash: string | undefined): string | undefin
  * the call, which reads and pins a page the record lacks). A page with no origin to frame it at, or at an origin that
  * is not a sandbox's, is a failure, never a frame.
  */
-const pageOf = (client: AppClient, record: McpAppRecord): Effect.Effect<AppLoad> =>
+const pageOf = (
+  client: AppClient,
+  record: McpAppRecord,
+  pageOrigin: string,
+): Effect.Effect<AppLoad> =>
   Effect.gen(function* () {
     const key = keyOf(record, record.htmlHash);
     const held = key === undefined ? undefined : pages.get(key);
@@ -106,7 +110,7 @@ const pageOf = (client: AppClient, record: McpAppRecord): Effect.Effect<AppLoad>
       return { status: "failed", reason: "The host named no sandbox origin for this App" } as const;
     }
 
-    if (!isSandboxOrigin(answer.origin)) {
+    if (!isSandboxOrigin(answer.origin, pageOrigin)) {
       return { status: "failed", reason: "The sandbox origin is not one the page frames" } as const;
     }
 
@@ -124,7 +128,11 @@ const pageOf = (client: AppClient, record: McpAppRecord): Effect.Effect<AppLoad>
   );
 
 /** Load call `callId`'s View: mount its record, then its page. Never fails: how it ended is the value. */
-export const loadAppView = (client: AppClient, callId: string): Effect.Effect<AppLoad> =>
+export const loadAppView = (
+  client: AppClient,
+  callId: string,
+  pageOrigin: string,
+): Effect.Effect<AppLoad> =>
   client.mountApp(callId).pipe(
     Effect.flatMap((mounted): Effect.Effect<AppLoad> => {
       if (mounted.status === "stub" && "stub" in mounted) {
@@ -132,7 +140,7 @@ export const loadAppView = (client: AppClient, callId: string): Effect.Effect<Ap
       }
 
       return mounted.status === "record" && "record" in mounted
-        ? pageOf(client, mounted.record)
+        ? pageOf(client, mounted.record, pageOrigin)
         : Effect.succeed({ status: "none" });
     }),
     Effect.catchTag("SessionCommandError", (error) =>

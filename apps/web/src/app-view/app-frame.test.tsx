@@ -9,6 +9,7 @@ import type { McpAppRecord } from "@cloudpid/protocol";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AppMount, type AppLoadedProps } from "./app-call.tsx";
 import { AppFrame, type AppFrameProps } from "./app-frame.tsx";
 import { TEARDOWN_TIMEOUT_MS } from "./bridge.ts";
 import type { AppPage } from "./load.ts";
@@ -28,6 +29,10 @@ const record: McpAppRecord = {
 };
 
 const pageAt = (origin: string): AppPage => ({ html: "<p>view</p>", meta: {}, origin });
+
+// A page is the same page by identity (the loader hands one object for one page), so a card is not told it changed.
+const PAGE_A = pageAt(ORIGIN);
+const PAGE_B = pageAt(OTHER);
 
 type Sent = { readonly data: Record<string, unknown>; readonly target: string };
 
@@ -126,7 +131,7 @@ const render = (props: Partial<AppFrameProps> = {}) => {
     root.render(
       <AppFrame
         record={record}
-        page={pageAt(ORIGIN)}
+        page={PAGE_A}
         tool={{
           name: "mcp__docs__page",
           server: "docs",
@@ -197,6 +202,21 @@ describe("a View's frame in its card", () => {
     expect(host.querySelector("iframe")).toBe(view.element);
   });
 
+  it("says it may go once, though it is asked to close again and again", async () => {
+    const closed = vi.fn();
+
+    render({ onClosed: closed });
+    frameOf().handshake();
+    render({ onClosed: closed, closing: true });
+    render({ onClosed: closed, closing: false });
+    render({ onClosed: closed, closing: true });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(TEARDOWN_TIMEOUT_MS);
+    });
+
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
   it("waits at most 2 s for a View that does not answer", async () => {
     const closed = vi.fn();
 
@@ -236,7 +256,7 @@ describe("a View's frame in its card", () => {
     old.handshake();
     old.sent.length = 0;
 
-    render({ page: pageAt(OTHER) });
+    render({ page: PAGE_B });
 
     expect(old.methods()).toEqual(["ui/resource-teardown"]);
     expect(host.querySelector("iframe")).toBe(old.element);
@@ -261,5 +281,79 @@ describe("a View's frame in its card", () => {
     });
 
     expect(closed).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("a card's hold on a frame whose View is no longer live", () => {
+  const tool = {
+    name: "mcp__docs__page",
+    server: "docs",
+    tool: "page",
+    uri: "ui://docs/page",
+    visibility: ["model", "app"],
+  };
+
+  // What loads a View in the card, in place of the atoms: the record and page at once.
+  const Loaded = (props: AppLoadedProps) => (
+    <AppFrame
+      record={record}
+      page={PAGE_A}
+      tool={undefined}
+      badge={props.badge}
+      closing={props.closing}
+      onFramed={props.onFramed}
+      onClosed={props.onClosed}
+    />
+  );
+
+  const mount = (live: boolean) => {
+    act(() => {
+      root.render(
+        <AppMount
+          sessionId="s1"
+          callId="c1"
+          tool={tool}
+          badge={null}
+          live={live}
+          note="App unavailable"
+          Loaded={Loaded}
+        />,
+      );
+    });
+  };
+
+  it("shows the note, mounting nothing, for a call that was never live", () => {
+    mount(false);
+    expect(host.querySelector("iframe")).toBeNull();
+    expect(host.textContent).toContain("App unavailable");
+  });
+
+  it("keeps the frame while its View tears down, then shows the note, and a View that comes back is a new frame", async () => {
+    mount(true);
+
+    const first = frameOf();
+
+    first.handshake();
+    first.sent.length = 0;
+
+    mount(false);
+
+    // Told to tear down, and still there to hear it; no note yet.
+    expect(first.methods()).toEqual(["ui/resource-teardown"]);
+    expect(host.querySelector("iframe")).toBe(first.element);
+    expect(host.textContent).not.toContain("App unavailable");
+
+    first.say({ jsonrpc: "2.0", id: first.sent[0]?.data["id"], result: {} });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(host.querySelector("iframe")).toBeNull();
+    expect(host.textContent).toContain("App unavailable");
+
+    // The server is back: a frame of its own, never the dead one.
+    mount(true);
+    expect(host.querySelector("iframe")).not.toBeNull();
+    expect(host.querySelector("iframe")).not.toBe(first.element);
   });
 });

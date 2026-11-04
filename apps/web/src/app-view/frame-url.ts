@@ -23,11 +23,24 @@ const VIEW_ORIGIN = new RegExp(
 );
 
 /**
- * Whether `origin` is one the page may frame an App View at: a View's host on the sandbox's domain, or, in a development
- * build only (`dev`, Vite's `DEV`), the local sandbox: a production page never frames a loopback address.
+ * The app origins under `alchemy dev` (`LOCAL_APP_ORIGINS` of the server's `view-host.ts`; the drift guard in `frame-url.test.ts`
+ * holds the copies equal): the main Worker's, which serves a build of this page, and Vite's. A page served from anywhere else
+ * is not a local one.
  */
-export const isSandboxOrigin = (origin: string, dev: boolean = import.meta.env.DEV): boolean =>
-  VIEW_ORIGIN.test(origin) || (dev && origin === LOCAL_SANDBOX_ORIGIN);
+export const LOCAL_APP_ORIGINS: ReadonlyArray<string> = [
+  "http://localhost:1337",
+  "http://localhost:5173",
+];
+
+/**
+ * Whether `origin` is one the page may frame an App View at: a View's host on the sandbox's domain, or the local sandbox,
+ * and that only for a page that is itself at a local app origin (`pageOrigin`, the page's own `location.origin`): a deployed
+ * page is never at one, so it never frames a loopback address, whatever it is told. The decision is the page's origin, not
+ * the build's: under `alchemy dev` the Worker serves a production build at `localhost:1337`.
+ */
+export const isSandboxOrigin = (origin: string, pageOrigin: string): boolean =>
+  VIEW_ORIGIN.test(origin) ||
+  (origin === LOCAL_SANDBOX_ORIGIN && LOCAL_APP_ORIGINS.includes(pageOrigin));
 
 /** Whether `origin` is the local sandbox, which has no hostname to tell it the app origin, so the page says it. */
 const isLocalSandbox = (origin: string): boolean => origin === LOCAL_SANDBOX_ORIGIN;
@@ -92,7 +105,8 @@ export const frameUrl = (
   csp: McpUiResourceCsp | undefined,
   pageOrigin: string,
 ): string => {
-  if (!isSandboxOrigin(origin)) throw new Error(`${origin} is not an App sandbox origin`);
+  if (!isSandboxOrigin(origin, pageOrigin))
+    throw new Error(`${origin} is not an App sandbox origin`);
 
   const query: string[] = [];
   const declared = csp === undefined ? undefined : JSON.stringify(csp);

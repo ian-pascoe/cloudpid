@@ -273,8 +273,15 @@ const LiveFrame = ({
 
   cancelReason.current = cancelled;
 
+  // Once per frame: a frame that has been told to close is dead (its bridge closes with the teardown), and its card makes
+  // a new one, so a second run of this effect (a Strict Mode double run, a `closing` that flips back and on) must not retire
+  // it, or say `onClosed`, again.
+  const retired = useRef(false);
+
   useEffect(() => {
-    if (!closing) return;
+    if (!closing || retired.current) return;
+
+    retired.current = true;
 
     const bridge = bridgeRef.current;
 
