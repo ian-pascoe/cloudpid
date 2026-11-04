@@ -105,7 +105,9 @@ describe("a question the engine passes to the host's onInput", () => {
 
     const initialize = server.received.find((received) => received.rpc?.method === "initialize");
 
-    expect(initialize?.rpc?.params).toMatchObject({ capabilities: { elicitation: { form: {} } } });
+    expect(initialize?.rpc?.params).toMatchObject({
+      capabilities: { elicitation: { form: {}, url: {} } },
+    });
   });
 
   it("is cancelled when the call can answer nothing, or the host gave no onInput", async () => {

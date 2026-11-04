@@ -10,7 +10,15 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { ASK_TOOL, legacyStatefulServer, modernServer, rpcMethods } from "@cloudpid/mcp/testing";
+import {
+  ASK_TOOL,
+  type FakeOptions,
+  GATED_TOOL,
+  legacyStatefulServer,
+  modernServer,
+  rpcMethods,
+  VISIT_TOOL,
+} from "@cloudpid/mcp/testing";
 import type { McpApplySet } from "@cloudpid/mcp/types";
 import {
   type ClientMessage,
@@ -89,10 +97,21 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
 };
 
 /** A Session whose host runs the real engine against a fake Legacy server that has the `ask` tool. */
-const open = async (asked: Array<Schema.Json>, cancelled: Array<string> = [], name = "mcp") => {
+const open = async (
+  asked: Array<Schema.Json>,
+  cancelled: Array<string> = [],
+  name = "mcp",
+  more: Pick<FakeOptions, "gate"> = {},
+) => {
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
-  const server = legacyStatefulServer({ moreTools: [ASK_TOOL], asked, cancelled });
+
+  const server = legacyStatefulServer({
+    moreTools: [ASK_TOOL, VISIT_TOOL, GATED_TOOL],
+    asked,
+    cancelled,
+    ...more,
+  });
 
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
     server.handle(new Request(input, init)),
@@ -401,6 +420,122 @@ describe("a Modern MCP server's form in a Session", () => {
     expect(dump.map(([key]) => key).filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
     expect(JSON.stringify(owner.received)).not.toContain(SENTINEL);
     expect(logs.join("\n")).not.toContain(SENTINEL);
+    owner.close();
+  });
+});
+
+const PAGE_URL = "https://login.example.com/authorize?state=1";
+
+describe("a Legacy MCP server's page in a Session", () => {
+  it("is opened in the call: the server is told at once, and the card goes when the call ends", async () => {
+    const { stub, asked } = await open([]);
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([
+        `call:mcp__docs__visit:${JSON.stringify({ url: PAGE_URL, message: "Sign in", elicitationId: "e1", holdMs: 600 })}`,
+        "done",
+      ]);
+      await instance.submit({ requestId: "turn-1", text: "visit" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    const [request] = owner.requests();
+
+    expect(request).toMatchObject({
+      server: "docs",
+      message: "Sign in",
+      page: { url: PAGE_URL, host: "login.example.com", domain: "example.com", opened: false },
+    });
+    expect(await inputPushes(stub)).toEqual([
+      { kind: "input", names: [], mcp: { server: "docs", kind: "elicitation", page: true } },
+    ]);
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "open",
+      request: request?.id ?? "",
+      action: "opened",
+    });
+    await settles(async () => expect(asked).toEqual([{ action: "accept" }]));
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+    owner.close();
+  });
+
+  it("is declined unseen when its address is not an https page", async () => {
+    const { stub, asked } = await open([]);
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([
+        `call:mcp__docs__visit:${JSON.stringify({ url: "http://login.example.com/x", elicitationId: "e1" })}`,
+        "done",
+      ]);
+      await instance.submit({ requestId: "turn-1", text: "visit" });
+    });
+    await settles(async () => expect(asked).toEqual([{ action: "decline" }]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+    expect(owner.requests()).toEqual([]);
+    owner.close();
+  });
+
+  it("is a -32042: opened, then Done sends the call again, which now runs", async () => {
+    const gate = { times: 1, calls: 0, url: PAGE_URL };
+    const { stub } = await open([], [], "mcp", { gate });
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["call:mcp__docs__gated:{}", "done"]);
+      await instance.submit({ requestId: "turn-1", text: "gated" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    const [request] = owner.requests();
+
+    expect(request?.page).toMatchObject({ url: PAGE_URL, opened: false, retry: true });
+
+    // Done is not offered before the page is opened.
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "early",
+      request: request?.id ?? "",
+      action: "done",
+    });
+    await settles(async () =>
+      expect(owner.received).toContainEqual(
+        expect.objectContaining({ type: "error", id: "early" }),
+      ),
+    );
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "open",
+      request: request?.id ?? "",
+      action: "opened",
+    });
+    await settles(async () => expect(owner.requests()[0]?.page?.opened).toBe(true));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "done",
+      request: request?.id ?? "",
+      action: "done",
+    });
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    expect(gate.calls).toBe(2);
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.join("\n")).toContain("opened");
     owner.close();
   });
 });

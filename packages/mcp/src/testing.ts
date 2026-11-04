@@ -15,6 +15,7 @@ export {
   type FakeResourceTemplate,
   type FakeServer,
   fetchTo,
+  GATED_TOOL,
   HANG_TOOL,
   hostileServer,
   legacyStatefulServer,
@@ -35,4 +36,5 @@ export {
   type TaskServer,
   type TaskServerOptions,
   TYPED_TOOL,
+  VISIT_TOOL,
 } from "./fakes.fixture.ts";
