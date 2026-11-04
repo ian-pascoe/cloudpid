@@ -694,6 +694,49 @@ describe("an MCP task", () => {
     expect(JSON.stringify(spans)).not.toContain("task-1");
   });
 
+  it("spans a tasks/get that failed, however its last status read, with the polls it left out counted", async () => {
+    const host = await signedIn([granted(TOKEN)]);
+
+    await host.scriptRequest(urlOf("sentry"), [
+      {
+        result: {
+          kind: "task_state",
+          task: { ...CREATED, status: "working" },
+          fetchedAt: Date.now(),
+          state: {},
+        },
+        auth: [false],
+      },
+      {
+        result: {
+          kind: "failed",
+          error: { _tag: "ServerError", message: "no such task", code: -32602 },
+          state: {},
+        },
+        auth: [false],
+      },
+    ]);
+
+    const polled = withCtx(taskOp("tasks/get", "sentry", { taskId: "task-err" }), {
+      lastStatus: "working",
+    });
+
+    await host.request(polled, {});
+    expect(await host.request(polled, {})).toMatchObject({ _tag: "CallFailed" });
+
+    const spans = (await host.spans()).filter(
+      (span) =>
+        span.name === "mcp.request" && span.attributes["op"] === "tasks/get" && span.sampled,
+    );
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.attributes).toMatchObject({
+      "mcp.task.status": "error",
+      "mcp.task.quiet_polls": 1,
+    });
+    expect(JSON.stringify(spans)).not.toContain("task-err");
+  });
+
   it("answers ServerChanged, sending nothing, when the server's conn is not the one the task started on", async () => {
     const host = await discovered(["search"], entry("docs"));
 

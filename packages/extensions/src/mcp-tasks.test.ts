@@ -613,6 +613,87 @@ describe("a task the owner stopped everything for", () => {
     );
   });
 
+  it("does not send a second `tasks/cancel` for a task whose cancel the agent sent", async () => {
+    const { session, taskServer } = await setup(
+      10_000,
+      { ...TIMING, cancelGraceMs: 60_000 },
+      scripted((text) =>
+        text === "cancel" ? call(["mcp_task_cancel", { task: "mcp-task-1" }]) : undefined,
+      ),
+      // The server takes the cancel and goes on working, as one that ignores it does.
+      { host: { cancelAnswer: async () => McpHostTaskAck.make({}) } },
+    );
+
+    await turn(session, "go");
+    await turn(session, "cancel");
+    expect((await recordNow(session, "mcp-task-1"))?.cancel).toMatchObject({
+      by: "agent",
+      sent: "sent",
+    });
+
+    await session.root.abort(context, { background: true });
+    await session.until(ended(session), "the task to end");
+
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+    expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({
+      status: "cancelled",
+      by: "stop",
+    });
+  });
+
+  it("ends the task within two seconds of Stop all though the server never answers the cancel", async () => {
+    const { session, taskServer, written } = await setup(10_000, TIMING, scripted(), {
+      host: { cancelAnswer: () => new Promise(() => undefined) },
+    });
+
+    await turn(session, "go");
+
+    const started = Date.now();
+
+    await session.root.abort(context, { background: true });
+    await session.until(ended(session), "the task to end");
+
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1900);
+    expect(Date.now() - started).toBeLessThan(4500);
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+    expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({
+      status: "cancelled",
+      by: "stop",
+    });
+    // The agent is told in a notice all the same.
+    expect(written).toHaveLength(1);
+  });
+
+  it("stops an inline call within two seconds though the server never answers the cancel", async () => {
+    const { session, taskServer, client } = await setup(
+      10_000,
+      { ...TIMING, windowMs: 60_000 },
+      scripted(),
+      {
+        host: { cancelAnswer: () => new Promise(() => undefined) },
+      },
+    );
+
+    const running = session.root
+      .submit({ type: "input", content: "go" }, context)
+      .then((submission) => submission.wait(context));
+
+    await vi.waitFor(async () => expect(await recordNow(session, "mcp-task-1")).toBeDefined());
+
+    const started = Date.now();
+
+    await session.root.abort(context);
+    await running;
+    expect(Date.now() - started).toBeLessThan(4500);
+
+    // The call's invocation ended with the Stop, so the sweep ends the record, and sends no second cancel.
+    expect(
+      await sweepTasks({ harness: session.harness, client, origin: {}, now: () => 9000 }),
+    ).toBe(1);
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+    expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({ by: "stop" });
+  });
+
   it("drops a result held for a busy conversation, and says so in a notice", async () => {
     const busy = gate();
 
@@ -996,7 +1077,12 @@ describe("the sweep at a wake", () => {
   /** Add the records of a call to the Session's document, as a call that was cut off left them. */
   const leave = async (
     session: Awaited<ReturnType<typeof setup>>["session"],
-    more: ReadonlyArray<{ readonly background?: boolean; readonly ended?: boolean }>,
+    more: ReadonlyArray<{
+      readonly background?: boolean;
+      readonly ended?: boolean;
+      /** A record from before the call's task was kept. */
+      readonly anonymous?: boolean;
+    }>,
   ) => {
     await session.harness.commit(async (tx) => {
       const doc = await tx.doc(McpTasksDoc);
@@ -1026,6 +1112,8 @@ describe("the sweep at a wake", () => {
 
         stored.background = each.background === true;
 
+        if (each.anonymous === true) delete stored.callTask;
+
         if (each.ended === true) {
           stored.end = { status: "completed", by: "server", at: 2000 };
           stored.status = "completed";
@@ -1039,7 +1127,9 @@ describe("the sweep at a wake", () => {
 
     await leave(session, [{}, { background: true }, { ended: true }]);
 
-    expect(await sweepTasks({ harness: session.harness, client, origin: {} })).toBe(1);
+    expect(
+      await sweepTasks({ harness: session.harness, client, origin: {}, now: () => 9000 }),
+    ).toBe(1);
 
     const doc = await session.harness.snapshot(McpTasksDoc, context);
 
@@ -1057,7 +1147,9 @@ describe("the sweep at a wake", () => {
     expect(cancels[0]).toMatchObject({ params: { taskId: `${SECRET}-0` } });
 
     // A second sweep finds nothing to do.
-    expect(await sweepTasks({ harness: session.harness, client, origin: {} })).toBe(0);
+    expect(
+      await sweepTasks({ harness: session.harness, client, origin: {}, now: () => 9000 }),
+    ).toBe(0);
     expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
   });
 
@@ -1070,12 +1162,26 @@ describe("the sweep at a wake", () => {
 
     await vi.waitFor(async () => expect(await recordNow(session, "mcp-task-1")).toBeDefined());
 
-    expect(await sweepTasks({ harness: session.harness, client, origin: {} })).toBe(0);
+    expect(
+      await sweepTasks({ harness: session.harness, client, origin: {}, now: () => 9000 }),
+    ).toBe(0);
     expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(0);
     expect((await recordNow(session, "mcp-task-1"))?.end).toBeUndefined();
 
     await session.root.abort(context);
     await running;
+  });
+
+  it("leaves a record from before the call's task was kept, which it cannot tell from a live call's", async () => {
+    const { session, taskServer, client } = await setup(1000);
+
+    await leave(session, [{ anonymous: true }]);
+
+    expect(
+      await sweepTasks({ harness: session.harness, client, origin: {}, now: () => 9000 }),
+    ).toBe(0);
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(0);
+    expect((await recordNow(session, "mcp-task-1"))?.end).toBeUndefined();
   });
 
   it("ends the record even when the server cannot be asked", async () => {
@@ -1087,7 +1193,9 @@ describe("the sweep at a wake", () => {
     });
 
     await leave(session, [{}]);
-    expect(await sweepTasks({ harness: session.harness, client, origin: {} })).toBe(1);
+    expect(
+      await sweepTasks({ harness: session.harness, client, origin: {}, now: () => 9000 }),
+    ).toBe(1);
     expect(
       (await session.harness.snapshot(McpTasksDoc, context))?.tasks["mcp-task-1"]?.end,
     ).toMatchObject({

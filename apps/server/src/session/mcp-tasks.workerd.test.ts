@@ -12,8 +12,10 @@ import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } fro
 import { env } from "cloudflare:workers";
 import { modernTaskServer, rpcMethods, type TaskServer } from "@cloudpid/mcp/testing";
 import type { McpApplySet } from "@cloudpid/mcp/types";
+import type { ApiResult, SessionVia } from "@cloudpid/protocol";
 import { type ServerMessage, ServerMessageJson } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TestSession } from "./host.fixture.ts";
@@ -24,6 +26,9 @@ const settles = <A>(check: () => Promise<A>) =>
   vi.waitFor(check, { timeout: 15_000, interval: 50 });
 
 let counter = 0;
+
+/** The Sessions a test opened: stopped after it, so no follower of one polls through the next test's server. */
+const sessions: Array<DurableObjectStub<TestSession>> = [];
 
 const SET: McpApplySet = {
   kind: "set",
@@ -65,6 +70,8 @@ type Wire = {
   ignoreCancel: boolean;
   /** The `tasks/cancel` the fetch answered itself. */
   ignored: number;
+  /** Never answer `tasks/cancel`: the request hangs, as one to a server that has stopped responding does. */
+  hangCancel: boolean;
 };
 
 const rpcMethodOf = async (request: Request): Promise<string | undefined> => {
@@ -83,13 +90,15 @@ const open = async (timing: Record<string, number> = TIMING, name = "mcp") => {
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
   const server = modernTaskServer();
-  const wire: Wire = { unreachable: false, ignoreCancel: false, ignored: 0 };
+  const wire: Wire = { unreachable: false, ignoreCancel: false, ignored: 0, hangCancel: false };
 
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     const method = await rpcMethodOf(request);
 
     if (wire.unreachable && method === "tasks/get") throw new TypeError("Network connection lost");
+
+    if (wire.hangCancel && method === "tasks/cancel") return new Promise<Response>(() => {});
 
     if (wire.ignoreCancel && method === "tasks/cancel") {
       wire.ignored += 1;
@@ -105,6 +114,7 @@ const open = async (timing: Record<string, number> = TIMING, name = "mcp") => {
 
   const stub = env.SESSIONS.getByName(`${name}-${environment}`);
 
+  sessions.push(stub);
   await runInDurableObject(stub, (instance: TestSession) => {
     instance.mcpEnvironment(environment, 1);
     instance.mcpTaskTiming(timing);
@@ -189,7 +199,14 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
 
 const logs: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.allSettled(
+    sessions
+      .splice(0)
+      .map((stub) =>
+        runInDurableObject(stub, (instance: TestSession) => instance.stopEverything()),
+      ),
+  );
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   logs.length = 0;
@@ -548,5 +565,229 @@ describe("the lifecycle of a background MCP task", () => {
 
     await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
     await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
+  });
+});
+
+/** A Session with `count` detached MCP tasks that never end, each from a turn of its own, and its Run ended. */
+const followingMany = async (count: number, timing: Record<string, number> = TIMING) => {
+  const opened = await open(timing);
+  const { stub } = opened;
+
+  await script(
+    stub,
+    Array.from({ length: count }, () => [REPORT({ polls: 100_000 }), "In the background."]).flat(),
+  );
+
+  for (let turn = 1; turn <= count; turn += 1) {
+    await submit(stub, "report", `turn-${turn}`);
+    await finishedRuns(stub, turn);
+  }
+
+  await idle(stub);
+  await settles(async () => expect((await reportedTasks(stub)).at(-1)).toBe(count));
+
+  return opened;
+};
+
+/** Where each MCP task record of the Session stands. */
+const records = async (stub: DurableObjectStub<TestSession>) =>
+  Record.values(
+    await runInDurableObject(stub, (instance: TestSession) => instance.mcpTaskRecords()),
+  );
+
+const via: SessionVia = { auth: "oauth", client: { name: "claude-code" } };
+
+/** The value of an `ok` result: a failure fails the test with its error. */
+const okValue = <T>(result: ApiResult<T>): T => {
+  if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`);
+
+  return result.value;
+};
+
+describe("a Session that only follows an MCP task, over the MCP endpoint", () => {
+  it("reads idle, and only Stop all (`subagents`) reaches the task", async () => {
+    const { stub, server } = await following();
+
+    // Following is not work: the endpoint says idle, and a plain stop has no Run to stop.
+    expect(okValue(await stub.mcpStatus()).status).toBe("idle");
+
+    const plain = okValue(await stub.mcpStop({ via }));
+
+    expect(plain.status).toBe("idle");
+    expect(plain.stopping).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(server.tasks.get("task-1")?.status).toBe("working");
+
+    // Stop all is the owner's path to what a Session follows.
+    okValue(await stub.mcpStop({ via, subagents: true }));
+    await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
+    await followingNone(stub);
+    expect(okValue(await stub.mcpStatus()).status).toBe("idle");
+  });
+});
+
+describe("a server that never answers `tasks/cancel`", () => {
+  it("does not hold Stop all for longer than the bound: the cancels go out together and every record ends by Stop", async () => {
+    const { stub, wire, server } = await followingMany(2);
+
+    wire.hangCancel = true;
+
+    const started = Date.now();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
+
+    // Two cancels, each bounded at 2 s, concurrently: not 4 s.
+    expect(Date.now() - started).toBeLessThan(3500);
+    await settles(async () =>
+      expect(await records(stub)).toEqual([
+        { status: "cancelled", by: "stop" },
+        { status: "cancelled", by: "stop" },
+      ]),
+    );
+    await settles(async () => expect((await reportedTasks(stub)).at(-1)).toBe(0));
+    expect(callsOf(server, "tasks/cancel")).toBe(0);
+
+    // The agent is told in a notice, and no Run was started for it.
+    expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(2);
+
+    await submit(stub, "and?", "turn-9");
+    await finishedRuns(stub, 3);
+    expect((await requests(stub)).at(-1) ?? "").toContain("[MCP task notice | task=mcp-task-1");
+  });
+
+  it("does not hold the Session's deletion for longer than the bound either", async () => {
+    const { stub, wire } = await followingMany(2);
+
+    wire.hangCancel = true;
+
+    const started = Date.now();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.destroy());
+
+    expect(Date.now() - started).toBeLessThan(8000);
+  });
+});
+
+describe("a server a deploy of the host reached", () => {
+  it("is retried by the follower when the host's RPC breaks, and nothing is resent", async () => {
+    const { stub, server, environment } = await following();
+    const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+
+    await host.failRequests("tasks/get");
+
+    const polls = callsOf(server, "tasks/get");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    // Nothing reached the server, and the task is neither ended nor told of.
+    expect(callsOf(server, "tasks/get")).toBe(polls);
+    expect(await records(stub)).toEqual([{ status: "working" }]);
+    expect((await requests(stub)).join("\n")).not.toContain("MCP task ended");
+
+    await host.failRequests(undefined);
+    await settles(async () => expect(callsOf(server, "tasks/get")).toBeGreaterThan(polls));
+
+    expect(callsOf(server, "tools/call")).toBe(1);
+    expect(await records(stub)).toEqual([{ status: "working" }]);
+  });
+
+  it("is retried by the call inside the window when the host's RPC breaks, and `tools/call` goes out once", async () => {
+    const opened = await open({ ...TIMING, windowMs: 5000 });
+    const { stub, server, environment } = opened;
+    const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+
+    await script(stub, [REPORT({ region: "eu", polls: 40 }), "done"]);
+    await submit(stub, "report");
+    await settles(async () => expect(callsOf(server, "tasks/get")).toBeGreaterThanOrEqual(1));
+    await host.failRequests("tasks/get");
+    // One poll may have been on its way.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const polls = callsOf(server, "tasks/get");
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(callsOf(server, "tasks/get")).toBe(polls);
+    await host.failRequests(undefined);
+    await idle(stub);
+
+    expect(await results(stub)).toEqual([expect.stringContaining("report:eu")]);
+    expect(callsOf(server, "tools/call")).toBe(1);
+  });
+});
+
+describe("the alarm of a Session that only follows an MCP task", () => {
+  it("is the follower's own time to poll, not the heartbeat", async () => {
+    const { stub, server } = await following20s();
+
+    await settles(async () => expect(callsOf(server, "tasks/get")).toBeGreaterThanOrEqual(1));
+    await settles(async () => expect((await reportedTasks(stub)).at(-1)).toBe(1));
+
+    const alarm = await runInDurableObject(stub, (_instance: TestSession, state) =>
+      state.storage.getAlarm(),
+    );
+
+    const ahead = (alarm ?? 0) - Date.now();
+
+    // The poll is 20 s away, the heartbeat a minute: the alarm is the first.
+    expect(alarm).not.toBeNull();
+    expect(ahead).toBeGreaterThan(5000);
+    expect(ahead).toBeLessThanOrEqual(21_000);
+  });
+});
+
+/** `following`, with a poll every 20 s. */
+const following20s = async () => {
+  const opened = await open({ ...TIMING, pollMs: 20_000 });
+
+  await script(opened.stub, [REPORT({ polls: 100_000 }), "It runs in the background.", "Noted."]);
+  await submit(opened.stub, "report");
+  await finishedRuns(opened.stub, 1);
+  await idle(opened.stub);
+
+  return opened;
+};
+
+describe("the sweep at a wake", () => {
+  it("ends an inline task whose call is gone, cancelling it at the server once", async () => {
+    const { stub, server, environment } = await open();
+
+    // A call was made, so the Session kept its settings, the Environment among them, as any Session that has MCP tasks has.
+    await script(stub, ["Hello."]);
+    await submit(stub, "hi");
+    await idle(stub);
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.leaveOrphanMcpTask("task-orphan"),
+    );
+    expect(await records(stub)).toEqual([{ status: "working" }]);
+
+    const after = await evict(environment);
+
+    await settles(async () =>
+      expect(await records(after)).toEqual([{ status: "cancelled", by: "stop" }]),
+    );
+    expect(callsOf(server, "tasks/cancel")).toBe(1);
+  });
+});
+
+describe("the count of followed MCP tasks the Registry is told", () => {
+  it("is never told by a Session that never ran an MCP tool", async () => {
+    const stub = env.SESSIONS.getByName(`plain-${counter++}`);
+
+    await script(stub, ["Hello."]);
+    await submit(stub, "hi");
+    await idle(stub);
+    await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
+
+    expect(await reportedTasks(stub)).toEqual([]);
+  });
+
+  it("is remembered across an eviction, so the new instance does not tell it again", async () => {
+    const { stub, environment } = await following();
+
+    await settles(async () => expect(await reportedTasks(stub)).toEqual([1]));
+
+    const after = await evict(environment);
+
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(await reportedTasks(after)).toEqual([1]);
   });
 });

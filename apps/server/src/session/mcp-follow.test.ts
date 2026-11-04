@@ -8,6 +8,7 @@ const state = (extra: Partial<FollowState> = {}): FollowState => ({
   activeBranch: 1,
   copying: false,
   idle: true,
+  following: false,
   unsettled: false,
   stalled: false,
   newestEntry: 10,

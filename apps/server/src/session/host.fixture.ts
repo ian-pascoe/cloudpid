@@ -82,10 +82,12 @@ import type {
   WorkspaceChanges,
 } from "@cloudpid/protocol";
 import {
+  addTask,
   emptyMcpExtension,
   type McpHostClientService,
   type McpQuestionsService,
   rememberSampling,
+  McpTasksDoc,
   type McpTasksTiming,
 } from "@cloudpid/extensions/mcp";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
@@ -106,6 +108,7 @@ import {
   LiveDoc,
   ROOT_CONVERSATION_ID,
   type SnapshotEvent,
+  type TaskId,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -2096,6 +2099,59 @@ export class TestSession extends DurableObject {
           todo: await harness.harness.snapshot(TodoDoc, ROOT_CONVERSATION_ID, context),
           context: await harness.harness.snapshot(ContextDoc, ROOT_CONVERSATION_ID, context),
         }));
+      }),
+    );
+  }
+
+  /**
+   * Leave an inline MCP task's record whose call is no longer live, as a call that was cut off leaves it (`taskId` is
+   * the server's id for it): what the sweep ends.
+   */
+  leaveOrphanMcpTask(taskId: string): Promise<void> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+
+        yield* callDurable("commit", (context) =>
+          harness.harness.commit(async (tx) => {
+            addTask(await tx.doc(McpTasksDoc), {
+              taskId,
+              server: "docs",
+              tool: "report",
+              modelTool: "mcp__docs__report",
+              conn: "conn-docs",
+              transport: "http",
+              conversation: ROOT_CONVERSATION_ID,
+              agent: "root",
+              callId: "call-gone",
+              // SAFETY: the ID of no task that is live.
+              callTask: 987_654 as TaskId,
+              windowMs: 600_000,
+              createdAt: Date.now(),
+              ttlMs: null,
+              status: "working",
+            });
+          }, context),
+        );
+      }),
+    );
+  }
+
+  /** The Session's MCP task records, by handle: where each stands and who ended it. */
+  mcpTaskRecords(): Promise<Readonly<Record<string, { status: string; by?: string }>>> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+
+        const doc = yield* callDurable("snapshot", (context) =>
+          harness.harness.snapshot(McpTasksDoc, context),
+        );
+
+        return Record.map(doc?.tasks ?? {}, (task) =>
+          task.end === undefined
+            ? { status: task.status }
+            : { status: task.status, by: task.end.by },
+        );
       }),
     );
   }

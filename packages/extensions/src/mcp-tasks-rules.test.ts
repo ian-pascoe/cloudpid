@@ -5,6 +5,7 @@
 import {
   McpHostCallFailed,
   McpHostTaskAck,
+  MCP_TASK_TIMEOUT_MS,
   McpHostTaskState,
   type McpTaskSnapshot,
   NotFound,
@@ -15,7 +16,7 @@ import {
 } from "@cloudpid/mcp/types";
 import { ROOT_CONVERSATION_ID, type TaskId } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
-import { HostLost } from "./mcp/client.ts";
+import { HostLost, type McpHostClientService } from "./mcp/client.ts";
 import {
   backoffMs,
   clampPollMs,
@@ -23,6 +24,7 @@ import {
   durationText,
   endedHeader,
   endedText,
+  MCP_TASK_CANCEL_SENDING_MS,
   MCP_TASK_FAILURE_LIMIT_MS,
   MCP_TASK_RESULT_KEPT_MS,
   MCP_TASK_UNKNOWN_GRACE_MS,
@@ -32,7 +34,7 @@ import {
   windowMsOf,
 } from "./mcp/task-policy.ts";
 import { endedRecord } from "./mcp/task-end.ts";
-import { taskAttributes } from "./mcp/task-host.ts";
+import { cancelDue, taskAttributes } from "./mcp/task-host.ts";
 import { applyDecision, cancelTook, decide } from "./mcp/task-poll.ts";
 import { MCP_TASK_POOL_BYTES, resultPool, type StoredResult } from "./mcp/task-results.ts";
 import {
@@ -555,5 +557,39 @@ describe("the pool of task results", () => {
     );
 
     expect(note?.images).toBe(1);
+  });
+});
+
+describe("whether Stop all still has to send a `tasks/cancel`", () => {
+  // SAFETY: only its identity is read: no request is made.
+  const client = {} as McpHostClientService;
+
+  const cancelled = (cancel: McpTaskRecord["cancel"]) => {
+    const record = recordIn(state());
+
+    if (cancel !== undefined) record.cancel = cancel;
+
+    return record;
+  };
+
+  it("sends one for a task that was never asked to cancel", () => {
+    expect(cancelDue(client, cancelled(undefined), 5_000)).toBe(true);
+  });
+
+  it("sends none for a cancel that went, or failed, which is not asked again", () => {
+    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "sent" }), 500_000)).toBe(
+      false,
+    );
+    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "failed" }), 500_000)).toBe(
+      false,
+    );
+  });
+
+  it("leaves a `sending` one to its sender until it is older than the host's request bound", () => {
+    const sending = cancelled({ at: 1_000, by: "agent", sent: "sending" });
+
+    expect(cancelDue(client, sending, 1_000 + MCP_TASK_CANCEL_SENDING_MS - 1)).toBe(false);
+    expect(cancelDue(client, sending, 1_000 + MCP_TASK_CANCEL_SENDING_MS)).toBe(true);
+    expect(MCP_TASK_CANCEL_SENDING_MS).toBeGreaterThan(2 * MCP_TASK_TIMEOUT_MS);
   });
 });
