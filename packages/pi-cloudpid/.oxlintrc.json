@@ -1,0 +1,86 @@
+{
+  "$schema": "../../node_modules/@effect/tsgo/oxlint-schema.json",
+  "extends": ["../../.oxlintrc.json"],
+  "rules": {
+    // Replaces the root rule. The extension runs on the owner's laptop and bundles the SDK's client
+    // (docs/architecture/mcp-endpoint.md → The `/cloudpid` command), so the SDK rule of the Workers is replaced by what a
+    // laptop bundle must never reach: Workers code, and every other `@modelcontextprotocol/*` package. It may import
+    // only types from `@cloudpid/protocol`, whose Schemas pull `effect` and the Registry into the bundle.
+    "no-restricted-imports": [
+      "error",
+      {
+        "patterns": [
+          {
+            "group": ["cloudflare:*", "@cloudflare/**"],
+            "message": "pi-cloudpid runs on the owner's machine and must not import Workers code (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["alchemy", "alchemy/**", "@alchemy.run/**"],
+            "message": "pi-cloudpid must not import alchemy (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["@earendil-works/pi-durable", "@earendil-works/pi-durable/**"],
+            "message": "pi-cloudpid must not import pi-durable: it is the Workers side of cloudpid (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["@cloudpid/extensions", "@cloudpid/extensions/**"],
+            "message": "pi-cloudpid must not import @cloudpid/extensions (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["workerd", "workerd/**"],
+            "message": "pi-cloudpid must not import workerd (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "group": ["@modelcontextprotocol/**", "!@modelcontextprotocol/client"],
+            "message": "pi-cloudpid bundles the SDK's client and nothing else of it: not the server, core, an extension or a transport (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+          },
+          {
+            "regex": "^@cloudpid/protocol(/|$)",
+            "allowTypeImports": true,
+            "message": "pi-cloudpid imports only types from @cloudpid/protocol (`import type`): its Schemas pull effect and the Registry into the bundle, so the constants are copied (src/constants.ts, checked by constants.test.ts)."
+          }
+        ]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      // Tests and the stub endpoint build on cloudpid's own protocol values (`apiOk`, the tool table) and check the
+      // copied constants against them; none of them is in the bundle.
+      "files": ["**/*.test.ts", "**/*.fixture.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              {
+                "group": ["cloudflare:*", "@cloudflare/**"],
+                "message": "pi-cloudpid runs on the owner's machine and must not import Workers code (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+              },
+              {
+                "group": ["alchemy", "alchemy/**", "@alchemy.run/**"],
+                "message": "pi-cloudpid must not import alchemy (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+              },
+              {
+                "group": ["@earendil-works/pi-durable", "@earendil-works/pi-durable/**"],
+                "message": "pi-cloudpid must not import pi-durable: it is the Workers side of cloudpid (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+              },
+              {
+                "group": ["@cloudpid/extensions", "@cloudpid/extensions/**"],
+                "message": "pi-cloudpid must not import @cloudpid/extensions (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+              },
+              {
+                "group": ["workerd", "workerd/**"],
+                "message": "pi-cloudpid must not import workerd (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+              },
+              {
+                "group": ["@modelcontextprotocol/**", "!@modelcontextprotocol/client"],
+                "message": "pi-cloudpid bundles the SDK's client and nothing else of it: not the server, core, an extension or a transport (docs/architecture/mcp-endpoint.md → The `/cloudpid` command)."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

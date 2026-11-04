@@ -100,6 +100,55 @@ describe("only packages/mcp imports @modelcontextprotocol/*", () => {
   });
 });
 
+describe("packages/pi-cloudpid runs on the owner's machine", () => {
+  it("passes the SDK it bundles and what a laptop extension imports", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import { Client } from "@modelcontextprotocol/client";`, false],
+      [`import type { SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";`, false],
+      [`import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";`, false],
+      [`import { spawn } from "node:child_process";`, false],
+    ]);
+  });
+
+  it("fails what belongs to the Workers side", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import { env } from "cloudflare:workers";`, true],
+      [`import type { Fetcher } from "@cloudflare/workers-types";`, true],
+      [`import { Computer } from "@cloudflare/computer";`, true],
+      [`import "workerd";`, true],
+      [`import { Resource } from "alchemy";`, true],
+      [`import { Worker } from "alchemy/cloudflare";`, true],
+      [`import { Worker } from "@alchemy.run/cloudflare";`, true],
+      [`import { Harness } from "@earendil-works/pi-durable";`, true],
+      [`import { Todo } from "@cloudpid/extensions/todo";`, true],
+      [`import { Todo } from "@cloudpid/extensions";`, true],
+    ]);
+  });
+
+  it("imports the SDK's client and nothing else of the SDK", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import { Client } from "@modelcontextprotocol/client";`, false],
+      [`import { createMcpHandler } from "@modelcontextprotocol/server";`, true],
+      [`import { ZodError } from "@modelcontextprotocol/core";`, true],
+      [`import { tasks } from "@modelcontextprotocol/ext-tasks";`, true],
+      [`import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";`, true],
+    ]);
+  });
+
+  it("imports only types from @cloudpid/protocol", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import type { SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";`, false],
+      [`import { type SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";`, false],
+      [`import type { MAX_TITLE_LENGTH } from "@cloudpid/protocol";`, false],
+      [`export type { ApiResult } from "@cloudpid/protocol/mcp-api";`, false],
+      [`import { MAX_TITLE_LENGTH } from "@cloudpid/protocol";`, true],
+      [`import { apiOk } from "@cloudpid/protocol/mcp-api";`, true],
+      [`import { type ApiResult, apiOk } from "@cloudpid/protocol/mcp-api";`, true],
+      [`import "@cloudpid/protocol/mcp-tools";`, true],
+    ]);
+  });
+});
+
 describe("apps/web imports types only from @modelcontextprotocol/ext-apps", () => {
   it("passes a type-only import and fails every other", async () => {
     await check("apps/web", [

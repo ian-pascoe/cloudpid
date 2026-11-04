@@ -1,0 +1,35 @@
+{
+  "name": "@cloudpid/pi-cloudpid",
+  "version": "0.0.0",
+  "private": true,
+  "description": "pi extension: /cloudpid imports the active pi Session into cloudpid",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "node build.ts",
+    "typecheck": "effect-tsgo tsrs",
+    "lint": "oxlint",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.4.0",
+    "effect": "^4.0.6"
+  },
+  "devDependencies": {
+    "@cloudpid/config": "workspace:*",
+    "@cloudpid/mcp": "workspace:*",
+    "@cloudpid/protocol": "workspace:*",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@types/node": "^26.6.5"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
