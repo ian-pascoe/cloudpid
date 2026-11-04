@@ -420,9 +420,9 @@ describe("pages attached to a message", () => {
 
     await runInDurableObject(stub, (instance: TestSession) => {
       instance.script(["Three."]);
-      instance.setOwnerTabPages([
-        { ownerTabId: "slow", url: "https://slow.example/", title: "Slow" },
-      ]);
+      instance.setOwnerTabPages([SHOWN]);
+      // The first message's page read never ends of itself.
+      instance.holdOwnerTabReads();
     });
 
     const owner = await connect(stub);
@@ -432,12 +432,17 @@ describe("pages attached to a message", () => {
       id: "s-1",
       input: "first",
       requestId: "r-1",
-      pages: [{ ownerTabId: "slow" }],
+      pages: [{ ownerTabId: SHOWN.ownerTabId }],
     });
     owner.send({ type: "submit", id: "s-2", input: "second" });
 
-    // The first is being prepared (its slow page read takes 150 ms), and the second waits behind it.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The first is being prepared, its page read under way, and the second waits behind it.
+    await poll(
+      async () =>
+        (await runInDurableObject(stub, (instance: TestSession) => instance.ownerTabReads()))
+          .length > 0,
+      () => "The first message's page was never read",
+    );
 
     owner.send({ type: "abort", id: "stop" });
 
