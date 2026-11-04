@@ -666,7 +666,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     send({
       type: "page_visible",
       id: nextCommandId(),
-      visible: typeof document === "undefined" || document.visibilityState === "visible",
+      // Only a page that says it is hidden is: one with no document, or a test's stub of one, is not.
+      visible: typeof document === "undefined" || document.visibilityState !== "hidden",
     });
   };
 
@@ -1660,8 +1661,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       ),
   });
 
-  // The page's visibility, as it changes (a page with no document, a test's, is always visible).
-  if (typeof document !== "undefined") {
+  // The page's visibility, as it changes (a page with no document, or a test's stub with no events, never changes).
+  if (typeof document !== "undefined" && "addEventListener" in document) {
     yield* Effect.acquireRelease(
       Effect.sync(() => {
         document.addEventListener("visibilitychange", sendVisibility);

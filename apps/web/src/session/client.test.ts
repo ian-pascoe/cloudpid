@@ -3082,6 +3082,25 @@ describe("the App calls on a Session connection", () => {
       }),
   );
 
+  it.effect("connects on a page whose `document` is a stub with no events or visibility", () =>
+    Effect.gen(function* () {
+      vi.stubGlobal("document", { body: {} });
+
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          vi.unstubAllGlobals();
+        }),
+      );
+
+      const { latest } = yield* setup();
+
+      yield* greeted(latest(), { appViews: true });
+
+      // Nothing says it is hidden, so it is not.
+      expect(latest().visibility()).toEqual([true]);
+    }),
+  );
+
   it.effect(
     "fails a View's request that the dropped socket had in flight, saying the connection was lost",
     () =>
