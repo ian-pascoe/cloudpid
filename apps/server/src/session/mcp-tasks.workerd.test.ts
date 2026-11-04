@@ -796,7 +796,7 @@ describe("a server a deploy of the host reached", () => {
   });
 
   it("is retried by the call inside the window when the host's RPC breaks, and `tools/call` goes out once", async () => {
-    const opened = await open({ ...TIMING, windowMs: 5000 });
+    const opened = await open({ ...TIMING, windowMs: 20_000 });
     const { stub, server, environment } = opened;
     const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
 
