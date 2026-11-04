@@ -176,6 +176,12 @@ export const ResumeStateV1 = Schema.Struct({
   deferred: Schema.Array(Schema.String),
   /** Which round of questions this is, from 1. */
   round: Schema.Int,
+  /**
+   * A Legacy server's `-32042` (URL elicitation required) rather than a Modern round: the call ran nothing, so a resume
+   * sends it again as it was, with nothing added (`answered` is empty), once every page is answered `accept`; any other
+   * answer fails it with the server's own error, `message`. Absent from a Modern round's.
+   */
+  urlRequired: Schema.optionalKey(Schema.Struct({ message: Schema.String })),
 });
 
 export type ResumeStateV1 = typeof ResumeStateV1.Type;
@@ -953,6 +959,11 @@ export interface McpEngineHooks {
    * Deprecation). A hook that fails or is slow fails nothing. An engine from before never calls it.
    */
   readonly onDeprecated?: (feature: string) => void | Promise<void>;
+  /**
+   * The owner finished at the page URL question `key` asked them to open: the server said so on the call's own stream
+   * (`notifications/elicitation/complete`), and the caller closes its card. The host keeps no `elicitationId`.
+   */
+  readonly onInputComplete?: (key: string) => void | Promise<void>;
 }
 
 /** `McpEngine`'s arguments as they cross RPC, encoded; the engine decodes each. */
@@ -1264,6 +1275,11 @@ export interface McpHostRequestHooks {
   ) => Promise<typeof McpInputAnswer.Encoded>;
   /** The server stopped waiting for question `key` (its own cancellation): the caller withdraws its card. */
   readonly onInputEnded?: (key: string) => void | Promise<void>;
+  /**
+   * The owner finished at the page URL question `key` asked them to open: the server said so on the call's own stream
+   * (`notifications/elicitation/complete`), and the caller closes its card. The host keeps no `elicitationId`.
+   */
+  readonly onInputComplete?: (key: string) => void | Promise<void>;
 }
 
 /** The request completed: the server's result (a `tools/call`'s, `isError` included) and how it fits the output schema. */

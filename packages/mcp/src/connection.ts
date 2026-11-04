@@ -53,6 +53,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import type * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -102,6 +103,7 @@ import {
   McpTaskSnapshot,
   ProtocolViolation,
   ResumeStateV1,
+  ServerError,
   type SessionRow,
   SessionRowV1,
   SignInRequired,
@@ -184,6 +186,11 @@ export interface McpDeps {
   readonly onInputEnded?: (key: string) => void;
   /** The server sent a request that uses a feature the spec deprecated (`"sampling"`), however it ends. Fails nothing. */
   readonly onDeprecated?: (feature: string) => void;
+  /**
+   * The owner finished at the page that URL question `key` asked them to open: the server said so on the call's own
+   * stream (`notifications/elicitation/complete`), and the question is closed. Never for a completion on another stream.
+   */
+  readonly onInputComplete?: (key: string) => void;
 }
 
 /** A `notifications/message` as the server sent it: the level, the logger's name and the data, any JSON. */
@@ -305,6 +312,9 @@ export interface CallToolParams {
   readonly arguments?: Readonly<Record<string, Schema.Json>>;
 }
 
+/** The JSON-RPC code of a Legacy server's "URL elicitation required" error. */
+const URL_REQUIRED_CODE = ProtocolErrorCode.UrlElicitationRequired;
+
 /** The most the SDK's own timer may be given: the core's deadline is the one that ends a call. */
 const SDK_TIMER_MAX_MS = 2_147_483_647;
 
@@ -324,6 +334,10 @@ interface Asking {
   readonly waitMs: number;
   readonly pause: Effect.Effect<void>;
   readonly resume: Effect.Effect<void>;
+  /** The call's token, which a page's completion notice is told under. */
+  readonly token: string;
+  /** Succeeds when the call is over: a page the owner opened is no longer waited for. */
+  readonly over: Deferred.Deferred<void>;
 }
 
 /** One connection to one MCP server (The MCP core #394 D7). */
@@ -428,7 +442,8 @@ interface RequestPolicy {
 /** What a `tools/call` attempt got: the task wire's answer, or the client's result (on Modern, maybe `input_required`). */
 type CallSent =
   | { readonly kind: "wire"; readonly answer: Result }
-  | { readonly kind: "client"; readonly value: CallToolResult | Result };
+  | { readonly kind: "client"; readonly value: CallToolResult | Result }
+  | { readonly kind: "url"; readonly answer: UrlRequired };
 
 /** A `tools/call` sent again with the answers to a round of questions (Modern; ADR-0037). */
 interface Retry {
@@ -455,8 +470,22 @@ type ReadParams = { readonly uri: string; readonly _meta?: RequestMeta };
 const noDeferral = (ctx: McpCallContext): McpCallContext =>
   ctx.answers?.defer === undefined ? ctx : { ...ctx, answers: Struct.omit(ctx.answers, ["defer"]) };
 
-/** What a `tools/call` attempt came to: an outcome, or a round of questions to answer. */
-type CallAnswer = Outcome<CallToolResult> | Asked;
+/**
+ * A Legacy server's `-32042` (URL elicitation required): it refused the call before running it, until the owner has
+ * opened the pages it lists. `elicitations` are those pages as the server sent them (`mode: "url"`, `elicitationId`,
+ * `url`, `message`), and `message` is the server's own error.
+ */
+interface UrlRequired {
+  readonly kind: "url_required";
+  readonly message: string;
+  readonly elicitations: ReadonlyArray<{
+    readonly elicitationId: string;
+    readonly page: JsonObject;
+  }>;
+}
+
+/** What a `tools/call` attempt came to: an outcome, a round of questions to answer, or a Legacy server's `-32042`. */
+type CallAnswer = Outcome<CallToolResult> | Asked | UrlRequired;
 
 /** What a request on the task wire is given beside its method and params. */
 interface WireOptions {
@@ -867,6 +896,18 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         ),
       );
 
+      const answerOf = (given: Effect.Success<typeof answered>): QuestionAnswer => {
+        if (given.kind === "defer") return none;
+
+        if (sampling) {
+          return given.kind === "answered"
+            ? unsampled("cloudpid could not answer the sampling request", MCP_INTERNAL_ERROR)
+            : given;
+        }
+
+        return given.kind === "sampled" ? cancelled : given;
+      };
+
       // The server stopped waiting (its own `notifications/cancelled`): the question is withdrawn.
       const stopped = Effect.callback<"ended">((resume) => {
         if (ended.aborted) return resume(Effect.succeed("ended"));
@@ -878,26 +919,88 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         return Effect.sync(() => ended.removeEventListener("abort", onEnd));
       });
 
+      // A page's completion is heard from the ask on: the owner may finish there before they have answered.
+      const page =
+        "mode" in params && params.mode === "url"
+          ? yield* listenForPage(call, params.elicitationId)
+          : undefined;
+
+      const finished = page === undefined ? stopped : Effect.raceFirst(stopped, page.completed);
+
       yield* call.pause;
 
-      const outcome = yield* Effect.raceFirst(answered, stopped).pipe(Effect.ensuring(call.resume));
+      const askedAt = yield* Clock.currentTimeMillis;
+
+      const outcome = yield* Effect.raceFirst(answered, finished).pipe(
+        Effect.onInterrupt(() => Effect.andThen(call.resume, page?.forget ?? Effect.void)),
+      );
+
+      if (outcome === "complete") {
+        yield* Effect.andThen(call.resume, page?.forget ?? Effect.void);
+        deps.onInputComplete?.(key);
+
+        return cancelled;
+      }
 
       if (outcome === "ended") {
+        yield* Effect.andThen(call.resume, page?.forget ?? Effect.void);
         deps.onInputEnded?.(key);
 
         return none;
       }
 
-      // A Legacy question lives only as long as its call: one kept for later is cancelled, or refused (ADR-0037).
-      if (outcome.kind === "defer") return none;
+      // A Legacy question lives only as long as its call: one kept for later is cancelled, or refused (ADR-0037); an
+      // answer of the other kind is one the Session should never give: a form is cancelled, a sample refused.
+      const answer = answerOf(outcome);
 
-      // An answer of the other kind is one the Session should never give: a form is cancelled, a sample refused.
-      if (sampling)
-        return outcome.kind === "answered"
-          ? unsampled("cloudpid could not answer the sampling request", MCP_INTERNAL_ERROR)
-          : outcome;
+      // A page the owner opened: the server goes on at once, and the call's clock stays stopped until the owner has
+      // finished there (the server says so on this call's stream), the call ends, or the bound passes.
+      if (page !== undefined && answer.kind === "answered" && answer.result.action === "accept") {
+        yield* Effect.forkDetach(awaitPage(call, page, key, askedAt));
+      } else {
+        yield* Effect.andThen(call.resume, page?.forget ?? Effect.void);
+      }
 
-      return outcome.kind === "sampled" ? cancelled : outcome;
+      return answer;
+    });
+
+  /** Hears the completion of the URL question `elicitationId` on `call`'s stream, from now until `forget`. */
+  const listenForPage = (call: Asking, elicitationId: string) =>
+    Effect.gen(function* () {
+      const completed = yield* Deferred.make<"complete">();
+
+      const forget = ties.onComplete(call.token, elicitationId, () =>
+        Effect.runForkWith(context)(Deferred.succeed(completed, "complete" as const)),
+      );
+
+      return { completed: Deferred.await(completed), forget: Effect.sync(forget) };
+    });
+
+  /**
+   * Holds the clock of `call`, stopped for the page that question `key` asked the owner to open, until the server says the
+   * owner finished there (`onInputComplete`), the call ends, or the call's bound from the ask passes (`onInputEnded`:
+   * the card is withdrawn).
+   */
+  const awaitPage = (
+    call: Asking,
+    page: Effect.Success<ReturnType<typeof listenForPage>>,
+    key: string,
+    askedAt: number,
+  ) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const remaining = Math.max(0, call.waitMs - (now - askedAt));
+
+      const ended = yield* Effect.raceFirst(
+        page.completed,
+        Effect.raceFirst(
+          Effect.as(Deferred.await(call.over), "over" as const),
+          Effect.as(Effect.sleep(Duration.millis(remaining)), "bound" as const),
+        ),
+      ).pipe(Effect.ensuring(Effect.andThen(page.forget, call.resume)));
+
+      if (ended === "complete") deps.onInputComplete?.(key);
+      else if (ended === "bound") deps.onInputEnded?.(key);
     });
 
   /** Whether the server is asked for logs: `onLog` hears them, and the server declares `logging`. */
@@ -1245,6 +1348,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           )
         : undefined;
 
+      const over = yield* Deferred.make<void>();
+
       if (askable && deadline !== undefined) {
         asking.set(token, {
           offers: new Set<McpInputRequest["kind"]>([
@@ -1256,6 +1361,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
             (answers.sampling === true ? MCP_SAMPLING_WAIT_MS : MCP_ELICITATION_WAIT_MS),
           pause: deadline.pause,
           resume: deadline.resume,
+          token,
+          over,
         });
       }
 
@@ -1263,14 +1370,27 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         Effect.ensuring(
           Effect.andThen(
             deadline === undefined ? Effect.void : deadline.clear,
-            Effect.sync(() => {
-              asking.delete(token);
-              ties.release(token);
-            }),
+            Effect.andThen(
+              Effect.sync(() => {
+                asking.delete(token);
+                ties.release(token);
+              }),
+              Deferred.succeed(over, undefined),
+            ),
           ),
         ),
       );
     });
+
+  /**
+   * Whether a Legacy server's `-32042` may be kept for the owner: the call can answer an elicitation, keeps its questions
+   * for later (`ctx.answers.defer`) and has an `onInput` to ask. For any other call it is the server's error.
+   */
+  const mayKeepPages = (ctx: McpCallContext) =>
+    live.era === "legacy" &&
+    deps.onInput !== undefined &&
+    ctx.answers?.elicitation === true &&
+    ctx.answers.defer === true;
 
   /**
    * Sends a tool's call once, or with `retry` the answers to a round of questions. Whether the call is offered a task
@@ -1304,12 +1424,22 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
                 )
               : callOnClient(client, params, ctx, signal, own, retry).then(
                   (value) => ({ kind: "client", value }) as const,
+                  (error: Error) => {
+                    // A `-32042` is a question for a call that keeps them; to any other it is the server's error.
+                    const url = mayKeepPages(ctx) ? urlRequiredOf(error) : undefined;
+
+                    return url === undefined
+                      ? Promise.reject(error)
+                      : ({ kind: "url", answer: url } as const);
+                  },
                 );
           },
           true,
           { declared: () => offersTask(ctx) },
         ),
       );
+
+      if (sent.kind === "url") return sent.answer;
 
       return yield* sent.kind === "wire"
         ? readCallAnswer(sent.answer)
@@ -1383,6 +1513,73 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     });
 
   /**
+   * A Legacy server's `-32042`, round `round` of its call: the call ran nothing, so it waits for the owner and is sent
+   * again. Each page it lists goes to `onInput` as a question to keep (`defer`), and the call ends as `input_required`
+   * with a `ResumeState` that `resume` sends the original request again from, on a new id, once every page is answered
+   * `accept`. A page the caller does not keep (it declined it unseen), and the call's eleventh `-32042`, end the call
+   * with the server's own error: the latter says the server kept asking, and the call is never sent again.
+   */
+  const keepPages = (
+    params: CallToolParams,
+    ctx: McpCallContext,
+    answer: UrlRequired,
+    round: number,
+  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    Effect.gen(function* () {
+      const { onInput } = deps;
+      const error = ServerError.make({ message: answer.message, code: URL_REQUIRED_CODE });
+
+      if (round > MCP_INPUT_ROUNDS) {
+        return yield* ServerError.make({
+          message: `${answer.message}. ${target.name ?? "The server"} kept asking for the same page; stopped after ${MCP_INPUT_ROUNDS} tries`,
+          code: URL_REQUIRED_CODE,
+        });
+      }
+
+      const deferred: Array<McpInputRequest> = [];
+
+      for (const { elicitationId, page } of answer.elicitations) {
+        const input: McpInputRequest = {
+          key: elicitationId,
+          kind: "elicitation",
+          params: page,
+          mode: "deferrable",
+        };
+
+        const kept = onInput === undefined ? undefined : yield* onInput(input);
+
+        if (kept?.kind !== "defer") return yield* error;
+
+        deferred.push(input);
+      }
+
+      const state: ResumeStateV1 = {
+        v: 1,
+        method: "tools/call",
+        name: params.tool.name,
+        arguments: { ...params.arguments },
+        answered: {},
+        deferred: Arr.map(deferred, (each) => each.key),
+        round,
+        urlRequired: { message: answer.message },
+      };
+
+      if (jsonBytes(state) > MCP_RESUME_STATE_MAX_BYTES) {
+        return yield* TooLarge.make({
+          message: "The server's questions are too large to keep for later",
+          limit: MCP_RESUME_STATE_MAX_BYTES,
+        });
+      }
+
+      return {
+        kind: "input_required",
+        requests: deferred,
+        resume: state,
+        fetchedAt: yield* Clock.currentTimeMillis,
+      } satisfies InputRequired;
+    });
+
+  /**
    * Runs a Modern call's rounds of questions from `answer`: each round's questions are answered (Roots by the core, the
    * rest through `onInput`), then the call is sent again with every answer and the server's `requestState`, on a new
    * id, at most `MCP_INPUT_ROUNDS` rounds. A round with a question the caller deferred ends here, as `input_required`
@@ -1399,7 +1596,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       let answer = first;
       let round = firstRound;
 
-      while (answer.kind === "asked") {
+      while (answer.kind === "asked" || answer.kind === "url_required") {
+        if (answer.kind === "url_required") return yield* keepPages(params, ctx, answer, round);
+
         if (round > MCP_INPUT_ROUNDS) {
           return yield* ProtocolViolation.make({
             message: `The server asked questions for more than ${MCP_INPUT_ROUNDS} rounds`,
@@ -1477,6 +1676,26 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         return yield* Unsupported.make({
           message: `The resume answers too few questions: ${Arr.join(missing, ", ")} unanswered`,
         });
+      }
+
+      // A Legacy server's `-32042`: the original request goes again, as it was, once the owner has opened every page. Any
+      // other answer ends the call with the server's own error, which nothing sent again can change.
+      if (state.urlRequired !== undefined) {
+        if (Arr.some(state.deferred, (key) => answers[key]?.["action"] !== "accept")) {
+          return yield* ServerError.make({
+            message: state.urlRequired.message,
+            code: URL_REQUIRED_CODE,
+          });
+        }
+
+        const again: CallToolParams = {
+          tool: { ...tool, name: state.name },
+          arguments: state.arguments,
+        };
+
+        return yield* Effect.flatMap(sendCall(again, ctx), (answer) =>
+          drive(again, ctx, answer, state.round + 1),
+        );
       }
 
       const inputResponses: Record<string, JsonObject> = { ...state.answered };
@@ -2053,6 +2272,42 @@ const jsonObjectOf = (
     | CreateMessageRequestParams
     | undefined,
 ) => Option.getOrElse(toJsonObject(JSON.stringify(value ?? {})), () => ({}));
+
+/** The pages a `-32042` lists (`ElicitRequestURLParams`): each is a question of URL mode. */
+const decodeUrlElicitations = Schema.decodeUnknownOption(
+  Schema.Struct({
+    elicitations: Schema.NonEmptyArray(
+      Schema.Struct({
+        mode: Schema.Literal("url"),
+        elicitationId: Schema.String,
+        url: Schema.String,
+        message: Schema.String,
+      }),
+    ),
+  }),
+);
+
+/** A Legacy server's `-32042` and the pages it lists, when `error` is one that lists any. */
+const urlRequiredOf = (error: Error): UrlRequired | undefined => {
+  if (
+    !(error instanceof ProtocolError) ||
+    error.code !== ProtocolErrorCode.UrlElicitationRequired
+  ) {
+    return undefined;
+  }
+
+  return Option.match(decodeUrlElicitations(error.data), {
+    onNone: () => undefined,
+    onSome: ({ elicitations }) => ({
+      kind: "url_required",
+      message: error.message,
+      elicitations: Arr.map(elicitations, (page) => ({
+        elicitationId: page.elicitationId,
+        page: { ...page },
+      })),
+    }),
+  });
+};
 
 /** How many bytes `value` weighs as JSON. */
 const jsonBytes = (value: Schema.Json) =>
