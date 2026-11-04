@@ -131,6 +131,15 @@ export const mcpAccessProps = <
 export const MCP_CALLS_BINDING = "MCP_CALLS";
 
 /**
+ * The period of `MCP_CALLS`, in seconds: what a caller over the rate is told to wait at most. Here, not in `mcp/api.ts`,
+ * so that the Worker's props (`worker.ts`) import nothing of the endpoint's.
+ */
+export const MCP_CALLS_PERIOD_S = 60;
+
+/** The calls per period of `MCP_CALLS`, per identity. */
+export const MCP_CALLS_LIMIT = 120;
+
+/**
  * The `MCP_CALLS` namespace id of `stage`: a positive integer the runtime counts a key in. Counters are per namespace and
  * Workers of one account may share one, so a preview stage must not count in `prod`'s: each stage's is a hash of its name
  * (FNV-1a), moved above the small numbers a hand-written namespace would use.

@@ -10,16 +10,20 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 
-/** The client document's path and the callback's (`sign-in-routes.ts` routes them; the origin goes before). */
-const DOCUMENT_PATH = "/oauth/mcp/client.json";
+/**
+ * The client document's path: public on every deployed stage (`sign-in-routes.ts` routes it; the origin goes before). Here,
+ * not in `sign-in-routes.ts`, so that the Worker's props (`bypass-access.ts`) import none of the routes.
+ */
+export const CLIENT_DOCUMENT_PATH = "/oauth/mcp/client.json";
 
-const CALLBACK_PATH = "/oauth/mcp/callback";
+/** The OAuth callback's path: public on every deployed stage, with an optional 12-character issuer hash below it. */
+export const CALLBACK_PATH = "/oauth/mcp/callback";
 
 /** The two origins of `alchemy dev` (the stage's `Host`es there): workerd's own, and Vite's, which proxies the sign-in paths. */
 const LOCAL_ORIGINS: ReadonlyArray<string> = ["http://localhost:1337", "http://localhost:5173"];
 
 /** The client document's URL, which is the client id at an authorization server that supports it. */
-export const clientDocumentUrl = (origin: string): string => `${origin}${DOCUMENT_PATH}`;
+export const clientDocumentUrl = (origin: string): string => `${origin}${CLIENT_DOCUMENT_PATH}`;
 
 /** The redirect URI of a sign-in that does not use an issuer hash: the callback itself. */
 export const callbackUrl = (origin: string): string => `${origin}${CALLBACK_PATH}`;

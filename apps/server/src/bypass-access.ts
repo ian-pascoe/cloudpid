@@ -5,7 +5,7 @@
 
 import * as Effect from "effect/Effect";
 import { appHost } from "./mcp-access.ts";
-import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./sign-in-routes.ts";
+import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";
 
 /**
  * The Bypass application's props: `self_hosted` with exactly two `public` destinations, `<host>/oauth/mcp/client.json`

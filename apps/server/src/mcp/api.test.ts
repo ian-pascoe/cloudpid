@@ -16,8 +16,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionRefusal } from "../registry/store.ts";
 import { endedBy } from "../session/mcp-follow.ts";
 import type { FollowState } from "../session/mcp-reads.ts";
+import { MCP_CALLS_PERIOD_S } from "../mcp-access.ts";
 import {
-  MCP_CALLS_PERIOD_S,
   identityOf,
   tooManyRunning,
   mcpApiService,
