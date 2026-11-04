@@ -334,3 +334,747 @@ describe("a Legacy server's GET stream", () => {
     await expect.poll(() => cancelled).toBe(true);
   });
 });
+
+const KiB = 1024;
+
+type Json =
+  | null
+  | boolean
+  | number
+  | string
+  | ReadonlyArray<Json>
+  | { readonly [key: string]: Json };
+
+/** One SSE `message` event carrying `data` (a JSON-RPC message, or a batch of them), with an event id and a `retry` when given. */
+const event = (data: Json, options: { id?: string; retry?: number } = {}) =>
+  `${options.id === undefined ? "" : `id: ${options.id}\n`}${options.retry === undefined ? "" : `retry: ${options.retry}\n`}event: message\ndata: ${JSON.stringify(data)}\n\n`;
+
+/** A priming event: an event id and a `retry`, no data (what a server that polls sends first). */
+const priming = (id: string, retry?: number) =>
+  `id: ${id}\n${retry === undefined ? "" : `retry: ${retry}\n`}data:\n\n`;
+
+const stream = (...parts: ReadonlyArray<string>) =>
+  new Response(parts.join(""), { headers: { "content-type": "text/event-stream" } });
+
+/** An SSE response of `parts`, each its own chunk, or split into chunks of `size` bytes. */
+const chunked = (parts: ReadonlyArray<string>, size?: number) => {
+  const encoded = new TextEncoder();
+  const bytes = encoded.encode(parts.join(""));
+
+  const sizes = size === undefined ? parts.map((part) => encoded.encode(part).byteLength) : [];
+
+  let at = 0;
+  let index = 0;
+
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const length = size ?? sizes[index];
+
+        if (length === undefined || at >= bytes.byteLength) {
+          controller.close();
+
+          return;
+        }
+
+        controller.enqueue(bytes.slice(at, at + length));
+        at += length;
+        index += 1;
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+};
+
+/** An SSE response of `bytes`, cut into chunks of `size` bytes, which may split a multi-byte character. */
+const byteChunks = (bytes: Uint8Array, size: number) => {
+  let at = 0;
+
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (at >= bytes.byteLength) {
+          controller.close();
+
+          return;
+        }
+
+        controller.enqueue(bytes.slice(at, at + size));
+        at += size;
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+};
+
+/** The start of an event that is exactly `bytes` bytes long (without its blank line), none of it a line ending. */
+const eventOfSize = (bytes: number, filler = "x") =>
+  `data: ${filler.repeat((bytes - 6) / new TextEncoder().encode(filler).byteLength)}`;
+
+const answerOf = (rpc: RpcBody, text: string) => ({
+  jsonrpc: "2.0",
+  id: rpc.id ?? null,
+  result: { content: [{ type: "text", text }] },
+});
+
+/** A notification of about `bytes` bytes. */
+const bulky = (bytes: number) => ({
+  jsonrpc: "2.0",
+  method: "notifications/message",
+  params: { level: "info", data: "x".repeat(bytes) },
+});
+
+/**
+ * `base`, whose `tools/call` is answered with `first`, and whose `GET` carrying a `Last-Event-ID` is answered by
+ * `resumed`, given the call's JSON-RPC message and the id it asked to resume after.
+ */
+const resumable = (
+  base: FakeServer,
+  first: (rpc: RpcBody) => Response,
+  resumed: (rpc: RpcBody, lastEventId: string, resumes: number) => Response,
+) => {
+  let call: RpcBody | undefined;
+  let resumes = 0;
+
+  return hostileServer(base, (request, rpc) => {
+    if (rpc?.method === "tools/call") {
+      call = rpc;
+
+      return first(rpc);
+    }
+
+    const lastEventId = request.headers.get("last-event-id");
+
+    if (request.method === "GET" && lastEventId !== null && call !== undefined) {
+      resumes += 1;
+
+      return resumed(call, lastEventId, resumes);
+    }
+
+    return undefined;
+  });
+};
+
+/** The `Last-Event-ID`s the server was asked to resume after. */
+const resumedAfter = (server: FakeServer) =>
+  server.received.flatMap((received) => {
+    const id = received.headers.get("last-event-id");
+
+    return received.method === "GET" && id !== null ? [id] : [];
+  });
+
+const callsOf = (server: FakeServer) =>
+  rpcMethods(server).filter((method) => method === "tools/call");
+
+const legacyBases = bases.filter(([name]) => name !== "Modern");
+
+describe.each(legacyBases)("a %s server that ends a call's stream early", (_name, base) => {
+  it("is resumed with GET and Last-Event-ID to the answer", async () => {
+    const server = resumable(
+      base(),
+      (rpc) => stream(priming("a-1", 2000), event(progress(rpc), { id: "a-2" })),
+      (rpc, lastEventId) =>
+        stream(event(answerOf(rpc, `resumed after ${lastEventId}`), { id: "a-3" })),
+    );
+
+    const { clock, slept } = recordingClock();
+    const { called } = await attempt(server, clock);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "resumed after a-2" }] });
+    expect(resumedAfter(server)).toEqual(["a-2"]);
+    expect(slept).toEqual([2000]);
+    expect(callsOf(server)).toHaveLength(1);
+
+    const resume = server.received.find((received) => received.headers.has("last-event-id"));
+    const post = server.received.find((received) => received.rpc?.method === "tools/call");
+
+    expect(resume?.headers.get("accept")).toContain("text/event-stream");
+    expect(resume?.headers.get("mcp-session-id")).toEqual(post?.headers.get("mcp-session-id"));
+    expect(resume?.headers.get("mcp-protocol-version")).toEqual(
+      post?.headers.get("mcp-protocol-version"),
+    );
+  });
+
+  it("is resumed again for as long as each resume brings an event id (SSE polling)", async () => {
+    const server = resumable(
+      base(),
+      () => stream(priming("p-1", 500)),
+      (rpc, lastEventId, resumes) =>
+        resumes < 4
+          ? stream(priming(`p-${resumes + 1}`))
+          : stream(event(answerOf(rpc, `answered after ${lastEventId}`), { id: "p-5" })),
+    );
+
+    const { clock, slept } = recordingClock();
+    const { called } = await attempt(server, clock);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "answered after p-4" }] });
+    expect(resumedAfter(server)).toEqual(["p-1", "p-2", "p-3", "p-4"]);
+    expect(slept).toEqual([500, 500, 500, 500]);
+  });
+
+  it.each([
+    ["no retry", undefined, 1000],
+    ["a retry under 0.5 s", 100, 500],
+    ["a retry over 10 s", 60_000, 10_000],
+    ["a retry of 3 s", 3000, 3000],
+  ])("waits %s out: %s ms is %s ms", async (_what, retry, waited) => {
+    const server = resumable(
+      base(),
+      () => stream(priming("a-1", retry)),
+      (rpc) => stream(event(answerOf(rpc, "done"))),
+    );
+
+    const { clock, slept } = recordingClock();
+
+    await attempt(server, clock);
+
+    expect(slept).toEqual([waited]);
+  });
+
+  it("keeps the event an early end left unfinished from the first resumed one", async () => {
+    const server = resumable(
+      base(),
+      (rpc) =>
+        stream(
+          priming("a-1"),
+          `id: a-2\nevent: message\ndata: ${JSON.stringify(progress(rpc)).slice(0, 30)}`,
+        ),
+      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
+    expect(resumedAfter(server)).toEqual(["a-1"]);
+  });
+
+  it("keeps an event the early end left unfinished after a line ending from the first resumed one", async () => {
+    // The unfinished event is a whole answer short of its blank line: dispatched, it would answer the call.
+    const server = resumable(
+      base(),
+      (rpc) =>
+        stream(
+          priming("a-1"),
+          `id: a-2\nevent: message\ndata: ${JSON.stringify(answerOf(rpc, "premature"))}\n`,
+        ),
+      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
+    expect(resumedAfter(server)).toEqual(["a-1"]);
+  });
+
+  it.each([
+    ["a CR after the line's LF", "\n\r"],
+    ["two CRs", "\r\r"],
+  ])("settles a stream whose answer ends in %s, event id or not", async (_what, ending) => {
+    // The SDK's parser holds a CR at the end of a chunk back for a LF, and has nothing to flush it with.
+    for (const id of ["a-1", undefined]) {
+      const server = resumable(
+        base(),
+        (rpc) =>
+          stream(
+            `${id === undefined ? "" : `id: ${id}\n`}event: message\ndata: ${JSON.stringify(answerOf(rpc, "bare CR"))}${ending}`,
+          ),
+        (rpc) => stream(event(answerOf(rpc, "never asked for"))),
+      );
+
+      const { called } = await attempt(server);
+
+      expect(called).toEqual({ content: [{ type: "text", text: "bare CR" }] });
+      expect(resumedAfter(server)).toEqual([]);
+    }
+  });
+
+  it.each([
+    ["two CRs", "\r\r"],
+    ["a CR after the line's LF", "\n\r"],
+  ])(
+    "settles a stream whose answer ends in %s when a later chunk has no line ending",
+    async (_what, ending) => {
+      // The SDK's parser holds the CR that ends a chunk, and every later chunk without a CR or LF after it.
+      for (const id of ["a-1", undefined]) {
+        const server = resumable(
+          base(),
+          (rpc) =>
+            chunked([
+              `${id === undefined ? "" : `id: ${id}\n`}event: message\ndata: ${JSON.stringify(answerOf(rpc, "held CR"))}${ending}`,
+              "id: a-2",
+            ]),
+          (rpc) => stream(event(answerOf(rpc, "never asked for"))),
+        );
+
+        const { called } = await attempt(server);
+
+        expect(called).toEqual({ content: [{ type: "text", text: "held CR" }] });
+        expect(resumedAfter(server)).toEqual([]);
+      }
+    },
+  );
+
+  it("does not dispatch an answer an early end left with its last line cut short", async () => {
+    // The unfinished event is whole but for its last line, an `id:` cut short; its answer must not be dispatched.
+    const server = resumable(
+      base(),
+      (rpc) =>
+        stream(
+          priming("a-1"),
+          `event: message\ndata: ${JSON.stringify(answerOf(rpc, "premature"))}\nid: a-`,
+        ),
+      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
+    expect(resumedAfter(server)).toEqual(["a-1"]);
+  });
+
+  it("does not dispatch an answer a CR-ended early end left with its last line cut short", async () => {
+    // The tap ends the line the SDK was left holding, so the discard that follows needs no line ending of its own.
+    const server = resumable(
+      base(),
+      (rpc) => stream(`id: a-1\n\ndata:${JSON.stringify(answerOf(rpc, "premature"))}\rid: a-`),
+      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
+    expect(resumedAfter(server)).toEqual(["a-1"]);
+  });
+
+  it("does not take an answer in an event the SDK ignores for the answer: another type is not read", async () => {
+    const ignored = (rpc: RpcBody, id?: string) =>
+      stream(
+        `${id === undefined ? "" : `id: ${id}\n`}event: other\ndata: ${JSON.stringify(answerOf(rpc, "ignored"))}\n\n`,
+      );
+
+    // No event id: cut at once, not left waiting for its timeout.
+    const bare = resumable(
+      base(),
+      (rpc) => ignored(rpc),
+      (rpc) => stream(event(answerOf(rpc, "x"))),
+    );
+
+    expect((await attempt(bare)).called).toEqual(failedWith(Cut, { mayHaveRun: true }));
+
+    // With one: resumed to the answer the SDK reads.
+    const resumed = resumable(
+      base(),
+      (rpc) => ignored(rpc, "a-1"),
+      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-2" })),
+    );
+
+    expect((await attempt(resumed)).called).toEqual({ content: [{ type: "text", text: "whole" }] });
+  });
+
+  it("keeps a first resumed line from joining a whitespace-only line the early end left", async () => {
+    const server = resumable(
+      base(),
+      () => stream(priming("a-1"), "  "),
+      (rpc) => stream(`data: ${JSON.stringify(answerOf(rpc, "whole"))}\n\n`),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
+  });
+
+  it("is cut when a resume fails twice in a row, and it may have run", async () => {
+    const server = resumable(
+      base(),
+      () => stream(priming("a-1")),
+      () => new Response(null, { status: 503 }),
+    );
+
+    const { clock, slept } = recordingClock();
+    const { called } = await attempt(server, clock);
+
+    expect(called).toEqual(failedWith(Cut, { mayHaveRun: true }));
+    expect(resumedAfter(server)).toEqual(["a-1", "a-1"]);
+    expect(slept).toEqual([1000, 1000]);
+    expect(callsOf(server)).toHaveLength(1);
+  });
+
+  it("is cut at once when the server cannot resume it (a 404 or 405)", async () => {
+    const server = resumable(
+      base(),
+      () => stream(priming("a-1")),
+      () => new Response(null, { status: 405 }),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual(failedWith(Cut, { mayHaveRun: true }));
+    expect(resumedAfter(server)).toEqual(["a-1"]);
+  });
+
+  it("is cut when its resumes bring no new event: that is no progress either", async () => {
+    const server = resumable(
+      base(),
+      () => stream(priming("a-1")),
+      () => stream(priming("a-1")),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual(failedWith(Cut, { mayHaveRun: true }));
+    expect(resumedAfter(server)).toEqual(["a-1", "a-1"]);
+  });
+
+  it("is cut when a resume breaks mid-stream and the next one fails", async () => {
+    const server = resumable(
+      base(),
+      () => stream(priming("a-1")),
+      (_rpc, _lastEventId, resumes) => {
+        if (resumes > 1) throw new TypeError("network connection lost");
+
+        return stream(priming("a-2"));
+      },
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual(failedWith(Cut, { mayHaveRun: true }));
+    expect(resumedAfter(server)).toEqual(["a-1", "a-2", "a-2"]);
+  });
+
+  it("is not resumed when its stream carried no event id: cut at once", async () => {
+    const server = resumable(
+      base(),
+      (rpc) => stream(event(progress(rpc))),
+      (rpc) => stream(event(answerOf(rpc, "never asked for"))),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual(failedWith(Cut, { mayHaveRun: true }));
+    expect(resumedAfter(server)).toEqual([]);
+  });
+
+  it("counts the resumed bytes toward the 16 MiB budget", async () => {
+    const chunk = 512 * KiB;
+
+    const server = resumable(
+      base(),
+      () => stream(...Array.from({ length: 20 }, (_, i) => event(bulky(chunk), { id: `a-${i}` }))),
+      (rpc) =>
+        stream(
+          ...Array.from({ length: 16 }, (_, i) => event(bulky(chunk), { id: `b-${i}` })),
+          event(answerOf(rpc, "too late"), { id: "b-end" }),
+        ),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual(failedWith(TooLarge, { limit: 16 * MiB }));
+  });
+
+  it("answers within the budget when the first stream and the resumed one fit in it", async () => {
+    const chunk = 512 * KiB;
+
+    const server = resumable(
+      base(),
+      () => stream(...Array.from({ length: 20 }, (_, i) => event(bulky(chunk), { id: `a-${i}` }))),
+      (rpc) =>
+        stream(
+          ...Array.from({ length: 8 }, (_, i) => event(bulky(chunk), { id: `b-${i}` })),
+          event(answerOf(rpc, "in time"), { id: "b-end" }),
+        ),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "in time" }] });
+  });
+
+  it("holds an event on the resumed stream to 1 MiB, though the first stream's may be larger", async () => {
+    const answered = (resumedEvent: number) =>
+      resumable(
+        base(),
+        (rpc) => stream(event(bulky(2 * MiB), { id: "a-1" }), event(progress(rpc), { id: "a-2" })),
+        (rpc) =>
+          stream(
+            event(bulky(resumedEvent), { id: "b-1" }),
+            event(answerOf(rpc, "ok"), { id: "b-2" }),
+          ),
+      );
+
+    expect((await attempt(answered(512 * KiB))).called).toEqual({
+      content: [{ type: "text", text: "ok" }],
+    });
+    expect((await attempt(answered(MiB + 1))).called).toEqual(failedWith(TooLarge, { limit: MiB }));
+  });
+});
+
+describe("a Modern server that ends a call's stream early", () => {
+  it("is not resumed, event ids or not: cut at once", async () => {
+    const server = resumable(
+      modernServer(),
+      (rpc) => stream(priming("a-1"), event(progress(rpc), { id: "a-2" })),
+      (rpc) => stream(event(answerOf(rpc, "never asked for"))),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual(failedWith(Cut, { mayHaveRun: true }));
+    expect(resumedAfter(server)).toEqual([]);
+  });
+});
+
+describe("the tap's resumed stream", () => {
+  const ENDPOINT = "https://example.test/mcp";
+  const call = { jsonrpc: "2.0", id: 7, method: "tools/call", params: {} };
+
+  const post = (wire: ReturnType<typeof tapFetch>, signal: AbortSignal | null = null) =>
+    wire(ENDPOINT, {
+      method: "POST",
+      body: JSON.stringify(call),
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        "mcp-session-id": "session-1",
+        "mcp-protocol-version": "2025-11-25",
+        authorization: "Bearer token",
+      },
+      signal,
+    });
+
+  it("hands the SDK only the request's own events: another request's answer is dropped", async () => {
+    const resumeHeaders: Array<Headers> = [];
+
+    const wire = tapFetch(
+      async (_input, init) => {
+        if (init?.method === "GET") {
+          resumeHeaders.push(new Headers(init.headers));
+
+          return stream(
+            event({ jsonrpc: "2.0", id: 8, result: { stolen: true } }, { id: "a-2" }),
+            event([
+              { jsonrpc: "2.0", id: 9, result: {} },
+              { jsonrpc: "2.0", id: 7, result: {} },
+            ]),
+            event({ jsonrpc: "2.0", id: null, error: { code: -1, message: "stolen" } }),
+            event({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info" } }),
+            event({ jsonrpc: "2.0", id: 7, result: { own: true } }, { id: "a-3" }),
+          );
+        }
+
+        return stream(priming("a-1"));
+      },
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const response = await post(wire);
+    const text = await response.text();
+
+    expect(text).not.toContain("stolen");
+    expect(text).not.toContain('"id":8');
+    expect(text).not.toContain('"id":9');
+    expect(text).toContain('"own":true');
+    expect(text).toContain("notifications/message");
+    expect(resumeHeaders).toHaveLength(1);
+    expect(resumeHeaders[0]?.get("last-event-id")).toBe("a-1");
+    expect(resumeHeaders[0]?.get("authorization")).toBe("Bearer token");
+    expect(resumeHeaders[0]?.get("mcp-session-id")).toBe("session-1");
+    expect(resumeHeaders[0]?.get("content-type")).toBeNull();
+  });
+
+  it("reads events whichever way their lines end", async () => {
+    const answer = JSON.stringify({ jsonrpc: "2.0", id: 7, result: { own: true } });
+
+    const wire = tapFetch(
+      async (_input, init) =>
+        init?.method === "GET" ? stream(`id: a-2\r\rdata: ${answer}\r\r`) : stream("id: a-1\r\r"),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const response = await post(wire);
+
+    expect(await response.text()).toContain('"own":true');
+  });
+
+  it("keeps a CRLF split between chunks from ending an event", async () => {
+    const wire = tapFetch(
+      async (_input, init) =>
+        init?.method === "GET"
+          ? chunked([
+              'id: a-2\r\ndata: {"jsonrpc":"2.0","id":7,\r',
+              '\ndata: "result":{"own":true}}\r\n\r\n',
+            ])
+          : stream(priming("a-1")),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const text = await (await post(wire)).text();
+
+    expect(text).toContain('"id":7,\ndata: "result":{"own":true}}\n\n');
+    expect(text).not.toContain("may or may not have run");
+  });
+
+  it("splits a stream fed in tiny chunks in time that does not grow with the event", async () => {
+    const big = `data: ${"x".repeat(MiB - 1024)}`;
+    const resumed = () => chunked([`${big}\n\n`, event(answerOf({ id: 7 }, "ok"))], 64);
+
+    const wire = tapFetch(
+      async (_input, init) => (init?.method === "GET" ? resumed() : stream(priming("a-1"))),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const started = performance.now();
+    const text = await (await post(wire)).text();
+    const took = performance.now() - started;
+
+    expect(text).toContain('"id":7');
+    expect(text).not.toContain("over 1 MiB");
+    // Splitting what is held again for every chunk takes seconds here; splitting what is new takes tens of ms.
+    expect(took).toBeLessThan(1500);
+  });
+
+  it("ends a GET stream at an event over 1 MiB that arrives whole in one chunk", async () => {
+    let ended = false;
+
+    const wire = tapFetch(
+      async () => chunked([`data: ${"x".repeat(MiB + 1)}\n\n`, "data: after\n\n"]),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+      {
+        response: () => undefined,
+        retried: () => undefined,
+        get: (e) => void ("ended" in e && (ended = true)),
+      },
+    );
+
+    const response = await wire(ENDPOINT, { method: "GET" });
+
+    expect(await response.text()).toBe("");
+    expect(ended).toBe(true);
+  });
+
+  it("holds a GET stream fed in tiny chunks to time that does not grow with the event", async () => {
+    const wire = tapFetch(
+      async () => chunked([`data: ${"x".repeat(MiB - 1024)}`], 64),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    const started = performance.now();
+    const text = await (await wire(ENDPOINT, { method: "GET" })).text();
+
+    expect(text.length).toBeGreaterThan(MiB - 2048);
+    expect(performance.now() - started).toBeLessThan(1500);
+  });
+
+  it.each([
+    ["a line ending and then the blank line", (event: string) => [`${event}\n`, "\n"]],
+    ["the whole event and its blank line", (event: string) => [`${event}\n\n`]],
+  ])(
+    "holds a resumed event to 1 MiB, not a byte over, whether it arrives as %s",
+    async (_what, split) => {
+      const answer = event({ jsonrpc: "2.0", id: 7, result: { own: true } });
+
+      const read = async (size: number) => {
+        const wire = tapFetch(
+          async (_input, init) =>
+            init?.method === "GET"
+              ? chunked([...split(eventOfSize(size)), answer])
+              : stream(priming("a-1")),
+          { now: () => 0, sleep: async () => undefined },
+          new Verdicts(),
+        );
+
+        return (await post(wire)).text();
+      };
+
+      expect(await read(MiB)).toContain('"own":true');
+      expect(await read(MiB + 1)).toContain("over 1 MiB");
+    },
+  );
+
+  it.each([
+    ["a line ending and then the blank line", (event: string) => [`${event}\n`, "\n"]],
+    ["the whole event and its blank line", (event: string) => [`${event}\n\n`]],
+  ])(
+    "holds a GET stream's event to 1 MiB, not a byte over, whether it arrives as %s",
+    async (_what, split) => {
+      const read = async (size: number) => {
+        const wire = tapFetch(
+          async () => chunked(split(eventOfSize(size))),
+          { now: () => 0, sleep: async () => undefined },
+          new Verdicts(),
+        );
+
+        return (await wire(ENDPOINT, { method: "GET" })).text();
+      };
+
+      expect((await read(MiB)).length).toBeGreaterThan(MiB);
+      expect(await read(MiB + 1)).toBe("");
+    },
+  );
+
+  it("reads a character split between chunks whole, on a resumed stream", async () => {
+    const answer = new TextEncoder().encode(
+      event({ jsonrpc: "2.0", id: 7, result: { text: "é" } }),
+    );
+
+    const split = answer.indexOf(0xc3) + 1;
+
+    const wire = tapFetch(
+      async (_input, init) =>
+        init?.method === "GET" ? byteChunks(answer, split) : stream(priming("a-1")),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    expect(await (await post(wire)).text()).toContain('"text":"é"');
+  });
+
+  it("counts a character split between chunks once, on a GET stream", async () => {
+    // Exactly 1 MiB of two-byte characters, in chunks that cut some of them in half.
+    const bytes = new TextEncoder().encode(`${eventOfSize(MiB, "é")}\n\n`);
+
+    const wire = tapFetch(
+      async () => byteChunks(bytes, 65_537),
+      { now: () => 0, sleep: async () => undefined },
+      new Verdicts(),
+    );
+
+    expect((await (await wire(ENDPOINT, { method: "GET" })).text()).length).toBeGreaterThan(
+      MiB / 2,
+    );
+  });
+
+  it("is not opened once the request is aborted while it waits", async () => {
+    const controller = new AbortController();
+    let gets = 0;
+
+    const wire = tapFetch(
+      async (_input, init) => {
+        if (init?.method === "GET") gets += 1;
+
+        return stream(priming("a-1"));
+      },
+      {
+        now: () => 0,
+        sleep: async () => {
+          controller.abort();
+        },
+      },
+      new Verdicts(),
+    );
+
+    const response = await post(wire, controller.signal);
+
+    await response.text();
+
+    expect(gets).toBe(0);
+  });
+});
