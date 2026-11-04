@@ -65,6 +65,8 @@ export type ElicitingCall = {
   readonly tool: string;
   /** The title of the MCP prompt whose `prompts/get` asks: its questions wait live for 5 min and tell the owner nothing. */
   readonly prompt?: string | undefined;
+  /** The call is an App View's `tools/call`: its questions wait live for 5 min, tell the owner nothing and name the app. */
+  readonly app?: true | undefined;
   readonly callId: string;
   readonly conversationId: ConversationId;
   /** Where the server's definition is. */
@@ -243,6 +245,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     if (call.source !== undefined) question.source = call.source;
 
     if (call.prompt !== undefined) question.prompt = call.prompt;
+
+    if (call.app === true) question.app = true;
 
     if (request.era !== undefined) question.era = request.era;
 

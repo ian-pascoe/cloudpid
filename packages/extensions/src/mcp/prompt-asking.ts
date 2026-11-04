@@ -84,14 +84,14 @@ export type PromptSummaries = {
  * Whether a prompt send's get waits at a page live: what its `answers` say (`McpAnswers.livePages`) and what its question
  * hooks do with a page (`ElicitingCall.livePages`), declared once so the two cannot part.
  */
-const LIVE_PAGES = true;
+export const LIVE_PAGES = true;
 
 /**
- * What a get says it can answer: a form, for as long as the owner has to answer it and a little more, so the Session's own
+ * What a get (or an App View's call, `./app-asking.ts`) says it can answer: a form, for as long as the owner has to answer it and a little more, so the Session's own
  * end of the wait comes first; a Sampling request, which may run (`SAMPLING_SAMPLE_MS`) after the owner has said yes; and a
  * page, waited at live (`livePages`). None is kept for later (no `defer`, no `pages`): a prompt send has no resume.
  */
-const answersOf = (samples: boolean): McpAnswers =>
+export const liveAnswers = (samples: boolean): McpAnswers =>
   samples
     ? {
         elicitation: true,
@@ -184,7 +184,7 @@ export const promptAsking = (
   }
 
   return {
-    answers: answersOf(sampler !== undefined),
+    answers: liveAnswers(sampler !== undefined),
     hooks,
     settle: async () => {
       await Effect.runPromise(questions.settleCall(ask.callId));

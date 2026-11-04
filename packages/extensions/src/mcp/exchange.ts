@@ -34,6 +34,7 @@ import {
 } from "@cloudpid/mcp/types";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type {
+  JsonObject as DurableJsonObject,
   PromptSection,
   ToolExecutionApi,
   ToolExecutionResult,
@@ -370,6 +371,8 @@ export type Exchange = {
    * a host that lists `tasks`, when the Session follows MCP tasks. Whether a given call is offered one is `followsTasks`.
    */
   readonly tasking?: McpTasking | undefined;
+  /** The tool is an App tool of a host that keeps App records: a task its call turns into is recorded when it completes. */
+  readonly app?: boolean | undefined;
 };
 
 /** The Session's means of following MCP tasks, as a tool's exchange holds them. */
@@ -382,7 +385,7 @@ export type McpTasking = {
 /**
  * Whether this call is offered an MCP task (`allowTask`): the one place the line is drawn. An agent's call (the root's, a
  * subagent's, or a `codemode` script's nested call) to an HTTP server or a stdio one, while the Session and the server are
- * under their caps; an App View's call comes with #498.
+ * under their caps. An App View's call is offered one by its own path (`./app-request.ts`), with its own window.
  */
 export const followsTasks = async (
   exchange: Exchange,
@@ -793,6 +796,20 @@ export const send = async <A>(
           windowMs: following.tasks.timing?.windowMs ?? windowMsOf(server.server.timeout),
           source: server.source,
         };
+
+        // An App tool's task completes into its App record, so the View of the original call gets the result in the background too.
+        if (exchange.app === true && next.op === "tools/call") {
+          const parentCall = await parentCallOf(api, context);
+
+          // SAFETY: the arguments the call was sent with, an object.
+          const app: Mutable<NonNullable<TaskStart["app"]>> = {
+            arguments: (next.params.arguments ?? {}) as DurableJsonObject,
+          };
+
+          if (parentCall !== undefined) app.parentCall = parentCall;
+
+          start.app = app;
+        }
 
         // A stdio server's task is the Workspace's it was started in.
         if (server.server.type === "stdio" && workspace !== undefined) {

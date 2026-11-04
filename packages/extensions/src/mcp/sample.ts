@@ -42,6 +42,8 @@ export type SamplingCall = {
   readonly tool: string;
   /** The title of the MCP prompt whose `prompts/get` asks: its requests wait live for 5 min and tell the owner nothing. */
   readonly prompt?: string | undefined;
+  /** The call is an App View's `tools/call`: its requests wait live for 5 min and tell the owner nothing. */
+  readonly app?: true | undefined;
   readonly callId: string;
   readonly conversationId: ConversationId;
   /** Aborts when Stop does: a sample under way is stopped, and a card waiting is withdrawn. */
@@ -117,6 +119,7 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
         defers: call.defers === true && modern,
         resumed: kept,
         prompt: call.prompt,
+        app: call.app,
         source: call.source,
         hold: call.hold,
       }),

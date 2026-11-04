@@ -203,6 +203,12 @@ export const McpElicitationRequest = Schema.Struct({
    * its `prompts/get`, not a tool's call. A client from before it reads `tool`, the prompt's command.
    */
   prompt: Schema.optionalKey(Schema.String),
+  /**
+   * The question was asked during a `tools/call` of an App View (`docs/architecture/mcp-apps.md` → Server requests from an
+   * App View's calls): the card's origin line reads "<server>'s app", and it is drawn in the waiting area, never inside the
+   * View. A client from before it reads `tool`, the tool the View called.
+   */
+  app: Schema.optionalKey(Schema.Literal(true)),
   /** The server's message, cut and cleaned. */
   message: Schema.String,
   /** A page question's `form` has no fields: the card draws `page` instead. */

@@ -42,6 +42,7 @@ import {
   type PollOutcome,
 } from "./task-policy.ts";
 import type { McpTasksOptions } from "./task-port.ts";
+import { appRecorderOf } from "./apps.ts";
 import {
   completedResult,
   endedResult,
@@ -150,7 +151,11 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
       return completedResult(
         record,
         outcome.result,
-        { spill: spillTo(env, context), signal: runtime.signal },
+        {
+          spill: spillTo(env, context),
+          signal: runtime.signal,
+          onValue: appRecorderOf(tasks, record),
+        },
         true,
       );
     }

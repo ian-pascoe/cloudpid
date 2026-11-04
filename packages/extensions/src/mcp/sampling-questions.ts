@@ -347,7 +347,7 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const { card } = question;
-      const { waitMs: wait, quiet } = waitFor(card.prompt);
+      const { waitMs: wait, quiet } = waitFor(card);
 
       const request: Mutable<McpSamplingRequest> = {
         ...card,

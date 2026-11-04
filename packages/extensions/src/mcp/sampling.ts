@@ -119,6 +119,8 @@ export type McpSamplingAsk = {
   readonly tool: string;
   /** The title of the MCP prompt whose `prompts/get` the request came in, when it is a prompt send's. */
   readonly prompt?: string | undefined;
+  /** Whether the request came in an App View's `tools/call`: it waits live, 5 min, and tells the owner nothing. */
+  readonly app?: true | undefined;
   readonly callId: string;
   readonly conversationId: McpSamplingRequest["conversationId"];
   /** The server's own request id. */
@@ -299,7 +301,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
               id,
               server: ask.server,
               tool: ask.tool,
-              origin: ask.prompt === undefined ? "agent" : "prompt",
+              origin: ask.app === true ? "app" : ask.prompt === undefined ? "agent" : "prompt",
               conversationId: ask.conversationId,
               callId: ask.callId,
               sequence,
@@ -657,6 +659,8 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
             if (ask.source !== undefined) card.source = ask.source;
 
             if (ask.prompt !== undefined) card.prompt = ask.prompt;
+
+            if (ask.app === true) card.app = true;
 
             if (record.systemPrompt !== undefined) card.systemPrompt = record.systemPrompt;
 

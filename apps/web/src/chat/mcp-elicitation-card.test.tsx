@@ -201,6 +201,17 @@ describe("McpElicitationCard", () => {
     expect(markup).not.toContain("call ends in");
   });
 
+  it("says an App View's question is from the server's app, which goes on without an answer", () => {
+    const markup = render(
+      request(FORM, { app: true, tool: "report", deadline: 5 * 60 * 1000 + 1000 }),
+    );
+
+    expect(markup).toContain("github&#x27;s app");
+    expect(markup).not.toContain("during");
+    expect(markup).toContain("github&#x27;s app goes on without an answer in 5:00");
+    expect(markup).not.toContain("call ends in");
+  });
+
   it("draws a widget per kind, prefills defaults and marks required fields", () => {
     const markup = render(request(FORM));
 

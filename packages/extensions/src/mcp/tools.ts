@@ -207,6 +207,7 @@ const toolFor = (
     pages: keeps.pages,
     samples,
     tasking,
+    app,
   };
 
   return {

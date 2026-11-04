@@ -191,6 +191,11 @@ export type McpQuestionAsk = {
    * for `MCP_PROMPT_QUESTION_WAIT_MS` and tells the owner nothing (`docs/architecture/mcp-server-requests.md` → Questions).
    */
   readonly prompt?: string;
+  /**
+   * Whether it is a question of an App View's `tools/call` (`docs/architecture/mcp-apps.md` → Server requests from an App
+   * View's calls): it waits live as a prompt send's does (5 minutes, no Notification), and its card names the app.
+   */
+  readonly app?: true;
   readonly message: string;
   /** A page question has a form with no fields: the card draws its `page`. */
   readonly form: ElicitationForm;
@@ -338,9 +343,10 @@ export type McpWaitingKind = {
 };
 
 /**
- * How a question waits, by whether it is a prompt send's (`prompt` is its title): a call's question waits `waitMs` and
- * tells the owner, a prompt send's waits `promptWaitMs` (`MCP_PROMPT_QUESTION_WAIT_MS` unless a test shortens it) and
- * tells them nothing, as they are at the composer. One rule for the forms and the Sampling requests alike.
+ * How a question waits, by whether it is live: a prompt send's (`prompt` is its title) or an App View's call's (`app`). An
+ * agent's call's question waits `waitMs` and tells the owner; a live one waits `promptWaitMs`
+ * (`MCP_PROMPT_QUESTION_WAIT_MS` unless a test shortens it) and tells them nothing, as they are at the composer or in the
+ * View. One rule for the forms and the Sampling requests alike.
  */
 export const waitsOf = (waits: {
   readonly waitMs: number;
@@ -348,8 +354,11 @@ export const waitsOf = (waits: {
 }) => {
   const promptWaitMs = waits.promptWaitMs ?? MCP_PROMPT_QUESTION_WAIT_MS;
 
-  return (prompt: string | undefined): { readonly waitMs: number; readonly quiet: boolean } =>
-    prompt === undefined
+  return (origin: {
+    readonly prompt?: string | undefined;
+    readonly app?: true | undefined;
+  }): { readonly waitMs: number; readonly quiet: boolean } =>
+    origin.prompt === undefined && origin.app !== true
       ? { waitMs: waits.waitMs, quiet: false }
       : { waitMs: promptWaitMs, quiet: true };
 };
@@ -698,7 +707,7 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
   const turnedAway = (
     ask: Omit<
       McpQuestionAsk,
-      "key" | "form" | "notes" | "source" | "page" | "retry" | "era" | "prompt"
+      "key" | "form" | "notes" | "source" | "page" | "retry" | "era" | "prompt" | "app"
     > & {
       readonly form?: ElicitationForm;
       readonly notes?: ReadonlyArray<string>;
@@ -784,6 +793,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       if (ask.source !== undefined) request.source = ask.source;
 
       if (ask.prompt !== undefined) request.prompt = ask.prompt;
+
+      if (ask.app === true) request.app = true;
 
       if (shown.page !== undefined) {
         const page: Mutable<McpElicitationPage> = { ...shown.page, opened: false };

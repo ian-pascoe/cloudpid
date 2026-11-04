@@ -1322,6 +1322,8 @@ export interface TaskServerOptions extends FakeOptions {
   readonly alwaysTask?: boolean;
   /** `pollIntervalMs` in every task the server reports. */
   readonly pollIntervalMs?: number;
+  /** Make `report` a tool of an App (`_meta.ui.resourceUri`), which Views may call too. */
+  readonly appUri?: string;
 }
 
 export interface TaskServer extends FakeServer {
@@ -1401,7 +1403,12 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
   const base = modernServer({
     ...options,
     listMore: true,
-    moreTools: [...(options.moreTools ?? []), REPORT_TOOL],
+    moreTools: [
+      ...(options.moreTools ?? []),
+      options.appUri === undefined
+        ? REPORT_TOOL
+        : { ...REPORT_TOOL, _meta: { ui: { resourceUri: options.appUri } } },
+    ],
     extensions: options.unadvertised === true ? undefined : { [TASKS_EXTENSION]: {} },
   });
 

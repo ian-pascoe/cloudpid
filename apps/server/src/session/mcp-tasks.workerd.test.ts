@@ -86,10 +86,10 @@ const rpcMethodOf = async (request: Request): Promise<string | undefined> => {
 };
 
 /** A Session whose host runs the real engine against a fake Modern server that has the `report` tool. */
-const open = async (timing: Record<string, number> = TIMING, name = "mcp") => {
+const open = async (timing: Record<string, number> = TIMING, name = "mcp", appUri?: string) => {
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
-  const server = modernTaskServer();
+  const server = modernTaskServer(appUri === undefined ? {} : { appUri });
   const wire: Wire = { unreachable: false, ignoreCancel: false, ignored: 0, hangCancel: false };
 
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -273,6 +273,25 @@ const expectNoServerId = async (
 };
 
 describe("an MCP task the agent's call started", () => {
+  it("makes the App record of an App tool's call when the task ends, whether inline or in the background", async () => {
+    const { stub } = await open(TIMING, "mcp", "ui://docs/report");
+    const appCalls = () => runInDurableObject(stub, (instance: TestSession) => instance.appCalls());
+
+    await script(stub, [
+      REPORT({ region: "eu", polls: 2 }),
+      REPORT({ region: "us", polls: 14 }),
+      "done",
+    ]);
+    await submit(stub, "report");
+    await idle(stub);
+
+    await settles(async () => expect(await appCalls()).toHaveLength(2));
+    expect(await appCalls()).toEqual([
+      expect.objectContaining({ server: "docs", tool: "report", state: "kept" }),
+      expect.objectContaining({ server: "docs", tool: "report", state: "kept" }),
+    ]);
+  });
+
   it("ends inside the window and returns as a synchronous call would", async () => {
     spyOnLogs();
 

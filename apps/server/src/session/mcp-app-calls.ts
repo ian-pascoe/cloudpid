@@ -13,6 +13,11 @@
 //    `hidden`, a tool whose visibility includes `app`. The host checks the same again, and that the server is still the
 //    one the record names.
 //
+// **Server requests from a View's `tools/call`** (`docs/architecture/mcp-apps.md` → Server requests from an App View's
+// calls): the request carries what the extension needs to ask the owner for the View's server: whether its page is visible
+// now (a hide withdraws a Sampling card, not an elicitation's), and the View's one elicitation slot. A request's own signal is
+// its teardown: the View's cancel, and the socket going. What the questions came to goes to the audit log as notes.
+//
 // A View's log line (`log`) is not a request: it is limited the same way, redacted, cut, and a `warning` or above becomes a
 // span event for telemetry; it reaches no model, transcript or audit log.
 //
@@ -20,7 +25,7 @@
 // when the host answers, when its View cancels it (`cancel`), or when its socket goes (`endViews`); a cancel aborts the
 // host's request. One span for each request, which names its server, method and outcome but never its arguments.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- the registry of what is in flight is plain mutable state, which the limits are counted in.
-import type { McpAppRequestInput } from "@cloudpid/extensions/mcp";
+import type { McpAppRequestInput, McpAppView } from "@cloudpid/extensions/mcp";
 import { isWarningOrAbove, MCP_LOG_LEVELS, type JsonObject } from "@cloudpid/mcp/types";
 import {
   appAuditSummary,
@@ -103,6 +108,11 @@ export type AppCalls = {
   readonly log: (input: AppViewLog) => Effect.Effect<void>;
   /** The View's page went: everything it has in flight is aborted. */
   readonly endViews: (view: WebSocket) => Effect.Effect<void>;
+  /**
+   * The page of `view`'s socket says it is visible or hidden (`page_visible`). A hide withdraws the Sampling cards of its
+   * Views' calls; their elicitations stay.
+   */
+  readonly visibility: (view: WebSocket, visible: boolean) => Effect.Effect<void>;
 };
 
 const ToolParams = Schema.Struct({
@@ -154,6 +164,12 @@ const outcomeOf = (answer: McpAppRequestAnswer): McpAppAuditSummary["outcome"] =
   return { status: "error", reason: "failed", message: answer.message ?? "The request failed" };
 };
 
+/** `done` with what the request's questions came to noted in its audit line. */
+const withNotes = (done: Run, notes: ReadonlyArray<string>): Run =>
+  done.summary === undefined || notes.length === 0
+    ? done
+    : { ...done, summary: { ...done.summary, notes } };
+
 /** What the Session made of a request: its answer, and what its audit log says, none for a request that was no call. */
 type Run = {
   readonly answer: McpAppRequestAnswer;
@@ -163,6 +179,48 @@ type Run = {
 export const appCallsOver = (options: AppCallsOptions): AppCalls => {
   // A View is a socket's mount of one call: its counts and what it has in flight are the registry's, under the call's id.
   const views = socketRequests(options.now);
+
+  /** What each socket's page says of its visibility, and the signal a hide aborts. */
+  const pages = new WeakMap<WebSocket, { visible: boolean; hide: AbortController }>();
+
+  const pageOf = (socket: WebSocket) => {
+    let page = pages.get(socket);
+
+    if (page === undefined) {
+      page = { visible: false, hide: new AbortController() };
+      pages.set(socket, page);
+    }
+
+    return page;
+  };
+
+  /** The elicitation each View has waiting: one at a time. */
+  const slots = new WeakMap<WebSocket, Set<string>>();
+
+  /** What the extension asks of the View of `socket`'s mount of call `callId`. */
+  const viewOf = (socket: WebSocket, callId: string): McpAppView => ({
+    hidden: () => {
+      const page = pageOf(socket);
+
+      return page.visible ? page.hide.signal : AbortSignal.abort();
+    },
+    takeSlot: () => {
+      let taken = slots.get(socket);
+
+      if (taken === undefined) {
+        taken = new Set();
+        slots.set(socket, taken);
+      }
+
+      if (taken.has(callId)) return undefined;
+
+      taken.add(callId);
+
+      return () => {
+        taken.delete(callId);
+      };
+    },
+  });
 
   /** A request's own checks and what it comes to, before it is answered, redacted and logged. */
   const run = (input: AppViewRequest, stop: AbortController): Effect.Effect<Run> =>
@@ -228,6 +286,8 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
         );
       }
 
+      const notes: Array<string> = [];
+
       const answer = yield* options.request({
         ...what,
         server,
@@ -235,10 +295,12 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
         conversation,
         viewHash,
         signal: stop.signal,
+        view: viewOf(input.view, input.callId),
+        notes,
         workspaceOf: Effect.suspend(() => input.workspaceOf(conversation)),
       });
 
-      return ended(answer);
+      return withNotes(ended(answer), notes);
     });
 
   const request: AppCalls["request"] = (input) =>
@@ -249,6 +311,9 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
           "The page is hidden: its App Views make no requests until it is visible",
         );
       }
+
+      // A page that says it is visible is, until it says otherwise: a Sampling card asked now is not withdrawn at once.
+      pageOf(input.view).visible = true;
 
       const view = views.of(input.view, input.callId);
 
@@ -367,5 +432,18 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
       ),
     );
 
-  return { request, cancel, log, endViews };
+  const visibility: AppCalls["visibility"] = (view, visible) =>
+    Effect.sync(() => {
+      const page = pageOf(view);
+
+      page.visible = visible;
+
+      // Aborted for the requests that asked of it, and made anew for the ones that come when it is shown again.
+      if (!visible) {
+        page.hide.abort();
+        page.hide = new AbortController();
+      }
+    });
+
+  return { request, cancel, log, endViews, visibility };
 };

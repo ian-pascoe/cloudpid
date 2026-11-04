@@ -1,7 +1,8 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, not combinators.
 // The line under a waiting MCP question's header that says who is waiting (`docs/architecture/mcp-server-requests.md` →
 // Questions, Elicitation requests): "during `mcp__github__create_issue` · the agent" (or "· subagent <name>") for a tool's
-// call, "getting prompt <title>" for the `prompts/get` of a prompt send, with the badge of where the server's definition is.
+// call, "getting prompt <title>" for the `prompts/get` of a prompt send, "<server>'s app" for a call an App View made (drawn in
+// the waiting area, never inside the View), with the badge of where the server's definition is.
 import type { McpElicitationSource } from "@cloudpid/protocol";
 import { countdown, sourceLabel } from "./mcp-elicitation-form.ts";
 
@@ -11,6 +12,8 @@ export type McpAsker = {
   readonly tool: string;
   /** The title of the prompt whose send asks it, when it is a prompt send's. */
   readonly prompt?: string | undefined;
+  /** Whether it was asked in a `tools/call` of an App View. */
+  readonly app?: true | undefined;
   readonly source?: McpElicitationSource | undefined;
 };
 
@@ -26,7 +29,9 @@ export const McpOriginLine = ({
 
   return (
     <p className="mt-1 text-xs text-muted-foreground">
-      {request.prompt === undefined ? (
+      {request.app === true ? (
+        `${request.server}'s app`
+      ) : request.prompt === undefined ? (
         <>
           during <span className="font-mono">{request.tool}</span> ·{" "}
           {agent === undefined ? "the agent" : `subagent ${agent}`}
@@ -41,8 +46,16 @@ export const McpOriginLine = ({
   );
 };
 
-/** What a question with a deadline says about it: a call ends then, and a prompt send's get goes on without an answer. */
-export const endsLine = (request: McpAsker, deadline: number, now: number): string =>
-  request.prompt === undefined
+/**
+ * What a question with a deadline says about it: a call ends then, and a prompt send's get or an App View's call goes on
+ * without an answer.
+ */
+export const endsLine = (request: McpAsker, deadline: number, now: number): string => {
+  if (request.app === true) {
+    return `${request.server}'s app goes on without an answer in ${countdown(deadline, now)}`;
+  }
+
+  return request.prompt === undefined
     ? `${request.server}'s call ends in ${countdown(deadline, now)}`
     : `${request.server}'s prompt goes on without an answer in ${countdown(deadline, now)}`;
+};
