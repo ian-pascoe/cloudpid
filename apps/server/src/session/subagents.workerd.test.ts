@@ -352,6 +352,9 @@ it("holds a subagent to the Session's spend limit, and the root's next request t
     instance.limit(REQUEST_COST);
     await instance.submit("Delegate quietly");
   });
+
+  // The limit set above reaches the Session because the fixture reads its settings at each read. A fixture that read them
+  // once, as its layer was built, let the child's request through to hang, and the Session never went idle (#551).
   await eventually(stub, (instance) => instance.idle());
 
   const subagents = await runInDurableObject(stub, (instance: TestSubagentSession) =>
