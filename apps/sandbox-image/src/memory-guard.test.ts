@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
   COMMAND_BASH,
@@ -108,15 +108,17 @@ const startGuard = (earlyoom: string, notes: string) => {
   return { child, output, exited };
 };
 
-/** Waits until `check` holds, or fails after two seconds. */
-const until = async (check: () => boolean) => {
-  for (let tries = 0; tries < 200; tries++) {
-    if (check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("timed out");
-};
+/**
+ * Waits until `check` holds, or fails, naming it, after 10 s: a deadline well under the tests' timeout, not a count of
+ * polls, which a loaded runner's slow timers stretch or cut short (#632).
+ */
+const until = (check: () => boolean) =>
+  vi.waitFor(
+    () => {
+      if (!check()) throw new Error(`Never held: ${String(check)}`);
+    },
+    { timeout: 10_000, interval: 10 },
+  );
 
 /** The notes in `notes`, oldest first, without the ones being written. */
 const notesIn = (notes: string): string[] =>

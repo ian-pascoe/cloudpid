@@ -6,7 +6,7 @@
  */
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off unnecessaryEffectGen:off
 import * as Effect from "effect/Effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { failedWith, run, settled, TARGET, testDeps } from "./core.fixture.ts";
 import {
   type FakeOptions,
@@ -24,27 +24,26 @@ const URI = "file:///notes.md";
 
 const OTHER = "file:///other.md";
 
+/**
+ * How long a wait for the events lasts: a deadline well under the tests' timeout, not a count of polls, which a loaded
+ * runner's slow timers stretch or cut short (#632).
+ */
+const WAIT = { timeout: 10_000, interval: 10 };
+
 /** Waits until `events` holds `count` of them (the notifications reach the client a moment after they are sent). */
-const until = async (events: ReadonlyArray<McpListenEvent>, count: number) => {
-  for (let tries = 0; events.length < count && tries < 200; tries += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-};
+const until = (events: ReadonlyArray<McpListenEvent>, count: number) =>
+  vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(count), WAIT);
 
 /** Waits until `events` holds the update of `uri` and a change of the `list`. */
-const untilHeard = async (
+const untilHeard = (
   events: ReadonlyArray<McpListenEvent>,
   uri: string,
   list: "tools" | "prompts" | "resources",
-) => {
-  const heard = () =>
-    events.some((event) => "uri" in event && event.uri === uri) &&
-    events.some((event) => "list" in event && event.list === list);
-
-  for (let tries = 0; !heard() && tries < 200; tries += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-};
+) =>
+  vi.waitFor(() => {
+    expect(events).toContainEqual({ kind: "resource_updated", uri });
+    expect(events).toContainEqual({ kind: "list_changed", list });
+  }, WAIT);
 
 /**
  * `fetchTo(server)` whose streamed answers end when their request is aborted, as a real connection's do: the in-process
