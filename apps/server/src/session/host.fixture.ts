@@ -248,6 +248,8 @@ export type ChangesFixture = {
   /** As a listing that may not start the Container shows them, until one that may has run. */
   readonly stopped?: WorkspaceChanges;
   readonly delayMs?: number;
+  /** Each listing waits for `releaseChanges()`, so watches that come meanwhile fold into one more after it. */
+  readonly held?: boolean;
   readonly fails?: boolean;
   readonly started?: boolean;
   /** Each file's working text, by `repo/path`; one not named reads as its own name. */
@@ -1009,6 +1011,8 @@ export class TestSession extends DurableObject {
   readonly #gate = Promise.withResolvers<void>();
   /** Resolves when this instance's model request reaches the gate. */
   readonly gated = Promise.withResolvers<void>();
+  /** Holds back the listings of a `held` Changes fixture until `releaseChanges()`. */
+  readonly #changesHold = Promise.withResolvers<void>();
 
   /**
    * The gate over this instance's storage, for a Session whose name starts with `mcp-replaced-`: everything the instance
@@ -1529,7 +1533,8 @@ export class TestSession extends DurableObject {
 
   /**
    * The Changes as the test set them (`setChanges`): the `running` list while the Container runs or a listing may start
-   * it, else the `stopped` one. Each listing is recorded, by whether it may start the Container, and takes `delayMs`.
+   * it, else the `stopped` one. Each listing is recorded, by whether it may start the Container, waits for
+   * `releaseChanges()` when `held`, and takes `delayMs`.
    */
   #changesSource(): ChangesSource {
     const kv = this.ctx.storage.kv;
@@ -1544,6 +1549,8 @@ export class TestSession extends DurableObject {
         ]);
 
         if (fixture === undefined) return null;
+
+        if (fixture.held === true) await this.#changesHold.promise;
 
         await new Promise((resolve) => setTimeout(resolve, fixture.delayMs ?? 0));
 
@@ -1713,6 +1720,11 @@ export class TestSession extends DurableObject {
   /** What the Session's Workspace lists as its Changes from now on. */
   setChanges(fixture: ChangesFixture): void {
     this.ctx.storage.kv.put(CHANGES_FIXTURE_KEY, fixture);
+  }
+
+  /** Let the listings of a `held` Changes fixture through. */
+  releaseChanges(): void {
+    this.#changesHold.resolve();
   }
 
   /** Each listing of the Changes so far, by whether it could start the Container. */

@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { Approvals } from "@cloudpid/extensions/approvals";
@@ -76,14 +77,19 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
     match: (message: ServerMessage) => message is A,
     from = 0,
   ): Promise<A> => {
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const found = received.slice(from).find(match);
+    let found: A | undefined;
 
-      if (found !== undefined) return found;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => {
+        found = received.slice(from).find(match);
 
-    throw new Error(`Never received the expected message: ${JSON.stringify(received)}`);
+        return found !== undefined;
+      },
+      () => `Never received the expected message: ${JSON.stringify(received)}`,
+    );
+
+    // SAFETY: `poll` returned, so `match` found it.
+    return found as A;
   };
 
   return {
@@ -120,14 +126,11 @@ const only = (message: Requests): ApprovalRequest => {
 };
 
 /** Wait until `stub`'s Session has no work live. */
-const idle = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 500; attempt++) {
-    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Never idle");
-};
+const idle = (stub: DurableObjectStub<TestSession>) =>
+  poll(
+    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
+    () => "Never idle",
+  );
 
 const script = (stub: DurableObjectStub<TestSession>, ...responses: string[]) =>
   runInDurableObject(stub, (instance: TestSession) => instance.script(responses));
