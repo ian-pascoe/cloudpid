@@ -395,7 +395,7 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
 
       /**
        * The write of the definition, bounded. One rule for every choice that keeps something (the Session's grants too): a
-       * choice that cannot be kept releases the request, which waits as before, and the answer fails with why, so the card
+       * choice that cannot be kept (or is interrupted) releases the request, which waits as before, and the answer fails with why, so the card
        * says it and the owner picks another. Nothing is settled on a failure.
        */
       const keeping = <E>(keep: Effect.Effect<void, E | McpQuestionsError>) =>
@@ -405,7 +405,7 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
             orElse: () =>
               McpQuestionsError.make({ message: "The definition was not saved in time" }),
           }),
-          Effect.tapError(() =>
+          Effect.onError(() =>
             Effect.sync(() => {
               held.claimed = false;
             }),
