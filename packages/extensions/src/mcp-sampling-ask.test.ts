@@ -57,7 +57,7 @@ const open = (
     grants: ReadonlyArray<McpSamplingSessionGrant>;
   }> = [];
 
-  const told: Array<{ server: string; kind?: string | undefined }> = [];
+  const told: Array<{ server: string; page?: true; sampling?: true }> = [];
   const written: Array<{ server: string; value: string; source: unknown }> = [];
 
   const questions = createMcpQuestions({
@@ -156,7 +156,7 @@ describe("MCP sampling on a definition that says ask", () => {
         source: { kind: "global" },
         deadline: 10 * 60 * 1000,
       });
-      expect(told).toEqual([{ server: "demo", kind: "sampling" }]);
+      expect(told).toEqual([{ server: "demo", sampling: true }]);
 
       yield* questions.answerSampling("call-1:1", { choice: "allow_call" });
 

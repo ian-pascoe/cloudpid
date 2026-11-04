@@ -706,6 +706,12 @@ export class TestSession extends DurableObject {
       credentials: [],
       // The 10-minute bound, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`).
       waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
+      samplingWaitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
+      // *Always allow* and *Never* on a Sampling card: noted, never written to a Registry the fixture does not have.
+      remember: ({ server, value }) =>
+        Effect.sync(() => {
+          this.#samplingWrites.push({ server, value });
+        }),
       encryptionKey: SECRETS_KEY,
       session: this.ctx.id.toString(),
     });
@@ -1728,6 +1734,13 @@ export class TestSession extends DurableObject {
   /** What the MCP servers' Sampling requests have cost this Session, and how many reached a model. */
   samplingUsage() {
     return samplingTotals(this.ctx.storage.kv);
+  }
+
+  readonly #samplingWrites: Array<{ server: string; value: "allow" | "off" }> = [];
+
+  /** What the Sampling card's *Always allow* and *Never* wrote to the servers' definitions, in order. */
+  samplingWrites() {
+    return [...this.#samplingWrites];
   }
 
   /** The records of the Sampling requests, oldest first. */
