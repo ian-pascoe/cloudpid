@@ -23582,7 +23582,7 @@ var SETUP_STEPS = [
   "  CLOUDPID_URL=https://<your cloudpid host>/mcp",
   "  CLOUDPID_ACCESS_CLIENT_ID=<the Local agent's client ID>",
   "  CLOUDPID_ACCESS_CLIENT_SECRET=<its secret>",
-  "From a cloudpid checkout, `bun --cwd infra run local-agent-token --stage <stage>` prints the last two. The extension's README has the rest."
+  "From a cloudpid checkout, `bun run --cwd infra local-agent-token --stage <stage>` prints the last two. The extension's README has the rest."
 ].join(`
 `);
 var LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
@@ -23617,7 +23617,7 @@ ${SETUP_STEPS}`);
   }
   return { url: endpointUrl(url), clientId, clientSecret };
 };
-var BUILD_SHA = "61e08a592006633751db4b752366e9595e9ae4be";
+var BUILD_SHA = "d841f12c7276a6bc1fc6564c653c35447b384ff2";
 var clientName = (sha = BUILD_SHA) => `pi-cloudpid/${sha.slice(0, 12)}`;
 
 // src/constants.ts
@@ -23680,7 +23680,7 @@ var stringsField = (fields, key) => {
 };
 
 // src/endpoint.ts
-var TOKEN_REJECTED = "service token rejected or expired: run `local-agent-token` (`bun --cwd infra run local-agent-token --stage <stage>` in a cloudpid checkout) and update CLOUDPID_ACCESS_CLIENT_ID and CLOUDPID_ACCESS_CLIENT_SECRET.";
+var TOKEN_REJECTED = "service token rejected or expired: run `local-agent-token` (`bun run --cwd infra local-agent-token --stage <stage>` in a cloudpid checkout) and update CLOUDPID_ACCESS_CLIENT_ID and CLOUDPID_ACCESS_CLIENT_SECRET.";
 var ENDPOINT_OLDER = "the endpoint is older than this extension";
 var statusOf = (error) => {
   for (let at = error, depth = 0;at !== undefined && depth < 8; depth += 1) {
