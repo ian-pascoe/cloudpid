@@ -1,5 +1,5 @@
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { AgentEvent } from "@earendil-works/pi-durable";
@@ -40,6 +40,12 @@ const decode = Schema.decodeUnknownEffect(ServerMessageJson);
 
 type Events = Extract<ServerMessage, { type: "events" }>;
 
+/**
+ * How long a wait for the Session lasts: a loaded CI runner once took over 3 s to answer a first watch (#300). It stays
+ * under the 30 s test timeout, so a wait never met fails with what did arrive.
+ */
+const WAIT_MS = 20_000;
+
 /** A client of a Session's socket that keeps every message the Session sent it. */
 const connect = async (stub: DurableObjectStub<TestSession>) => {
   const response = await stub.fetch("http://session/socket", { headers: { Upgrade: "websocket" } });
@@ -64,7 +70,9 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
 
   /** Messages after `from`, once `done` holds of them. */
   const until = async (done: (messages: readonly ServerMessage[]) => boolean, from = 0) => {
-    for (let attempt = 0; attempt < 300; attempt++) {
+    const deadline = Date.now() + WAIT_MS;
+
+    while (Date.now() < deadline) {
       const messages = received.slice(from);
 
       if (done(messages)) return messages;
@@ -145,7 +153,9 @@ const Submitted = Schema.Struct({
 
 /** Wait until `stub`'s Session has no work live. */
 const idle = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 300; attempt++) {
+  const deadline = Date.now() + WAIT_MS;
+
+  while (Date.now() < deadline) {
     if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -653,7 +663,13 @@ describe("a watch", () => {
     // Waking restarts the watches: the root's with a snapshot, the other's not at all.
     expect(await recordedWatches(stub)).toEqual([{ watches: [root] }]);
 
-    const woken = await client.until((messages) => messages.length >= 2, before);
+    // The root's snapshot and the error, not any two messages: the root's Todo List and App calls may come first.
+    const woken = await client.until(
+      (messages) =>
+        eventsOf(messages, root).length > 0 &&
+        Arr.some(messages, (message) => message.type === "error"),
+      before,
+    );
 
     expect(woken).toContainEqual({
       type: "error",
@@ -936,16 +952,12 @@ describe("a Changes watch", () => {
 
     const sent = { type: "changes", repos: [repoChanges("a.ts")], startingContainer: false };
 
+    // The second and third watches came while the first listing ran: one more after it, for all three, where one
+    // listing per client would make three. Wait for both: the second can land before a busy runner looks for the first.
     for (const client of [first, second, third]) {
       expect(
-        changeLists(await client.until((messages) => changeLists(messages).length === 1)),
-      ).toEqual([sent]);
-    }
-
-    // The second and third watches came while the first listing ran: one more after it, for all three, where one
-    // listing per client would make three.
-    for (const client of [first, second, third]) {
-      await client.until((messages) => changeLists(messages).length === 2);
+        changeLists(await client.until((messages) => changeLists(messages).length >= 2)),
+      ).toEqual([sent, sent]);
     }
 
     expect(await changesCalls(stub)).toEqual([false, false]);
