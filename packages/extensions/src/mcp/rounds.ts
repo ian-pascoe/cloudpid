@@ -26,6 +26,7 @@ import {
   McpRoundState,
   type McpQuestionsService,
 } from "./questions.ts";
+import { refusedBy } from "./question-records.ts";
 import type { Sampling } from "./sample.ts";
 
 /** The marker written once round `round`'s questions are stored: a rerun that finds it waits for them again. */
@@ -109,6 +110,7 @@ type Sampled =
 const sampled = async (
   samples: ReadonlyArray<McpDeferredSample>,
   sampling: Pick<Sampling, "resume"> | undefined,
+  server: string,
 ): Promise<Sampled> => {
   const replies: Mutable<McpTaskInputResponses> = {};
   const refusals: Array<McpSamplingDetail> = [];
@@ -117,15 +119,7 @@ const sampled = async (
     // Nothing is run for a round that is sunk; its requests are settled refused, which their records say.
     const kept: McpDeferredSample["sample"] =
       refusals.length > 0 && sample.decision.action === "allow"
-        ? {
-            ...sample,
-            decision: {
-              action: "refuse",
-              by: "cloudpid",
-              reason: MCP_CALL_ENDED_REASON,
-              why: "unanswered",
-            },
-          }
+        ? { ...sample, decision: refusedBy("cloudpid", MCP_CALL_ENDED_REASON, "unanswered") }
         : sample;
 
     const outcome = await sampling?.resume(kept, key);
@@ -134,7 +128,7 @@ const sampled = async (
     else if (outcome?.kind === "refused") refusals.push(outcome.detail);
     else {
       refusals.push({
-        server: "",
+        server,
         status: "refused",
         by: "cloudpid",
         reason: "cloudpid cannot run the request here",
@@ -185,7 +179,7 @@ export const resumeOf = async (
   const samples: Array<McpDeferredSample> = [];
 
   for (const each of answered) {
-    if ("sample" in each) {
+    if (each.kind === "sample") {
       samples.push(each);
 
       continue;
@@ -218,7 +212,7 @@ export const resumeOf = async (
   // The round's Sampling requests are run now, on what the owner decided, so the replies are never kept: a restart in
   // between runs them again (their record is the same one) rather than lose the call.
   if (samples.length > 0) {
-    const ran = await sampled(samples, call.sampling);
+    const ran = await sampled(samples, call.sampling, call.server);
 
     // Stopped meanwhile: the call's end settles the round.
     if (context.abortSignal?.aborted === true) return { kind: "stopped" };
@@ -227,7 +221,7 @@ export const resumeOf = async (
     if (ran.kind === "sunk") {
       await Effect.runPromise(questions.endRound(api.callId));
 
-      return { kind: "sunk", detail: { ...ran.detail, server: call.server } };
+      return { kind: "sunk", detail: ran.detail };
     }
 
     Object.assign(answers, ran.replies);

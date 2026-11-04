@@ -9,9 +9,11 @@ import {
   MCP_ELICITATIONS_PER_CALL,
   validateElicitation,
 } from "@cloudpid/mcp/types";
-import { sha256Hex } from "@cloudpid/config";
+import { ROLE_NAMES, type RoleName, sha256Hex } from "@cloudpid/config";
 import type { McpEra } from "@cloudpid/mcp/types";
 import { holdsPlaceholder } from "../secrets/references.ts";
+import type { McpSamplingWhy } from "./details.ts";
+import type { McpSamplingGrant } from "./sampling-records.ts";
 import type {
   ElicitationContent,
   ElicitationForm,
@@ -60,6 +62,60 @@ export const MCP_CALL_ENDED_REASON = "the server's call ended";
 
 /** Why a question is cancelled when the Run is stopped. */
 export const MCP_RUN_STOPPED_REASON = "Run stopped";
+
+/**
+ * How a Sampling request was decided, for the sampler that waits on it, live or kept with its round: an allow with the Role
+ * to run it on, or a refusal.
+ */
+export type McpSamplingDecision =
+  | {
+      readonly action: "allow";
+      /** The Role the owner picked, or the card's own when they did not. */
+      readonly role: RoleName;
+      /** What let it run; *Allow for this call* is `call`. Absent: the server's definition, switched to `allow` while it waited. */
+      readonly grant?: McpSamplingGrant;
+    }
+  | {
+      readonly action: "refuse";
+      readonly by: "owner" | "cloudpid";
+      readonly reason: string;
+      readonly why?: McpSamplingWhy;
+    };
+
+/** A refusal, `why` named only when there is one (`exactOptionalPropertyTypes`). */
+export const refusedBy = (
+  by: "owner" | "cloudpid",
+  reason: string,
+  why?: McpSamplingWhy,
+): McpSamplingDecision =>
+  why === undefined ? { action: "refuse", by, reason } : { action: "refuse", by, reason, why };
+
+/**
+ * What the owner's choice decides, and what else it covers: the decision for the request they answered, the others of its
+ * round getting the same one (each on its own Role unless `picked`), and `also` the call's later requests, or the
+ * server's in every call.
+ */
+export type McpSamplingVerdict = McpSamplingDecision & {
+  readonly also?: "call" | "server";
+  /** The Role the owner changed the card's to: the requests the choice covers run on it too. */
+  readonly picked?: RoleName;
+  /** *Never*: the server's later requests in the calls it covers are refused without asking. */
+  readonly never?: true;
+};
+
+/**
+ * `verdict` as the decision of one request it covers: the Role the owner picked runs it, else the Role it was shown on
+ * (`own`, as a client reads it), else the verdict's.
+ */
+export const decisionOf = (verdict: McpSamplingVerdict, own: string): McpSamplingDecision => {
+  if (verdict.action === "refuse") return refusedBy(verdict.by, verdict.reason, verdict.why);
+
+  const role = verdict.picked ?? ROLE_NAMES.find((each) => each === own) ?? verdict.role;
+
+  return verdict.grant === undefined
+    ? { action: "allow", role }
+    : { action: "allow", role, grant: verdict.grant };
+};
 
 const SETTLED_KEY = "mcp-question:settled";
 const settledKey = (id: string) => `mcp-question:s:${id}`;

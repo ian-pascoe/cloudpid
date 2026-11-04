@@ -34,6 +34,7 @@
 // resumed call and the next request see the declarations the Context Window was shown. The store also keeps each
 // conversation's last opened Context Window, so `windowOpened` is sent once per window across restarts.
 // @effect-diagnostics missingPipeableSignature:off -- builders over plain values.
+import { samplingOf } from "@cloudpid/config";
 import type { McpCaller, McpRequestStart } from "@cloudpid/mcp/types";
 import type { McpAppHtmlAnswer, McpAppRequestAnswer } from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
@@ -640,6 +641,23 @@ export const makeMcpTools = (
         : Result.succeed(server.name);
     });
 
+  /**
+   * The servers of `after` whose definition's `sampling` became `allow` or `off` since `before`, which the Sampling
+   * requests waiting for the owner are answered by (`samplingSwitched`).
+   */
+  const samplingSwitched = (before: McpInventory | undefined, after: McpInventory | undefined) =>
+    Arr.filterMap(after?.servers ?? [], (server) => {
+      const was = Arr.findFirst(before?.servers ?? [], (each) => each.name === server.name);
+
+      if (Option.isNone(was)) return Result.failVoid;
+
+      const mode = samplingOf(server.server);
+
+      return mode !== samplingOf(was.value.server) && (mode === "allow" || mode === "off")
+        ? Result.succeed({ name: server.name, mode })
+        : Result.failVoid;
+    });
+
   const requestStart: McpToolsService["requestStart"] = Effect.fn("mcp.tools.request_start")(
     function* (input: McpRequestStartInput) {
       const before = latest;
@@ -655,6 +673,13 @@ export const makeMcpTools = (
         if (questions !== undefined) yield* questions.withdrawServer(name, why);
 
         if (signIns !== undefined) yield* signIns.withdrawServer(name, why);
+      }
+
+      // A Sampling request a server waits on is run, or refused, as the definition now says.
+      if (questions !== undefined) {
+        for (const { name, mode } of samplingSwitched(before, latest)) {
+          yield* questions.samplingSwitched(name, mode);
+        }
       }
 
       // A completion that was never carried here (an older deploy, a host's `working` report) is caught up now.

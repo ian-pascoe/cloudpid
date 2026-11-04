@@ -59,6 +59,14 @@ const ASK = `call:mcp__docs__ask:${JSON.stringify({
   samples: 1,
 })}`;
 
+/** The same, with two Sampling requests in the round. */
+const ASK_TWO = `call:mcp__docs__ask:${JSON.stringify({
+  message: "Who?",
+  requestedSchema: NAME_FORM,
+  forms: 1,
+  samples: 2,
+})}`;
+
 /** A client of a Session's socket that keeps every message the Session sent it. */
 const connect = async (stub: DurableObjectStub<TestSession>) => {
   const response = await stub.fetch("http://session/socket", { headers: { Upgrade: "websocket" } });
@@ -193,7 +201,52 @@ describe("a Modern MCP server's Sampling request in a Session", () => {
     owner.close();
   });
 
-  it("is refused by the owner: the form beside it is withdrawn, no resume is sent, and the agent reads sampling_refused", async () => {
+  it("is decided once for every Sampling request of the call's round, and each runs once as the one resume starts", async () => {
+    const { stub, server, asked, owner } = await open();
+
+    await start(stub, [ASK_TWO, "first reply", "second reply", "done"]);
+    await settles(async () => expect(owner.samples()).toHaveLength(2));
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+
+    const [first, second] = owner.samples();
+
+    // Both are the one call's, which the client draws as one card.
+    expect(first?.callId).toBe(second?.callId);
+    expect(owner.forms()[0]?.callId).toBe(first?.callId);
+
+    owner.send({
+      type: "mcp_sampling_answer",
+      id: "yes",
+      request: first?.id ?? "",
+      choice: "allow_call",
+    });
+    await settles(async () => expect(owner.samples()).toEqual([]));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "form",
+      request: owner.forms()[0]?.id ?? "",
+      action: "accept",
+      content: { name: "Ada" },
+    });
+
+    await idle(stub);
+
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(2);
+    expect(asked).toEqual([
+      expect.objectContaining({
+        responses: expect.objectContaining({
+          s1: expect.objectContaining({ content: { type: "text", text: "first reply" } }),
+          s2: expect.objectContaining({ content: { type: "text", text: "second reply" } }),
+        }),
+      }),
+    ]);
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.samplingUsage()),
+    ).toMatchObject({ requests: 2 });
+    owner.close();
+  });
+
+  it("is refused by the owner: the form beside it is withdrawn, no resume is sent, and the call ends with details.error sampling_refused", async () => {
     const { stub, server, asked, owner } = await open();
 
     await start(stub, [ASK, "done"]);
@@ -219,6 +272,9 @@ describe("a Modern MCP server's Sampling request in a Session", () => {
     );
 
     expect(results.join("\n")).toContain("ends the call, which may have done part of its work");
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) => instance.toolResultDetails()),
+    ).toEqual([expect.objectContaining({ error: "sampling_refused" })]);
     expect(
       await runInDurableObject(stub, (instance: TestSession) => instance.samplingUsage()),
     ).toMatchObject({ requests: 0 });

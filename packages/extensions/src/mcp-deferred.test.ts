@@ -591,7 +591,7 @@ describe("a deferred round in the Session's storage", () => {
     });
     await Effect.runPromise(questions.answer("call-9:1", { action: "decline" }));
     expect(await Effect.runPromise(questions.awaitRound(ASK.callId))).toEqual([
-      { key: "7", outcome: { action: "decline", by: "owner" }, fields: [] },
+      { kind: "form", key: "7", outcome: { action: "decline", by: "owner" }, fields: [] },
     ]);
   });
 

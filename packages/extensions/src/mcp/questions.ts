@@ -65,9 +65,7 @@ import type { Mutable } from "effect/Types";
 
 export {
   MCP_DEFERRED_DEADLINE_MS,
-  MCP_SAMPLING_PARAMS_MAX,
   type McpDeferredAnswer,
-  type McpDeferredForm,
   type McpDeferredRound,
   type McpDeferredSample,
   McpRoundState,
@@ -190,6 +188,12 @@ export type McpQuestionsService = {
     id: string,
     given: McpSamplingGiven,
   ) => Effect.Effect<void, McpQuestionsError>;
+  /**
+   * The server's definition says `allow` or `off` now (`mode`): the Sampling requests of it waiting for the owner, live
+   * or kept with a Modern call's round, are run as `allow` says, with no card, or refused as `off` says, which sinks their
+   * rounds (`docs/architecture/mcp-server-requests.md` → The server changes while a question waits).
+   */
+  readonly samplingSwitched: (server: string, mode: "allow" | "off") => Effect.Effect<void>;
   /** Take back the Session's grant for `server`. */
   readonly revokeSampling: (server: string) => Effect.Effect<void>;
   /**
@@ -664,6 +668,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     samplingGrants: sampling.grants,
     answerSampling: sampling.answer,
     revokeSampling: sampling.revoke,
+    samplingSwitched: sampling.switched,
     deferSampling: sampling.defer,
     sampledCount: (callId) => basics.callOf(callId).sampled,
     noteSampled: (callId, sequence) => {

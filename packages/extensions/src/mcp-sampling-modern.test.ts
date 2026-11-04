@@ -21,13 +21,14 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
-import { DOCS, detailsOf, open } from "./mcp.fixture.ts";
+import { DOCS, detailsOf, open, startOf } from "./mcp.fixture.ts";
 import { fakeMcpHost, type FakeMcpAnswer } from "./mcp.testing.ts";
 import {
   createMcpQuestions,
   MCP_DEFERRED_DEADLINE_MS,
   McpRoundState,
   type McpQuestionStorage,
+  type McpSamplingCard,
 } from "./mcp/questions.ts";
 import { createMcpSampling } from "./mcp/sampling.ts";
 import { openKeptVault } from "./secrets/vault.ts";
@@ -204,7 +205,20 @@ const setup = async (
   const sent = () => host.calls.flatMap((each) => (each.method === "request" ? [each.input] : []));
   const run = () => session.root.submit({ type: "input", content: "go" }, context);
 
-  return { memory, questions, sampling, faux, session, sent, resumes, replies, told, run };
+  return {
+    memory,
+    questions,
+    sampling,
+    faux,
+    session,
+    sent,
+    resumes,
+    replies,
+    told,
+    run,
+    host,
+    tools,
+  };
 };
 
 const waitingFor = (questions: Awaited<ReturnType<typeof setup>>["questions"], count: number) =>
@@ -358,6 +372,50 @@ describe("a Modern server's Sampling request that asks the owner", () => {
     expect((await detailsOf(session))[0]).toMatchObject({ error: "sampling_refused" });
   });
 
+  it("is run, with no card, when the server's definition is switched to allow while it waits, and refused when switched to off", async () => {
+    const allowed = await setup();
+    const submitted = await allowed.run();
+
+    await waitingFor(allowed.questions, 1);
+    allowed.host.set([{ ...DOCS, entry: { sampling: "allow" } }]);
+    await Effect.runPromise(allowed.tools.requestStart(startOf(1)));
+
+    // Its card is gone and the form beside it still waits; the answer to the form sends the one resume with the reply.
+    expect(await Effect.runPromise(allowed.questions.pendingSampling)).toEqual([]);
+
+    const [form] = await Effect.runPromise(allowed.questions.pending);
+
+    await Effect.runPromise(
+      allowed.questions.answer(form?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+    );
+    await submitted.wait(context);
+
+    expect(allowed.faux.state.callCount).toBe(1);
+    expect(allowed.resumes).toHaveLength(1);
+    expect(allowed.resumes[0]).toMatchObject({
+      params: { answers: { s1: { role: "assistant" } } },
+    });
+    expect(await Effect.runPromise(allowed.sampling.records)).toEqual([
+      expect.objectContaining({ status: "answered", by: "definition" }),
+    ]);
+
+    const off = await setup();
+    const ended = await off.run();
+
+    await waitingFor(off.questions, 1);
+    off.host.set([{ ...DOCS, entry: { sampling: "off" } }]);
+    await Effect.runPromise(off.tools.requestStart(startOf(1)));
+    await ended.wait(context);
+
+    expect(off.resumes).toEqual([]);
+    expect(off.faux.state.callCount).toBe(0);
+    expect(await Effect.runPromise(off.questions.pending)).toEqual([]);
+    expect((await detailsOf(off.session))[0]).toMatchObject({
+      error: "sampling_refused",
+      sampling: [expect.objectContaining({ status: "refused", by: "cloudpid" })],
+    });
+  });
+
   it("is withdrawn when Stop aborts the waiting call, and its record settles refused", async () => {
     const { memory, questions, sampling: sampler, session, run } = await setup({ asks: [SAMPLE] });
     const submitted = await run();
@@ -374,12 +432,27 @@ describe("a Modern server's Sampling request that asks the owner", () => {
   });
 });
 
-/** The Session's questions over `storage`, with a Sampling request of `callId` kept in a round that is shown. */
-const keepOne = async (
+const ROLES: McpSamplingCard["roles"] = [
+  { role: "small", model: "m/small" },
+  { role: "medium", model: "m/medium" },
+];
+
+/**
+ * The Session's questions over `storage`, with a round of `callId` kept and shown: Sampling requests (`samples`, each the
+ * Role it would run on; one on `small` by default) and, when `form` is set, a form beside them.
+ */
+const keepRound = async (
   memory: ReturnType<typeof memoryStorage>,
   callId: string,
-  server = "docs",
+  options: {
+    readonly server?: string;
+    readonly samples?: ReadonlyArray<"small" | "medium">;
+    readonly form?: boolean;
+  } = {},
 ) => {
+  const server = options.server ?? "docs";
+  const samples: ReadonlyArray<"small" | "medium"> = options.samples ?? ["small"];
+
   const questions = createMcpQuestions({
     storage: memory.storage,
     announce: () => Effect.void,
@@ -390,25 +463,42 @@ const keepOne = async (
   });
 
   const kept = await Effect.runPromise(
-    questions.deferSampling({
-      id: `${callId}:1`,
-      key: "s1",
-      sequence: 1,
-      params: SAMPLE.params,
-      card: {
+    Effect.forEach(samples, (role, index) =>
+      questions.deferSampling({
+        id: `${callId}:${index + 1}`,
+        key: `s${index + 1}`,
+        sequence: index + 1,
+        params: SAMPLE.params,
+        card: {
+          callId,
+          conversationId: ROOT_CONVERSATION_ID,
+          server,
+          tool: "mcp__docs__search",
+          role,
+          model: `m/${role}`,
+          roles: ROLES,
+          messages: [],
+          tools: [],
+          notes: [],
+        },
+      }),
+    ),
+  );
+
+  if (options.form === true) {
+    await Effect.runPromise(
+      questions.defer({
+        key: "q1",
         callId,
         conversationId: ROOT_CONVERSATION_ID,
         server,
         tool: "mcp__docs__search",
-        role: "small",
-        model: "m",
-        roles: [{ role: "small", model: "m" }],
-        messages: [],
-        tools: [],
+        message: "Who are you?",
+        form: { fields: [{ kind: "text", name: "name", required: true }] },
         notes: [],
-      },
-    }),
-  );
+      }),
+    );
+  }
 
   await Effect.runPromise(
     questions.commitRound({
@@ -422,13 +512,13 @@ const keepOne = async (
   );
   await Effect.runPromise(questions.showRound(callId));
 
-  return { questions, kept };
+  return { questions, kept: kept[0] };
 };
 
 describe("the owner's choices on a Modern server's Sampling request", () => {
   it("keeps Allow for this call in the storage, so a later round of the call after a restart is not asked", async () => {
     const memory = memoryStorage();
-    const { questions, kept } = await keepOne(memory, "call-1");
+    const { questions, kept } = await keepRound(memory, "call-1");
 
     expect(kept).toBe("deferred");
     expect(questions.samplingStanding("call-1", "docs")).toBeUndefined();
@@ -453,10 +543,10 @@ describe("the owner's choices on a Modern server's Sampling request", () => {
   it("lets through the server's requests of other calls on Allow in this Session, and sinks them on Refuse in this Session", async () => {
     for (const choice of ["allow_session", "refuse_session"] as const) {
       const memory = memoryStorage();
-      const { questions } = await keepOne(memory, "call-1");
+      const { questions } = await keepRound(memory, "call-1");
 
-      await keepOne(memory, "call-2");
-      await keepOne(memory, "call-3", "other");
+      await keepRound(memory, "call-2");
+      await keepRound(memory, "call-3", { server: "other" });
 
       expect(await Effect.runPromise(questions.pendingSampling)).toHaveLength(3);
       await Effect.runPromise(questions.answerSampling("call-1:1", { choice }));
@@ -483,9 +573,183 @@ describe("the owner's choices on a Modern server's Sampling request", () => {
     }
   });
 
+  it("applies one decision to every Sampling request of the round, each on its own Role unless the owner picked one", async () => {
+    const memory = memoryStorage();
+
+    const { questions } = await keepRound(memory, "call-1", {
+      samples: ["small", "medium"],
+      form: true,
+    });
+
+    expect(await Effect.runPromise(questions.pendingSampling)).toHaveLength(2);
+    await Effect.runPromise(questions.answerSampling("call-1:1", { choice: "allow_call" }));
+
+    // Both are answered by the one choice; the form beside them still waits.
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([]);
+    expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+
+    const [form] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(
+      questions.answer(form?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+    );
+
+    const round = await Effect.runPromise(questions.awaitRound("call-1"));
+
+    expect(
+      round?.flatMap((each) => (each.kind === "sample" ? [each.sample.decision] : [])),
+    ).toEqual([
+      { action: "allow", role: "small", grant: "call" },
+      { action: "allow", role: "medium", grant: "call" },
+    ]);
+
+    // A Role the owner picked runs every request of the round.
+    const picked = await keepRound(memoryStorage(), "call-2", { samples: ["small", "medium"] });
+
+    await Effect.runPromise(
+      picked.questions.answerSampling("call-2:2", { choice: "allow_call", role: "medium" }),
+    );
+
+    const ran = await Effect.runPromise(picked.questions.awaitRound("call-2"));
+
+    expect(ran?.flatMap((each) => (each.kind === "sample" ? [each.sample.decision] : []))).toEqual([
+      { action: "allow", role: "medium", grant: "call" },
+      { action: "allow", role: "medium", grant: "call" },
+    ]);
+  });
+
+  it("refuses every Sampling request of the round by the owner on one refusal, and cancels the form beside them", async () => {
+    const memory = memoryStorage();
+
+    const { questions } = await keepRound(memory, "call-1", {
+      samples: ["small", "medium"],
+      form: true,
+    });
+
+    await Effect.runPromise(questions.answerSampling("call-1:2", { choice: "refuse" }));
+
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+
+    const round = await Effect.runPromise(questions.awaitRound("call-1"));
+
+    expect(
+      round?.flatMap((each) => (each.kind === "sample" ? [each.sample.decision] : [])),
+    ).toEqual([
+      expect.objectContaining({ action: "refuse", by: "owner" }),
+      expect.objectContaining({ action: "refuse", by: "owner" }),
+    ]);
+    expect(round?.flatMap((each) => (each.kind === "form" ? [each.outcome] : []))).toEqual([
+      expect.objectContaining({ action: "cancel", by: "cloudpid" }),
+    ]);
+  });
+
+  it("leaves a form-only round of another call alone when the owner refuses the server for the Session", async () => {
+    const memory = memoryStorage();
+    const { questions } = await keepRound(memory, "call-1");
+
+    // Another call of the server waits on a form alone, a third on a form beside a Sampling request of another server.
+    await keepRound(memory, "call-2", { samples: [], form: true });
+    await keepRound(memory, "call-3", { server: "other", form: true });
+
+    await Effect.runPromise(questions.answerSampling("call-1:1", { choice: "refuse_session" }));
+
+    // Their forms still wait, unanswered: no round but call-1's was sunk.
+    expect((await Effect.runPromise(questions.pending)).map((form) => form.callId).sort()).toEqual([
+      "call-2",
+      "call-3",
+    ]);
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([
+      expect.objectContaining({ callId: "call-3" }),
+    ]);
+  });
+
+  it("keeps what the owner already allowed in another call when they refuse the server for the Session", async () => {
+    const memory = memoryStorage();
+    const { questions } = await keepRound(memory, "call-1");
+
+    // Call 2's request was allowed, and its round still waits on a form: it is not pending, so the refusal never reaches it.
+    const second = await keepRound(memory, "call-2", { form: true });
+
+    await Effect.runPromise(second.questions.answerSampling("call-2:1", { choice: "allow_call" }));
+    await Effect.runPromise(questions.answerSampling("call-1:1", { choice: "refuse_session" }));
+
+    const [form] = await Effect.runPromise(questions.pending);
+
+    expect(form).toMatchObject({ callId: "call-2" });
+    await Effect.runPromise(
+      questions.answer(form?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+    );
+
+    const round = await Effect.runPromise(questions.awaitRound("call-2"));
+
+    expect(
+      round?.flatMap((each) => (each.kind === "sample" ? [each.sample.decision] : [])),
+    ).toEqual([{ action: "allow", role: "small", grant: "call" }]);
+    expect(round?.flatMap((each) => (each.kind === "form" ? [each.outcome] : []))).toEqual([
+      expect.objectContaining({ action: "accept", by: "owner" }),
+    ]);
+  });
+
+  it("runs the server's waiting requests, with no card, when its definition is switched to allow", async () => {
+    const memory = memoryStorage();
+    const { questions } = await keepRound(memory, "call-1", { form: true });
+
+    await keepRound(memory, "call-2");
+    await keepRound(memory, "call-3", { server: "other" });
+
+    await Effect.runPromise(questions.samplingSwitched("docs", "allow"));
+
+    // The server's requests are answered as its definition allows; another server's still waits, and the form too.
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([
+      expect.objectContaining({ callId: "call-3" }),
+    ]);
+    expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+
+    const round = await Effect.runPromise(questions.awaitRound("call-2"));
+
+    expect(round).toEqual([
+      expect.objectContaining({
+        kind: "sample",
+        sample: expect.objectContaining({ decision: { action: "allow", role: "small" } }),
+      }),
+    ]);
+  });
+
+  it("refuses the server's waiting requests, by cloudpid, when its definition is switched to off", async () => {
+    const memory = memoryStorage();
+    const { questions } = await keepRound(memory, "call-1", { form: true });
+
+    await keepRound(memory, "call-3", { server: "other", form: true });
+    await Effect.runPromise(questions.samplingSwitched("docs", "off"));
+
+    // Call 1's round is sunk (its form withdrawn); the other server's round is untouched.
+    expect(await Effect.runPromise(questions.pendingSampling)).toEqual([
+      expect.objectContaining({ callId: "call-3" }),
+    ]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([
+      expect.objectContaining({ callId: "call-3" }),
+    ]);
+
+    const round = await Effect.runPromise(questions.awaitRound("call-1"));
+
+    expect(round).toEqual([
+      expect.objectContaining({
+        kind: "sample",
+        sample: expect.objectContaining({
+          decision: expect.objectContaining({ action: "refuse", by: "cloudpid" }),
+        }),
+      }),
+      expect.objectContaining({
+        kind: "form",
+        outcome: expect.objectContaining({ action: "cancel", by: "cloudpid" }),
+      }),
+    ]);
+  });
+
   it("refuses the answer of a Role the card does not offer, and a second answer to a request that ended", async () => {
     const memory = memoryStorage();
-    const { questions } = await keepOne(memory, "call-1");
+    const { questions } = await keepRound(memory, "call-1");
 
     await expect(
       Effect.runPromise(
@@ -501,7 +765,7 @@ describe("the owner's choices on a Modern server's Sampling request", () => {
   it("is not kept past 1 MiB of parameters, or by a storage that cannot take it", async () => {
     const memory = memoryStorage();
 
-    const big = await keepOne(memory, "call-1").then(async ({ questions }) =>
+    const big = await keepRound(memory, "call-1").then(async ({ questions }) =>
       Effect.runPromise(
         questions.deferSampling({
           id: "call-2:1",

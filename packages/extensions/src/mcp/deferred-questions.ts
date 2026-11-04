@@ -22,21 +22,23 @@
 //   Sampling request kept beside the forms ([#486](https://github.com/ian-pascoe/cloudpid/issues/486)): its card
 //   (`mcp_sampling_requests`) and the request's parameters, redacted and chunked in `mcp-question:p:<id>:<n>`, since the
 //   sample is made when the round resumes, not when the owner allows it; it is listed in its call's record under
-//   `sampling:<id>`, apart from the forms' ids. One refusal of a Sampling request sinks the round: every other question
-//   of it is answered `cancel` (or refused) by cloudpid, "the server's call ended", even a form the owner had answered
-//   (`decideSampling`). A round holding a kind this build does not know is not waited for again.
+//   `sampling:<id>`, apart from the forms' ids. One decision answers every Sampling request of the round waiting for the
+//   owner (`decideSampling`); a refusal of them sinks the round: its forms are answered `cancel` by cloudpid, "the server's
+//   call ended", even one the owner had answered. Only a round holding a pending Sampling request of the one the choice
+//   covers is touched, and no question already answered is overwritten. A round holding a kind this build does not know
+//   is not waited for again.
 import {
   ElicitationContent,
   type McpElicitationPage,
   type McpElicitationRequest,
   type McpSamplingRequest,
 } from "@cloudpid/protocol";
-import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
 import { isJsonObject, type JsonObject, type McpEra } from "@cloudpid/mcp/types";
 import type { SealedValue, SecretVaultError } from "../secrets/vault.ts";
-import type { McpElicitationDetail, McpSamplingWhy } from "./details.ts";
+import type { McpElicitationDetail } from "./details.ts";
 import {
   cancelled,
+  decisionOf,
   JsonText,
   MCP_CALL_ENDED_REASON,
   MCP_QUESTION_UNRECORDED_REASON,
@@ -48,12 +50,14 @@ import {
   type McpQuestionOutcome,
   McpQuestionsError,
   type McpQuestionStorage,
+  type McpSamplingDecision,
+  type McpSamplingVerdict,
   eraDefault,
   pageIdentityOf,
   questionId,
+  refusedBy,
 } from "./question-records.ts";
-import type { McpSamplingDecision } from "./sampling-questions.ts";
-import { type McpSamplingGrant, samplingRecords } from "./sampling-records.ts";
+import { samplingRecords } from "./sampling-records.ts";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
@@ -127,20 +131,6 @@ type DeferredQuestion = {
   readonly mode?: "form" | "url";
 };
 
-/** A Sampling request's answer as the record keeps it: what the owner decided, or why cloudpid refused it. */
-type KeptSampling =
-  | {
-      readonly action: "allow";
-      readonly role: RoleName;
-      readonly grant: McpSamplingGrant;
-    }
-  | {
-      readonly action: "refuse";
-      readonly by: "owner" | "cloudpid";
-      readonly reason: string;
-      readonly why?: McpSamplingWhy;
-    };
-
 /** A Modern server's Sampling request kept for later: the card the owner is shown, and once given, the answer. */
 type DeferredSampling = {
   /** The slot it is listed under in its call's record (`sampling:<request id>`). */
@@ -155,7 +145,8 @@ type DeferredSampling = {
   readonly askedAt: number;
   /** How many chunks its parameters are stored in. */
   readonly chunks: number;
-  readonly answer?: KeptSampling;
+  /** What was decided: the owner's choice, or why cloudpid refused it. */
+  readonly answer?: McpSamplingDecision;
 };
 
 /** A question of a deferred round, of either kind. */
@@ -198,6 +189,9 @@ const eraOfAsk = (ask: McpQuestionAsk): McpEra => ask.era ?? eraDefault(ask.page
 
 const kindOf = (question: StoredQuestion): DeferredKind => question.kind ?? "elicitation";
 
+/** The kinds this build can answer; a stored question of another is a later build's. */
+const KNOWN_KINDS: ReadonlySet<string> = new Set<DeferredKind>(["elicitation", "sampling"]);
+
 /** The era of the server that asked a question, for a record from before the field too. */
 const eraOf = (question: DeferredQuestion): McpEra =>
   question.era ?? eraDefault(question.mode === "url");
@@ -214,6 +208,7 @@ export type McpQuestionVault = {
 
 /** What became of a deferred form or page, the accepted content opened: the call's resume sends it, `details` notes it. */
 export type McpDeferredForm = {
+  readonly kind: "form";
   readonly key: string;
   readonly outcome: McpQuestionOutcome;
   /** The names of the fields the owner answered. */
@@ -227,6 +222,7 @@ export type McpDeferredForm = {
  * request as it was kept, redacted) as the same request (`id`, `sequence`), or the request is refused.
  */
 export type McpDeferredSample = {
+  readonly kind: "sample";
   readonly key: string;
   readonly sample: {
     readonly id: string;
@@ -238,23 +234,6 @@ export type McpDeferredSample = {
 
 /** What became of a deferred question of either kind. */
 export type McpDeferredAnswer = McpDeferredForm | McpDeferredSample;
-
-/** What a Sampling request is answered with by `decideSampling`: the owner's choice, and what it lets through or sinks. */
-export type McpSamplingVerdict =
-  | {
-      readonly action: "allow";
-      readonly role: RoleName;
-      readonly grant: McpSamplingGrant;
-      /** The owner's choice covers the call's other requests, or the server's across calls. */
-      readonly also: "call" | "server";
-    }
-  | {
-      readonly action: "refuse";
-      readonly by: "owner";
-      readonly reason: string;
-      /** A refusal for the Session or for good also refuses the server's requests in other calls. */
-      readonly also?: "server";
-    };
 
 /** A Modern server's Sampling request, to be kept with its call's round. */
 export type McpSamplingDeferral = {
@@ -308,14 +287,6 @@ const unrecorded = () => McpQuestionsError.make({ message: MCP_QUESTION_UNRECORD
 
 const decodeContent = Schema.decodeEffect(Schema.fromJsonString(ElicitationContent));
 
-/** What a Sampling request is answered with when its round was sunk by another question's refusal. */
-const sunkSampling: KeptSampling = {
-  action: "refuse",
-  by: "cloudpid",
-  reason: MCP_CALL_ENDED_REASON,
-  why: "unanswered",
-};
-
 /** The deferred questions over the Session's storage (see the file's header). */
 export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) => {
   const { storage, vault, basics, tell, tellSampling } = options;
@@ -346,13 +317,14 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
   /**
    * The record's questions, when this build can answer every one: all stored, and all of a kind it knows. A record
-   * holding another kind (from a later build) is neither shown, answered nor waited for again.
+   * holding another kind (from a later build) is neither shown, answered nor waited for again. The types say every
+   * question is of a kind of `DeferredKind`; the storage may hold one a later build wrote, which is what this checks.
    */
   const answerable = (record: DeferredRecord): ReadonlyArray<StoredQuestion> | undefined => {
     const questions = questionsOf(record);
 
     return questions.length === record.questions.length &&
-      questions.every((question) => ["elicitation", "sampling"].includes(kindOf(question)))
+      questions.every((question) => KNOWN_KINDS.has(kindOf(question)))
       ? questions
       : undefined;
   };
@@ -462,6 +434,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
             if (held === undefined || (held.status !== "waiting" && held.status !== "running"))
               return;
 
+            // The decision that ended it, if one did; else no one decided.
             const given = question.answer?.action === "refuse" ? question.answer : undefined;
             const { why: _earlier, ...rest } = held;
             const why = given === undefined ? "unanswered" : given.why;
@@ -836,20 +809,15 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       const decision: McpSamplingDecision =
         Option.isNone(params) || given === undefined
-          ? {
-              action: "refuse",
-              by: "cloudpid",
-              reason:
-                given === undefined ? "the request was withdrawn" : MCP_QUESTION_UNRECORDED_REASON,
-              why: "unanswered",
-            }
-          : given.action === "allow"
-            ? { action: "allow", role: given.role, grant: given.grant }
-            : given.why === undefined
-              ? { action: "refuse", by: given.by, reason: given.reason }
-              : { action: "refuse", by: given.by, reason: given.reason, why: given.why };
+          ? refusedBy(
+              "cloudpid",
+              given === undefined ? "the request was withdrawn" : MCP_QUESTION_UNRECORDED_REASON,
+              "unanswered",
+            )
+          : given;
 
       return {
+        kind: "sample",
         key: question.key,
         sample: {
           id: question.request.id,
@@ -868,6 +836,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       // A page needs nothing opened: Done is its `accept`, with no content.
       if (given?.action === "accept" && "page" in given) {
         return {
+          kind: "form",
           key: question.key,
           outcome: { action: "accept", by: "owner", content: {} },
           fields: [],
@@ -886,12 +855,19 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
               ? { action: given.action, by: given.by }
               : { action: given.action, by: given.by, reason: given.reason };
 
-        return { key: question.key, outcome, fields: [], ...page } satisfies McpDeferredForm;
+        return {
+          kind: "form",
+          key: question.key,
+          outcome,
+          fields: [],
+          ...page,
+        } satisfies McpDeferredForm;
       }
 
       // Only a form's answer is sealed: the page's was dealt with above.
       if (!("sealed" in given)) {
         return {
+          kind: "form",
           key: question.key,
           outcome: cancelled("the answer could not be opened"),
           fields: [],
@@ -907,6 +883,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       if (Option.isNone(content)) {
         return {
+          kind: "form",
           key: question.key,
           outcome: cancelled("the answer could not be opened"),
           fields: [],
@@ -914,6 +891,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       }
 
       return {
+        kind: "form",
         key: question.key,
         outcome: { action: "accept", by: "owner", content: content.value },
         fields: given.fields,
@@ -1183,14 +1161,10 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
             // A Sampling request has no `cancel`: refused, which ends the call as it does for any refusal.
             if (isSampling(question)) {
-              const answer: KeptSampling = {
-                action: "refuse",
-                by: "cloudpid",
-                reason,
-                why: "unanswered",
-              };
-
-              storage.put(questionKey(question.id), { ...question, answer });
+              storage.put(questionKey(question.id), {
+                ...question,
+                answer: refusedBy("cloudpid", reason, "unanswered"),
+              });
 
               continue;
             }
@@ -1222,104 +1196,119 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     }
   };
 
+  /** The unanswered Sampling requests of a shown round, with the round's other questions: undefined when it holds none. */
+  const pendingOf = (record: DeferredRecord) => {
+    if (record.round?.shown !== true) return undefined;
+
+    const questions = answerable(record);
+
+    const pending = Arr.filter(
+      questions ?? [],
+      (question): question is DeferredSampling =>
+        isSampling(question) && question.answer === undefined,
+    );
+
+    return questions === undefined || pending.length === 0 ? undefined : { questions, pending };
+  };
+
+  /**
+   * Answer the unanswered Sampling requests of `record`'s shown round, each with its own `decide`d answer, in one step with
+   * reading them. A refusal among them sinks the round: every question of it that is not a Sampling request is answered
+   * `cancel` by cloudpid, "the server's call ended" (a form the owner had answered too: the server is sent nothing), and
+   * the Sampling requests already answered stay as they were. A round with none unanswered is left alone. Throws when the
+   * storage cannot take it. `false`: nothing was pending.
+   */
+  const answerRound = (
+    record: DeferredRecord,
+    decide: (question: DeferredSampling) => McpSamplingDecision,
+  ): boolean => {
+    const held = pendingOf(record);
+
+    if (held === undefined) return false;
+
+    const decisions = Arr.map(held.pending, (question) => [question, decide(question)] as const);
+
+    for (const [question, answer] of decisions)
+      storage.put(questionKey(question.id), { ...question, answer });
+
+    if (Arr.some(decisions, ([, answer]) => answer.action === "refuse")) {
+      for (const question of held.questions) {
+        if (isSampling(question)) continue;
+
+        storage.put(questionKey(question.id), {
+          ...question,
+          answer: { action: "cancel", by: "cloudpid", reason: MCP_CALL_ENDED_REASON },
+        });
+      }
+    }
+
+    return true;
+  };
+
+  /** Tell the clients and wake the calls of the rounds `answerRound` answered. */
+  const answered = (callIds: ReadonlySet<string>) =>
+    Effect.gen(function* () {
+      yield* tell;
+      yield* tellSampling;
+
+      for (const callId of callIds) yield* wake(callId);
+    });
+
+  /**
+   * Answer the pending Sampling requests of `server`'s shown rounds, in every call, with `decide`: the definition's `allow`
+   * (they run) or `off` (they are refused, which sinks their rounds). A round with none pending is untouched.
+   */
+  const answerServer = (
+    server: string,
+    decide: (question: DeferredSampling) => McpSamplingDecision,
+  ) =>
+    Effect.gen(function* () {
+      const woken = new Set<string>();
+
+      yield* Effect.try(() => {
+        for (const callId of deferredIds()) {
+          const record = readRecord(callId);
+
+          if (record?.server === server && answerRound(record, decide)) woken.add(callId);
+        }
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not answer an MCP server's deferred Sampling requests", cause),
+        ),
+      );
+
+      yield* answered(woken);
+    });
+
   /**
    * The owner's decision on Sampling request `id`, kept in its question (`false`: it is not shown or was answered
-   * meanwhile: the first answer wins, read again in the step that writes). An allow lets through the call's other
-   * unanswered requests, or the server's across calls, each on its own Role. A refusal sinks the round: every other
-   * question of it is answered by cloudpid ("the server's call ended"), even a form the owner had answered, and a refusal
-   * for the Session or for good sinks the server's other rounds the same way, refusing their requests of it.
+   * meanwhile: the first answer wins, read in the step that writes). It is the decision for every Sampling request of its
+   * round waiting for the owner, each on its own Role unless the owner picked one (`decisionOf`); a choice for the Session
+   * or for good (`also: "server"`) is the decision for the server's pending requests in other calls too. A refusal sinks
+   * only the rounds that hold a pending request it covers (`answerRound`): a round of forms alone, or whose requests were
+   * answered already, is left as it is.
    */
   const decideSampling = (id: string, verdict: McpSamplingVerdict) =>
     Effect.gen(function* () {
       const woken = new Set<string>();
 
       const decided = yield* Effect.try(() => {
-        const slot = samplingSlot(id);
-        const question = findShownBy(slot, isSampling);
+        const question = findShownBy(samplingSlot(id), isSampling);
 
         if (question === undefined) return false;
 
         const { callId, server } = question.request;
+        const decide = (each: DeferredSampling) => decisionOf(verdict, each.request.role);
 
-        if (verdict.action === "allow") {
-          const answer: KeptSampling = {
-            action: "allow",
-            role: verdict.role,
-            grant: verdict.grant,
-          };
+        for (const other of deferredIds()) {
+          const record = readRecord(other);
 
-          storage.put(questionKey(slot), { ...question, answer });
-          woken.add(callId);
+          if (record === undefined) continue;
 
-          // What the choice covers: the call's other requests, or the server's across calls, each on its own Role.
-          for (const other of deferredIds()) {
-            const record = readRecord(other);
+          const covered =
+            other === callId || (verdict.also === "server" && record.server === server);
 
-            if (record?.round?.shown !== true) continue;
-
-            if (verdict.also === "call" ? other !== callId : record.server !== server) continue;
-
-            for (const each of questionsOf(record)) {
-              const role = isSampling(each)
-                ? ROLE_NAMES.find((name) => name === each.request.role)
-                : undefined;
-
-              if (!isSampling(each) || role === undefined) continue;
-
-              if (each.id === slot || each.answer !== undefined) continue;
-
-              storage.put(questionKey(each.id), {
-                ...each,
-                answer: { action: "allow", role, grant: verdict.grant },
-              });
-              woken.add(other);
-            }
-          }
-
-          return true;
-        }
-
-        const refused: KeptSampling = { action: "refuse", by: verdict.by, reason: verdict.reason };
-
-        /** `record`'s round sunk: its Sampling requests answered `sampling`, every other question cancelled by cloudpid. */
-        const sink = (
-          record: DeferredRecord,
-          except: string | undefined,
-          sampling: KeptSampling,
-        ) => {
-          for (const each of questionsOf(record)) {
-            if (each.id === except) continue;
-
-            storage.put(
-              questionKey(each.id),
-              isSampling(each)
-                ? { ...each, answer: sampling }
-                : {
-                    ...each,
-                    answer: { action: "cancel", by: "cloudpid", reason: MCP_CALL_ENDED_REASON },
-                  },
-            );
-          }
-
-          woken.add(record.callId);
-        };
-
-        const record = readRecord(callId);
-
-        if (record === undefined) return false;
-
-        storage.put(questionKey(slot), { ...question, answer: refused });
-        // The other questions of its round are withdrawn, the owner's own answers to them too.
-        sink(record, slot, sunkSampling);
-
-        // A refusal for the Session or for good sinks the server's other rounds too, refusing what they ask.
-        if (verdict.also === "server") {
-          for (const other of deferredIds()) {
-            const rest = other === callId ? undefined : readRecord(other);
-
-            if (rest?.server === server && rest.round?.shown === true)
-              sink(rest, undefined, refused);
-          }
+          if (covered && answerRound(record, decide)) woken.add(other);
         }
 
         return true;
@@ -1327,10 +1316,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       if (!decided) return false;
 
-      yield* tell;
-      yield* tellSampling;
-
-      for (const callId of woken) yield* wake(callId);
+      yield* answered(woken);
 
       return true;
     });
@@ -1340,6 +1326,14 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     shownSampling,
     samplingHeld,
     decideSampling,
+    /** The server's definition says `allow` now: its pending requests run, on the Role each was shown on. */
+    allowServer: (server: string) =>
+      answerServer(server, (question) =>
+        decisionOf({ action: "allow", role: "small" }, question.request.role),
+      ),
+    /** The server's definition says `off` now: its pending requests are refused by cloudpid for `reason`. */
+    refuseServer: (server: string, reason: string) =>
+      answerServer(server, () => refusedBy("cloudpid", reason)),
     deferSampling,
     answer,
     defer,

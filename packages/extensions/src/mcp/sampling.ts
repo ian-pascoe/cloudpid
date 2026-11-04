@@ -702,7 +702,11 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
             );
           }
 
-          record = { ...record, by: "owner", grant: decided.grant };
+          // No grant: the server's definition, switched to `allow` while the request waited, let it run.
+          record =
+            decided.grant === undefined
+              ? { ...record, by: "definition" }
+              : { ...record, by: "owner", grant: decided.grant };
 
           if (decided.role !== prepared.role) {
             const model = modelOf(bound.models, roles, decided.role);

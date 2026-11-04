@@ -163,6 +163,8 @@ describe("a script's MCP call whose Modern server also asks to use a model", () 
     );
 
     expect(results[0]).toContain("docs asked for a model reply, which was refused by you");
+    // The script reads a failed call's text only, so the code is in it.
+    expect(results[0]).toContain("(sampling_refused)");
     expect(
       await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
         instance.samplingUsage(),

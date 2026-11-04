@@ -335,6 +335,56 @@ describe("MCP sampling on a definition that says ask", () => {
       });
     }));
 
+  test("refuses the call's other waiting requests with the one refused, and leaves another call's", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced } = open();
+
+      const first = yield* Effect.forkChild(sampler.sample(ask()));
+      const second = yield* Effect.forkChild(sampler.sample(ask({ key: "2" })));
+      const other = yield* Effect.forkChild(sampler.sample(ask({ key: "3", callId: "call-2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(3));
+      yield* questions.answerSampling("call-1:1", { choice: "refuse" });
+
+      expect(yield* Fiber.join(first)).toMatchObject({ kind: "refused", detail: { by: "owner" } });
+      expect(yield* Fiber.join(second)).toMatchObject({
+        kind: "refused",
+        detail: { by: "owner", status: "refused" },
+      });
+      expect(yield* questions.pendingSampling).toEqual([
+        expect.objectContaining({ callId: "call-2" }),
+      ]);
+      yield* questions.settleCall("call-2");
+      yield* Fiber.join(other);
+    }));
+
+  test("runs a waiting request when the server's definition is switched to allow, with no grant, and refuses it when switched to off", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced, faux } = open();
+
+      faux.setResponses([fauxAssistantMessage("as the definition allows")]);
+
+      const allowed = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+      yield* questions.samplingSwitched("demo", "allow");
+
+      expect(yield* Fiber.join(allowed)).toMatchObject({
+        kind: "sampled",
+        detail: { status: "answered", by: "definition", role: "small" },
+      });
+      expect(yield* questions.pendingSampling).toEqual([]);
+
+      const off = yield* Effect.forkChild(sampler.sample(ask({ key: "2", callId: "call-2" })));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+      yield* questions.samplingSwitched("demo", "off");
+      expect(yield* Fiber.join(off)).toMatchObject({
+        kind: "refused",
+        detail: { by: "cloudpid", status: "refused" },
+      });
+    }));
+
   test("writes the definition on Always allow, then runs the request and the server's other waiting ones", () =>
     Effect.gen(function* () {
       const { sampler, questions, announced, faux, written } = open();

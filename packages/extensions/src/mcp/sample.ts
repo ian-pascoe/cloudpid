@@ -208,14 +208,14 @@ const lineOf = (detail: McpSamplingDetail): string | undefined =>
  * What the model reads of a Modern call that a refused Sampling request ended (`docs/architecture/
  * mcp-server-requests.md` → Sampling requests, Refusals): an `InputResponse` has no error form, so the server was told
  * nothing and the call ends here, `isError`, with `details.error: "sampling_refused"` (a script's call gets the same
- * code). The call's own work may be partly done.
+ * code: a script reads only a failed call's text, so the code is in it). The call's own work may be partly done.
  */
 export const samplingRefusedResult = (
   detail: McpSamplingDetail,
   base: McpDetails,
 ): ToolExecutionResult<JsonValue> =>
   failedWith(
-    `${detail.server} asked for a model reply, which was ${wordsOf(detail)}. On this server's protocol that ends the call, which may have done part of its work.`,
+    `${detail.server} asked for a model reply, which was ${wordsOf(detail)}. On this server's protocol that ends the call, which may have done part of its work (sampling_refused).`,
     { ...base, error: "sampling_refused" },
   );
 
