@@ -191,7 +191,7 @@ describe("admitting a message", () => {
 
       // The move holds the lock while its summary is made; the first message is sent meanwhile, and the second after.
       await summarizing;
-      void instance.holdPreparing("a1");
+      const preparingA1 = instance.holdPreparing("a1");
 
       const first = instance.submit("a1");
 
@@ -205,6 +205,8 @@ describe("admitting a message", () => {
 
       const second = instance.submit("a2");
 
+      await preparingA1;
+      // A moment for the second to be placed if it wrongly could be: nothing signals a message that waits in its line.
       await sleep(50);
       // The first is for the branch the Session moved to, and the second is behind it: neither is placed yet.
       expect(await sent(instance, went.active)).toEqual([]);
@@ -387,6 +389,7 @@ describe("admitting a message", () => {
       // Sent after the Stop, it is for the conversation as it is after it.
       const after = instance.submitOutcome("c2", child);
 
+      // Nothing says it got to the lock it waits for either: a moment lets it.
       await sleep(50);
       instance.finishSummary();
 
