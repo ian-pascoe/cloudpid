@@ -42,7 +42,7 @@ describe("the byte budget", () => {
     expect(await settled(more[2])).toBe(true);
   });
 
-  it("lets nobody in over budget while a pool holder is still running", async () => {
+  it("lets nobody in over budget while the holders still running hold enough for the oldest waiter", async () => {
     const budget = makeBudget();
     const [running, a, b, fresh] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
 
@@ -62,6 +62,25 @@ describe("the byte budget", () => {
     for (const charge of more) {
       expect(await settled(charge)).toBe(true);
     }
+  });
+
+  it("lets the oldest waiter in over budget when the holders still running could not give back enough for it", async () => {
+    const budget = makeBudget();
+    const [idle, a, b, c] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
+
+    // `idle` holds a few bytes and waits on its server, not on the pool (a slow tool's open response); the others
+    // hold the rest of the pool and each waits for a mebibyte more.
+    await idle.charge(512);
+    await a.charge(3 * MiB);
+    await b.charge(3 * MiB);
+    await c.charge(2 * MiB - 512);
+
+    const more = [a.charge(MiB), b.charge(MiB), c.charge(MiB)] as const;
+
+    // Were `idle` to end, its bytes would let none of them in, so waiting on it is a deadlock: the oldest goes on.
+    expect(await settled(more[0])).toBe(true);
+    expect(await settled(more[1])).toBe(false);
+    expect(await settled(more[2])).toBe(false);
   });
 
   it("keeps a waiting call's bytes counted", async () => {
