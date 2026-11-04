@@ -41,6 +41,22 @@ export type McpElicitationDetail = {
   readonly fields: Array<string>;
 };
 
+/**
+ * One Sampling request the server made during a call (`docs/architecture/mcp-server-requests.md` → Sampling requests,
+ * Records): never its content, only what the owner reads on the call's card.
+ */
+export type McpSamplingDetail = {
+  readonly server: string;
+  readonly status: "answered" | "refused" | "failed";
+  readonly by: "definition" | "cloudpid";
+  /** Why it was refused or failed. */
+  readonly reason?: string;
+  readonly role?: string;
+  readonly model?: string;
+  readonly tokens?: number;
+  readonly cost?: number;
+};
+
 /** The most resources a call's `details` names. */
 export const MAX_RESOURCE_REFS = 20;
 
@@ -79,6 +95,8 @@ export type McpDetails = {
   readonly cut?: "host_lost" | "engine_lost";
   /** The questions the server asked during the call, answered; absent when it asked none. */
   readonly elicitation?: Array<McpElicitationDetail>;
+  /** The Sampling requests the server made during the call; absent when it made none. */
+  readonly sampling?: Array<McpSamplingDetail>;
   /**
    * A call that failed fast because the server needs the owner signed in (`docs/architecture/mcp-sign-in.md` → Sign-in
    * requests): `status` is `required`, `step_up`, `rejected` or `unavailable`, and `scope` is what a step-up wants.
