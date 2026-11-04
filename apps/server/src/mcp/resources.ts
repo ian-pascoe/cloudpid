@@ -249,7 +249,8 @@ export const resourceRequest = (
 
     if (Result.isFailure(resolved)) return resolved.failure;
 
-    const reached = yield* reachServer(resolved.success);
+    // `ctx.start: false` (a preview): a stdio server's Container is not started for it, and a stopped one is `stopped`.
+    const reached = yield* reachServer(resolved.success, { start: ctx.start !== false });
 
     if (Result.isFailure(reached)) return reached.failure;
 

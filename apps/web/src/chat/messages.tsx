@@ -8,7 +8,7 @@ import {
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import * as Arr from "effect/Array";
-import { ChevronRight, Globe } from "lucide-react";
+import { ChevronRight, FileText, Globe } from "lucide-react";
 import * as Predicate from "effect/Predicate";
 import {
   KeptDetails,
@@ -27,11 +27,12 @@ import {
   type ShownSkill,
   shownMcpPrompt,
   shownPages,
+  shownResources,
   shownReview,
   shownSkills,
   shownVia,
 } from "../session/thread-messages.ts";
-import type { AttachedPage } from "@cloudpid/protocol";
+import { type AttachedPage, type AttachedResource, resourceLabel } from "@cloudpid/protocol";
 import { pageHost, pageLabel } from "./attached-pages.ts";
 import { entryIdOf } from "../session/tree.ts";
 import { AnswerBar, BranchChevrons, OwnerMessageBar } from "./tree-bar.tsx";
@@ -52,6 +53,34 @@ const SkillDisclosure = ({ skill, messageId }: { skill: ShownSkill; messageId: s
       {skill.text}
     </pre>
   </KeptDetails>
+);
+
+/**
+ * An MCP resource the owner attached: a chip with its name, its server and what became of it (read as text or an image,
+ * kept as a file, or not read, with why). The model got a block of the server's content the Session added; the chip stands
+ * for it (docs/architecture/mcp-in-a-session.md → Attached resources).
+ */
+const ResourceChip = ({ resource }: { resource: AttachedResource }) => (
+  <li className="rounded-md border bg-background px-2.5 py-1.5 text-sm whitespace-normal">
+    <div className="flex items-center gap-2">
+      <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0">
+        <span className="block truncate" title={resource.uri}>
+          {resourceLabel(resource)}
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">
+          MCP · {resource.server}
+          {resource.kind === "image" ? " · image" : ""}
+          {resource.path !== undefined ? " · saved as a file" : ""}
+        </span>
+      </span>
+    </div>
+    {resource.kind === "error" && (
+      <p className="mt-1 text-xs text-destructive">
+        Could not be read{resource.error === undefined ? "" : `: ${resource.error}`}
+      </p>
+    )}
+  </li>
 );
 
 /**
@@ -112,6 +141,7 @@ const UserMessage = () => {
   const id = useAuiState((state) => state.message.id);
   const skills = shownSkills(custom);
   const pages = shownPages(custom);
+  const resources = shownResources(custom);
   const review = shownReview(custom);
   const via = shownVia(custom);
   const prompt = shownMcpPrompt(custom);
@@ -127,6 +157,13 @@ const UserMessage = () => {
           <ul aria-label="Attached pages" className="mt-1.5 flex flex-col gap-1.5">
             {Arr.map(pages, (page) => (
               <PageChip key={page.ownerTabId} page={page} />
+            ))}
+          </ul>
+        )}
+        {resources.length > 0 && (
+          <ul aria-label="Attached MCP resources" className="mt-1.5 flex flex-col gap-1.5">
+            {Arr.map(resources, (resource) => (
+              <ResourceChip key={`${resource.server}\u0000${resource.uri}`} resource={resource} />
             ))}
           </ul>
         )}

@@ -6,6 +6,7 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import {
   AttachedPage,
+  AttachedResource,
   McpPromptData,
   SessionVia,
   type SessionView,
@@ -238,6 +239,12 @@ const decodePages = Schema.decodeUnknownOption(Schema.Array(AttachedPage));
 export const shownPages = (custom: MessageCustom | undefined): readonly AttachedPage[] =>
   Option.getOrElse(decodePages(custom?.["pages"]), () => []);
 
+const decodeResources = Schema.decodeUnknownOption(Schema.Array(AttachedResource));
+
+/** The MCP resources attached to a user message, as its metadata keeps them; none when it has none. */
+export const shownResources = (custom: MessageCustom | undefined): readonly AttachedResource[] =>
+  Option.getOrElse(decodeResources(custom?.["resources"]), () => []);
+
 const decodeVia = Schema.decodeUnknownOption(SessionVia);
 
 /** Who sent a user message over the MCP endpoint, as its metadata keeps it; none for the owner's own. */
@@ -278,6 +285,7 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
     // attached to it as chips, and a Review's Annotations as chips under its summary, each opening on the code it quoted.
     const skills: ShownSkill[] = (message.skills ?? []).map(({ name, text }) => ({ name, text }));
     const pages = message.pages ?? [];
+    const resources = message.resources ?? [];
     const review = message.review ?? [];
 
     const prompt = message.mcpPrompt;
@@ -285,6 +293,7 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
     if (
       skills.length > 0 ||
       pages.length > 0 ||
+      resources.length > 0 ||
       review.length > 0 ||
       message.via !== undefined ||
       prompt !== undefined
@@ -299,6 +308,9 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
       if (skills.length > 0) custom["skills"] = skills;
 
       if (pages.length > 0) custom["pages"] = pages.map((page) => ({ ...page }));
+
+      if (resources.length > 0)
+        custom["resources"] = resources.map((resource) => ({ ...resource }));
 
       if (review.length > 0) custom["review"] = review.map((annotation) => ({ ...annotation }));
 

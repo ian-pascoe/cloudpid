@@ -68,6 +68,8 @@ import type {
   HistoryPage,
   LastRun,
   McpPromptRef,
+  McpResourceMenu,
+  ResourceRef,
   Navigated,
   PullList,
   RunDiff,
@@ -1880,6 +1882,47 @@ export class TestSession extends DurableObject {
         ),
       ),
     );
+  }
+
+  /**
+   * Submit `text` with the MCP resources `refs` attached, as the socket's `submit` does: the submission, or why it was
+   * refused (its message, and its code and server when it carries them).
+   */
+  submitResources({
+    requestId,
+    text,
+    refs,
+  }: TestPrompt & { readonly refs: ReadonlyArray<ResourceRef> }): Promise<
+    | { readonly submission: number }
+    | {
+        readonly failure: {
+          readonly message: string;
+          readonly code?: string | undefined;
+          readonly server?: string | undefined;
+        };
+      }
+  > {
+    return this.#runtime.runPromise(
+      this.#host
+        .submit({
+          requestId,
+          input: text,
+          resources: { refs, redact: Effect.succeed(<A>(value: A): A => value) },
+        })
+        .pipe(
+          Effect.map((submission) => ({ submission })),
+          Effect.catch((error) =>
+            Effect.succeed({
+              failure: { message: error.message, code: error.code, server: error.server },
+            }),
+          ),
+        ),
+    );
+  }
+
+  /** The MCP resources the root conversation's `@` menu lists. */
+  resourceMenu(): Promise<McpResourceMenu> {
+    return this.#runtime.runPromise(this.#host.resourceMenu());
   }
 
   /**

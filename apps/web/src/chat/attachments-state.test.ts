@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- assertions over what the fakes recorded, in native arrays.
 
-import { MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
+import { MAX_ATTACHED_RESOURCES, MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -15,14 +15,17 @@ import { settle } from "../session/client.testing.ts";
 import {
   addAttachmentsAtom,
   addPageAtom,
+  addResourceAtom,
   attachmentsAtom,
   type PageToAttach,
   removeAttachmentAtom,
   removePageAtom,
+  removeResourceAtom,
   screenNote,
   sendAttachedAtom,
   sentAttachments,
   sentPages,
+  sentResources,
   waitingFor,
 } from "./attachments-state.ts";
 import { chatRegistry, fakeImages, fakeUploads, live, sent } from "./chat.testing.ts";
@@ -49,6 +52,8 @@ const setup = Effect.gen(function* () {
     chat.registry.mount(sendAttachedAtom(ROOT)),
     chat.registry.mount(addPageAtom(ROOT)),
     chat.registry.mount(removePageAtom(ROOT)),
+    chat.registry.mount(addResourceAtom(ROOT)),
+    chat.registry.mount(removeResourceAtom(ROOT)),
   ];
 
   const leave = Effect.sync(() => {
@@ -56,7 +61,8 @@ const setup = Effect.gen(function* () {
   }).pipe(Effect.andThen(settle));
 
   yield* settle;
-  yield* live(chat.latest());
+  // A Session that takes attached resources, as the current one says in its hello.
+  yield* live(chat.latest(), { attachedResources: true });
 
   const add = (...files: File[]) =>
     Effect.sync(() => {
@@ -527,5 +533,113 @@ describe("a composer's attached pages", () => {
 
       revoked.mockRestore();
     }),
+  );
+});
+
+describe("a composer's attached MCP resources", () => {
+  const GUIDE = { server: "docs", uri: "file:///guide.md", name: "Guide" };
+
+  it.effect("are attached once, in order, and taken off again", () =>
+    Effect.gen(function* () {
+      const { registry, state } = yield* setup;
+
+      registry.set(addResourceAtom(ROOT), GUIDE);
+      registry.set(addResourceAtom(ROOT), GUIDE);
+      registry.set(addResourceAtom(ROOT), { server: "docs", uri: "file:///b.md", name: "" });
+      yield* settle;
+
+      expect(state().resources.map((chip) => chip.uri)).toEqual([
+        "file:///guide.md",
+        "file:///b.md",
+      ]);
+      expect(sentResources(state())).toEqual([
+        { ref: { server: "docs", uri: "file:///guide.md", name: "Guide" }, label: "Guide" },
+        { ref: { server: "docs", uri: "file:///b.md" }, label: "b.md" },
+      ]);
+
+      registry.set(removeResourceAtom(ROOT), { server: "docs", uri: "file:///guide.md" });
+      yield* settle;
+
+      expect(state().resources.map((chip) => chip.uri)).toEqual(["file:///b.md"]);
+    }),
+  );
+
+  it.effect("hold a message's worth, no more", () =>
+    Effect.gen(function* () {
+      const { registry, state } = yield* setup;
+
+      for (let index = 0; index < MAX_ATTACHED_RESOURCES + 3; index++) {
+        registry.set(addResourceAtom(ROOT), {
+          server: "docs",
+          uri: `file:///${String(index)}`,
+          name: "",
+        });
+      }
+
+      yield* settle;
+
+      expect(state().resources).toHaveLength(MAX_ATTACHED_RESOURCES);
+    }),
+  );
+
+  it.effect(
+    "make a message alone, go as references, and come back when the Session refuses it",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest, state } = yield* setup;
+
+        registry.set(addResourceAtom(ROOT), GUIDE);
+        yield* settle;
+
+        registry.set(sendAttachedAtom(ROOT), callOf({ typed: "", whenBusy: "followUp" }));
+        yield* settle;
+
+        const [submit] = sent(latest(), "submit");
+
+        expect(submit).toMatchObject({
+          resources: [{ server: "docs", uri: GUIDE.uri, name: "Guide" }],
+        });
+        // Off the composer while the Session answers.
+        expect(state().resources).toEqual([]);
+
+        yield* latest().say({
+          type: "error",
+          id: submit?.id,
+          message: "A resource you attached is gone",
+          code: "ATTACHED_RESOURCE_GONE",
+        });
+
+        expect(
+          exitFailure(AsyncResult.toExit(yield* settled(registry, sendAttachedAtom(ROOT)))),
+        ).toBe("A resource you attached is gone");
+        expect(state().resources.map((chip) => chip.uri)).toEqual([GUIDE.uri]);
+      }),
+  );
+
+  it.effect(
+    "are not sent to a Session that does not say it takes them, and come back with why",
+    () =>
+      Effect.gen(function* () {
+        const chat = chatRegistry(fakeUploads().layer, fakeImages().layer);
+
+        chat.registry.mount(sessionStatusAtom("s1"));
+        chat.registry.mount(attachmentsAtom(ROOT));
+        chat.registry.mount(addResourceAtom(ROOT));
+        chat.registry.mount(sendAttachedAtom(ROOT));
+        yield* settle;
+        // An older Session: its hello has no `attachedResources`.
+        yield* live(chat.latest());
+
+        chat.registry.set(addResourceAtom(ROOT), GUIDE);
+        yield* settle;
+        chat.registry.set(sendAttachedAtom(ROOT), callOf({ typed: "go", whenBusy: "followUp" }));
+        yield* settle;
+
+        expect(sent(chat.latest(), "submit")).toEqual([]);
+        expect(
+          exitFailure(AsyncResult.toExit(yield* settled(chat.registry, sendAttachedAtom(ROOT)))),
+        ).toMatch(/cannot take attached MCP resources/);
+        expect(chat.registry.get(attachmentsAtom(ROOT)).resources).toHaveLength(1);
+      }),
   );
 });

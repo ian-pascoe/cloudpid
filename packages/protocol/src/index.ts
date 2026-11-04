@@ -3,6 +3,8 @@ export * from "./annotations.ts";
 
 export * from "./attached-pages.ts";
 
+export * from "./attached-resources.ts";
+
 export * from "./attachments.ts";
 
 export * from "./changes.ts";

@@ -4,7 +4,7 @@
 // the rest. The main Worker drives both (`fillSession`). What is copied, in plain functions, is `fork.ts`'s.
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { TodoDoc } from "@cloudpid/extensions/todo";
-import type { McpAppCopies, McpAppCopy, McpPromptData } from "@cloudpid/protocol";
+import type { AttachedResource, McpAppCopies, McpAppCopy, McpPromptData } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AgentDoc,
@@ -35,7 +35,12 @@ import {
   NO_AGENT,
   toolResultIds,
 } from "./fork.ts";
-import { isOwnerMessage, ownerMessagePrompt, ownerMessageText } from "./tree.ts";
+import {
+  isOwnerMessage,
+  ownerMessagePrompt,
+  ownerMessageResources,
+  ownerMessageText,
+} from "./tree.ts";
 import { type AgentPick, PICK_KEY, pickAsOf } from "./pick.ts";
 import type { SettingsKv } from "./settings.ts";
 
@@ -190,6 +195,7 @@ export const sessionForks = (options: ForksOptions) => {
       let through: number | null;
       let text: string | null = null;
       let mcpPrompt: McpPromptData | undefined;
+      let resources: ReadonlyArray<AttachedResource> | undefined;
 
       if (request.point === undefined) {
         through = (yield* newest(undefined, 1))[0]?.id ?? null;
@@ -208,6 +214,7 @@ export const sessionForks = (options: ForksOptions) => {
 
           text = ownerMessageText(entry);
           mcpPrompt = ownerMessagePrompt(entry);
+          resources = ownerMessageResources(entry);
           through = before?.id ?? null;
         } else {
           through = entry.id;
@@ -243,6 +250,8 @@ export const sessionForks = (options: ForksOptions) => {
       };
 
       if (mcpPrompt !== undefined) plan.mcpPrompt = mcpPrompt;
+
+      if (resources !== undefined) plan.resources = resources;
 
       return plan;
     }).pipe(options.inArrivalOrder);

@@ -14,6 +14,7 @@ import {
   ConversationId,
   decodeClientMessage,
   type FileMatches,
+  type McpResourceMenu,
   type HistoryPage,
   type Navigated,
   type SessionTree,
@@ -736,6 +737,7 @@ export const sessionSocketsLayer = (
         | ComparisonSources
         | RunDiff
         | FileMatches
+        | McpResourceMenu
         | HistoryPage
         | SessionTree
         | Navigated
@@ -775,6 +777,7 @@ export const sessionSocketsLayer = (
               pages: refs,
               annotations: ids,
               mcpPrompt: picked,
+              resources: attached,
               ...typed
             } = message;
 
@@ -787,6 +790,17 @@ export const sessionSocketsLayer = (
                   message: "An MCP prompt cannot go with a Review",
                   code: "MCP_PROMPT_FAILED",
                   server: picked.server,
+                }),
+              );
+            }
+
+            // The MCP resources attached are read in the message's prepare step too, and a Review's summary is its own
+            // message, which they do not join.
+            if (attached !== undefined && attached.length > 0 && ids !== undefined) {
+              return Effect.fail(
+                SessionError.make({
+                  operation: "submit",
+                  message: "Attached MCP resources cannot go with a Review: remove them first",
                 }),
               );
             }
@@ -806,13 +820,27 @@ export const sessionSocketsLayer = (
             const withPages =
               refs === undefined || refs.length === 0 ? typed : { ...typed, attachPages };
 
-            const prompt =
+            const withPrompt =
               picked === undefined
                 ? withPages
                 : {
                     ...withPages,
                     mcpPrompt: {
                       ref: picked,
+                      redact: secrets.refresh.pipe(
+                        Effect.as(<A>(value: A): A => secrets.redact(value)),
+                      ),
+                    },
+                  };
+
+            // What a server answers for a resource is redacted of the Secrets held, as the rest of the message's text is.
+            const prompt =
+              attached === undefined || attached.length === 0
+                ? withPrompt
+                : {
+                    ...withPrompt,
+                    resources: {
+                      refs: attached,
                       redact: secrets.refresh.pipe(
                         Effect.as(<A>(value: A): A => secrets.redact(value)),
                       ),
@@ -845,6 +873,10 @@ export const sessionSocketsLayer = (
 
             return host.files(search);
           }
+
+          // The `@` menu's MCP resources: the servers' lists, which start no Container.
+          case "mcp_resource_menu":
+            return host.resourceMenu(message.conversationId);
 
           // Answered to this socket alone, as every command is: the links are never stored or sent to other clients.
           case "live_view":
@@ -1230,8 +1262,8 @@ export const sessionSocketsLayer = (
         yield* send(
           server,
           copying
-            ? { type: "hello", root, copying, appViews: true, mcpTasks: true }
-            : { type: "hello", root, appViews: true, mcpTasks: true },
+            ? { type: "hello", root, copying, appViews: true, mcpTasks: true, attachedResources: true }
+            : { type: "hello", root, appViews: true, mcpTasks: true, attachedResources: true },
         );
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),

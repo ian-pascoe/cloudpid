@@ -11,6 +11,7 @@ import {
   escapePageText,
   isInlineImageType,
   MAX_MCP_PROMPT_RESOURCES,
+  MAX_RESOURCE_INLINE_TEXT_BYTES,
   MAX_MCP_PROMPT_RESULT_DESCRIPTION,
   type McpPromptErrorCode,
   type McpPromptPart,
@@ -31,11 +32,11 @@ const bytesOf = (text: string): number => encoder.encode(text).byteLength;
 export const MAX_MCP_PROMPT_BLOCK_BYTES = 1024 * 1024;
 
 /**
- * The most an embedded text resource keeps in the block: more goes to a file, and the block names its path. Until
- * Attached resources have a guard of their own (`docs/architecture/mcp-in-a-session.md` → Attached resources), the two
- * share this one.
+ * The most an embedded text resource keeps in the block: more goes to a file, and the block names its path. It is the
+ * guard of Attached resources too (`MAX_RESOURCE_INLINE_TEXT_BYTES`, `docs/architecture/mcp-in-a-session.md` →
+ * Attached resources), which the two share.
  */
-export const MAX_MCP_PROMPT_INLINE_TEXT_BYTES = 128 * 1024;
+export const MAX_MCP_PROMPT_INLINE_TEXT_BYTES = MAX_RESOURCE_INLINE_TEXT_BYTES;
 
 /** The URIs a prompt's resource references keep, in characters. */
 const MAX_URI = 2048;
@@ -161,14 +162,14 @@ const proseOf = (input: PromptInput, text: string): string =>
 const attribute = (input: PromptInput, value: string): string =>
   escapePageText(input.redact(cleanText(value)).replaceAll(/\s+/gu, " "));
 
-const base64Bytes = (data: string): number => {
+export const base64Bytes = (data: string): number => {
   const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
 
   return Math.floor((data.length * 3) / 4) - padding;
 };
 
 /** `data`, base64, as bytes, or nothing when it is not base64. */
-const decodeBase64 = (data: string): Uint8Array | undefined => {
+export const decodeBase64 = (data: string): Uint8Array | undefined => {
   try {
     return Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
   } catch {

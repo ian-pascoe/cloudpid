@@ -15,7 +15,7 @@ import { PushManagerLive } from "../push.ts";
 import { fakeRegistryLayer } from "../registry.testing.ts";
 import { appRuntime } from "../runtime.ts";
 import { SessionProbe } from "../session/client.ts";
-import { FakeSocket, settle } from "../session/client.testing.ts";
+import { FakeSocket, settle, type Value } from "../session/client.testing.ts";
 import { ImageEncoder, ImageError } from "./image-encode.ts";
 import { UploadError, Uploads } from "./uploads.ts";
 
@@ -150,11 +150,11 @@ export const chatRegistry = (
   };
 };
 
-/** Greet and answer the root's watch, as a Session does. */
-export const live = (socket: FakeSocket) =>
+/** Greet (with the capabilities `hello` adds) and answer the root's watch, as a Session does. */
+export const live = (socket: FakeSocket, hello: { readonly [key: string]: Value } = {}) =>
   Effect.gen(function* () {
     yield* socket.open();
-    yield* socket.say({ type: "hello", root: 1 });
+    yield* socket.say({ type: "hello", root: 1, ...hello });
 
     const watch = socket.commands().find((command) => command.type === "watch");
 

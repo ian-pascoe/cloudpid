@@ -40,6 +40,7 @@ import {
   conversationOfText,
   type McpAppHtmlAnswer,
   type McpAppRequestAnswer,
+  type McpResourceMenu,
 } from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -79,6 +80,15 @@ import { appToolsOf } from "./mcp/app-tools.ts";
 import { appRequestOf, type McpAppRequestInput } from "./mcp/app-request.ts";
 import { appHtmlOf, MCP_APP_FEATURE, type McpAppHtmlInput } from "./mcp/apps.ts";
 import {
+  type AttachedReadInput,
+  type AttachedResourcesDeps,
+  type AttachedReadResult,
+  listResourceMenu,
+  MCP_NO_START_FEATURE,
+  readAttachedResource,
+  type ResourceMenuInput,
+} from "./mcp/attached-resources.ts";
+import {
   MCP_RESEND_FEATURE,
   MCP_RESUME_FEATURE,
   MCP_SAMPLING_FEATURE,
@@ -105,6 +115,14 @@ export {
   type McpWatched,
   type McpWatchRecorder,
 } from "./mcp/watches.ts";
+
+export {
+  type AttachedContent,
+  type AttachedReadInput,
+  type AttachedReadResult,
+  MCP_NO_START_FEATURE,
+  type ResourceMenuInput,
+} from "./mcp/attached-resources.ts";
 
 export {
   createMcpSignIns,
@@ -221,7 +239,8 @@ export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
  * a call keeps its Modern server's questions for later with `resume` (`./mcp/exchange.ts`), and without it answers
  * them live; it keeps a Legacy server's `-32042` pages with `resend`, and without it that is the server's error; a
  * Legacy server whose definition says `sampling: "allow"` is answered its Sampling requests with `sampling`
- * (`./mcp/sample.ts`), and none is declared without it.
+ * (`./mcp/sample.ts`), and none is declared without it; a stdio server's resource is listed for the `@` menu, and read for
+ * a preview, without starting its Container only with `no_start` (`./mcp/attached-resources.ts`).
  */
 export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESOURCE_FEATURE,
@@ -231,6 +250,7 @@ export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_SAMPLING_FEATURE,
   MCP_TASKS_FEATURE,
   MCP_WATCHES_FEATURE,
+  MCP_NO_START_FEATURE,
 ];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */
@@ -366,6 +386,16 @@ export type McpToolsService = {
    * `app`), sent to the host as an `app` request, and answered as the View is. Never fails.
    */
   readonly appRequest: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
+  /**
+   * The owner's MCP resources in the composer (`docs/architecture/mcp-in-a-session.md` → Attached resources), checked
+   * against the inventory the tools were last built from and sent to the host as `owner` requests. `menu` lists them for
+   * the `@` menu and starts no Container; `read` reads one at send, as the message is admitted, and may start the
+   * Container of a stdio server. Neither fails.
+   */
+  readonly attachedResources: {
+    readonly menu: (input: ResourceMenuInput) => Effect.Effect<McpResourceMenu>;
+    readonly read: <A>(input: AttachedReadInput<A>) => Effect.Effect<AttachedReadResult<A>>;
+  };
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
   /**
@@ -872,6 +902,16 @@ export const makeMcpTools = (
     return Option.some(built);
   };
 
+  /** What the owner's resources in the composer read of the tools as they were last built. */
+  const attachedDeps = (): AttachedResourcesDeps => ({
+    client,
+    servers: latest?.servers ?? [],
+    origin: latest?.origin ?? {},
+    noStart: latest?.features.includes(MCP_NO_START_FEATURE) === true,
+    slackMs: options.slackMs,
+    slotWaitMs: options.streamWaitMs,
+  });
+
   return {
     requestStart,
     reinstall,
@@ -893,6 +933,10 @@ export const makeMcpTools = (
         },
         input,
       ),
+    attachedResources: {
+      menu: (input) => listResourceMenu(attachedDeps(), input),
+      read: (input) => readAttachedResource(attachedDeps(), input),
+    },
     bindNotices: (next) => {
       notices = next;
     },

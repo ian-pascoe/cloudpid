@@ -20,6 +20,7 @@ import {
   FileMatches,
   HEARTBEAT,
   HistoryPage,
+  McpResourceMenu,
   Navigated,
   RunDiff,
   SessionTree,
@@ -31,6 +32,7 @@ import {
   OwnerTabListing,
   type McpPromptRef,
   Refusal,
+  type ResourceRef,
   type PageRef,
   reduceEvents,
   withEarlier,
@@ -389,6 +391,15 @@ export interface SessionClient {
     conversationId?: number,
   ) => Effect.Effect<FileMatches, SessionCommandError>;
   /**
+   * The MCP resources the composer's `@` menu lists, by server, for the root conversation or subagent conversation
+   * `conversationId` (`docs/architecture/mcp-in-a-session.md` → Attached resources): the Session reads the servers' lists and
+   * starts no Container. A Session that does not say `attachedResources` in `hello` lists none (it answers no servers, and
+   * is never sent the request). Fails as `catalog` does.
+   */
+  readonly resourceMenu: (
+    conversationId?: number,
+  ) => Effect.Effect<McpResourceMenu, SessionCommandError>;
+  /**
    * Run the Session's Slash command `name` with `args` on the root conversation, or on subagent conversation
    * `conversationId`: what it did, or a failure saying why it could not, or that it may have run when the socket closed
    * before its answer.
@@ -515,6 +526,8 @@ interface PendingSubmit {
   readonly annotations: readonly string[] | undefined;
   /** The MCP prompt it got, which the Session gets as the message is sent. */
   readonly mcpPrompt: McpPromptRef | undefined;
+  /** The MCP resources attached to it, which the Session reads as the message is sent. */
+  readonly resources: readonly ResourceRef[] | undefined;
   /** What its lane says while the Session prepares it, in place of `text`. */
   readonly getting: string | undefined;
   /** Whether it went out on the current socket. */
@@ -553,6 +566,8 @@ const decodeServerMessage = Schema.decodeOption(ServerMessageJson);
 const decodeCatalog = Schema.decodeUnknownOption(Catalog);
 
 const decodeFileMatches = Schema.decodeUnknownOption(FileMatches);
+
+const decodeResourceMenu = Schema.decodeUnknownOption(McpResourceMenu);
 
 const decodeOutcome = Schema.decodeUnknownOption(CommandOutcome);
 
@@ -679,6 +694,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
   // Whether it takes `mcp_task_cancel` and `container_keep`: one from before refuses both as unreadable.
   let mcpTasks = false;
+  // Whether the Session on this connection takes `submit.resources` and `mcp_resource_menu` (its `hello` says): one from
+  // before reads either as an unreadable message, and a message sent without its resources would not say so.
+  // `null` until the connection's `hello` has said.
+  let attachedResources: boolean | null = null;
 
   /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
   const sendVisibility = (): void => {
@@ -934,7 +953,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   };
 
   const flush = (): void => {
-    for (const submit of pending) {
+    for (const submit of pending.slice()) {
       if (submit.sent) continue;
 
       // A submit waits for the watch of the conversation it is for: it could land before the snapshot otherwise.
@@ -944,6 +963,22 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           : threadWatches.get(submit.conversationId)?.watched === true;
 
       if (!ready) continue;
+
+      // A Session that does not take resources would refuse the whole message as unreadable, or, were they left out, send
+      // it without what the owner attached: it is refused here, and the composer gives the chips back.
+      if (
+        submit.resources !== undefined &&
+        submit.resources.length > 0 &&
+        attachedResources !== true
+      ) {
+        answered(
+          submit.commandId,
+          undefined,
+          "This Session cannot take attached MCP resources until it is updated; remove them or try again in a few minutes.",
+        );
+
+        continue;
+      }
 
       const message: Types.Mutable<Extract<ClientMessage, { type: "submit" }>> = {
         type: "submit",
@@ -962,6 +997,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       if (submit.annotations !== undefined) message.annotations = submit.annotations;
 
       if (submit.mcpPrompt !== undefined) message.mcpPrompt = submit.mcpPrompt;
+
+      if (submit.resources !== undefined && submit.resources.length > 0) {
+        message.resources = [...submit.resources];
+      }
 
       submit.sent = true;
       send(message);
@@ -1007,6 +1046,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     // The next `hello` says whether the Session that answers takes the App Views' messages.
     appViews = false;
     mcpTasks = false;
+    attachedResources = null;
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of pending) submit.sent = false;
@@ -1049,6 +1089,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         root = message.root;
         appViews = message.appViews === true;
         mcpTasks = message.mcpTasks === true;
+        attachedResources = message.attachedResources === true;
         update({
           activeBranch: root,
           copying: message.copying === true,
@@ -1536,16 +1577,18 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     // @effect-diagnostics-next-line cryptoRandomUUID:off
     requestId: string = crypto.randomUUID(),
   ): void => {
-    const { input, display, pages, annotations, mcpPrompt, getting } = Predicate.isString(message)
-      ? {
-          input: message,
-          display: message,
-          pages: undefined,
-          annotations: undefined,
-          mcpPrompt: undefined,
-          getting: undefined,
-        }
-      : { mcpPrompt: undefined, getting: undefined, ...message };
+    const { input, display, pages, annotations, mcpPrompt, resources, getting } =
+      Predicate.isString(message)
+        ? {
+            input: message,
+            display: message,
+            pages: undefined,
+            annotations: undefined,
+            mcpPrompt: undefined,
+            resources: undefined,
+            getting: undefined,
+          }
+        : { mcpPrompt: undefined, resources: undefined, getting: undefined, ...message };
 
     pending.push({
       commandId: nextCommandId(),
@@ -1557,6 +1600,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       conversationId: isRoot(conversationId) ? undefined : conversationId,
       annotations: annotations === undefined || annotations.length === 0 ? undefined : annotations,
       mcpPrompt,
+      resources,
       getting,
       sent: false,
       outcome,
@@ -1967,6 +2011,22 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         return message;
       }, decodeFileMatches),
+    resourceMenu: (conversationId) =>
+      attachedResources === null
+        ? Effect.fail(SessionCommandError.make({ message: NOT_CONNECTED }))
+        : attachedResources
+          ? request((id) => {
+              const message: Types.Mutable<Extract<ClientMessage, { type: "mcp_resource_menu" }>> =
+                {
+                  type: "mcp_resource_menu",
+                  id,
+                };
+
+              addressTo(message, conversationId);
+
+              return message;
+            }, decodeResourceMenu)
+          : Effect.succeed({ servers: [] }),
     command: (name, args, conversationId) =>
       request(
         (id) => {

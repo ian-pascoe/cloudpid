@@ -38,6 +38,7 @@ import {
   buildSessionTree,
   EMPTY_TREE,
   ownerMessagePrompt,
+  ownerMessageResources,
   ownerMessageText,
   planNavigation,
   SessionTreeDoc,
@@ -250,12 +251,15 @@ export const sessionBranches = (options: BranchesOptions) => {
       const before = request.position === "before" && Option.isSome(entry);
       const text = before ? ownerMessageText(entry.value) : null;
       const mcpPrompt = before ? ownerMessagePrompt(entry.value) : undefined;
+      const resources = before ? ownerMessageResources(entry.value) : undefined;
 
       /** The answer: the prompt goes with the text only when the message had one. */
       const navigated = (conversationId: Navigated["conversationId"]): Navigated => {
         const answer: Mutable<Navigated> = { conversationId, text };
 
         if (mcpPrompt !== undefined) answer.mcpPrompt = mcpPrompt;
+
+        if (resources !== undefined) answer.resources = resources;
 
         return answer;
       };

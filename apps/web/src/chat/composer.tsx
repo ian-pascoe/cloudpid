@@ -39,15 +39,19 @@ import {
   type AttachedMessage,
   addAttachmentsAtom,
   addPageAtom,
+  addResourceAtom,
   attachmentsAtom,
   removeAttachmentAtom,
   removePageAtom,
+  removeResourceAtom,
   sendAttachedAtom,
   sentAttachments,
   waitingFor,
 } from "./attachments-state.ts";
 import { catalogAtom } from "./catalog.ts";
 import { AttachPageButton, PageChips } from "./page-chips.tsx";
+import { resourceMenuAtom } from "./mcp-resource-menu.ts";
+import { ResourceChips } from "./resource-chips.tsx";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu } from "./completion-menu.tsx";
 import {
@@ -195,6 +199,9 @@ const ComposerBox = ({
   const removeAttachment = useAtomSet(removeAttachmentAtom(key));
   const addPage = useAtomSet(addPageAtom(key));
   const removePage = useAtomSet(removePageAtom(key));
+  const addResource = useAtomSet(addResourceAtom(key));
+  const removeResource = useAtomSet(removeResourceAtom(key));
+  const resources = useAtomValue(resourceMenuAtom(key));
   const sendAttached = useCall(sendAttachedAtom(key));
   const allDrafts = useAtomValue(annotationsAtom(key.sessionId));
   const deleteDraft = useCall(deleteAnnotationAtom(key.sessionId));
@@ -202,7 +209,11 @@ const ComposerBox = ({
   useFileDropZone(dropZone, key);
 
   const dragging = useAtomValue(fileDragAtom(key));
-  const attached = attachments.items.length > 0 || attachments.pages.length > 0;
+
+  const attached =
+    attachments.items.length > 0 ||
+    attachments.pages.length > 0 ||
+    attachments.resources.length > 0;
 
   // The drafts addressed to this conversation: while there are some, what is sent here is a Review of them.
   const drafts = draftsTo(allDrafts, conversationId);
@@ -371,11 +382,15 @@ const ComposerBox = ({
     commands: allCommands,
     catalog: catalog ?? undefined,
     files,
+    resources,
     edit,
     run: (command, args) => {
       void run(command, args);
     },
     pickPrompt,
+    pickResource: (server, resource) => {
+      addResource({ server, uri: resource.uri, name: resource.title ?? resource.name });
+    },
   });
 
   /**
@@ -598,6 +613,7 @@ const ComposerBox = ({
             />
           )}
           <PageChips state={attachments} onRemove={removePage} />
+          <ResourceChips state={attachments} onRemove={removeResource} />
           <AttachmentTiles
             // A page's screen shows on its chip.
             items={attachments.items.filter((item) => item.screenOf === undefined)}

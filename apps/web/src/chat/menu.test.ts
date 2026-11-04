@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- assertions over the menu's native arrays and records.
 
-import type { McpPromptEntry } from "@cloudpid/protocol";
+import type { McpMenuResource, McpPromptEntry, McpResourceMenu } from "@cloudpid/protocol";
 import * as Match from "effect/Match";
 import { describe, expect, it } from "vitest";
 import type { ComposerCommand } from "./commands.ts";
@@ -23,6 +23,7 @@ const pickedAs = (pick: MenuPick): string =>
       insert: ({ text }) => text,
       run: ({ command }) => `run ${command.name}`,
       prompt: () => "prompt",
+      resource: ({ server, resource }) => `attach ${server} ${resource.uri}`,
       none: () => "none",
     }),
   );
@@ -320,5 +321,106 @@ describe("the keys an open menu takes", () => {
     expect(press("ArrowDown", 0)).toBeNull();
     expect(press("ArrowUp", 0)).toBeNull();
     expect(press("Escape", 0)).toBe("close");
+  });
+});
+
+describe("the MCP resources in the @ menu", () => {
+  const resource = (name: string, uri: string, more: Partial<McpMenuResource> = {}) => ({
+    name,
+    uri,
+    ...more,
+  });
+
+  const resources: McpResourceMenu = {
+    servers: [
+      {
+        server: "docs",
+        source: "owner",
+        state: "ok",
+        resources: [
+          resource("readme", "file:///docs/readme.md", {
+            title: "Read me",
+            description: "How to start\nmore",
+          }),
+          resource("changelog", "file:///docs/changelog.md"),
+        ],
+      },
+      {
+        server: "wiki",
+        source: "repo:acme/web",
+        state: "ok",
+        resources: [resource("home", "https://wiki.test/home", { mimeType: "text/html" })],
+      },
+      { server: "logs", source: "owner", state: "stopped", resources: [] },
+      { server: "crm", source: "owner", state: "sign_in", resources: [] },
+    ],
+  };
+
+  const none: FileResults = { query: "", paths: [], searching: false, failed: false };
+
+  const menuFor = (text: string, listed: McpResourceMenu | null = resources, files = none) => {
+    const trigger = detectTrigger(text, text.length);
+
+    return trigger === null ? null : completionFor(trigger, commands, catalog, files, listed);
+  };
+
+  it("lists the servers' resources after the files, a section for each, with a Repo's source said", () => {
+    const files: FileResults = { ...none, paths: ["README.md"] };
+
+    expect(menuFor("@", resources, files)?.sections.map((section) => section.label)).toEqual([
+      "Files",
+      "MCP · docs",
+      "MCP · wiki · from acme/web",
+      "MCP · logs",
+      "MCP · crm",
+    ]);
+  });
+
+  it("shows a resource as its title or name, its URI muted after it, and the first description line", () => {
+    const row = menuFor("@")?.entries.find(
+      (entry) => entry.id === "resource:docs:file:///docs/readme.md",
+    );
+
+    expect(row).toMatchObject({
+      label: "Read me",
+      detail: "file:///docs/readme.md",
+      description: "How to start",
+    });
+    expect(row?.pick).toMatchObject({ kind: "resource", server: "docs" });
+  });
+
+  it("says why a server lists none in a muted row that cannot be picked", () => {
+    const rows = menuFor("@")?.entries.filter((entry) => entry.muted === true);
+
+    expect(rows?.map((row) => [row.label, row.description, row.pick.kind])).toEqual([
+      ["logs", "not running: its Container is stopped", "none"],
+      ["crm", "sign-in needed", "none"],
+    ]);
+  });
+
+  it("ranks by what is typed, by name or title first and then by URI", () => {
+    expect(menuFor("@chan")?.entries.map((entry) => entry.id)).toEqual([
+      "resource:docs:file:///docs/changelog.md",
+    ]);
+    expect(menuFor("@wiki.test")?.entries.map((entry) => entry.id)).toEqual([
+      "resource:wiki:https://wiki.test/home",
+    ]);
+  });
+
+  it("narrows to one server's resources after @server:", () => {
+    const completion = menuFor("@docs:");
+
+    expect(completion?.sections.map((section) => section.label)).toEqual(["MCP · docs"]);
+    expect(completion?.entries.map((entry) => entry.label)).toEqual(["Read me", "changelog"]);
+    expect(menuFor("@docs:read")?.entries.map((entry) => entry.label)).toEqual(["Read me"]);
+    expect(menuFor("@docs:zzz")?.notice).toBe("No matching resources in docs.");
+    expect(menuFor("@logs:")?.entries.map((entry) => entry.description)).toEqual([
+      "not running: its Container is stopped",
+    ]);
+  });
+
+  it("is the files menu alone until the Session has answered, or when it has no resources", () => {
+    expect(menuFor("@", null)?.notice).toBe(menuFor("@", { servers: [] })?.notice);
+    expect(menuFor("@", null)?.entries.some((entry) => entry.pick.kind === "resource")).toBe(false);
   });
 });

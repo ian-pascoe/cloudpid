@@ -20,6 +20,7 @@ import {
   type ClientMessage,
   type RepoChanges,
   type McpPromptRef,
+  type ResourceRef,
   type PageRef,
   type SecretRequest,
   type SessionUsage,
@@ -129,6 +130,8 @@ export interface OutgoingMessage {
   readonly annotations?: readonly string[];
   /** The MCP prompt it carries (`Submit.mcpPrompt`): the Session gets it as the message is sent. */
   readonly mcpPrompt?: McpPromptRef;
+  /** The MCP resources attached to it (`Submit.resources`): the Session reads them as the message is sent. */
+  readonly resources?: readonly ResourceRef[];
   /** What its lane says while the Session gets the prompt ("Getting Review PR from docs…"), in place of `display`. */
   readonly getting?: string;
 }

@@ -40,6 +40,7 @@ import * as Schema from "effect/Schema";
 import { type PageCrop, PageCropType } from "./annotations.ts";
 import type { McpPromptData } from "./mcp-prompts.ts";
 import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
+import { type AttachedResource, isResourcesBlock } from "./attached-resources.ts";
 import type { SessionVia } from "./mcp-api.ts";
 import { reviewTitle, type ShownReviewAnnotation, shownReview } from "./review.ts";
 import { skillBlocksIn, type UserEntryData, userEntryData } from "./user-entry.ts";
@@ -92,6 +93,8 @@ export type TranscriptMessage = {
   readonly skills?: readonly TranscriptSkill[];
   /** The pages attached to an owner's message, which shows a chip for each instead of the block the model got. */
   readonly pages?: readonly AttachedPage[];
+  /** The MCP resources attached to an owner's message, which shows a chip for each instead of the block the model got. */
+  readonly resources?: readonly AttachedResource[];
   /** A Review's Annotations, each with its quote and the owner's text: the message shows its summary instead. */
   readonly review?: readonly ShownReviewAnnotation[];
   /** Who sent an owner's message that came over the MCP endpoint (never the owner's email). */
@@ -194,6 +197,33 @@ const withoutPageBlock = (parts: readonly TranscriptPart[]): TranscriptPart[] =>
 };
 
 /**
+ * `parts` without the block of Attached resources the Session added (the last text part shaped like one) and the inline
+ * pictures right after it, one for each resource that went in as an image (`resources`): the chips show them instead.
+ */
+const withoutResourcesBlock = (
+  parts: readonly TranscriptPart[],
+  resources: readonly AttachedResource[],
+): TranscriptPart[] => {
+  const at = parts.findLastIndex((part) => part.type === "text" && isResourcesBlock(part.text));
+
+  if (at === -1) return [...parts];
+
+  let pictures = resources.filter((resource) => resource.kind === "image").length;
+
+  return parts.filter((part, index) => {
+    if (index === at) return false;
+
+    if (index > at && pictures > 0 && part.type === "image") {
+      pictures -= 1;
+
+      return false;
+    }
+
+    return true;
+  });
+};
+
+/**
  * `parts` without the crops of a Review's page Annotations (`ReviewData.crops`: a label and an image each, the last parts
  * of the message), and the crops, in order, for the Review's chips.
  */
@@ -257,7 +287,11 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
 
   const prompted = promptShown(userParts(message.content), data.mcpPrompt);
   const { parts: carried, crops } = withoutCrops(prompted.parts, data);
-  const parts = data.pages === undefined ? carried : withoutPageBlock(carried);
+  const unpaged = data.pages === undefined ? carried : withoutPageBlock(carried);
+
+  const parts =
+    data.resources === undefined ? unpaged : withoutResourcesBlock(unpaged, data.resources);
+
   const first = parts.findIndex((part) => part.type === "text");
   const expanded = parts[first];
   const text = expanded?.type === "text" ? expanded.text : "";
@@ -296,7 +330,12 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
       ? projected
       : { ...projected, pages: data.pages };
 
-  const reviewed = review === undefined ? paged : { ...paged, review };
+  const sourced =
+    data.resources === undefined || data.resources.length === 0
+      ? paged
+      : { ...paged, resources: data.resources };
+
+  const reviewed = review === undefined ? sourced : { ...sourced, review };
 
   const prompt =
     prompted.block === undefined || data.mcpPrompt === undefined
