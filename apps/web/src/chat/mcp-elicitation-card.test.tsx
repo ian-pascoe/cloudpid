@@ -1,7 +1,13 @@
-import type { ConversationId, ElicitationForm, McpElicitationRequest } from "@cloudpid/protocol";
+import type {
+  ConversationId,
+  ElicitationForm,
+  McpElicitationPage,
+  McpElicitationRequest,
+} from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { McpElicitationCard } from "./mcp-elicitation-card.tsx";
+import { elicitationLine } from "./mcp-elicitation-detail.ts";
 import {
   countdown,
   enteredOf,
@@ -279,5 +285,104 @@ describe("where a server is defined", () => {
     expect(sourceLabel({ kind: "repo" })).toBeUndefined();
     expect(sourceLabel({ kind: "future" })).toBeUndefined();
     expect(sourceLabel(undefined)).toBeUndefined();
+  });
+});
+
+const PAGE: McpElicitationPage = {
+  url: "https://login.Example.com/auth?x=1&y=2",
+  host: "login.example.com",
+  domain: "example.com",
+  opened: false,
+};
+
+const renderPage = (
+  page: McpElicitationPage,
+  more: Partial<McpElicitationRequest> = {},
+  retryReady = false,
+  disabled = false,
+) =>
+  renderToStaticMarkup(
+    <McpElicitationCard
+      request={request({ fields: [] }, { message: "Sign in to <b>continue</b>", page, ...more })}
+      disabled={disabled}
+      retryReady={retryReady}
+      now={1000}
+      onAnswer={() => Promise.resolve(null)}
+    />,
+  );
+
+describe("McpElicitationCard, a page to open", () => {
+  it("shows the address as plain text with its domain emphasized, and an Open link that leaves no opener", () => {
+    const markup = renderPage(PAGE);
+
+    expect(markup).toContain("github asks you to open a page");
+    expect(markup).toContain("Sign in to &lt;b&gt;continue&lt;/b&gt;");
+    expect(markup).toContain("https://login.<strong");
+    expect(markup).toContain(">Example.com</strong>/auth?x=1&amp;y=2");
+    expect(markup).toContain('href="https://login.Example.com/auth?x=1&amp;y=2"');
+    expect(markup).toContain('target="_blank"');
+    expect(markup).toContain('rel="noopener noreferrer"');
+    expect(markup).toContain(">Open<");
+    expect(markup).toContain("github&#x27;s call ends in 10:00");
+    expect(markup).not.toContain(">Submit<");
+  });
+
+  it("reads Opened once a page the server goes on from by itself is opened, with Open again and no Decline", () => {
+    const markup = renderPage({ ...PAGE, opened: true }, { waits: "owner" });
+
+    expect(markup).toContain("Opened · github goes on when you finish there");
+    expect(markup).toContain(">Open again<");
+    expect(markup).not.toContain(">Decline<");
+    expect(markup).not.toContain("Done, try again");
+  });
+
+  it("offers Done, try again for a page that is sent again, on only once every page is opened", () => {
+    const early = renderPage({ ...PAGE, retry: true });
+    const ready = renderPage({ ...PAGE, retry: true, opened: true }, {}, true);
+
+    expect(early).toMatch(/<button[^>]*disabled=""[^>]*>Done, try again/);
+    expect(early).toContain(">Decline<");
+    expect(early).toContain(">Cancel<");
+    expect(ready).not.toMatch(/<button[^>]*disabled=""[^>]*>Done, try again/);
+    expect(ready).toContain(">Done, try again<");
+    expect(ready).toContain("press Done when you have finished at login.example.com");
+  });
+
+  it("says the server asked for the page again, and warns about a look-alike host", () => {
+    const markup = renderPage({ ...PAGE, again: true, warning: "mixed_script" });
+
+    expect(markup).toContain("Not finished at login.example.com yet");
+    expect(markup).toContain("mixes writing systems");
+    expect(renderPage({ ...PAGE, warning: "idn" })).toContain("internationalized address");
+  });
+
+  it("turns Open into an off button while the Session is not live", () => {
+    const markup = renderPage(PAGE, {}, false, true);
+
+    expect(markup).toContain("Reconnecting…");
+    expect(markup).not.toContain("<a ");
+  });
+});
+
+describe("what a call's card says of a page", () => {
+  const shown = { server: "github", by: "owner", fields: [], mode: "url", host: "example.com" };
+
+  it("names the host, never the address", () => {
+    expect(elicitationLine({ ...shown, action: "accept" })).toBe(
+      "You opened a page on example.com for github",
+    );
+    expect(elicitationLine({ ...shown, action: "decline" })).toBe(
+      "You declined github's request to open a page on example.com",
+    );
+    expect(
+      elicitationLine({
+        ...shown,
+        action: "decline",
+        by: "cloudpid",
+        reason: "it is a cloudpid page",
+      }),
+    ).toBe(
+      "cloudpid declined github's request to open a page on example.com: it is a cloudpid page",
+    );
   });
 });

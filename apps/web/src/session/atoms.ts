@@ -5,7 +5,7 @@ import {
   sessionSocketPath,
   type AnnotationDraft,
   type BrowserHandoffRequest,
-  type ElicitationAction,
+  type McpElicitationAction,
   type ElicitationContent,
   type SecretKeep,
   type TodoTask,
@@ -379,7 +379,7 @@ export const answerApprovalAtom = Atom.family((sessionId: string) =>
 /** The owner's answer to an MCP server's question: Submit with its values, Decline, or a quiet Cancel. */
 export interface McpElicitationAnswerInput {
   readonly request: string;
-  readonly action: ElicitationAction;
+  readonly action: McpElicitationAction;
   readonly content?: ElicitationContent;
 }
 

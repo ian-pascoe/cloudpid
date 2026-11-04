@@ -3,21 +3,24 @@
 // "<server> asks for your input", the server's message as plain text, and one widget per field. The form is cloudpid's
 // own (`ElicitationForm`), made by the Session; this never reads JSON Schema. Submit is off until the values pass the
 // validator the Session runs again; a form with no fields is a confirmation gate (Accept, Decline). Typed values live
-// in this card's state and nowhere else, and are lost on a reload.
+// in this card's state and nowhere else, and are lost on a reload. A question with a `page` is the other card here
+// (`docs/architecture/mcp-server-requests.md` → Elicitation requests, URL mode): the address in plain text, its domain
+// emphasized, and an Open link the card never follows by itself.
 import { validateElicitation } from "@cloudpid/mcp/types";
 import type {
-  ElicitationAction,
   ElicitationContent,
   ElicitationField,
+  McpElicitationAction,
+  McpElicitationPage,
   McpElicitationRequest,
 } from "@cloudpid/protocol";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
-import { MessageCircleQuestion } from "lucide-react";
+import { ExternalLink, MessageCircleQuestion } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button } from "../components/ui/button.tsx";
+import { Button, buttonVariants } from "../components/ui/button.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { exitFailure } from "../registry.ts";
 import { agentLabel } from "../session/agents.ts";
@@ -52,14 +55,17 @@ const TICK_MS = 1000;
 
 /**
  * What a card takes: its request, whether answering is off, the clock (a test gives its own), the subagent that asked
- * (none for the root agent), and the owner's answer, which ends with the Session's refusal of it, or null.
+ * (none for the root agent), whether every page of its call that is sent again has been opened (`retryReady`, from any
+ * client; only a page that `retry`s reads it), and the owner's answer, which ends with the Session's refusal of it, or
+ * null.
  */
 type CardProps = {
   request: McpElicitationRequest;
   disabled: boolean;
   now?: number;
   agent?: string | undefined;
-  onAnswer: (action: ElicitationAction, content?: ElicitationContent) => Promise<string | null>;
+  retryReady?: boolean;
+  onAnswer: (action: McpElicitationAction, content?: ElicitationContent) => Promise<string | null>;
 };
 
 const fieldClass =
@@ -278,13 +284,7 @@ const useNow = (fixed: number | undefined) => {
  * <server> may ask again". Everything the server wrote is shown as plain text. While the Session is not live the inputs
  * and buttons are off and the card reads "Reconnecting…"; typed values stay in the tab.
  */
-export const McpElicitationCard = ({
-  request,
-  disabled,
-  now: fixedNow,
-  agent,
-  onAnswer,
-}: CardProps) => {
+const FormCard = ({ request, disabled, now: fixedNow, agent, onAnswer }: CardProps) => {
   const [values, setValues] = useState<FormValues>(() => initialValues(request.form));
   const [sent, setSent] = useState(false);
   const [refusal, setRefusal] = useState<ReturnType<typeof refusalOf> | null>(null);
@@ -296,7 +296,7 @@ export const McpElicitationCard = ({
   const origin = sourceLabel(request.source);
 
   /** The answer, which stays on the card (every input and button back on, the reason shown) if the Session refuses it. */
-  const answer = (action: ElicitationAction, content?: ElicitationContent) => {
+  const answer = (action: McpElicitationAction, content?: ElicitationContent) => {
     setSent(true);
     setRefusal(null);
     void onAnswer(action, content).then((refused) => {
@@ -476,6 +476,212 @@ export const McpElicitationCard = ({
   );
 };
 
+/**
+ * The address a page card shows, in plain text, with its registrable domain emphasized: what comes before the domain in
+ * the host, the domain, and the rest. An address the host cannot be found in (the Session made both, so none) is shown
+ * whole.
+ */
+const addressParts = (page: McpElicitationPage) => {
+  const hostAt = page.url.toLowerCase().indexOf(page.host);
+  const domainAt = page.host.lastIndexOf(page.domain);
+
+  if (hostAt < 0 || domainAt < 0) return { before: page.url, domain: "", after: "" };
+
+  const start = hostAt + domainAt;
+
+  return {
+    before: page.url.slice(0, start),
+    domain: page.url.slice(start, start + page.domain.length),
+    after: page.url.slice(start + page.domain.length),
+  };
+};
+
+/** What the Session says of a host that is not plain ASCII, or mixes scripts. */
+const WARNINGS = {
+  idn: "This is an internationalized address: check the host below before you open it.",
+  mixed_script:
+    "This address mixes writing systems, as some look-alike addresses do: check the host below before you open it.",
+} as const;
+
+/**
+ * The card for a question with a page (`docs/architecture/mcp-server-requests.md` → Elicitation requests, URL mode):
+ * "<server> asks you to open a page", the server's message, the address as plain text with its domain emphasized, and
+ * Open, a link that opens it in a new tab with no opener and is never followed by the card itself. Open's click tells
+ * the Session (`opened`). A page the server goes on from by itself (no `retry`) reads "Opened · <server> goes on when
+ * you finish there" once opened, with Open again; one that is sent again offers "Done, try again", on once every page
+ * of the call has been opened (from any client), with Decline and Cancel always on.
+ */
+const PageCard = ({
+  request,
+  page,
+  disabled,
+  now: fixedNow,
+  agent,
+  retryReady = false,
+  onAnswer,
+}: CardProps & { page: McpElicitationPage }) => {
+  const [sent, setSent] = useState(false);
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const now = useNow(fixedNow);
+  const off = disabled || sent;
+  const origin = sourceLabel(request.source);
+  const parts = addressParts(page);
+  const goesOn = page.retry !== true;
+
+  const answer = (action: McpElicitationAction) => {
+    setSent(true);
+    setRefusal(null);
+    void onAnswer(action).then((refused) => {
+      setSent(false);
+
+      if (refused !== null) setRefusal(refused);
+    });
+  };
+
+  return (
+    <section
+      id={requestCardId(request.id)}
+      aria-label={`${request.server} asks you to open a page`}
+      className="mx-auto mb-3 flex max-h-[calc(var(--waiting-height,60dvh)-0.75rem)] w-full max-w-3xl flex-col gap-3 rounded-lg border bg-card px-4 py-3 shadow-sm short:gap-2 short:py-2"
+    >
+      <div className="shrink-0">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <ExternalLink className="size-4 shrink-0" aria-hidden />
+          {request.server} asks you to open a page
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">
+          during <span className="font-mono">{request.tool}</span> ·{" "}
+          {agent === undefined ? "the agent" : `subagent ${agent}`}
+          {origin === undefined ? null : (
+            <span className="ml-2 rounded border px-1 py-0.5 text-[0.7rem]">{origin}</span>
+          )}
+        </p>
+      </div>
+      <div
+        className="min-h-12 flex-1 overflow-y-auto"
+        role="region"
+        aria-label="The page"
+        tabIndex={0}
+      >
+        <p className="text-sm break-words whitespace-pre-wrap">{request.message}</p>
+        {Arr.map(request.notes, (note) => (
+          <p key={note} className="mt-1 text-xs text-muted-foreground">
+            {note}
+          </p>
+        ))}
+        {page.again === true ? (
+          <p className="mt-2 text-sm font-medium">Not finished at {page.host} yet</p>
+        ) : null}
+        {page.warning === undefined ? null : (
+          <p role="alert" className="mt-2 text-xs text-destructive">
+            {WARNINGS[page.warning]}
+          </p>
+        )}
+        <p className="mt-3 rounded-md border bg-muted px-3 py-2 font-mono text-xs break-all whitespace-pre-wrap">
+          {parts.before}
+          {parts.domain === "" ? null : <strong className="text-foreground">{parts.domain}</strong>}
+          {parts.after}
+        </p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Host: <span className="font-mono">{page.host}</span>
+        </p>
+      </div>
+      {refusal === null ? null : (
+        <p role="alert" className="shrink-0 text-xs text-destructive">
+          {refusal}
+        </p>
+      )}
+      <p className="shrink-0 text-xs text-muted-foreground">
+        {request.server} chose this address; cloudpid does not know the page. Never enter a password
+        or key at a page you did not expect.
+      </p>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+        <span className="text-xs text-muted-foreground">
+          {disabled
+            ? "Reconnecting…"
+            : page.opened && goesOn
+              ? `Opened · ${request.server} goes on when you finish there`
+              : page.opened
+                ? `Opened · press Done when you have finished at ${page.host}`
+                : request.waits === "owner"
+                  ? `${request.server} waits for you`
+                  : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
+        </span>
+        <div className="flex gap-2">
+          {page.opened && goesOn ? null : (
+            <>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={off}
+                title={`Closes without answering; ${request.server} may ask again`}
+                onClick={() => {
+                  answer("cancel");
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={off}
+                onClick={() => {
+                  answer("decline");
+                }}
+              >
+                Decline
+              </Button>
+            </>
+          )}
+          {off ? (
+            <Button size="sm" disabled>
+              {page.opened ? "Open again" : "Open"}
+            </Button>
+          ) : (
+            // Opened in a new tab with no opener; the click tells the Session once, and never stops the link.
+            <a
+              href={page.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={buttonVariants({
+                variant: page.retry === true && retryReady ? "outline" : "default",
+                size: "sm",
+              })}
+              onClick={() => {
+                if (!page.opened) answer("opened");
+              }}
+            >
+              {page.opened ? "Open again" : "Open"}
+            </a>
+          )}
+          {page.retry === true ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={off || !retryReady}
+              onClick={() => {
+                answer("done");
+              }}
+            >
+              Done, try again
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
+};
+
+/** The card for one MCP elicitation request: a page to open, or a form. */
+export const McpElicitationCard = (props: CardProps) =>
+  props.request.page === undefined ? (
+    <FormCard {...props} />
+  ) : (
+    <PageCard {...props} page={props.request.page} />
+  );
+
 /** The cards for the MCP questions waiting for the owner in the Session shown, oldest first. */
 export const McpElicitationRequests = () => {
   const sessionId = useShownSessionId();
@@ -485,11 +691,19 @@ export const McpElicitationRequests = () => {
   const disabled = useAtomValue(sessionStatusAtom(sessionId), (status) => status !== "live");
   const answer = useAtomSet(answerMcpElicitationAtom(sessionId), { mode: "promiseExit" });
 
+  // A page that is sent again is "Done" once every such page of its call is opened, from any client.
+  const unopened = new Set(
+    Arr.flatMap(requests, (each) =>
+      each.page?.retry === true && !each.page.opened ? [each.callId] : [],
+    ),
+  );
+
   return Arr.map(requests, (request) => (
     <McpElicitationCard
       key={request.id}
       request={request}
       disabled={disabled}
+      retryReady={!unopened.has(request.callId)}
       agent={agentLabel(graph, request.conversationId)}
       onAnswer={(action, content) =>
         answer(
