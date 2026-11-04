@@ -223,7 +223,6 @@ const props = Effect.gen(function* () {
   };
 });
 
-/** The main Worker. This file is its own entry, so it is bundled as written. */
 /**
  * The main Worker. This file is its own entry, so it is bundled as written. Its init is a module of its own, loaded at the
  * isolate's first event (`worker-init.ts`): the Worker's global scope evaluates only what the props need, so the startup

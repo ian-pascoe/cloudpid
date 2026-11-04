@@ -57,9 +57,10 @@ import { type RateLimiter, serveMcpRoute } from "./mcp/endpoint.ts";
 import type { ServerDurableObject } from "./worker-shape.ts";
 
 /**
- * The Durable Object classes the init yields and provides, by the name alchemy's generated entry exports each under:
- * exactly `SERVER_DURABLE_OBJECTS` (`worker-shape.ts`), which the startup budget bundles with, since a key missing or
- * extra here fails the typecheck. A Durable Object added to the Layers below is added here and there.
+ * The Durable Object classes the init takes its objects from, by the name alchemy's generated entry exports each under.
+ * The typecheck holds the keys to exactly `SERVER_DURABLE_OBJECTS` (`worker-shape.ts`), which the startup budget bundles
+ * with; that each class's own id is its key, and that a Durable Object added to the Layers below is added here and there,
+ * is by convention.
  */
 const durableObjects = { Session, Registry, McpHost } satisfies {
   readonly [Name in ServerDurableObject]: typeof Session | typeof Registry | typeof McpHost;

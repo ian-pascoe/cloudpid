@@ -19,10 +19,7 @@ import { fileURLToPath } from "node:url";
 import { WorkerBundle } from "@alchemy.run/cloudflare/Workers/Sources/Rolldown";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
-import {
-  getCompatibility,
-  getToolingCompatibility,
-} from "@alchemy.run/cloudflare/Workers/Compatibility";
+import { getCompatibility } from "@alchemy.run/cloudflare/Workers/Compatibility";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { SERVER_COMPATIBILITY, SERVER_DURABLE_OBJECTS } from "../src/worker-shape.ts";
 
@@ -36,9 +33,8 @@ const RUNS = Number(process.env.RUNS ?? 5);
 
 const main = new URL("../src/worker.ts", import.meta.url).href;
 
-/** The compatibility the deploy uploads (`getCompatibility`: alchemy's default flags added) and the one it bundles with. */
+/** The compatibility the deploy bundles and uploads with: `getCompatibility`, alchemy's default flags added. */
 const deployed = getCompatibility({ compatibility: SERVER_COMPATIBILITY, main });
-const tooling = getToolingCompatibility(deployed, main);
 
 const out = fileURLToPath(new URL("../node_modules/.cache/startup/", import.meta.url));
 
@@ -49,7 +45,7 @@ const bundle = await Effect.runPromise(
     return yield* bundler.build({
       id: "Server",
       main,
-      compatibility: tooling,
+      compatibility: deployed,
       // The generated entry exports the Worker's Durable Object classes (`worker-init.ts`'s Layers), as a plan finds them.
       entry: {
         kind: "effect",
