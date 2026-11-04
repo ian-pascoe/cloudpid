@@ -766,7 +766,10 @@ export type SessionHostService = {
   readonly prompt: (prompt: Prompt) => Effect.Effect<Answer, SessionError>;
   /** The alarm handler: keep the heartbeat while work is live, and resume it. */
   readonly alarm: Effect.Effect<void, SessionError>;
-  /** Whether no task is live and no submission is unsettled. Reads only: it never starts work. */
+  /**
+   * Whether no task is live, no submission is unsettled and no message is being prepared. Reads only: it never starts
+   * work.
+   */
   readonly idle: Effect.Effect<boolean, SessionError>;
   /**
    * Reconcile the alarm and the Registry with what is live now, as the end of a Run does: for a change outside a Run to
@@ -4167,10 +4170,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
     alarm: wakeAndResume,
-    // A follower of an MCP task is not work: a conversation that only follows tasks is idle.
+    // A follower of an MCP task is not work: a conversation that only follows tasks is idle. A message still being
+    // prepared is (its request start may wait on an MCP server's discovery), as the followed state's `idle` counts it.
     idle: inspect.pipe(
       Effect.map(
-        ({ tasks, submissions }) => working(tasks).length === 0 && submissions.length === 0,
+        ({ tasks, submissions }) =>
+          working(tasks).length === 0 && submissions.length === 0 && !admission.anyPreparing(),
       ),
     ),
     settle,

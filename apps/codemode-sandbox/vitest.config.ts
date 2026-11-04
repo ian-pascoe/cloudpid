@@ -1,7 +1,11 @@
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
+import { testTimeout } from "@cloudpid/config/vitest";
 import { defineConfig } from "vitest/config";
 
-/** The Worker's tests run inside workerd, against its real entry and Durable Object. */
+/**
+ * The Worker's tests run inside workerd, against its real entry and Durable Object. They do not merge the shared base, so
+ * they take its timeout themselves rather than Vitest's 5 s default, which a loaded CI runner can pass (#632).
+ */
 export default defineConfig({
   plugins: [
     cloudflareTest({
@@ -14,5 +18,5 @@ export default defineConfig({
       },
     }),
   ],
-  test: { include: ["src/**/*.test.ts"] },
+  test: { include: ["src/**/*.test.ts"], testTimeout },
 });
