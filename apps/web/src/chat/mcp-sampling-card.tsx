@@ -157,7 +157,9 @@ export const McpSamplingCard = ({
         <span className="text-xs text-muted-foreground">
           {disabled
             ? "Reconnecting…"
-            : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
+            : request.waits === "owner"
+              ? `${request.server} waits for your answer`
+              : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
         </span>
         <div className="flex flex-wrap gap-2">
           <div className="flex items-center">

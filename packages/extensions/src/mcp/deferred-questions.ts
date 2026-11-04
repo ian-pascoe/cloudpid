@@ -18,17 +18,23 @@
 // - **Never a value in the clear:** an accepted form's content is sealed in its question (the `vault`, AES-GCM) until
 //   the round's resume is built, and goes with the record: at the call's end, Stop, or, for a call gone with an earlier
 //   instance, the Session going idle (`dropAbandoned`).
-// - **A kind per question:** `elicitation`, and `sampling` once Sampling requests are deferred too
-//   ([#486](https://github.com/ian-pascoe/cloudpid/issues/486)); a question stored without one is an elicitation. This
-//   build shows and answers elicitations only: a round with any other kind is not waited for again.
+// - **A kind per question:** `elicitation` (a question stored without one is one), and `sampling`, a Modern server's
+//   Sampling request kept beside the forms ([#486](https://github.com/ian-pascoe/cloudpid/issues/486)): its card
+//   (`mcp_sampling_requests`) and the request's parameters, redacted and chunked in `mcp-question:p:<id>:<n>`, since the
+//   sample is made when the round resumes, not when the owner allows it; it is listed in its call's record under
+//   `sampling:<id>`, apart from the forms' ids. One refusal of a Sampling request sinks the round: every other question
+//   of it is answered `cancel` (or refused) by cloudpid, "the server's call ended", even a form the owner had answered
+//   (`decideSampling`). A round holding a kind this build does not know is not waited for again.
 import {
   ElicitationContent,
   type McpElicitationPage,
   type McpElicitationRequest,
+  type McpSamplingRequest,
 } from "@cloudpid/protocol";
-import type { McpEra } from "@cloudpid/mcp/types";
+import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
+import { isJsonObject, type JsonObject, type McpEra } from "@cloudpid/mcp/types";
 import type { SealedValue, SecretVaultError } from "../secrets/vault.ts";
-import type { McpElicitationDetail } from "./details.ts";
+import type { McpElicitationDetail, McpSamplingWhy } from "./details.ts";
 import {
   cancelled,
   JsonText,
@@ -46,6 +52,8 @@ import {
   pageIdentityOf,
   questionId,
 } from "./question-records.ts";
+import type { McpSamplingDecision } from "./sampling-questions.ts";
+import { type McpSamplingGrant, samplingRecords } from "./sampling-records.ts";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
@@ -62,6 +70,15 @@ const deferredKey = (callId: string) => `mcp-question:d:${callId}`;
 const chunkKey = (callId: string, n: number) => `${deferredKey(callId)}:${n}`;
 const questionKey = (id: string) => `mcp-question:q:${id}`;
 
+/** A Sampling request's id in its call's record, apart from the forms' ids (both are `<callId>:<n>`). */
+const samplingSlot = (id: string) => `sampling:${id}`;
+
+/** The chunks of a Sampling request's parameters, as JSON: the sample is made from them when the round resumes. */
+const paramsKey = (id: string, n: number) => `mcp-question:p:${id}:${n}`;
+
+/** The most characters of a Sampling request's parameters, as JSON, that are kept for later: 1 MiB. */
+export const MCP_SAMPLING_PARAMS_MAX = 1024 * 1024;
+
 /** The most characters of a `ResumeState`'s JSON one storage value holds: 32 Ki, at most 96 KiB as UTF-8. */
 const RESUME_CHUNK = 32 * 1024;
 
@@ -71,7 +88,7 @@ const RESUME_CHUNK = 32 * 1024;
  */
 export const MCP_DEFERRED_DEADLINE_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** What a deferred question asks for: an elicitation form, or (not deferred yet, #486) a Sampling request. */
+/** What a deferred question asks for: an elicitation form, or a Sampling request. */
 type DeferredKind = "elicitation" | "sampling";
 
 /**
@@ -97,7 +114,7 @@ type DeferredQuestion = {
   readonly id: string;
   readonly key: string;
   /** Absent in a question stored before kinds were: an elicitation. */
-  readonly kind?: DeferredKind;
+  readonly kind?: "elicitation";
   readonly request: McpElicitationRequest;
   readonly askedAt: number;
   readonly answer?: KeptAnswer;
@@ -109,6 +126,46 @@ type DeferredQuestion = {
   /** What it asks: a form, or a page to open; absent reads as a form. */
   readonly mode?: "form" | "url";
 };
+
+/** A Sampling request's answer as the record keeps it: what the owner decided, or why cloudpid refused it. */
+type KeptSampling =
+  | {
+      readonly action: "allow";
+      readonly role: RoleName;
+      readonly grant: McpSamplingGrant;
+    }
+  | {
+      readonly action: "refuse";
+      readonly by: "owner" | "cloudpid";
+      readonly reason: string;
+      readonly why?: McpSamplingWhy;
+    };
+
+/** A Modern server's Sampling request kept for later: the card the owner is shown, and once given, the answer. */
+type DeferredSampling = {
+  /** The slot it is listed under in its call's record (`sampling:<request id>`). */
+  readonly id: string;
+  /** The server's own key for it within its round. */
+  readonly key: string;
+  readonly kind: "sampling";
+  /** The card, as `mcp_sampling_requests` sends it; its `id` is the sampler's record id. */
+  readonly request: McpSamplingRequest;
+  /** Its number within the call: the sampler's record id's, kept so the resume's sample is the same request. */
+  readonly sequence: number;
+  readonly askedAt: number;
+  /** How many chunks its parameters are stored in. */
+  readonly chunks: number;
+  readonly answer?: KeptSampling;
+};
+
+/** A question of a deferred round, of either kind. */
+type StoredQuestion = DeferredQuestion | DeferredSampling;
+
+const isSampling = (question: StoredQuestion): question is DeferredSampling =>
+  question.kind === "sampling";
+
+const isElicitation = (question: StoredQuestion): question is DeferredQuestion =>
+  question.kind !== "sampling";
 
 /** A call's deferred record: its questions' ids, and once the round is stored whole, the round. */
 type DeferredRecord = {
@@ -126,6 +183,8 @@ type DeferredRecord = {
     readonly asked: ReadonlyArray<McpElicitationDetail>;
     /** The requests the call had made, toward its cap, so a rerun counts on from them. */
     readonly count: number;
+    /** The Sampling requests the call had made, for the same; absent in a round stored before them. */
+    readonly sampled?: number;
     /** Whether its cards show: set once `mcp.wait.<r>` is written. */
     readonly shown?: boolean;
   };
@@ -137,7 +196,7 @@ const stateOf = { Resume: undefined, Resend: "resend", Read: "read" } as const;
 /** The era an ask names, or the default of one from a core that named none. */
 const eraOfAsk = (ask: McpQuestionAsk): McpEra => ask.era ?? eraDefault(ask.page !== undefined);
 
-const kindOf = (question: DeferredQuestion): DeferredKind => question.kind ?? "elicitation";
+const kindOf = (question: StoredQuestion): DeferredKind => question.kind ?? "elicitation";
 
 /** The era of the server that asked a question, for a record from before the field too. */
 const eraOf = (question: DeferredQuestion): McpEra =>
@@ -153,14 +212,58 @@ export type McpQuestionVault = {
   readonly open: (id: string, sealed: SealedValue) => Effect.Effect<string, SecretVaultError>;
 };
 
-/** What became of a deferred question, the accepted content opened: the call's resume sends it, `details` notes it. */
-export type McpDeferredAnswer = {
+/** What became of a deferred form or page, the accepted content opened: the call's resume sends it, `details` notes it. */
+export type McpDeferredForm = {
   readonly key: string;
   readonly outcome: McpQuestionOutcome;
   /** The names of the fields the owner answered. */
   readonly fields: ReadonlyArray<string>;
   /** The host of the page, when it was a page question. */
   readonly page?: { readonly host: string };
+};
+
+/**
+ * A deferred Sampling request and what the owner decided: the sample is made when the round resumes, from `params` (the
+ * request as it was kept, redacted) as the same request (`id`, `sequence`), or the request is refused.
+ */
+export type McpDeferredSample = {
+  readonly key: string;
+  readonly sample: {
+    readonly id: string;
+    readonly sequence: number;
+    readonly params: JsonObject;
+    readonly decision: McpSamplingDecision;
+  };
+};
+
+/** What became of a deferred question of either kind. */
+export type McpDeferredAnswer = McpDeferredForm | McpDeferredSample;
+
+/** What a Sampling request is answered with by `decideSampling`: the owner's choice, and what it lets through or sinks. */
+export type McpSamplingVerdict =
+  | {
+      readonly action: "allow";
+      readonly role: RoleName;
+      readonly grant: McpSamplingGrant;
+      /** The owner's choice covers the call's other requests, or the server's across calls. */
+      readonly also: "call" | "server";
+    }
+  | {
+      readonly action: "refuse";
+      readonly by: "owner";
+      readonly reason: string;
+      /** A refusal for the Session or for good also refuses the server's requests in other calls. */
+      readonly also?: "server";
+    };
+
+/** A Modern server's Sampling request, to be kept with its call's round. */
+export type McpSamplingDeferral = {
+  /** The card; its `id` is the sampler's record id. */
+  readonly request: McpSamplingRequest;
+  readonly key: string;
+  readonly sequence: number;
+  /** The request's parameters, redacted: what the sample is made from when the round resumes. */
+  readonly params: JsonObject;
 };
 
 /**
@@ -197,15 +300,26 @@ export type McpDeferredQuestionsOptions = {
   readonly basics: McpQuestionBasics;
   /** Tell the clients which questions wait. */
   readonly tell: Effect.Effect<void>;
+  /** Tell the clients which Sampling requests wait; called when a round's cards for them show, change or go. */
+  readonly tellSampling: Effect.Effect<void>;
 };
 
 const unrecorded = () => McpQuestionsError.make({ message: MCP_QUESTION_UNRECORDED_REASON });
 
 const decodeContent = Schema.decodeEffect(Schema.fromJsonString(ElicitationContent));
 
+/** What a Sampling request is answered with when its round was sunk by another question's refusal. */
+const sunkSampling: KeptSampling = {
+  action: "refuse",
+  by: "cloudpid",
+  reason: MCP_CALL_ENDED_REASON,
+  why: "unanswered",
+};
+
 /** The deferred questions over the Session's storage (see the file's header). */
 export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) => {
-  const { storage, vault, basics, tell } = options;
+  const { storage, vault, basics, tell, tellSampling } = options;
+  const samples = samplingRecords(storage);
 
   /** Calls of this instance waiting for their round, by call: what wakes the wait when an answer comes. */
   const rounds = new Map<string, Deferred.Deferred<void>>();
@@ -217,24 +331,28 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
   const readRecord = (callId: string): DeferredRecord | undefined =>
     storage.get<DeferredRecord>(deferredKey(callId));
 
-  const readQuestion = (id: string): DeferredQuestion | undefined =>
-    storage.get<DeferredQuestion>(questionKey(id));
+  const readQuestion = (id: string): StoredQuestion | undefined =>
+    storage.get<StoredQuestion>(questionKey(id));
 
   /** The record's questions that are stored. */
-  const questionsOf = (record: DeferredRecord): ReadonlyArray<DeferredQuestion> =>
+  const questionsOf = (record: DeferredRecord): ReadonlyArray<StoredQuestion> =>
     Arr.filterMap(record.questions, (id) =>
       Result.fromNullishOr(readQuestion(id), () => undefined),
     );
 
+  /** The record's forms and pages that are stored: the questions a page's answer is about. */
+  const elicitationsOf = (record: DeferredRecord): ReadonlyArray<DeferredQuestion> =>
+    Arr.filter(questionsOf(record), isElicitation);
+
   /**
-   * The record's questions, when this build can answer every one: all stored, and all elicitations. A record holding
-   * another kind (a Sampling request, from a later build) is neither shown, answered nor waited for again.
+   * The record's questions, when this build can answer every one: all stored, and all of a kind it knows. A record
+   * holding another kind (from a later build) is neither shown, answered nor waited for again.
    */
-  const answerable = (record: DeferredRecord): ReadonlyArray<DeferredQuestion> | undefined => {
+  const answerable = (record: DeferredRecord): ReadonlyArray<StoredQuestion> | undefined => {
     const questions = questionsOf(record);
 
     return questions.length === record.questions.length &&
-      questions.every((question) => kindOf(question) === "elicitation")
+      questions.every((question) => ["elicitation", "sampling"].includes(kindOf(question)))
       ? questions
       : undefined;
   };
@@ -254,7 +372,17 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       storage.delete(chunkKey(record.callId, n));
     }
 
-    for (const id of record.questions) storage.delete(questionKey(id));
+    for (const id of record.questions) {
+      const question = readQuestion(id);
+
+      if (question !== undefined && isSampling(question)) {
+        for (let n = 0; n < question.chunks; n += 1) {
+          storage.delete(paramsKey(question.request.id, n));
+        }
+      }
+
+      storage.delete(questionKey(id));
+    }
 
     storage.delete(deferredKey(record.callId));
 
@@ -273,16 +401,29 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     Effect.orElseSucceed((): ReadonlyArray<string> => []),
   );
 
-  /** The questions shown to the owner: the elicitations of a round marked shown, not answered yet. */
-  const shown = (): ReadonlyArray<McpElicitationRequest> =>
+  /** The questions of the rounds marked shown, not answered yet. */
+  const shownQuestions = (): ReadonlyArray<StoredQuestion> =>
     Arr.flatMap(deferredIds(), (callId) => {
       const record = readRecord(callId);
-      const questions = record?.round?.shown === true ? (answerable(record) ?? []) : ([] as const);
 
-      return Arr.filterMap(questions, (question) =>
-        question.answer === undefined ? Result.succeed(question.request) : Result.failVoid,
-      );
+      return record?.round?.shown === true ? (answerable(record) ?? []) : [];
     });
+
+  /** The forms and pages shown to the owner: those of a round marked shown, not answered yet. */
+  const shown = (): ReadonlyArray<McpElicitationRequest> =>
+    Arr.filterMap(shownQuestions(), (question) =>
+      isElicitation(question) && question.answer === undefined
+        ? Result.succeed(question.request)
+        : Result.failVoid,
+    );
+
+  /** The Sampling requests shown to the owner, not answered yet: a Modern server's, kept with its round. */
+  const shownSampling = (): ReadonlyArray<McpSamplingRequest> =>
+    Arr.filterMap(shownQuestions(), (question) =>
+      isSampling(question) && question.answer === undefined
+        ? Result.succeed(question.request)
+        : Result.failVoid,
+    );
 
   /** The call's pages are forgotten: a storage that cannot do it leaves them for the storage's own bound. */
   const forgetPages = (callId: string) =>
@@ -313,8 +454,31 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       );
 
       for (const question of questions) {
-        // A Sampling request's record comes with Sampling (#486).
-        if (kindOf(question) !== "elicitation") continue;
+        // A Sampling request the round did not run: its record, written waiting, settles refused.
+        if (isSampling(question)) {
+          yield* Effect.try(() => {
+            const held = samples.get(question.request.id);
+
+            if (held === undefined || (held.status !== "waiting" && held.status !== "running"))
+              return;
+
+            const given = question.answer?.action === "refuse" ? question.answer : undefined;
+            const { why: _earlier, ...rest } = held;
+            const why = given === undefined ? "unanswered" : given.why;
+
+            const refused = {
+              ...rest,
+              status: "refused" as const,
+              by: given?.by ?? "cloudpid",
+              reason: given?.reason ?? reason,
+              settledAt: now,
+            };
+
+            samples.put(why === undefined ? refused : { ...refused, why }, now);
+          }).pipe(Effect.ignore);
+
+          continue;
+        }
 
         const given = question.answer;
 
@@ -344,6 +508,57 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         ),
       );
       yield* tell;
+
+      if (Arr.some(questions, isSampling)) yield* tellSampling;
+    });
+
+  /**
+   * List question `slot` in its call's record and store it, with the `extra` keys it owns. Stored before the round ends:
+   * a storage that cannot take it (a replaced Session) keeps nothing (`false`), and the server is told `cancel` in the
+   * round's retry, never left with a question nobody can answer.
+   */
+  const keepQuestion = (
+    callId: string,
+    server: string,
+    slot: string,
+    question: StoredQuestion,
+    extra: ReadonlyArray<readonly [string, string]> = [],
+  ) =>
+    Effect.gen(function* () {
+      const stored = yield* Effect.try(() => {
+        const record = readRecord(callId);
+
+        // A round still stored is one whose resume went out: its questions were settled.
+        if (record?.round !== undefined) removeRecord(record);
+
+        const earlier = record === undefined || record.round !== undefined ? [] : record.questions;
+
+        // Listed first: a question whose write fails is dropped with the record, never left behind unlisted.
+        writeRecord({ callId, server, questions: [...earlier, slot] });
+        storage.put(questionKey(slot), question);
+
+        for (const [key, value] of extra) storage.put(key, value);
+      }).pipe(Effect.option);
+
+      if (Option.isSome(stored)) return true;
+
+      // Unlist it again, if the storage takes that much: the round goes on without it.
+      yield* Effect.try(() => {
+        const record = readRecord(callId);
+
+        storage.delete(questionKey(slot));
+
+        for (const [key] of extra) storage.delete(key);
+
+        if (record === undefined || !record.questions.includes(slot)) return;
+
+        const rest = record.questions.filter((each) => each !== slot);
+
+        if (rest.length === 0) removeRecord(record);
+        else writeRecord({ ...record, questions: rest });
+      }).pipe(Effect.ignore);
+
+      return false;
     });
 
   /**
@@ -381,49 +596,22 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       request.waits = "owner";
       active.add(ask.callId);
 
-      // Stored before the round ends: a storage that cannot take it (a replaced Session) keeps nothing, and the server
-      // is told `cancel` in the round's retry, never left with a question nobody can answer.
-      const stored = yield* Effect.try(() => {
-        const record = readRecord(ask.callId);
+      const keptAs: DeferredQuestion =
+        ask.page === undefined
+          ? { id, key: ask.key, kind: "elicitation", request, askedAt: now, era: eraOfAsk(ask) }
+          : {
+              id,
+              key: ask.key,
+              kind: "elicitation",
+              request,
+              askedAt: now,
+              mode: "url",
+              era: eraOfAsk(ask),
+            };
 
-        // A round still stored is one whose resume went out: its questions were settled.
-        if (record?.round !== undefined) removeRecord(record);
+      const stored = yield* keepQuestion(ask.callId, ask.server, id, keptAs);
 
-        const earlier = record === undefined || record.round !== undefined ? [] : record.questions;
-
-        const question: DeferredQuestion = {
-          id,
-          key: ask.key,
-          kind: "elicitation",
-          request,
-          askedAt: now,
-        };
-
-        const keptAs: DeferredQuestion =
-          ask.page === undefined
-            ? { ...question, era: eraOfAsk(ask) }
-            : { ...question, mode: "url", era: eraOfAsk(ask) };
-
-        // Listed first: a question whose write fails is dropped with the record, never left behind unlisted.
-        writeRecord({ callId: ask.callId, server: ask.server, questions: [...earlier, id] });
-        storage.put(questionKey(id), keptAs);
-      }).pipe(Effect.option);
-
-      if (Option.isSome(stored)) return "deferred" as const;
-
-      // Unlist it again, if the storage takes that much: the round goes on without it.
-      yield* Effect.try(() => {
-        const record = readRecord(ask.callId);
-
-        storage.delete(questionKey(id));
-
-        if (record === undefined || !record.questions.includes(id)) return;
-
-        const rest = record.questions.filter((each) => each !== id);
-
-        if (rest.length === 0) removeRecord(record);
-        else writeRecord({ ...record, questions: rest });
-      }).pipe(Effect.ignore);
+      if (stored) return "deferred" as const;
 
       yield* basics.keep(
         basics.settledOf(
@@ -435,6 +623,50 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       );
 
       return "unrecorded" as const;
+    });
+
+  /**
+   * Keep a Modern server's Sampling request for the call's round (`deferral.params`, redacted, in chunks beside its
+   * card): stored, and shown once the round is. `"unrecorded"`: the storage cannot take it (a replaced Session's), or the
+   * request is too large to keep, and the request is to be refused.
+   */
+  const deferSampling = (deferral: McpSamplingDeferral) =>
+    Effect.gen(function* () {
+      const { request, key, sequence, params } = deferral;
+      const now = yield* Clock.currentTimeMillis;
+      const text = yield* Schema.encodeEffect(JsonText)(params).pipe(Effect.option);
+
+      if (Option.isNone(text) || text.value.length > MCP_SAMPLING_PARAMS_MAX) {
+        return "unrecorded" as const;
+      }
+
+      const chunks = Math.max(1, Math.ceil(text.value.length / RESUME_CHUNK));
+      const slot = samplingSlot(request.id);
+
+      const question: DeferredSampling = {
+        id: slot,
+        key,
+        kind: "sampling",
+        request,
+        sequence,
+        askedAt: now,
+        chunks,
+      };
+
+      active.add(request.callId);
+
+      const stored = yield* keepQuestion(
+        request.callId,
+        request.server,
+        slot,
+        question,
+        Arr.makeBy(chunks, (n) => [
+          paramsKey(request.id, n),
+          text.value.slice(n * RESUME_CHUNK, (n + 1) * RESUME_CHUNK),
+        ]),
+      );
+
+      return stored ? ("deferred" as const) : ("unrecorded" as const);
     });
 
   /** Store the call's round whole: its `ResumeState` beside the questions `defer` kept. Not shown yet. */
@@ -467,6 +699,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
             chunks,
             asked: round.asked,
             count: asked,
+            sampled: basics.callOf(callId).sampled,
             state: stateOf[round.state._tag],
           },
         });
@@ -488,7 +721,13 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       if (record === undefined || round === undefined) return yield* unrecorded();
 
-      if (round.shown === true) return yield* tell;
+      if (round.shown === true) {
+        yield* tell;
+
+        if (Arr.some(questionsOf(record), isSampling)) yield* tellSampling;
+
+        return;
+      }
 
       yield* Effect.try(() => writeRecord({ ...record, round: { ...round, shown: true } })).pipe(
         Effect.mapError(unrecorded),
@@ -498,19 +737,26 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       yield* tell;
 
-      const shownPages = yield* Effect.try(() => questionsOf(record)).pipe(
-        Effect.map(
-          Arr.filterMap((each) =>
-            each.request.page === undefined ? Result.failVoid : Result.succeed(each.request.page),
-          ),
-        ),
-        Effect.orElseSucceed((): ReadonlyArray<McpElicitationPage> => []),
+      const stored = yield* Effect.try(() => questionsOf(record)).pipe(
+        Effect.orElseSucceed((): ReadonlyArray<StoredQuestion> => []),
       );
+
+      const shownPages = Arr.filterMap(stored, (each) =>
+        isElicitation(each) && each.request.page !== undefined
+          ? Result.succeed(each.request.page)
+          : Result.failVoid,
+      ) satisfies ReadonlyArray<McpElicitationPage>;
+
+      const hasSampling = Arr.some(stored, isSampling);
+
+      if (hasSampling) yield* tellSampling;
 
       // A round that is all pages the server asks for again tells the owner nothing: they were told of those already.
       const kind: Mutable<McpWaitingKind> = {};
 
       if (shownPages.length > 0) kind.page = true;
+      // A round of Sampling requests alone asks to use a model; one with a form beside them asks for input.
+      else if (hasSampling && Arr.every(stored, isSampling)) kind.sampling = true;
 
       if (
         shownPages.length === record.questions.length &&
@@ -549,6 +795,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       // A rerun's call counts on toward its cap, and the owner, told when the round was shown, is not told again.
       basics.restoreCall(callId, {
         count: round.count,
+        sampled: round.sampled,
         waiting: round.shown === true ? questions.length : undefined,
       });
 
@@ -568,6 +815,51 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       } satisfies McpDeferredRound;
     });
 
+  /**
+   * What a Sampling request's kept answer gives the resume: the request as it was kept, and what was decided. A request
+   * whose parameters can no longer be read is refused by cloudpid.
+   */
+  const openedSample = (question: DeferredSampling) =>
+    Effect.gen(function* () {
+      const parts = yield* Effect.try(() =>
+        Arr.makeBy(question.chunks, (n) => storage.get<string>(paramsKey(question.request.id, n))),
+      ).pipe(Effect.orElseSucceed(() => [undefined]));
+
+      const params = parts.some((part) => part === undefined)
+        ? Option.none<JsonObject>()
+        : yield* Schema.decodeEffect(JsonText)(parts.join("")).pipe(
+            Effect.option,
+            Effect.map(Option.filter(isJsonObject)),
+          );
+
+      const given = question.answer;
+
+      const decision: McpSamplingDecision =
+        Option.isNone(params) || given === undefined
+          ? {
+              action: "refuse",
+              by: "cloudpid",
+              reason:
+                given === undefined ? "the request was withdrawn" : MCP_QUESTION_UNRECORDED_REASON,
+              why: "unanswered",
+            }
+          : given.action === "allow"
+            ? { action: "allow", role: given.role, grant: given.grant }
+            : given.why === undefined
+              ? { action: "refuse", by: given.by, reason: given.reason }
+              : { action: "refuse", by: given.by, reason: given.reason, why: given.why };
+
+      return {
+        key: question.key,
+        sample: {
+          id: question.request.id,
+          sequence: question.sequence,
+          params: Option.getOrElse(params, (): JsonObject => ({})),
+          decision,
+        },
+      } satisfies McpDeferredSample;
+    });
+
   /** What a deferred question's kept answer gives the resume: an accepted form's content opened. */
   const opened = (question: DeferredQuestion) =>
     Effect.gen(function* () {
@@ -580,7 +872,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           outcome: { action: "accept", by: "owner", content: {} },
           fields: [],
           page: { host: question.request.page?.host ?? "" },
-        } satisfies McpDeferredAnswer;
+        } satisfies McpDeferredForm;
       }
 
       const page =
@@ -594,7 +886,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
               ? { action: given.action, by: given.by }
               : { action: given.action, by: given.by, reason: given.reason };
 
-        return { key: question.key, outcome, fields: [], ...page } satisfies McpDeferredAnswer;
+        return { key: question.key, outcome, fields: [], ...page } satisfies McpDeferredForm;
       }
 
       // Only a form's answer is sealed: the page's was dealt with above.
@@ -603,7 +895,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           key: question.key,
           outcome: cancelled("the answer could not be opened"),
           fields: [],
-        } satisfies McpDeferredAnswer;
+        } satisfies McpDeferredForm;
       }
 
       const content =
@@ -618,14 +910,14 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           key: question.key,
           outcome: cancelled("the answer could not be opened"),
           fields: [],
-        } satisfies McpDeferredAnswer;
+        } satisfies McpDeferredForm;
       }
 
       return {
         key: question.key,
         outcome: { action: "accept", by: "owner", content: content.value },
         fields: given.fields,
-      } satisfies McpDeferredAnswer;
+      } satisfies McpDeferredForm;
     });
 
   /**
@@ -648,7 +940,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
         const questions =
           record === undefined
-            ? Option.none<ReadonlyArray<DeferredQuestion>>()
+            ? Option.none<ReadonlyArray<StoredQuestion>>()
             : yield* Effect.try(() => questionsOf(record)).pipe(Effect.option);
 
         if (Option.isNone(questions)) {
@@ -660,7 +952,11 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         if (Arr.every(questions.value, (question) => question.answer !== undefined)) {
           rounds.delete(callId);
 
-          return yield* Effect.forEach(questions.value, opened);
+          return yield* Effect.forEach(
+            questions.value,
+            (question): Effect.Effect<McpDeferredAnswer> =>
+              isSampling(question) ? openedSample(question) : opened(question),
+          );
         }
 
         yield* Deferred.await(signal).pipe(
@@ -674,12 +970,16 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       }
     });
 
-  /** The shown, unanswered deferred question `id`. */
-  const findShown = (id: string) => {
+  /** The shown, unanswered deferred question `id`, of the kind `matches`. */
+  const findShownBy = <Q extends StoredQuestion>(
+    id: string,
+    matches: (q: StoredQuestion) => q is Q,
+  ) => {
     const question = readQuestion(id);
     const record = question === undefined ? undefined : readRecord(question.request.callId);
 
     return question !== undefined &&
+      matches(question) &&
       record?.round?.shown === true &&
       record.questions.includes(id) &&
       question.answer === undefined &&
@@ -687,6 +987,9 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       ? question
       : undefined;
   };
+
+  /** The shown, unanswered deferred form or page `id`. */
+  const findShown = (id: string) => findShownBy(id, isElicitation);
 
   /**
    * The owner's answer to a deferred page question (a Legacy `-32042`'s, or a Modern server's): `opened` records Open's
@@ -711,7 +1014,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       const settled = yield* Effect.try(() => {
         const record = readRecord(callId);
-        const round = record === undefined ? undefined : questionsOf(record);
+        const round = record === undefined ? undefined : elicitationsOf(record);
         const open = round?.filter((each) => each.answer === undefined);
 
         // The first answer wins: read again, in the step that writes.
@@ -878,6 +1181,20 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           for (const question of questionsOf(record)) {
             if (question.answer !== undefined) continue;
 
+            // A Sampling request has no `cancel`: refused, which ends the call as it does for any refusal.
+            if (isSampling(question)) {
+              const answer: KeptSampling = {
+                action: "refuse",
+                by: "cloudpid",
+                reason,
+                why: "unanswered",
+              };
+
+              storage.put(questionKey(question.id), { ...question, answer });
+
+              continue;
+            }
+
             const answer: KeptAnswer = { action: "cancel", by: "cloudpid", reason };
 
             storage.put(questionKey(question.id), { ...question, answer });
@@ -891,10 +1208,139 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       }
 
       yield* tell;
+      yield* tellSampling;
+    });
+
+  /** The shown, unanswered Sampling request `id` (its record id), as its card answers it. */
+  const samplingHeld = (id: string) => {
+    try {
+      const question = findShownBy(samplingSlot(id), isSampling);
+
+      return question === undefined ? undefined : { request: question.request };
+    } catch {
+      return undefined;
+    }
+  };
+
+  /**
+   * The owner's decision on Sampling request `id`, kept in its question (`false`: it is not shown or was answered
+   * meanwhile: the first answer wins, read again in the step that writes). An allow lets through the call's other
+   * unanswered requests, or the server's across calls, each on its own Role. A refusal sinks the round: every other
+   * question of it is answered by cloudpid ("the server's call ended"), even a form the owner had answered, and a refusal
+   * for the Session or for good sinks the server's other rounds the same way, refusing their requests of it.
+   */
+  const decideSampling = (id: string, verdict: McpSamplingVerdict) =>
+    Effect.gen(function* () {
+      const woken = new Set<string>();
+
+      const decided = yield* Effect.try(() => {
+        const slot = samplingSlot(id);
+        const question = findShownBy(slot, isSampling);
+
+        if (question === undefined) return false;
+
+        const { callId, server } = question.request;
+
+        if (verdict.action === "allow") {
+          const answer: KeptSampling = {
+            action: "allow",
+            role: verdict.role,
+            grant: verdict.grant,
+          };
+
+          storage.put(questionKey(slot), { ...question, answer });
+          woken.add(callId);
+
+          // What the choice covers: the call's other requests, or the server's across calls, each on its own Role.
+          for (const other of deferredIds()) {
+            const record = readRecord(other);
+
+            if (record?.round?.shown !== true) continue;
+
+            if (verdict.also === "call" ? other !== callId : record.server !== server) continue;
+
+            for (const each of questionsOf(record)) {
+              const role = isSampling(each)
+                ? ROLE_NAMES.find((name) => name === each.request.role)
+                : undefined;
+
+              if (!isSampling(each) || role === undefined) continue;
+
+              if (each.id === slot || each.answer !== undefined) continue;
+
+              storage.put(questionKey(each.id), {
+                ...each,
+                answer: { action: "allow", role, grant: verdict.grant },
+              });
+              woken.add(other);
+            }
+          }
+
+          return true;
+        }
+
+        const refused: KeptSampling = { action: "refuse", by: verdict.by, reason: verdict.reason };
+
+        /** `record`'s round sunk: its Sampling requests answered `sampling`, every other question cancelled by cloudpid. */
+        const sink = (
+          record: DeferredRecord,
+          except: string | undefined,
+          sampling: KeptSampling,
+        ) => {
+          for (const each of questionsOf(record)) {
+            if (each.id === except) continue;
+
+            storage.put(
+              questionKey(each.id),
+              isSampling(each)
+                ? { ...each, answer: sampling }
+                : {
+                    ...each,
+                    answer: { action: "cancel", by: "cloudpid", reason: MCP_CALL_ENDED_REASON },
+                  },
+            );
+          }
+
+          woken.add(record.callId);
+        };
+
+        const record = readRecord(callId);
+
+        if (record === undefined) return false;
+
+        storage.put(questionKey(slot), { ...question, answer: refused });
+        // The other questions of its round are withdrawn, the owner's own answers to them too.
+        sink(record, slot, sunkSampling);
+
+        // A refusal for the Session or for good sinks the server's other rounds too, refusing what they ask.
+        if (verdict.also === "server") {
+          for (const other of deferredIds()) {
+            const rest = other === callId ? undefined : readRecord(other);
+
+            if (rest?.server === server && rest.round?.shown === true)
+              sink(rest, undefined, refused);
+          }
+        }
+
+        return true;
+      }).pipe(Effect.orElseSucceed(() => false));
+
+      if (!decided) return false;
+
+      yield* tell;
+      yield* tellSampling;
+
+      for (const callId of woken) yield* wake(callId);
+
+      return true;
     });
 
   return {
     shown,
+    shownSampling,
+    samplingHeld,
+    decideSampling,
+    deferSampling,
     answer,
     defer,
     commitRound,

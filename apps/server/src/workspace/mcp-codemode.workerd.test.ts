@@ -17,6 +17,7 @@ import {
   evict,
   idle,
   pending,
+  pendingSampling,
   sent,
   session,
   settles,
@@ -81,5 +82,91 @@ describe("a script's MCP call whose server asks a question", () => {
     expect(
       await runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.mcpRecords()),
     ).toEqual([expect.objectContaining({ action: "cancel", by: "cloudpid" })]);
+  }, 30_000);
+});
+
+describe("a script's MCP call whose Modern server also asks to use a model", () => {
+  it("keeps the Sampling request with the form through an eviction, sends the call once, and runs the sample and resumes once", async () => {
+    const { stub, workspace } = session();
+
+    await asked(stub, workspace, ASK, false, true);
+    await settles(async () => expect(await pendingSampling(stub)).toHaveLength(1));
+
+    const [form] = await pending(stub);
+    const [sample] = await pendingSampling(stub);
+
+    expect(sample).toMatchObject({ server: "docs", tool: "mcp__docs__ask", waits: "owner" });
+    expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
+
+    await evict(stub);
+
+    // The next instance has both waiting, sent the call no second time, and has made no sample.
+    await settles(async () => expect(await pendingSampling(stub)).toEqual([sample]));
+    expect(await pending(stub)).toEqual([form]);
+    expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
+    expect(
+      await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+        instance.samplingUsage(),
+      ),
+    ).toMatchObject({ requests: 0 });
+
+    await runInDurableObject(stub, async (instance: TestMcpCodemodeSession) => {
+      await instance.mcpSamplingAnswer(sample?.id ?? "", "allow_call");
+      await instance.mcpAnswer(form?.id ?? "", { name: "Ada" });
+    });
+    await idle(stub);
+
+    // One tools/call, one resume carrying both answers; the sample ran once, as the round resumed.
+    expect(await sent(stub)).toMatchObject({
+      calls: 1,
+      resumes: 1,
+      answers: {
+        q1: { action: "accept", content: { name: "Ada" } },
+        s1: expect.objectContaining({ role: "assistant" }),
+      },
+    });
+    expect(
+      await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+        instance.samplingUsage(),
+      ),
+    ).toMatchObject({ requests: 1 });
+    expect(await pending(stub)).toEqual([]);
+    expect(await pendingSampling(stub)).toEqual([]);
+
+    const results = await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results[0]).toContain("Script completed");
+    expect(results[0]).toContain('Hello \\"Ada\\" and \\"a sampled reply\\"');
+  }, 30_000);
+
+  it("withdraws the form and resumes nothing when the owner refuses the Sampling request, and the script's call fails", async () => {
+    const { stub, workspace } = session();
+
+    await asked(stub, workspace, ASK, false, true);
+    await settles(async () => expect(await pendingSampling(stub)).toHaveLength(1));
+
+    const [sample] = await pendingSampling(stub);
+
+    await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+      instance.mcpSamplingAnswer(sample?.id ?? "", "refuse"),
+    );
+    await idle(stub);
+
+    expect(await pending(stub)).toEqual([]);
+    expect(await pendingSampling(stub)).toEqual([]);
+    expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
+
+    const results = await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results[0]).toContain("docs asked for a model reply, which was refused by you");
+    expect(
+      await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
+        instance.samplingUsage(),
+      ),
+    ).toMatchObject({ requests: 0 });
   }, 30_000);
 });

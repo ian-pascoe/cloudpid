@@ -231,7 +231,7 @@ describe("MCP sampling on a definition that says ask", () => {
       const outcome = yield* Fiber.join(sampling);
 
       expect(refusedWith(outcome)).toEqual({ code: -1, message: "refused by the owner" });
-      expect(outcome.detail).toMatchObject({ status: "refused", by: "owner" });
+      expect(outcome).toMatchObject({ detail: { status: "refused", by: "owner" } });
       expect(faux.state.callCount).toBe(0);
     }));
 
@@ -626,7 +626,7 @@ describe("MCP sampling on a definition that says ask", () => {
         code: -1,
         message: "the owner did not answer in time",
       });
-      expect(outcome.detail).toMatchObject({ why: "unanswered", by: "cloudpid" });
+      expect(outcome).toMatchObject({ detail: { why: "unanswered", by: "cloudpid" } });
       expect(announced.at(-1)?.requests).toEqual([]);
     }));
 
@@ -672,7 +672,7 @@ describe("MCP sampling on a definition that says ask", () => {
       const outcome = yield* Fiber.join(sampling);
 
       expect(refusedWith(outcome)).toEqual({ code: -1, message: MCP_RUN_STOPPED_REASON });
-      expect(outcome.detail).toMatchObject({ by: "cloudpid", why: "unanswered" });
+      expect(outcome).toMatchObject({ detail: { by: "cloudpid", why: "unanswered" } });
       expect(announced.at(-1)?.requests).toEqual([]);
       expect(yield* questions.pendingSampling).toEqual([]);
       expect(yield* sampler.view("call-1:1")).toMatchObject({

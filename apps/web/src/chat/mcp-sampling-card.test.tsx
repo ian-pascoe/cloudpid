@@ -51,6 +51,13 @@ describe("McpSamplingCard", () => {
     expect(markup).toContain("docs&#x27;s call ends in 10:00");
   });
 
+  it("says a request that waits for the owner waits, with no countdown", () => {
+    const markup = render(request({ waits: "owner", deadline: 30 * 24 * 60 * 60 * 1000 }));
+
+    expect(markup).toContain("docs waits for your answer");
+    expect(markup).not.toContain("call ends in");
+  });
+
   it("offers the Role picker on the request's Role, with each Role's model", () => {
     const markup = render(request());
 

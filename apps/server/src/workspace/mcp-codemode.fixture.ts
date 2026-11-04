@@ -1,8 +1,9 @@
 // A test Session DO on a Workspace whose scripts call an MCP tool (`docs/architecture/mcp-server-requests.md` → The
 // waiting-question record: `codemode`): the `mcp` extension over a fake host, which answers the `ask` tool of the
 // server `docs` as a Modern server does (its question kept for later: `InputRequired`, then the resume's result) or as
-// a Legacy one does (its question asked live, and the call held open), as `mcpEra` says. What the fake was sent is
-// counted in the object's storage, so the counts outlive an eviction.
+// a Legacy one does (its question asked live, and the call held open), as `mcpEra` says. A Modern server may ask a
+// Sampling request in the same round (`mcpSampling`), which the Session runs on its models as the round resumes. What the
+// fake was sent is counted in the object's storage, so the counts outlive an eviction.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
 import type { Harness } from "@cloudpid/effect-durable";
 import type { Approvals } from "@cloudpid/extensions/approvals";
@@ -14,16 +15,23 @@ import {
   type McpHostClientService,
   mcpExtension,
   MCP_RESUME_FEATURE,
+  MCP_SAMPLING_FEATURE,
 } from "@cloudpid/extensions/mcp";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import type { SettingsReload } from "@cloudpid/extensions/settings";
 import {
   isJsonObject,
+  McpHostCallFailed,
   McpHostCompleted,
   McpHostInputRequired,
   type McpInputRequest,
+  Unsupported,
 } from "@cloudpid/mcp/types";
-import type { ElicitationContent, McpElicitationRequest } from "@cloudpid/protocol";
+import type {
+  ElicitationContent,
+  McpElicitationRequest,
+  McpSamplingRequest,
+} from "@cloudpid/protocol";
 import type { Extension } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { TestCodemodeSession } from "./codemode.fixture.ts";
@@ -31,6 +39,7 @@ import { TestCodemodeSession } from "./codemode.fixture.ts";
 const ERA = "mcp-fake-era";
 const CALLS = "mcp-fake-calls";
 const RESUMES = "mcp-fake-resumes";
+const SAMPLING = "mcp-fake-sampling";
 
 /** The form the `ask` tool asks. */
 const QUESTION: typeof McpInputRequest.Encoded = {
@@ -45,6 +54,18 @@ const QUESTION: typeof McpInputRequest.Encoded = {
     },
   },
   mode: "deferrable",
+};
+
+/** The Sampling request a Modern round asks beside the form, when `mcpSampling` says it does. */
+const SAMPLE: typeof McpInputRequest.Encoded = {
+  key: "s1",
+  kind: "sampling",
+  params: {
+    messages: [{ role: "user", content: { type: "text", text: "Greet them" } }],
+    maxTokens: 100,
+  },
+  mode: "deferrable",
+  era: "modern",
 };
 
 /** The `ResumeState` the fake hands out, which its resume expects back. */
@@ -81,8 +102,13 @@ export class TestMcpCodemodeSession extends TestCodemodeSession {
             kv.put("mcp-fake-answers", input.params.answers);
 
             const content = input.params.answers["q1"]?.["content"];
+            const reply = input.params.answers["s1"]?.["content"];
 
-            return text(`Hello ${JSON.stringify(isJsonObject(content) ? content["name"] : null)}`);
+            return text(
+              `Hello ${JSON.stringify(isJsonObject(content) ? content["name"] : null)}${
+                isJsonObject(reply) ? ` and ${JSON.stringify(reply["text"])}` : ""
+              }`,
+            );
           }
 
           count(CALLS);
@@ -94,11 +120,25 @@ export class TestMcpCodemodeSession extends TestCodemodeSession {
             return HostLost.make({ message: "The fake's call was stopped" });
           }
 
-          const answer = await hooks.onInput?.(QUESTION);
+          const asks = kv.get<boolean>(SAMPLING) === true ? [QUESTION, SAMPLE] : [QUESTION];
+          const answers = await Promise.all(asks.map(async (request) => hooks.onInput?.(request)));
 
-          return answer?.kind === "defer"
-            ? McpHostInputRequired.make({ requests: [QUESTION], resume: STATE, conn: "conn-docs" })
-            : text(`Answered ${JSON.stringify(answer)}`);
+          // As the core's round does: a refused request ends the call locally, a deferred one ends the round.
+          const refused = answers.find((answer) => answer?.kind === "refused");
+
+          if (refused?.kind === "refused") {
+            return McpHostCallFailed.make({
+              error: Unsupported.make({ message: refused.message }),
+            });
+          }
+
+          return answers.some((answer) => answer?.kind === "defer")
+            ? McpHostInputRequired.make({
+                requests: asks,
+                resume: { ...STATE, deferred: asks.map((request) => request.key) },
+                conn: "conn-docs",
+              })
+            : text(`Answered ${JSON.stringify(answers[0])}`);
         }),
     };
   }
@@ -115,10 +155,14 @@ export class TestMcpCodemodeSession extends TestCodemodeSession {
     | Approvals
   > {
     const mcp = mcpExtension(
-      { servers: [DOCS], offered: [], features: ["inventory", "call", MCP_RESUME_FEATURE] },
+      {
+        servers: [DOCS],
+        offered: [],
+        features: ["inventory", "call", MCP_RESUME_FEATURE, MCP_SAMPLING_FEATURE],
+      },
       this.#host(),
       { session: this.ctx.id.toString(), workspace: "ws:test" },
-      { questions: this.mcpQuestionsService() },
+      { questions: this.mcpQuestionsService(), sampling: this.mcpSamplingService() },
     );
 
     return Effect.map(super.hostExtensions(), (base) => [...base, mcp]);
@@ -127,6 +171,21 @@ export class TestMcpCodemodeSession extends TestCodemodeSession {
   /** Make the fake answer as a Legacy server does from now on. */
   mcpLegacy(): void {
     this.ctx.storage.kv.put(ERA, "legacy");
+  }
+
+  /** Make the Modern fake ask a Sampling request beside its form from now on. */
+  mcpSampling(): void {
+    this.ctx.storage.kv.put(SAMPLING, true);
+  }
+
+  /** The Sampling requests waiting for the owner. */
+  mcpSamplingPending(): Promise<ReadonlyArray<McpSamplingRequest>> {
+    return Effect.runPromise(this.mcpQuestionsService().pendingSampling);
+  }
+
+  /** The owner's choice on Sampling request `id`. */
+  mcpSamplingAnswer(id: string, choice: "allow_call" | "refuse"): Promise<void> {
+    return Effect.runPromise(this.mcpQuestionsService().answerSampling(id, { choice }));
   }
 
   /** The questions waiting for the owner. */

@@ -16,10 +16,15 @@
 //   or the clock's, finds it taken. One rule for a choice that cannot be kept (a write of the definition that fails or takes
 //   too long, a grant the storage refuses): the claim is released and the answer fails with why, so the card says it and the
 //   owner picks another; nothing is settled.
+// - **A Modern server's request** is kept for later instead (`./deferred-questions.ts`, `deferSampling`): the card is stored
+//   with the call's round, outlives the instance, and is answered here by the same choices; the sample runs at the round's
+//   resume. *Allow for this call* is kept in the storage for such a call (`mcp-sampling:call:<callId>`), so a later round of
+//   the call, after an eviction, still finds it. One refusal sinks the round (`decideSampling`).
 // - **The record.** The request's card is made of its record (`sampling-records.ts`), which the sampler wrote as `waiting`
 //   before it asked. `mcp-sampling:waiting` lists what waits, so a new instance, which finds nothing to answer them, can
 //   settle those records as refused.
-import type { RoleName } from "@cloudpid/config";
+import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
+import type { JsonObject } from "@cloudpid/mcp/types";
 import type {
   McpElicitationSource,
   McpSamplingChoice,
@@ -41,6 +46,11 @@ import {
   McpQuestionsError,
   type McpQuestionStorage,
 } from "./question-records.ts";
+import {
+  MCP_DEFERRED_DEADLINE_MS,
+  type McpDeferredQuestions,
+  type McpSamplingVerdict,
+} from "./deferred-questions.ts";
 import { type McpSamplingGrant, samplingRecords } from "./sampling-records.ts";
 
 /** How long a Sampling request waits for the owner, as the Legacy question does: 10 minutes. */
@@ -120,11 +130,19 @@ export type McpSamplingQuestionsOptions = {
   readonly waitMs?: number | undefined;
   /** Where *Always allow* and *Never* write; without it the card cannot offer them. */
   readonly remember?: McpSamplingRemember | undefined;
+  /** A Modern server's requests, kept for later: their cards show beside the live ones, and the same choices answer them. */
+  readonly deferred: Pick<
+    McpDeferredQuestions,
+    "shownSampling" | "samplingHeld" | "decideSampling" | "deferSampling"
+  >;
 };
 
 const WAITING_KEY = "mcp-sampling:waiting";
 
 const GRANTS_KEY = "mcp-sampling:grants";
+
+/** The call's own grant, kept for a call that outlives its instance (a Modern server's): `Allow for this call`. */
+const callGrantKey = (callId: string) => `mcp-sampling:call:${callId}`;
 
 /** A request waiting, as the storage keeps it: who asks and when, so a new instance can settle its record. */
 type WaitingEntry = { readonly id: string; readonly callId: string; readonly askedAt: number };
@@ -203,7 +221,11 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
     else storage.put(GRANTS_KEY, next);
   };
 
-  const pending = Effect.sync(() => Arr.map([...waiting.values()], (held) => held.request));
+  /** The requests waiting for the owner: the live ones, and a Modern server's kept for later. */
+  const pending = Effect.sync(() => [
+    ...Arr.map([...waiting.values()], (held) => held.request),
+    ...options.deferred.shownSampling(),
+  ]);
 
   const grants = Effect.sync(sessionGrants);
 
@@ -316,6 +338,42 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
       return yield* Deferred.await(outcome);
     });
 
+  /** Whether the call's grant was kept in the storage: a Modern call's, which may outlive its instance. */
+  const keptCallGrant = (callId: string): boolean => {
+    try {
+      return storage.get<true>(callGrantKey(callId)) === true;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * Keep a Modern server's request for later, with its call's round: its card is stored, shown once the round is, and
+   * answered by `answer` like a live one. `params` is the request as the sample will be made from, redacted.
+   */
+  const defer = (
+    question: McpSamplingQuestion & { readonly sequence: number; readonly params: JsonObject },
+  ) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+
+      const request: Mutable<McpSamplingRequest> = {
+        ...question.card,
+        id: question.id,
+        // No deadline: the owner is waited for in the call's resume. A client from before `waits` needs one, far off.
+        deadline: now + MCP_DEFERRED_DEADLINE_MS,
+        waits: "owner",
+        writable: yield* canWrite(question.card.source),
+      };
+
+      return yield* options.deferred.deferSampling({
+        request,
+        key: question.key,
+        sequence: question.sequence,
+        params: question.params,
+      });
+    });
+
   /** Whether the owner has already decided for this call or for the Session, so its request needs no card. */
   const standing = (callId: string, server: string): McpSamplingStanding | undefined => {
     const session = sessionGrants().find((grant) => grant.server === server);
@@ -327,7 +385,9 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
 
     if (session?.action === "allow") return { action: "allow", grant: "session" };
 
-    return callGrants.has(callId) ? { action: "allow", grant: "call" } : undefined;
+    return callGrants.has(callId) || keptCallGrant(callId)
+      ? { action: "allow", grant: "call" }
+      : undefined;
   };
 
   /** End every waiting request that `matches` with `decision`, each with its own Role. */
@@ -341,9 +401,158 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
       }
     });
 
+  /**
+   * `keep`, bounded: the write of the definition, or of a grant. One rule for every choice that keeps something (the
+   * Session's grants too): a choice that cannot be kept (or is interrupted) releases the request, which waits as before
+   * (`release`), and the answer fails with why, so the card says it and the owner picks another. Nothing is settled on a
+   * failure.
+   */
+  const keepingWith =
+    (release: Effect.Effect<void>) =>
+    <E>(keep: Effect.Effect<void, E | McpQuestionsError>) =>
+      keep.pipe(
+        Effect.timeoutOrElse({
+          duration: WRITE_MS,
+          orElse: () => McpQuestionsError.make({ message: "The definition was not saved in time" }),
+        }),
+        Effect.onError(() => release),
+      );
+
+  /** The write of `request`'s definition that *Always allow* (`allow`) and *Never* (`off`) make, kept as `keeping` does. */
+  const writtenFor =
+    (
+      request: Pick<McpSamplingRequest, "server" | "source" | "conversationId">,
+      keeping: ReturnType<typeof keepingWith>,
+    ) =>
+    (value: "allow" | "off") =>
+      keeping(
+        options.remember === undefined
+          ? McpQuestionsError.make({
+              message: "This server's definition cannot be changed from here",
+            })
+          : options.remember.write({
+              server: request.server,
+              source: request.source,
+              conversationId: request.conversationId,
+              value,
+            }),
+      );
+
+  /** Requests of a Modern server being answered now: the first answer claims it, as a live request's `claimed` does. */
+  const claimed = new Set<string>();
+
+  /**
+   * The owner's answer to a Modern server's request, kept with its round: the same choices as a live one, kept the same
+   * ways, then one decision in the storage. A refusal sinks the round (`decideSampling`).
+   */
+  const answerDeferred = (
+    id: string,
+    held: { readonly request: McpSamplingRequest },
+    given: McpSamplingGiven,
+  ): Effect.Effect<void, McpQuestionsError> =>
+    Effect.gen(function* () {
+      const { request } = held;
+      const { choice } = given;
+      const named = given.role ?? request.role;
+      const role = ROLE_NAMES.find((each) => each === named);
+
+      if (claimed.has(id)) {
+        return yield* McpQuestionsError.make({ message: "This request is being answered" });
+      }
+
+      if (role === undefined || !Arr.some(request.roles, (option) => option.role === role)) {
+        return yield* McpQuestionsError.make({ message: "That Role is not available" });
+      }
+
+      const writing = choice === "allow_always" || choice === "refuse_never";
+
+      if (writing && !request.writable) {
+        return yield* McpQuestionsError.make({
+          message: "This server's definition cannot be changed from here",
+        });
+      }
+
+      claimed.add(id);
+
+      const keeping = keepingWith(Effect.sync(() => claimed.delete(id)));
+      const written = writtenFor(request, keeping);
+
+      /** Keeps the call's own grant, which a later round after an eviction still finds. */
+      const keepCallGrant = Effect.try(() => {
+        storage.put(callGrantKey(request.callId), true);
+        callGrants.add(request.callId);
+      }).pipe(
+        Effect.catch(() =>
+          McpQuestionsError.make({ message: "cloudpid could not keep the choice for this call" }),
+        ),
+      );
+
+      const verdict: McpSamplingVerdict = yield* Effect.gen(function* () {
+        switch (choice) {
+          case "allow_call": {
+            yield* keeping(keepCallGrant);
+
+            return { action: "allow", role, grant: "call", also: "call" } as const;
+          }
+
+          case "allow_session": {
+            yield* keeping(setGrant(request.server, "allow"));
+
+            return { action: "allow", role, grant: "session", also: "server" } as const;
+          }
+
+          case "allow_always": {
+            yield* written("allow");
+            yield* keeping(keepCallGrant);
+
+            return { action: "allow", role, grant: "always", also: "server" } as const;
+          }
+
+          case "refuse":
+            return { action: "refuse", by: "owner", reason: REFUSED_BY_OWNER } as const;
+
+          case "refuse_session": {
+            yield* keeping(setGrant(request.server, "refuse"));
+
+            return {
+              action: "refuse",
+              by: "owner",
+              reason: REFUSED_FOR_SESSION,
+              also: "server",
+            } as const;
+          }
+
+          case "refuse_never": {
+            yield* written("off");
+
+            return {
+              action: "refuse",
+              by: "owner",
+              reason: REFUSED_NEVER,
+              also: "server",
+            } as const;
+          }
+        }
+      }).pipe(Effect.ensuring(Effect.sync(() => claimed.delete(id))));
+
+      // The first answer wins: a request another client answered meanwhile (or whose call ended) is gone.
+      const taken = yield* options.deferred.decideSampling(id, verdict);
+
+      if (!taken) return yield* McpQuestionsError.make({ message: "This request ended" });
+
+      yield* tell;
+    });
+
   const answer = (id: string, given: McpSamplingGiven): Effect.Effect<void, McpQuestionsError> =>
     Effect.gen(function* () {
       const held = waiting.get(id);
+
+      // A request of a Modern server's, kept with its round.
+      if (held === undefined) {
+        const kept = options.deferred.samplingHeld(id);
+
+        if (kept !== undefined) return yield* answerDeferred(id, kept, given);
+      }
 
       if (held === undefined)
         return yield* McpQuestionsError.make({ message: "This request ended" });
@@ -393,38 +602,13 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
           },
         );
 
-      /**
-       * The write of the definition, bounded. One rule for every choice that keeps something (the Session's grants too): a
-       * choice that cannot be kept (or is interrupted) releases the request, which waits as before, and the answer fails with why, so the card
-       * says it and the owner picks another. Nothing is settled on a failure.
-       */
-      const keeping = <E>(keep: Effect.Effect<void, E | McpQuestionsError>) =>
-        keep.pipe(
-          Effect.timeoutOrElse({
-            duration: WRITE_MS,
-            orElse: () =>
-              McpQuestionsError.make({ message: "The definition was not saved in time" }),
-          }),
-          Effect.onError(() =>
-            Effect.sync(() => {
-              held.claimed = false;
-            }),
-          ),
-        );
+      const keeping = keepingWith(
+        Effect.sync(() => {
+          held.claimed = false;
+        }),
+      );
 
-      const written = (value: "allow" | "off") =>
-        keeping(
-          options.remember === undefined
-            ? McpQuestionsError.make({
-                message: "This server's definition cannot be changed from here",
-              })
-            : options.remember.write({
-                server: request.server,
-                source: request.source,
-                conversationId: request.conversationId,
-                value,
-              }),
-        );
+      const written = writtenFor(request, keeping);
 
       switch (choice) {
         case "allow_call": {
@@ -485,6 +669,8 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
 
   return {
     ask,
+    defer,
+    tell,
     standing,
     pending,
     grants,
@@ -511,6 +697,10 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
         );
         callGrants.delete(callId);
         callRefusals.delete(callId);
+
+        if (keptCallGrant(callId)) {
+          yield* Effect.try(() => storage.delete(callGrantKey(callId))).pipe(Effect.ignore);
+        }
       }),
     /**
      * Settle the records an earlier instance left waiting: their calls are gone with it. Run once, when the instance starts,

@@ -46,12 +46,17 @@ const DEFERRING: McpCallContext = {
 const decode = Schema.decodeSync(McpEngineRequestResult);
 
 /** Sends `req` to `server` through the engine. */
-const send = async (server: FakeServer, req: McpEngineRequestEncoded, hooks: McpEngineHooks) => {
+const send = async (
+  server: FakeServer,
+  req: McpEngineRequestEncoded,
+  hooks: McpEngineHooks,
+  to: typeof target & { readonly sampling?: boolean } = target,
+) => {
   vi.stubGlobal("fetch", fetchTo(server));
 
   return decode(
     await Effect.runPromise(
-      request(target, {}, req, hooks, { version: "test", hold: () => undefined }).pipe(
+      request(to, {}, req, hooks, { version: "test", hold: () => undefined }).pipe(
         Effect.provide(Layer.mergeAll(ByteBudget.layer, Validators.layer)),
       ),
     ),
@@ -197,5 +202,85 @@ describe("a Modern server's questions through the engine", () => {
       Unsupported.make({ message: MCP_RESUME_STATE_EXPIRED }),
     );
     expect(server.received.some((received) => received.rpc?.method === "tools/call")).toBe(false);
+  });
+
+  it("declares sampling only on a call whose caller offers to answer it, for a server the definition lets sample", async () => {
+    const SAMPLING: McpCallContext = {
+      origin: "agent",
+      conversation: "c1",
+      answers: { elicitation: true, sampling: true, defer: true },
+    };
+
+    const offers = modernServer({ moreTools: [ASK_TOOL] });
+    const offersNone = modernServer({ moreTools: [ASK_TOOL] });
+    const noHook = modernServer({ moreTools: [ASK_TOOL] });
+    const notLet = modernServer({ moreTools: [ASK_TOOL] });
+    const sampling = { ...target, sampling: true };
+
+    await send(offers, callAsk(SAMPLING), deferring, sampling);
+    await send(offersNone, callAsk(DEFERRING), deferring, sampling);
+    await send(noHook, callAsk(SAMPLING), {}, sampling);
+    // The target says the definition does not let it (`off`, or stdio): nothing is declared whatever the call says.
+    await send(notLet, callAsk(SAMPLING), deferring);
+
+    expect(declared(offers)).toMatchObject({
+      "io.modelcontextprotocol/clientCapabilities": { sampling: { tools: {} } },
+    });
+
+    for (const server of [offersNone, noHook, notLet]) {
+      expect(JSON.stringify(declared(server))).not.toContain("sampling");
+    }
+  });
+
+  it("keeps a Sampling request for later, with the question's key and kind, and resumes it with the reply", async () => {
+    const server = modernServer({ moreTools: [ASK_TOOL], asked: [] });
+    const seen: Array<McpInputRequest> = [];
+    const sampling = { ...target, sampling: true };
+
+    const ctx: McpCallContext = {
+      origin: "agent",
+      conversation: "c1",
+      answers: { sampling: true, defer: true },
+    };
+
+    const first = await send(
+      server,
+      {
+        op: "tools/call",
+        tool: ASK_TOOL,
+        arguments: { message: "?", forms: 0, samples: 1 },
+        ctx,
+      },
+      {
+        onInput: (input) => {
+          seen.push(input);
+
+          return Promise.resolve({ kind: "defer" });
+        },
+      },
+      sampling,
+    );
+
+    expect(seen).toMatchObject([{ key: "s1", kind: "sampling", era: "modern" }]);
+
+    if (first.kind !== "input_required") throw new Error("Expected input_required");
+
+    const reply = { role: "assistant", content: { type: "text", text: "Hi" }, model: "m" };
+
+    const resumed = await send(
+      server,
+      {
+        op: "resume",
+        tool: ASK_TOOL,
+        resume: first.resume,
+        answers: { s1: reply },
+        ctx,
+      },
+      deferring,
+      sampling,
+    );
+
+    expect(resumed.kind).toBe("complete");
+    expect(textOf(resumed)).toContain('\\"model\\":\\"m\\"');
   });
 });

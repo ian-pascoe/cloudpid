@@ -47,7 +47,7 @@ import type { McpHostClientService } from "./client.ts";
 import type { McpDetails, McpElicitationDetail, McpSamplingDetail } from "./details.ts";
 import { elicitingHooks, withElicitation } from "./elicit.ts";
 import type { Subject } from "./ended.ts";
-import { samplingHooks, withSampling } from "./sample.ts";
+import { samplingHooks, samplingRefusedResult, withSampling } from "./sample.ts";
 import type { McpSamplingService } from "./sampling.ts";
 import {
   failedWith,
@@ -501,6 +501,8 @@ export const send = async <A>(
           conversationId: api.conversationId,
           signal: context.abortSignal,
           decision: samplingOf(server.server) === "allow" ? "allow" : "ask",
+          // A Modern server's `ask` request is kept with the call's round when the call keeps its questions.
+          defers: deferring,
           source: server.source,
           hold,
         })
@@ -590,6 +592,12 @@ export const send = async <A>(
     result: Exclude<Awaited<ReturnType<typeof once>>, undefined>,
   ): Promise<Sent<A>> => {
     if (!Predicate.isTagged(result, "Completed")) {
+      // A Modern server's Sampling request that was refused ended the call in the core, the server told nothing: the
+      // call says so (`details.error`), whatever the core's own words for it were.
+      const refused = sampling?.sunk();
+
+      if (refused !== undefined) return failed(samplingRefusedResult(refused, base));
+
       return failed(
         failureResult(result, base, subject, { subagent: await isSubagentCall(api, context) }),
       );
@@ -654,9 +662,13 @@ export const send = async <A>(
           ctx: request.ctx,
           asked: asking?.asked,
           read: paging && request.op === "resources/read" ? request : undefined,
+          sampling,
         });
 
         if (resumed.kind === "refused") return failed(failedWith(pagesMessage, base));
+
+        // A Sampling request of the round was refused: it sinks the round, nothing is sent, and the call ends here.
+        if (resumed.kind === "sunk") return failed(samplingRefusedResult(resumed.detail, base));
 
         if (resumed.kind === "stopped") return failed(failedWith(`The ${noun} was stopped`, base));
 

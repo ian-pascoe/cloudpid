@@ -595,7 +595,7 @@ describe("a deferred round in the Session's storage", () => {
     ]);
   });
 
-  it("neither shows nor waits again for a round with a Sampling request, which this build cannot answer", async () => {
+  it("neither shows nor waits again for a round with a question of a kind this build does not know", async () => {
     const { questions, memory } = await service();
 
     await Effect.runPromise(questions.defer(ASK));
@@ -604,7 +604,7 @@ describe("a deferred round in the Session's storage", () => {
 
     const key = "mcp-question:q:call-9:1";
 
-    memory.storage.put(key, { ...memory.storage.get<object>(key), kind: "sampling" });
+    memory.storage.put(key, { ...memory.storage.get<object>(key), kind: "a-later-kind" });
 
     expect(await Effect.runPromise(questions.pending)).toEqual([]);
     expect(await Effect.runPromise(questions.deferredRound(ASK.callId))).toBeUndefined();
@@ -613,7 +613,7 @@ describe("a deferred round in the Session's storage", () => {
     ).rejects.toThrow("This request ended");
   });
 
-  it("shows none of a round that holds a Sampling request beside a form, nor takes an answer to the form", async () => {
+  it("shows none of a round that holds a question of an unknown kind beside a form, nor takes an answer to the form", async () => {
     const { questions, memory } = await service();
 
     await Effect.runPromise(questions.defer(ASK));
@@ -623,7 +623,7 @@ describe("a deferred round in the Session's storage", () => {
 
     const key = "mcp-question:q:call-9:2";
 
-    memory.storage.put(key, { ...memory.storage.get<object>(key), kind: "sampling" });
+    memory.storage.put(key, { ...memory.storage.get<object>(key), kind: "a-later-kind" });
 
     expect(await Effect.runPromise(questions.pending)).toEqual([]);
     await expect(

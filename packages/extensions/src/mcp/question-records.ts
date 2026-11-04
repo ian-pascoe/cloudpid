@@ -173,6 +173,8 @@ export type McpCallState = {
   asked: number;
   /** Requests turned away at the cap, to give their records an id. */
   capped: number;
+  /** Sampling requests the call made (the sampler's own cap and ids), kept with a round so a rerun counts on from them. */
+  sampled: number;
   waiting: number;
   notified: boolean;
   idleSince: number;
@@ -344,6 +346,7 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     const held = calls.get(callId) ?? {
       asked: 0,
       capped: 0,
+      sampled: 0,
       waiting: 0,
       notified: false,
       idleSince: 0,
@@ -360,11 +363,16 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
    */
   const restoreCall = (
     callId: string,
-    restored: { readonly count: number; readonly waiting: number | undefined },
+    restored: {
+      readonly count: number;
+      readonly waiting: number | undefined;
+      readonly sampled?: number | undefined;
+    },
   ) => {
     const state = callOf(callId);
 
     state.asked = Math.max(state.asked, restored.count);
+    state.sampled = Math.max(state.sampled, restored.sampled ?? 0);
 
     if (restored.waiting !== undefined) {
       state.notified = true;

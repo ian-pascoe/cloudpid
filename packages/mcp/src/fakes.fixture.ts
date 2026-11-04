@@ -139,7 +139,8 @@ export const ROOTS_TOOL = {
  * The fakes' tool that asks the client a form (`elicitation/create`) during the call, and answers with what it got: the
  * `action` and `content` as JSON text, or, when the client refused the request, `isError` with the error's message. On
  * Modern it asks in `input_required` rounds instead (`rounds`, default 1, of `forms` forms each, default 1, keyed `q1`,
- * `q2`, … and with `roots`, a `roots/list` too), each with a `requestState` of `round-<n>`, and answers the last
+ * `q2`, … and with `roots`, a `roots/list` too, and `samples` Sampling requests keyed `s1`, `s2`, …), each with a
+ * `requestState` of `round-<n>`, and answers the last
  * round's responses as JSON text; every answer it gets is recorded in `asked`, with the round and the state it came
  * back with.
  */
@@ -156,6 +157,7 @@ export const ASK_TOOL = {
       rounds: { type: "number" },
       forms: { type: "number" },
       roots: { type: "boolean" },
+      samples: { type: "number" },
     },
   },
 };
@@ -171,6 +173,8 @@ const AskArguments = Schema.Struct({
   rounds: Schema.optionalKey(Schema.Int),
   forms: Schema.optionalKey(Schema.Int),
   roots: Schema.optionalKey(Schema.Boolean),
+  /** Modern: how many Sampling requests (`s1`, `s2`, ...) each round asks beside its forms. */
+  samples: Schema.optionalKey(Schema.Int),
 });
 
 /**
@@ -621,7 +625,7 @@ const fakeMcp = (
       }
 
       case "ask": {
-        const { message, requestedSchema, standalone, giveUpMs, rounds, forms, roots } =
+        const { message, requestedSchema, standalone, giveUpMs, rounds, forms, roots, samples } =
           Schema.decodeUnknownSync(AskArguments)(request.params.arguments);
 
         if (modern) {
@@ -649,6 +653,13 @@ const fakeMcp = (
           }
 
           if (roots === true) inputRequests["roots"] = inputRequired.listRoots();
+
+          for (let sample = 1; sample <= (samples ?? 0); sample++) {
+            inputRequests[`s${sample}`] = inputRequired.createMessage({
+              messages: [{ role: "user", content: { type: "text", text: `Sample ${sample}` } }],
+              maxTokens: 100,
+            });
+          }
 
           return inputRequired({ inputRequests, requestState: `round-${round + 1}` });
         }

@@ -24,6 +24,7 @@ import {
   type McpDeferredRound,
   type McpQuestionVault,
 } from "./deferred-questions.ts";
+import type { JsonObject } from "@cloudpid/mcp/types";
 import {
   cancelled,
   modeOf,
@@ -64,8 +65,11 @@ import type { Mutable } from "effect/Types";
 
 export {
   MCP_DEFERRED_DEADLINE_MS,
+  MCP_SAMPLING_PARAMS_MAX,
   type McpDeferredAnswer,
+  type McpDeferredForm,
   type McpDeferredRound,
+  type McpDeferredSample,
   McpRoundState,
   type McpQuestionVault,
 } from "./deferred-questions.ts";
@@ -188,6 +192,19 @@ export type McpQuestionsService = {
   ) => Effect.Effect<void, McpQuestionsError>;
   /** Take back the Session's grant for `server`. */
   readonly revokeSampling: (server: string) => Effect.Effect<void>;
+  /**
+   * Keep a Modern server's Sampling request, which the sampler checked, for the call's round: its card is stored beside the
+   * forms, shown once the round is (`showRound`), and answered by `answerSampling`; the sample is made when the round
+   * resumes, from `params` (redacted). `"unrecorded"`: the storage cannot take it (a replaced Session's) or it is too large,
+   * and the request is to be refused.
+   */
+  readonly deferSampling: (
+    question: McpSamplingQuestion & { readonly sequence: number; readonly params: JsonObject },
+  ) => Effect.Effect<"deferred" | "unrecorded">;
+  /** How many Sampling requests the call has made, kept with its rounds so a rerun after an eviction counts on from them. */
+  readonly sampledCount: (callId: string) => number;
+  /** The call made Sampling request number `sequence`. */
+  readonly noteSampled: (callId: string, sequence: number) => void;
   /** Whether a Modern server's form can be kept for later: the service has a vault for the answers. */
   readonly defers: boolean;
   /**
@@ -304,7 +321,13 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
   const tell: Effect.Effect<void> = Effect.suspend(() => pending.pipe(Effect.flatMap(announce)));
 
-  const deferred = createDeferredQuestions({ storage, vault: options.vault, basics, tell });
+  const deferred = createDeferredQuestions({
+    storage,
+    vault: options.vault,
+    basics,
+    tell,
+    tellSampling: Effect.suspend(() => sampling.tell),
+  });
 
   const sampling = createSamplingQuestions({
     storage,
@@ -312,6 +335,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     announce: options.announceSampling ?? (() => Effect.void),
     waitMs: options.samplingWaitMs,
     remember: options.remember,
+    deferred,
   });
 
   const pending = Effect.sync(() => [
@@ -640,6 +664,13 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     samplingGrants: sampling.grants,
     answerSampling: sampling.answer,
     revokeSampling: sampling.revoke,
+    deferSampling: sampling.defer,
+    sampledCount: (callId) => basics.callOf(callId).sampled,
+    noteSampled: (callId, sequence) => {
+      const state = basics.callOf(callId);
+
+      state.sampled = Math.max(state.sampled, sequence);
+    },
     settleCall,
     complete,
     whileOpen,
