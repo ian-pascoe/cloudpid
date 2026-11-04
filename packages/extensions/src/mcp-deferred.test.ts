@@ -555,7 +555,7 @@ describe("a Modern server's form", () => {
     await session.start(tools, startOf(1, { offered: ["codemode"] }));
     await session.prompt("go");
 
-    // The script's end settled the round, and the call was woken to find none: nothing was resumed.
+    // The script's end settled the round, and its abort ended the call: nothing was resumed.
     expect(resumes).toEqual([]);
     expect(await Effect.runPromise(questions.pending)).toEqual([]);
     expect(await Effect.runPromise(questions.records)).toEqual([

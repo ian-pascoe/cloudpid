@@ -39,6 +39,16 @@ describe("a codemode result that ends its script's questions as timed out", () =
     // Not as anything but the whole result, nor without a timeout of the script's own, nor as a non-error.
     expect(endedByTimeout(callOf(TIMED), resultOf(`${interrupted} And more.`))).toBe(false);
     expect(endedByTimeout(callOf(TIMED), resultOf(`log\n${interrupted}`))).toBe(false);
+    // Nor beside another item: the library writes it as the only one.
+    expect(
+      endedByTimeout(callOf(TIMED), {
+        isError: true,
+        output: [
+          { type: "text", text: interrupted },
+          { type: "text", text: "more" },
+        ],
+      }),
+    ).toBe(false);
     expect(endedByTimeout(callOf("await tools.x();"), resultOf(interrupted))).toBe(false);
     expect(endedByTimeout(callOf(TIMED), resultOf(interrupted, false))).toBe(false);
   });

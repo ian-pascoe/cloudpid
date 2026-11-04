@@ -73,7 +73,7 @@ describe("a script's MCP call whose server asks a question", () => {
     await idle(stub);
 
     expect(await pending(stub)).toEqual([]);
-    // The script's end settled the round and woke its call to find none: no resume was sent.
+    // The script's end settled the round, and its abort ended the call: no resume was sent.
     expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
 
     const results = await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
