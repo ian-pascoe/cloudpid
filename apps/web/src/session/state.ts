@@ -19,6 +19,7 @@ import {
   type OwnerTabListing,
   type ClientMessage,
   type RepoChanges,
+  type AppMessageRef,
   type McpPromptRef,
   type ResourceRef,
   type PageRef,
@@ -135,6 +136,8 @@ export interface OutgoingMessage {
   readonly mcpPrompt?: McpPromptRef;
   /** The MCP resources attached to it (`Submit.resources`): the Session reads them as the message is sent. */
   readonly resources?: readonly ResourceRef[];
+  /** The App messages the owner sends with it (`Submit.app`): the Session adds each as a part of its own. */
+  readonly app?: readonly AppMessageRef[];
   /** What its lane says while the Session gets the prompt ("Getting Review PR from docs…"), in place of `display`. */
   readonly getting?: string;
 }

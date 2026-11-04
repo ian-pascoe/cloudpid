@@ -129,7 +129,9 @@ const requests: AppRequestClient = {
 
 /** The Session's client: its state, those requests, and every other command a page may start doing nothing. */
 const clientOf = (state: SubscriptionRef.SubscriptionRef<SessionState>) => {
-  const own = new Map<string, unknown>(Object.entries({ ...requests, state }));
+  // A Session that says nothing of App messages or context in its `hello`: the card offers its View neither.
+  const takes = () => ({ appMessages: false, appContext: false });
+  const own = new Map<string, unknown>(Object.entries({ ...requests, state, takes }));
 
   return new Proxy(
     {},

@@ -15,6 +15,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
+import * as Schema from "effect/Schema";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 
 const entryOf = (entry: { readonly name: string; readonly description: string }) => ({
@@ -113,6 +114,33 @@ const promptMarkdown = (prompt: NonNullable<TranscriptMessage["mcpPrompt"]>): st
   ];
 };
 
+/** What an export says of the App messages an owner's message sent: each text as a blockquote, from the App it came from. */
+const appMarkdown = (app: NonNullable<TranscriptMessage["app"]>): string[] =>
+  app.map(
+    ({ server, text }) =>
+      `Sent from ${server === "" ? "an" : `the ${server}`} app:\n\n${quoted(text)}`,
+  );
+
+/** `server/tool` of an MCP tool's model-facing name (`mcp__<server>__<tool>`), or the name as it is. */
+const appToolOf = (name: string): string => {
+  const [prefix, server, ...tool] = name.split("__");
+
+  return prefix === "mcp" && server !== undefined && tool.length > 0
+    ? `${server}/${tool.join("__")}`
+    : name;
+};
+
+const AppDetails = Schema.Struct({
+  meta: Schema.Struct({ ui: Schema.Struct({ resourceUri: Schema.String }) }),
+});
+
+const isAppDetails = Schema.is(AppDetails);
+
+/** Whether a tool result's `details.meta.ui.resourceUri` names a `ui://` resource: the call mounted an App an export cannot show. */
+const isAppResult = (
+  details: Extract<TranscriptPart, { type: "tool-result" }>["details"],
+): boolean => isAppDetails(details) && details.meta.ui.resourceUri.startsWith("ui://");
+
 /** One message of the History as Markdown. */
 const messageMarkdown = (message: TranscriptMessage): string | undefined => {
   switch (message.role) {
@@ -122,6 +150,7 @@ const messageMarkdown = (message: TranscriptMessage): string | undefined => {
       return [
         "## Owner",
         textOf(message.parts),
+        ...(message.app === undefined ? [] : appMarkdown(message.app)),
         ...(message.mcpPrompt === undefined ? [] : promptMarkdown(message.mcpPrompt)),
         ...(skills === "" ? [] : [`_Skills: ${skills}_`]),
       ].join("\n\n");
@@ -158,6 +187,9 @@ const messageMarkdown = (message: TranscriptMessage): string | undefined => {
           part.type === "tool-result"
             ? [
                 `**Tool result** \`${part.name}\`${part.error ? " (error)" : ""}\n\n${fenced(resultText(part.content))}`,
+                ...(isAppResult(part.details)
+                  ? [`_App: ${appToolOf(part.name)} (not rendered)_`]
+                  : []),
               ]
             : [],
         )

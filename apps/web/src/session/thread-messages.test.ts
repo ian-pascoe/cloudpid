@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   answerOf,
   entriesOf,
+  shownApps,
   shownMcpPrompt,
   shownPages,
   shownResources,
@@ -175,6 +176,16 @@ describe("the thread messages of a view", () => {
     expect(shownResources(message?.metadata?.custom)).toEqual(resources);
     expect(shownResources(undefined)).toEqual([]);
     expect(shownPages(message?.metadata?.custom)).toEqual([]);
+  });
+
+  it("keeps the App messages a user message sent, for its 'sent from the app' blocks", () => {
+    const app = [{ callId: "c1", server: "docs", text: "Pick A" }];
+
+    const [message] = toThreadMessages(view({ messages: [{ ...user("1", "go"), app }] }));
+
+    expect(shownApps(message?.metadata?.custom)).toEqual(app);
+    expect(shownApps(undefined)).toEqual([]);
+    expect(shownResources(message?.metadata?.custom)).toEqual([]);
   });
 
   it("keeps who sent a message over the MCP endpoint, for its chip", () => {

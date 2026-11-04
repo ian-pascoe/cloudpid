@@ -20,6 +20,7 @@ import type {
   McpUiInitializeRequest,
   McpUiInitializeResult,
   McpUiInitializedNotification,
+  McpUiResourcePermissions,
   McpUiRequestDisplayModeRequest,
   McpUiResourceCsp,
   McpUiResourceTeardownRequest,
@@ -38,6 +39,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 
 // Each method is typed by the spec's own literal, so a rename in ext-apps breaks the build here.
 const PROXY_READY =
@@ -129,8 +131,15 @@ export interface BridgeOptions {
   readonly origin: string;
   /** Subscribe to the page's `message` events; returns the unsubscribe. */
   readonly listen: (handler: (message: IncomingMessage) => void) => () => void;
-  /** What `sandbox-resource-ready` carries: the View's HTML and the CSP it declared (which the proxy's header already enforces). */
-  readonly page: { readonly html: string; readonly csp?: McpUiResourceCsp };
+  /**
+   * What `sandbox-resource-ready` carries: the View's HTML, the CSP it declared (which the proxy's header already enforces)
+   * and the browser permissions it declared, which the proxy puts on its inner frame's `allow` (`apps/app-sandbox`).
+   */
+  readonly page: {
+    readonly html: string;
+    readonly csp?: McpUiResourceCsp;
+    readonly permissions?: McpUiResourcePermissions;
+  };
   /** The host's context as it is now, which `ui/initialize` is answered with. */
   readonly hostContext: () => McpUiHostContext;
   readonly capabilities: McpUiHostCapabilities;
@@ -386,10 +395,15 @@ export const createBridge = (options: BridgeOptions): Bridge => {
 
       proxyReady = true;
 
-      const resource: McpUiSandboxResourceReadyNotification["params"] =
-        options.page.csp === undefined
-          ? { html: options.page.html }
-          : { html: options.page.html, csp: options.page.csp };
+      const { csp, permissions } = options.page;
+
+      const resource: Types.Mutable<McpUiSandboxResourceReadyNotification["params"]> = {
+        html: options.page.html,
+      };
+
+      if (csp !== undefined) resource.csp = csp;
+
+      if (permissions !== undefined) resource.permissions = permissions;
 
       notify(RESOURCE_READY, resource);
 

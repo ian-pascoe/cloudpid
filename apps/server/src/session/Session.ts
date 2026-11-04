@@ -1018,8 +1018,13 @@ export const SessionLive = Session.make(
                 reload: reloadSessionExtensions,
                 mcp: mcpTools,
                 apps: mcpApps.service,
-                // The Resource watches of a branch the Session moved off are ended at the hosts.
-                onBranchLeft: mcpWatches.service.endConversation,
+                // The App contexts Views sent, which the host writes to a conversation as an untrusted notice.
+                appContexts: mcpApps.service.contexts,
+                // The Resource watches of a branch the Session moved off are ended at the hosts, and its pending App contexts dropped.
+                onBranchLeft: (conversation) =>
+                  mcpWatches.service
+                    .endConversation(conversation)
+                    .pipe(Effect.andThen(mcpApps.service.contexts.drop(String(conversation)))),
                 env: workspace.env,
                 // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,
@@ -1162,12 +1167,17 @@ export const SessionLive = Session.make(
             invoked(
               "session.subagent.delete",
               host.deleteSubagent(agent, workspace).pipe(
-                // The drafts addressed to it go with it, and so do the Resource watches of its conversations.
+                // The drafts addressed to it go with it, and so do the Resource watches and pending App contexts of its conversations.
                 Effect.tap(() => reviews.prune),
                 Effect.tap((deletion) =>
-                  Effect.forEach(deletion.conversations, mcpWatches.service.endConversation, {
-                    discard: true,
-                  }),
+                  Effect.forEach(
+                    deletion.conversations,
+                    (conversation) =>
+                      mcpWatches.service
+                        .endConversation(conversation)
+                        .pipe(Effect.andThen(mcpApps.service.contexts.drop(String(conversation)))),
+                    { discard: true },
+                  ),
                 ),
                 Effect.map((deletion) => deletion.kept),
               ),

@@ -153,6 +153,54 @@ describe("exportMarkdown", () => {
   });
 });
 
+describe("exportMarkdown of an App", () => {
+  it("quotes an App message and notes an App's result as not rendered", () => {
+    const markdown = exportMarkdown(
+      1,
+      [
+        entry({
+          id: 1,
+          kind: "cloudpid.user",
+          data: {
+            display: "go",
+            skills: [],
+            app: [{ callId: "c1", server: "docs", text: "Pick A\nor B" }],
+          },
+          model: [
+            {
+              role: "user",
+              content: [
+                { type: "text", text: "go" },
+                { type: "text", text: "Pick A\nor B" },
+              ],
+              timestamp: 1,
+            },
+          ],
+        }),
+        entry({
+          id: 2,
+          kind: "pi.tool",
+          model: [
+            {
+              role: "toolResult",
+              toolCallId: "c1",
+              toolName: "mcp__docs__chart",
+              content: [{ type: "text", text: "ok" }],
+              details: { meta: { ui: { resourceUri: "ui://docs/chart" } } },
+              isError: false,
+              timestamp: 2,
+            },
+          ],
+        }),
+      ],
+      "2026-01-02T00:00:00.000Z",
+    );
+
+    expect(markdown).toContain("## Owner\n\ngo\n\nSent from the docs app:\n\n> Pick A\n> or B");
+    expect(markdown).toContain("_App: docs/chart (not rendered)_");
+  });
+});
+
 describe("exportMarkdown of an MCP prompt", () => {
   it("writes what the owner typed, the prompt with its arguments, the block it got as a quote, and its resources by URI", () => {
     const block =

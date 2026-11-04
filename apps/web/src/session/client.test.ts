@@ -3218,6 +3218,91 @@ describe("the App calls on a Session connection", () => {
   );
 
   it.effect(
+    "sends an App View's context to a Session that says it takes it, and answers what the Session answers",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { appContext: true });
+
+        expect(client.takes()).toEqual({ appMessages: false, appContext: true });
+
+        const asked = yield* client.appContext("c1", "Row 3 is selected").pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const command = latest()
+          .commands()
+          .find((each) => each.type === "mcp_app_context");
+
+        expect(command).toEqual({
+          type: "mcp_app_context",
+          id: expect.any(String),
+          callId: "c1",
+          text: "Row 3 is selected",
+        });
+        yield* latest().say({
+          type: "result",
+          id: command?.id,
+          result: { status: "held", context: { hash: "h", text: "Row 3 is selected", at: 1 } },
+        });
+        expect(yield* Fiber.join(asked)).toMatchObject({ status: "held" });
+      }),
+  );
+
+  it.effect(
+    "sends a Session from before no App context, answering refused, and decides again at each hello",
+    () =>
+      Effect.gen(function* () {
+        const { client, sockets, latest } = yield* setup();
+
+        yield* greeted(latest(), {});
+
+        expect(client.takes()).toEqual({ appMessages: false, appContext: false });
+        expect(yield* client.appContext("c1", "text")).toMatchObject({ status: "refused" });
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "mcp_app_context"),
+        ).toEqual([]);
+
+        yield* greeted(latest(), { appMessages: true, appContext: true });
+        expect(client.takes()).toEqual({ appMessages: true, appContext: true });
+
+        yield* latest().drop();
+        yield* advance(1_000);
+
+        const reconnected = sockets[1]!;
+
+        yield* reconnected.open();
+        yield* reconnected.say({ type: "hello", root: 1 });
+        expect(client.takes()).toEqual({ appMessages: false, appContext: false });
+      }),
+  );
+
+  it.effect("sends the App messages of a submit to a Session that says it takes them", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* greeted(latest(), { appMessages: true });
+
+      yield* client
+        .submitAndAwait(
+          { input: "go", display: "go", app: [{ callId: "c1", text: "Pick A" }] },
+          "followUp",
+        )
+        .pipe(Effect.forkChild);
+      yield* settle;
+
+      expect(
+        latest()
+          .commands()
+          .find((command) => command.type === "submit"),
+      ).toMatchObject({ input: "go", app: [{ callId: "c1", text: "Pick A" }] });
+    }),
+  );
+
+  it.effect(
     "sends a resource preview's read to a Session that says it takes one, with the conversation when there is one, and answers its answer",
     () =>
       Effect.gen(function* () {

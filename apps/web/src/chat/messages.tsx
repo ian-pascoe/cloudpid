@@ -26,6 +26,7 @@ import {
   answerOf,
   entriesOf,
   type ShownSkill,
+  shownApps,
   shownMcpPrompt,
   shownPages,
   shownResources,
@@ -37,6 +38,7 @@ import {
   ATTACHED_KIND,
   type AttachedPage,
   type AttachedResource,
+  type SentAppMessage,
   resourceKey,
   resourceLabel,
 } from "@cloudpid/protocol";
@@ -136,6 +138,19 @@ const PageChip = ({ page }: { page: AttachedPage }) => (
   </SentChip>
 );
 
+/**
+ * A message an App View offered and the owner sent with theirs (`submit.app`): its words under "Sent from the <server> app",
+ * apart from the owner's own, since the app wrote them (docs/architecture/mcp-apps.md → App messages and App context).
+ */
+const AppMessage = ({ message }: { message: SentAppMessage }) => (
+  <li className="rounded-md border bg-background px-2.5 py-1.5 text-sm whitespace-normal">
+    <p className="text-xs text-muted-foreground">
+      {message.server === "" ? "Sent from an app" : `Sent from the ${message.server} app`}
+    </p>
+    <p className="mt-0.5 whitespace-pre-wrap">{message.text}</p>
+  </li>
+);
+
 /** An image in the owner's message (an Attachment's), at most 256 px high. */
 const UserImage = () => {
   const image = useAuiState((state) =>
@@ -159,6 +174,7 @@ const UserMessage = () => {
   const skills = shownSkills(custom);
   const pages = shownPages(custom);
   const resources = shownResources(custom);
+  const apps = shownApps(custom);
   const review = shownReview(custom);
   const via = shownVia(custom);
   const prompt = shownMcpPrompt(custom);
@@ -181,6 +197,13 @@ const UserMessage = () => {
           <ul aria-label="Attached MCP resources" className="mt-1.5 flex flex-col gap-1.5">
             {Arr.map(resources, (resource) => (
               <ResourceChip key={resourceKey(resource)} resource={resource} />
+            ))}
+          </ul>
+        )}
+        {apps.length > 0 && (
+          <ul aria-label="Sent from Apps" className="mt-1.5 flex flex-col gap-1.5">
+            {Arr.map(apps, (message) => (
+              <AppMessage key={message.callId} message={message} />
             ))}
           </ul>
         )}

@@ -11,6 +11,7 @@ import type {
   McpAppTool,
 } from "@cloudpid/protocol";
 import type { AppCalls } from "./mcp-app-calls.ts";
+import type { AppContexts } from "./mcp-app-context.ts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -19,6 +20,12 @@ import type * as Stream from "effect/Stream";
 export type McpAppsService = McpAppRecorder &
   McpAppCopies &
   AppCalls & {
+    /** The App contexts the Views sent: held pending, and written to a conversation as an untrusted notice (`./mcp-app-context.ts`). */
+    readonly contexts: AppContexts;
+    /** The server of each call of `callIds`, in order: its record's or its stub's; none for a call the Session has no record of. */
+    readonly serversOf: (
+      callIds: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlyArray<string | undefined>>;
     /** The App calls of `conversation`, oldest first: what `mcp_apps` lists. */
     readonly list: (conversation: ConversationId) => Effect.Effect<ReadonlyArray<McpAppEntry>>;
     /** `conversation`'s App calls now, and again each time they change. */

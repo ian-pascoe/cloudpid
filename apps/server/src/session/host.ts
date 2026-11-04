@@ -90,6 +90,7 @@ import {
   type UserEntryData,
   userEntryData,
   type McpAppCopies,
+  type SentAppMessage,
   base64FromBytes,
   isMcpSpillPath,
   MAX_MCP_RESOURCE_PREVIEW_BYTES,
@@ -176,6 +177,7 @@ import type { ImportDefaults } from "./import-model.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
 import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure } from "./errors.ts";
+import type { AppContexts } from "./mcp-app-context.ts";
 import type { PromptCatalog } from "./mcp-prompt-catalog.ts";
 import type { HoldSlot, SpillRead } from "./mcp-resource-previews.ts";
 import { promptFileName, promptMessage, type PromptFile } from "./mcp-prompt.ts";
@@ -571,6 +573,12 @@ export type SessionHostOptions<R = never> = {
    * it copies, a page of entries at a time.
    */
   readonly apps?: McpAppCopies | undefined;
+  /**
+   * The App contexts the Views sent (`docs/architecture/mcp-apps.md` → App messages and App context): the pending ones of a
+   * conversation are written to it as one untrusted notice when input is admitted to it (`admitDraft`), and while it is busy
+   * as they come (`appContextHeld`), one write in flight for a conversation.
+   */
+  readonly appContexts?: AppContexts | undefined;
   /** What the Session lets go of for a conversation its active branch moved off: its Resource watches, silently. */
   readonly onBranchLeft?: ((conversation: ConversationId) => Effect.Effect<void>) | undefined;
   /**
@@ -661,6 +669,12 @@ export type Prompt = {
     readonly refs: ReadonlyArray<ResourceRef>;
     readonly redact: Effect.Effect<<A>(value: A) => A, SessionError>;
   };
+  /**
+   * The App messages the owner sent with it (`submit.app`), cleaned and redacted, with the server's name from the call's record
+   * (empty when the record is gone): each is a text part of its own after the typed text and the blocks of pages and
+   * resources, and the owner's entry keeps them for the transcript's "sent from the <server> app".
+   */
+  readonly apps?: ReadonlyArray<SentAppMessage>;
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
   readonly whenBusy?: NonNullable<InputSubmissionDraft["whenBusy"]>;
   /**
@@ -752,6 +766,12 @@ export type SessionHostService = {
   ) => Effect.Effect<{ readonly id: number; readonly queued: boolean } | undefined, SessionError>;
   /** Show `notice` in the active branch's transcript, as a line of its own. */
   readonly note: (notice: string) => Effect.Effect<void, SessionError>;
+  /**
+   * An App View's context was held for `conversation`: while it is busy and no earlier write of App contexts waits for its
+   * next boundary, the pending ones are written now, to be placed there. An idle conversation's wait for its next input.
+   * Never fails: what goes wrong is logged, and the contexts stay pending.
+   */
+  readonly appContextHeld: (conversation: ConversationId) => Effect.Effect<void>;
   /** The root conversation's ID; the root is created when absent. */
   readonly root: Effect.Effect<ConversationId, SessionError>;
   /** The active branch's conversation ID (GLOSSARY.md → Session branch); the root is created when absent. */
@@ -1869,6 +1889,103 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     ),
   );
 
+  /**
+   * Write the App contexts pending for `conversation` as one `write` (`docs/architecture/mcp-apps.md` → App messages and App
+   * context): a notice the model reads as untrusted, which never starts a Run. Placed at once in an idle conversation and at
+   * its next boundary in a busy one, before any input queued behind it. Answers its submission, or undefined when nothing was
+   * pending or the write could not be made: a failure is logged, and the contexts stay pending for the next write.
+   */
+  const writeAppContexts = (conversation: Conversation): Effect.Effect<Submission | undefined> => {
+    const contexts = options.appContexts;
+
+    if (contexts === undefined) return Effect.undefined;
+
+    return contexts.take(String(conversation.id)).pipe(
+      Effect.flatMap((taken) =>
+        taken === undefined
+          ? Effect.undefined
+          : attempt("submit", () =>
+              conversation.submit(
+                { type: "write", requestId: taken.requestId, entry: taken.entry },
+                context,
+              ),
+            ).pipe(
+              Effect.tapError(() => taken.release),
+              Effect.tap(() => taken.delivered),
+            ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("The App contexts could not be written", cause).pipe(
+          Effect.as(undefined),
+        ),
+      ),
+    );
+  };
+
+  /** Whether `conversation` has admitted `requestId` already; a read that fails says it has not. */
+  const resentInput = (conversation: Conversation, requestId: string | undefined) =>
+    requestId === undefined
+      ? Effect.succeed(false)
+      : attempt("submissionByRequest", () =>
+          conversation.commit((tx) => tx.submissionByRequest(conversation.id, requestId), context),
+        ).pipe(
+          Effect.map((admitted) => admitted !== undefined),
+          Effect.orElseSucceed(() => false),
+        );
+
+  /** The conversations with a write of App contexts waiting for its next boundary: one in flight for each. */
+  const contextsInFlight = new Set<ConversationId>();
+
+  /**
+   * An App View's context was held for `conversationId`. A busy conversation is written the pending contexts now, to be placed
+   * at its next boundary, when none waits there already; the ones held meanwhile are written when that one is placed, if it is
+   * still busy. An idle conversation keeps them pending until input is admitted to it, so a View's every change is not an entry
+   * of the conversation for good.
+   */
+  const appContextHeld = (conversationId: ConversationId): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      if (options.appContexts === undefined || contextsInFlight.has(conversationId)) {
+        return Effect.void;
+      }
+
+      // Claimed before any step that waits, so two held contexts cannot both write.
+      contextsInFlight.add(conversationId);
+
+      const release = Effect.sync(() => contextsInFlight.delete(conversationId));
+
+      return Effect.gen(function* () {
+        const conversation = yield* addressed(conversationId);
+
+        const live = yield* attempt("snapshot", () =>
+          harness.harness.snapshot(LiveDoc, conversation.id, context),
+        );
+
+        if (live?.run === undefined) return yield* release;
+
+        const submission = yield* writeAppContexts(conversation);
+
+        if (submission === undefined) return yield* release;
+
+        const record = yield* attempt("status", () => submission.status(context));
+
+        if (record.status !== "queued") return yield* release;
+
+        // Placed at the boundary: the next write goes then, if the conversation is still busy.
+        yield* attempt("wait", () => submission.wait(context)).pipe(
+          Effect.ignore,
+          Effect.andThen(release),
+          Effect.andThen(Effect.suspend(() => appContextHeld(conversationId))),
+          Effect.forkIn(scope),
+        );
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("The App contexts could not be delivered", cause).pipe(
+            Effect.andThen(release),
+          ),
+        ),
+      );
+    });
+
   /** Fail while the Session takes no message: it is being filled as a Fork or Clone, or carries its files to one. */
   const unlessForking = forks.refusal.pipe(
     Effect.flatMap((refusal) =>
@@ -1913,6 +2030,15 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       // Arm before admitting work: an object that dies after the commit is still woken.
       const submission = yield* arm({ active: true }).pipe(
         Effect.andThen(target),
+        // The App contexts pending for it go first, before the input, which is placed after them at any boundary; a resend of
+        // an input that was admitted finds the first submission and writes nothing.
+        Effect.tap((conversation) =>
+          options.appContexts === undefined
+            ? Effect.void
+            : resentInput(conversation, draft.requestId).pipe(
+                Effect.flatMap((resent) => (resent ? Effect.void : writeAppContexts(conversation))),
+              ),
+        ),
         Effect.flatMap((conversation) =>
           tracedRun(
             conversation.id,
@@ -2233,6 +2359,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     changes: {
       readonly pages?: ReadonlyArray<AttachedPage>;
       readonly resources?: ReadonlyArray<AttachedResource>;
+      readonly app?: ReadonlyArray<SentAppMessage>;
     } = {},
   ) => {
     const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
@@ -2244,6 +2371,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       review: data?.review,
       mcpPrompt: data?.mcpPrompt,
       resources: changes.resources ?? data?.resources,
+      app: changes.app ?? data?.app,
     });
   };
 
@@ -2275,6 +2403,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     review?: JsonValue;
     mcpPrompt?: JsonValue;
     resources?: Array<AttachedResource>;
+    app?: Array<SentAppMessage>;
   };
 
   /**
@@ -2288,6 +2417,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     readonly review?: ReviewData | undefined;
     readonly mcpPrompt?: McpPromptData | undefined;
     readonly resources?: ReadonlyArray<AttachedResource> | undefined;
+    readonly app?: ReadonlyArray<SentAppMessage> | undefined;
   }) => {
     const data: OwnerEntryData = { display: kept.display, skills: [...kept.skills] };
 
@@ -2298,6 +2428,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     if (kept.mcpPrompt !== undefined) data.mcpPrompt = mcpPromptJson(kept.mcpPrompt);
 
     if (kept.resources !== undefined) data.resources = [...kept.resources];
+
+    if (kept.app !== undefined) data.app = [...kept.app];
 
     return { kind: USER_ENTRY_KIND, data };
   };
@@ -2656,9 +2788,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
                 ? expanded(rendered)
                 : withPages(expanded(rendered), prompt.input, pages, from);
 
-            return resources === undefined
-              ? paged
-              : withResources(paged, prompt.input, resources, from);
+            const sourced =
+              resources === undefined ? paged : withResources(paged, prompt.input, resources, from);
+
+            return prompt.apps === undefined || prompt.apps.length === 0
+              ? sourced
+              : withApps(sourced, prompt.input, prompt.apps, from);
           }),
         ),
       ),
@@ -2897,6 +3032,25 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ...message.images,
     ]),
     entry: entryKeeping(draft, input, { resources: message.chips }),
+  });
+
+  /**
+   * `draft` with the App messages the owner sent as a text part each, of their own, before the first image from part `from` on
+   * (after the blocks of pages and resources, which were placed the same way), and the entry that keeps who offered them.
+   */
+  const withApps = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    apps: ReadonlyArray<SentAppMessage>,
+    from: number,
+  ): InputSubmissionDraft => ({
+    ...draft,
+    content: withBlockBefore(
+      draft,
+      from,
+      Arr.map(apps, (app) => ({ type: "text" as const, text: app.text })),
+    ),
+    entry: entryKeeping(draft, input, { app: apps }),
   });
 
   /**
@@ -3892,6 +4046,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         ),
         Effect.asVoid,
       ),
+    appContextHeld,
     submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
     alarm: wakeAndResume,

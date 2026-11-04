@@ -8,6 +8,7 @@
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- the bookkeeping of one composer's uploads: native arrays and sets mutated in place, one synchronous step at a time.
 
 import {
+  MAX_APP_MESSAGES,
   MAX_ATTACHED_PAGES,
   MAX_ATTACHED_RESOURCES,
   MAX_ATTACHMENT_BYTES,
@@ -45,6 +46,7 @@ import {
   isPictureType,
   outgoingMessage,
   requestedName,
+  type SentApp,
   type SentAttachment,
   type SentPage,
   type SentResource,
@@ -106,6 +108,17 @@ export interface ResourceChipState {
   readonly name: string;
 }
 
+/**
+ * An App message the message being written holds (`docs/architecture/mcp-apps.md` → App messages and App context): what an
+ * App View asked to say (`ui/message`), as a chip above the input until the owner sends, edits or discards it. One for each
+ * View: a newer one of the same call replaces it. `server` is the server's configured name, for the chip.
+ */
+export interface AppMessageChipState {
+  readonly callId: string;
+  readonly server: string;
+  readonly text: string;
+}
+
 /** The Owner tab to attach, with the Browser Pane's current frame as a picture when it is the one shown. */
 export interface PageToAttach {
   readonly ownerTabId: string;
@@ -121,6 +134,8 @@ export interface AttachmentsState {
   readonly pages: readonly PageChipState[];
   /** The MCP resources attached to the message, in the order they were attached. */
   readonly resources: readonly ResourceChipState[];
+  /** The App messages the message holds, in the order they came: at most `MAX_APP_MESSAGES`, one for each App View. */
+  readonly apps: readonly AppMessageChipState[];
   /** How each picture goes, by its ID: inline, or as a file only and why. Absent while it is being prepared. */
   readonly fits: ReadonlyMap<string, Fit>;
   /** The pictures `fits` was made for (`picturesOf`): a set that changed since is being fitted again. */
@@ -131,6 +146,7 @@ const EMPTY: AttachmentsState = {
   items: [],
   pages: [],
   resources: [],
+  apps: [],
   fits: new Map(),
   fitted: "",
 };
@@ -226,6 +242,13 @@ export const sentResources = (state: AttachmentsState): readonly SentResource[] 
     return { ref, label: resourceLabel(chip) };
   });
 
+/** The App messages as the message sends them: the call and text of each, with the label its lane shows. */
+export const sentApps = (state: AttachmentsState): readonly SentApp[] =>
+  state.apps.map((chip) => ({
+    ref: { callId: chip.callId, text: chip.text },
+    label: chip.server === "" ? "App message" : `Message from ${chip.server}`,
+  }));
+
 /** Whether `chip` is the resource `other` names. */
 const sameResource = (
   chip: Pick<ResourceChipState, "server" | "uri">,
@@ -269,6 +292,13 @@ export interface Attachments {
   readonly removeResource: (
     resource: Pick<ResourceChipState, "server" | "uri">,
   ) => Effect.Effect<void>;
+  /**
+   * Hold an App View's message as a chip: `held` (a newer message of the same View replaces its last, in its place), or
+   * `refused` when the composer already holds `MAX_APP_MESSAGES` of other Views'.
+   */
+  readonly addAppMessage: (chip: AppMessageChipState) => Effect.Effect<"held" | "refused">;
+  /** Take an App message off the message (Discard, or Edit, which moves its text to the input). */
+  readonly removeAppMessage: (callId: string) => Effect.Effect<void>;
   /** Take them all off the composer while their message is submitted; their names stay taken until released. */
   readonly hold: Effect.Effect<Held>;
 }
@@ -562,8 +592,34 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
         : Effect.void,
     );
 
+  const addAppMessage = (chip: AppMessageChipState): Effect.Effect<"held" | "refused"> =>
+    Effect.suspend(() => {
+      const at = current.apps.findIndex((each) => each.callId === chip.callId);
+
+      if (at === -1 && current.apps.length >= MAX_APP_MESSAGES) return Effect.succeed("refused");
+
+      return step((before) => ({
+        ...before,
+        apps:
+          at === -1
+            ? [...before.apps, chip]
+            : before.apps.map((each) => (each.callId === chip.callId ? chip : each)),
+      })).pipe(Effect.as("held"));
+    });
+
+  const removeAppMessage = (callId: string): Effect.Effect<void> =>
+    Effect.suspend(() =>
+      current.apps.some((chip) => chip.callId === callId)
+        ? step((before) => ({
+            ...before,
+            apps: before.apps.filter((chip) => chip.callId !== callId),
+          }))
+        : Effect.void,
+    );
+
   const hold = Effect.suspend(() => {
     const taken = current.items;
+    const takenApps = current.apps;
     const takenPages = current.pages;
     const takenResources = current.resources;
 
@@ -573,7 +629,7 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
       for (const item of taken) held.delete(item);
     });
 
-    return step((before) => ({ ...before, items: [], pages: [], resources: [] })).pipe(
+    return step((before) => ({ ...before, items: [], pages: [], resources: [], apps: [] })).pipe(
       Effect.as<Held>({
         restore: unhold.pipe(
           // A page attached again meanwhile gives way to the one that was refused, screen and all: the screen it
@@ -600,6 +656,13 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
                     (chip) => !takenResources.some((each) => sameResource(each, chip)),
                   ),
                 ].slice(0, MAX_ATTACHED_RESOURCES),
+                // An App message sent again meanwhile by the same View gives way to the one that was refused (the owner's).
+                apps: [
+                  ...takenApps,
+                  ...before.apps.filter(
+                    (chip) => !takenApps.some((each) => each.callId === chip.callId),
+                  ),
+                ].slice(0, MAX_APP_MESSAGES),
               })).pipe(Effect.andThen(Effect.forEach(stale, forget, { discard: true })));
             }),
           ),
@@ -618,6 +681,8 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
     addResource,
     addResources,
     removeResource,
+    addAppMessage,
+    removeAppMessage,
     hold,
   } satisfies Attachments;
 });
@@ -694,6 +759,24 @@ const removeResourceFrom = (program: AttachmentsProgram) =>
     { concurrent: true },
   );
 
+/** Hold an App View's message in `program`'s message (`Attachments.addAppMessage`). */
+const addAppMessageTo = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (chip: AppMessageChipState, get) =>
+      get.result(program).pipe(Effect.flatMap((attachments) => attachments.addAppMessage(chip))),
+    { concurrent: true },
+  );
+
+/** Take an App message off `program`'s message, by its call. */
+const removeAppMessageFrom = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (callId: string, get) =>
+      get
+        .result(program)
+        .pipe(Effect.flatMap((attachments) => attachments.removeAppMessage(callId))),
+    { concurrent: true },
+  );
+
 /** The conversation's Attachments, while a composer of it reads them. */
 const attachmentsProgramAtom = Atom.family((key: ConversationKey) =>
   appRuntime.atom(makeAttachments(Effect.succeed(key.sessionId))),
@@ -737,6 +820,16 @@ export const addResourcesAtom = Atom.family((key: ConversationKey) =>
 /** Take an attached MCP resource off the conversation's message. */
 export const removeResourceAtom = Atom.family((key: ConversationKey) =>
   removeResourceFrom(attachmentsProgramAtom(key)),
+);
+
+/** Hold an App View's message (`ui/message`) in the conversation's composer: `held` or `refused` (no room). */
+export const addAppMessageAtom = Atom.family((key: ConversationKey) =>
+  addAppMessageTo(attachmentsProgramAtom(key)),
+);
+
+/** Take an App message off the conversation's message, by its call (Discard, or Edit once its text is in the input). */
+export const removeAppMessageAtom = Atom.family((key: ConversationKey) =>
+  removeAppMessageFrom(attachmentsProgramAtom(key)),
 );
 
 /** Why a message with Attachments was not sent: they were not ready, or the Session refused it. */
@@ -795,7 +888,14 @@ export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
 
           const held = yield* attachments.hold;
 
-          const plain = outgoingMessage(typed, sent, sentPages(ready), sentResources(ready));
+          const plain = outgoingMessage(
+            typed,
+            sent,
+            sentPages(ready),
+            sentResources(ready),
+            sentApps(ready),
+          );
+
           const message = prompt === undefined ? plain : withPrompt(plain, prompt);
 
           yield* client

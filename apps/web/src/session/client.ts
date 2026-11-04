@@ -26,6 +26,7 @@ import {
   SessionTree,
   LiveViewLinks,
   McpAppHtmlAnswer,
+  McpAppContextAnswer,
   McpAppRequestAnswer,
   McpAppMounted,
   McpResourcePreviewAnswer,
@@ -34,6 +35,7 @@ import {
   OwnerTabListing,
   type McpPromptRef,
   Refusal,
+  type AppMessageRef,
   type ResourceRef,
   type PageRef,
   reduceEvents,
@@ -504,6 +506,20 @@ export interface SessionClient {
     logger: string | undefined,
     message: string,
   ) => void;
+  /**
+   * An App View's `ui/update-model-context` for call `callId` (`docs/architecture/mcp-apps.md` → App messages and App
+   * context): the Session holds it and gives it to the model as an untrusted notice. The answer is `held` or `refused` (an
+   * answer, not a failure); a Session whose `hello` did not say `appContext` is answered `refused` with nothing sent.
+   */
+  readonly appContext: (
+    callId: string,
+    text: string,
+  ) => Effect.Effect<McpAppContextAnswer, SessionCommandError>;
+  /**
+   * What the Session on this connection takes of an App's messages (its `hello` says): the composer holds an App message
+   * (`ui/message`) only when `appMessages`, since a send with `submit.app` would be refused by one from before.
+   */
+  readonly takes: () => { readonly appMessages: boolean; readonly appContext: boolean };
 }
 
 /** What the owner is told of a command a Session from before does not take. */
@@ -544,6 +560,8 @@ interface PendingSubmit {
   readonly mcpPrompt: McpPromptRef | undefined;
   /** The MCP resources attached to it, which the Session reads as the message is sent. */
   readonly resources: readonly ResourceRef[] | undefined;
+  /** The App messages the owner sends with it (`Submit.app`). */
+  readonly app: readonly AppMessageRef[] | undefined;
   /** What its lane says while the Session prepares it, in place of `text`. */
   readonly getting: string | undefined;
   /** Whether it went out on the current socket. */
@@ -602,6 +620,8 @@ const decodeOwnerTabListing = Schema.decodeUnknownOption(OwnerTabListing);
 const decodeMcpAppMounted = Schema.decodeUnknownOption(McpAppMounted);
 
 const decodeMcpAppHtmlAnswer = Schema.decodeUnknownOption(McpAppHtmlAnswer);
+
+const decodeMcpAppContextAnswer = Schema.decodeUnknownOption(McpAppContextAnswer);
 
 const decodeMcpAppRequestAnswer = Schema.decodeUnknownOption(McpAppRequestAnswer);
 
@@ -718,6 +738,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   let attachedResources: boolean | null = null;
   // Whether it takes `mcp_resource_read` (`hello.resourcePreviews`), on the same terms.
   let resourcePreviews = false;
+  // Whether it takes `submit.app` (`hello.appMessages`) and `mcp_app_context` (`hello.appContext`), on the same terms.
+  let appMessages = false;
+  let appContext = false;
 
   /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
   const sendVisibility = (): void => {
@@ -996,6 +1019,17 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
       if (!ready) continue;
 
+      // The same for App messages: a Session that does not take them would refuse the message as unreadable.
+      if (submit.app !== undefined && submit.app.length > 0 && !appMessages) {
+        answered(
+          submit.commandId,
+          undefined,
+          "This Session cannot take App messages until it is updated; discard them or try again in a few minutes.",
+        );
+
+        continue;
+      }
+
       // A Session that does not take resources would refuse the whole message as unreadable, or, were they left out, send
       // it without what the owner attached: it is refused here, and the composer gives the chips back.
       if (
@@ -1033,6 +1067,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       if (submit.resources !== undefined && submit.resources.length > 0) {
         message.resources = [...submit.resources];
       }
+
+      if (submit.app !== undefined && submit.app.length > 0) message.app = [...submit.app];
 
       submit.sent = true;
       send(message);
@@ -1079,6 +1115,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     appViews = false;
     mcpTasks = false;
     attachedResources = null;
+    appMessages = false;
+    appContext = false;
     resourcePreviews = false;
 
     // What was sent went with the socket; the answers will not come.
@@ -1124,6 +1162,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         mcpTasks = message.mcpTasks === true;
         attachedResources = message.attachedResources === true;
         resourcePreviews = message.resourcePreviews === true;
+        appMessages = message.appMessages === true;
+        appContext = message.appContext === true;
         update({
           activeBranch: root,
           copying: message.copying === true,
@@ -1611,7 +1651,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     // @effect-diagnostics-next-line cryptoRandomUUID:off
     requestId: string = crypto.randomUUID(),
   ): void => {
-    const { input, display, pages, annotations, mcpPrompt, resources, getting } =
+    const { input, display, pages, annotations, mcpPrompt, resources, app, getting } =
       Predicate.isString(message)
         ? {
             input: message,
@@ -1620,9 +1660,16 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
             annotations: undefined,
             mcpPrompt: undefined,
             resources: undefined,
+            app: undefined,
             getting: undefined,
           }
-        : { mcpPrompt: undefined, resources: undefined, getting: undefined, ...message };
+        : {
+            mcpPrompt: undefined,
+            resources: undefined,
+            app: undefined,
+            getting: undefined,
+            ...message,
+          };
 
     pending.push({
       commandId: nextCommandId(),
@@ -1635,6 +1682,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       annotations: annotations === undefined || annotations.length === 0 ? undefined : annotations,
       mcpPrompt,
       resources,
+      app: app === undefined || app.length === 0 ? undefined : app,
       getting,
       sent: false,
       outcome,
@@ -2165,6 +2213,17 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
       send(logger === undefined ? line : { ...line, logger });
     },
+    appContext: (callId, text) =>
+      appContext
+        ? request(
+            (id) => ({ type: "mcp_app_context", id, callId, text }),
+            decodeMcpAppContextAnswer,
+          )
+        : Effect.succeed({
+            status: "refused",
+            message: "This Session cannot take App context until it is updated",
+          }),
+    takes: () => ({ appMessages, appContext }),
     resourcePreview: (conversationId, server, uri, path) =>
       resourcePreviews
         ? request((id) => {

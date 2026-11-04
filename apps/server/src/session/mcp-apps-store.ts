@@ -45,6 +45,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Mutable } from "effect/Types";
+import { appContextsOver } from "./mcp-app-context.ts";
 import { appCallsOver } from "./mcp-app-calls.ts";
 import { McpApps, type McpAppsService } from "./mcp-apps.ts";
 import type { SessionKv } from "./session-kv.ts";
@@ -247,6 +248,19 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     for (const listener of listeners) listener(conversations);
   };
 
+  /** The App contexts the Views sent (`./mcp-app-context.ts`): held beside the records, never in them. */
+  const contexts = appContextsOver({
+    storage,
+    call: (callId) =>
+      Option.map(
+        Arr.findFirst(index(), (entry) => entry.callId === callId),
+        (entry) => ({ server: entry.server, tool: entry.tool, conversation: entry.conversation }),
+      ),
+    secrets,
+    changed,
+    now,
+  });
+
   /**
    * Write `entries` as the index after the bounds held: the least recently mounted record past the byte and count bounds
    * is evicted (never `keep`, the one just written, so a lone record at its own bound stays), the oldest stubs past theirs
@@ -352,7 +366,11 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
   const list = (conversation: ConversationId): ReadonlyArray<McpAppEntry> =>
     Arr.map(
       Arr.filter(index(), (entry) => entry.conversation === String(conversation)),
-      entryOf,
+      (entry): McpAppEntry => {
+        const context = contexts.contextOf(entry.callId);
+
+        return context === undefined ? entryOf(entry) : { ...entryOf(entry), context };
+      },
     );
 
   const mount: McpAppsService["mount"] = (callId) =>
@@ -389,7 +407,12 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
         Arr.map(entries, (each) => (each === entry ? { ...entry, mountedAt: now() } : each)),
       );
 
-      return { status: "record", record: record.value };
+      const context = contexts.contextOf(callId);
+
+      return {
+        status: "record",
+        record: context === undefined ? record.value : { ...record.value, context },
+      };
     });
 
   /** A page's answer with the origin its View is served on, when the host named the server's and the stage can build it. */
@@ -628,6 +651,16 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
 
   const service: McpAppsService = {
     ...calls,
+    contexts,
+    serversOf: (callIds) =>
+      Effect.sync(() =>
+        Arr.map(
+          callIds,
+          (callId) =>
+            Arr.findFirst(index(), (entry) => entry.callId === callId).pipe(Option.getOrUndefined)
+              ?.server,
+        ),
+      ),
     put,
     setTools: (next) => {
       const key = JSON.stringify(next);

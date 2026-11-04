@@ -47,6 +47,8 @@ const FACTS: AppFacts = {
   badge: null,
   mountable: true,
   archived: false,
+  context: undefined,
+  conversationId: undefined,
 };
 
 // What loads a View in a place, in place of the atoms (which need a Session): the record and page at once.

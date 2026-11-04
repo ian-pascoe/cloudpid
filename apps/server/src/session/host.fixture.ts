@@ -1129,7 +1129,13 @@ export class TestSession extends DurableObject {
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               mcp: this.hostMcp(),
               apps: this.#mcpApps().service,
-              onBranchLeft: this.#mcpWatches().service.endConversation,
+              appContexts: this.#mcpApps().service.contexts,
+              onBranchLeft: (conversation) =>
+                this.#mcpWatches()
+                  .service.endConversation(conversation)
+                  .pipe(
+                    Effect.andThen(this.#mcpApps().service.contexts.drop(String(conversation))),
+                  ),
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
               // Read at each use, so a test can shorten it for one Session (`expandTimeoutMs`) after it is built.

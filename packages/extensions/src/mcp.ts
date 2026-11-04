@@ -114,6 +114,13 @@ export { MCP_APP_FEATURE, type McpAppHtmlInput, type McpAppRecorder } from "./mc
 
 export { type McpAppRequestInput } from "./mcp/app-request.ts";
 
+export {
+  type AppContextItem,
+  appContextNotice,
+  MCP_APP_CONTEXT_KIND,
+  MCP_APP_CONTEXT_NOTICE,
+} from "./mcp/app-context.ts";
+
 export { MCP_NO_START_FEATURE } from "./mcp/no-start.ts";
 
 export { type McpResourcePreviewInput } from "./mcp/resource-preview.ts";

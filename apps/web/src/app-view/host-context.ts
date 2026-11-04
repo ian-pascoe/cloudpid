@@ -10,6 +10,7 @@ import type {
   McpUiStyleVariableKey,
   McpUiStyles,
 } from "@modelcontextprotocol/ext-apps";
+import type * as Types from "effect/Types";
 
 /** The host's name and version, as `ui/initialize` answers them. */
 export const HOST_INFO = { name: "cloudpid", version: "1" } as const;
@@ -181,26 +182,55 @@ export const hostContextOf = (
   return context;
 };
 
+/** What a frame serves of a View's asks besides its server's calls; each is advertised only when the frame does it. */
+export interface HostServes {
+  /** `ui/open-link`: a confirmation in the card (every frame has one). */
+  readonly openLinks?: boolean;
+  /** `ui/message`: the composer holds the View's message as a chip. */
+  readonly message?: boolean;
+  /** `ui/update-model-context`: the Session holds the View's context for the model. */
+  readonly updateModelContext?: boolean;
+  /** The View declared `permissions.clipboardWrite`, which the frame and the proxy grant (nothing else is granted). */
+  readonly clipboardWrite?: boolean;
+}
+
 /**
  * The capabilities cloudpid advertises to a View, and nothing it does not do: the sandbox's CSP (the one the View
- * declared, which the proxy enforces as a header), and, when the frame has a Session's client to serve them (`serverCalls`),
- * the View's calls of its own server's tools and resources (`requests.ts`), without `listChanged` (the host sends no
- * list-changed notification), and its log lines (`logging`, which the Session takes for telemetry). Links, clipboard and
- * messages are added by the tickets that serve them.
+ * declared, which the proxy enforces as a header) and its permission (`clipboardWrite`, only when declared), `openLinks`,
+ * `message` and `updateModelContext` (text only) when the frame serves them (`serves`), and, when the frame has a Session's
+ * client to serve them (`serverCalls`), the View's calls of its own server's tools and resources (`requests.ts`), without
+ * `listChanged` (the host sends no list-changed notification), and its log lines (`logging`, which the Session takes for
+ * telemetry).
  */
 export const hostCapabilities = (
   csp: McpUiResourceCsp | undefined,
   serverCalls = false,
   readOnly = false,
+  serves: HostServes = {},
 ): McpUiHostCapabilities => {
-  const sandbox = csp === undefined ? {} : { csp };
+  const sandbox: Types.Mutable<NonNullable<McpUiHostCapabilities["sandbox"]>> = {};
 
-  if (!serverCalls) return { sandbox };
+  if (csp !== undefined) sandbox.csp = csp;
+
+  if (serves.clipboardWrite === true) sandbox.permissions = { clipboardWrite: {} };
+
+  const capabilities: Types.Mutable<McpUiHostCapabilities> = { sandbox };
+
+  if (serves.openLinks === true) capabilities.openLinks = {};
+
+  if (serves.message === true) capabilities.message = { text: {} };
+
+  if (serves.updateModelContext === true) capabilities.updateModelContext = { text: {} };
+
+  if (!serverCalls) return capabilities;
 
   // A View that may only read (an archived Session's reopened View) is not offered the server's tools.
-  return readOnly
-    ? { sandbox, serverResources: {}, logging: {} }
-    : { sandbox, serverTools: {}, serverResources: {}, logging: {} };
+  if (!readOnly) capabilities.serverTools = {};
+
+  capabilities.serverResources = {};
+  capabilities.logging = {};
+
+  return capabilities;
 };
 
 /**
