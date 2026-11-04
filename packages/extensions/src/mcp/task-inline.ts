@@ -18,6 +18,7 @@ import { pollOnce, sendCancel, taskSpan } from "./task-host.ts";
 import { applyDecision, decide, type Decision } from "./task-poll.ts";
 import { detachedText, pollDelayMs, type PollOutcome } from "./task-policy.ts";
 import { type McpTasksOptions, sleepUntilWoken } from "./task-port.ts";
+import { endedRecord, endInDoc } from "./task-end.ts";
 import {
   completedResult,
   endedResult,
@@ -27,10 +28,10 @@ import {
 } from "./task-results.ts";
 import {
   addTask,
-  endTask,
   MCP_TASK_TOOL_NAMES,
   McpTasksDoc,
   type McpTaskDraft,
+  type McpTaskEnd,
   type McpTaskRecord,
   taskOfCall,
 } from "./task-state.ts";
@@ -203,14 +204,8 @@ const finish = async (
 ): Promise<StoredResult> => {
   const { api, context } = call;
   const now = api.now();
-
-  const ended: McpTaskRecord = {
-    ...structuredClone(record),
-    end: { ...end, at: now },
-    status: end.status,
-  };
-
-  const stop = context.abortSignal;
+  const closed: McpTaskEnd = { ...end, at: now };
+  const ended = endedRecord(record, closed, { decision });
 
   if (decision.cancel === true) await sendCancel(call.client, record, call.origin);
 
@@ -219,7 +214,7 @@ const finish = async (
       ? await completedResult(
           ended,
           outcome.result,
-          { spill: spillTo(api.env, context), signal: stop },
+          { spill: spillTo(api.env, context), signal: context.abortSignal },
           false,
           call.base,
         )
@@ -228,17 +223,11 @@ const finish = async (
   const note = call.pool.put(record.handle, result, now);
 
   await api.commit(async (tx) => {
-    const doc = await tx.doc(McpTasksDoc);
-    const current = doc.tasks[record.handle];
-
-    if (current === undefined) return;
-
-    applyDecision(current, decision);
-
-    if (note !== undefined) current.result = note;
-
-    current.delivery = "none";
-    endTask(doc, record.handle, { ...end, at: now });
+    endInDoc(await tx.doc(McpTasksDoc), record.handle, closed, {
+      decision,
+      note,
+      delivery: "none",
+    });
   }, context);
 
   await taskSpan(ended);
@@ -291,7 +280,7 @@ export const followInline = async (call: TaskCall, first: McpTaskRecord): Promis
 
     if (api.now() >= deadline) return detach(call, record);
 
-    const outcome = await pollOnce(call.client, call.origin, record, stop);
+    const outcome = await pollOnce(call.client, call.origin, record, stop, call.tasks.redact);
 
     if (stoppedNow()) return stopped(call, record);
 

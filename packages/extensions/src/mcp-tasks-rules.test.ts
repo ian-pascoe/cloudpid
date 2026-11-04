@@ -24,12 +24,15 @@ import {
   endedHeader,
   endedText,
   MCP_TASK_FAILURE_LIMIT_MS,
-  MCP_TASK_GRACE_MS,
+  MCP_TASK_RESULT_KEPT_MS,
+  MCP_TASK_UNKNOWN_GRACE_MS,
   pollDelayMs,
   readPoll,
   statusLine,
   windowMsOf,
 } from "./mcp/task-policy.ts";
+import { endedRecord } from "./mcp/task-end.ts";
+import { taskAttributes } from "./mcp/task-host.ts";
 import { applyDecision, cancelTook, decide } from "./mcp/task-poll.ts";
 import { MCP_TASK_POOL_BYTES, resultPool, type StoredResult } from "./mcp/task-results.ts";
 import {
@@ -37,7 +40,6 @@ import {
   atCap,
   endTask,
   liveTasks,
-  MCP_TASK_RESULT_KEPT_MS,
   MCP_TASKS_PER_SERVER,
   MCP_TASKS_PER_SESSION,
   MCP_TASKS_RETAINED,
@@ -329,7 +331,7 @@ describe("the Failures table", () => {
     const later = decide(
       { ...record, failures: first.failures },
       { kind: "gone" },
-      NOW + MCP_TASK_GRACE_MS,
+      NOW + MCP_TASK_UNKNOWN_GRACE_MS,
     );
 
     expect(later.end).toMatchObject({ status: "unknown", by: "cloudpid" });
@@ -390,6 +392,49 @@ describe("the Failures table", () => {
       lastPolledAt: NOW,
     });
     expect(record.failures).toEqual({ count: 0 });
+  });
+});
+
+describe("the span of a task that ended", () => {
+  const NOW = 100_000;
+
+  it("counts the polls the end carried: the record is ended with the decision applied", () => {
+    const record = recordIn(state());
+    const decision = decide(record, polled({ status: "completed" }), NOW);
+
+    const ended = endedRecord(
+      record,
+      { ...(decision.end ?? { status: "completed", by: "server" }), at: NOW },
+      { decision },
+    );
+
+    expect(record.polls).toBe(0);
+    expect(ended).toMatchObject({ polls: 1, status: "completed", end: { at: NOW } });
+    expect(taskAttributes(ended)).toMatchObject({
+      "mcp.task.polls": 1,
+      "mcp.task.outcome": "completed",
+      "mcp.task.mode": "inline",
+    });
+  });
+
+  it("names a canceller only when there was one, and never holds the server's id or words", () => {
+    const record = recordIn(state(), { statusMessage: "private words" });
+
+    const completed = endedRecord(record, { at: NOW, status: "completed", by: "server" }, {});
+
+    const byAgent = endedRecord(
+      { ...record, cancel: { at: 1, by: "agent", sent: "sent" } },
+      { at: NOW, status: "cancelled", by: "agent" },
+      {},
+    );
+
+    const byServer = endedRecord(record, { at: NOW, status: "cancelled", by: "server" }, {});
+
+    expect(taskAttributes(completed)["mcp.task.cancelled_by"]).toBe("none");
+    expect(taskAttributes(byAgent)["mcp.task.cancelled_by"]).toBe("agent");
+    expect(taskAttributes(byServer)["mcp.task.cancelled_by"]).toBe("server");
+    expect(JSON.stringify(taskAttributes(byAgent))).not.toContain(SECRET);
+    expect(JSON.stringify(taskAttributes(byAgent))).not.toContain("private words");
   });
 });
 

@@ -22,7 +22,15 @@ import type { McpCallOrigin } from "./exchange.ts";
 import { spillTo } from "./spill.ts";
 import { pollOnce, sendCancel, taskSpan } from "./task-host.ts";
 import { applyDecision, decide, type Decision } from "./task-poll.ts";
-import { endedText, pollDelayMs, type PollOutcome } from "./task-policy.ts";
+import { endedRecord, endInDoc, markCancelSent } from "./task-end.ts";
+import {
+  endedText,
+  MCP_TASK_CANCEL_GRACE_MS,
+  MCP_TASK_CANCEL_SENDING_MS,
+  MCP_TASK_FOLLOW_MS,
+  pollDelayMs,
+  type PollOutcome,
+} from "./task-policy.ts";
 import type { McpTasksOptions } from "./task-port.ts";
 import {
   completedResult,
@@ -31,11 +39,7 @@ import {
   type StoredResult,
 } from "./task-results.ts";
 import {
-  endTask,
   MCP_TASK_ENDED_KIND,
-  MCP_TASK_CANCEL_GRACE_MS,
-  MCP_TASK_CANCEL_SENDING_MS,
-  MCP_TASK_FOLLOW_MS,
   MCP_TASK_FOLLOWER,
   MCP_TASK_NOTICE_KIND,
   McpTasksDoc,
@@ -49,7 +53,7 @@ export type FollowerInput = { handle: string };
 /** `poll` looks at the task; `deliver` holds its result for an idle conversation; `post` and `notice` tell the agent. */
 export type FollowerState =
   | { phase: "poll" }
-  | { phase: "deliver"; round: number }
+  | { phase: "deliver" }
   | { phase: "post" }
   | { phase: "notice" };
 
@@ -142,12 +146,8 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
     decision: Decision,
   ) => {
     const now = runtime.now();
-
-    const ended: McpTaskRecord = {
-      ...structuredClone(record),
-      end: { ...end, at: now },
-      status: end.status,
-    };
+    const closed: McpTaskEnd = { ...end, at: now };
+    const ended = endedRecord(record, closed, { decision });
 
     if (decision.cancel === true) await sendCancel(client, record, origin);
 
@@ -158,31 +158,57 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
       const doc = await tx.doc(McpTasksDoc);
       const current = doc.tasks[record.handle];
 
-      if (current === undefined) return done;
-
-      applyDecision(current, decision);
-
-      if (note !== undefined) current.result = note;
+      if (current === undefined || current.end !== undefined) return done;
 
       // A waiting `mcp_task_wait` claims the result, while its call lives.
       const waiter = current.waiter === undefined ? undefined : await tx.task(current.waiter);
       const waiting = waiter !== undefined && isLive(waiter.state.status);
       const owner = causedByYou(end);
 
-      current.delivery = waiting ? "wait" : owner ? "none" : "pending";
-      endTask(doc, record.handle, { ...end, at: now });
+      endInDoc(doc, record.handle, closed, {
+        decision,
+        note,
+        delivery: waiting ? "wait" : owner ? "none" : "pending",
+      });
 
       return waiting
         ? done
-        : {
-            status: "running",
-            checkpoint: owner ? { phase: "notice" } : { phase: "deliver", round: 0 },
-          };
+        : { status: "running", checkpoint: owner ? { phase: "notice" } : { phase: "deliver" } };
     }, context);
 
     await taskSpan(ended);
 
     return next;
+  };
+
+  /**
+   * Leave the agent a model-visible note of `record` (`cloudpid.mcp-task-notice`): cloudpid's words only, written once for
+   * the task, never starting a Run. It is best effort: a conversation that was archived or deleted takes none.
+   */
+  const leaveNotice = async (record: McpTaskRecord, now: number, text: string) => {
+    const status = record.end?.status ?? record.status;
+    const by = record.end?.by ?? "owner";
+
+    const entry: EntryDraft = {
+      kind: MCP_TASK_NOTICE_KIND,
+      model: [
+        {
+          role: "user",
+          content: `[MCP task notice | task=${record.handle} | server=${record.server} | status=${status} | by=${by === "agent" ? "you" : "the owner"}]\nMCP task ${record.handle} ${text}`,
+          timestamp: now,
+        },
+      ],
+      data: { task: record.handle, status, by },
+    };
+
+    try {
+      await tasks.write?.(record.conversation, {
+        requestId: `mcp-task-notice:${record.handle}`,
+        entry,
+      });
+    } catch {
+      // The note is a courtesy: the end stands without it.
+    }
   };
 
   const definition: McpTaskFollower = defineTask<FollowerInput, FollowerState, null>({
@@ -206,7 +232,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           await runtime.commit(
             () =>
               record?.delivery === "pending"
-                ? { status: "running", checkpoint: { phase: "deliver", round: 0 } }
+                ? { status: "running", checkpoint: { phase: "deliver" } }
                 : done,
             context,
           );
@@ -227,7 +253,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           await runtime.commit(async (tx) => {
             const current = (await tx.doc(McpTasksDoc)).tasks[handle];
 
-            if (current?.cancel !== undefined) current.cancel.sent = took ? "sent" : "failed";
+            markCancelSent(current, took);
           }, context);
         }
 
@@ -246,7 +272,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           return;
         }
 
-        const outcome = await pollOnce(client, origin, record, runtime.signal);
+        const outcome = await pollOnce(client, origin, record, runtime.signal, tasks.redact);
         const decision = decide(record, outcome, runtime.now(), timing);
 
         if (decision.end !== undefined) {
@@ -305,7 +331,6 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
       deliver: async (task, runtime, context) => {
         const { handle } = task.input;
-        const { round } = task.state.checkpoint;
         const state = await runtime.snapshot(McpTasksDoc, context);
         const record = state?.tasks[handle];
 
@@ -325,7 +350,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
           // Busy again: held for the next idle.
           if ((await tx.doc(LiveDoc, current.conversation)).run !== undefined) {
-            return { status: "running", checkpoint: { phase: "deliver", round: round + 1 } };
+            return { status: "running", checkpoint: { phase: "deliver" } };
           }
 
           current.delivery = "auto";
@@ -385,22 +410,11 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           const status = record.end?.status ?? record.status;
           const by = record.end?.by ?? "owner";
 
-          const entry: EntryDraft = {
-            kind: MCP_TASK_NOTICE_KIND,
-            model: [
-              {
-                role: "user",
-                content: `[MCP task notice | task=${handle} | server=${record.server} | status=${status} | by=${by === "agent" ? "you" : "the owner"}]\nMCP task ${handle} ended: ${status === "cancelled" ? "it was cancelled" : "it was stopped"}${by === "agent" ? " at your request" : " by the owner"}.`,
-                timestamp: runtime.now(),
-              },
-            ],
-            data: { task: handle, status, by },
-          };
-
-          await tasks.write?.(record.conversation, {
-            requestId: `mcp-task-notice:${handle}`,
-            entry,
-          });
+          await leaveNotice(
+            record,
+            runtime.now(),
+            `ended: ${status === "cancelled" ? "it was cancelled" : "it was stopped"}${by === "agent" ? " at your request" : " by the owner"}.`,
+          );
         }
 
         await runtime.commit(() => done, context);
@@ -408,51 +422,62 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
     },
 
     // Aborted with its conversation's background work (Stop all, Archive, a deleted conversation): the task is
-    // cancelled on the server, and the held result is dropped.
+    // cancelled on the server, the held result is dropped, and the agent is told in a notice that starts no Run.
     abort: async (task, runtime, context) => {
       const { handle } = task.input;
       const record = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle];
 
-      if (record !== undefined && record.end === undefined) {
+      if (record === undefined) {
+        await runtime.commit(() => aborted, context);
+
+        return;
+      }
+
+      const now = runtime.now();
+
+      if (record.end === undefined) {
         await sendCancel(client, record, origin);
 
-        const now = runtime.now();
-
-        const ended: McpTaskRecord = {
-          ...structuredClone(record),
-          end: { status: "cancelled", by: "stop", at: now },
-          status: "cancelled",
-        };
-
+        const closed: McpTaskEnd = { status: "cancelled", by: "stop", at: now };
+        const ended = endedRecord(record, closed, {});
         const note = pool.put(handle, endedResult(ended, true), now);
 
         await runtime.commit(async (tx): Promise<Next> => {
-          const doc = await tx.doc(McpTasksDoc);
-          const current = doc.tasks[handle];
-
-          if (current !== undefined) {
-            if (note !== undefined) current.result = note;
-
-            current.delivery = "none";
-            endTask(doc, handle, { status: "cancelled", by: "stop", at: now });
-          }
+          endInDoc(await tx.doc(McpTasksDoc), handle, closed, { note, delivery: "none" });
 
           return aborted;
         }, context);
 
         await taskSpan(ended);
+        await leaveNotice(ended, now, "ended: it was cancelled by the owner.");
 
         return;
       }
 
+      // Ended, with its result held for an idle conversation: the owner stopped everything, so the result is dropped
+      // and the agent is told so; a result already claimed or posted is the agent's and stays.
+      const held = record.delivery === "pending";
+
+      if (held) pool.drop(handle);
+
       await runtime.commit(async (tx): Promise<Next> => {
         const current = (await tx.doc(McpTasksDoc)).tasks[handle];
 
-        // Stopped while its result was held for an idle conversation: the owner stopped everything, so nothing is told.
-        if (current?.delivery === "pending") current.delivery = "none";
+        if (current?.delivery === "pending") {
+          current.delivery = "none";
+          delete current.result;
+        }
 
         return aborted;
       }, context);
+
+      if (held) {
+        await leaveNotice(
+          record,
+          now,
+          `ended (${record.end.status}), and its result was dropped when the owner stopped everything.`,
+        );
+      }
     },
   });
 

@@ -13,7 +13,7 @@ import * as Predicate from "effect/Predicate";
 import type { HostLost } from "./client.ts";
 import {
   MCP_TASK_FAILURE_LIMIT_MS,
-  MCP_TASK_GRACE_MS,
+  MCP_TASK_UNKNOWN_GRACE_MS,
   backoffMs,
   type PollOutcome,
   statusLine,
@@ -50,7 +50,7 @@ export const cancelTook = (answer: McpHostRequestResult | HostLost): boolean =>
  * The times a decision uses, which a test shortens (`McpTasksOptions.timing`); the defaults are the spec's.
  */
 export type McpTaskLimits = {
-  readonly graceMs?: number;
+  readonly unknownGraceMs?: number;
   readonly failureMs?: number;
   readonly backoffMs?: number;
 };
@@ -179,7 +179,10 @@ export const decide = (
       const unknownSince = record.failures.unknownSince ?? now;
       const failures = { ...record.failures, unknownSince };
 
-      if (record.repinned === true || now - unknownSince >= (limits.graceMs ?? MCP_TASK_GRACE_MS)) {
+      if (
+        record.repinned === true ||
+        now - unknownSince >= (limits.unknownGraceMs ?? MCP_TASK_UNKNOWN_GRACE_MS)
+      ) {
         return {
           patch: { lastPolledAt: now },
           failures,

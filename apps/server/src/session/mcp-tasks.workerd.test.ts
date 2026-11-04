@@ -42,7 +42,13 @@ const SET: McpApplySet = {
 };
 
 /** Times that fit a test: a window of 400 ms, a poll every 50 ms, a grace of 300 ms. */
-const TIMING = { windowMs: 400, pollMs: 50, graceMs: 300, backoffMs: 100, cancelGraceMs: 300 };
+const TIMING = {
+  windowMs: 400,
+  pollMs: 50,
+  unknownGraceMs: 300,
+  backoffMs: 100,
+  cancelGraceMs: 300,
+};
 
 const REPORT = (
   args: { readonly region?: string; readonly polls?: number; readonly inline?: boolean } = {},

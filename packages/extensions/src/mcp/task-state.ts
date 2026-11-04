@@ -32,18 +32,6 @@ export const MCP_TASKS_PER_SERVER = 8;
 /** How many ended records the document keeps. */
 export const MCP_TASKS_RETAINED = 50;
 
-/** How long cloudpid follows a task before it stops (`tasks/cancel`, then `stopped`): 7 days from its creation. */
-export const MCP_TASK_FOLLOW_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** How long an ignored `tasks/cancel` is waited for before cloudpid stops following: 2 minutes. */
-export const MCP_TASK_CANCEL_GRACE_MS = 2 * 60 * 1000;
-
-/** How long a cancel marked `sending` is left to its sender before the follower sends it again: 10 seconds. */
-export const MCP_TASK_CANCEL_SENDING_MS = 10_000;
-
-/** How long a result is kept after the task ended: 7 days. */
-export const MCP_TASK_RESULT_KEPT_MS = 7 * 24 * 60 * 60 * 1000;
-
 /**
  * Where a task stands. The server's own five, and two cloudpid adds when it can no longer follow: `unknown` (the server
  * does not know it, or cannot be reached any more) and `stopped` (cloudpid stopped following: the server's identity

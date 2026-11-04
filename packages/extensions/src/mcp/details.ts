@@ -16,6 +16,7 @@ import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { storedBytes } from "../stored-bytes.ts";
 import type { McpSamplingGrant } from "./sampling-records.ts";
+import type { McpTaskState } from "./task-state.ts";
 
 /** The hints of a tool's annotations that are booleans, which the card shows as badges; they are untrusted and gate nothing. */
 export const HINTS = [
@@ -145,7 +146,7 @@ export type McpDetails = {
    */
   readonly mcp_task?: {
     readonly task: string;
-    readonly status: string;
+    readonly status: McpTaskState;
     readonly after_ms?: number;
     readonly background?: boolean;
   };

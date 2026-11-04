@@ -170,7 +170,7 @@ Exposure decides how each tool is registered. It is resolved by one pure functio
   - `sign_in` (see [_Sign-in requests_](mcp-sign-in.md#sign-in-requests));
   - Sampling summaries and `elicitation` (see [_Sampling requests_](mcp-server-requests.md#sampling-requests), [_Elicitation requests_](mcp-server-requests.md#elicitation-requests));
   - `mcp_task` (see [_MCP tasks_](mcp-server-requests.md#mcp-tasks));
-  - `error`, which is `too_large`, `invalid_structured_output`, `sampling_refused` or `mcp_task_background`;
+  - `error`, which is `too_large`, `invalid_structured_output`, `sampling_refused`, `mcp_task_failed`, `mcp_task_cancelled`, `mcp_task_unknown` or `mcp_task_stopped` (the last four are how an MCP task ended without a result; [_MCP tasks_](mcp-server-requests.md#mcp-tasks));
   - `cut`, which is `host_lost` or `engine_lost` (see [_Failures and cuts_](mcp-connections.md#failures-and-cuts)).
 
   The tool's `_meta` is passed on each call as `details.meta` (see [_Declaring and reading Apps_](mcp-apps.md#declaring-and-reading-apps)).

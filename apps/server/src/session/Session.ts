@@ -636,10 +636,14 @@ export const SessionLive = Session.make(
             }),
         });
 
+        // The MCP tasks the agent's calls started: followed in the background, results kept in this object's storage
+        // (`./mcp-tasks.ts`).
+        const mcpTasks = sessionMcpTasks({ storage: kv });
+
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
         const mcpTools = sessionMcp({
           apps: mcpApps.service,
-          tasks: sessionMcpTasks({ storage: kv }),
+          tasks: mcpTasks.options,
           questions: mcpQuestions.service,
           sampling: mcpSampling.service,
           signIns: mcpSignIns.service,
@@ -1027,7 +1031,8 @@ export const SessionLive = Session.make(
             // The App records, redacted of the same Secrets.
             Layer.provideMerge(mcpApps.layer),
             // The Sign-in requests, which redact the agent's words of the same Secrets.
-            Layer.provideMerge(mcpSignIns.layer),
+            // The MCP tasks, which redact what a server writes of them of the same Secrets.
+            Layer.provideMerge(Layer.merge(mcpSignIns.layer, mcpTasks.layer)),
             Layer.provideMerge(sessionSecrets),
             Layer.provideMerge(sessionChanges),
             Layer.provideMerge(sessionComparisons),

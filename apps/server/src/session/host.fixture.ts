@@ -730,6 +730,15 @@ export class TestSession extends DurableObject {
     return this.#questions;
   }
 
+  /** The Session's MCP tasks, made once: the MCP tools follow with its options, the runtime provides its layer. */
+  #tasks: ReturnType<typeof sessionMcpTasks> | undefined;
+
+  #mcpTasks(): ReturnType<typeof sessionMcpTasks> {
+    this.#tasks ??= sessionMcpTasks({ storage: this.ctx.storage.kv });
+
+    return this.#tasks;
+  }
+
   /** The Session's MCP questions, for a subclass that builds MCP tools of its own. */
   protected mcpQuestionsService(): McpQuestionsService {
     return this.#mcpQuestions().service;
@@ -822,7 +831,7 @@ export class TestSession extends DurableObject {
       apps: this.#mcpApps().service,
       // The times of MCP tasks, shortened by `mcpTaskTiming` for the tests that wait them out: read when a task needs
       // them, as the test sets them after the Session is built.
-      tasks: Object.defineProperty(sessionMcpTasks({ storage: kv }), "timing", {
+      tasks: Object.defineProperty(this.#mcpTasks().options, "timing", {
         enumerable: true,
         get: () => kv.get<McpTasksTiming>("mcp-task-timing"),
       }),
@@ -1242,6 +1251,7 @@ export class TestSession extends DurableObject {
           Layer.provideMerge(Layer.merge(this.#mcpQuestions().layer, this.#mcpSampling().layer)),
           Layer.provideMerge(this.#mcpApps().layer),
           Layer.provideMerge(this.#mcpSignIns().layer),
+          Layer.provideMerge(this.#mcpTasks().layer),
           Layer.provideMerge(
             sessionSecretsLayer({
               encryptionKey: SECRETS_KEY,

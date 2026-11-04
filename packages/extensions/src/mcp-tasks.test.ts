@@ -15,12 +15,14 @@ import {
   type McpHostRequestInput,
   type McpTaskSnapshot,
   NotFound,
+  ServerError,
 } from "@cloudpid/mcp/types";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Record from "effect/Record";
+import type { Mutable } from "effect/Types";
 import { describe, expect, it } from "vitest";
-import { open } from "./mcp.fixture.ts";
+import { open, startOf } from "./mcp.fixture.ts";
 import {
   makeMcpTools,
   memoryMcpToolsStore,
@@ -29,8 +31,11 @@ import {
 } from "./mcp.ts";
 import { type FakeMcpAnswer, type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { recordOfCall, startTask } from "./mcp/task-inline.ts";
+import type { McpToolOptions } from "./mcp/tools.ts";
 import { McpTasksDoc, type McpTasksState } from "./mcp/task-state.ts";
-import { answer, call, context } from "./subagents/harness.fixture.ts";
+import { HostLost } from "./mcp/client.ts";
+import { resultPool } from "./mcp/task-results.ts";
+import { answer, call, context, gate } from "./subagents/harness.fixture.ts";
 
 const SECRET = "srv-secret-7";
 
@@ -49,24 +54,50 @@ const CREATED = {
 
 type Sent = McpHostRequestInput;
 
+/** What a test changes in the host's server. */
+type TaskHostOptions = {
+  /** The status message the server gives its working task. */
+  readonly message?: string;
+  /** What the host answers the `n`th `tasks/get` instead of the task's state (1-based); `undefined`: the state. */
+  readonly getAnswer?: (n: number) => ReturnType<FakeMcpAnswer> | undefined;
+  /** What the host answers `tasks/cancel` instead of an acknowledgement. */
+  readonly cancelAnswer?: () => ReturnType<FakeMcpAnswer>;
+};
+
 /** A task the host's server runs: it ends once it was polled `polls` times, unless it was cancelled. */
-const taskHost = (polls: number) => {
+const taskHost = (polls: number, options: TaskHostOptions = {}) => {
   const sent: Sent[] = [];
   let gets = 0;
   let cancelled = false;
 
   const snapshot = (status: McpTaskSnapshot["status"]): McpTaskSnapshot =>
     // SAFETY: only the statuses that carry no more than the common fields are made here.
-    ({ ...CREATED, status, statusMessage: "Making the report" }) as McpTaskSnapshot;
+    ({
+      ...CREATED,
+      status,
+      statusMessage: options.message ?? "Making the report",
+    }) as McpTaskSnapshot;
+
+  const completed = (text = "a plain result") =>
+    McpHostCompleted.make({
+      result: { kind: "inline", value: { content: [{ type: "text", text }] } },
+    });
 
   const answerOf: FakeMcpAnswer = async (input) => {
     sent.push(input);
 
     switch (input.op) {
+      // A call not offered a task is answered at once, as a server does.
       case "tools/call":
-        return McpHostTaskStarted.make({ task: snapshot("working"), conn: "conn-docs" });
+        return input.ctx.allowTask === true
+          ? McpHostTaskStarted.make({ task: snapshot("working"), conn: "conn-docs" })
+          : completed();
       case "tasks/get": {
         gets += 1;
+
+        const forced = options.getAnswer?.(gets);
+
+        if (forced !== undefined) return forced;
 
         if (cancelled) return McpHostTaskState.make({ task: snapshot("cancelled") });
 
@@ -82,13 +113,13 @@ const taskHost = (polls: number) => {
       }
 
       case "tasks/cancel":
+        if (options.cancelAnswer !== undefined) return options.cancelAnswer();
+
         cancelled = true;
 
         return McpHostTaskAck.make({});
       default:
-        return McpHostCompleted.make({
-          result: { kind: "inline", value: { content: [{ type: "text", text: "other" }] } },
-        });
+        return completed();
     }
   };
 
@@ -110,12 +141,14 @@ const memory = () => {
   };
 };
 
-const TIMING = { windowMs: 40, pollMs: 4, graceMs: 20, backoffMs: 5, cancelGraceMs: 40 };
+const TIMING = { windowMs: 40, pollMs: 4, unknownGraceMs: 20, backoffMs: 5, cancelGraceMs: 40 };
 
 /** A script: "go" calls the tool; an ended entry is answered in words; `extra` answers the rest it knows. */
+type Script = Parameters<typeof open>[0];
+
 const scripted =
-  (extra: (text: string) => ReturnType<typeof call> | undefined = () => undefined) =>
-  (request: { readonly text: string }) => {
+  (extra: (text: string) => ReturnType<typeof call> | undefined = () => undefined): Script =>
+  (request) => {
     const { text } = request;
     const more = extra(text);
 
@@ -126,32 +159,60 @@ const scripted =
     return answer(text.startsWith("[MCP task ended") ? "noted the end" : "ok");
   };
 
-const setup = async (polls: number, timing = TIMING, script = scripted()) => {
-  const host = fakeMcpHost([SERVER]);
-  const taskServer = taskHost(polls);
+/** What a test changes in the Session around the host. */
+type SetupOptions = {
+  readonly servers?: ReadonlyArray<FakeMcpServer>;
+  readonly host?: TaskHostOptions;
+  readonly redact?: (text: string) => Promise<string>;
+  readonly ready?: () => Promise<boolean>;
+  readonly offered?: ReadonlyArray<string>;
+};
+
+const setup = async (
+  polls: number,
+  timing = TIMING,
+  script: Script = scripted(),
+  more: SetupOptions = {},
+) => {
+  const host = fakeMcpHost(more.servers ?? [SERVER]);
+  const taskServer = taskHost(polls, more.host);
   const storage = memory();
   const submitted: unknown[] = [];
-  const written: Array<{ readonly requestId: string; readonly kind: string }> = [];
+
+  const written: Array<{
+    readonly requestId: string;
+    readonly kind: string;
+    readonly text: string;
+  }> = [];
 
   host.answer(taskServer.answerOf);
 
-  const tools = makeMcpTools(host.client, memoryMcpToolsStore(), {
+  const toolOptions: Mutable<McpToolOptions> = {
     slackMs: 0,
     tasks: {
       storage,
       timing,
+      redact: more.redact,
       submitted: (id) => {
         submitted.push(id);
       },
       write: async (_conversation, note) => {
-        written.push({ requestId: note.requestId, kind: note.entry.kind });
+        written.push({
+          requestId: note.requestId,
+          kind: note.entry.kind,
+          text: JSON.stringify(note.entry.model),
+        });
       },
     },
-  });
+  };
+
+  if (more.ready !== undefined) toolOptions.ready = more.ready;
+
+  const tools = makeMcpTools(host.client, memoryMcpToolsStore(), toolOptions);
 
   const session = await open(script);
 
-  await session.start(tools);
+  await session.start(tools, startOf(more.servers?.length ?? 1, { offered: more.offered ?? [] }));
 
   const toolCalls = () => taskServer.sent.filter((input) => input.op === "tools/call");
   const everything = async () => JSON.stringify(await session.entries());
@@ -313,7 +374,10 @@ describe("an MCP task that outlasts the window", () => {
 
     expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
     expect(written).toEqual([
-      { requestId: "mcp-task-notice:mcp-task-1", kind: MCP_TASK_NOTICE_KIND },
+      expect.objectContaining({
+        requestId: "mcp-task-notice:mcp-task-1",
+        kind: MCP_TASK_NOTICE_KIND,
+      }),
     ]);
     expect(submitted).toEqual([]);
     expect((await session.texts("user")).some((text) => text.startsWith("[MCP task ended"))).toBe(
@@ -434,5 +498,414 @@ describe("a call a restart cut off after its record was stored", () => {
     expect(Record.keys(state.tasks)).toEqual(["mcp-task-1"]);
     expect(state.next).toBe(2);
     expect(memos.get("mcp.task")).toBe("mcp-task-1");
+  });
+});
+
+/** Run the turn `text` on the root conversation and wait for its answer. */
+const turn = async (session: Awaited<ReturnType<typeof setup>>["session"], text: string) => {
+  const submission = await session.root.submit({ type: "input", content: text }, context);
+
+  await submission.wait(context);
+};
+
+/** The record of `handle` as the Session's document holds it now. */
+const recordNow = async (session: Awaited<ReturnType<typeof setup>>["session"], handle: string) =>
+  (await session.harness.snapshot(McpTasksDoc, context))?.tasks[handle];
+
+/** Whether the task `handle` has ended. */
+const ended =
+  (session: Awaited<ReturnType<typeof setup>>["session"], handle = "mcp-task-1") =>
+  async () =>
+    (await recordNow(session, handle))?.end !== undefined;
+
+/** Whether an entry told the agent a task ended. */
+const toldOfEnd = async (session: Awaited<ReturnType<typeof setup>>["session"]) =>
+  (await session.texts("user")).some((text) => text.startsWith("[MCP task ended"));
+
+describe("what a server writes of its task", () => {
+  it("is redacted of held Secrets before it is stored or shown, and the model never reads the server's id", async () => {
+    const { session, everything } = await setup(
+      200,
+      TIMING,
+      scripted((text) => (text === "list" ? call(["mcp_tasks", {}]) : undefined)),
+      {
+        host: { message: "Using key sk-live-123 for the report" },
+        redact: async (text) => text.replaceAll("sk-live-123", "[redacted]"),
+      },
+    );
+
+    await turn(session, "go");
+    await turn(session, "list");
+
+    expect((await recordNow(session, "mcp-task-1"))?.statusMessage).toBe(
+      "Using key [redacted] for the report",
+    );
+    expect((await session.texts("toolResult")).join("\n")).toContain(
+      "Using key [redacted] for the report",
+    );
+    expect(await everything()).not.toContain("sk-live-123");
+    expect(await everything()).not.toContain(SECRET);
+    await session.root.abort(context, { background: true });
+  });
+});
+
+describe("a cancel", () => {
+  it("is sent once, and not again after an answer that is not an acknowledgement", async () => {
+    const { session, taskServer } = await setup(
+      10_000,
+      TIMING,
+      scripted((text) =>
+        text === "cancel" ? call(["mcp_task_cancel", { task: "mcp-task-1" }]) : undefined,
+      ),
+      {
+        host: {
+          cancelAnswer: async () =>
+            McpHostCallFailed.make({ error: ServerError.make({ message: "no", code: -32000 }) }),
+        },
+      },
+    );
+
+    await turn(session, "go");
+    await turn(session, "cancel");
+
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+    expect((await session.texts("toolResult")).at(-1)).toContain("could not be delivered");
+    await session.root.abort(context, { background: true });
+  });
+});
+
+describe("a task the owner stopped everything for", () => {
+  it("is cancelled at the server, ended, and the agent is told in a notice that starts no Run", async () => {
+    const { session, taskServer, written, submitted, storage } = await setup(10_000);
+
+    await turn(session, "go");
+    await session.root.abort(context, { background: true });
+    await session.until(ended(session), "the task to end");
+
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+    expect(await recordNow(session, "mcp-task-1")).toMatchObject({
+      status: "cancelled",
+      end: { status: "cancelled", by: "stop" },
+      delivery: "none",
+    });
+    expect(written).toEqual([
+      expect.objectContaining({
+        requestId: "mcp-task-notice:mcp-task-1",
+        kind: MCP_TASK_NOTICE_KIND,
+        text: expect.stringContaining("cancelled by the owner"),
+      }),
+    ]);
+    expect(submitted).toEqual([]);
+    expect(await toldOfEnd(session)).toBe(false);
+    // The words kept for the agent that asks are cloudpid's: the task was cancelled.
+    expect(JSON.stringify(resultPool(storage).get("mcp-task-1", Date.now()))).toContain(
+      "was cancelled",
+    );
+  });
+
+  it("drops a result held for a busy conversation, and says so in a notice", async () => {
+    const busy = gate();
+
+    const { session, written, submitted, storage } = await setup(30, TIMING, (request) =>
+      request.text === "slow" ? busy.promise.then(() => answer("slow done")) : scripted()(request),
+    );
+
+    await turn(session, "go");
+
+    // A turn that stays busy while the task ends: the result is held for the idle conversation.
+    const slow = await session.root.submit({ type: "input", content: "slow" }, context);
+
+    await session.until(ended(session), "the task to end");
+    expect(resultPool(storage).get("mcp-task-1", Date.now())).toBeDefined();
+    expect((await recordNow(session, "mcp-task-1"))?.delivery).toBe("pending");
+
+    // The model is still answering: it lets go as the Run is aborted.
+    const stopping = session.root.abort(context, { background: true });
+
+    busy.resolve();
+    await stopping;
+    await slow.wait(context).catch(() => undefined);
+    await session.until(
+      async () => (await recordNow(session, "mcp-task-1"))?.delivery === "none",
+      "the result to be dropped",
+    );
+
+    expect(resultPool(storage).get("mcp-task-1", Date.now())).toBeUndefined();
+    expect(written).toEqual([
+      expect.objectContaining({
+        requestId: "mcp-task-notice:mcp-task-1",
+        text: expect.stringContaining("its result was dropped when the owner stopped everything"),
+      }),
+    ]);
+    expect(submitted).toEqual([]);
+    expect(await toldOfEnd(session)).toBe(false);
+  });
+});
+
+describe("a -32602 from the server", () => {
+  const gone = async () =>
+    McpHostCallFailed.make({ error: NotFound.make({ message: "gone", code: -32602 }) });
+
+  it("is followed on when the task is known again within the grace", async () => {
+    const { session, toolCalls } = await setup(12, { ...TIMING, unknownGraceMs: 500 }, scripted(), {
+      host: { getAnswer: (n) => (n >= 3 && n <= 6 ? gone() : undefined) },
+    });
+
+    await turn(session, "go");
+    await session.until(() => toldOfEnd(session), "the end");
+    await session.settle();
+
+    const text = (await session.texts("user")).find((each) => each.startsWith("[MCP task ended"));
+
+    expect(text).toContain("status=completed");
+    expect(toolCalls()).toHaveLength(1);
+  });
+
+  it("is unknown only once the grace has passed", async () => {
+    const seen: number[] = [];
+
+    const { session } = await setup(10_000, { ...TIMING, unknownGraceMs: 150 }, scripted(), {
+      host: {
+        getAnswer: (n) => {
+          if (n < 3) return undefined;
+
+          seen.push(Date.now());
+
+          return gone();
+        },
+      },
+    });
+
+    await turn(session, "go");
+    await session.until(ended(session), "the end");
+
+    expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({
+      status: "unknown",
+      by: "cloudpid",
+    });
+    expect(Date.now() - (seen[0] ?? 0)).toBeGreaterThanOrEqual(150);
+    expect(seen.length).toBeGreaterThan(2);
+    await session.settle();
+  });
+});
+
+describe("a host or engine deploy while the Session lives", () => {
+  const lost = async () => HostLost.make({ message: "the host went away" });
+
+  it("is retried: the polls that found the host lost are sent again, and nothing else is", async () => {
+    const { session, taskServer, toolCalls } = await setup(12, TIMING, scripted(), {
+      host: { getAnswer: (n) => (n >= 3 && n <= 7 ? lost() : undefined) },
+    });
+
+    await turn(session, "go");
+    await session.until(() => toldOfEnd(session), "the end");
+    await session.settle();
+
+    // The task was followed to its end through the outage: one `tools/call`, and no cancel.
+    expect(toolCalls()).toHaveLength(1);
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toEqual([]);
+    expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({ status: "completed" });
+  });
+
+  it("is retried inside the window too, and the call returns the task's result", async () => {
+    const { session, toolCalls } = await setup(6, { ...TIMING, windowMs: 5000 }, scripted(), {
+      host: { getAnswer: (n) => (n >= 2 && n <= 4 ? lost() : undefined) },
+    });
+
+    await turn(session, "go");
+
+    expect(await session.texts("toolResult")).toEqual([expect.stringContaining("the report")]);
+    expect(toolCalls()).toHaveLength(1);
+  });
+});
+
+describe("the owner steering a call that waits for its task", () => {
+  it("detaches it at once, and the Run goes on", async () => {
+    const { session, toolCalls } = await setup(10_000, { ...TIMING, windowMs: 60_000 });
+
+    const first = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await session.until(
+      async () => (await recordNow(session, "mcp-task-1")) !== undefined,
+      "the task",
+    );
+    await session.root.submit({ type: "input", content: "hurry", whenBusy: "steer" }, context);
+    await first.wait(context);
+
+    expect((await session.texts("toolResult"))[0]).toContain("runs as MCP task mcp-task-1");
+    expect(await recordNow(session, "mcp-task-1")).toMatchObject({ background: true });
+    expect(toolCalls()).toHaveLength(1);
+    await session.root.abort(context, { background: true });
+  });
+});
+
+describe("mcp_task_wait", () => {
+  it("returns where the task stands when its time runs out", async () => {
+    const { session } = await setup(
+      10_000,
+      TIMING,
+      scripted((text) =>
+        text === "wait" ? call(["mcp_task_wait", { task: "mcp-task-1", timeout_s: 1 }]) : undefined,
+      ),
+    );
+
+    await turn(session, "go");
+    await turn(session, "wait");
+
+    expect((await session.texts("toolResult")).at(-1)).toContain(
+      "MCP task mcp-task-1 is still working after 1s",
+    );
+    await session.root.abort(context, { background: true });
+  });
+
+  it("returns where the task stands when the owner sends a message", async () => {
+    const { session } = await setup(
+      10_000,
+      TIMING,
+      scripted((text) =>
+        text === "wait"
+          ? call(["mcp_task_wait", { task: "mcp-task-1", timeout_s: 600 }])
+          : undefined,
+      ),
+    );
+
+    await turn(session, "go");
+
+    const waiting = await session.root.submit({ type: "input", content: "wait" }, context);
+
+    await session.until(
+      async () => (await recordNow(session, "mcp-task-1"))?.waiter !== undefined,
+      "the wait",
+    );
+    await session.root.submit({ type: "input", content: "hurry", whenBusy: "steer" }, context);
+    await waiting.wait(context);
+
+    expect((await session.texts("toolResult")).at(-1)).toContain("a message arrived");
+    expect((await recordNow(session, "mcp-task-1"))?.waiter).toBeUndefined();
+    await session.root.abort(context, { background: true });
+  });
+
+  it("is one open wait at a time per task: the second is told so", async () => {
+    const { session } = await setup(
+      10_000,
+      TIMING,
+      scripted((text) =>
+        text === "wait"
+          ? call(
+              ["mcp_task_wait", { task: "mcp-task-1", timeout_s: 1 }],
+              ["mcp_task_wait", { task: "mcp-task-1", timeout_s: 1 }],
+            )
+          : undefined,
+      ),
+    );
+
+    await turn(session, "go");
+    await turn(session, "wait");
+
+    const results = (await session.texts("toolResult")).slice(-2);
+
+    expect(results.filter((text) => text.includes("Another call is already waiting"))).toHaveLength(
+      1,
+    );
+    expect(results.filter((text) => text.includes("still working after 1s"))).toHaveLength(1);
+    await session.root.abort(context, { background: true });
+  });
+});
+
+/** Whether each `tools/call` the host was sent was offered a task. */
+const offers = (taskServer: Awaited<ReturnType<typeof setup>>["taskServer"]) =>
+  taskServer.sent.flatMap((input) =>
+    input.op === "tools/call" ? [input.ctx.allowTask === true] : [],
+  );
+
+describe("which calls are offered a task", () => {
+  const OTHER: FakeMcpServer = { ...SERVER, name: "other" };
+  const THIRD: FakeMcpServer = { ...SERVER, name: "third" };
+
+  const several = scripted((text) => {
+    if (text === "other") return call(["mcp__other__report", {}]);
+
+    return text === "third" ? call(["mcp__third__report", {}]) : undefined;
+  });
+
+  it("is offered one in the root conversation, and not once 8 are live on the server or 16 in the Session", async () => {
+    const { session, taskServer } = await setup(100_000, TIMING, several, {
+      servers: [SERVER, OTHER, THIRD],
+    });
+
+    for (let n = 0; n < 8; n += 1) await turn(session, "go");
+
+    // The 9th call to the same server goes out without the declaration.
+    await turn(session, "go");
+
+    for (let n = 0; n < 8; n += 1) await turn(session, "other");
+
+    // 16 are live in the Session now: another server's call goes out without it either.
+    await turn(session, "third");
+
+    expect(offers(taskServer)).toEqual([
+      ...Array.from({ length: 8 }, () => true),
+      false,
+      ...Array.from({ length: 8 }, () => true),
+      false,
+    ]);
+    await session.root.abort(context, { background: true });
+  });
+
+  it("is not offered to a stdio server's call", async () => {
+    const stdio: FakeMcpServer = { ...SERVER, entry: { type: "stdio", command: "npx" } };
+
+    const { session, taskServer } = await setup(10, TIMING, scripted(), {
+      servers: [stdio],
+      ready: async () => true,
+    });
+
+    await turn(session, "go");
+
+    expect(offers(taskServer)).toEqual([false]);
+  });
+
+  it("is not offered to a call inside a codemode script", async () => {
+    const scriptServer: FakeMcpServer = { ...SERVER, exposure: "codemode" };
+
+    const { session, taskServer } = await setup(
+      10,
+      TIMING,
+      scripted((text) =>
+        text === "go"
+          ? call([
+              "codemode",
+              { code: "console.log(JSON.stringify(await tools.mcp__docs__report({})))" },
+            ])
+          : undefined,
+      ),
+      { servers: [scriptServer], offered: ["codemode"] },
+    );
+
+    await turn(session, "go");
+
+    expect(offers(taskServer)).toEqual([false]);
+  });
+
+  it("is not offered to a subagent's call", async () => {
+    const { session, taskServer } = await setup(
+      10,
+      TIMING,
+      (request) => {
+        if (request.agent === "root") {
+          return request.text === "go" ? call(["subagent", { task: "Report" }]) : answer("ok");
+        }
+
+        return request.text.includes("plain result")
+          ? answer("child done")
+          : call(["mcp__docs__report", {}]);
+      },
+      { offered: ["subagent*", "read"] },
+    );
+
+    await turn(session, "go");
+    await session.settle();
+
+    expect(offers(taskServer)).toEqual([false]);
   });
 });

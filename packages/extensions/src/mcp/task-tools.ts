@@ -25,16 +25,11 @@ import type { McpCallOrigin } from "./exchange.ts";
 import { failedWith } from "./result.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { sendCancel } from "./task-host.ts";
-import { durationText } from "./task-policy.ts";
+import { markCancelSent } from "./task-end.ts";
+import { durationText, MCP_TASK_RESULT_KEPT_MS } from "./task-policy.ts";
 import { sleepUntilWoken } from "./task-port.ts";
 import { type McpResultPool, type StoredResult } from "./task-results.ts";
-import {
-  EMPTY_TASKS,
-  MCP_TASK_RESULT_KEPT_MS,
-  McpTasksDoc,
-  type McpTaskRecord,
-  type McpTasksState,
-} from "./task-state.ts";
+import { EMPTY_TASKS, McpTasksDoc, type McpTaskRecord, type McpTasksState } from "./task-state.ts";
 
 /** How long `mcp_task_wait` waits when it is not told: 5 minutes; at most 30. */
 const DEFAULT_WAIT_S = 300;
@@ -269,6 +264,100 @@ export const taskTools = (
     );
   };
 
+  /**
+   * Take the one open wait of `handle` for this call: `busy` while another call's wait lives, `ended` when the task has
+   * ended meanwhile (its result is read at once), else `waiting`.
+   */
+  const takeWait = (api: ToolExecutionApi, context: ToolContext, handle: string) =>
+    api.commit(async (tx) => {
+      const current = (await tx.doc(McpTasksDoc)).tasks[handle];
+
+      if (current === undefined || current.end !== undefined) return "ended" as const;
+
+      const other =
+        current.waiter === undefined || current.waiter === api.taskId
+          ? undefined
+          : await tx.task(current.waiter);
+
+      // One open wait per task: another call's, while it lives.
+      if (other !== undefined && other.state.status !== "terminal") return "busy" as const;
+
+      current.waiter = api.taskId;
+
+      return "waiting" as const;
+    }, context);
+
+  /** How a task that has not ended stands, for a wait that stopped before it did. */
+  const standing = (record: McpTaskRecord) =>
+    record.status === "input_required" ? "waiting for input" : "working";
+
+  /**
+   * Wait for `handle` to end, until `until`: its result when it ends, where it stands when the time runs out or the owner
+   * sends a message, an error when the wait is stopped.
+   */
+  const awaitEnd = async (
+    api: ToolExecutionApi,
+    context: ToolContext,
+    handle: string,
+    until: number,
+    seconds: number,
+  ): Promise<ToolExecutionResult<JsonValue>> => {
+    for (;;) {
+      const fresh = (await api.snapshot(McpTasksDoc, context))?.tasks[handle];
+
+      if (fresh === undefined) return unknown(waitName, handle);
+
+      if (fresh.end !== undefined) return claimed(api, context, fresh);
+
+      const left = until - api.now();
+
+      if (left <= 0) {
+        return {
+          output: text(
+            `MCP task ${handle} is still ${standing(fresh)} after ${durationText(seconds * 1000)}. Wait again with mcp_task_wait, or stop it with mcp_task_cancel.`,
+          ),
+          details: detailsFor(waitName, fresh),
+          structuredOutput: { content: [] },
+        };
+      }
+
+      const watch = await api.watchDoc(McpTasksDoc, context);
+      let woke;
+
+      try {
+        woke = await sleepUntilWoken(
+          api,
+          api.conversationId,
+          context,
+          left,
+          context.abortSignal,
+          new Promise<void>((resolve) => {
+            watch?.start(() => {
+              if (watch.value?.tasks[handle]?.end !== undefined) resolve();
+
+              return Promise.resolve();
+            });
+          }),
+        );
+      } finally {
+        await watch?.stop();
+      }
+
+      if (woke === "steered") {
+        return {
+          output: text(
+            `Stopped waiting for MCP task ${handle}: a message arrived. It is still ${standing(fresh)}; wait again with mcp_task_wait when you want.`,
+          ),
+          details: detailsFor(waitName, fresh),
+          structuredOutput: { content: [] },
+        };
+      }
+
+      if (woke === "stopped")
+        return failedWith("The wait was stopped", detailsFor(waitName, fresh));
+    }
+  };
+
   const waiter: ToolRegistration = {
     name: waitName,
     description:
@@ -281,8 +370,7 @@ export const taskTools = (
       // SAFETY: the arguments pi-durable validated against the tool's parameters, an object.
       const input = argsOf(args as JsonObject);
       const handle = (input.task ?? "").trim();
-      const state = await api.snapshot(McpTasksDoc, context);
-      const record = namedOf(state, api.conversationId, handle);
+      const record = namedOf(await api.snapshot(McpTasksDoc, context), api.conversationId, handle);
 
       if (record === undefined) return unknown(waitName, handle);
 
@@ -296,25 +384,7 @@ export const taskTools = (
       // The deadline is kept, so a rerun after a restart waits for what is left.
       const until = await api.memo<number>("mcp.wait.until", api.now() + seconds * 1000, context);
 
-      const taken = await api.commit(async (tx) => {
-        const current = (await tx.doc(McpTasksDoc)).tasks[handle];
-
-        if (current === undefined || current.end !== undefined) return "ended" as const;
-
-        const other =
-          current.waiter === undefined || current.waiter === api.taskId
-            ? undefined
-            : await tx.task(current.waiter);
-
-        // One open wait per task: another call's, while it lives.
-        if (other !== undefined && other.state.status !== "terminal") return "busy" as const;
-
-        current.waiter = api.taskId;
-
-        return "waiting" as const;
-      }, context);
-
-      if (taken === "busy") {
+      if ((await takeWait(api, context, handle)) === "busy") {
         return failedWith(
           `Another call is already waiting for MCP task ${handle}. One wait at a time per task.`,
           detailsFor(waitName, record),
@@ -322,62 +392,7 @@ export const taskTools = (
       }
 
       try {
-        for (;;) {
-          const fresh = (await api.snapshot(McpTasksDoc, context))?.tasks[handle];
-
-          if (fresh === undefined || fresh.end !== undefined) {
-            return fresh === undefined
-              ? unknown(waitName, handle)
-              : await claimed(api, context, fresh);
-          }
-
-          const left = until - api.now();
-
-          if (left <= 0) {
-            return {
-              output: text(
-                `MCP task ${handle} is still ${fresh.status === "input_required" ? "waiting for input" : "working"} after ${durationText(seconds * 1000)}. Wait again with mcp_task_wait, or stop it with mcp_task_cancel.`,
-              ),
-              details: detailsFor(waitName, fresh),
-              structuredOutput: { content: [] },
-            };
-          }
-
-          const watch = await api.watchDoc(McpTasksDoc, context);
-          let woke;
-
-          try {
-            woke = await sleepUntilWoken(
-              api,
-              api.conversationId,
-              context,
-              left,
-              context.abortSignal,
-              new Promise<void>((resolve) => {
-                watch?.start(() => {
-                  if (watch.value?.tasks[handle]?.end !== undefined) resolve();
-
-                  return Promise.resolve();
-                });
-              }),
-            );
-          } finally {
-            await watch?.stop();
-          }
-
-          if (woke === "steered") {
-            return {
-              output: text(
-                `Stopped waiting for MCP task ${handle}: a message arrived. It is still ${fresh.status === "input_required" ? "waiting for input" : "working"}; wait again with mcp_task_wait when you want.`,
-              ),
-              details: detailsFor(waitName, fresh),
-              structuredOutput: { content: [] },
-            };
-          }
-
-          if (woke === "stopped")
-            return failedWith("The wait was stopped", detailsFor(waitName, fresh));
-        }
+        return await awaitEnd(api, context, handle, until, seconds);
       } finally {
         await release(api, handle);
       }
@@ -432,7 +447,7 @@ export const taskTools = (
       await api.commit(async (tx) => {
         const current = (await tx.doc(McpTasksDoc)).tasks[handle];
 
-        if (current?.cancel !== undefined) current.cancel.sent = took ? "sent" : "failed";
+        markCancelSent(current, took);
       }, context);
 
       return took

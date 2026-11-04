@@ -35,6 +35,11 @@ export type McpTasksOptions = {
   readonly submitted?: ((id: SubmissionId) => void) | undefined;
   /** Where a note for an end the owner caused is written (`McpNotices.write`); absent: no note. */
   readonly write?: McpNotices["write"] | undefined;
+  /**
+   * Redacts the Session's held Secrets from a text a server wrote (a task's `statusMessage`, a `failed` task's message)
+   * before it is stored or shown. Absent: nothing is held.
+   */
+  readonly redact?: ((text: string) => Promise<string>) | undefined;
 };
 
 /** The context of a `tasks/*` request for `record`: the agent's, in the conversation that started it. */

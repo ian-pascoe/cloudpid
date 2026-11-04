@@ -23,13 +23,8 @@ import type { McpDetails } from "./details.ts";
 import { type McpResultContext, failedWith, resultFor, streamFailure } from "./result.ts";
 import { readStreamed } from "./stream.ts";
 import type { Spill } from "./spill.ts";
-import { durationText } from "./task-policy.ts";
-import {
-  MCP_TASK_RESULT_KEPT_MS,
-  type McpTaskBy,
-  type McpTaskRecord,
-  type McpTaskResultNote,
-} from "./task-state.ts";
+import { durationText, MCP_TASK_RESULT_KEPT_MS } from "./task-policy.ts";
+import { type McpTaskBy, type McpTaskRecord, type McpTaskResultNote } from "./task-state.ts";
 
 /** The Durable Object's synchronous key-value storage, as the pool uses it. */
 export type McpTaskStorage = {
@@ -70,6 +65,8 @@ export type McpResultPool = {
   ) => McpTaskResultNote | undefined;
   /** The result kept for `handle`, unless it expired, was dropped for room, or never was kept. */
   readonly get: (handle: string, now: number) => StoredResult | undefined;
+  /** Drop the result kept for `handle`, if any: Stop all, Archive and delete drop what a conversation held. */
+  readonly drop: (handle: string) => void;
   /** When the result of `handle` is kept until. */
   readonly keptUntil: (handle: string) => number | undefined;
 };
@@ -153,6 +150,14 @@ export const resultPool = (storage: McpTaskStorage): McpResultPool => {
       // SAFETY: what `put` stored, a `ToolExecutionResult` serialized as JSON.
       return Option.isSome(parsed) ? (parsed.value as StoredResult) : undefined;
     },
+    drop: (handle) => {
+      const all = index();
+      const kept = Arr.filter(all, (entry) => entry.handle !== handle);
+
+      for (const entry of all) if (entry.handle === handle) remove(entry);
+
+      if (kept.length < all.length) storage.put(INDEX_KEY, kept);
+    },
     keptUntil: (handle) => {
       const entry = Arr.findFirst(index(), (each) => each.handle === handle);
 
@@ -178,13 +183,6 @@ export const taskDetails = (
   return { ...base, mcp_task: mcpTask };
 };
 
-/** The call's `details` for a task's result: its server and tool, and the task. */
-export const detailsOf = (
-  record: McpTaskRecord,
-  background: boolean,
-  base: McpDetails = { server: record.server, tool: record.tool },
-): McpDetails => taskDetails(record, base, background);
-
 /** Who a cancelled task was cancelled by, in words. */
 const cancelledBy = (by: McpTaskBy | undefined): string =>
   Match.value(by).pipe(
@@ -204,7 +202,12 @@ export const endedResult = (
   const status = end?.status ?? record.status;
   const who = `${record.server}'s MCP task ${record.handle} (${record.modelTool})`;
   const after = durationText((end?.at ?? record.createdAt) - record.createdAt);
-  const base = detailsOf(record, background, details);
+
+  const base = taskDetails(
+    record,
+    details ?? { server: record.server, tool: record.tool },
+    background,
+  );
 
   switch (status) {
     case "failed":
@@ -272,7 +275,11 @@ export const completedResult = async (
   background: boolean,
   details?: McpDetails,
 ): Promise<StoredResult> => {
-  const base = detailsOf(record, background, details);
+  const base = taskDetails(
+    record,
+    details ?? { server: record.server, tool: record.tool },
+    background,
+  );
 
   if (state.result === undefined) {
     return failedWith(`${record.server}'s MCP task ${record.handle} completed without a result.`, {
