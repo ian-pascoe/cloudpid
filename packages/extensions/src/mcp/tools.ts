@@ -61,7 +61,12 @@ import { signInTool } from "./sign-in-tool.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { spillTo } from "./spill.ts";
 
-export { MCP_CALL_SLACK_MS, MCP_RESEND_FEATURE, MCP_SAMPLING_FEATURE, MCP_STREAM_IDLE_MS } from "./exchange.ts";
+export {
+  MCP_CALL_SLACK_MS,
+  MCP_RESEND_FEATURE,
+  MCP_SAMPLING_FEATURE,
+  MCP_STREAM_IDLE_MS,
+} from "./exchange.ts";
 
 export type { McpCallOrigin, McpToolOptions } from "./exchange.ts";
 

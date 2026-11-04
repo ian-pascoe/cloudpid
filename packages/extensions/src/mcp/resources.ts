@@ -9,7 +9,12 @@ import { type McpExposure, MCP_RESOURCE_TOOL_NAMES, resolveExposure } from "@clo
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import type { McpHostClientService } from "./client.ts";
-import { MCP_RESEND_FEATURE, type McpCallOrigin, type McpToolOptions, samplesOf } from "./exchange.ts";
+import {
+  MCP_RESEND_FEATURE,
+  type McpCallOrigin,
+  type McpToolOptions,
+  samplesOf,
+} from "./exchange.ts";
 import { exposureKeys } from "./exposure.ts";
 import { listTool } from "./resource-list.ts";
 import { readTool } from "./resource-read.ts";
