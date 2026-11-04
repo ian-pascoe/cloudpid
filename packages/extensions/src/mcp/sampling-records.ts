@@ -4,8 +4,9 @@
 // Session's Secrets before it is written. It never enters any model's context. A record is at most 256 KiB, and the
 // Session keeps 16 MiB of them: past it the least recently written are reduced to stubs (their status, Role, model,
 // tokens and cost stay; the messages, tools and reply go).
+import type { RoleName } from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
-import type { McpSamplingWhy } from "./details.ts";
+import type { McpSamplingBy, McpSamplingWhy } from "./details.ts";
 import type { McpQuestionStorage } from "./question-records.ts";
 
 /** The most bytes one record holds. */
@@ -29,8 +30,17 @@ export type McpSamplingStatus =
   | "refused"
   /** The model failed, or the sample ran out of time. */
   | "failed"
+  /** Shown to the owner, who has not answered. */
+  | "waiting"
   /** Not settled yet. */
   | "running";
+
+/**
+ * What let a request run without the card's own yes: the owner's **Allow for this call** (`call`, which covers the call's
+ * later requests), **Allow in this Session** (`session`) or **Always allow** (`always`, which wrote the definition). A
+ * later build that keeps a Modern call's grant with its deferred question reads this field, and adds its own members.
+ */
+export type McpSamplingGrant = "call" | "session" | "always";
 
 /** What a record keeps of one Sampling request. A field the request did not have is absent. */
 export type McpSamplingRecord = {
@@ -47,7 +57,7 @@ export type McpSamplingRecord = {
   readonly reason?: string;
   /** Why, as a tag; see `McpSamplingWhy`. */
   readonly why?: McpSamplingWhy;
-  readonly role?: string;
+  readonly role?: RoleName;
   readonly model?: string;
   readonly hints?: ReadonlyArray<string>;
   readonly priorities?: {
@@ -66,8 +76,13 @@ export type McpSamplingRecord = {
   readonly stopReason?: string;
   readonly tokens?: number;
   readonly cost?: number;
-  /** Who decided: `definition` (its `sampling` is `allow`) or `cloudpid` (a refusal of its own rules). */
-  readonly by: "definition" | "cloudpid";
+  /**
+   * Who decided: `definition` (its `sampling` is `allow`), `owner` (the card), `grant` (an earlier choice of the owner's, kept
+   * for the call or the Session) or `cloudpid` (a refusal of its own rules).
+   */
+  readonly by: McpSamplingBy;
+  /** The grant that let it run, when one did. */
+  readonly grant?: McpSamplingGrant;
   readonly notes: ReadonlyArray<string>;
   readonly askedAt: number;
   readonly settledAt?: number;

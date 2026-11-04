@@ -118,7 +118,14 @@ export const setup = async (
   const logged: Array<{ tool: string; field: string }> = [];
   const events: string[] = [];
   const asked: ApprovalAsk[] = [];
-  const changeCalls: Array<{ scope: string; approved: boolean; guard: unknown }> = [];
+
+  const changeCalls: Array<{
+    scope: string;
+    approved: boolean;
+    guard: unknown;
+    actor: "owner" | undefined;
+  }> = [];
+
   const held = new Set(start.held ?? []);
   let answered = 0;
   const host = fakeMcpHost(start.hostServers ?? []);
@@ -196,9 +203,14 @@ export const setup = async (
         });
       }),
     own: Effect.succeed(own),
-    change: ({ scope, changes, author: { conversation, tool, reason, approved }, guard }) =>
+    change: ({ scope, changes, author: { conversation, tool, reason, approved, actor }, guard }) =>
       Effect.suspend(() => {
-        changeCalls.push({ scope, approved: approved === true, guard });
+        changeCalls.push({
+          scope,
+          approved: approved === true,
+          guard,
+          actor,
+        });
         events.push(
           `change ${scope} ${Arr.join(
             Arr.map(changes, (each) => each.field),
@@ -462,7 +474,19 @@ export const setup = async (
       () => new Error(`no tool ${name}`),
     );
 
-  return { world, recorded, logged, events, host, tool, changes, asked, changeCalls };
+  return {
+    world,
+    recorded,
+    logged,
+    events,
+    host,
+    tool,
+    changes,
+    asked,
+    changeCalls,
+    settings,
+    access,
+  };
 };
 
 /** The invocation's API of the call with task id `taskId`: the tools read only the conversation and the task. */

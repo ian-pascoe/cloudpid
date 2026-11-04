@@ -58,7 +58,29 @@ export type AgentChangeAuthor = {
   readonly reason: string;
   /** Set when the owner approved the change before it was made (GLOSSARY.md → Approval). */
   readonly approved?: true | undefined;
+  /**
+   * Set when the change is the owner's own act, made through the Session (the Sampling card's *Always allow* and *Never*):
+   * recorded as the owner's change, with no Session, conversation or tool, and with no revert, as the owner's reverts have.
+   */
+  readonly actor?: "owner" | undefined;
 };
+
+/** Why the owner's change `change` is not reverted: a revert is not undone, and an act of their own is theirs to change back. */
+export const ownerChangeRefusal = (change: AgentChange): string =>
+  change.reverts === null
+    ? "This is your own change, which has no revert: change the setting itself"
+    : "A revert is not undone: change the setting itself";
+
+/** Who a change by `author` is recorded as made by: the owner (no Session, conversation or tool) or the agent. */
+export const recordedAuthor = (author: AgentChangeAuthor) =>
+  author.actor === "owner"
+    ? ({ actor: "owner", session: null, conversation: null, tool: null } as const)
+    : ({
+        actor: "agent",
+        session: author.session,
+        conversation: author.conversation,
+        tool: author.tool,
+      } as const);
 
 /**
  * One Container setting of an Environment or at Global, given a new value: `field` is a setting's name (`idleMinutes`)
@@ -689,8 +711,8 @@ const revertGlobalField = (
 
 /**
  * The owner's revert of Agent change `id` of `environment`: its `before` value written back and recorded as the owner's
- * change. Refused, saying what the field is now, when it no longer has the change's `after` value; and for a revert,
- * which is not undone.
+ * change. Refused, saying what the field is now, when it no longer has the change's `after` value; and for an owner's change,
+ * a revert (which is not undone) or one of their own through a Session's card.
  */
 export const revertAgentChange = (
   storage: RegistryStorage,
@@ -710,7 +732,7 @@ export const revertAgentChange = (
     if (change === null || (known === null && !isGlobal)) return { status: "missing" };
 
     if (change.actor === "owner") {
-      return { status: "refused", message: "A revert is not undone: change the setting itself" };
+      return { status: "refused", message: ownerChangeRefusal(change) };
     }
 
     // Once only: the agent may give the field the change's value again, which a second revert would undo unrecorded.

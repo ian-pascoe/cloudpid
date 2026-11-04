@@ -13,7 +13,7 @@
 // failure on the host's side (the engine out of reach or silent) is not the server's: it leaves its state as it was,
 // held back for 30 s. No discovery holds its slot past `DISCOVERY_DEADLINE_MS`: it is then given up the same way.
 // @effect-diagnostics missingPipeableSignature:off -- the scheduler's operations, not combinators.
-import { samplingOf, signsInOnItsOwn } from "@cloudpid/config";
+import { declaresSampling, signsInOnItsOwn } from "@cloudpid/config";
 import { currentTraceId } from "@cloudpid/telemetry";
 import {
   isJsonObject,
@@ -273,8 +273,9 @@ export const targetOf = (
         timeoutMs: (Predicate.isNumber(timeout) ? timeout : 60) * 1000,
       };
 
-      // A Legacy connection to a server that `allow`s it declares `sampling` (the owner's yes on a card is not built yet).
-      if (samplingOf(server.server) === "answer") reached.sampling = true;
+      // A Legacy connection to an HTTP server that does not switch it `off` declares `sampling`: `allow` answers its requests,
+      // `ask` (the default) asks the owner on a card.
+      if (declaresSampling(server.server)) reached.sampling = true;
 
       // A connection that signs in on its own declares the OAuth Client Credentials extension, and no other does.
       if (signsInOnItsOwn(server.server)) {

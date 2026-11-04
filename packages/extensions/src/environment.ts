@@ -155,6 +155,11 @@ export type ChangeAuthor = {
   readonly reason: string;
   /** Set when the owner approved the change before it was made (`./approvals.ts`). */
   readonly approved?: true | undefined;
+  /**
+   * `owner` when the change is the owner's own act, made through the Session (the Sampling card's *Always allow* and
+   * *Never*): the Registry records it as the owner's, with no conversation or tool, and with no revert. Absent: the agent's.
+   */
+  readonly actor?: "owner" | undefined;
 };
 
 /** The Environment a change was made to, by id and name. */

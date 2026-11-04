@@ -6,6 +6,8 @@ import {
   type AnnotationDraft,
   type BrowserHandoffRequest,
   type McpElicitationAction,
+  type McpSamplingChoice,
+  type McpSamplingRole,
   type ElicitationContent,
   type SecretKeep,
   type TodoTask,
@@ -90,6 +92,10 @@ export const secretLifetimeMinutesAtom = slice((state) => state.secretLifetimeMi
 /** The Agent changes waiting for the owner's Approval. */
 export const approvalRequestsAtom = slice((state) => state.approvalRequests);
 export const mcpElicitationRequestsAtom = slice((state) => state.mcpElicitationRequests);
+
+/** The MCP servers' Sampling requests waiting for the owner, and the Session's grants for them. */
+export const mcpSamplingRequestsAtom = slice((state) => state.mcpSamplingRequests);
+export const mcpSamplingGrantsAtom = slice((state) => state.mcpSamplingGrants);
 
 /** The Sign-in requests waiting for the owner. */
 export const mcpSignInRequestsAtom = slice((state) => state.mcpSignInRequests);
@@ -390,6 +396,46 @@ export const answerMcpElicitationAtom = Atom.family((sessionId: string) =>
       get
         .result(sessionClientAtom(sessionId))
         .pipe(Effect.flatMap((client) => client.answerMcpElicitation(request, action, content))),
+    { concurrent: true },
+  ),
+);
+
+/** The owner's answer to an MCP server's Sampling request: the choice, and the Role picked to run it on. */
+export interface McpSamplingAnswerInput {
+  readonly request: string;
+  readonly choice: McpSamplingChoice;
+  readonly role?: McpSamplingRole;
+}
+
+/** Answer one of Session `sessionId`'s MCP Sampling requests; a refusal (or a failed write) fails with its message. */
+export const answerMcpSamplingAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    ({ request, choice, role }: McpSamplingAnswerInput, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.answerMcpSampling(request, choice, role))),
+    { concurrent: true },
+  ),
+);
+
+/** Read one settled Sampling request of Session `sessionId`, the id a call's `details.sampling` names. */
+export const getMcpSamplingAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    (request: string, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.getMcpSampling(request))),
+    { concurrent: true },
+  ),
+);
+
+/** Take back one of Session `sessionId`'s Sampling grants. */
+export const revokeMcpSamplingAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    (server: string, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.revokeMcpSampling(server))),
     { concurrent: true },
   ),
 );

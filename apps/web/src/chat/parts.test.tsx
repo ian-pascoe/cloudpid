@@ -13,7 +13,10 @@ const CALL: NestedCall = { id: "1", name: "read", args: { path: "a.ts" }, status
 
 /** A settled `codemode` card whose artifact is `artifact`. */
 const render = (
-  artifact: { nested: NestedCall[]; omittedCalls?: OmittedCalls } | { elicitations: unknown[] },
+  artifact:
+    | { nested: NestedCall[]; omittedCalls?: OmittedCalls }
+    | { elicitations: unknown[] }
+    | { samplings: unknown[] },
   toolName = "codemode",
 ) => {
   const registry = AtomRegistry.make();
@@ -117,5 +120,41 @@ describe("ToolCallCard's MCP questions", () => {
       "cloudpid declined docs&#x27;s form: it asked for a credential (&#x27;API key&#x27;)",
     );
     expect(text).toContain("cloudpid cancelled docs&#x27;s form: the owner did not answer in time");
+  });
+});
+
+describe("ToolCallCard's MCP model use", () => {
+  it("says what became of each request its server made to use a model, and opens the ones with a record", () => {
+    const markup = render(
+      {
+        samplings: [
+          {
+            server: "docs",
+            status: "answered",
+            by: "owner",
+            role: "small",
+            model: "m/small",
+            tokens: 1200,
+            id: "s-1",
+          },
+          { server: "docs", status: "refused", by: "grant", grant: "session" },
+          { server: "docs", status: "refused", by: "cloudpid", reason: "over the Spend limit" },
+        ],
+      },
+      "mcp__docs__sample",
+    );
+
+    const text = markup.replaceAll(/<[^>]*>/g, "");
+
+    expect(markup).toContain(">Model use<");
+    expect(text).toContain("You let docs use a model (small · m/small, 1.2k tokens)");
+    expect(text).toContain(
+      "You refused docs&#x27;s request to use a model, as you chose for this Session",
+    );
+    expect(text).toContain(
+      "cloudpid refused docs&#x27;s request to use a model: over the Spend limit",
+    );
+    // Only the one with a record is a disclosure.
+    expect(markup.match(/<details/g)?.length).toBe(2);
   });
 });

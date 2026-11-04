@@ -12,6 +12,7 @@ import {
   McpQuestions,
   type McpQuestionsService,
   type McpQuestionStorage,
+  type McpSamplingRemember,
 } from "@cloudpid/extensions/mcp";
 import { Secrets, type SecretsService } from "@cloudpid/extensions/secrets";
 import { openKeptVault } from "@cloudpid/extensions/secrets/core";
@@ -19,7 +20,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import type { PushEvent } from "../push/notification.ts";
-import { mcpElicitationRequests, send, type SocketState } from "./sockets.ts";
+import { mcpElicitationRequests, mcpSamplingRequests, send, type SocketState } from "./sockets.ts";
 
 export type SessionMcpQuestionsOptions = {
   /** The object's synchronous key-value storage. */
@@ -34,6 +35,10 @@ export type SessionMcpQuestionsOptions = {
   readonly ownHost?: ((host: string) => boolean) | undefined;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
+  /** How long a Sampling request waits, `MCP_SAMPLING_ASK_WAIT_MS` unless a test shortens it. */
+  readonly samplingWaitMs?: number | undefined;
+  /** Where the Sampling card's *Always allow* and *Never* write the server's definition; without it the card cannot. */
+  readonly remember?: McpSamplingRemember | undefined;
   /**
    * The master key, `SECRETS_ENCRYPTION_KEY`, and what names the Session in each sealed answer's binding: with both, a
    * Modern server's form is kept for later; without, it is answered live, as a Legacy one.
@@ -49,6 +54,13 @@ export const MCP_ELICITATION_PURPOSE = "mcp-elicitation";
 export type SessionMcpQuestions = {
   readonly service: McpQuestionsService;
   readonly layer: Layer.Layer<McpQuestions, never, Secrets>;
+};
+
+/** What the Notification says of what waits: a page to open, a model to use, or (absent both) a form. */
+const pushedFor = (server: string, page: true | undefined, sampling: true | undefined) => {
+  if (page === true) return { server, kind: "elicitation", page } as const;
+
+  return { server, kind: sampling === true ? "sampling" : "elicitation" } as const;
 };
 
 export const sessionMcpQuestions = (options: SessionMcpQuestionsOptions): SessionMcpQuestions => {
@@ -84,15 +96,18 @@ export const sessionMcpQuestions = (options: SessionMcpQuestionsOptions): Sessio
     notify:
       options.notify === undefined
         ? undefined
-        : ({ server, page }) =>
+        : ({ server, page, sampling }) =>
             options.notify?.({
               kind: "input",
               names: [],
-              mcp:
-                page === true
-                  ? { server, kind: "elicitation", page }
-                  : { server, kind: "elicitation" },
+              mcp: pushedFor(server, page, sampling),
             }) ?? Effect.void,
+    announceSampling: ({ requests, grants }) =>
+      Effect.forEach(options.sockets.getWebSockets(), (socket) =>
+        send(socket, mcpSamplingRequests(requests, grants)),
+      ).pipe(Effect.asVoid),
+    samplingWaitMs: options.samplingWaitMs,
+    remember: options.remember,
     // What the owner is shown never holds a Secret's value.
     redact: (shown) => Effect.map(secrets, (held) => held.redact(shown)),
     holdsSecret: (text) =>

@@ -214,8 +214,17 @@ export const pageIdentityOf = (
 
 const pagesKey = (callId: string) => `mcp-question:pages:${callId}`;
 
+/** What a waiting question tells the owner of: the server, and what it waits on when that is not a form. */
+const whoOf = (server: string, kind: McpWaitingKind) => {
+  if (kind.page === true) return { server, page: true } as const;
+
+  return kind.sampling === true ? ({ server, sampling: true } as const) : { server };
+};
+
 /** How a question that waits tells the owner: the first of a call does, a later one only after a pause. */
 export type McpWaitingKind = {
+  /** It asks to use a model (a Sampling request), which the Notification says. */
+  readonly sampling?: true;
   /** It asks the owner to open a page, which the Notification says. */
   readonly page?: true;
   /** The owner is not told at all: a page the server asks for again, which they were told of already. */
@@ -269,9 +278,16 @@ export type McpQuestionBasicsOptions = {
   readonly redact: <A>(value: A) => Effect.Effect<A>;
   /** Whether a string the owner entered holds a Secret the Session holds or a deploy-time credential. */
   readonly holdsSecret: (text: string) => Effect.Effect<boolean>;
-  /** Tell the owner a call waits for them (a push); it must not fail. `page`: it asks them to open a page. */
+  /**
+   * Tell the owner a call waits for them (a push); it must not fail. `page`: it asks them to open a page; `sampling`: it asks
+   * to use a model; a form otherwise.
+   */
   readonly notify?:
-    | ((who: { readonly server: string; readonly page?: true }) => Effect.Effect<void>)
+    | ((who: {
+        readonly server: string;
+        readonly page?: true;
+        readonly sampling?: true;
+      }) => Effect.Effect<void>)
     | undefined;
 };
 
@@ -423,9 +439,7 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       state.notified = true;
 
       return notifies && options.notify !== undefined
-        ? Effect.forkDetach(
-            options.notify(kind.page === true ? { server, page: true } : { server }),
-          ).pipe(Effect.asVoid)
+        ? Effect.forkDetach(options.notify(whoOf(server, kind))).pipe(Effect.asVoid)
         : Effect.void;
     });
 

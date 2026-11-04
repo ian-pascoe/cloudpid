@@ -585,7 +585,9 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
     problems: [
       ...(meta?.problems ?? []),
       // A stdio server's `allow` is not declared until its bridge carries Legacy questions: told, not silent (#569).
-      ...(samplingOf(view.server.server) === "stdio" ? [{ problem: STDIO_SAMPLING_PROBLEM }] : []),
+      ...(view.server.server.sampling === "allow" && samplingOf(view.server.server) === "stdio"
+        ? [{ problem: STDIO_SAMPLING_PROBLEM }]
+        : []),
     ],
   };
 

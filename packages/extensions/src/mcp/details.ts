@@ -15,6 +15,7 @@ import * as Record from "effect/Record";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { storedBytes } from "../stored-bytes.ts";
+import type { McpSamplingGrant } from "./sampling-records.ts";
 
 /** The hints of a tool's annotations that are booleans, which the card shows as badges; they are untrusted and gate nothing. */
 export const HINTS = [
@@ -48,9 +49,19 @@ export type McpElicitationDetail = {
 /**
  * Why cloudpid turned a Sampling request down or failed it, as a tag the card and the model's line read instead of the
  * words: the Spend limit (`budget`), the call's cap (`cap`), a request that is invalid (`invalid`) or cannot be served
- * (`unservable`), the model (`model`), or cloudpid's own seam (`internal`: the models not ready, a record not kept).
+ * (`unservable`), the model (`model`), the owner not answering in time (`unanswered`), or cloudpid's own seam (`internal`: the models not ready, a record not kept).
  */
-export type McpSamplingWhy = "budget" | "cap" | "invalid" | "unservable" | "model" | "internal";
+export type McpSamplingWhy =
+  | "budget"
+  | "cap"
+  | "invalid"
+  | "unservable"
+  | "model"
+  | "unanswered"
+  | "internal";
+
+/** Who decided a Sampling request: the server's definition (`allow`), the owner on the card, a grant of theirs, or cloudpid's own rules. */
+export type McpSamplingBy = "definition" | "owner" | "grant" | "cloudpid";
 
 /**
  * One Sampling request the server made during a call (`docs/architecture/mcp-server-requests.md` → Sampling requests,
@@ -59,7 +70,9 @@ export type McpSamplingWhy = "budget" | "cap" | "invalid" | "unservable" | "mode
 export type McpSamplingDetail = {
   readonly server: string;
   readonly status: "answered" | "refused" | "failed";
-  readonly by: "definition" | "cloudpid";
+  readonly by: McpSamplingBy;
+  /** What let it run without the card's own yes, for one that ran on the owner's say: the call, the Session or Always. */
+  readonly grant?: McpSamplingGrant;
   /** Why it was refused or failed, in words. */
   readonly reason?: string;
   readonly why?: McpSamplingWhy;
@@ -67,6 +80,8 @@ export type McpSamplingDetail = {
   readonly model?: string;
   readonly tokens?: number;
   readonly cost?: number;
+  /** The record's id, which `mcp_sampling_get` reads: what the call's card expands. */
+  readonly id?: string;
 };
 
 /** The most resources a call's `details` names. */

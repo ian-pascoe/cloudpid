@@ -14,7 +14,7 @@
 // round ends as `InputRequired`, is stored whole and marked (`mcp.wait.<r>`), and the call waits with no clock running;
 // once the owner has answered, `mcp.resumed.<r>` is written and the resume sent. A rerun after a restart waits again
 // for a round so marked, and settles any other call it finds sent as one that may have run.
-import { samplingOf } from "@cloudpid/config";
+import { declaresSampling, samplingOf } from "@cloudpid/config";
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
@@ -403,6 +403,12 @@ export const send = async <A>(
   // The clock of the request that is out: the Session gives up on the host when it passes.
   let clock: PausableDeadline | undefined;
 
+  // Stops the call's clock while the owner decides, and starts it again: what a question or a Sampling card holds.
+  const hold = {
+    pause: Effect.suspend(() => clock?.pause ?? Effect.void),
+    resume: Effect.suspend(() => clock?.resume ?? Effect.void),
+  };
+
   // A server's question waits for the owner while the call's clock stands still, and Stop withdraws it. A Modern one is
   // kept for later instead when the call defers, and waited for between its rounds, with no clock running.
   const asking =
@@ -418,16 +424,14 @@ export const send = async <A>(
           source: server.source,
           defers: deferring,
           keepsPages: paging,
-          pause: Effect.suspend(() => clock?.pause ?? Effect.void),
-          resume: Effect.suspend(() => clock?.resume ?? Effect.void),
+          ...hold,
         });
 
-  // A Legacy HTTP server whose definition says `allow` is answered its Sampling requests on the Session's models, on a
-  // tool's call and a resource read (`exchange.samples`); a stdio server declares none until #569.
+  // A Legacy HTTP server whose definition does not say `off` has its Sampling requests answered on the Session's models,
+  // on a tool's call and a resource read (`exchange.samples`): at once for `allow`, after the owner's yes on a card for
+  // `ask`. A stdio server declares none until #569.
   const sampling =
-    options.sampling !== undefined &&
-    exchange.samples === true &&
-    samplingOf(server.server) === "answer"
+    options.sampling !== undefined && exchange.samples === true && declaresSampling(server.server)
       ? samplingHooks({
           sampling: options.sampling,
           server: server.name,
@@ -435,6 +439,9 @@ export const send = async <A>(
           callId: api.callId,
           conversationId: api.conversationId,
           signal: context.abortSignal,
+          decision: samplingOf(server.server) === "allow" ? "allow" : "ask",
+          source: server.source,
+          hold,
         })
       : undefined;
 

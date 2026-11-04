@@ -41,6 +41,9 @@ import {
   type TreePoint,
   type ConversationId,
   type McpElicitationAction,
+  type McpSamplingChoice,
+  McpSamplingRecordView,
+  type McpSamplingRole,
   type ElicitationContent,
   type ServerMessage,
   type SecretKeep,
@@ -325,6 +328,23 @@ export interface SessionClient {
     content?: ElicitationContent,
   ) => Effect.Effect<void, SessionCommandError>;
   /**
+   * Answer MCP Sampling request `request` (`docs/architecture/mcp-server-requests.md` → Sampling requests) by `choice`, with
+   * `role` the Role picked to run it on (absent, the card's own). The Session's next `mcp_sampling_requests` closes the
+   * card; a refusal (the request ended, or the Session could not save an Always or Never) fails with its message, and the
+   * card stays.
+   */
+  readonly answerMcpSampling: (
+    request: string,
+    choice: McpSamplingChoice,
+    role?: McpSamplingRole,
+  ) => Effect.Effect<void, SessionCommandError>;
+  /** Take back the Session's grant for `server`; its next request asks again. */
+  readonly revokeMcpSampling: (server: string) => Effect.Effect<void, SessionCommandError>;
+  /** The settled Sampling request `request` (a call's `details.sampling` id), or `null` when none is kept. */
+  readonly getMcpSampling: (
+    request: string,
+  ) => Effect.Effect<McpSamplingRecordView | null, SessionCommandError>;
+  /**
    * Decline Sign-in request `request` (`docs/architecture/mcp-sign-in.md` → Sign-in requests): the agent is told the owner
    * declined, with `reason` when the owner gave one. The Session's next `mcp_sign_in_requests` closes the card; a request
    * that is gone fails with the Session's message. The sign-in itself is the card's link, not a command.
@@ -512,6 +532,8 @@ const decodeMcpAppMounted = Schema.decodeUnknownOption(McpAppMounted);
 const decodeMcpAppHtmlAnswer = Schema.decodeUnknownOption(McpAppHtmlAnswer);
 
 const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
+
+const decodeSamplingRecord = Schema.decodeUnknownOption(Schema.NullOr(McpSamplingRecordView));
 
 const decodeComparisonSources = Schema.decodeUnknownOption(ComparisonSources);
 
@@ -722,6 +744,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "secretLifetimeMinutes"
         | "approvalRequests"
         | "mcpElicitationRequests"
+        | "mcpSamplingRequests"
+        | "mcpSamplingGrants"
         | "mcpSignInRequests"
         | "annotations"
         | "viewed"
@@ -1074,6 +1098,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       case "mcp_elicitation_requests":
         update({ mcpElicitationRequests: message.requests });
+
+        return;
+      case "mcp_sampling_requests":
+        update({ mcpSamplingRequests: message.requests, mcpSamplingGrants: message.grants });
 
         return;
       case "mcp_sign_in_requests":
@@ -1745,6 +1773,31 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         () => Option.some(undefined),
         true,
       ),
+    answerMcpSampling: (asked, choice, role) =>
+      request(
+        (id) => {
+          const answer: Types.Mutable<Extract<ClientMessage, { type: "mcp_sampling_answer" }>> = {
+            type: "mcp_sampling_answer",
+            id,
+            request: asked,
+            choice,
+          };
+
+          if (role !== undefined) answer.role = role;
+
+          return answer;
+        },
+        () => Option.some(undefined),
+        true,
+      ),
+    revokeMcpSampling: (server) =>
+      request(
+        (id) => ({ type: "mcp_sampling_revoke", id, server }),
+        () => Option.some(undefined),
+        true,
+      ),
+    getMcpSampling: (asked) =>
+      request((id) => ({ type: "mcp_sampling_get", id, request: asked }), decodeSamplingRecord),
     declineMcpSignIn: (asked, reason) =>
       request(
         (id) => {

@@ -30,6 +30,8 @@ import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { AppCall } from "../app-view/app-call.tsx";
 import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
+import { samplingsOf } from "./mcp-sampling-detail.ts";
+import { SamplingLines } from "./mcp-sampling-record.tsx";
 import { mcpStatusLabel, shownMcpStatus } from "./mcp-status.ts";
 import { NestedCall, OmittedCalls } from "./nested-calls.ts";
 import { keepClosedInView } from "./scroller.ts";
@@ -413,6 +415,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
   const changes = changesOf(artifact);
   const questions = questionsOf(artifact);
+  const samplings = samplingsOf(artifact);
   const mcpStatus = shownMcpStatus(artifact);
 
   // The Call diff of an `edit` or `write` that finished: only a call with a result has one.
@@ -446,6 +449,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
           </ul>
         </div>
       )}
+      {samplings.length > 0 && <SamplingLines requests={samplings} />}
       {(calls.length > 0 || omitted !== undefined) && (
         <NestedCalls parentId={toolCallId} calls={calls} omitted={omitted} />
       )}

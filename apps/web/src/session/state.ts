@@ -10,6 +10,8 @@ import {
   type McpAppEntry,
   type McpAppTool,
   type McpElicitationRequest,
+  type McpSamplingRequest,
+  type McpSamplingSessionGrant,
   type McpSignInRequest,
   type OwnerTabDriver,
   type OwnerTabListing,
@@ -146,6 +148,10 @@ export interface SessionState {
   readonly approvalRequests: readonly ApprovalRequest[];
   /** MCP servers' questions waiting for the owner, each shown as a card, oldest first; typed values live in the card. */
   readonly mcpElicitationRequests: readonly McpElicitationRequest[];
+  /** MCP servers' Sampling requests waiting for the owner, each shown as a card, oldest first. */
+  readonly mcpSamplingRequests: readonly McpSamplingRequest[];
+  /** The Session's grants for MCP servers' Sampling requests (Allow or Refuse in this Session), which Session details list. */
+  readonly mcpSamplingGrants: readonly McpSamplingSessionGrant[];
   /** The Sign-in requests waiting for the owner: an agent asked them to sign in to an MCP server. */
   readonly mcpSignInRequests: readonly McpSignInRequest[];
   /** The Session's draft Annotations, oldest first, as of the last `annotations` message; every client has the same. */
@@ -214,6 +220,8 @@ export const INITIAL_SESSION_STATE: SessionState = {
   secretLifetimeMinutes: 15,
   approvalRequests: [],
   mcpElicitationRequests: [],
+  mcpSamplingRequests: [],
+  mcpSamplingGrants: [],
   mcpSignInRequests: [],
   annotations: [],
   viewed: [],

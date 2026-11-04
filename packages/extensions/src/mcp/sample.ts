@@ -13,6 +13,8 @@ import {
   type McpInputRequest,
   plainLine,
 } from "@cloudpid/mcp/types";
+import type { McpSampledMode } from "@cloudpid/config";
+import type { McpElicitationSource } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
   ConversationId,
@@ -34,8 +36,16 @@ export type SamplingCall = {
   readonly tool: string;
   readonly callId: string;
   readonly conversationId: ConversationId;
-  /** Aborts when Stop does: a sample under way is stopped. */
+  /** Aborts when Stop does: a sample under way is stopped, and a card waiting is withdrawn. */
   readonly signal: AbortSignal | undefined;
+  /** What the server's definition says: `allow` answers without asking, `ask` asks the owner on a card first. */
+  readonly decision: McpSampledMode;
+  /** Where the server's definition is, for the card's badge. */
+  readonly source?: McpElicitationSource | undefined;
+  /** Stop the call's own clock while the owner decides, and start it again. */
+  readonly hold?:
+    | { readonly pause: Effect.Effect<void>; readonly resume: Effect.Effect<void> }
+    | undefined;
 };
 
 /** The hook of a call whose server may sample, and the requests it made. */
@@ -85,6 +95,9 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
         key: request.key,
         params: request.params,
         signal,
+        decision: call.decision,
+        source: call.source,
+        hold: call.hold,
       }),
     ).finally(() => controllers.delete(request.key));
 
@@ -119,9 +132,15 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
 const lineOf = (detail: McpSamplingDetail): string | undefined => {
   if (detail.status === "answered") return undefined;
 
+  if (detail.by === "owner" || detail.by === "grant") {
+    return `${detail.server} asked for a model reply; refused by you`;
+  }
+
   // Nothing the server wrote is in a reason, but the model's own failure may carry the provider's words: kept short and plain.
   const why = (() => {
     switch (detail.why) {
+      case "unanswered":
+        return "the owner did not answer in time";
       case "budget":
         return "out of budget";
       case "cap":

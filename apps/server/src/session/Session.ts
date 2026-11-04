@@ -16,6 +16,7 @@ import { DeployCredentials, Environments } from "@cloudpid/extensions/environmen
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { InstructionsSettings } from "@cloudpid/extensions/instructions";
+import { rememberSampling } from "@cloudpid/extensions/mcp";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SettingsAccess } from "@cloudpid/extensions/settings";
@@ -571,6 +572,23 @@ export const SessionLive = Session.make(
         // SAFETY: the Server Worker binds the Images binding as `IMAGES` (`worker.ts`).
         const images = worker[IMAGES_BINDING] as ImagesBinding;
 
+        // The `settings_mcp_*` tools' read of the Registry, and their pushes of a changed set.
+        const settingsMcp = sessionSettingsMcpAccess({
+          registry: registries.getByName(REGISTRY_NAME),
+          session: name,
+          host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
+          workspace: Effect.tryPromise(() => placement()).pipe(
+            Effect.map(({ workspace: id, object }) => (id === null ? null : object)),
+          ),
+        });
+
+        // The Registry's Settings, as the Session reaches them: the agent's `settings_*` tools change them, and so does the
+        // Sampling card's *Always allow* and *Never* for the owner.
+        const settingsAccess = sessionSettingsAccess({
+          registry: registries.getByName(REGISTRY_NAME),
+          session: name,
+        });
+
         // What MCP servers ask the owner during a call: shown on the sockets, pushed, never kept (`./mcp-questions.ts`).
         const mcpQuestions = sessionMcpQuestions({
           storage: kv,
@@ -582,21 +600,13 @@ export const SessionLive = Session.make(
           // A Modern server's answers are sealed until the call's resume, bound to this object's ID.
           encryptionKey: secrets.encryptionKey,
           session: state.raw.id.toString(),
+          // *Always allow* and *Never* on a Sampling card write the server's definition, as the owner's change.
+          remember: rememberSampling({ settings: settingsAccess, mcp: settingsMcp }),
         });
 
-        // The sampler that answers an allowing Legacy server's Sampling requests on this Session's models, its records kept
-        // in this object's storage (`./mcp-sampling.ts`).
-        const mcpSampling = sessionMcpSampling({ storage: kv });
-
-        // The `settings_mcp_*` tools' read of the Registry, and their pushes of a changed set.
-        const settingsMcp = sessionSettingsMcpAccess({
-          registry: registries.getByName(REGISTRY_NAME),
-          session: name,
-          host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
-          workspace: Effect.tryPromise(() => placement()).pipe(
-            Effect.map(({ workspace: id, object }) => (id === null ? null : object)),
-          ),
-        });
+        // The sampler that answers a Legacy server's Sampling requests on this Session's models, asking the owner on a card
+        // when the definition says `ask`; its records are kept in this object's storage (`./mcp-sampling.ts`).
+        const mcpSampling = sessionMcpSampling({ storage: kv, questions: mcpQuestions.service });
 
         // The agent's asks that the owner sign in to an MCP server: durable, shown on the sockets, pushed once for each
         // sign-in's key (`./mcp-sign-ins.ts`).
@@ -958,13 +968,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(SubagentWorkspaces, subagentWorkspaces),
                   Effect.provideService(Environments, environments),
                   Effect.provideService(EnvironmentRemoval, environmentRemoval),
-                  Effect.provideService(
-                    SettingsAccess,
-                    sessionSettingsAccess({
-                      registry: registries.getByName(REGISTRY_NAME),
-                      session: name,
-                    }),
-                  ),
+                  Effect.provideService(SettingsAccess, settingsAccess),
                   // The `settings_mcp_*` tools: the Registry's MCP servers, and the hosts of the Environments they name.
                   Effect.provideService(SettingsMcpAccess, settingsMcp),
                   Effect.provideService(DeployCredentials, {

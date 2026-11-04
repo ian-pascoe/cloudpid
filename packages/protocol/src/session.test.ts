@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { McpSamplingRecordView } from "./mcp-sampling.ts";
 import {
   Catalog,
   CommandOutcome,
@@ -572,5 +573,53 @@ describe("the Session socket messages", () => {
         }),
       ),
     ).toEqual(Option.none());
+  });
+
+  it("carry the Sampling requests and grants, and keep a Role, an action, a status or a deciding party a later build adds", async () => {
+    const request = {
+      id: "call-1:1",
+      callId: "call-1",
+      conversationId: 1,
+      server: "docs",
+      tool: "mcp__docs__sample",
+      role: "xxlarge",
+      model: "m/huge",
+      roles: [
+        { role: "small", model: "m/small" },
+        { role: "xxlarge", model: "m/huge" },
+      ],
+      messages: [{ role: "user", text: "hi" }],
+      tools: [],
+      notes: [],
+      writable: true,
+      deadline: 1000,
+    };
+
+    const text = JSON.stringify({
+      type: "mcp_sampling_requests",
+      requests: [request],
+      grants: [
+        { server: "docs", action: "allow" },
+        { server: "wiki", action: "defer" },
+      ],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+
+    // The record a call's card expands, with a status and a deciding party this build does not know.
+    const record = {
+      server: "docs",
+      tool: "mcp__docs__sample",
+      messages: [],
+      tools: [],
+      notes: [],
+      id: "call-1:1",
+      callId: "call-1",
+      status: "paused",
+      by: "operator",
+      askedAt: 1,
+    };
+
+    expect(Schema.decodeOption(McpSamplingRecordView)(record)).toEqual(Option.some(record));
   });
 });

@@ -635,6 +635,171 @@ describe("a Session connection", () => {
     );
   });
 
+  describe("MCP sampling requests", () => {
+    const asked = {
+      id: "call-1:s1",
+      callId: "call-1",
+      conversationId: 1,
+      server: "docs",
+      tool: "mcp__docs__sample",
+      role: "small",
+      model: "m/small",
+      roles: [{ role: "small", model: "m/small" }],
+      writable: true,
+      messages: [{ role: "user", text: "hi" }],
+      tools: [],
+      notes: [],
+      deadline: 600_000,
+    };
+
+    it.effect("keeps the cards and the grants of a closed socket until the next one says", () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
+
+        yield* watching(latest());
+        yield* latest().say({
+          type: "mcp_sampling_requests",
+          requests: [asked],
+          grants: [{ server: "docs", action: "allow" }],
+        });
+        yield* latest().drop();
+
+        expect(state().mcpSamplingRequests).toEqual([asked]);
+        expect(state().mcpSamplingGrants).toEqual([{ server: "docs", action: "allow" }]);
+
+        yield* advance(60_000);
+        yield* watching(latest());
+        yield* latest().say({ type: "mcp_sampling_requests", requests: [], grants: [] });
+
+        expect(state().mcpSamplingRequests).toEqual([]);
+        expect(state().mcpSamplingGrants).toEqual([]);
+      }),
+    );
+
+    it.effect("sends the choice, and the Role only when one was picked", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const plain = yield* Effect.forkChild(client.answerMcpSampling("call-1:s1", "allow_call"));
+
+        yield* settle;
+        expect(latest().commands().at(-1)).toEqual({
+          type: "mcp_sampling_answer",
+          id: expect.any(String),
+          request: "call-1:s1",
+          choice: "allow_call",
+        });
+        yield* Fiber.interrupt(plain);
+
+        const picked = yield* Effect.forkChild(
+          client.answerMcpSampling("call-1:s1", "allow_session", "medium"),
+        );
+
+        yield* settle;
+        expect(latest().commands().at(-1)).toEqual({
+          type: "mcp_sampling_answer",
+          id: expect.any(String),
+          request: "call-1:s1",
+          choice: "allow_session",
+          role: "medium",
+        });
+        yield* Fiber.interrupt(picked);
+      }),
+    );
+
+    it.effect("fails with the Session's refusal, so the card can show it", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const answer = yield* Effect.forkChild(
+          client.answerMcpSampling("call-1:s1", "allow_always"),
+        );
+
+        yield* settle;
+        yield* latest().say({
+          type: "error",
+          id: latest().commands().at(-1)?.id,
+          message: "could not save the server's definition",
+        });
+
+        const exit = yield* Fiber.await(answer);
+
+        expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toMatchObject({
+          message: "could not save the server's definition",
+        });
+      }),
+    );
+
+    it.effect("revokes a grant, and reads a settled record or none", () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const revoke = yield* Effect.forkChild(client.revokeMcpSampling("docs"));
+
+        yield* settle;
+
+        const revoked = latest().commands().at(-1);
+
+        expect(revoked).toEqual({
+          type: "mcp_sampling_revoke",
+          id: expect.any(String),
+          server: "docs",
+        });
+        yield* latest().say({ type: "result", id: revoked?.id, result: null });
+        expect(Exit.isSuccess(yield* Fiber.await(revoke))).toBe(true);
+
+        const gone = yield* Effect.forkChild(client.getMcpSampling("s-1"));
+
+        yield* settle;
+
+        const asking = latest().commands().at(-1);
+
+        expect(asking).toEqual({
+          type: "mcp_sampling_get",
+          id: expect.any(String),
+          request: "s-1",
+        });
+        yield* latest().say({ type: "result", id: asking?.id, result: null });
+
+        const none = yield* Fiber.await(gone);
+
+        expect(Exit.isSuccess(none) ? none.value : undefined).toBeNull();
+
+        const found = yield* Effect.forkChild(client.getMcpSampling("s-2"));
+
+        yield* settle;
+
+        const reading = latest().commands().at(-1);
+
+        const record = {
+          server: "docs",
+          tool: "mcp__docs__sample",
+          messages: [{ role: "user", text: "hi" }],
+          tools: [],
+          notes: [],
+          id: "s-2",
+          callId: "call-1",
+          status: "answered",
+          by: "owner",
+          reply: "hello",
+          askedAt: 1,
+        };
+
+        yield* latest().say({ type: "result", id: reading?.id, result: record });
+
+        const read = yield* Fiber.await(found);
+
+        expect(Exit.isSuccess(read) ? read.value : undefined).toEqual(record);
+      }),
+    );
+  });
+
   describe("MCP sign-in requests", () => {
     const asked = {
       id: "signin-1",

@@ -186,6 +186,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
         const approved = yield* approvals.pending;
         const handed = yield* handoffs.pending;
         const asked = yield* questions.pending;
+        const sampling = yield* questions.pendingSampling;
         const signing = yield* signIns.pending;
 
         const found: Array<{ readonly key: string; readonly request: Waiting }> = [
@@ -225,6 +226,19 @@ const sessionMcp = (options: SessionMcpOptions) =>
                       : `${question.server} asks you to open a page`,
                   )
                 : "An MCP server needs your input",
+              url: "",
+            },
+          })),
+          // The server's name only, never what it asks: the card has that.
+          ...Arr.map(sampling, (request) => ({
+            key: `sampling:${request.id}`,
+            request: {
+              kind: "sampling" as const,
+              request_id: request.id,
+              agent_id: agentIdOf(state, request.conversationId),
+              summary: readable
+                ? redact(`${request.server} asks to use a model`)
+                : "An MCP server asks to use a model",
               url: "",
             },
           })),

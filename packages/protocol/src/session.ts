@@ -21,6 +21,12 @@ import {
   McpElicitationAction,
   McpElicitationRequest,
 } from "./mcp-elicitation.ts";
+import {
+  McpSamplingChoice,
+  McpSamplingRequest,
+  McpSamplingRole,
+  McpSamplingSessionGrant,
+} from "./mcp-sampling.ts";
 import { McpCatalogServer, McpPromptData, McpPromptEntry, McpPromptRef } from "./mcp-prompts.ts";
 
 /**
@@ -196,6 +202,41 @@ export const McpElicitationAnswer = Schema.Struct({
   request: Schema.String,
   action: McpElicitationAction,
   content: Schema.optionalKey(ElicitationContent),
+});
+
+/**
+ * The owner's answer to MCP Sampling request `request` (`mcp_sampling_requests`) by `choice`: allow it for the call, for the
+ * Session or always (which writes the definition's `sampling`), or refuse it, for the Session or never. `role` is the Role
+ * the owner picked to run an allowed request on, from the card's `roles`; absent, the card's own. Answered with `null`; fails
+ * when no such request waits (answered, ended or withdrawn), and when a choice that writes the definition could not be saved
+ * (the request then still waits). (`docs/architecture/mcp-server-requests.md` → Sampling requests).
+ */
+export const McpSamplingAnswer = Schema.Struct({
+  type: Schema.Literal("mcp_sampling_answer"),
+  id: CommandId,
+  request: Schema.String,
+  choice: McpSamplingChoice,
+  role: Schema.optionalKey(McpSamplingRole),
+});
+
+/**
+ * Ask for the settled Sampling request `request`, the id of a call's `details.sampling` entry: answered with its
+ * `McpSamplingRecordView`, or `null` when no such record is kept (the Session keeps the newest, within a bound).
+ */
+export const McpSamplingGet = Schema.Struct({
+  type: Schema.Literal("mcp_sampling_get"),
+  id: CommandId,
+  request: Schema.String,
+});
+
+/**
+ * Take back the Session grant for `server` (the Session's details list them): its next Sampling request asks the owner again,
+ * or is answered as its definition says. Answered with `null`, also when it had no grant.
+ */
+export const McpSamplingRevoke = Schema.Struct({
+  type: Schema.Literal("mcp_sampling_revoke"),
+  id: CommandId,
+  server: Schema.String,
 });
 
 /**
@@ -650,6 +691,9 @@ export const ClientMessage = Schema.Union([
   SecretAnswer,
   ApprovalAnswer,
   McpElicitationAnswer,
+  McpSamplingAnswer,
+  McpSamplingGet,
+  McpSamplingRevoke,
   McpSignInAnswer,
   AnnotationSave,
   AnnotationDelete,
@@ -839,6 +883,20 @@ export const ApprovalRequests = Schema.Struct({
 export const McpElicitationRequests = Schema.Struct({
   type: Schema.Literal("mcp_elicitation_requests"),
   requests: Schema.Array(McpElicitationRequest),
+});
+
+/**
+ * The Sampling requests MCP servers wait on the owner to answer (`docs/architecture/mcp-server-requests.md` → Sampling
+ * requests), oldest first, and the Session's grants (the owner's choices for a server until the Session ends, which the
+ * Session's details list). A client shows a card for each request outside the chat, and answers with
+ * `mcp_sampling_answer`. Sent after `hello` on every connect (empty too) and in full to every client whenever either
+ * changes. A Legacy server's request lives only as long as its call waits (ADR-0037): it does not outlive an eviction or a
+ * restart; the grants do.
+ */
+export const McpSamplingRequests = Schema.Struct({
+  type: Schema.Literal("mcp_sampling_requests"),
+  requests: Schema.Array(McpSamplingRequest),
+  grants: Schema.Array(McpSamplingSessionGrant),
 });
 
 /**
@@ -1424,6 +1482,7 @@ export const ServerMessage = Schema.Union([
   SecretRequests,
   ApprovalRequests,
   McpElicitationRequests,
+  McpSamplingRequests,
   McpSignInRequests,
   AnnotationsMessage,
   ViewedMessage,

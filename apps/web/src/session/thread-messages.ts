@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import { type CallDiff, callDiffOf } from "../call-diff.ts";
 import { madeChanges, type ShownChange } from "../chat/agent-change.ts";
 import { askedQuestions, type ShownElicitation } from "../chat/mcp-elicitation-detail.ts";
+import { sampledRequests, type ShownSampling } from "../chat/mcp-sampling-detail.ts";
 import { mcpStatusOf, type ShownMcpStatus } from "../chat/mcp-status.ts";
 import {
   liveCalls,
@@ -144,6 +145,7 @@ const resolveCall = (
     const images = shownImages(result.content);
     const changes = madeChanges(result.details);
     const elicitations = askedQuestions(result.details);
+    const samplings = sampledRequests(result.details);
     const mcp = mcpStatusOf(result.details);
     const diff = callDiffOf(result.name, result.details, result.error);
 
@@ -166,6 +168,8 @@ const resolveCall = (
 
     if (elicitations.length > 0) artifact.elicitations = elicitations;
 
+    if (samplings.length > 0) artifact.samplings = samplings;
+
     if (mcp !== undefined) artifact.mcp = mcp;
 
     if (diff !== undefined) artifact.diff = diff;
@@ -179,6 +183,7 @@ const resolveCall = (
         images.length === 0 &&
         changes.length === 0 &&
         elicitations.length === 0 &&
+        samplings.length === 0 &&
         mcp === undefined &&
         diff === undefined
         ? resolved
@@ -195,6 +200,7 @@ type CardArtifact = {
   images?: { readonly mimeType: string; readonly data: string }[];
   changes?: ReadonlyArray<ShownChange>;
   elicitations?: ReadonlyArray<ShownElicitation>;
+  samplings?: ReadonlyArray<ShownSampling>;
   mcp?: ShownMcpStatus;
   diff?: CallDiff;
 };
