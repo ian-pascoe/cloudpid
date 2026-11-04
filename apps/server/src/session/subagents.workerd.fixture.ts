@@ -134,7 +134,12 @@ export class TestSubagentSession extends DurableObject {
               Layer.succeed(SessionRegistry, {
                 // A message is placed once the Session reports itself running, so holding the report holds a message
                 // in the middle of being placed (`holdPlacing`).
-                report: () => Effect.promise(() => this.#placing?.promise ?? Promise.resolve()),
+                report: () =>
+                  Effect.promise(() => {
+                    this.#placing?.started.resolve();
+
+                    return this.#placing?.finish.promise ?? Promise.resolve();
+                  }),
                 // Recorded in storage, so a test reads them across instances; `failAgentReports` makes them fail.
                 reportAgents: (agents) =>
                   ctx.storage.kv.get<boolean>(AGENT_REPORTS_FAIL) === true
@@ -413,16 +418,20 @@ export class TestSubagentSession extends DurableObject {
   }
 
   /** While set, a message being placed waits for `finishPlacing`: its report of the Session running is held. */
-  #placing: PromiseWithResolvers<void> | undefined;
+  #placing: { started: PromiseWithResolvers<void>; finish: PromiseWithResolvers<void> } | undefined;
 
-  /** Hold the placing of the next message, once it starts, until `finishPlacing`. */
-  holdPlacing(): void {
-    this.#placing = Promise.withResolvers<void>();
+  /** Hold the placing of the next message, once it starts, until `finishPlacing`. Resolves once that placing has started. */
+  holdPlacing(): Promise<void> {
+    const held = { started: Promise.withResolvers<void>(), finish: Promise.withResolvers<void>() };
+
+    this.#placing = held;
+
+    return held.started.promise;
   }
 
   /** Let the held placing end, and every later one go on. */
   finishPlacing(): void {
-    this.#placing?.resolve();
+    this.#placing?.finish.resolve();
     this.#placing = undefined;
   }
 
@@ -445,26 +454,42 @@ export class TestSubagentSession extends DurableObject {
     );
   }
 
-  /** The messages whose preparation is held, by text: their page read waits until `finishPreparing`. */
-  readonly #preparing = new Map<string, PromiseWithResolvers<void>>();
+  /** The messages whose preparation is held, by text: their page read starts, then waits until `finishPreparing`. */
+  readonly #preparing = new Map<
+    string,
+    { started: PromiseWithResolvers<void>; finish: PromiseWithResolvers<void> }
+  >();
 
-  /** Hold the preparation of the message `text` (a slow read of its attached pages) until `finishPreparing(text)`. */
-  holdPreparing(text: string): void {
-    this.#preparing.set(text, Promise.withResolvers<void>());
+  /**
+   * Hold the preparation of the message `text` (a slow read of its attached pages) until `finishPreparing(text)`.
+   * Resolves once that preparation has started.
+   */
+  holdPreparing(text: string): Promise<void> {
+    const held = { started: Promise.withResolvers<void>(), finish: Promise.withResolvers<void>() };
+
+    this.#preparing.set(text, held);
+
+    return held.started.promise;
   }
 
   /** Let the held preparation of the message `text` end. */
   finishPreparing(text: string): void {
-    this.#preparing.get(text)?.resolve();
+    this.#preparing.get(text)?.finish.resolve();
   }
 
   /** The page read that holds the preparation of `text`, if it is held. */
   #held(text: string): Pick<Prompt, "attachPages"> {
-    const gate = this.#preparing.get(text);
+    const held = this.#preparing.get(text);
 
-    return gate === undefined
+    return held === undefined
       ? {}
-      : { attachPages: Effect.promise(() => gate.promise).pipe(Effect.as([])) };
+      : {
+          attachPages: Effect.promise(() => {
+            held.started.resolve();
+
+            return held.finish.promise;
+          }).pipe(Effect.as([])),
+        };
   }
 
   /** Navigate to just before the Session's first message, with a summary of the branch left when asked: the branch entered, or why it could not. */
