@@ -10,6 +10,8 @@ import {
   MAX_MCP_APP_AUDIT,
   MAX_MCP_APP_LOG_CHARS,
   MAX_MCP_APP_REQUEST_KEY,
+  MCP_APP_INTERNAL_ERROR,
+  MCP_APP_INVALID_PARAMS,
   type McpAppAuditEntry,
   type McpAppRequestAnswer,
 } from "@cloudpid/protocol";
@@ -19,7 +21,7 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type { SessionClient } from "../session/client.ts";
-import { INTERNAL_ERROR, INVALID_PARAMS, RpcError, type RequestHandler } from "./bridge.ts";
+import { RpcError, type RequestHandler } from "./bridge.ts";
 
 /** What serving a View's requests needs of the Session's client. */
 export type AppRequestClient = Pick<SessionClient, "appRequest" | "appLog">;
@@ -59,7 +61,8 @@ const nextRequestId = (): string => {
 const paramsOf = (params: unknown): Record<string, Schema.Json> | undefined => {
   const decoded = Arr.isArray(params) ? Option.none() : decodeParams(params);
 
-  if (Option.isNone(decoded)) throw new RpcError(INVALID_PARAMS, "params must be an object");
+  if (Option.isNone(decoded))
+    throw new RpcError(MCP_APP_INVALID_PARAMS, "params must be an object");
 
   return decoded.value;
 };
@@ -77,7 +80,7 @@ const answerOf = (answer: McpAppRequestAnswer, reports: ViewRequestReports): unk
     throw new RpcError(answer.code, answer.message);
   }
 
-  throw new RpcError(INTERNAL_ERROR, "The host could not answer");
+  throw new RpcError(MCP_APP_INTERNAL_ERROR, "The host could not answer");
 };
 
 /**
@@ -102,7 +105,10 @@ export const viewRequestHandlers = (
         if (error instanceof RpcError) throw error;
 
         // The socket is down (or dropped with the request in flight), or the frame is going: the View hears if it is there.
-        throw new RpcError(INTERNAL_ERROR, "Connection lost: the host could not reach the Session");
+        throw new RpcError(
+          MCP_APP_INTERNAL_ERROR,
+          "Connection lost: the host could not reach the Session",
+        );
       });
 
       return answerOf(answer, reports);

@@ -21,11 +21,12 @@
 // host's request. One span for each request, which names its server, method and outcome but never its arguments.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- the registry of what is in flight is plain mutable state, which the limits are counted in.
 import type { McpAppRequestInput } from "@cloudpid/extensions/mcp";
-import { isWarningOrAbove, type JsonObject } from "@cloudpid/mcp/types";
+import { isWarningOrAbove, MCP_LOG_LEVELS, type JsonObject } from "@cloudpid/mcp/types";
 import {
   appAuditSummary,
   MAX_MCP_APP_IN_FLIGHT,
   MAX_MCP_APP_LOG_CHARS,
+  MAX_MCP_APP_LOGS_PER_MINUTE,
   MAX_MCP_APP_PER_MINUTE,
   MCP_APP_INTERNAL_ERROR,
   MCP_APP_INVALID_PARAMS,
@@ -37,6 +38,7 @@ import {
   McpAppRequestError,
   McpAppRequestResult,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -93,12 +95,27 @@ export type AppCallsOptions = {
   readonly now: () => number;
 };
 
+/**
+ * Count a request or log line arriving at `at` against a View's `stamps` of the last minute, and say whether it is over
+ * `limit`. It is counted whether or not it is let through, so a View is not let spend what it was refused; only the
+ * newest `limit` stamps are kept, so a View that is over the limit stays over it for as long as it keeps asking.
+ */
+const admit = (stamps: Array<number>, at: number, limit: number): boolean => {
+  const live = stamps.filter((each) => at - each < MINUTE_MS);
+  const over = live.length >= limit;
+
+  live.push(at);
+  stamps.splice(0, stamps.length, ...live.slice(-limit));
+
+  return over;
+};
+
 /** One View's counts, and what it has in flight. */
 type ViewState = {
   /** When its requests of the last minute arrived. */
-  stamps: Array<number>;
+  readonly stamps: Array<number>;
   /** When its log lines of the last minute arrived. */
-  logStamps: Array<number>;
+  readonly logStamps: Array<number>;
   readonly running: Map<string, AbortController>;
 };
 
@@ -279,18 +296,8 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
       }
 
       const state = stateOf(input.view, input.callId);
-      const at = options.now();
 
-      state.stamps = state.stamps.filter((each) => at - each < MINUTE_MS);
-
-      // Counted as it arrives, a refused request too, so a View is not let spend what it was refused. Only the newest
-      // minute's worth is kept: a View that is over the limit stays over it for as long as it keeps asking.
-      const over = state.stamps.length >= MAX_MCP_APP_PER_MINUTE;
-
-      state.stamps.push(at);
-      state.stamps.splice(0, state.stamps.length - MAX_MCP_APP_PER_MINUTE);
-
-      if (over) {
+      if (admit(state.stamps, options.now(), MAX_MCP_APP_PER_MINUTE)) {
         return mcpAppError(
           "limit",
           `At most ${MAX_MCP_APP_PER_MINUTE} requests a minute for each App View`,
@@ -382,20 +389,19 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
       if (Option.isNone(record)) return;
 
       const state = stateOf(input.view, input.callId);
-      const at = options.now();
 
-      state.logStamps = state.logStamps.filter((each) => at - each < MINUTE_MS);
+      if (admit(state.logStamps, options.now(), MAX_MCP_APP_LOGS_PER_MINUTE)) return;
 
-      const over = state.logStamps.length >= MAX_MCP_APP_PER_MINUTE;
+      // A level this build does not know is kept as a warning (it may be one), but is named `unknown`, never the View's own text.
+      const known = Arr.contains(MCP_LOG_LEVELS, input.level);
 
-      state.logStamps.push(at);
-      state.logStamps.splice(0, state.logStamps.length - MAX_MCP_APP_PER_MINUTE);
+      if (known && !isWarningOrAbove(input.level)) return;
 
-      if (over || !isWarningOrAbove(input.level)) return;
-
+      const level = known ? input.level : "unknown";
       const redactor = yield* options.secrets;
 
-      // Redacted, then cut, so a Secret is never cut into a piece that no longer matches it.
+      // Redacted after the client cut it to 2 KiB, so a Secret that straddled that cut arrives as a fragment, which no
+      // longer matches it: this guards against an accident (a View that logs what it was given), not a hostile View.
       const message = redactor.redact(input.message).slice(0, MAX_MCP_APP_LOG_CHARS);
       const logger = redactor.redact(input.logger ?? "");
 
@@ -403,13 +409,13 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
         const span = yield* Effect.currentSpan;
         const now = yield* Clock.currentTimeNanos;
 
-        span.event(APP_LOG_EVENT, now, { level: input.level, logger, message });
+        span.event(APP_LOG_EVENT, now, { level, logger, message });
       }).pipe(
         Effect.withSpan("mcp.app_log", {
           attributes: {
             "mcp.server": record.value.server,
             "mcp.app.call": input.callId,
-            "mcp.app.level": input.level,
+            "mcp.app.level": level,
           },
         }),
       );

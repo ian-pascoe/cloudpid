@@ -437,6 +437,16 @@ describe("a log line from an App View", () => {
     ]);
   });
 
+  it("names a level it does not know `unknown`, never the View's own text, and keeps the line as a warning", async () => {
+    const { calls } = session();
+
+    const events = await logged(calls, { view: socket(), level: "hunter2-level".repeat(8) });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.attributes).toMatchObject({ level: "unknown" });
+    expect(JSON.stringify(events)).not.toContain("hunter2");
+  });
+
   it("is cut to its limit, and reaches no audit log", async () => {
     const { calls, audit } = session();
 

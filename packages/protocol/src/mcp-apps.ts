@@ -39,6 +39,9 @@ export const MAX_MCP_APP_AUDIT = 50;
 export const MAX_MCP_APP_IN_FLIGHT = 4;
 export const MAX_MCP_APP_PER_MINUTE = 60;
 
+/** The log lines (`notifications/message`) a View may send in a minute, counted the same way. */
+export const MAX_MCP_APP_LOGS_PER_MINUTE = 60;
+
 /** What an audit entry keeps of a request: its arguments, in UTF-8 bytes (cut at a character), and the result's or error's text, in characters. */
 export const MCP_APP_AUDIT_ARGS_BYTES = 2048;
 export const MCP_APP_AUDIT_TEXT_CHARS = 500;

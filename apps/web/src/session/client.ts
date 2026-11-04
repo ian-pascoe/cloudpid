@@ -980,6 +980,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     if (connection === ended) connection = null;
 
     watched = false;
+    // The next `hello` says whether the Session that answers takes the App Views' messages.
+    appViews = false;
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of pending) submit.sent = false;

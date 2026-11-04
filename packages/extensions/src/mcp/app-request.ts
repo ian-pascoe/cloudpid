@@ -23,7 +23,6 @@ import {
 import {
   MCP_APP_INTERNAL_ERROR,
   mcpAppError,
-  type McpAppReason,
   type McpAppRequestAnswer,
   type McpAppRequestError,
 } from "@cloudpid/protocol";
@@ -68,9 +67,6 @@ export type McpAppRequestDeps = {
   readonly slackMs?: number | undefined;
 };
 
-const failure: (reason: McpAppReason, message: string, code?: number) => McpAppRequestError =
-  mcpAppError;
-
 /** A promise that resolves when `signal` aborts, and never otherwise. */
 const abortedBy = (signal: AbortSignal) =>
   new Promise<void>((resolve) => {
@@ -85,11 +81,15 @@ const refusalOf = (
   input: McpAppRequestInput,
 ): Option.Option<McpAppRequestError> => {
   if (Option.isNone(server)) {
-    return Option.some(failure("unavailable", `No MCP server ${input.server} in this Environment`));
+    return Option.some(
+      mcpAppError("unavailable", `No MCP server ${input.server} in this Environment`),
+    );
   }
 
   if (!isReachable(server.value)) {
-    return Option.some(failure("hidden", `MCP server ${input.server} is switched off or hidden`));
+    return Option.some(
+      mcpAppError("hidden", `MCP server ${input.server} is switched off or hidden`),
+    );
   }
 
   if (input.method !== "tools/call") return Option.none();
@@ -98,14 +98,17 @@ const refusalOf = (
 
   if (Option.isNone(tool)) {
     return Option.some(
-      failure("refused", `MCP server ${input.server} lists no tool ${input.name}`),
+      mcpAppError("refused", `MCP server ${input.server} lists no tool ${input.name}`),
     );
   }
 
   return visibilityOfMeta(tool.value._meta).includes("app")
     ? Option.none()
     : Option.some(
-        failure("refused", `Tool ${input.name} of MCP server ${input.server} is not for App Views`),
+        mcpAppError(
+          "refused",
+          `Tool ${input.name} of MCP server ${input.server} is not for App Views`,
+        ),
       );
 };
 
@@ -116,20 +119,20 @@ type HostAnswer = McpHostRequestResult | HostLost;
 const failedWith = (error: McpHostCallFailed["error"], server: string): McpAppRequestError =>
   Match.value(error).pipe(
     Match.tag("SignInRequired", () => ({
-      ...failure("sign_in", `MCP server ${server} needs you signed in`),
+      ...mcpAppError("sign_in", `MCP server ${server} needs you signed in`),
       server,
     })),
     Match.tag("StepUpRequired", () => ({
-      ...failure("sign_in", `MCP server ${server} needs you signed in with more access`),
+      ...mcpAppError("sign_in", `MCP server ${server} needs you signed in with more access`),
       server,
       stepUp: true,
     })),
-    Match.tag("Unreachable", (each) => failure("unavailable", each.message)),
+    Match.tag("Unreachable", (each) => mcpAppError("unavailable", each.message)),
     Match.tag("ServerError", (each) =>
-      failure("failed", each.message, each.code ?? MCP_APP_INTERNAL_ERROR),
+      mcpAppError("failed", each.message, each.code ?? MCP_APP_INTERNAL_ERROR),
     ),
-    Match.tag("NotFound", (each) => failure("failed", each.message, each.code)),
-    Match.orElse((each) => failure("failed", each.message, MCP_APP_INTERNAL_ERROR)),
+    Match.tag("NotFound", (each) => mcpAppError("failed", each.message, each.code)),
+    Match.orElse((each) => mcpAppError("failed", each.message, MCP_APP_INTERNAL_ERROR)),
   );
 
 /** The App View's answer for what the host answered. */
@@ -142,7 +145,7 @@ const answerOf = (answer: HostAnswer, server: string): Effect.Effect<McpAppReque
         // Over 1 MiB: more than a socket message carries, and more than a View is given.
         return Effect.promise(() => result.body.cancel().catch(() => undefined)).pipe(
           Effect.as(
-            failure(
+            mcpAppError(
               "failed",
               "The result is too large for an App View (over 1 MiB)",
               MCP_APP_INTERNAL_ERROR,
@@ -154,20 +157,20 @@ const answerOf = (answer: HostAnswer, server: string): Effect.Effect<McpAppReque
       return Effect.succeed(
         isJsonObject(result.value)
           ? ({ status: "result", result: result.value } as const)
-          : failure("failed", "The server's result is not an object", MCP_APP_INTERNAL_ERROR),
+          : mcpAppError("failed", "The server's result is not an object", MCP_APP_INTERNAL_ERROR),
       );
     }),
     Match.tag("CallFailed", (failed) => Effect.succeed(failedWith(failed.error, server))),
     Match.tag("UnknownServer", "ServerChanged", (each) =>
-      Effect.succeed(failure("unavailable", each.message)),
+      Effect.succeed(mcpAppError("unavailable", each.message)),
     ),
-    Match.tag("NotAllowed", (each) => Effect.succeed(failure("refused", each.message))),
+    Match.tag("NotAllowed", (each) => Effect.succeed(mcpAppError("refused", each.message))),
     Match.tag("HostUnsupported", "HostFailed", "HostLost", (each) =>
-      Effect.succeed(failure("failed", each.message, MCP_APP_INTERNAL_ERROR)),
+      Effect.succeed(mcpAppError("failed", each.message, MCP_APP_INTERNAL_ERROR)),
     ),
     Match.orElse((each) =>
       Effect.succeed(
-        failure(
+        mcpAppError(
           "failed",
           `The MCP host answered ${each._tag}, which an App View's request never asks for`,
           MCP_APP_INTERNAL_ERROR,
@@ -216,11 +219,11 @@ export const appRequestOf = (
 
   if (Option.isSome(refused) || Option.isNone(server)) {
     return Effect.succeed(
-      Option.getOrElse(refused, () => failure("unavailable", "No such server")),
+      Option.getOrElse(refused, () => mcpAppError("unavailable", "No such server")),
     );
   }
 
-  const cancelled = failure("cancelled", "The request was cancelled");
+  const cancelled = mcpAppError("cancelled", "The request was cancelled");
 
   // The Session giving up on the host: aborts the request the host is running.
   const lost = new AbortController();
@@ -243,7 +246,7 @@ export const appRequestOf = (
         (yield* Effect.promise(() => deps.ready?.(named) ?? Promise.resolve(true)));
 
       if (!ready) {
-        return failure(
+        return mcpAppError(
           "unavailable",
           "The Workspace this server runs in did not answer; the request was not sent",
         );
@@ -265,7 +268,7 @@ export const appRequestOf = (
         Effect.sleep(waitOf(server.value, deps.slackMs ?? MCP_CALL_SLACK_MS)).pipe(
           Effect.tap(() => Effect.sync(() => lost.abort())),
           Effect.as(
-            failure("failed", "The MCP host did not answer in time", MCP_APP_INTERNAL_ERROR),
+            mcpAppError("failed", "The MCP host did not answer in time", MCP_APP_INTERNAL_ERROR),
           ),
         ),
       ),

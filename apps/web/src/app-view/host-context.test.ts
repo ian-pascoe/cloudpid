@@ -101,6 +101,7 @@ describe("hostCapabilities", () => {
       sandbox: {},
       serverTools: {},
       serverResources: {},
+      logging: {},
     });
   });
 });

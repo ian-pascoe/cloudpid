@@ -5,6 +5,7 @@
 // @effect-diagnostics preferEffectArray:off asyncFunction:off -- fakes: a log of calls, and promises the handlers answer.
 import type { McpAppAuditEntry, McpAppRequestAnswer } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import { describe, expect, it } from "vitest";
 import { RpcError } from "./bridge.ts";
 import { SessionCommandError } from "../session/client.ts";
@@ -98,7 +99,7 @@ describe("a View's requests", () => {
   it("serves only those two methods", () => {
     const handlers = viewRequestHandlers(fakeClient(undefined).client, "c", reports().on);
 
-    expect(Object.keys(handlers).sort()).toEqual(["resources/read", "tools/call"]);
+    expect(Record.keys(handlers).sort()).toEqual(["resources/read", "tools/call"]);
   });
 
   it("answers params that are not an object of JSON with -32602, without asking the Session", async () => {
@@ -183,7 +184,7 @@ describe("a View's requests", () => {
       (error: unknown) => error,
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await Effect.runPromise(Effect.sleep("10 millis"));
     aborts.abort();
 
     expect(await pending).toBeInstanceOf(RpcError);

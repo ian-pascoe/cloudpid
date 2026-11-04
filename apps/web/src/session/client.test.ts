@@ -3060,6 +3060,29 @@ describe("the App calls on a Session connection", () => {
   );
 
   it.effect(
+    "decides again at each hello: a Session that replaces one that took them, and does not say so, is sent nothing",
+    () =>
+      Effect.gen(function* () {
+        const { client, sockets, latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+        yield* latest().drop();
+        yield* advance(1_000);
+
+        const reconnected = sockets[1]!;
+
+        yield* reconnected.open();
+        yield* reconnected.say({ type: "hello", root: 1 });
+        client.appLog("c1", "error", undefined, "a line");
+
+        expect(reconnected.visibility()).toEqual([]);
+        expect(reconnected.commands().filter((command) => command.type === "mcp_app_log")).toEqual(
+          [],
+        );
+      }),
+  );
+
+  it.effect(
     "fails a View's request that the dropped socket had in flight, saying the connection was lost",
     () =>
       Effect.gen(function* () {

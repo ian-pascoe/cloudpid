@@ -31,6 +31,11 @@ import type {
   McpUiToolInputPartialNotification,
   McpUiToolResultNotification,
 } from "@modelcontextprotocol/ext-apps";
+import {
+  MCP_APP_INTERNAL_ERROR,
+  MCP_APP_INVALID_PARAMS,
+  MCP_APP_METHOD_NOT_FOUND,
+} from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -76,11 +81,6 @@ export const INITIALIZE_TIMEOUT_MS = 10_000;
 
 /** How long a teardown waits for the View's answer before the frame goes anyway (`docs/architecture/mcp-apps.md` → App Views in the transcript: Teardown). */
 export const TEARDOWN_TIMEOUT_MS = 2000;
-
-/** JSON-RPC's own error codes, and the one `ui/open-link` answers a dismissal with. */
-export const METHOD_NOT_FOUND = -32_601;
-export const INVALID_PARAMS = -32_602;
-export const INTERNAL_ERROR = -32_603;
 
 /** What the page's `window` gives a message: the window it came from, the origin of that window's document, and the data. */
 export interface IncomingMessage {
@@ -249,7 +249,7 @@ export const createBridge = (options: BridgeOptions): Bridge => {
 
       if (Option.isNone(asked)) {
         return Promise.reject(
-          new RpcError(INVALID_PARAMS, "ui/initialize needs a protocolVersion"),
+          new RpcError(MCP_APP_INVALID_PARAMS, "ui/initialize needs a protocolVersion"),
         );
       }
 
@@ -298,7 +298,7 @@ export const createBridge = (options: BridgeOptions): Bridge => {
     const handler = handlerOf(method);
 
     if (handler === undefined) {
-      respond(id, { error: new RpcError(METHOD_NOT_FOUND, `Method not found: ${method}`) });
+      respond(id, { error: new RpcError(MCP_APP_METHOD_NOT_FOUND, `Method not found: ${method}`) });
 
       return;
     }
@@ -312,7 +312,7 @@ export const createBridge = (options: BridgeOptions): Bridge => {
           error:
             error instanceof RpcError
               ? error
-              : new RpcError(INTERNAL_ERROR, "The host could not answer"),
+              : new RpcError(MCP_APP_INTERNAL_ERROR, "The host could not answer"),
         });
       },
     );

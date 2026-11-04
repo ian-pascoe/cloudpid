@@ -4,11 +4,11 @@
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type, anti-slop/no-known-value-widening, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion, typescript/no-implied-eval -- fakes of the browser's windows and of JSON-RPC traffic: their data is whatever a case posts, a View's runtime is evaluated from the package as a function of its window (`new Function`, the only way to run it here), and the casts are cut down to a case's shape */
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off globalTimers:off newPromise:off -- fakes of the browser's windows and timers.
 import { readFileSync } from "node:fs";
+import { MCP_APP_METHOD_NOT_FOUND } from "@cloudpid/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   INITIALIZE_TIMEOUT_MS,
   MCP_APPS_PROTOCOL_VERSION,
-  METHOD_NOT_FOUND,
   RpcError,
   retire,
   TEARDOWN_TIMEOUT_MS,
@@ -466,7 +466,7 @@ describe("a View's requests", () => {
       expect(page.posts.pop()?.data).toEqual({
         jsonrpc: "2.0",
         id: 40,
-        error: { code: METHOD_NOT_FOUND, message: `Method not found: ${method}` },
+        error: { code: MCP_APP_METHOD_NOT_FOUND, message: `Method not found: ${method}` },
       });
     }
   });
@@ -477,7 +477,10 @@ describe("a View's requests", () => {
     for (const method of ["constructor", "toString", "__proto__"]) {
       page.deliver(rpc(method, {}, 41));
       await vi.advanceTimersByTimeAsync(0);
-      expect(page.posts.pop()?.data).toMatchObject({ id: 41, error: { code: METHOD_NOT_FOUND } });
+      expect(page.posts.pop()?.data).toMatchObject({
+        id: 41,
+        error: { code: MCP_APP_METHOD_NOT_FOUND },
+      });
     }
   });
 
