@@ -34,6 +34,7 @@ import {
   endTask,
   MCP_TASK_ENDED_KIND,
   MCP_TASK_CANCEL_GRACE_MS,
+  MCP_TASK_CANCEL_SENDING_MS,
   MCP_TASK_FOLLOW_MS,
   MCP_TASK_FOLLOWER,
   MCP_TASK_NOTICE_KIND,
@@ -215,8 +216,12 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
         const now = runtime.now();
 
-        // A cancel that was being sent when the object stopped is sent once more, and an ignored one is given up on.
-        if (record.cancel?.sent === "sending") {
+        // A cancel that was being sent when the object stopped is sent once more (one still being sent by the call that
+        // asked for it is left to finish), and an ignored one is given up on.
+        if (
+          record.cancel?.sent === "sending" &&
+          now - record.cancel.at >= MCP_TASK_CANCEL_SENDING_MS
+        ) {
           const took = await sendCancel(client, record, origin);
 
           await runtime.commit(async (tx) => {
