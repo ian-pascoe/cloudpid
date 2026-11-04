@@ -19,6 +19,8 @@ import { BROWSER_IDLE_MS } from "@cloudpid/extensions/browser";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
+import { poll, pollFor } from "../poll.fixture.ts";
 import { describeEvent } from "../push/notification.ts";
 import {
   LIVE_VIEW_LINKS,
@@ -56,19 +58,14 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   /** The first message after `from` that `match` accepts. */
-  const next = async <A extends ServerMessage>(
+  const next = <A extends ServerMessage>(
     match: (message: ServerMessage) => message is A,
     from = 0,
-  ): Promise<A> => {
-    for (let attempt = 0; attempt < 1000; attempt++) {
-      const found = received.slice(from).find(match);
-
-      if (found !== undefined) return found;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    throw new Error(`Never received the expected message: ${JSON.stringify(received)}`);
-  };
+  ): Promise<A> =>
+    pollFor(
+      () => received.slice(from).find(match),
+      () => `Never received the expected message: ${JSON.stringify(received)}`,
+    );
 
   return {
     received,
@@ -94,22 +91,15 @@ const isRequests = (message: ServerMessage): message is Requests =>
 const isPending = (message: ServerMessage): message is Requests =>
   isRequests(message) && message.requests.length > 0;
 
+const isEmpty = (message: ServerMessage): message is Requests =>
+  isRequests(message) && message.requests.length === 0;
+
 const only = (message: Requests): BrowserHandoffRequest => {
   const [request] = message.requests;
 
   if (request === undefined || message.requests.length !== 1) throw new Error("Not one request");
 
   return request;
-};
-
-/** Wait until `stub`'s Session has no work live. */
-const idle = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 1000; attempt++) {
-    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Never idle");
 };
 
 const SCRIPT = [
@@ -329,11 +319,14 @@ describe("Browser Handoffs over the Session socket", () => {
     const waiting = await connect(slow);
 
     waiting.send({ type: "submit", id: "go", input: "Log me in" });
-    await waiting.next(isPending);
+
+    const pending = await waiting.next(isPending);
+
     await idle(slow);
 
     expect((await results(slow)).at(-1)).toMatch(/timed out after 30 minutes/);
-    expect((await waiting.next(isRequests, waiting.received.length - 1)).requests).toEqual([]);
+    // A list after the pending one withdraws it, whatever the Session sent after that.
+    await waiting.next(isEmpty, waiting.received.indexOf(pending) + 1);
   });
 
   it("withdraws the request and ends the handoff when the run is stopped", async () => {
@@ -378,9 +371,7 @@ describe("Browser Handoffs over the Session socket", () => {
       runInDurableObject(stub, (instance: TestSession) => instance.endedHandoffs());
 
     // The new instance settles with no work live.
-    for (let attempt = 0; attempt < 1000 && (await ended()).length === 0; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(async () => (await ended()).length > 0);
 
     expect(await ended()).toEqual(["99"]);
 

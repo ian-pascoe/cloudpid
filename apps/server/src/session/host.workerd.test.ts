@@ -5,7 +5,7 @@ import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { poll } from "../poll.fixture.ts";
+import { eventually, idle } from "../durable-waits.fixture.ts";
 import { REQUEST_COST, type TestSession } from "./host.fixture.ts";
 
 /** A new Workspace of the default Environment, as `createSession` makes one. */
@@ -35,16 +35,6 @@ const settles = <T>(check: () => Promise<T>) =>
   vi.waitFor(check, { timeout: 10_000, interval: 50 });
 
 const fresh = () => env.SESSIONS.get(env.SESSIONS.newUniqueId());
-
-/** Poll `check` inside the object until it holds. */
-const eventually = async (
-  stub: DurableObjectStub<TestSession>,
-  check: (instance: TestSession, state: DurableObjectState) => Promise<boolean>,
-): Promise<void> =>
-  poll(
-    () => runInDurableObject(stub, check),
-    () => "Condition not reached",
-  );
 
 let counter = 0;
 
@@ -124,7 +114,7 @@ describe("a Session host", () => {
     await evictDurableObject(stub);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
     // The alarm's instance finishes the run by itself: `idle()` only reads, and no client submits or waits.
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     const answer = await runInDurableObject(stub, (instance: TestSession) =>
       instance.prompt({ requestId: "turn-1", text: "hi" }),

@@ -21,6 +21,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
 declare global {
@@ -134,12 +135,12 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   const until = async (done: (messages: readonly ServerMessage[]) => boolean) => {
-    for (let attempt = 0; attempt < 500; attempt++) {
-      if (done(received)) return received;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => done(received),
+      () => `Never received the expected messages: ${JSON.stringify(received)}`,
+    );
 
-    throw new Error(`Never received the expected messages: ${JSON.stringify(received)}`);
+    return received;
   };
 
   const send = (message: ClientMessage) => socket.send(JSON.stringify(message));
@@ -827,7 +828,7 @@ describe("an App View's requests over the Session's socket", () => {
 
   it("answers a result over 1 MiB as an error, and cancels a request on the View's say-so, which cancels the server's call", async () => {
     const cancelled: string[] = [];
-    const { client, visible, ask, entry } = await withViews({ cancelled });
+    const { client, server, visible, ask, entry } = await withViews({ cancelled });
 
     await visible();
 
@@ -842,8 +843,14 @@ describe("an App View's requests over the Session's socket", () => {
     const hanging = ask("tools/call", { name: "hang", arguments: {} }, "slow");
 
     // The server has the call; the View cancels it.
-    await settles(async () => expect(cancelled).toEqual([]));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await poll(
+      () =>
+        server.received.some(
+          (each) => each.rpc?.method === "tools/call" && each.rpc.params?.["name"] === "hang",
+        ),
+      () => "The server never had the call",
+    );
+    expect(cancelled).toEqual([]);
     client.send({ type: "mcp_app_cancel", id: "cancel", callId: entry.callId, requestId: "slow" });
 
     expect(await hanging).toMatchObject({ status: "error", reason: "cancelled" });

@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { idle } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
@@ -124,13 +125,6 @@ const only = (message: Requests): ApprovalRequest => {
 
   return request;
 };
-
-/** Wait until `stub`'s Session has no work live. */
-const idle = (stub: DurableObjectStub<TestSession>) =>
-  poll(
-    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
-    () => "Never idle",
-  );
 
 const script = (stub: DurableObjectStub<TestSession>, ...responses: string[]) =>
   runInDurableObject(stub, (instance: TestSession) => instance.script(responses));

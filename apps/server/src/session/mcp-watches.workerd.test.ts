@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import type { EngineScript } from "../mcp/host.fixture.ts";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
 declare global {
@@ -128,12 +129,12 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   const until = async (done: (messages: readonly ServerMessage[]) => boolean) => {
-    for (let attempt = 0; attempt < 500; attempt++) {
-      if (done(received)) return received;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => done(received),
+      () => `Never received the expected messages: ${JSON.stringify(received)}`,
+    );
 
-    throw new Error(`Never received the expected messages: ${JSON.stringify(received)}`);
+    return received;
   };
 
   return {

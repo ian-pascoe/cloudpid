@@ -27,6 +27,8 @@ import { secretReference } from "@cloudpid/extensions/secrets";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import type { ChangesFixture, TestSession } from "./host.fixture.ts";
 import { DRAFTS_CHANGED } from "./reviews.ts";
 
@@ -53,17 +55,18 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   const until = async (done: (messages: readonly ServerMessage[]) => boolean, from = 0) => {
-    // 10 s: a loaded runner answers slowly.
-    for (let attempt = 0; attempt < 1_000; attempt++) {
-      const messages = received.slice(from);
+    let messages: readonly ServerMessage[] = [];
 
-      if (done(messages)) return messages;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => {
+        messages = received.slice(from);
 
-    throw new Error(
-      `Never received the expected messages: ${JSON.stringify(received.slice(from))}`,
+        return done(messages);
+      },
+      () => `Never received the expected messages: ${JSON.stringify(received.slice(from))}`,
     );
+
+    return messages;
   };
 
   /** The drafts as the Session last said them, once it has said them `count` times. */
@@ -203,14 +206,6 @@ const onPage = (overrides: Partial<PageAnnotationDraft> = {}): PageAnnotationDra
   text: "Make this bigger.",
   ...overrides,
 });
-
-/** Wait until Session `stub` has settled its run. */
-const settled = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-};
 
 describe("draft Annotations", () => {
   it("are sent after hello, then to every client on each save and delete", async () => {
@@ -670,10 +665,7 @@ describe("a Review", () => {
       ),
     );
 
-    for (let attempt = 0; attempt < 300; attempt++) {
-      if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await idle(stub);
 
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),
@@ -743,7 +735,7 @@ describe("a Review", () => {
       annotations: ["on-page", "on-area", "on-call"],
     });
     expect(await client.answer("send")).toMatchObject({ type: "result" });
-    await settled(stub);
+    await idle(stub);
 
     const [request] = await runInDurableObject(stub, (instance: TestSession) =>
       instance.requestUserMessages(),
@@ -818,7 +810,7 @@ describe("a Review", () => {
       annotations: Array.from({ length: count }, (_, index) => `p${index}`),
     });
     expect(await client.answer("send")).toMatchObject({ type: "result" });
-    await settled(stub);
+    await idle(stub);
 
     const [request] = await runInDurableObject(stub, (instance: TestSession) =>
       instance.requestUserMessages(),
@@ -876,7 +868,7 @@ describe("a Review", () => {
     expect(await client.answer("review")).toMatchObject({ type: "result" });
 
     await runInDurableObject(stub, (instance: TestSession) => instance.open());
-    await settled(stub);
+    await idle(stub);
 
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),
@@ -908,10 +900,7 @@ describe("a Review", () => {
     });
     await client.answer("send");
 
-    for (let attempt = 0; attempt < 300; attempt++) {
-      if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await idle(stub);
 
     const entries = await runInDurableObject(stub, (instance: TestSession) =>
       instance.rootEntries(),
@@ -927,25 +916,35 @@ describe("a Review", () => {
   it("keeps a draft saved again while it was being sent, with its new text", async () => {
     const stub = fresh();
 
-    // The last check waits on a listing of the Changes, which takes a while.
+    // The last check waits on a listing of the Changes, held until the test lets it through.
     await runInDurableObject(stub, (instance: TestSession) => {
-      instance.setChanges({ ...changes(FILE), delayMs: 300 });
+      instance.setChanges({ ...changes(FILE), held: true });
       instance.script(["Looked."]);
     });
+
+    const listings = () =>
+      runInDurableObject(stub, (instance: TestSession) => instance.changesCalls().length);
 
     const client = await connect(stub);
 
     client.send({ type: "annotation_save", id: "a", annotation: onChanges() });
     client.send({ type: "annotation_save", id: "b", annotation: onCall() });
     await client.answer("b");
+
+    const before = await listings();
+
     client.send({ type: "submit", id: "send", input: "", annotations: ["on-changes", "on-call"] });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await poll(
+      async () => (await listings()) > before,
+      () => "The send never listed the Changes",
+    );
     client.send({
       type: "annotation_save",
       id: "edit",
       annotation: onChanges({ text: "Typed while it was sent." }),
     });
     await client.answer("edit");
+    await runInDurableObject(stub, (instance: TestSession) => instance.releaseChanges());
     expect(await client.answer("send")).toMatchObject({ type: "result" });
 
     // The edit was saved while the Review was being sent, before the Session answered it.

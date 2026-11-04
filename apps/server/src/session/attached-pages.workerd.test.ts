@@ -20,6 +20,8 @@ import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
+import { poll, pollFor } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
 declare global {
@@ -47,33 +49,20 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
     received.push(Effect.runSync(decode(event.data)));
   });
 
-  const answer = async (id: string) => {
-    for (let attempt = 0; attempt < 1000; attempt++) {
-      const found = received.find(
-        (message) => (message.type === "result" || message.type === "error") && message.id === id,
-      );
-
-      if (found !== undefined) return found;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    throw new Error(`No answer to ${id}: ${JSON.stringify(received)}`);
-  };
+  const answer = (id: string) =>
+    pollFor(
+      () =>
+        received.find(
+          (message) => (message.type === "result" || message.type === "error") && message.id === id,
+        ),
+      () => `No answer to ${id}: ${JSON.stringify(received)}`,
+    );
 
   return {
     received,
     send: (message: ClientMessage) => socket.send(JSON.stringify(message)),
     answer,
   };
-};
-
-const idle = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 1000; attempt++) {
-    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Never idle");
 };
 
 const SHOWN = {
@@ -417,9 +406,9 @@ describe("pages attached to a message", () => {
 
     await runInDurableObject(stub, (instance: TestSession) => {
       instance.script(["Three."]);
-      instance.setOwnerTabPages([
-        { ownerTabId: "slow", url: "https://slow.example/", title: "Slow" },
-      ]);
+      instance.setOwnerTabPages([SHOWN]);
+      // The first message's page read never ends of itself.
+      instance.holdOwnerTabReads();
     });
 
     const owner = await connect(stub);
@@ -429,12 +418,17 @@ describe("pages attached to a message", () => {
       id: "s-1",
       input: "first",
       requestId: "r-1",
-      pages: [{ ownerTabId: "slow" }],
+      pages: [{ ownerTabId: SHOWN.ownerTabId }],
     });
     owner.send({ type: "submit", id: "s-2", input: "second" });
 
-    // The first is being prepared (its slow page read takes 150 ms), and the second waits behind it.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The first is being prepared, its page read under way, and the second waits behind it.
+    await poll(
+      async () =>
+        (await runInDurableObject(stub, (instance: TestSession) => instance.ownerTabReads()))
+          .length > 0,
+      () => "The first message's page was never read",
+    );
 
     owner.send({ type: "abort", id: "stop" });
 

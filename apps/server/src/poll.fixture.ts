@@ -54,3 +54,24 @@ export const poll = async (
     await new Promise((resolve) => setTimeout(resolve, INTERVAL_MS));
   }
 };
+
+/**
+ * Call `find` every 10 ms until it finds something, and answer it. Once the test's waits give up, throw `failure()`'s
+ * message.
+ */
+export const pollFor = async <A>(
+  find: () => A | undefined | Promise<A | undefined>,
+  failure: () => string,
+): Promise<A> => {
+  const until = deadline();
+
+  for (;;) {
+    const found = await find();
+
+    if (found !== undefined) return found;
+
+    if (Date.now() >= until) throw new Error(failure());
+
+    await new Promise((resolve) => setTimeout(resolve, INTERVAL_MS));
+  }
+};

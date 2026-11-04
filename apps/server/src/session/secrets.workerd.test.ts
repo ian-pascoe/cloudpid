@@ -14,6 +14,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
@@ -93,13 +94,6 @@ const only = (message: Requests): SecretRequest => {
 
   return request;
 };
-
-/** Wait until `stub`'s Session has no work live. */
-const idle = (stub: DurableObjectStub<TestSession>) =>
-  poll(
-    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
-    () => "Never idle",
-  );
 
 /** The script: ask for `API_KEY`, then echo it through a placeholder. */
 const SCRIPT = [

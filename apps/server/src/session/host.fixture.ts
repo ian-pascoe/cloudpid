@@ -356,6 +356,9 @@ const ownerTabListing = (kv: Kv): OwnerTabListing =>
 /** Rounds of waiting on a handoff, which end early when the test completes it. */
 const roundWaiters = new Map<string, () => void>();
 
+/** Whether the test browser host's reads of the Owner tabs are held for good (`holdOwnerTabReads`). */
+const OWNER_TAB_READS_HELD = "owner-tab-reads-held";
+
 /**
  * A browser host that hands a tab over at once and finishes the handoff when the test says (`completeHandoff`). Its
  * state is in the object's storage, as the real host's is in its own object: it outlives an instance of the Session.
@@ -473,14 +476,21 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
 
       return ownerTabListing(kv);
     }),
-  readOwnerTabPages: readingOwnerTabPages({
-    open: () => kv.get<OwnerTabPageRead[]>("owner-tab-pages") ?? [],
-    reading: (ids) => {
-      kv.put("owner-tab-reads", [...(kv.get<string[][]>("owner-tab-reads") ?? []), [...ids]]);
-    },
-    // A page called "slow" takes a moment to read, for the tests of arrival order.
-    delayMs: (ids) => (ids.includes("slow") ? 150 : 0),
-  }),
+  readOwnerTabPages: (ids) => {
+    const reading = (read: ReadonlyArray<string>) => {
+      kv.put("owner-tab-reads", [...(kv.get<string[][]>("owner-tab-reads") ?? []), [...read]]);
+    };
+
+    // Held (`holdOwnerTabReads`), a read is told as it starts, and only an interruption ends it.
+    return kv.get<boolean>(OWNER_TAB_READS_HELD) === true
+      ? Effect.sync(() => reading(ids)).pipe(Effect.andThen(Effect.never))
+      : readingOwnerTabPages({
+          open: () => kv.get<OwnerTabPageRead[]>("owner-tab-pages") ?? [],
+          reading,
+          // A page called "slow" takes a moment to read, for the tests of arrival order.
+          delayMs: (read) => (read.includes("slow") ? 150 : 0),
+        })(ids);
+  },
   endHandoff: (requestId) =>
     Effect.sync(() => {
       kv.put("handoff-ended", [...(kv.get<string[]>("handoff-ended") ?? []), requestId]);
@@ -2781,6 +2791,14 @@ export class TestSession extends DurableObject {
   /** The Owner tabs the test browser host has open, the first one shown, as the composer lists and reads them. */
   setOwnerTabPages(pages: readonly OwnerTabPageRead[]): void {
     this.ctx.storage.kv.put("owner-tab-pages", pages);
+  }
+
+  /**
+   * Hold the test browser host's reads of the Owner tabs from now on: each is told (`ownerTabReads`) as it starts, and
+   * never ends unless it is interrupted, as Stop interrupts a message's preparation.
+   */
+  holdOwnerTabReads(): void {
+    this.ctx.storage.kv.put(OWNER_TAB_READS_HELD, true);
   }
 
   /** The Owner tabs the test browser host was asked to read for a message, one list per message, oldest first. */

@@ -19,6 +19,7 @@ import { env } from "cloudflare:workers";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 
 declare global {
@@ -215,7 +216,10 @@ describe("a request", () => {
     const pending = host.request(call("docs", "search"), { untilAborted: () => aborted });
 
     // Once the engine holds the call, the caller aborts it.
-    while ((await host.engineRequests()).length === 0) await new Promise((r) => setTimeout(r, 10));
+    await poll(
+      async () => (await host.engineRequests()).length > 0,
+      () => "The engine never had the call",
+    );
 
     abort();
 
@@ -277,7 +281,10 @@ describe("a request", () => {
     // Five calls fill the engine queue; the sixth waits for a slot.
     const holding = Array.from({ length: 5 }, () => host.request(call("slow", "search"), {}));
 
-    while ((await host.engineRequests()).length < 5) await new Promise((r) => setTimeout(r, 10));
+    await poll(
+      async () => (await host.engineRequests()).length >= 5,
+      () => "The engine never had the five calls",
+    );
 
     expect(await host.request(call("slow", "search"), {})).toMatchObject({
       _tag: "CallFailed",

@@ -55,13 +55,47 @@ type SocketEvent = {
   };
 };
 
-/** The server-sent events of a carried socket's stream, one at a time. */
-const eventsOf = (response: Response) => {
+/**
+ * How the test's page reads a carried socket's stream: `as it comes`, as a browser's does, whatever the test is doing
+ * meanwhile (the Workspace takes a page that leaves a write unread for a keep-alive tick, 50 ms here, as one that stopped
+ * reading), or `when asked`, only as far as the test reads it.
+ */
+type Reading = "as it comes" | "when asked";
+
+/** The server-sent events of a carried socket's stream, one at a time, read by the page as `reading` says. */
+const eventsOf = (response: Response, reading: Reading) => {
   if (response.body === null) throw new Error("No stream");
 
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  const waiting: Array<() => void> = [];
 
   let buffer = "";
+  /** How the stream ended, once it has: `done`, or the error it failed with. */
+  let ended: string | undefined;
+
+  const pull = async () => {
+    try {
+      const { value, done } = await reader.read();
+
+      if (done) ended = "done";
+      else buffer += value;
+    } catch (error) {
+      ended = String(error);
+    }
+
+    for (const wake of waiting.splice(0)) wake();
+  };
+
+  const pumping =
+    reading === "as it comes"
+      ? (async () => {
+          while (ended === undefined) await pull();
+        })()
+      : undefined;
+
+  /** More of the stream: what the page read by itself next, or, when it reads only when asked, a read. */
+  const more = () =>
+    pumping === undefined ? pull() : new Promise<void>((resolve) => waiting.push(resolve));
 
   return {
     next: async (): Promise<SocketEvent> => {
@@ -81,31 +115,26 @@ const eventsOf = (response: Response) => {
           return { type, data: JSON.parse(data) };
         }
 
-        const { value, done } = await reader.read();
+        if (ended !== undefined) throw new Error("The stream ended");
 
-        if (done) throw new Error("The stream ended");
-
-        buffer += value;
+        await more();
       }
     },
     /** Read until the stream ends; how it ended: `done`, or the error it failed with. */
     drain: async (): Promise<string> => {
-      try {
-        for (;;) {
-          const { done } = await reader.read();
+      while (ended === undefined) await more();
 
-          if (done) return "done";
-        }
-      } catch (error) {
-        return String(error);
-      }
+      return ended;
     },
     cancel: () => reader.cancel(),
   };
 };
 
-/** Open a carried socket to the dev server's `/hmr` through the script's endpoint, and read its `open` event. */
-const openSocket = async (stub: Workspace) => {
+/**
+ * Open a carried socket to the dev server's `/hmr` through the script's endpoint, and read its `open` event. Its page
+ * reads the stream as `reading` says.
+ */
+const openSocket = async (stub: Workspace, reading: Reading = "as it comes") => {
   const response = await stub.containerPreview(
     new Request(`${PAGE}/__cloudpid/ws/open?path=%2Fhmr%3Ftoken%3Dt&protocols=vite-hmr`, {
       headers: SCRIPT,
@@ -116,7 +145,7 @@ const openSocket = async (stub: Workspace) => {
   expect(response.status).toBe(200);
   expect(response.headers.get("content-type")).toBe("text/event-stream");
 
-  const events = eventsOf(response);
+  const events = eventsOf(response, reading);
   const opened = await events.next();
 
   expect(opened.type).toBe("open");
@@ -355,7 +384,7 @@ describe("a WebSocket of a Container preview, a carried socket", () => {
 
   it("closes the Container's socket, and fails its stream, when the page stops reading it without letting go", async () => {
     const stub = await workspace();
-    const { events } = await openSocket(stub);
+    const { events } = await openSocket(stub, "when asked");
 
     // The page reads nothing more while the dev server keeps sending. Once the Workspace finds it so it closes the
     // socket, and a send after that raises the error of a send on a closed socket: that one is expected.

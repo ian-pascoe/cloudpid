@@ -17,6 +17,8 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
 const decode = Schema.decodeUnknownEffect(ServerMessageJson);
@@ -36,13 +38,12 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
   });
 
   const until = async (done: (messages: readonly ServerMessage[]) => boolean) => {
-    // 10 s: a loaded runner answers slowly.
-    for (let attempt = 0; attempt < 1_000; attempt++) {
-      if (done(received)) return received;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => done(received),
+      () => `Never received the expected messages: ${JSON.stringify(received)}`,
+    );
 
-    throw new Error(`Never received the expected messages: ${JSON.stringify(received)}`);
+    return received;
   };
 
   return {
@@ -65,14 +66,19 @@ let made = 0;
 /** A Session whose host has a writing tool (`write`) and a fake Workspace that copies. */
 const fresh = () => env.SESSIONS.getByName(`runs-${Date.now()}-${made++}`);
 
-const idle = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 1_000; attempt++) {
-    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+/** The diff Annotation drafts of `stub`'s Session. */
+const drafts = async (stub: DurableObjectStub<TestSession>) =>
+  (await runInDurableObject(stub, (instance: TestSession) => instance.annotations())).filter(
+    isDiffAnnotation,
+  );
 
-  throw new Error("The Session never went idle");
-};
+/** Wait until the first draft is frozen at the Run's end copy. */
+const untilFrozen = (stub: DurableObjectStub<TestSession>) =>
+  poll(async () => {
+    const [draft] = await drafts(stub);
+
+    return draft?.source.kind === "run" && draft.source.end !== null;
+  });
 
 const WRITE = 'call:write:{"path":"a.txt"}';
 
@@ -142,6 +148,14 @@ describe("the Last run on the Session", () => {
     submit(client, "write", "Write it");
     await client.answer("write");
     await idle(stub);
+    await client.until((messages) =>
+      messages.some(
+        (message) =>
+          message.type === "last_run" &&
+          message.lastRun !== null &&
+          message.lastRun.endedAt !== null,
+      ),
+    );
 
     // Opened before the write, with the call that made it; ended with the newest entry once the Session was idle.
     const calls = await runInDurableObject(stub, (instance: TestSession) => instance.runCalls());
@@ -229,18 +243,9 @@ describe("the Last run on the Session", () => {
     await idle(stub);
 
     // Ended: one more check freezes the draft at the end copy.
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const drafts = await runInDurableObject(stub, (instance: TestSession) =>
-        instance.annotations(),
-      );
+    await untilFrozen(stub);
 
-      if (drafts[0]?.source.kind === "run" && drafts[0].source.end !== null) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    const [draft] = (
-      await runInDurableObject(stub, (instance: TestSession) => instance.annotations())
-    ).filter(isDiffAnnotation);
+    const [draft] = await drafts(stub);
 
     expect(draft?.source).toMatchObject({ kind: "run", run: "run0", end: "b".repeat(40) });
     expect(draft?.status).toBeUndefined();
@@ -287,12 +292,11 @@ describe("the Last run on the Session", () => {
     await idle(stub);
 
     // Both writes ran (the Session went idle) with one start asked for, and the Run was ended as missed.
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const calls = await runInDurableObject(stub, (instance: TestSession) => instance.runCalls());
-
-      if (calls.some((call) => "end" in call)) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(async () =>
+      (await runInDurableObject(stub, (instance: TestSession) => instance.runCalls())).some(
+        (call) => "end" in call,
+      ),
+    );
 
     const calls = await runInDurableObject(stub, (instance: TestSession) => instance.runCalls());
 
@@ -323,14 +327,7 @@ describe("the Last run on the Session", () => {
     await runInDurableObject(stub, (instance: TestSession) => instance.open());
     await idle(stub);
 
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const drafts = await runInDurableObject(stub, (instance: TestSession) =>
-        instance.annotations(),
-      );
-
-      if (drafts[0]?.source.kind === "run" && drafts[0].source.end !== null) break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await untilFrozen(stub);
 
     // The files change after the Run: the quoted lines are gone from them.
     await runInDurableObject(stub, (instance: TestSession) => {
@@ -389,18 +386,9 @@ describe("the Last run on the Session", () => {
     await idle(stub);
 
     // The quote is gone from the file: outdated, not moved.
-    for (let attempt = 0; attempt < 500; attempt++) {
-      const drafts = (
-        await runInDurableObject(stub, (instance: TestSession) => instance.annotations())
-      ).filter(isDiffAnnotation);
+    await poll(async () => (await drafts(stub))[0]?.status === "outdated");
 
-      if (drafts[0]?.status === "outdated") break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    const [draft] = (
-      await runInDurableObject(stub, (instance: TestSession) => instance.annotations())
-    ).filter(isDiffAnnotation);
+    const [draft] = await drafts(stub);
 
     expect(draft?.status).toBe("outdated");
   });

@@ -9,6 +9,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { NAVIGATE_WHILE_PREPARING } from "./branches.ts";
+import { eventually, idle } from "../durable-waits.fixture.ts";
 import type { TestSubagentSession } from "./subagents.workerd.fixture.ts";
 
 declare global {
@@ -21,19 +22,6 @@ declare global {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Poll `check` inside the object until it holds. */
-const eventually = async (
-  stub: DurableObjectStub<TestSubagentSession>,
-  check: (instance: TestSubagentSession) => Promise<boolean>,
-): Promise<void> => {
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (await runInDurableObject(stub, check)) return;
-    await sleep(10);
-  }
-
-  throw new Error("Condition not reached");
-};
 
 /**
  * A Session whose root has started a subagent and whose subagent has answered, so both conversations are idle, with the
@@ -53,7 +41,7 @@ const withChild = async () => {
     async (instance) =>
       (await instance.subagents())?.agents["agent-1"]?.turns.at(-1)?.status === "completed",
   );
-  await eventually(stub, (instance) => instance.idle());
+  await idle(stub);
 
   const state = await runInDurableObject(stub, (instance: TestSubagentSession) =>
     instance.subagents(),
@@ -75,11 +63,11 @@ describe("admitting a message", () => {
     const { stub, child } = await withChild();
 
     await runInDurableObject(stub, async (instance: TestSubagentSession) => {
-      instance.holdPreparing("a1");
+      const preparingA1 = instance.holdPreparing("a1");
 
       const slow = instance.submit("a1");
 
-      await sleep(50);
+      await preparingA1;
 
       // Another conversation is admitted meanwhile.
       await instance.submitTo(child, "c1");
@@ -92,7 +80,7 @@ describe("admitting a message", () => {
       instance.finishPreparing("a1");
       await slow;
     });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
@@ -106,13 +94,13 @@ describe("admitting a message", () => {
     const { stub, child } = await withChild();
 
     await runInDurableObject(stub, async (instance: TestSubagentSession) => {
-      instance.holdPreparing("a1");
-      instance.holdPreparing("c1");
+      const preparingA1 = instance.holdPreparing("a1");
+      const preparingC1 = instance.holdPreparing("c1");
 
       const root = [instance.submit("a1"), instance.submit("a2"), instance.submit("a3")];
       const sub = [instance.submitTo(child, "c1"), instance.submitTo(child, "c2")];
 
-      await sleep(50);
+      await Promise.all([preparingA1, preparingC1]);
       expect(await sent(instance)).toEqual([]);
       expect(await sent(instance, child)).toEqual([]);
 
@@ -125,7 +113,7 @@ describe("admitting a message", () => {
       instance.finishPreparing("a1");
       await Promise.all(root);
     });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
@@ -141,11 +129,11 @@ describe("admitting a message", () => {
     const [during, after] = await runInDurableObject(
       stub,
       async (instance: TestSubagentSession) => {
-        instance.holdPreparing("a1");
+        const preparingA1 = instance.holdPreparing("a1");
 
         const slow = instance.submit("a1");
 
-        await sleep(50);
+        await preparingA1;
 
         const during = await instance.navigateNowhere();
 
@@ -174,11 +162,11 @@ describe("admitting a message", () => {
 
         if ("failure" in went) throw new Error(went.failure);
 
-        instance.holdPreparing("a1");
+        const preparingA1 = instance.holdPreparing("a1");
 
         const slow = instance.submit("a1");
 
-        await sleep(50);
+        await preparingA1;
 
         const during = await instance.switchTo(root);
 
@@ -203,10 +191,11 @@ describe("admitting a message", () => {
 
       // The move holds the lock while its summary is made; the first message is sent meanwhile, and the second after.
       await summarizing;
-      instance.holdPreparing("a1");
+      const preparingA1 = instance.holdPreparing("a1");
 
       const first = instance.submit("a1");
 
+      // It waits for the lock before it is prepared, and nothing says it got there: a moment lets it.
       await sleep(50);
       instance.finishSummary();
 
@@ -216,6 +205,8 @@ describe("admitting a message", () => {
 
       const second = instance.submit("a2");
 
+      await preparingA1;
+      // A moment for the second to be placed if it wrongly could be: nothing signals a message that waits in its line.
       await sleep(50);
       // The first is for the branch the Session moved to, and the second is behind it: neither is placed yet.
       expect(await sent(instance, went.active)).toEqual([]);
@@ -226,7 +217,7 @@ describe("admitting a message", () => {
       return went.active;
     });
 
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
 
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, branch)),
@@ -237,13 +228,13 @@ describe("admitting a message", () => {
     const { stub, child } = await withChild();
 
     const outcomes = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
-      instance.holdPreparing("a1");
-      instance.holdPreparing("c1");
+      const preparingA1 = instance.holdPreparing("a1");
+      const preparingC1 = instance.holdPreparing("c1");
 
       const root = [instance.submitOutcome("a1"), instance.submitOutcome("a2")];
       const sub = instance.submitOutcome("c1", child);
 
-      await sleep(50);
+      await Promise.all([preparingA1, preparingC1]);
 
       // A message in line is unsettled input: the Session is not idle, so the MCP endpoint's Stop does not skip it.
       expect(await instance.busyness()).toEqual({ idle: false, unsettled: true });
@@ -260,7 +251,7 @@ describe("admitting a message", () => {
 
     expect(outcomes.withdrawn).toEqual(["withdrawn", "withdrawn"]);
     expect(outcomes.other).toBe("placed");
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
     ).toEqual([]);
@@ -272,7 +263,7 @@ describe("admitting a message", () => {
     await runInDurableObject(stub, async (instance: TestSubagentSession) => {
       await instance.submit("a3");
     });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance)),
     ).toEqual(["a3"]);
@@ -282,13 +273,13 @@ describe("admitting a message", () => {
     const { stub, child } = await withChild();
 
     const outcomes = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
-      instance.holdPreparing("a1");
-      instance.holdPreparing("c1");
+      const preparingA1 = instance.holdPreparing("a1");
+      const preparingC1 = instance.holdPreparing("c1");
 
       const root = instance.submitOutcome("a1");
       const sub = instance.submitOutcome("c1", child);
 
-      await sleep(50);
+      await Promise.all([preparingA1, preparingC1]);
       await instance.abort({ conversationId: child });
 
       const withdrawn = await sub;
@@ -305,12 +296,12 @@ describe("admitting a message", () => {
     const { stub, child } = await withChild();
 
     const withdrawn = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
-      instance.holdPreparing("a1");
-      instance.holdPreparing("c1");
+      const preparingA1 = instance.holdPreparing("a1");
+      const preparingC1 = instance.holdPreparing("c1");
 
       const lines = [instance.submitOutcome("a1"), instance.submitOutcome("c1", child)];
 
-      await sleep(50);
+      await Promise.all([preparingA1, preparingC1]);
       await instance.stopEverything();
 
       return Promise.all(lines);
@@ -329,12 +320,12 @@ describe("admitting a message", () => {
     const { stub, child } = await withChild();
 
     const withdrawn = await runInDurableObject(stub, async (instance: TestSubagentSession) => {
-      instance.holdPreparing("a1");
-      instance.holdPreparing("c1");
+      const preparingA1 = instance.holdPreparing("a1");
+      const preparingC1 = instance.holdPreparing("c1");
 
       const lines = [instance.submitOutcome("a1"), instance.submitOutcome("c1", child)];
 
-      await sleep(50);
+      await Promise.all([preparingA1, preparingC1]);
       await instance.abort({ subagents: true });
 
       return Promise.all(lines);
@@ -353,13 +344,13 @@ describe("admitting a message", () => {
       const order: string[] = [];
 
       // The message is prepared at once, and held in the middle of being placed.
-      instance.holdPlacing();
+      const placing = instance.holdPlacing();
 
       const placed = instance.submitOutcome("a1").then((outcome) => {
         order.push(outcome);
       });
 
-      await sleep(50);
+      await placing;
 
       const stopped = instance.abort().then(() => {
         order.push("stopped");
@@ -376,7 +367,7 @@ describe("admitting a message", () => {
 
     expect(order).toEqual(["placed", "stopped"]);
     // What was placed was aborted: nothing is left running or queued.
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
   });
 
   it("withdraws a message sent before Stop that was still waiting for the lock a move of the Session tree held", async () => {
@@ -391,12 +382,14 @@ describe("admitting a message", () => {
 
       const before = instance.submitOutcome("c1", child);
 
+      // Nothing says a message got to the lock it waits for: a moment lets it.
       await sleep(50);
       await instance.abort({ conversationId: child });
 
       // Sent after the Stop, it is for the conversation as it is after it.
       const after = instance.submitOutcome("c2", child);
 
+      // Nothing says it got to the lock it waits for either: a moment lets it.
       await sleep(50);
       instance.finishSummary();
 
@@ -408,7 +401,7 @@ describe("admitting a message", () => {
     });
 
     expect(outcomes).toEqual({ before: "withdrawn", after: "placed" });
-    await eventually(stub, (instance) => instance.idle());
+    await idle(stub);
     expect(
       await runInDurableObject(stub, (instance: TestSubagentSession) => sent(instance, child)),
     ).toEqual(["c2"]);
@@ -420,11 +413,11 @@ describe("admitting a message", () => {
     const [during, after] = await runInDurableObject(
       stub,
       async (instance: TestSubagentSession) => {
-        instance.holdPreparing("a1");
+        const preparingA1 = instance.holdPreparing("a1");
 
         const slow = instance.submitOutcome("a1");
 
-        await sleep(50);
+        await preparingA1;
 
         const during = await instance.navigateNowhere();
 
