@@ -28,6 +28,8 @@ import {
   type McpAppMounted,
   type McpAppTool,
   type McpElicitationRequest,
+  type McpSamplingRequest,
+  type McpSamplingSessionGrant,
   type McpSignInRequest,
   type ServerMessage,
   ServerMessageJson,
@@ -43,6 +45,7 @@ import {
 import { type ApprovalAsk, Approvals, type ApprovalsError } from "@cloudpid/extensions/approvals";
 import {
   McpQuestions,
+  McpSampling,
   type McpQuestionsError,
   McpSignIns,
   type McpSignInsError,
@@ -198,6 +201,13 @@ export const ownerTabDriversMessage = (drivers: ReadonlyArray<OwnerTabDriver>): 
 export const mcpElicitationRequests = (
   requests: ReadonlyArray<McpElicitationRequest>,
 ): ServerMessage => ({ type: "mcp_elicitation_requests", requests });
+
+/** The `mcp_sampling_requests` message for `requests` and the Session's `grants`, which every client is sent. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- builds a message, not a combinator.
+export const mcpSamplingRequests = (
+  requests: ReadonlyArray<McpSamplingRequest>,
+  grants: ReadonlyArray<McpSamplingSessionGrant>,
+): ServerMessage => ({ type: "mcp_sampling_requests", requests, grants });
 
 /** The `mcp_sign_in_requests` message for `requests`, which every client is sent. */
 export const mcpSignInRequests = (requests: ReadonlyArray<McpSignInRequest>): ServerMessage => ({
@@ -396,6 +406,7 @@ export const sessionSocketsLayer = (
   | OwnerTabDrivers
   | Approvals
   | McpQuestions
+  | McpSampling
   | McpSignIns
   | AnnotationStore
   | ViewedStore
@@ -419,6 +430,7 @@ export const sessionSocketsLayer = (
       const drivers = yield* OwnerTabDrivers;
       const approvals = yield* Approvals;
       const mcpQuestions = yield* McpQuestions;
+      const mcpSampling = yield* McpSampling;
       const mcpSignIns = yield* McpSignIns;
       const scope = yield* Effect.scope;
       /** Each open socket's running watches, by conversation. */
@@ -917,6 +929,19 @@ export const sessionSocketsLayer = (
                   : { action: message.action },
               )
               .pipe(Effect.as(null));
+          case "mcp_sampling_answer":
+            return mcpQuestions
+              .answerSampling(
+                message.request,
+                message.role === undefined
+                  ? { choice: message.choice }
+                  : { choice: message.choice, role: message.role },
+              )
+              .pipe(Effect.as(null));
+          case "mcp_sampling_get":
+            return mcpSampling.view(message.request).pipe(Effect.map((view) => view ?? null));
+          case "mcp_sampling_revoke":
+            return mcpQuestions.revokeSampling(message.server).pipe(Effect.as(null));
           case "mcp_sign_in_answer":
             return mcpSignIns.decline(message.request, message.reason).pipe(Effect.as(null));
           case "annotation_save":
@@ -1069,6 +1094,16 @@ export const sessionSocketsLayer = (
         // MCP servers' questions live only as long as their calls wait; sent when none waits too, so a client clears the
         // cards it held.
         yield* send(server, mcpElicitationRequests(yield* mcpQuestions.pending));
+
+        // MCP servers' Sampling requests live only as long as their calls wait too, and the Session's grants survive;
+        // sent when none waits too, so a client clears the cards and the grants it held.
+        yield* send(
+          server,
+          mcpSamplingRequests(
+            yield* mcpQuestions.pendingSampling,
+            yield* mcpQuestions.samplingGrants,
+          ),
+        );
 
         // Sign-in requests have no deadline and survive an eviction; sent when none waits too, so a client clears the
         // cards it held.

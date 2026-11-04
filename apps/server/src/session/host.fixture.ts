@@ -722,7 +722,10 @@ export class TestSession extends DurableObject {
   #sampling: ReturnType<typeof sessionMcpSampling> | undefined;
 
   #mcpSampling(): ReturnType<typeof sessionMcpSampling> {
-    this.#sampling ??= sessionMcpSampling({ storage: this.ctx.storage.kv });
+    this.#sampling ??= sessionMcpSampling({
+      storage: this.ctx.storage.kv,
+      questions: this.#mcpQuestions().service,
+    });
 
     return this.#sampling;
   }

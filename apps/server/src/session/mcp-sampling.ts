@@ -7,6 +7,7 @@ import {
   createMcpSampling,
   McpSampling,
   type McpQuestionStorage,
+  type McpQuestionsService,
   type McpSamplingService,
 } from "@cloudpid/extensions/mcp";
 import { Secrets, type SecretsService } from "@cloudpid/extensions/secrets";
@@ -16,6 +17,8 @@ import * as Layer from "effect/Layer";
 export type SessionMcpSamplingOptions = {
   /** The object's synchronous key-value storage. */
   readonly storage: McpQuestionStorage;
+  /** The Session's questions, which ask the owner of a server whose definition says `ask`. */
+  readonly questions?: Pick<McpQuestionsService, "askSampling" | "samplingStanding"> | undefined;
 };
 
 /** The service the Session's MCP tools sample through, and the layer that provides it once the Secrets are built. */
@@ -36,6 +39,7 @@ export const sessionMcpSampling = (options: SessionMcpSamplingOptions): SessionM
 
   const service = createMcpSampling({
     storage: options.storage,
+    questions: options.questions,
     // What a record keeps, and what a model is shown of a server's tools, never holds a Secret's value.
     redact: (value) => Effect.map(secrets, (held) => held.redact(value)),
   });
