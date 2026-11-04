@@ -538,5 +538,3 @@ describe("what a call's card says of a page", () => {
     );
   });
 });
-
-// #626 acceptance: a test-only change, with a class no other file names: <div className="tracking-[0.777em]" />
