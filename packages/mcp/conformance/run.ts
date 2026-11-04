@@ -77,12 +77,13 @@ export interface Side {
  * a scenario.
  */
 export const outcome = (mode: Mode, sides: { readonly client: Side; readonly server: Side }) => {
-  const empty = (["client", "server"] as const).filter((side) => sides[side].scenarios === 0);
+  const emptySides = (["client", "server"] as const).filter((side) => sides[side].scenarios === 0);
   const ran = `Conformance (${mode}): ${sides.client.scenarios} client and ${sides.server.scenarios} server scenarios ran`;
 
   return {
-    exitCode: sides.client.status === 0 && sides.server.status === 0 && empty.length === 0 ? 0 : 1,
-    summary: empty.length === 0 ? ran : `${ran}: the ${empty.join(" and the ")} ran none`,
+    exitCode:
+      sides.client.status === 0 && sides.server.status === 0 && emptySides.length === 0 ? 0 : 1,
+    summary: emptySides.length === 0 ? ran : `${ran}: the ${emptySides.join(" and the ")} ran none`,
   };
 };
 
@@ -144,6 +145,9 @@ const main = async () => {
 
   const common = ["--suite", "all", "--spec-version", mode, "--expected-failures", file];
 
+  /** Where each side's runner writes its scenarios' results, which are also what counts the scenarios it ran. */
+  const results = { client: join(out, "client"), server: join(out, "server") } as const;
+
   console.log(`\n=== client scenarios (${mode}) ===`);
 
   const client = spawnSync(
@@ -155,7 +159,7 @@ const main = async () => {
       `${process.execPath} ${join(here, "client.ts")}`,
       ...common,
       "--output-dir",
-      join(out, "client"),
+      results.client,
     ],
     { stdio: "inherit" },
   );
@@ -167,13 +171,13 @@ const main = async () => {
   try {
     const run = spawnSync(
       process.execPath,
-      [runner, "server", "--url", server.url, ...common, "--output-dir", join(out, "server")],
+      [runner, "server", "--url", server.url, ...common, "--output-dir", results.server],
       { stdio: "inherit" },
     );
 
     const { exitCode, summary } = outcome(mode, {
-      client: { status: client.status, scenarios: scenariosRan(join(out, "client")) },
-      server: { status: run.status, scenarios: scenariosRan(join(out, "server")) },
+      client: { status: client.status, scenarios: scenariosRan(results.client) },
+      server: { status: run.status, scenarios: scenariosRan(results.server) },
     });
 
     console.log(`\n${summary}`);

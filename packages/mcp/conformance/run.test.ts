@@ -1,6 +1,7 @@
 /**
- * `conformance/run.ts`: the baseline it reads and the file it hands the runner (`docs/architecture/mcp.md` → Testing and
- * tracing → Conformance).
+ * `conformance/run.ts`: the baseline it reads, the file it hands the runner, the scenarios each side ran, and the run's
+ * outcome and summary line, which `ci.yml`'s `Conformance (<mode>)` step asserts (`docs/architecture/mcp.md` → Testing
+ * and tracing → Conformance).
  */
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off preferEffectRecord:off
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -134,5 +135,51 @@ describe("a run's outcome", () => {
       exitCode: 1,
       summary: "Conformance (2025-03-26): 2 client and 0 server scenarios ran: the server ran none",
     });
+  });
+});
+
+describe("the summary line `ci.yml` asserts", () => {
+  const workflow = readFileSync(
+    resolve(import.meta.dirname, "..", "..", "..", ".github", "workflows", "ci.yml"),
+    "utf8",
+  );
+
+  /** The `Conformance (<mode>)` step's `grep` pattern for `mode`, from basic regex (literal parentheses) to a RegExp. */
+  const asserted = (mode: string) => {
+    const pattern = /grep -q "(\^Conformance \(\$MODE\): .*\$)"/.exec(workflow)?.[1];
+
+    expect(pattern).toBeDefined();
+
+    return new RegExp(
+      (pattern ?? "")
+        .replace("$MODE", mode)
+        .replaceAll(".", "\\.")
+        .replaceAll("(", "\\(")
+        .replaceAll(")", "\\)"),
+    );
+  };
+
+  it("matches a run whose sides each ran a scenario", () => {
+    expect(
+      outcome("2025-06-18", {
+        client: { status: 0, scenarios: 5 },
+        server: { status: 0, scenarios: 27 },
+      }).summary,
+    ).toMatch(asserted("2025-06-18"));
+  });
+
+  it("matches no run where a side ran none, nor another mode's", () => {
+    expect(
+      outcome("2025-03-26", {
+        client: { status: 0, scenarios: 2 },
+        server: { status: 0, scenarios: 0 },
+      }).summary,
+    ).not.toMatch(asserted("2025-03-26"));
+    expect(
+      outcome("2025-06-18", {
+        client: { status: 0, scenarios: 5 },
+        server: { status: 0, scenarios: 27 },
+      }).summary,
+    ).not.toMatch(asserted("2025-11-25"));
   });
 });
