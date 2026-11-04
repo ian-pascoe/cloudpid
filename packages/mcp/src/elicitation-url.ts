@@ -12,6 +12,8 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+import { getDomain } from "tldts";
+import { decodePunycode } from "./punycode.ts";
 
 /** The longest address a URL-mode question may carry: past it the question is malformed. */
 export const ELICITATION_URL_MAX = 8192;
@@ -22,7 +24,7 @@ export type ElicitationPage = {
   readonly url: string;
   /** The host in ASCII: an internationalized one in punycode. */
   readonly host: string;
-  /** The registrable domain, a suffix of `host` (an approximation: no public suffix list). */
+  /** The registrable domain, a suffix of `host` (from the Public Suffix List, private section included). */
   readonly domain: string;
   /** The host is internationalized (`idn`) or mixes scripts in a label (`mixed_script`). */
   readonly warning?: "idn" | "mixed_script";
@@ -127,91 +129,6 @@ const localName = (host: string) =>
   host.endsWith(".local") ||
   host.endsWith(".internal");
 
-// ---------------------------------------------------------------------------------------------------------------------
-// The host's Unicode form, for the mixed-script warning
-// ---------------------------------------------------------------------------------------------------------------------
-
-const BASE = 36;
-const T_MIN = 1;
-const T_MAX = 26;
-const SKEW = 38;
-const DAMP = 700;
-const INITIAL_BIAS = 72;
-const INITIAL_N = 128;
-
-const adapt = (delta: number, points: number, first: boolean) => {
-  let scaled = first ? Math.floor(delta / DAMP) : delta >> 1;
-  let k = 0;
-
-  scaled += Math.floor(scaled / points);
-
-  while (scaled > ((BASE - T_MIN) * T_MAX) >> 1) {
-    scaled = Math.floor(scaled / (BASE - T_MIN));
-    k += BASE;
-  }
-
-  return k + Math.floor(((BASE - T_MIN + 1) * scaled) / (scaled + SKEW));
-};
-
-const digitOf = (char: string) => {
-  const code = char.charCodeAt(0);
-
-  if (code >= 48 && code <= 57) return code - 22;
-
-  if (code >= 97 && code <= 122) return code - 97;
-
-  return BASE;
-};
-
-/** A punycode label (RFC 3492, without its `xn--`) as the characters it spells, or undefined when it is not valid. */
-const decodePunycode = (label: string): string | undefined => {
-  const split = label.lastIndexOf("-");
-
-  const output: Array<number> = Arr.map(
-    Array.from(split > 0 ? label.slice(0, split) : ""),
-    (char) => char.codePointAt(0) ?? 0,
-  );
-
-  let n = INITIAL_N;
-  let bias = INITIAL_BIAS;
-  let i = 0;
-  let index = split > 0 ? split + 1 : 0;
-
-  while (index < label.length) {
-    const before = i;
-    let weight = 1;
-
-    for (let k = BASE; ; k += BASE) {
-      if (index >= label.length) return undefined;
-
-      const digit = digitOf(label.charAt(index));
-
-      index += 1;
-
-      if (digit >= BASE) return undefined;
-
-      i += digit * weight;
-
-      const threshold = k <= bias ? T_MIN : k >= bias + T_MAX ? T_MAX : k - bias;
-
-      if (digit < threshold) break;
-
-      weight *= BASE - threshold;
-    }
-
-    bias = adapt(i - before, output.length + 1, before === 0);
-    n += Math.floor(i / (output.length + 1));
-    i %= output.length + 1;
-
-    if (n > 0x10ffff) return undefined;
-
-    output.splice(i, 0, n);
-    i += 1;
-  }
-
-  return String.fromCodePoint(...output);
-};
-
 /** The scripts a label's letters are told apart by; any other letter counts for none. */
 const SCRIPTS = [
   /\p{Script=Latin}/u,
@@ -236,24 +153,14 @@ const mixesScripts = (host: string): boolean =>
     return Arr.filter(SCRIPTS, (script) => script.test(text)).length > 1;
   });
 
-/** The second-level labels under a two-letter country code that are registries, as in `example.co.uk`. */
-const REGISTRIES = new Set(["ac", "co", "com", "edu", "go", "gov", "ne", "net", "or", "org"]);
-
 /**
- * The registrable domain of `host`: its last two labels, or three under a country code's registry (`co.uk`). An
- * approximation (there is no public suffix list here): it only decides what the card emphasizes, and the full host is
- * always shown beside it. An IP literal is its own.
+ * The registrable domain of `host`: the name its owner registered, so that what the card emphasizes names the page's
+ * owner. It reads the Public Suffix List with its private section, so `attacker.github.io` is `attacker.github.io`, not
+ * `github.io`, and `auth.example.co.uk` is `example.co.uk`. A host that is itself a suffix, an IP literal and a name the
+ * list does not cover are their own.
  */
-export const registrableDomain = (host: string): string => {
-  if (ipv4Of(host) !== undefined || host.startsWith("[")) return host;
-
-  const labels = host.split(".");
-  const last = labels.at(-1) ?? "";
-  const second = labels.at(-2) ?? "";
-  const keep = last.length === 2 && REGISTRIES.has(second) && labels.length > 2 ? 3 : 2;
-
-  return labels.slice(-keep).join(".");
-};
+export const registrableDomain = (host: string): string =>
+  getDomain(host, { allowPrivateDomains: true }) ?? host;
 
 /**
  * The page `text` names, or why it is not shown. `isOwnHost` says whether a host (lowercase, ASCII) is one of cloudpid's

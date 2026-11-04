@@ -22,7 +22,8 @@
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/core": "2.4.0",
     "@modelcontextprotocol/server": "2.4.0",
-    "effect": "^4.0.6"
+    "effect": "^4.0.6",
+    "tldts": "^7.4.19"
   },
   "devDependencies": {
     "@cloudpid/config": "workspace:*",

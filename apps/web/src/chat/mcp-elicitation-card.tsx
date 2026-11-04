@@ -591,10 +591,6 @@ const PageCard = ({
           {refusal}
         </p>
       )}
-      <p className="shrink-0 text-xs text-muted-foreground">
-        {request.server} chose this address; cloudpid does not know the page. Never enter a password
-        or key at a page you did not expect.
-      </p>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">
           {disabled

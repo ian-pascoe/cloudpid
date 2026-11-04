@@ -325,6 +325,8 @@ describe("McpElicitationCard, a page to open", () => {
     expect(markup).toContain(">Open<");
     expect(markup).toContain("github&#x27;s call ends in 10:00");
     expect(markup).not.toContain(">Submit<");
+    // The spec has no footer for a page: the domain emphasis is the defence.
+    expect(markup).not.toContain("Never enter a password");
   });
 
   it("reads Opened once a page the server goes on from by itself is opened, with Open again and no Decline", () => {
