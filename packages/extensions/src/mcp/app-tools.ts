@@ -4,8 +4,8 @@
 import { mcpToolNames } from "@cloudpid/config";
 import { appUriOfMeta, isJsonObject } from "@cloudpid/mcp/types";
 import {
-  MAX_MCP_APP_SCHEMA_BYTES,
-  MAX_MCP_APP_SCHEMAS_BYTES,
+  MAX_MCP_APP_SCHEMA_CHARS,
+  MAX_MCP_APP_SCHEMAS_CHARS,
   MAX_MCP_APP_TOOLS,
   type McpAppTool,
 } from "@cloudpid/protocol";
@@ -54,7 +54,7 @@ export const appToolsOf = (servers: ReadonlyArray<McpBuildServer>): ReadonlyArra
         if (isJsonObject(tool.inputSchema)) {
           const size = JSON.stringify(tool.inputSchema).length;
 
-          if (size <= MAX_MCP_APP_SCHEMA_BYTES && schemas + size <= MAX_MCP_APP_SCHEMAS_BYTES) {
+          if (size <= MAX_MCP_APP_SCHEMA_CHARS && schemas + size <= MAX_MCP_APP_SCHEMAS_CHARS) {
             schemas += size;
             app.inputSchema = tool.inputSchema;
           }

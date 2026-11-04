@@ -12,7 +12,7 @@ import {
   NoAppHtml,
   TimedOut,
 } from "@cloudpid/mcp/types";
-import { MAX_MCP_APP_SCHEMA_BYTES, type McpAppDraft, type McpAppTool } from "@cloudpid/protocol";
+import { MAX_MCP_APP_SCHEMA_CHARS, type McpAppDraft, type McpAppTool } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { describe, expect, it } from "vitest";
@@ -110,7 +110,7 @@ describe("an app-only tool", () => {
 
   it("tells the page each App tool's input schema for the View's toolInfo, within its bounds", async () => {
     const schema = { type: "object", properties: { slug: { type: "string" } } };
-    const huge = { type: "object", description: "x".repeat(MAX_MCP_APP_SCHEMA_BYTES) };
+    const huge = { type: "object", description: "x".repeat(MAX_MCP_APP_SCHEMA_CHARS) };
 
     const host = fakeMcpHost([
       appServer({
