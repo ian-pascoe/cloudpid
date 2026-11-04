@@ -81,7 +81,7 @@ export const MCP_DEFINITION_KEYS = [
 ] as const;
 
 /** What `samplingOf` says of a definition. */
-export type McpSamplingMode = "allow" | "ask" | "off" | "stdio";
+export type McpSamplingMode = "allow" | "ask" | "off";
 
 /** The modes whose requests are declared, and so answered: the ones a call decides by. */
 export type McpSampledMode = Extract<McpSamplingMode, "allow" | "ask">;
@@ -89,31 +89,19 @@ export type McpSampledMode = Extract<McpSamplingMode, "allow" | "ask">;
 /**
  * What a server's definition says to its Sampling requests, which is the one place that decides it
  * (`docs/architecture/mcp-server-requests.md` → Sampling requests): `"allow"` answers them on the owner's models without
- * asking, `"ask"` (the default) asks the owner on a card, and `"off"` declares nothing. Either of the first two is
- * declared to an HTTP server only: a stdio server gets `"stdio"` in their place, whose requests the bridge does not
- * carry yet ([#569](https://github.com/ian-pascoe/cloudpid/issues/569)), so it is declared nothing. A Repo's `allow` was
- * read as `ask` before it got here (`resolveMcpServerSet`).
+ * asking, `"ask"` (the default) asks the owner on a card, and `"off"` declares nothing. A stdio server is read the same
+ * way as an HTTP one (its bridge carries its requests as it carries a Legacy elicitation's). A Repo's `allow` was read
+ * as `ask` before it got here (`resolveMcpServerSet`).
  */
-export const samplingOf = (server: {
-  readonly sampling?: unknown;
-  readonly type?: unknown;
-}): McpSamplingMode => {
+export const samplingOf = (server: { readonly sampling?: unknown }): McpSamplingMode => {
   if (server.sampling === "off") return "off";
-
-  if (server.type === "stdio") return "stdio";
 
   return server.sampling === "allow" ? "allow" : "ask";
 };
 
-/** Whether a definition's Sampling requests are declared, and so answered: `allow` or `ask` on an HTTP server. */
-export const declaresSampling = (server: {
-  readonly sampling?: unknown;
-  readonly type?: unknown;
-}): boolean => {
-  const mode = samplingOf(server);
-
-  return mode === "allow" || mode === "ask";
-};
+/** Whether a definition's Sampling requests are declared, and so answered: `allow` or `ask`. */
+export const declaresSampling = (server: { readonly sampling?: unknown }): boolean =>
+  samplingOf(server) !== "off";
 
 /** What a server's name looks like: `^[A-Za-z0-9_-]+$`, at most 64 characters. */
 export const MCP_NAME = /^[A-Za-z0-9_-]+$/;

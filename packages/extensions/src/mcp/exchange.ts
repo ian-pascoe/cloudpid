@@ -519,9 +519,9 @@ export const send = async <A>(
           hold,
         });
 
-  // A Legacy HTTP server whose definition does not say `off` has its Sampling requests answered on the Session's models,
-  // on a tool's call and a resource read (`exchange.samples`): at once for `allow`, after the owner's yes on a card for
-  // `ask`. A stdio server declares none until #569.
+  // A Legacy server (HTTP or stdio) whose definition does not say `off` has its Sampling requests answered on the Session's
+  // models, on a tool's call and a resource read (`exchange.samples`): at once for `allow`, after the owner's yes on a card for
+  // `ask`.
   const sampling =
     options.sampling !== undefined && exchange.samples === true && declaresSampling(server.server)
       ? samplingHooks({

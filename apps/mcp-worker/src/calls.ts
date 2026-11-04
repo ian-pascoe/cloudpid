@@ -120,8 +120,8 @@ const withExtensions = (deps: McpDeps, named: McpEngineHttpTarget["extensions"])
 };
 
 /**
- * `deps` that also declare `sampling: { tools: {} }`, only when the host's target says the definition lets it and only
- * for a remote server (`docs/architecture/mcp-server-requests.md` → Questions). A Legacy server is told once,
+ * `deps` that also declare `sampling: { tools: {} }`, only when the host's target says the definition lets it, for an HTTP server or a stdio one
+ * (`docs/architecture/mcp-server-requests.md` → Questions). A Legacy server is told once,
  * connection-wide, at `initialize`; a Legacy session that was initialized with another declaration is initialized again,
  * once. A Modern request declares it per request, in its `_meta`, only for a call whose caller offers to answer a Sampling
  * request (`ctx.answers.sampling`) and has an `onInput` to answer with; the round's request is answered by `onInput` (run,
@@ -129,7 +129,7 @@ const withExtensions = (deps: McpDeps, named: McpEngineHttpTarget["extensions"])
  * which a Modern server never acts on.
  */
 const withSampling = (deps: McpDeps, server: McpEngineTarget): McpDeps => {
-  if (server.kind !== "http" || server.sampling !== true) return deps;
+  if (server.sampling !== true) return deps;
 
   return {
     ...deps,

@@ -4,6 +4,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
+  declaresSampling,
   decodeMcpServerValue,
   MCP_OAUTH_KEYS,
   mcpEntryHints,
@@ -12,6 +13,7 @@ import {
   normalizeMcpName,
   normalizeMcpServer,
   readMcpRepoFile,
+  samplingOf,
   mcpKeyField,
   parseMcpField,
 } from "./mcp-servers.ts";
@@ -206,6 +208,18 @@ describe("an MCP server entry in the Settings", () => {
       description: "Linear issues",
       sampling: "off",
     });
+  });
+
+  it("reads `sampling` the same for a stdio server and an HTTP one: `ask` by default, `allow`, or `off`", () => {
+    for (const type of ["stdio", "http"]) {
+      const base: Record<string, unknown> = { type };
+
+      expect(samplingOf(base)).toBe("ask");
+      expect(samplingOf({ ...base, sampling: "allow" })).toBe("allow");
+      expect(samplingOf({ ...base, sampling: "off" })).toBe("off");
+      expect(declaresSampling(base)).toBe(true);
+      expect(declaresSampling({ ...base, sampling: "off" })).toBe(false);
+    }
   });
 
   it("refuses an exposure, a sampling mode and a timeout that are not valid", () => {

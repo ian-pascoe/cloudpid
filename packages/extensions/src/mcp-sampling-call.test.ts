@@ -225,6 +225,14 @@ describe("a Legacy server's Sampling request", () => {
   it.each([
     ["a definition that says ask", { server: { ...DOCS, entry: { sampling: "ask" } } }],
     ["a definition without sampling, which asks", { server: DOCS }],
+    [
+      "a stdio server that says allow",
+      { server: { ...ALLOWING, entry: { sampling: "allow", type: "stdio" } } },
+    ],
+    [
+      "a stdio server without sampling, which asks",
+      { server: { ...DOCS, entry: { type: "stdio" } } },
+    ],
   ])("is declared by %s", async (_name, options) => {
     const { sent } = await setup(options);
 
@@ -238,7 +246,6 @@ describe("a Legacy server's Sampling request", () => {
       { features: MCP_HOST_FEATURES.filter((each) => each !== MCP_SAMPLING_FEATURE) },
     ],
     ["a Session without a sampler", { sampler: false }],
-    ["a stdio server", { server: { ...ALLOWING, entry: { sampling: "allow", type: "stdio" } } }],
   ])("is not declared by %s", async (_name, options) => {
     const { sent } = await setup(options);
 

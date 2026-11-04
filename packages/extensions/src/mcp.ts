@@ -842,18 +842,15 @@ export const makeMcpTools = (
     });
 
   /**
-   * What each server of `after` reads for its definition's `sampling` (`allow`, `ask` or `off`; a stdio server has none),
+   * What each server of `after` reads for its definition's `sampling` (`allow`, `ask` or `off`),
    * which the Sampling requests waiting for the owner are answered by (`samplingSwitched`). Not only what changed since
    * the last start: a switch that had to yield to an answer in flight is made again at the next one.
    */
   const samplingRead = (after: McpInventory | undefined) =>
-    Arr.filterMap(after?.servers ?? [], (server) => {
-      const mode = samplingOf(server.server);
-
-      return mode === "allow" || mode === "ask" || mode === "off"
-        ? Result.succeed({ name: server.name, mode })
-        : Result.failVoid;
-    });
+    Arr.map(after?.servers ?? [], (server) => ({
+      name: server.name,
+      mode: samplingOf(server.server),
+    }));
 
   const requestStart: McpToolsService["requestStart"] = Effect.fn("mcp.tools.request_start")(
     function* (input: McpRequestStartInput) {
