@@ -9,6 +9,7 @@ import {
   type GetPromptResult,
   type Prompt,
   inputRequired,
+  type McpHttpHandler,
   Server,
   type ServerCapabilities,
   type Tool,
@@ -357,6 +358,16 @@ export interface FakeOptions {
   readonly asked?: Array<Json>;
   /** What the client answered the `sample` tool's requests with (a `CreateMessageResult`), or `{ error, code }`. */
   readonly sampled?: Array<Json>;
+  /**
+   * Declares `resources.subscribe` (and `listChanged`) and answers `resources/subscribe` and `resources/unsubscribe`,
+   * recording the URIs asked. A URI in `refuse` is answered with an error. A Modern server serves `subscriptions/listen`
+   * as the SDK does, whatever this says.
+   */
+  readonly subscriptions?: {
+    readonly subscribed: Array<string>;
+    readonly unsubscribed: Array<string>;
+    readonly refuse?: ReadonlyArray<string>;
+  };
   /** Further tools listed last, which answer as `echo` does unless something in front of the server answers first. */
   readonly moreTools?: ReadonlyArray<Tool>;
   /**
@@ -403,6 +414,10 @@ const fakeMcp = (
 
   if (options.resources !== undefined || options.resourceTemplates !== undefined) {
     capabilities.resources = {};
+  }
+
+  if (options.subscriptions !== undefined) {
+    capabilities.resources = { subscribe: true, listChanged: true };
   }
 
   if (options.prompts !== undefined) capabilities.prompts = { listChanged: true };
@@ -545,6 +560,23 @@ const fakeMcp = (
       return {
         contents: [...(Predicate.isFunction(found.contents) ? found.contents() : found.contents)],
       };
+    });
+  }
+
+  if (options.subscriptions !== undefined) {
+    const { subscribed, unsubscribed, refuse = [] } = options.subscriptions;
+
+    server.setRequestHandler("resources/subscribe", async (request) => {
+      if (refuse.includes(request.params.uri)) throw new Error("Cannot subscribe to that resource");
+
+      subscribed.push(request.params.uri);
+
+      return {};
+    });
+    server.setRequestHandler("resources/unsubscribe", async (request) => {
+      unsubscribed.push(request.params.uri);
+
+      return {};
     });
   }
 
@@ -887,9 +919,17 @@ const recording = (handle: (request: Request) => Promise<Response>): FakeServer 
   };
 };
 
-/** A Modern (`2026-07-28`) server: stateless, and answering any Legacy request as unsupported. */
-export const modernServer = (options?: FakeOptions): FakeServer =>
-  recording(createMcpHandler(() => fakeMcp(undefined, options, true), { legacy: "reject" }).fetch);
+/**
+ * A Modern (`2026-07-28`) server: stateless, and answering any Legacy request as unsupported. `notify` publishes a
+ * change to the open `subscriptions/listen` streams, as the SDK's handler does.
+ */
+export const modernServer = (
+  options?: FakeOptions,
+): FakeServer & Pick<McpHttpHandler, "notify"> => {
+  const handler = createMcpHandler(() => fakeMcp(undefined, options, true), { legacy: "reject" });
+
+  return { ...recording(handler.fetch), notify: handler.notify };
+};
 
 /** A Legacy server with no sessions: each POST is answered by a fresh server; GET and DELETE are 405. */
 export const legacyStatelessServer = (options?: FakeOptions): FakeServer =>
@@ -914,6 +954,7 @@ export const legacyStatelessServer = (options?: FakeOptions): FakeServer =>
  */
 export const legacyStatefulServer = (options?: FakeOptions) => {
   const sessions = new Map<string, WebStandardStreamableHTTPServerTransport>();
+  const servers = new Map<string, Server>();
   const streamed: Array<string> = [];
   let next = 0;
 
@@ -955,14 +996,17 @@ export const legacyStatefulServer = (options?: FakeOptions) => {
       sessionIdGenerator: () => `session-${++next}`,
       onsessioninitialized: (sessionId) => {
         sessions.set(sessionId, transport);
+        servers.set(sessionId, server);
       },
     });
 
     // A notification on the GET stream with every call, as servers announcing changes do.
-    await fakeMcp(
-      (server) => server.notification({ method: "notifications/tools/list_changed" }),
+    const server = fakeMcp(
+      (each) => each.notification({ method: "notifications/tools/list_changed" }),
       options,
-    ).connect(transport);
+    );
+
+    await server.connect(transport);
 
     return transport.handleRequest(request);
   });
@@ -974,6 +1018,22 @@ export const legacyStatefulServer = (options?: FakeOptions) => {
     streamed,
     /** Forget every session, as a restarted server does. */
     forget: () => sessions.clear(),
+    /** Tell every session's GET stream that the resource `uri` was updated. */
+    update: async (uri: string) => {
+      await Promise.all([...servers.values()].map((each) => each.sendResourceUpdated({ uri })));
+    },
+    /** Tell every session's GET stream that a list changed. */
+    listChanged: async (list: "tools" | "prompts" | "resources") => {
+      await Promise.all(
+        [...servers.values()].map((each) =>
+          each.notification({ method: `notifications/${list}/list_changed` }),
+        ),
+      );
+    },
+    /** Close every session's GET stream, as a server cutting them does; the sessions stay. */
+    cutStreams: async () => {
+      await Promise.all([...sessions.values()].map((each) => each.close()));
+    },
   };
 };
 

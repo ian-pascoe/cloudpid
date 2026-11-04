@@ -84,6 +84,7 @@ import {
   MCP_ELICITATION_WAIT_MS,
   MCP_INPUT_ROUNDS,
   MCP_INTERNAL_ERROR,
+  MCP_LISTEN_ACK_MS,
   MCP_RESUME_STATE_EXPIRED,
   MCP_RESUME_STATE_MAX_BYTES,
   MCP_LIST_WALK_TIMEOUT_MS,
@@ -96,6 +97,8 @@ import {
   type McpError,
   type McpInputAnswer,
   type McpInputRequest,
+  type McpListenEvent,
+  type McpListenFilter,
   type McpProgress,
   type McpRoot,
   McpTaskCreated,
@@ -358,6 +361,22 @@ interface Asking {
   readonly over: Deferred.Deferred<void>;
 }
 
+/** How a listen ended: the caller closed it (`local`), the server ended it deliberately (`graceful`), or it was cut (`remote`). */
+export type ListenEnd = "local" | "graceful" | "remote";
+
+/**
+ * An open listen (`McpConnection.listen`): what the server honors, how it ends, and a way to end it. The core never opens
+ * it again: every end the caller did not ask for is a gap that the caller checks (ADR-0032).
+ */
+export interface Listening {
+  /** The part of the filter the server agreed to: for a Legacy server, the URIs it accepted a subscription for. */
+  readonly honored: McpListenFilter;
+  /** Pending until the listen ends; never fails. */
+  readonly closed: Effect.Effect<ListenEnd>;
+  /** Ends the listen, and for a Legacy server unsubscribes (best effort). Idempotent. */
+  readonly close: Effect.Effect<void>;
+}
+
 /** One connection to one MCP server (The MCP core #394 D7). */
 export interface McpConnection {
   readonly era: ProtocolEra;
@@ -433,6 +452,18 @@ export interface McpConnection {
     args: Readonly<Record<string, string>>,
     ctx: McpCallContext,
   ) => Effect.Effect<Complete<GetPromptResult>, McpError>;
+  /**
+   * Opens a listen for `filter`, telling `onEvent` of each resource update and list change, until `closed`
+   * (`docs/architecture/mcp-in-a-session.md` → Resource watches). A Modern server is sent `subscriptions/listen`, and
+   * acknowledges within 10 s or the listen fails `TimedOut`. A Legacy server is sent `resources/subscribe` for each URI
+   * (one it refuses is left out of `honored`) with its GET stream open, which carries the list changes; a Legacy server
+   * with no session, or that answers the GET stream 405, cannot send updates and fails `Unsupported`. A listen holds
+   * no request slot of its own beyond its opening: it lives until it is closed or the connection's scope ends.
+   */
+  readonly listen: (
+    filter: McpListenFilter,
+    onEvent: (event: McpListenEvent) => void,
+  ) => Effect.Effect<Listening, McpError>;
 }
 
 /**
@@ -665,6 +696,19 @@ interface Live {
   readonly capabilities: ServerCapabilities;
   readonly instructions: string | undefined;
   readonly sessionId: string | undefined;
+  /** A Legacy `initialize` just made the session, so the SDK opens its GET stream by itself. */
+  readonly autoGet: boolean;
+}
+
+/** What a connection knows of its Legacy session's GET stream. */
+interface GetStream {
+  /** What the server answered it. */
+  status: number | undefined;
+  open: boolean;
+  /** Done once it was answered. */
+  readonly settled: Deferred.Deferred<void>;
+  /** Told when it ends. */
+  readonly ends: Set<() => void>;
 }
 
 /** How a connection opens: from the rows, or fresh. */
@@ -702,6 +746,14 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const counts = { responses: 0, retries: 0, eraDrops: 0, reinitializes: 0 };
   let lastStatus: number | undefined;
 
+  /** The Legacy session's GET stream: what the server answered it, whether it is open, and who wants to know it ended. */
+  const getStream: GetStream = {
+    status: undefined,
+    open: false,
+    settled: Deferred.makeUnsafe<void>(),
+    ends: new Set(),
+  };
+
   const observer: TapObserver = {
     response: (status) => {
       counts.responses += 1;
@@ -710,6 +762,26 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     retried: () => {
       counts.retries += 1;
     },
+    get: (event) => {
+      if ("status" in event) {
+        getStream.status = event.status;
+        getStream.open = event.status >= 200 && event.status < 300;
+        Deferred.doneUnsafe(getStream.settled, Effect.void);
+
+        return;
+      }
+
+      getStream.open = false;
+
+      for (const ended of getStream.ends) ended();
+    },
+  };
+
+  /** Who is told of a resource update or a list change: the open listens. */
+  const sinks = new Set<(event: McpListenEvent) => void>();
+
+  const emit = (event: McpListenEvent) => {
+    for (const sink of sinks) sink(event);
   };
 
   const fetch = tapFetch(
@@ -812,6 +884,21 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         onLog({ level: params.level, logger: params.logger, data: params.data });
       });
     }
+
+    // What a listen is told: on a Modern connection the notifications of its `subscriptions/listen` stream, on a Legacy
+    // one those of the session's GET stream. Nothing hears them while no listen is open.
+    client.setNotificationHandler("notifications/resources/updated", ({ params }) => {
+      emit({ kind: "resource_updated", uri: params.uri });
+    });
+    client.setNotificationHandler("notifications/tools/list_changed", () => {
+      emit({ kind: "list_changed", list: "tools" });
+    });
+    client.setNotificationHandler("notifications/prompts/list_changed", () => {
+      emit({ kind: "list_changed", list: "prompts" });
+    });
+    client.setNotificationHandler("notifications/resources/list_changed", () => {
+      emit({ kind: "list_changed", list: "resources" });
+    });
 
     const declared = declaredCapabilities(deps.capabilities, deps.extensions, deps.roots);
 
@@ -1099,6 +1186,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           capabilities: plan.row.capabilities as ServerCapabilities,
           instructions: plan.row.instructions,
           sessionId: plan.row.sessionId,
+          autoGet: false,
         } satisfies Live;
       }
 
@@ -1143,6 +1231,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         capabilities: client.getServerCapabilities() ?? {},
         instructions: client.getInstructions(),
         sessionId: transport.sessionId,
+        autoGet: era === "legacy" && transport.sessionId !== undefined,
       } satisfies Live;
     });
 
@@ -2316,6 +2405,125 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       } satisfies Complete<GetPromptResult>;
     });
 
+  /**
+   * The Modern listen: `subscriptions/listen`, acknowledged within `MCP_LISTEN_ACK_MS`. An era drop or a lost session
+   * recovers as any request's does.
+   */
+  const listenModern = (filter: McpListenFilter, onEvent: (event: McpListenEvent) => void) =>
+    Effect.gen(function* () {
+      sinks.add(onEvent);
+
+      const subscription = yield* request(
+        (client) => client.listen(filterOf(filter), { timeout: MCP_LISTEN_ACK_MS }),
+        false,
+      ).pipe(Effect.tapError(() => Effect.sync(() => sinks.delete(onEvent))));
+
+      const closed = Effect.promise(() => subscription.closed).pipe(
+        Effect.tap(() => Effect.sync(() => sinks.delete(onEvent))),
+      );
+
+      return {
+        honored: filterOf(subscription.honoredFilter),
+        closed,
+        close: Effect.promise(() => subscription.close()).pipe(
+          Effect.ignore,
+          Effect.tap(() => Effect.sync(() => sinks.delete(onEvent))),
+        ),
+      } satisfies Listening;
+    });
+
+  /**
+   * The Legacy listen: the session's GET stream, which carries the list changes and the updates, and a
+   * `resources/subscribe` for each URI. A server with no session, or whose GET stream is answered 405, cannot send
+   * updates. The GET stream a fresh `initialize` opens is the listen's; a connection made from a session row opens it.
+   */
+  const listenLegacy = (filter: McpListenFilter, onEvent: (event: McpListenEvent) => void) =>
+    Effect.gen(function* () {
+      const cannot = Unsupported.make({ message: "The server cannot send updates" });
+
+      if (live.sessionId === undefined) return yield* cannot;
+
+      if (live.autoGet) {
+        yield* Deferred.await(getStream.settled).pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.millis(MCP_LISTEN_ACK_MS),
+            orElse: () =>
+              Effect.fail(TimedOut.make({ message: "The GET stream did not open in 10 s" })),
+          }),
+        );
+      } else if (!getStream.open) {
+        const { transport } = live.client;
+
+        if (!(transport instanceof StreamableHTTPClientTransport)) return yield* cannot;
+
+        yield* Effect.tryPromise({
+          try: () => transport.resumeStream(""),
+          catch: (cause) => failure(cause).error,
+        });
+      }
+
+      if (!getStream.open) return yield* cannot;
+
+      const wanted = filter.resourceSubscriptions ?? [];
+      const canSubscribe = live.capabilities.resources?.subscribe === true;
+      const subscribed: Array<string> = [];
+
+      if (canSubscribe) {
+        yield* Effect.forEach(
+          wanted,
+          (uri) =>
+            Effect.tryPromise(() =>
+              live.client.subscribeResource({ uri }, { timeout: MCP_LISTEN_ACK_MS }),
+            ).pipe(
+              Effect.tap(() => Effect.sync(() => subscribed.push(uri))),
+              Effect.ignore,
+            ),
+          { concurrency: 4, discard: true },
+        );
+      }
+
+      const ended = Deferred.makeUnsafe<ListenEnd>();
+
+      const finish = (end: ListenEnd) => {
+        sinks.delete(onEvent);
+        getStream.ends.delete(remoteEnd);
+        Deferred.doneUnsafe(ended, Effect.succeed(end));
+      };
+
+      const remoteEnd = () => finish("remote");
+
+      sinks.add(onEvent);
+      getStream.ends.add(remoteEnd);
+
+      // The stream ended while the URIs were being subscribed.
+      if (!getStream.open) finish("remote");
+
+      return {
+        honored: filterOf({ ...filter, resourceSubscriptions: subscribed }),
+        closed: Deferred.await(ended),
+        close: Effect.gen(function* () {
+          if (Deferred.isDoneUnsafe(ended)) return;
+
+          finish("local");
+
+          yield* Effect.forEach(
+            subscribed,
+            (uri) =>
+              Effect.tryPromise(() =>
+                live.client.unsubscribeResource(
+                  { uri },
+                  { timeout: NOTIFY_GRACE.pipe(Duration.toMillis) },
+                ),
+              ).pipe(Effect.ignore),
+            { concurrency: 4, discard: true },
+          ).pipe(Effect.timeoutOrElse({ duration: NOTIFY_GRACE, orElse: () => Effect.void }));
+        }),
+      } satisfies Listening;
+    });
+
+  const listen = (filter: McpListenFilter, onEvent: (event: McpListenEvent) => void) =>
+    live.era === "modern" ? listenModern(filter, onEvent) : listenLegacy(filter, onEvent);
+
   const connection: McpConnection = {
     get era() {
       return live.era;
@@ -2341,10 +2549,41 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     listPage,
     readResource,
     getPrompt,
+    listen,
   };
 
   return connection;
 });
+
+/** `McpListenFilter` with a mutable list, which the SDK takes. */
+interface WireFilter {
+  resourceSubscriptions?: Array<string>;
+  toolsListChanged?: boolean;
+  promptsListChanged?: boolean;
+  resourcesListChanged?: boolean;
+}
+
+/** A listen's filter as the core holds it: only the parts that are set, and the lists of the flags that are `true`. */
+const filterOf = (given: {
+  readonly resourceSubscriptions?: ReadonlyArray<string> | undefined;
+  readonly toolsListChanged?: boolean | undefined;
+  readonly promptsListChanged?: boolean | undefined;
+  readonly resourcesListChanged?: boolean | undefined;
+}) => {
+  const filter: WireFilter = {};
+
+  if (given.resourceSubscriptions !== undefined) {
+    filter.resourceSubscriptions = [...given.resourceSubscriptions];
+  }
+
+  if (given.toolsListChanged === true) filter.toolsListChanged = true;
+
+  if (given.promptsListChanged === true) filter.promptsListChanged = true;
+
+  if (given.resourcesListChanged === true) filter.resourcesListChanged = true;
+
+  return filter;
+};
 
 /** The SDK's progress callback over `onProgress`: the notice's fields the core passes on, and nothing more. */
 const progressOf =

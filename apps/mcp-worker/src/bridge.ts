@@ -16,6 +16,8 @@
  * - **The spawn id** of the last response about the child (`x-cloudpid-spawn`) goes back to the host, which learns of a
  *   restart from it.
  * - **Uses:** a POST is a use of the Container and may start it when the target says `start`; a GET (the Legacy stream) never does either.
+ *   A listen's connection is `quiet`: none of its requests is a use or starts a Container, a POST included
+ *   (`docs/architecture/mcp-in-a-session.md` → Resource watches, Stdio).
  */
 // @effect-diagnostics asyncFunction:off globalFetch:off newPromise:off preferSchemaOverJson:off missingPipeableSignature:off preferEffectArray:off globalTimers:off -- the bridge is reached with Promises, over Requests and Responses, and a status read is bounded by a timer.
 import type { McpDeps } from "@cloudpid/mcp";
@@ -242,6 +244,7 @@ export const stdioBridge = (
   target: McpEngineStdioTarget,
   era: "legacy" | "modern" | undefined,
   scrub: Scrub,
+  quiet = false,
 ): StdioBridge => {
   const config = configOf(target);
   const header = mcpBridgeConfigHeader(config);
@@ -279,7 +282,7 @@ export const stdioBridge = (
       body: sent.body,
     });
 
-    const post = sent.method === "POST";
+    const post = sent.method === "POST" && !quiet;
 
     const answered = binding.mcpBridge(target.workspace, forwarded, {
       start: post && target.start,

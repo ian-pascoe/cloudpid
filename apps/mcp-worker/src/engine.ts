@@ -1,7 +1,7 @@
 /**
  * `McpEngine`, the stateless `WorkerEntrypoint` that runs `@cloudpid/mcp` for `McpHost` (ADR-0038;
- * `docs/architecture/mcp-connections.md` → The engine; #382 D1, D13.2). `discover` and `request` are here; `listen`
- * and `control` land with their first users. One `ManagedRuntime` per isolate holds the byte budget and the validator
+ * `docs/architecture/mcp-connections.md` → The engine; #382 D1, D13.2). `discover`, `request` and `listen` are here;
+ * `control` lands with its first user. One `ManagedRuntime` per isolate holds the byte budget and the validator
  * cache, built at the first call.
  *
  * Each call's work is held under `ctx.waitUntil` as well as returned: without it, a host that dies mid-call has the
@@ -11,6 +11,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type {
   McpEngineHooks,
+  McpListenFilter,
   McpEngineMethods,
   McpEnginePriorEncoded,
   McpEngineRequestEncoded,
@@ -22,7 +23,7 @@ import * as ManagedRuntime from "effect/ManagedRuntime";
 import type { Mutable } from "effect/Types";
 import { ByteBudget } from "./budget.ts";
 import type { McpBridgeBinding } from "./binding.ts";
-import { discover, request } from "./calls.ts";
+import { discover, listen, request } from "./calls.ts";
 import type { CallEnvironment } from "./call-context.ts";
 import { Validators } from "./validators.ts";
 
@@ -59,6 +60,16 @@ export class McpEngine extends WorkerEntrypoint<McpWorkerEnv> implements McpEngi
     hooks: McpEngineHooks,
   ) {
     return this.#run(request(target, prior, req, hooks, this.#environment()));
+  }
+
+  listen(
+    target: McpEngineTargetEncoded,
+    prior: McpEnginePriorEncoded,
+    filter: typeof McpListenFilter.Encoded,
+    hooks: McpEngineHooks,
+    stop?: ReadableStream<Uint8Array>,
+  ) {
+    return this.#run(listen(target, prior, filter, hooks, this.#environment(), stop));
   }
 
   #environment(): CallEnvironment {

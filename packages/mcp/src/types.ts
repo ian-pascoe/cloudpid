@@ -961,6 +961,63 @@ export const McpEngineRequestResult = Schema.Union([
 
 export type McpEngineRequestResult = typeof McpEngineRequestResult.Type;
 
+/** How long a listen waits for the server's acknowledgement (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions). */
+export const MCP_LISTEN_ACK_MS = 10_000;
+
+/**
+ * What a listen carries (`docs/architecture/mcp-in-a-session.md` → Resource watches; The MCP core #394 D12): the resource
+ * URIs to be told of (`resourceSubscriptions`, the wire's own name) and the list changes. A `2026-07-28` server
+ * acknowledges the part it honors; a `2025-11-25` server's shim subscribes each URI and reads list changes from its GET
+ * stream, so what it honors is the URIs it accepted.
+ */
+export const McpListenFilter = Schema.Struct({
+  resourceSubscriptions: Schema.Array(Schema.String).pipe(Schema.optionalKey),
+  toolsListChanged: Schema.optionalKey(Schema.Boolean),
+  promptsListChanged: Schema.optionalKey(Schema.Boolean),
+  resourcesListChanged: Schema.optionalKey(Schema.Boolean),
+});
+
+export type McpListenFilter = typeof McpListenFilter.Type;
+
+/** The lists a listen tells a change of. */
+export const MCP_LISTEN_LISTS = ["tools", "prompts", "resources"] as const;
+
+/**
+ * One thing a listen heard, one line of the engine's event stream: a resource was updated, a list changed, or (the last
+ * line) the stream ended. `closed` says how: `graceful` when the server ended it deliberately, `remote` when it was cut
+ * or broke; the end the caller asked for (`local`) is never a line. Any `kind` this build does not know reads as the last
+ * member, which is ignored.
+ */
+export const McpListenEvent = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("resource_updated"), uri: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("list_changed"), list: Schema.Literals(MCP_LISTEN_LISTS) }),
+  Schema.Struct({ kind: Schema.Literal("closed"), cause: Schema.Literals(["graceful", "remote"]) }),
+  Schema.Struct({ kind: Schema.String }),
+]);
+
+export type McpListenEvent = typeof McpListenEvent.Type;
+
+/**
+ * `listen`'s answer once the server acknowledged: what it honors, and the events as newline-delimited JSON
+ * (`McpListenEvent`), a native `ReadableStream` the host reads. The stream ends with a `closed` line when the server ends
+ * it; the host cancelling it closes the listen. The engine holds the connection for as long as the stream lives.
+ */
+export const McpEngineListening = Schema.Struct({
+  kind: Schema.Literal("listening"),
+  honored: McpListenFilter,
+  events: ByteStream,
+  era: McpEngineEra,
+  ...EngineSpawn,
+  state: McpEngineState,
+});
+
+export type McpEngineListening = typeof McpEngineListening.Type;
+
+/** `listen`'s result: listening, or what it failed with (a server that cannot send updates is `Unsupported`). */
+export const McpEngineListenResult = Schema.Union([McpEngineListening, McpEngineFailed]);
+
+export type McpEngineListenResult = typeof McpEngineListenResult.Type;
+
 /**
  * A server's `notifications/progress` on a call, as it reaches the caller (`docs/architecture/mcp-in-a-session.md` →
  * Calls and results): how far the call is, of `total` if the server knows it, and a message.
@@ -1042,6 +1099,21 @@ export interface McpEngineMethods {
     request: McpEngineRequestEncoded,
     hooks: McpEngineHooks,
   ) => Promise<typeof McpEngineRequestResult.Encoded>;
+  /**
+   * Opens a listen on the server (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions → Listens): a
+   * `subscriptions/listen` on a Modern server, `resources/subscribe` for each URI and the GET stream on a Legacy one. It
+   * answers once the server acknowledged, or fails in 10 s. The connection lives as long as the event stream does, and
+   * ends when `stop`, a stream the caller keeps, ends or breaks: closing it is how the caller ends the listen at once
+   * (cancelling the events is seen by the engine only at its next write, so a `ping` line comes every 30 s). An engine from
+   * before `stop` ignores it, and ends the listen at that next write.
+   */
+  readonly listen: (
+    target: McpEngineTargetEncoded,
+    prior: McpEnginePriorEncoded,
+    filter: typeof McpListenFilter.Encoded,
+    hooks: McpEngineHooks,
+    stop?: ReadableStream<Uint8Array>,
+  ) => Promise<typeof McpEngineListenResult.Encoded>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

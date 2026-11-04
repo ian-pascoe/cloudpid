@@ -31,6 +31,9 @@ import {
   type McpCallContext,
   type McpEngineCompleted,
   McpEngineDiscoverResult,
+  McpEngineListenResult,
+  McpListenFilter,
+  type McpListenEvent,
   type McpEngineDiscovered,
   type McpEngineFailed,
   type McpEngineHooks,
@@ -59,7 +62,10 @@ import {
   Unsupported,
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
+import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
@@ -67,6 +73,7 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import type { Mutable } from "effect/Types";
 import { stdioBridge, type StdioBridge, STDIO_CONNECT_TIMEOUT_MS, STDIO_URL } from "./bridge.ts";
+import { type ByteBudget } from "./budget.ts";
 import { type CallContext, type CallEnvironment, withCall } from "./call-context.ts";
 import { secretsOf } from "./logs.ts";
 import { type Answer, malformed, scrubError, toEngineValue } from "./results.ts";
@@ -92,6 +99,8 @@ interface CallInput {
   readonly env: CallEnvironment;
   /** Whether the server may have run the request once it was sent: only a `tools/call`. */
   readonly mayHaveRun: boolean;
+  /** A listen: through the bridge, no request is a use of the Container or starts it. */
+  readonly quiet?: boolean;
 }
 
 /**
@@ -187,6 +196,7 @@ const reachBridge = Effect.fnUntraced(function* (
   era: Schema.Json | undefined,
   env: CallEnvironment,
   call: CallContext,
+  quiet = false,
 ) {
   if (server.kind !== "stdio") return undefined;
 
@@ -198,7 +208,7 @@ const reachBridge = Effect.fnUntraced(function* (
 
   const hint = Option.map(decodeEraRow(era), (row) => row.era);
   const scrub = (text: string) => scrubRaw(text, call.tokens);
-  const through = stdioBridge(bridge, server, Option.getOrUndefined(hint), scrub);
+  const through = stdioBridge(bridge, server, Option.getOrUndefined(hint), scrub, quiet);
 
   call.routeVia(through.fetch, server.roots ?? []);
 
@@ -261,7 +271,7 @@ const runCall = Effect.fnUntraced(function* <A, R>(
           ),
           Effect.flatMap((server) =>
             Effect.gen(function* () {
-              bridge = yield* reachBridge(server, rows.era, input.env, call);
+              bridge = yield* reachBridge(server, rows.era, input.env, call, input.quiet === true);
 
               const connection = yield* connect(
                 connectTarget(server),
@@ -978,4 +988,154 @@ export const request = Effect.fn("mcp.engine.request")(function* (
     ...spawnField(spawn),
     state,
   });
+});
+
+/** How often a listen writes a `ping` line: the RPC notices a host that cancelled the events, or died, at the next write. */
+const LISTEN_PING_MS = 30_000;
+
+/** What a listen's event stream may hold unread before the host is taken to have stopped reading: its listen ends. */
+const LISTEN_BACKLOG = 1_000;
+
+const encoder = new TextEncoder();
+
+/**
+ * Opens one listen (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions → Listens): connects, opens the
+ * core's listen, and answers once the server acknowledged, with what it honors and the events as newline-delimited JSON on
+ * a native stream. The connection is kept, under `ctx.waitUntil`, for as long as the stream lives: it ends when the host
+ * cancels the stream (or its RPC dies), or when the server ends the listen, which is the stream's last line (`closed`).
+ * A failure before the acknowledgement is the answer, as any call's; nothing is held then. A listen is quiet at the
+ * bridge: no request of it is a use of the Container or starts it. It takes no part in the byte budget beyond the few
+ * bytes of its acknowledgement, since a listen's events are small and capped by the core.
+ */
+export const listen = Effect.fn("mcp.engine.listen")(function* (
+  target: McpEngineTargetEncoded,
+  prior: McpEnginePriorEncoded,
+  input: typeof McpListenFilter.Encoded,
+  hooks: McpEngineHooks,
+  env: CallEnvironment,
+  stop?: ReadableStream<Uint8Array>,
+) {
+  const decoded = yield* Schema.decodeEffect(McpListenFilter)(input).pipe(Effect.option);
+
+  if (Option.isNone(decoded)) {
+    return yield* encodeResult(
+      McpEngineListenResult,
+      failed(Unsupported.make({ message: "This engine does not run that listen" }), {}),
+    );
+  }
+
+  const filter = decoded.value;
+  const context = yield* Effect.context<ByteBudget>();
+  const answered = Deferred.makeUnsafe<typeof McpEngineListenResult.Encoded>();
+
+  const lifetime = runCall(
+    { target, prior, hooks, env, mayHaveRun: false, quiet: true },
+    (connection, call, bridge): Effect.Effect<void, McpError, Scope.Scope> =>
+      Effect.gen(function* () {
+        const stopped = Deferred.makeUnsafe<"local">();
+        let over = false;
+        let sink: ReadableStreamDefaultController<Uint8Array> | undefined;
+
+        const events = new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            sink = controller;
+          },
+          cancel: () => {
+            over = true;
+            Deferred.doneUnsafe(stopped, Effect.succeed("local" as const));
+          },
+        });
+
+        const send = (event: McpListenEvent) => {
+          if (over) return;
+
+          try {
+            sink?.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          } catch {
+            over = true;
+
+            return;
+          }
+
+          // A host that has stopped reading is taken to be gone.
+          if ((sink?.desiredSize ?? 0) < -LISTEN_BACKLOG) {
+            over = true;
+            Deferred.doneUnsafe(stopped, Effect.succeed("local" as const));
+          }
+        };
+
+        const listening = yield* connection.listen(filter, (event) => {
+          send(scrubValues(event, call.tokens));
+        });
+
+        // The host ends the listen by closing `stop`, which reaches here at once; one that dies ends it too. (Cancelling
+        // the events is seen only when a line is next written, so the engine writes a `ping` every `LISTEN_PING_MS`.)
+        if (stop !== undefined) {
+          const reader = stop.getReader();
+
+          const ended = () => {
+            Deferred.doneUnsafe(stopped, Effect.succeed("local" as const));
+          };
+
+          void reader.read().then(ended, ended);
+        }
+
+        const pinging = yield* Effect.sleep(Duration.millis(LISTEN_PING_MS)).pipe(
+          Effect.andThen(Effect.sync(() => send({ kind: "ping" }))),
+          Effect.forever,
+          Effect.forkScoped,
+        );
+
+        const spawn = bridge?.spawn();
+
+        const result = yield* encodeResult(McpEngineListenResult, {
+          kind: "listening",
+          honored: listening.honored,
+          events,
+          era: connection.era,
+          ...spawnField(spawn),
+          state: scrubValues(call.state(), call.tokens),
+        });
+
+        Deferred.doneUnsafe(answered, Effect.succeed(result));
+
+        const end = yield* Effect.raceFirst(listening.closed, Deferred.await(stopped));
+
+        if (end !== "local") send({ kind: "closed", cause: end });
+
+        // The stream ends with the listen, whoever ended it.
+        if (!over) {
+          over = true;
+          sink?.close();
+        }
+
+        yield* Fiber.interrupt(pinging);
+        yield* listening.close;
+      }),
+  ).pipe(
+    Effect.flatMap(({ outcome, state, logs, spawn }) =>
+      Result.isSuccess(outcome) || Deferred.isDoneUnsafe(answered)
+        ? Effect.void
+        : encodeResult(McpEngineListenResult, {
+            ...failed(outcome.failure, state),
+            ...logsField(logs),
+            ...spawnField(spawn),
+          }).pipe(
+            Effect.tap((result) =>
+              Effect.sync(() => Deferred.doneUnsafe(answered, Effect.succeed(result))),
+            ),
+            Effect.asVoid,
+          ),
+    ),
+  );
+
+  // The connection outlives this call: it is held for as long as its events are read.
+  env.hold(
+    Effect.runPromiseWith(context)(lifetime).then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+
+  return yield* Deferred.await(answered);
 });

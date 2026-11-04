@@ -164,7 +164,32 @@ const promptServer = (options: FakeOptions) =>
     ],
   });
 
-const KINDS: ReadonlyMap<string, (options: FakeOptions) => FakeServer> = new Map([
+/** Resources a subscribable fake lists, and what its subscribe and unsubscribe requests asked for (`/_seen`). */
+const WATCHED = {
+  uri: "file:///watched.md",
+  name: "watched",
+  mimeType: "text/markdown",
+  contents: [{ uri: "file:///watched.md", mimeType: "text/markdown", text: "# Watched" }],
+};
+
+/** A Modern server whose resources can be subscribed to (`subscriptions/listen`), and which `/_notify` publishes to. */
+const subscribableServer = (options: FakeOptions) =>
+  modernServer({ ...options, resources: [WATCHED], prompts: [] });
+
+/** A Legacy server with sessions, whose resources can be subscribed to, and a GET stream `/_notify` writes to. */
+const subscribableLegacyServer = (options: FakeOptions) =>
+  legacyStatefulServer({ ...options, resources: [WATCHED] });
+
+/** A fake, with the controls only some kinds have: publishing to a Modern listen, writing to a Legacy GET stream, cutting it. */
+type Served = FakeServer & {
+  readonly notify?: { readonly resourceUpdated: (uri: string) => void };
+  readonly update?: (uri: string) => Promise<void>;
+  readonly cutStreams?: () => Promise<void>;
+};
+
+const KINDS: ReadonlyMap<string, (options: FakeOptions) => Served> = new Map([
+  ["subscribable.test", subscribableServer],
+  ["subscribable-legacy.test", subscribableLegacyServer],
   ["modern.test", modernServer],
   ["apps.test", appServer],
   ["resources.test", resourcesServer],
@@ -190,8 +215,12 @@ const KINDS: ReadonlyMap<string, (options: FakeOptions) => FakeServer> = new Map
 ]);
 
 interface Fake {
-  readonly server: FakeServer;
+  readonly server: Served;
   readonly cancelled: Array<string>;
+  readonly subscriptions: {
+    readonly subscribed: Array<string>;
+    readonly unsubscribed: Array<string>;
+  };
 }
 
 const fakes = new Map<string, Fake>();
@@ -211,7 +240,18 @@ const fakeFor = (host: string, key: string) => {
   }
 
   const cancelled: Array<string> = [];
-  const fake = { server: make({ listMore: true, cancelled }), cancelled };
+  const subscribed: Array<string> = [];
+  const unsubscribed: Array<string> = [];
+  const subscriptions = { subscribed, unsubscribed };
+
+  // Only a subscribable fake declares `resources.subscribe`.
+  const subscribable = host.startsWith("subscribable") ? { subscriptions } : {};
+
+  const fake = {
+    server: make({ listMore: true, cancelled, ...subscribable }),
+    cancelled,
+    subscriptions,
+  };
 
   fakes.set(id, fake);
 
@@ -237,11 +277,30 @@ export default {
             : [],
         ),
         cancelled: fake.cancelled,
+        subscribed: fake.subscriptions.subscribed,
+        unsubscribed: fake.subscriptions.unsubscribed,
         // The capabilities the client declared at each `initialize`.
         declared: fake.server.received.flatMap((received) =>
           received.rpc?.method === "initialize" ? [received.rpc.params?.["capabilities"]] : [],
         ),
       });
+    }
+
+    // `/_notify?uri=…` tells the open listens (a Modern server's, a Legacy session's GET stream) that a resource was updated;
+    // `/_cut` closes a Legacy server's GET streams.
+    if (path === "_notify") {
+      const uri = url.searchParams.get("uri") ?? WATCHED.uri;
+
+      fake.server.notify?.resourceUpdated(uri);
+      await fake.server.update?.(uri);
+
+      return new Response(null, { status: 204 });
+    }
+
+    if (path === "_cut") {
+      await fake.server.cutStreams?.();
+
+      return new Response(null, { status: 204 });
     }
 
     return fake.server.handle(request);

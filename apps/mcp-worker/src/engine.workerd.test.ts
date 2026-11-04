@@ -6,6 +6,8 @@ import type { McpEngineMethods } from "@cloudpid/mcp/types";
 import {
   Cut,
   McpEngineDiscoverResult,
+  McpEngineListenResult,
+  type McpListenEvent,
   McpEngineRequestResult,
   SignInRequired,
   StepUpRequired,
@@ -40,6 +42,8 @@ const target = (
     | "logging"
     | "apps"
     | "resources"
+    | "subscribable"
+    | "subscribable-legacy"
     | "prompts"
     | "unauthorized"
     | "forbidden",
@@ -70,10 +74,16 @@ const seen = async (server: ReturnType<typeof target>) => {
     methods: Array<string>;
     notifications: Array<string>;
     cancelled: Array<string>;
+    subscribed: Array<string>;
+    unsubscribed: Array<string>;
   };
 };
 
 const decodeRequest = Schema.decodeSync(McpEngineRequestResult);
+
+const decodeListen = Schema.decodeSync(McpEngineListenResult);
+
+const WATCHED = "file:///watched.md";
 
 const BIG = { name: "big", inputSchema: { type: "object" } };
 
@@ -892,4 +902,192 @@ describe("the byte budget", () => {
       expect((await streamedText(next)).length).toBe(10 * MiB);
     },
   );
+});
+
+/** The events a listen's stream has written so far, as lines; `wait` reads until `count` of them have come. */
+const eventReader = (events: ReadableStream<Uint8Array>) => {
+  const reader = events.getReader();
+  const decoder = new TextDecoder();
+  const heard: Array<McpListenEvent> = [];
+  let tail = "";
+
+  const wait = async (count: number) => {
+    while (heard.length < count) {
+      const chunk = await reader.read();
+
+      if (chunk.done) break;
+
+      const lines = (tail + decoder.decode(chunk.value, { stream: true })).split("\n");
+
+      tail = lines.pop() ?? "";
+
+      for (const line of lines) {
+        // SAFETY: the engine writes `McpListenEvent`s as JSON lines.
+        heard.push(JSON.parse(line) as McpListenEvent);
+      }
+    }
+
+    return heard;
+  };
+
+  return { wait, cancel: () => reader.cancel() };
+};
+
+/** The listening answer of `result`, which a test expects. */
+const listening = (result: ReturnType<typeof decodeListen>) => {
+  if (result.kind !== "listening") throw new Error(`not listening: ${JSON.stringify(result)}`);
+
+  return result;
+};
+
+describe("listen", () => {
+  it("opens a Modern listen, writes the events the server publishes as lines, and closes it when the stream is cancelled", async () => {
+    const server = target("subscribable", "listen-modern");
+
+    const result = listening(
+      decodeListen(
+        await env.MCP_ENGINE.listen(
+          server,
+          {},
+          { resourceSubscriptions: [WATCHED], resourcesListChanged: true },
+          {},
+        ),
+      ),
+    );
+
+    expect(result.era).toBe("modern");
+    expect(result.honored.resourceSubscriptions).toEqual([WATCHED]);
+
+    const events = eventReader(result.events);
+
+    await env.FAKES.fetch(server.url.replace(/\/mcp$/, `/_notify?uri=${WATCHED}`));
+
+    expect(await events.wait(1)).toEqual([{ kind: "resource_updated", uri: WATCHED }]);
+
+    await events.cancel();
+    await env.FAKES.fetch(server.url.replace(/\/mcp$/, `/_notify?uri=${WATCHED}`));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect((await seen(server)).notifications).toContain("notifications/cancelled");
+  });
+
+  it("subscribes each URI of a Legacy server and hears its GET stream, keeping the session row for the host", async () => {
+    const server = target("subscribable-legacy", "listen-legacy");
+
+    const result = listening(
+      decodeListen(
+        await env.MCP_ENGINE.listen(server, {}, { resourceSubscriptions: [WATCHED] }, {}),
+      ),
+    );
+
+    expect(result.era).toBe("legacy");
+    expect(result.honored.resourceSubscriptions).toEqual([WATCHED]);
+    expect(result.state.session).toBeDefined();
+
+    const events = eventReader(result.events);
+
+    await env.FAKES.fetch(server.url.replace(/\/mcp$/, `/_notify?uri=${WATCHED}`));
+
+    expect(await events.wait(1)).toContainEqual({ kind: "resource_updated", uri: WATCHED });
+
+    // The engine sees the events cancelled when it next writes one.
+    await events.cancel();
+    await env.FAKES.fetch(server.url.replace(/\/mcp$/, `/_notify?uri=${WATCHED}`));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect((await seen(server)).unsubscribed).toEqual([WATCHED]);
+  });
+
+  it.each(["subscribable", "subscribable-legacy"] as const)(
+    "ends a %s listen at once when the caller closes its stop stream, and ends the events",
+    async (kind) => {
+      const server = target(kind, `listen-stop-${kind}`);
+      const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+
+      const result = listening(
+        decodeListen(
+          await env.MCP_ENGINE.listen(
+            server,
+            {},
+            { resourceSubscriptions: [WATCHED] },
+            {},
+            readable,
+          ),
+        ),
+      );
+
+      const events = eventReader(result.events);
+
+      await writable.getWriter().close();
+
+      // The events end with the listen, and a Legacy server is unsubscribed.
+      expect(await events.wait(1)).toEqual([]);
+
+      if (kind === "subscribable-legacy") {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        expect((await seen(server)).unsubscribed).toEqual([WATCHED]);
+      }
+    },
+  );
+
+  it("ends the stream with a closed line when the server cuts a Legacy listen", async () => {
+    const server = target("subscribable-legacy", "listen-cut");
+
+    const result = listening(
+      decodeListen(
+        await env.MCP_ENGINE.listen(server, {}, { resourceSubscriptions: [WATCHED] }, {}),
+      ),
+    );
+
+    const events = eventReader(result.events);
+
+    await env.FAKES.fetch(server.url.replace(/\/mcp$/, "/_cut"));
+
+    expect((await events.wait(1)).at(-1)).toEqual({ kind: "closed", cause: "remote" });
+  });
+
+  it("fails a listen of a server that cannot send updates as unsupported, holding nothing", async () => {
+    const result = decodeListen(
+      await env.MCP_ENGINE.listen(
+        target("legacy", "listen-405"),
+        {},
+        { resourceSubscriptions: [WATCHED] },
+        {},
+      ),
+    );
+
+    expect(result).toMatchObject({
+      kind: "failed",
+      error: expect.objectContaining({
+        constructor: Unsupported,
+        message: "The server cannot send updates",
+      }),
+    });
+  });
+
+  it("fails a listen of a server behind an OAuth wall as a sign-in", async () => {
+    const result = decodeListen(
+      await env.MCP_ENGINE.listen(target("unauthorized", "listen-wall"), {}, {}, {}),
+    );
+
+    expect(result).toMatchObject({ kind: "failed", error: expect.any(SignInRequired) });
+  });
+
+  it("fails a filter it cannot read as unsupported", async () => {
+    // SAFETY: a filter from a newer host, whose shape this engine does not know.
+    const result = decodeListen(
+      await env.MCP_ENGINE.listen(
+        target("subscribable", "listen-odd"),
+        {},
+        { resourceSubscriptions: 3 } as never,
+        {},
+      ),
+    );
+
+    expect(result).toMatchObject({
+      kind: "failed",
+      error: expect.objectContaining({ constructor: Unsupported }),
+    });
+  });
 });
