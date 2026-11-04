@@ -13,6 +13,7 @@ import {
   type PageRef,
   type StoredAttachment,
   type WhenBusy,
+  Refusal,
 } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
@@ -34,6 +35,7 @@ import { replying } from "../calls.ts";
 import { reviewLaneText } from "../review/drafts.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
+import type { SessionCommandError } from "../session/client.ts";
 import {
   formatSize,
   isPictureType,
@@ -45,6 +47,7 @@ import {
 import type { ConversationKey } from "./conversation.ts";
 import { type Fit, fitImages, UNPREPARED } from "./image-budget.ts";
 import { ImageEncoder } from "./image-encode.ts";
+import { type PromptChip, withPrompt } from "./mcp-prompt-state.ts";
 import { type UploadError, Uploads } from "./uploads.ts";
 
 /**
@@ -607,8 +610,23 @@ export const removePageAtom = Atom.family((key: ConversationKey) =>
 /** Why a message with Attachments was not sent: they were not ready, or the Session refused it. */
 export class SendError extends Schema.TaggedError<SendError, { readonly brand: unique symbol }>()(
   "SendError",
-  { message: Schema.String },
+  {
+    message: Schema.String,
+    /** What a refusal of an MCP prompt send carries (`SessionCommandError.refusal`). */
+    refusal: Schema.optionalKey(Refusal),
+  },
 ) {}
+
+/** A `SendError`'s fields from the Session's refusal: its message, with its code and server when it had them. */
+const sendErrorOf = (error: SessionCommandError) => {
+  const fields: Types.Mutable<ConstructorParameters<typeof SendError>[0]> = {
+    message: error.message,
+  };
+
+  if (error.refusal !== undefined) fields.refusal = error.refusal;
+
+  return fields;
+};
 
 /**
  * A message the composer sends itself: what was typed, how it goes while a Run is in progress, and, for a Review, the
@@ -618,6 +636,8 @@ export interface AttachedMessage {
   readonly typed: string;
   readonly whenBusy: WhenBusy;
   readonly annotations?: readonly string[];
+  /** The MCP prompt the message gets, as the composer's standing makes it (its live definition and its values). */
+  readonly prompt?: PromptChip;
 }
 
 /**
@@ -627,42 +647,44 @@ export interface AttachedMessage {
  */
 export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
   appRuntime.fn(
-    replying(({ typed, whenBusy, annotations = [] }: AttachedMessage, get: Atom.FnContext) =>
-      Effect.gen(function* () {
-        const attachments = yield* get.result(attachmentsProgramAtom(key));
-        const client = yield* get.result(sessionClientAtom(key.sessionId));
-        const ready = yield* SubscriptionRef.get(attachments.state);
-        const sent = sentAttachments(ready);
+    replying(
+      ({ typed, whenBusy, annotations = [], prompt }: AttachedMessage, get: Atom.FnContext) =>
+        Effect.gen(function* () {
+          const attachments = yield* get.result(attachmentsProgramAtom(key));
+          const client = yield* get.result(sessionClientAtom(key.sessionId));
+          const ready = yield* SubscriptionRef.get(attachments.state);
+          const sent = sentAttachments(ready);
 
-        if (sent === undefined) {
-          return yield* SendError.make({
-            message: waitingFor(ready) ?? "The attachments are not ready.",
-          });
-        }
+          if (sent === undefined) {
+            return yield* SendError.make({
+              message: waitingFor(ready) ?? "The attachments are not ready.",
+            });
+          }
 
-        const held = yield* attachments.hold;
+          const held = yield* attachments.hold;
 
-        const message = outgoingMessage(typed, sent, sentPages(ready));
+          const plain = outgoingMessage(typed, sent, sentPages(ready));
+          const message = prompt === undefined ? plain : withPrompt(plain, prompt);
 
-        yield* client
-          .submitAndAwait(
-            annotations.length === 0
-              ? message
-              : {
-                  ...message,
-                  display: reviewLaneText(message.display, annotations.length),
-                  annotations,
-                },
-            whenBusy,
-            key.conversationId,
-          )
-          .pipe(
-            Effect.tapError(() => held.restore),
-            Effect.mapError((error) => SendError.make({ message: error.message })),
-          );
+          yield* client
+            .submitAndAwait(
+              annotations.length === 0
+                ? message
+                : {
+                    ...message,
+                    display: reviewLaneText(message.display, annotations.length),
+                    annotations,
+                  },
+              whenBusy,
+              key.conversationId,
+            )
+            .pipe(
+              Effect.tapError(() => held.restore),
+              Effect.mapError((error) => SendError.make(sendErrorOf(error))),
+            );
 
-        yield* held.release;
-      }),
+          yield* held.release;
+        }),
     ),
     { concurrent: true },
   ),

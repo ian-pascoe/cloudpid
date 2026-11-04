@@ -921,6 +921,67 @@ describe("a Session connection", () => {
       }),
   );
 
+  it.effect(
+    "sends an MCP prompt with the submit, says what the lane shows while it is got, and fails with the code and server of a refusal",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+        const failures: Array<unknown> = [];
+
+        yield* watching(latest());
+
+        yield* client
+          .submitAndAwait(
+            {
+              input: "focus on tests",
+              display: "docs · Review PR · focus on tests",
+              mcpPrompt: { server: "docs", name: "review", arguments: { pr: "7" } },
+              getting: "Getting Review PR from docs…",
+            },
+            "followUp",
+          )
+          .pipe(
+            Effect.match({
+              onFailure: (error) => error,
+              onSuccess: () => null,
+            }),
+            Effect.flatMap((outcome) =>
+              Effect.sync(() => {
+                failures.push(outcome);
+              }),
+            ),
+            Effect.forkChild,
+            Effect.andThen(settle),
+          );
+
+        expect(latest().commands().at(-1)).toMatchObject({
+          type: "submit",
+          input: "focus on tests",
+          mcpPrompt: { server: "docs", name: "review", arguments: { pr: "7" } },
+        });
+        // While the Session gets it, the lane says so; the label is what it keeps once it is placed.
+        expect(state().sending.map((entry) => entry.text)).toEqual([
+          "Getting Review PR from docs…",
+        ]);
+
+        yield* latest().say({
+          type: "error",
+          id: latest().commands().at(-1)?.id,
+          message: "The argument pr is required",
+          code: "MCP_PROMPT_ARGUMENTS",
+          server: "docs",
+        });
+
+        expect(failures).toMatchObject([
+          {
+            message: "The argument pr is required",
+            refusal: { code: "MCP_PROMPT_ARGUMENTS", server: "docs" },
+          },
+        ]);
+        expect(state().sending).toEqual([]);
+      }),
+  );
+
   it.effect("tells nobody of a submit sent again after a reconnect until it is answered", () =>
     Effect.gen(function* () {
       const { client, latest } = yield* setup();

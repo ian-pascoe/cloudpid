@@ -7,6 +7,7 @@
 import { isSessionBranch, SubagentsDoc } from "@cloudpid/extensions/subagents";
 import {
   type ConversationId,
+  type McpPromptData,
   type SessionTree,
   type TreeBranch,
   type TreeNode,
@@ -126,6 +127,13 @@ export const ownerMessageText = (entry: EntryRecord): string => {
 
   return contentText(message.content);
 };
+
+/**
+ * The MCP prompt message `entry` was sent with, as it was kept (arguments redacted): what the composer gets back as a
+ * chip when the owner goes back before the message (`Navigated.mcpPrompt`).
+ */
+export const ownerMessagePrompt = (entry: EntryRecord): McpPromptData | undefined =>
+  userEntryData(entry)?.mcpPrompt;
 
 /** What the tree shows of `entry`, or nothing for one the transcript does not show. */
 export const nodeOf = (

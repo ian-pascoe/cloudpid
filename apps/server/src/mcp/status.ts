@@ -45,7 +45,10 @@ import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { McpHostMethods } from "./host.ts";
+import { type PromptCatalog, promptCatalog } from "../session/mcp-prompt-catalog.ts";
 import { mcpHostName } from "./name.ts";
+
+const NO_PROMPTS: PromptCatalog = { prompts: [], mcpServers: [] };
 
 /** The Registry's method a status read uses, on its object. */
 type StatusRegistry = Pick<RegistryMethods, "mcpServerNames" | "getSettingsOverrides">;
@@ -58,6 +61,12 @@ export type McpStatusObjects = {
 
 /** The client's MCP status reads. Each answers a value, never fails. */
 export type McpStatus = {
+  /**
+   * The Environment's MCP prompts for a composer with no Session yet (`draftCatalog`): the host's inventory as it stands,
+   * as a Session's catalog lists it. No prompts, whatever the reason there are none (no servers, a host that did not
+   * answer): the composer only misses its `/` rows.
+   */
+  readonly prompts: (environment: string) => Effect.Effect<PromptCatalog>;
   readonly servers: (environment: string) => Effect.Effect<McpServersView>;
   readonly serverLog: (input: {
     readonly environment: string;
@@ -234,6 +243,31 @@ const readSet = <A>(
 
 /** The MCP status reads over `objects`. */
 export const mcpStatus = (objects: McpStatusObjects): McpStatus => ({
+  prompts: (environment) =>
+    namesOf(objects, environment).pipe(
+      Effect.flatMap((names) =>
+        names === undefined || Option.isNone(names) || names.value.length === 0
+          ? Effect.succeed(NO_PROMPTS)
+          : objects
+              .host(mcpHostName(environment))
+              .servers({ parts: ["prompts"] })
+              .pipe(
+                Effect.map((answer) => {
+                  const decoded = decodeServers(answer);
+
+                  return Option.isNone(decoded) || Predicate.isTagged(decoded.value, "HostFailed")
+                    ? NO_PROMPTS
+                    : promptCatalog(decoded.value.servers);
+                }),
+              ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning(`Environment ${environment}'s MCP prompts were not read`, cause).pipe(
+          Effect.as(NO_PROMPTS),
+        ),
+      ),
+    ),
+
   servers: (environment) =>
     readSet(objects, environment, "servers were not read", (names) =>
       names.length === 0

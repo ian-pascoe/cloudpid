@@ -5,6 +5,7 @@
 import {
   type BranchSummaryRequest,
   type ForkKind,
+  type McpPromptData,
   NEW_WORKSPACE,
   SAME_WORKSPACE,
   type TreePoint,
@@ -51,11 +52,28 @@ export const composerPrefillAtom = Atom.make<Readonly<Record<string, string>>>({
   Atom.keepAlive,
 );
 
-/** Put `text` in Session `sessionId`'s root composer. */
-const prefill = (get: Atom.FnContext, sessionId: string, text: string | null) => {
-  if (text === null || text.trim() === "") return;
+/**
+ * The MCP prompt of the owner's message a move or a Fork was made before, by Session id, for the root composer to hold as
+ * its chip (`Navigated.mcpPrompt`): with the text in `composerPrefillAtom`, the message comes back as it was written.
+ */
+export const promptPrefillAtom = Atom.make<Readonly<Record<string, McpPromptData>>>({}).pipe(
+  Atom.keepAlive,
+);
 
-  get.set(composerPrefillAtom, { ...get(composerPrefillAtom), [sessionId]: text });
+/** Put `text`, and the MCP prompt it was sent with, in Session `sessionId`'s root composer. */
+const prefill = (
+  get: Atom.FnContext,
+  sessionId: string,
+  text: string | null,
+  mcpPrompt?: McpPromptData,
+) => {
+  if (text !== null && text.trim() !== "") {
+    get.set(composerPrefillAtom, { ...get(composerPrefillAtom), [sessionId]: text });
+  }
+
+  if (mcpPrompt !== undefined) {
+    get.set(promptPrefillAtom, { ...get(promptPrefillAtom), [sessionId]: mcpPrompt });
+  }
 };
 
 /**
@@ -96,7 +114,7 @@ export const navigateAtom = Atom.family((sessionId: string) =>
         Effect.flatMap((client) => client.navigate(point, summary)),
         Effect.tap((navigated) =>
           Effect.sync(() => {
-            prefill(get, sessionId, navigated.text);
+            prefill(get, sessionId, navigated.text, navigated.mcpPrompt);
           }),
         ),
       ),
@@ -153,7 +171,7 @@ export const forkSessionAtom = appRuntime.fn(
     return RegistryClient.use((registry) => registry("forkSession", request)).pipe(
       Effect.tap((forked) =>
         Effect.sync(() => {
-          prefill(get, forked.session.id, forked.text);
+          prefill(get, forked.session.id, forked.text, forked.mcpPrompt);
           get.set(pathAtom, sessionPath(forked.session.id));
         }),
       ),

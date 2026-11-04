@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   answerOf,
   entriesOf,
+  shownMcpPrompt,
   shownPages,
   shownReview,
   shownSkills,
@@ -112,6 +113,28 @@ describe("the thread messages of a view", () => {
       "metadata",
     );
     expect(shownSkills(undefined)).toEqual([]);
+  });
+
+  it("keeps the MCP prompt a user message got, with the block the model got, for its disclosure", () => {
+    const prompt = {
+      server: "docs",
+      command: "/mcp__docs__review",
+      name: "review",
+      title: "Review PR",
+      arguments: { pr: "7" },
+      parts: [],
+      resources: [],
+      text: '<mcp_prompt server="docs" name="review">\nReview 7.\n</mcp_prompt>',
+    };
+
+    const [message] = toThreadMessages(
+      view({ messages: [{ ...user("1", "be brief"), mcpPrompt: prompt }] }),
+    );
+
+    expect(message?.content).toEqual([{ type: "text", text: "be brief" }]);
+    expect(shownMcpPrompt(message?.metadata?.custom)).toEqual(prompt);
+    expect(shownMcpPrompt(undefined)).toBeUndefined();
+    expect(shownMcpPrompt({ mcpPrompt: 7 })).toBeUndefined();
   });
 
   it("keeps the pages attached to a user message, for its chips", () => {

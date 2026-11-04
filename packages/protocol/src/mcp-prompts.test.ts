@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   cleanPromptArgument,
+  flatCut,
   looksLikeMcpPromptCommand,
   mcpPromptErrorCode,
   promptArguments,
@@ -16,6 +17,14 @@ const declared = [
   { name: "pr", required: true },
   { name: "note", required: false },
 ];
+
+describe("an argument's value on one line", () => {
+  it("runs its lines together and cuts it with a …", () => {
+    expect(flatCut("  a\n b\t c ", 20)).toBe("a b c");
+    expect(flatCut("x".repeat(30), 10)).toBe(`${"x".repeat(9)}…`);
+    expect(flatCut("x".repeat(10), 10)).toBe("x".repeat(10));
+  });
+});
 
 describe("a prompt's arguments", () => {
   it("are checked for required fields and the size bounds", () => {

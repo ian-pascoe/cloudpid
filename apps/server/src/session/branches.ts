@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import type { Mutable } from "effect/Types";
 import { summarizeBranch, summaryMessage } from "./branch-summary.ts";
 import { attempt, refuse, type SessionError } from "./errors.ts";
 import { copyAgent } from "./fork.ts";
@@ -36,6 +37,7 @@ import {
   branchIds,
   buildSessionTree,
   EMPTY_TREE,
+  ownerMessagePrompt,
   ownerMessageText,
   planNavigation,
   SessionTreeDoc,
@@ -239,13 +241,21 @@ export const sessionBranches = (options: BranchesOptions) => {
         (each) => each.id === request.entryId,
       );
 
-      const text =
-        request.position === "before" && Option.isSome(entry)
-          ? ownerMessageText(entry.value)
-          : null;
+      const before = request.position === "before" && Option.isSome(entry);
+      const text = before ? ownerMessageText(entry.value) : null;
+      const mcpPrompt = before ? ownerMessagePrompt(entry.value) : undefined;
+
+      /** The answer: the prompt goes with the text only when the message had one. */
+      const navigated = (conversationId: Navigated["conversationId"]): Navigated => {
+        const answer: Mutable<Navigated> = { conversationId, text };
+
+        if (mcpPrompt !== undefined) answer.mcpPrompt = mcpPrompt;
+
+        return answer;
+      };
 
       if (plan.kind === "switch" && plan.conversationId === current.id) {
-        return { conversationId: current.id, text } satisfies Navigated;
+        return navigated(current.id);
       }
 
       const point = Match.value(plan).pipe(
@@ -304,7 +314,7 @@ export const sessionBranches = (options: BranchesOptions) => {
         }, context),
       );
 
-      return { conversationId: target, text } satisfies Navigated;
+      return navigated(target);
     }).pipe(inArrivalOrder);
 
   /** Make Session branch `conversationId` the active branch as it stands (the chevrons). */

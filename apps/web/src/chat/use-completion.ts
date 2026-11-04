@@ -4,6 +4,7 @@
 
 // @effect-diagnostics preferEffectArray:off -- the menu's rows are native arrays.
 
+import type { McpPromptEntry } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { type KeyboardEvent, useId } from "react";
 import type { ComposerCommand } from "./commands.ts";
@@ -30,6 +31,8 @@ export type CompletionOptions = {
   readonly edit: (next: Edited) => void;
   /** Run a command picked from the menu; absent where the composer runs none. */
   readonly run?: (command: ComposerCommand, args: string) => void;
+  /** An MCP prompt picked from the menu: the composer asks for its arguments, or holds it as a chip. */
+  readonly pickPrompt?: (prompt: McpPromptEntry) => void;
 };
 
 export type CompletionMenuState = {
@@ -63,6 +66,7 @@ export const useCompletion = ({
   files,
   edit,
   run,
+  pickPrompt,
 }: CompletionOptions): CompletionMenuState => {
   const id = useId();
   const text = useAtomValue(state.text);
@@ -96,11 +100,15 @@ export const useCompletion = ({
 
     if (entry === undefined || trigger === null) return;
 
-    if (entry.pick.kind === "run") run?.(entry.pick.command, entry.pick.args);
-    else {
-      edit(
-        replaceTrigger(text, trigger, entry.pick.text, { space: entry.pick.continues !== true }),
-      );
+    const { pick: picked } = entry;
+
+    if (picked.kind === "run") run?.(picked.command, picked.args);
+    else if (picked.kind === "prompt") {
+      // The `/name` typed so far leaves the text: the prompt is a chip above it, never text.
+      edit(replaceTrigger(text, trigger, "", { space: false }));
+      pickPrompt?.(picked.prompt);
+    } else if (picked.kind === "insert") {
+      edit(replaceTrigger(text, trigger, picked.text, { space: picked.continues !== true }));
     }
   };
 

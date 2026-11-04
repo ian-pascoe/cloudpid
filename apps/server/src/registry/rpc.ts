@@ -21,7 +21,9 @@ import {
   parseRepoSource,
   RegistryRpcs,
   SessionActionError,
+  type Catalog,
   type ForkKind,
+  type ForkedSession,
   ownBranchProblem,
   SessionNotFound,
   type SettingsOverridesState,
@@ -38,6 +40,7 @@ import * as Predicate from "effect/Predicate";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
 import type * as Schema from "effect/Schema";
+import type { Mutable } from "effect/Types";
 import {
   type ExportPage,
   type ExportRequest,
@@ -728,7 +731,11 @@ export const serveRegistryRpc = <R = never>(
             released,
           );
 
-          return { session: created, text: plan.text };
+          const forked: Mutable<ForkedSession> = { session: created, text: plan.text };
+
+          if (plan.mcpPrompt !== undefined) forked.mcpPrompt = plan.mcpPrompt;
+
+          return forked;
         }),
       renameSession: ({ id, title }) =>
         registry
@@ -1149,12 +1156,29 @@ export const serveRegistryRpc = <R = never>(
           ),
       listWorkspaces: () => registry.listWorkspaces(),
       draftCatalog: ({ environment, workspace }) =>
-        draftPlace(environment, workspace).pipe(
-          Effect.flatMap((place) =>
-            place === null
-              ? Effect.succeed({ commands: [], templates: [], skills: [] })
-              : lookups.catalog(place),
-          ),
+        Effect.all(
+          [
+            draftPlace(environment, workspace).pipe(
+              Effect.flatMap((place) =>
+                place === null
+                  ? Effect.succeed({ commands: [], templates: [], skills: [] })
+                  : lookups.catalog(place),
+              ),
+            ),
+            // The Environment's MCP prompts, from its host's inventory: no Workspace is readied for them.
+            mcpStatus.prompts(environment),
+          ],
+          { concurrency: 2 },
+        ).pipe(
+          Effect.map(([found, mcp]): Catalog => {
+            const catalog: Mutable<Catalog> = { ...found };
+
+            if (mcp.prompts.length > 0) catalog.prompts = mcp.prompts;
+
+            if (mcp.mcpServers.length > 0) catalog.mcpServers = mcp.mcpServers;
+
+            return catalog;
+          }),
         ),
       draftFiles: ({ environment, workspace, query }) =>
         draftPlace(environment, workspace).pipe(

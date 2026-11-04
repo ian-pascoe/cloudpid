@@ -1,13 +1,14 @@
 // The draft composer's state: what is typed and chosen, the last Environment chosen on this device, sending the draft,
 // and the first message waiting for its Session to take it.
 
-import { DEFAULT_ENVIRONMENT, NEW_WORKSPACE } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, NEW_WORKSPACE, type Refusal } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Atom from "effect/reactivity/Atom";
 import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
+import type * as Types from "effect/Types";
 import { outgoingMessage } from "./chat/attachments.ts";
 import {
   type AttachmentsState,
@@ -22,7 +23,9 @@ import { changing, RegistryClient } from "./registry.ts";
 import { isDraftPath, pathAtom, sessionPath } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
 import { sessionClientAtom } from "./session/atoms.ts";
+import type { SessionCommandError } from "./session/client.ts";
 import type { OutgoingMessage } from "./session/state.ts";
+import { draftPromptAtoms, type PromptChip, withPrompt } from "./chat/mcp-prompt-state.ts";
 
 // The draft's fields are kept while the app is open, as its Attachments are (`draftAttachmentsProgramAtom`), so a
 // draft left for another page is there on coming back, and a send under way goes on.
@@ -31,14 +34,17 @@ import type { OutgoingMessage } from "./session/state.ts";
 export const draftTextAtom = Atom.make("").pipe(Atom.keepAlive);
 
 /**
- * Whether the draft holds what a reload would lose: text, or Attachments (files or Owner tabs). It is kept while the
+ * Whether the draft holds what a reload would lose: text, an MCP prompt chip, or Attachments (files or Owner tabs). It is kept while the
  * app is open, so it can hold them off screen; `stale-build.ts` asks before it reloads.
  */
 export const draftHeldAtom = Atom.readable((get): boolean => {
   const attachments = get(draftAttachmentsAtom);
 
   return (
-    get(draftTextAtom).trim() !== "" || attachments.items.length > 0 || attachments.pages.length > 0
+    get(draftTextAtom).trim() !== "" ||
+    attachments.items.length > 0 ||
+    attachments.pages.length > 0 ||
+    get(draftPromptAtoms.chip) !== null
   );
 });
 
@@ -87,6 +93,8 @@ export interface FirstMessage {
   readonly message?: OutgoingMessage;
   /** The files of those Attachments, which the Session's composer attaches again should the Session refuse it. */
   readonly files?: readonly File[];
+  /** The MCP prompt it was sent with, which the Session's composer holds as its chip again should the Session refuse it. */
+  readonly chip?: PromptChip;
 }
 
 /**
@@ -134,7 +142,13 @@ export const sendDraftAtom = appRuntime
       );
 
       const text = input.text.trim();
+      const { prompt } = input;
       let first: FirstMessage | null = { text };
+
+      // An MCP prompt goes with the first message, which the new Session gets as it is sent.
+      if (prompt !== undefined) {
+        first = { text, message: withPrompt({ input: text, display: text }, prompt), chip: prompt };
+      }
 
       if (attached) {
         const settled = yield* attachments.uploadTo(created.id);
@@ -142,12 +156,27 @@ export const sendDraftAtom = appRuntime
         const files = Arr.map(settled.items, (item) => item.file);
 
         if (sent === undefined) {
+          const refused: Types.Mutable<RefusedFirstMessage> = {
+            text,
+            reason: unsentReason(settled),
+            files,
+          };
+
+          if (prompt !== undefined) refused.chip = prompt;
+
           first = null;
           get.set(refusedFirstMessagesAtom, {
             ...get(refusedFirstMessagesAtom),
-            [created.id]: { text, reason: unsentReason(settled), files },
+            [created.id]: refused,
           });
-        } else first = { text, message: outgoingMessage(text, sent), files };
+        } else {
+          const plain = outgoingMessage(text, sent);
+
+          first =
+            prompt === undefined
+              ? { text, message: plain, files }
+              : { text, message: withPrompt(plain, prompt), files, chip: prompt };
+        }
 
         // The next draft starts with no Attachments, and uploads to its own Session.
         get.refresh(draftAttachmentsProgramAtom);
@@ -161,6 +190,8 @@ export const sendDraftAtom = appRuntime
       }
 
       get.set(draftTextAtom, "");
+      get.set(draftPromptAtoms.chip, null);
+      get.set(draftPromptAtoms.form, null);
       get.set(draftBaseAtom, "");
       get.set(draftBranchAtom, "");
       get.set(draftWorkspaceAtom, NEW_WORKSPACE);
@@ -183,6 +214,10 @@ export interface RefusedFirstMessage {
   readonly reason: string;
   /** The files attached to it, which the composer attaches again. */
   readonly files?: readonly File[];
+  /** The MCP prompt it was sent with, which the composer holds as its chip again. */
+  readonly chip?: PromptChip;
+  /** What the Session's refusal carried of an MCP prompt send. */
+  readonly refusal?: Refusal;
 }
 
 /**
@@ -208,18 +243,26 @@ export const drainFirstMessageAtom = Atom.family((sessionId: string) =>
 
         if (first === undefined) return Effect.void;
 
-        const { text, message = text, files } = first;
+        const { text, message = text, files, chip } = first;
 
-        const answered = (reason: string | null) =>
+        const answered = (error: SessionCommandError | null) =>
           Effect.sync(() => {
             const { [sessionId]: _sent, ...others } = get.once(pendingFirstMessagesAtom);
 
             get.set(pendingFirstMessagesAtom, others);
 
-            if (reason !== null) {
+            if (error !== null) {
+              const refused: Types.Mutable<RefusedFirstMessage> = { text, reason: error.message };
+
+              if (files !== undefined) refused.files = files;
+
+              if (chip !== undefined) refused.chip = chip;
+
+              if (error.refusal !== undefined) refused.refusal = error.refusal;
+
               get.set(refusedFirstMessagesAtom, {
                 ...get.once(refusedFirstMessagesAtom),
-                [sessionId]: files === undefined ? { text, reason } : { text, reason, files },
+                [sessionId]: refused,
               });
             }
           });
@@ -229,7 +272,7 @@ export const drainFirstMessageAtom = Atom.family((sessionId: string) =>
           .pipe(
             Effect.matchEffect({
               onSuccess: () => answered(null),
-              onFailure: (error) => answered(error.message),
+              onFailure: (error) => answered(error),
             }),
           );
       }),

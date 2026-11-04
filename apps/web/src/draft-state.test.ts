@@ -5,6 +5,7 @@ import { EnvironmentError, type SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -27,7 +28,8 @@ import {
   refusedFirstMessagesAtom,
   sendDraftAtom,
 } from "./draft-state.ts";
-import type { DraftInput } from "./draft.ts";
+import { draftSendable, type DraftInput } from "./draft.ts";
+import { draftPromptAtoms, withPrompt } from "./chat/mcp-prompt-state.ts";
 import { environmentsAtom } from "./environments-state.ts";
 import { failureOf, RegistryClient, settledFailureOf } from "./registry.ts";
 import { fakeRegistryLayer, settled } from "./registry.testing.ts";
@@ -56,6 +58,17 @@ const memoryStorage = (): Storage => {
       items.set(key, value);
     },
   };
+};
+
+const REVIEW = {
+  command: "/mcp__docs__review",
+  server: "docs",
+  source: "owner",
+  name: "review",
+  title: "Review PR",
+  description: "",
+  arguments: [],
+  completions: false,
 };
 
 const created = (id: string, environment: string): SessionRecord => ({
@@ -139,6 +152,41 @@ describe("sending the draft", () => {
       expect(registry.get(draftBranchAtom)).toBe("");
       expect(registry.get(draftBaseAtom)).toBe("");
     }),
+  );
+
+  it.effect(
+    "sends the MCP prompt picked for the draft with its first message, and empties the chip",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = sending();
+        const chip = { prompt: REVIEW, values: {} };
+
+        registry.mount(pathAtom);
+        registry.mount(pendingFirstMessagesAtom);
+        registry.set(draftPromptAtoms.chip, chip);
+        expect(registry.get(draftHeldAtom)).toBe(true);
+
+        // No words: the prompt alone is a message.
+        expect(draftSendable(draft({ text: "", prompt: chip }))).toBe(true);
+        expect(draftSendable(draft({ text: "" }))).toBe(false);
+
+        registry.set(sendDraftAtom, draft({ text: "focus on tests", prompt: chip }));
+        yield* settled(registry, sendDraftAtom);
+
+        expect(registry.get(pendingFirstMessagesAtom)).toEqual({
+          s1: {
+            text: "focus on tests",
+            message: {
+              input: "focus on tests",
+              display: "docs · Review PR · focus on tests",
+              mcpPrompt: { server: "docs", name: "review" },
+              getting: "Getting Review PR from docs…",
+            },
+            chip,
+          },
+        });
+        expect(registry.get(draftPromptAtoms.chip)).toBeNull();
+      }),
   );
 
   it.effect("starts in an existing Workspace by its id", () =>
@@ -452,7 +500,7 @@ describe("the first message of a Session", () => {
   });
 
   /** An atom registry whose runtime dials fake sockets, recorded in `sockets`, holding `pending`. */
-  const setup = (pending: Readonly<{ [sessionId: string]: string }>) => {
+  const setup = (pending: Readonly<{ [sessionId: string]: string | FirstMessage }>) => {
     const sockets: FakeSocket[] = [];
 
     const registry = AtomRegistry.make({
@@ -474,7 +522,9 @@ describe("the first message of a Session", () => {
         ),
         Atom.initialValue(
           pendingFirstMessagesAtom,
-          Record.map(pending, (text): FirstMessage => ({ text })),
+          Record.map(pending, (first): FirstMessage =>
+            Predicate.isString(first) ? { text: first } : first,
+          ),
         ),
       ],
     });
@@ -594,6 +644,54 @@ describe("the first message of a Session", () => {
 
         expect(again).toHaveLength(1);
         expect(again[0]).toMatchObject({ input: "Fix the build", requestId: first?.requestId });
+      }),
+  );
+
+  it.effect(
+    "sends an MCP prompt with the first message, and gives its chip back with the refusal's code when the Session refuses it",
+    () =>
+      Effect.gen(function* () {
+        const prompt = { ...REVIEW, arguments: [{ name: "pr", required: true }] };
+        const chip = { prompt, values: { pr: "7" } };
+
+        const { registry, latest } = setup({
+          s1: {
+            text: "focus on tests",
+            message: withPrompt({ input: "focus on tests", display: "focus on tests" }, chip),
+            chip,
+          },
+        });
+
+        registry.mount(refusedFirstMessagesAtom);
+        registry.mount(drainFirstMessageAtom("s1"));
+        yield* settle;
+        yield* live(latest());
+        yield* settle;
+
+        const submit = submitsOn(latest())[0];
+
+        expect(submit).toMatchObject({
+          input: "focus on tests",
+          mcpPrompt: { server: "docs", name: "review", arguments: { pr: "7" } },
+        });
+
+        yield* latest().say({
+          type: "error",
+          id: submit?.id,
+          message: "The argument pr is required",
+          code: "MCP_PROMPT_ARGUMENTS",
+          server: "docs",
+        });
+        yield* settle;
+
+        expect(registry.get(refusedFirstMessagesAtom)).toEqual({
+          s1: {
+            text: "focus on tests",
+            reason: "The argument pr is required",
+            chip,
+            refusal: { code: "MCP_PROMPT_ARGUMENTS", server: "docs" },
+          },
+        });
       }),
   );
 

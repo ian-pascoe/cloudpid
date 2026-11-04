@@ -6,6 +6,7 @@ import type { Skill } from "@cloudpid/extensions/skills-discovery";
 import {
   type Catalog,
   type CatalogEntry,
+  flatCut,
   MCP_PROMPT_COMMAND_PREFIX,
   projectEntry,
   sessionCommandsFor,
@@ -13,6 +14,7 @@ import {
   type TranscriptPart,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 
 const entryOf = (entry: { readonly name: string; readonly description: string }) => ({
@@ -83,6 +85,34 @@ const textOf = (parts: ReadonlyArray<TranscriptPart>): string =>
 const resultText = (content: ReadonlyArray<TranscriptPart>): string =>
   content.map((part) => (part.type === "text" ? part.text : "[image]")).join("\n");
 
+/** `text` as a blockquote: every line, empty ones too, after `> `. */
+const quoted = (text: string): string =>
+  text
+    .split("\n")
+    .map((line) => (line === "" ? ">" : `> ${line}`))
+    .join("\n");
+
+/** The longest an argument's value is shown in an export, in characters. */
+const EXPORT_ARGUMENT_CHARACTERS = 200;
+
+/**
+ * What an export says of an MCP prompt the owner sent (`TranscriptMessage.mcpPrompt`): which prompt with its arguments
+ * (redacted as kept), the block the model got as a blockquote, and the resources it linked or embedded, by URI.
+ */
+const promptMarkdown = (prompt: NonNullable<TranscriptMessage["mcpPrompt"]>): string[] => {
+  const args = Record.toEntries(prompt.arguments)
+    .map(([name, value]) => `${name}=${flatCut(value, EXPORT_ARGUMENT_CHARACTERS)}`)
+    .join(", ");
+
+  const resources = prompt.resources.map((resource) => `- ${resource.uri}`);
+
+  return [
+    `MCP prompt: ${prompt.server}/${prompt.name}${args === "" ? "" : ` (${args})`}`,
+    quoted(prompt.text),
+    ...(resources.length === 0 ? [] : [["Resources:", ...resources].join("\n")]),
+  ];
+};
+
 /** One message of the History as Markdown. */
 const messageMarkdown = (message: TranscriptMessage): string | undefined => {
   switch (message.role) {
@@ -92,6 +122,7 @@ const messageMarkdown = (message: TranscriptMessage): string | undefined => {
       return [
         "## Owner",
         textOf(message.parts),
+        ...(message.mcpPrompt === undefined ? [] : promptMarkdown(message.mcpPrompt)),
         ...(skills === "" ? [] : [`_Skills: ${skills}_`]),
       ].join("\n\n");
     }

@@ -4,7 +4,7 @@
 // the rest. The main Worker drives both (`fillSession`). What is copied, in plain functions, is `fork.ts`'s.
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { TodoDoc } from "@cloudpid/extensions/todo";
-import type { McpAppCopies, McpAppCopy } from "@cloudpid/protocol";
+import type { McpAppCopies, McpAppCopy, McpPromptData } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AgentDoc,
@@ -20,6 +20,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
+import type { Mutable } from "effect/Types";
 import { attempt, refuse, type SessionError } from "./errors.ts";
 import {
   copiedDraft,
@@ -33,7 +34,7 @@ import {
   NO_AGENT,
   toolResultIds,
 } from "./fork.ts";
-import { isOwnerMessage, ownerMessageText } from "./tree.ts";
+import { isOwnerMessage, ownerMessagePrompt, ownerMessageText } from "./tree.ts";
 import { type AgentPick, PICK_KEY, pickAsOf } from "./pick.ts";
 import type { SettingsKv } from "./settings.ts";
 
@@ -174,6 +175,7 @@ export const sessionForks = (options: ForksOptions) => {
 
       let through: number | null;
       let text: string | null = null;
+      let mcpPrompt: McpPromptData | undefined;
 
       if (request.point === undefined) {
         through = (yield* newest(undefined, 1))[0]?.id ?? null;
@@ -191,6 +193,7 @@ export const sessionForks = (options: ForksOptions) => {
           }
 
           text = ownerMessageText(entry);
+          mcpPrompt = ownerMessagePrompt(entry);
           through = before?.id ?? null;
         } else {
           through = entry.id;
@@ -215,7 +218,7 @@ export const sessionForks = (options: ForksOptions) => {
         kv.put(HOLD_KEY, { until: now + HOLD_LIFETIME_MS } satisfies Hold);
       }
 
-      return {
+      const plan: Mutable<ForkPlan> = {
         conversationId: conversation.id,
         through,
         text,
@@ -223,7 +226,11 @@ export const sessionForks = (options: ForksOptions) => {
         pick: pickAsOf(options.picked(), agent),
         context: notes === undefined ? null : structuredClone(notes),
         todo: todo === undefined ? null : structuredClone(todo),
-      } satisfies ForkPlan;
+      };
+
+      if (mcpPrompt !== undefined) plan.mcpPrompt = mcpPrompt;
+
+      return plan;
     }).pipe(options.inArrivalOrder);
 
   /** A page of the entries a Fork or Clone copies. */

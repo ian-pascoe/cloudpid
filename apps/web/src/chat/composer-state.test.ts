@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { afterEach, beforeEach, vi } from "vitest";
 import { callOf } from "../calls.ts";
@@ -23,6 +24,8 @@ import { refusedFirstMessagesAtom } from "../draft-state.ts";
 import { attachmentsAtom } from "./attachments-state.ts";
 import { conversationKey } from "./conversation.ts";
 import { FILE_SEARCH_DEBOUNCE_MS, fileSearchAtom } from "./file-search.ts";
+import { conversationPromptAtoms } from "./mcp-prompt-state.ts";
+import { promptPrefillAtom } from "./tree-state.ts";
 
 /** A page whose links and clipboard the test watches, and whose width it sets. */
 const stubPage = () => {
@@ -199,6 +202,17 @@ describe("the composer's page and commands", () => {
   );
 });
 
+const REVIEW_PROMPT = {
+  command: "/mcp__docs__review",
+  server: "docs",
+  source: "owner",
+  name: "review",
+  title: "Review PR",
+  description: "",
+  arguments: [],
+  completions: false,
+};
+
 /** A composer over a fake assistant-ui and input, for the conversation `key`. */
 const composerOf = (key = conversationKey("s1", undefined)) => {
   let text = "";
@@ -212,6 +226,7 @@ const composerOf = (key = conversationKey("s1", undefined)) => {
   const state = composerState({
     key,
     lookups: conversationLookups(key),
+    prompt: conversationPromptAtoms(key),
     text: () => text,
     subscribe: (listener) => {
       listeners.add(listener);
@@ -450,6 +465,119 @@ describe("one composer's state", () => {
       expect(composer.text()).toBe("Look");
       expect(registry.get(attachments).items.map((item) => item.name)).toEqual(["notes.txt"]);
     }),
+  );
+
+  it.effect(
+    "takes back the MCP prompt a refused first message was sent with as its chip, and says what the refusal asks",
+    () =>
+      Effect.sync(() => {
+        const { registry } = chatRegistry();
+        const composer = composerOf();
+        const { state } = composer;
+        const prompt = { ...REVIEW_PROMPT, arguments: [{ name: "pr", required: true }] };
+
+        registry.mount(state.text);
+        registry.mount(state.note);
+        registry.mount(state.chip);
+        registry.mount(state.effects);
+        registry.set(refusedFirstMessagesAtom, {
+          s1: {
+            text: "focus on tests",
+            reason: "The server is not signed in",
+            chip: { prompt, values: { pr: "7" } },
+            refusal: { code: "MCP_SIGN_IN_REQUIRED", server: "docs" },
+          },
+        });
+
+        expect(composer.text()).toBe("focus on tests");
+        expect(registry.get(state.chip)).toEqual({ prompt, values: { pr: "7" } });
+        expect(registry.get(state.note)).toEqual({
+          tone: "error",
+          text: "The server is not signed in",
+          retry: true,
+          signIn: "docs",
+        });
+      }),
+  );
+
+  it.effect(
+    "opens the form again, and asks the catalog again, for a refused first message whose arguments the Session refused",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest } = chatRegistry();
+        const composer = composerOf();
+        const { state } = composer;
+        const prompt = { ...REVIEW_PROMPT, arguments: [{ name: "pr", required: true }] };
+
+        registry.mount(sessionStatusAtom("s1"));
+        registry.mount(state.chip);
+        registry.mount(state.form);
+        registry.mount(state.note);
+        registry.mount(state.effects);
+        yield* settle;
+        yield* live(latest());
+        registry.set(refusedFirstMessagesAtom, {
+          s1: {
+            text: "focus on tests",
+            reason: "The argument pr is required",
+            chip: { prompt, values: { pr: "7" } },
+            refusal: { code: "MCP_PROMPT_ARGUMENTS", server: "docs" },
+          },
+        });
+        yield* settle;
+
+        expect(registry.get(state.chip)).toEqual({ prompt, values: { pr: "7" } });
+        expect(registry.get(state.form)).toEqual({
+          prompt,
+          values: { pr: "7" },
+          problem: "The argument pr is required",
+        });
+        expect(sent(latest(), "catalog")).toHaveLength(1);
+      }),
+  );
+
+  it.effect(
+    "holds the chip of the MCP prompt a Branch or a Fork gave back, and asks the catalog whether it is still offered",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest } = chatRegistry();
+        const composer = composerOf();
+        const { state } = composer;
+
+        registry.mount(sessionStatusAtom("s1"));
+        registry.mount(state.chip);
+        registry.mount(state.effects);
+        yield* settle;
+        yield* live(latest());
+        registry.set(promptPrefillAtom, {
+          s1: {
+            server: "docs",
+            command: "/mcp__docs__review",
+            name: "review",
+            title: "Review PR",
+            arguments: { pr: "7" },
+            parts: [],
+            resources: [],
+          },
+          s2: {
+            server: "other",
+            command: "/mcp__other__x",
+            name: "x",
+            arguments: {},
+            parts: [],
+            resources: [],
+          },
+        });
+        yield* settle;
+
+        expect(registry.get(state.chip)).toMatchObject({
+          prompt: { server: "docs", name: "review", title: "Review PR" },
+          values: { pr: "7" },
+        });
+        // Only this Session's prompt is taken; the catalog is asked about it.
+        expect(Record.keys(registry.get(promptPrefillAtom))).toEqual(["s2"]);
+        expect(sent(latest(), "catalog")).toHaveLength(1);
+      }),
   );
 
   it.effect("leaves the refused first message to the root's composer in a subagent's", () =>

@@ -8,16 +8,25 @@ import * as Clipboard from "@effect/platform-browser/Clipboard";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
+import type * as Types from "effect/Types";
 import { replying } from "../calls.ts";
 import { refusedFirstMessagesAtom } from "../draft-state.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
 import { addAttachmentsAtom } from "./attachments-state.ts";
-import { askCatalogAtom } from "./catalog.ts";
+import { askCatalogAtom, refreshCatalogAtom } from "./catalog.ts";
 import { detectTrigger, type Trigger } from "./completion.ts";
 import type { ConversationKey } from "./conversation.ts";
 import { searchFilesAtom } from "./file-search.ts";
-import { composerPrefillAtom } from "./tree-state.ts";
+import {
+  type PromptAtoms,
+  type PromptChip,
+  type RefusalOutcome,
+  refusalOutcome,
+  restoredChip,
+  startingValues,
+} from "./mcp-prompt-state.ts";
+import { composerPrefillAtom, promptPrefillAtom } from "./tree-state.ts";
 
 /**
  * Whether Stop and `/stop` have something to stop: a Run is going, or a message of this conversation is still being sent
@@ -115,8 +124,27 @@ export const sessionCommandAtom = Atom.family((key: ConversationKey) =>
   ),
 );
 
-/** A line under the composer: why a command failed, or what one did. */
-export type Note = { readonly tone: "error" | "info"; readonly text: string };
+/**
+ * A line under the composer: why a command failed, or what one did. After a refused MCP prompt send it may offer to send
+ * again (`retry`) and a link to sign in to the server it names (`signIn`); the composer draws both.
+ */
+export type Note = {
+  readonly tone: "error" | "info";
+  readonly text: string;
+  readonly retry?: true;
+  readonly signIn?: string;
+};
+
+/** The note for a refused MCP prompt send, from what the refusal says to do (`refusalOutcome`). */
+export const refusalNote = (outcome: RefusalOutcome): Note => {
+  const note: Types.Mutable<Note> = { tone: "error", text: outcome.message };
+
+  if (outcome.retry) note.retry = true;
+
+  if (outcome.signIn !== undefined) note.signIn = outcome.signIn;
+
+  return note;
+};
 
 /** Where a composer's menus get what they list: the `@` menu's file search, and the catalog. */
 export interface ComposerLookups {
@@ -124,12 +152,15 @@ export interface ComposerLookups {
   readonly searchFiles: Atom.Writable<unknown, string | null>;
   /** Ask for the catalog, unless it is fresh (`askCatalogAtom`). */
   readonly askCatalog: Atom.Writable<unknown, void>;
+  /** Ask for it now, fresh or not (`refreshCatalogAtom`): a prompt's send was refused. */
+  readonly refreshCatalog: Atom.Writable<unknown, void>;
 }
 
 /** The lookups of a conversation's composer: its Session's answers about the conversation's directory. */
 export const conversationLookups = (key: ConversationKey): ComposerLookups => ({
   searchFiles: searchFilesAtom(key),
   askCatalog: askCatalogAtom(key),
+  refreshCatalog: refreshCatalogAtom(key),
 });
 
 /**
@@ -141,6 +172,8 @@ export interface ComposerSource {
   readonly key?: ConversationKey | undefined;
   /** Where its menus' catalog and files come from: the conversation's (`conversationLookups`), or the draft's. */
   readonly lookups: ComposerLookups;
+  /** The MCP prompt chip and argument form of this composer. */
+  readonly prompt: PromptAtoms;
   /** The text the store holds. */
   readonly text: () => string;
   /** Hear every change of the store; returns how to stop. */
@@ -156,7 +189,13 @@ export interface ComposerState {
   /** assistant-ui's text, as it changes. */
   readonly text: Atom.Atom<string>;
   readonly caret: Atom.Writable<number>;
+  /** The MCP prompt picked for the message being written, with its argument values. */
+  readonly chip: Atom.Writable<PromptChip | null>;
+  /** The argument form open on a prompt, or null. */
+  readonly form: PromptAtoms["form"];
   readonly focused: Atom.Writable<boolean>;
+  /** Ask for the catalog now (`ComposerLookups.refreshCatalog`). */
+  readonly refreshCatalog: ComposerLookups["refreshCatalog"];
   /** Why a command failed, or what one did; cleared as the owner edits the text. */
   readonly note: Atom.Writable<Note | null>;
   /** Whether a command is running. */
@@ -265,6 +304,7 @@ export const composerState = (source: ComposerSource): ComposerState => {
 
     get.mount(search);
     get.mount(askCatalog);
+    get.mount(source.lookups.refreshCatalog);
     get.mount(fileQuery);
     get.mount(listsCatalog);
     get.subscribe(fileQuery, (query) => {
@@ -295,11 +335,48 @@ export const composerState = (source: ComposerSource): ComposerState => {
         Atom.batch(() => {
           get.set(refusedFirstMessagesAtom, others);
           source.setText(since.trim() === "" ? message.text : `${message.text}\n\n${since}`);
-          get.set(note, { tone: "error", text: message.reason });
+
+          // The prompt the message was sent with comes back as its chip, to be sent again, and its refusal says what to do.
+          if (message.chip === undefined) get.set(note, { tone: "error", text: message.reason });
+          else {
+            const outcome = refusalOutcome(message.reason, message.refusal);
+            const { chip } = message;
+
+            get.set(source.prompt.chip, chip);
+            get.set(note, refusalNote(outcome));
+
+            // As for a refused send from here: the form opens again for arguments, and the catalog is asked for again.
+            if (outcome.reopenForm) {
+              get.set(source.prompt.form, {
+                prompt: chip.prompt,
+                values: startingValues(chip.prompt, chip.values),
+                problem: outcome.message,
+              });
+            }
+
+            if (outcome.refreshCatalog) get.set(source.lookups.refreshCatalog, undefined);
+          }
 
           if (message.files !== undefined && message.files.length > 0) {
             get.set(addAttachmentsAtom(key), message.files);
           }
+        });
+      },
+      { immediate: true },
+    );
+
+    // The MCP prompt of that message, as its chip: the catalog says whether it is still offered once it is known.
+    get.subscribe(
+      promptPrefillAtom,
+      (prefills) => {
+        const { [sessionId]: data, ...others } = prefills;
+
+        if (data === undefined) return;
+
+        Atom.batch(() => {
+          get.set(promptPrefillAtom, others);
+          get.set(source.prompt.chip, restoredChip(data, null));
+          get.set(askCatalog, undefined);
         });
       },
       { immediate: true },
@@ -327,6 +404,9 @@ export const composerState = (source: ComposerSource): ComposerState => {
   return {
     text,
     caret,
+    refreshCatalog: source.lookups.refreshCatalog,
+    chip: source.prompt.chip,
+    form: source.prompt.form,
     focused,
     note,
     busy: Atom.make(false),

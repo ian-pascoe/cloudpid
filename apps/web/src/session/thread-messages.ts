@@ -6,6 +6,7 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import {
   AttachedPage,
+  McpPromptData,
   SessionVia,
   type SessionView,
   ShownReviewAnnotation,
@@ -208,6 +209,17 @@ type MessageCustom = NonNullable<NonNullable<ThreadMessageLike["metadata"]>["cus
 export const shownSkills = (custom: MessageCustom | undefined): readonly ShownSkill[] =>
   Option.getOrElse(decodeSkills(custom?.["skills"]), () => []);
 
+/** An MCP prompt an owner's message got, as its disclosure shows it: what the entry kept of it, and the block the model got. */
+export const ShownMcpPrompt = Schema.Struct({ ...McpPromptData.fields, text: Schema.String });
+
+export type ShownMcpPrompt = typeof ShownMcpPrompt.Type;
+
+const decodeMcpPrompt = Schema.decodeUnknownOption(ShownMcpPrompt);
+
+/** The MCP prompt a user message's metadata keeps; none for a message that got none. */
+export const shownMcpPrompt = (custom: MessageCustom | undefined): ShownMcpPrompt | undefined =>
+  Option.getOrUndefined(decodeMcpPrompt(custom?.["mcpPrompt"]));
+
 const decodePages = Schema.decodeUnknownOption(Schema.Array(AttachedPage));
 
 /** The pages attached to a user message, as its metadata keeps them; none when it has none. */
@@ -256,11 +268,21 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
     const pages = message.pages ?? [];
     const review = message.review ?? [];
 
-    if (skills.length > 0 || pages.length > 0 || review.length > 0 || message.via !== undefined) {
+    const prompt = message.mcpPrompt;
+
+    if (
+      skills.length > 0 ||
+      pages.length > 0 ||
+      review.length > 0 ||
+      message.via !== undefined ||
+      prompt !== undefined
+    ) {
       const custom: MessageCustom = {};
 
       // The mark of who sent it over the MCP endpoint, which the message shows as a chip.
       if (message.via !== undefined) custom["via"] = { ...message.via };
+
+      if (prompt !== undefined) custom["mcpPrompt"] = { ...prompt };
 
       if (skills.length > 0) custom["skills"] = skills;
 

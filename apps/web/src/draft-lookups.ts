@@ -50,8 +50,12 @@ export const draftBranchesAtom = Atom.family((environment: string) =>
 );
 
 /** The catalogs of the draft's places. */
-export const { catalogAtom: draftCatalogAtom, askCatalogAtom: askDraftCatalogAtom } = catalogLookup(
-  (place: DraftPlace) => RegistryClient.use((registry) => registry("draftCatalog", place)),
+export const {
+  catalogAtom: draftCatalogAtom,
+  askCatalogAtom: askDraftCatalogAtom,
+  refreshCatalogAtom: refreshDraftCatalogAtom,
+} = catalogLookup((place: DraftPlace) =>
+  RegistryClient.use((registry) => registry("draftCatalog", place)),
 );
 
 /** The `@` menus of the draft's places. */
@@ -77,6 +81,12 @@ export const draftLookups: ComposerLookups = {
     (get) => get(askDraftCatalogAtom(get(draftPlaceAtom))),
     (ctx) => {
       ctx.set(askDraftCatalogAtom(ctx.get(draftPlaceAtom)), undefined);
+    },
+  ),
+  refreshCatalog: Atom.writable(
+    (get) => get(refreshDraftCatalogAtom(get(draftPlaceAtom))),
+    (ctx) => {
+      ctx.set(refreshDraftCatalogAtom(ctx.get(draftPlaceAtom)), undefined);
     },
   ),
 };

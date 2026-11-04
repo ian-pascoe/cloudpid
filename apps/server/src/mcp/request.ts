@@ -395,6 +395,23 @@ const appHtml = (
   });
 
 /**
+ * Mark `conn`'s inventory expired, so the next read that demands it (a catalog's, a request start's) lists the server
+ * again (`docs/architecture/mcp-in-a-session.md` → Freshness). Nothing is started here.
+ */
+const relistNext = (conn: string) =>
+  Effect.gen(function* () {
+    const store = yield* McpHostStore;
+
+    store.expireInventory([conn]);
+  });
+
+/** Whether `answer` is a server saying it has no such prompt: `NotFound`, or the invalid-params error (`-32602`) it answers with. */
+const unknownName = (answer: McpHostRequestResult): boolean =>
+  Predicate.isTagged(answer, "CallFailed") &&
+  (Predicate.isTagged(answer.error, "NotFound") ||
+    (Predicate.isTagged(answer.error, "ServerError") && answer.error.code === -32_602));
+
+/**
  * `request({ op: "prompts/get" })`: the owner's pick of a prompt, got when its message is sent (`docs/architecture/
  * mcp-in-a-session.md` → Getting a prompt at send). The checks of a call (a server that may be called, in the request's
  * Workspace if it is stdio) and a prompt the server's inventory lists; it is a read, so the server cannot have run
@@ -421,7 +438,10 @@ const promptGet = (
       Arr.some(held.prompts, (prompt) => prompt["name"] === params.name),
     );
 
+    // A prompt the inventory does not list may be one the server has added since: its list is read again next.
     if (!listed) {
+      yield* relistNext(resolved.success.view.server.conn);
+
       return NotAllowed.make({ message: `MCP server ${name} lists no prompt ${params.name}` });
     }
 
@@ -451,7 +471,12 @@ const promptGet = (
       what: "The prompt get",
     });
 
-    if (Result.isFailure(sent)) return sent.failure;
+    if (Result.isFailure(sent)) {
+      // The server does not know a prompt its inventory lists: the inventory is stale, so it is read again next.
+      if (unknownName(sent.failure)) yield* relistNext(resolved.success.view.server.conn);
+
+      return sent.failure;
+    }
 
     return sent.success.result.kind === "complete"
       ? McpHostCompleted.make({ result: sent.success.result.result })

@@ -2,28 +2,41 @@
 // and a command's run, awaited in an event handler, is a promise.
 
 import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
-import { useAtom, useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
+import {
+  RegistryContext,
+  useAtom,
+  useAtomMount,
+  useAtomSet,
+  useAtomValue,
+} from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Atom from "effect/reactivity/Atom";
+import type * as Types from "effect/Types";
 import { ArrowUp, ChevronUp, CornerUpRight, ListPlus, Square } from "lucide-react";
 import {
   type SubmitEvent,
   type KeyboardEvent,
   type ReactNode,
   type RefObject,
+  useContext,
   useId,
   useRef,
 } from "react";
 import { Menu, MenuItem } from "../components/ui/menu.tsx";
 import { cn } from "../lib/utils.ts";
-import { sessionCommandsFor, type WhenBusy } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, sessionCommandsFor, type WhenBusy } from "@cloudpid/protocol";
 import { messageOf } from "../registry.ts";
+import { sessionPath } from "../router.ts";
+import { sessionListAtom } from "../sessions.ts";
+import { mcpSignInStartHref } from "../settings/mcp-sign-in-model.ts";
 import type { QueuedEntry, SendingEntry } from "../session/state.ts";
 import { useCall } from "../calls.ts";
+import { ArgumentForm } from "./argument-form.tsx";
 import { AttachmentTiles } from "./attachment-tiles.tsx";
 import {
+  type AttachedMessage,
   addAttachmentsAtom,
   addPageAtom,
   attachmentsAtom,
@@ -52,10 +65,23 @@ import {
   conversationLookups,
   copyAtom,
   type Note,
+  refusalNote,
   sessionCommandAtom,
   stoppable,
   wideAtom,
 } from "./composer-state.ts";
+import {
+  conversationPromptAtoms,
+  type PromptChip,
+  promptTitle,
+  refusalOfCause,
+  refusalOutcome,
+  sendGate,
+  startingValues,
+} from "./mcp-prompt-state.ts";
+import { ComposerNote } from "./composer-note.tsx";
+import { PromptChipView } from "./prompt-chip.tsx";
+import { usePromptChip } from "./use-prompt-chip.ts";
 import { type ConversationKey, conversationKey, useShownSessionId } from "./conversation.ts";
 import { fileDragAtom, useFileDropZone } from "./file-drop.ts";
 import { fileResults, fileSearchAtom } from "./file-search.ts";
@@ -157,8 +183,13 @@ const ComposerBox = ({
   useAtomMount(state.effects);
 
   const catalog = useAtomValue(catalogAtom(key));
+
   const runSessionCommand = useCall(sessionCommandAtom(key));
   const copy = useCall(copyAtom);
+  const store = useContext(RegistryContext);
+  const lastWhenBusy = useRef<WhenBusy>("followUp");
+  const refreshCatalog = useAtomSet(state.refreshCatalog);
+  const sessions = useAtomValue(sessionListAtom);
   const attachments = useAtomValue(attachmentsAtom(key));
   const addAttachments = useAtomSet(addAttachmentsAtom(key));
   const removeAttachment = useAtomSet(removeAttachmentAtom(key));
@@ -172,16 +203,60 @@ const ComposerBox = ({
 
   const dragging = useAtomValue(fileDragAtom(key));
   const attached = attachments.items.length > 0 || attachments.pages.length > 0;
+
   // The drafts addressed to this conversation: while there are some, what is sent here is a Review of them.
   const drafts = draftsTo(allDrafts, conversationId);
   const reviewing = drafts.length > 0;
-  // The composer sends a message with Attachments or a Review itself: assistant-ui sends text alone.
-  const ownSend = attached || reviewing;
+
+  const {
+    chip,
+    setChip,
+    form,
+    setForm,
+    standing,
+    promptWaiting,
+    gone,
+    pickPrompt,
+    finishForm,
+    cancelForm,
+    editChip,
+  } = usePromptChip({
+    state,
+    catalog,
+    reviewing,
+    focusInput: () => {
+      requestAnimationFrame(() => {
+        input.current?.focus();
+      });
+    },
+    clearNote: () => {
+      setNote(null);
+    },
+  });
+
+  // The composer sends a message with Attachments, an MCP prompt or a Review itself: assistant-ui sends text alone.
+  const ownSend = attached || reviewing || chip !== null;
   // Attachments and attached pages alone make a message, and so do drafts (a Review needs no summary).
   const hasMessage = canSend || ownSend;
   // Why Send waits, shown under the box while no other note is.
-  const waiting = attached ? waitingFor(attachments) : null;
+  const attachmentsWaiting = attached ? waitingFor(attachments) : null;
+
+  const waiting = attachmentsWaiting ?? promptWaiting;
   const noteId = useId();
+
+  // Where a refused prompt's Sign in link goes: the Session's Environment, and back to the Session once done.
+  const environment = sessions?.find((session) => session.id === key.sessionId)?.environment;
+
+  const signInHref = (server: string): string | undefined =>
+    environment === undefined
+      ? undefined
+      : mcpSignInStartHref({
+          scope: environment,
+          global: GLOBAL_SCOPE,
+          server,
+          stepUp: false,
+          returnPath: sessionPath(key.sessionId),
+        });
 
   const shownNote: Note | null =
     note ?? (waiting === null ? null : { tone: "info", text: waiting });
@@ -300,6 +375,7 @@ const ComposerBox = ({
     run: (command, args) => {
       void run(command, args);
     },
+    pickPrompt,
   });
 
   /**
@@ -307,6 +383,9 @@ const ComposerBox = ({
    * assistant-ui must not send it.
    */
   const handled = (): boolean => {
+    // An MCP prompt is the message's one command: what is typed beside it is the owner's own words.
+    if (chip !== null) return false;
+
     const resolution = resolveCommand(allCommands, text);
 
     if (resolution.kind === "send") return false;
@@ -318,11 +397,29 @@ const ComposerBox = ({
   };
 
   /**
+   * Whether the prompt holds the message back (its form is open, it cannot go with a Review, or the chip cannot be sent as
+   * it is): then it says why and nothing is sent, whichever way the owner tried to send.
+   */
+  const refusedForPrompt = (): boolean => {
+    const gate = sendGate({ form, chip, standing, reviewing });
+
+    if (gate.send) return false;
+
+    setNote({ tone: "info", text: gate.note });
+
+    if (gate.form !== undefined) setForm(gate.form);
+
+    return true;
+  };
+
+  /**
    * Send what is typed with the Attachments, once they are all uploaded and fitted, and as a Review of the drafts when
    * there are some; else say what it waits for. Should the Session refuse the message, its text and Attachments come back
    * to the composer, with why under it.
    */
   const sendWithAttachments = (whenBusy: WhenBusy) => {
+    if (refusedForPrompt()) return;
+
     if (sentAttachments(attachments) === undefined) {
       setNote({
         tone: "info",
@@ -333,12 +430,20 @@ const ComposerBox = ({
     }
 
     const typed = text;
+    const message: Types.Mutable<AttachedMessage> = { typed, whenBusy };
 
     // The Attachments leave the composer with the text, as the send takes them.
-    const message = reviewing
-      ? { typed, whenBusy, annotations: drafts.map((draft) => draft.id) }
-      : { typed, whenBusy };
+    if (reviewing) message.annotations = drafts.map((draft) => draft.id);
 
+    // The prompt's definition as the catalog has it now: arguments it no longer takes are dropped (`promptWaiting` held
+    // back one that is gone, or that it now needs more of).
+    if (chip !== null && standing?.kind === "ready") {
+      message.prompt = { prompt: standing.prompt, values: chip.values };
+    }
+
+    const sentChip: PromptChip | null = chip;
+
+    lastWhenBusy.current = whenBusy;
     void sendAttached(message).then((exit) => {
       if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) return;
 
@@ -346,14 +451,37 @@ const ComposerBox = ({
       const since = aui.composer.getState().text;
 
       aui.composer.setText(since.trim() === "" ? typed : `${typed}\n\n${since}`);
-      setNote({ tone: "error", text: messageOf(exit.cause) });
+
+      if (sentChip === null) {
+        setNote({ tone: "error", text: messageOf(exit.cause) });
+
+        return;
+      }
+
+      // The refused prompt comes back as the chip (a newer one picked meanwhile stays), and what the refusal says to do.
+      const outcome = refusalOutcome(messageOf(exit.cause), refusalOfCause(exit.cause));
+
+      store.set(state.chip, store.get(state.chip) ?? sentChip);
+
+      if (outcome.reopenForm) {
+        setForm({
+          prompt: sentChip.prompt,
+          values: startingValues(sentChip.prompt, sentChip.values),
+          problem: outcome.message,
+        });
+      }
+
+      if (outcome.refreshCatalog) refreshCatalog();
+
+      setNote(refusalNote(outcome));
     });
     aui.composer.setText("");
+    setChip(null);
     setNote(null);
   };
 
   const queue = () => {
-    if (!hasMessage || handled()) return;
+    if (!hasMessage || handled() || refusedForPrompt()) return;
 
     if (ownSend) sendWithAttachments("followUp");
     else aui.composer.send({ steer: false });
@@ -361,6 +489,13 @@ const ComposerBox = ({
 
   const onSubmit = (event: SubmitEvent<HTMLFormElement>) => {
     if (busy || handled()) {
+      event.preventDefault();
+
+      return;
+    }
+
+    // A prompt that holds the message back holds back what assistant-ui would send of its text, too.
+    if (refusedForPrompt()) {
       event.preventDefault();
 
       return;
@@ -384,7 +519,13 @@ const ComposerBox = ({
     }
 
     // assistant-ui's own steer shortcut would send the text without the Attachments or the drafts.
-    if (ownSend && event.key === "Enter" && event.shiftKey && (event.ctrlKey || event.metaKey)) {
+    // An open prompt form holds it back too.
+    if (
+      (ownSend || promptWaiting !== null) &&
+      event.key === "Enter" &&
+      event.shiftKey &&
+      (event.ctrlKey || event.metaKey)
+    ) {
       event.preventDefault();
 
       if (!busy && !handled()) sendWithAttachments("steer");
@@ -413,6 +554,20 @@ const ComposerBox = ({
       <Lane label="Sending…" hint="waiting for the session" entries={sending} />
       <Lane label="Steering" hint="joins the run after its tool calls" entries={steerLane} />
       <Lane label="Next up" hint="starts after this run" entries={followUpLane} />
+      {form !== null && (
+        <ArgumentForm
+          title={promptTitle(form.prompt)}
+          server={form.prompt.server}
+          fields={form.prompt.arguments}
+          values={form.values}
+          problem={form.problem}
+          onChange={(values) => {
+            setForm({ ...form, values, problem: undefined });
+          }}
+          onDone={finishForm}
+          onCancel={cancelForm}
+        />
+      )}
       <div className="relative">
         {completion.menu !== null && (
           <CompletionMenu
@@ -432,6 +587,16 @@ const ComposerBox = ({
               void deleteDraft(id);
             }}
           />
+          {chip !== null && (
+            <PromptChipView
+              chip={chip}
+              gone={gone}
+              onEdit={editChip}
+              onRemove={() => {
+                setChip(null);
+              }}
+            />
+          )}
           <PageChips state={attachments} onRemove={removePage} />
           <AttachmentTiles
             // A page's screen shows on its chip.
@@ -546,16 +711,15 @@ const ComposerBox = ({
         </div>
       </div>
       {shownNote !== null && (
-        <p
+        <ComposerNote
           id={noteId}
-          role={shownNote.tone === "error" ? "alert" : "status"}
-          className={cn(
-            "px-1 text-xs",
-            shownNote.tone === "error" ? "text-destructive" : "text-muted-foreground",
-          )}
-        >
-          {shownNote.text}
-        </p>
+          note={shownNote}
+          signInHref={signInHref}
+          onRetry={() => {
+            setNote(null);
+            sendWithAttachments(lastWhenBusy.current);
+          }}
+        />
       )}
     </ComposerPrimitive.Root>
   );
@@ -592,6 +756,7 @@ export const Composer = (props: ComposerProps) => {
       value={{
         key,
         lookups: conversationLookups(key),
+        prompt: conversationPromptAtoms(key),
         text: () => aui.composer.getState().text,
         subscribe: (listener) => aui.subscribe(listener),
         input: () => input.current,

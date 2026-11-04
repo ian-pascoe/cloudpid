@@ -6217,6 +6217,37 @@ describe("the MCP status reads", () => {
     expect(JSON.stringify([failed, unknown])).not.toContain("secret");
   });
 
+  it("lists the Environment's MCP prompts in the draft's catalog from the host's inventory, and none when the host fails", async () => {
+    const fake = fakeRegistries();
+
+    fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear", "docs"]);
+    fake.mcpHostAnswers.servers = {
+      version: "v1",
+      promptsVersion: "p1",
+      servers: [
+        server("linear", { discoveredAt: 5 }),
+        server("docs", { state: "connecting" }),
+        server("off", { state: "disabled" }),
+      ],
+    };
+
+    const draft = (registry: Parameters<Parameters<typeof call>[1]>[0]) =>
+      registry.draftCatalog({ environment: DEFAULT_ENVIRONMENT, workspace: "new" });
+
+    const catalog = await call(fake, draft);
+
+    expect(catalog.prompts?.map((prompt) => prompt.command)).toEqual(["/mcp__linear__summarize"]);
+    expect(catalog.mcpServers).toEqual([{ server: "docs", state: "connecting" }]);
+    // Only the inventory was read: the prompts part, and no Workspace for it.
+    expect(fake.mcpHostCalls).toEqual([expect.stringMatching(/ servers prompts$/u)]);
+
+    fake.mcpHostAnswers.servers = { _tag: "HostFailed", message: "no storage" };
+
+    const failed = await call(fake, draft);
+
+    expect(failed).toEqual({ commands: [], templates: [], skills: [] });
+  });
+
   it("reads the log ring from the host's storage and never starts a Container or touches a Workspace", async () => {
     const fake = fakeRegistries();
 

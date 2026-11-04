@@ -11,6 +11,7 @@ import {
   type RepoBranches,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
+import type { PromptChip } from "./chat/mcp-prompt-state.ts";
 import { optionalBranchProblem } from "./environments.ts";
 import type { SessionPlace } from "./sessions.ts";
 
@@ -26,6 +27,8 @@ export interface DraftInput {
   readonly branch: string;
   /** For a new Workspace: the branch it starts from, as typed; empty for each Repo's default branch. */
   readonly base: string;
+  /** The MCP prompt picked for the first message, which the new Session gets as it is sent. */
+  readonly prompt?: PromptChip | undefined;
 }
 
 /** The Workspace the draft will use: `workspace` when `workspaces` (those of the chosen Environment) has it, else a new one. */
@@ -46,11 +49,11 @@ export const draftBaseProblem = (input: DraftInput): string | null =>
   input.workspace === NEW_WORKSPACE ? optionalBranchProblem(input.base) : null;
 
 /**
- * Whether the draft can be sent: it has a message (text, or Attachments when `attached`), and neither branch field is
- * wrong.
+ * Whether the draft can be sent: it has a message (text, an MCP prompt, or Attachments when `attached`), and neither
+ * branch field is wrong.
  */
 export const draftSendable = (input: DraftInput, attached = false): boolean =>
-  (input.text.trim() !== "" || attached) &&
+  (input.text.trim() !== "" || attached || input.prompt !== undefined) &&
   draftBranchProblem(input) === null &&
   draftBaseProblem(input) === null;
 

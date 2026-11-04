@@ -13,6 +13,7 @@ import {
   type OwnerTabListing,
   type ClientMessage,
   type RepoChanges,
+  type McpPromptRef,
   type PageRef,
   type SecretRequest,
   type SessionUsage,
@@ -120,6 +121,10 @@ export interface OutgoingMessage {
   readonly pages?: readonly PageRef[];
   /** The draft Annotations it sends as a Review (`Submit.annotations`); its input is the summary. */
   readonly annotations?: readonly string[];
+  /** The MCP prompt it carries (`Submit.mcpPrompt`): the Session gets it as the message is sent. */
+  readonly mcpPrompt?: McpPromptRef;
+  /** What its lane says while the Session gets the prompt ("Getting Review PR from docs…"), in place of `display`. */
+  readonly getting?: string;
 }
 
 export interface SessionState {

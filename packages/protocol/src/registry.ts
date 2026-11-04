@@ -13,6 +13,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { MarkedOrigin } from "./mcp-api.ts";
+import { McpPromptData } from "./mcp-prompts.ts";
 import { McpRepoFilesView } from "./mcp-repo-files.ts";
 import { McpSignInsView, McpSignOutView } from "./mcp-sign-ins.ts";
 import { McpReconnectView, McpServerLogView, McpServersView } from "./mcp-status.ts";
@@ -234,10 +235,14 @@ export const NEW_WORKSPACE = "new";
 /** What `forkSession` is told to start the Fork or Clone in its source's Workspace. */
 export const SAME_WORKSPACE = "same";
 
-/** A Fork or Clone made (`forkSession`), with the owner's message to put back in its composer, if any. */
+/**
+ * A Fork or Clone made (`forkSession`), with the owner's message to put back in its composer, if any, and the MCP prompt
+ * that message had (`mcpPrompt`, as `Navigated` carries it).
+ */
 export const ForkedSession = Schema.Struct({
   session: SessionRecord,
   text: Schema.NullOr(Schema.String),
+  mcpPrompt: Schema.optionalKey(McpPromptData),
 });
 
 export type ForkedSession = typeof ForkedSession.Type;
