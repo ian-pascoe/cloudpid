@@ -39,12 +39,17 @@ export type McpCallOrigin = typeof McpCallOrigin.Type;
 
 /**
  * What a caller can answer (`docs/architecture/mcp-server-requests.md` → Questions): the kinds of question the call's
- * `onInput` takes (elicitation so far), and how long a Legacy question may wait for the owner (`inputWaitMs`, the largest of the kinds
+ * `onInput` takes (elicitation and, on a Legacy server, Sampling), and how long a Legacy question may wait for the owner (`inputWaitMs`, the largest of the kinds
  * offered). The core declares to the server only what is offered here, and a callback's presence is the other half of
  * the version-skew gate (`docs/architecture/mcp.md` → Deploys: `ctx.answers`).
  */
 export const McpAnswers = Schema.Struct({
   elicitation: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The caller answers a Legacy server's Sampling request (`docs/architecture/mcp-server-requests.md` → Sampling
+   * requests). Only a Legacy connection asks: a Modern one declares no sampling yet, and this is read there as unset.
+   */
+  sampling: Schema.optionalKey(Schema.Boolean),
   inputWaitMs: Schema.optionalKey(Schema.Finite),
   /**
    * The caller keeps a Modern server's questions for later (`onInput` may answer `defer`), so the request may be
@@ -453,6 +458,13 @@ const TargetFields = {
   redact: Schema.Array(Schema.String).pipe(Schema.optionalKey),
   /** The entry's `timeout` for a `tools/call` (default 60 s). */
   timeoutMs: Schema.optionalKey(Schema.Int),
+  /**
+   * Whether a Legacy connection to this server declares `sampling` at `initialize` (the definition's `sampling` key lets
+   * it: `docs/architecture/mcp-server-requests.md` → Sampling requests). Absent from a host older than this field, and
+   * for a server that is declared none: a stdio server's questions are not answered yet, and a Modern connection
+   * declares no sampling.
+   */
+  sampling: Schema.optionalKey(Schema.Boolean),
 };
 
 /** A remote server: its URL and headers, `${NAME}` values resolved. */

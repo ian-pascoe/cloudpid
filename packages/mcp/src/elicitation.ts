@@ -32,14 +32,21 @@ export const MCP_ELICITATION_WAIT_MS = 10 * 60 * 1000;
 export const MCP_ELICITATIONS_PER_CALL = 10;
 
 /**
+ * How long a Legacy Sampling request may wait, from the ask (`ctx.answers.inputWaitMs`): the owner's 10 minutes and the
+ * 2 minutes a sample may take (`docs/architecture/mcp-server-requests.md` → Sampling requests, Waiting).
+ */
+export const MCP_SAMPLING_WAIT_MS = 12 * 60 * 1000;
+
+/**
  * A server's question, as the core surfaces it to a call's `onInput` (`mcp-server-requests.md` → Questions). `key` names
- * it within its call; `params` are the server's own parameters (an elicitation's `message` and `requestedSchema`);
+ * it within its call; `params` are the server's own parameters (an elicitation's `message` and `requestedSchema`, a Sampling request's `messages` and the rest of
+ * `sampling/createMessage`'s);
  * `live` means it can be answered only while its call waits (a Legacy server's), `deferrable` that it may be answered
  * later (a Modern server's).
  */
 export const McpInputRequest = Schema.Struct({
   key: Schema.String,
-  kind: Schema.Literal("elicitation"),
+  kind: Schema.Literals(["elicitation", "sampling"]),
   params: JsonObject,
   mode: Schema.Literals(["live", "deferrable"]),
 });
@@ -65,7 +72,22 @@ export const McpElicitResult = Schema.Struct({
 export type McpElicitResult = typeof McpElicitResult.Type;
 
 /**
- * What a call's `onInput` answers. `answered` carries the result the server gets (an elicitation's `ElicitResult`);
+ * What the Session answers a Sampling request with: the spec's `CreateMessageResult` (the reply `content` as one block or
+ * a list of them, with tool uses when the server offered tools). The core hands it to the SDK, which checks it against
+ * the spec before the server sees it.
+ */
+export const McpSamplingResult = Schema.Struct({
+  role: Schema.Literal("assistant"),
+  content: Schema.Json,
+  model: Schema.String,
+  stopReason: Schema.optionalKey(Schema.String),
+});
+
+export type McpSamplingResult = typeof McpSamplingResult.Type;
+
+/**
+ * What a call's `onInput` answers. `answered` carries the result the server gets (an elicitation's `ElicitResult`),
+ * `sampled` a Sampling request's `CreateMessageResult`;
  * `refused` is a question cloudpid cannot take (Legacy: a malformed form, the server getting a JSON-RPC error with
  * `code`, `-32602` unless it says otherwise; Modern: the call ends locally, the server told nothing). `defer` keeps a
  * `deferrable` question for later: the core answers the round's other questions, keeps them in the call's
@@ -75,6 +97,7 @@ export type McpElicitResult = typeof McpElicitResult.Type;
  */
 export const McpInputAnswer = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("answered"), result: McpElicitResult }),
+  Schema.Struct({ kind: Schema.Literal("sampled"), result: McpSamplingResult }),
   Schema.Struct({
     kind: Schema.Literal("refused"),
     message: Schema.String,

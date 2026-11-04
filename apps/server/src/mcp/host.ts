@@ -606,6 +606,8 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
 
     if (lastOkAt !== undefined) status.lastOkAt = lastOkAt;
 
+    if (view.deprecated.length > 0) status.deprecated = view.deprecated;
+
     answer.status = status;
   }
 

@@ -46,6 +46,8 @@ export type ServerView = {
   readonly status: StatusRow | undefined;
   readonly inventory: Option.Option<Inventory>;
   readonly state: McpServerState;
+  /** What the server has used that the spec deprecated, as this host saw it (`deprecation-store.ts`). */
+  readonly deprecated: ReadonlyArray<string>;
 };
 
 const reachOf = (server: StoredServer): Reach => {
@@ -82,6 +84,7 @@ export const viewServers: Effect.Effect<
       status,
       inventory: rows === undefined ? Option.none() : readInventory(rows),
       state: stateOf(reach, status),
+      deprecated: store.deprecated(server.conn),
     };
   });
 });

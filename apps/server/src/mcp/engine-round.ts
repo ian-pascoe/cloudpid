@@ -316,8 +316,31 @@ export const sendToEngine = (
     const run = Effect.runPromiseWith(yield* Effect.context<never>());
     const { auth } = access;
 
+    const { onInput } = hooks;
+
+    // The server's first Sampling request is noted on its status and logged, once per server per host lifetime (SEP-2577
+    // deprecates sampling: `mcp-server-requests.md` → Sampling requests, Deprecation). The request goes on as it came.
+    const noting: Pick<McpEngineHooks, "onInput"> =
+      onInput === undefined
+        ? {}
+        : {
+            onInput: (request) => {
+              if (request.kind === "sampling" && store.noteDeprecated(server.conn, "sampling")) {
+                void run(
+                  Effect.logWarning(
+                    `${server.name} used sampling, which the MCP spec deprecated in 2026-07-28 (SEP-2577) and may remove from the first revision released on or after 2027-07-28`,
+                  ),
+                );
+              }
+
+              return onInput(request);
+            },
+          };
+
     const engineHooks: McpEngineHooks =
-      auth === undefined ? hooks : { ...hooks, auth: (stale) => run(auth(stale)) };
+      auth === undefined
+        ? { ...hooks, ...noting }
+        : { ...hooks, ...noting, auth: (stale) => run(auth(stale)) };
 
     /** Whether the engine was given the call: an abort before it was cannot have run anything. */
     let sent = false;

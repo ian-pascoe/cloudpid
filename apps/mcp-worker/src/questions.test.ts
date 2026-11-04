@@ -4,7 +4,13 @@
  * not know is a refusal; the engine keeps nothing of either.
  */
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off strictEffectProvide:off schemaSync:off
-import { ASK_TOOL, fetchTo, legacyStatefulServer, type FakeOptions } from "@cloudpid/mcp/testing";
+import {
+  ASK_TOOL,
+  fetchTo,
+  legacyStatefulServer,
+  type FakeOptions,
+  SAMPLE_TOOL,
+} from "@cloudpid/mcp/testing";
 import {
   type McpEngineHooks,
   McpEngineRequestResult,
@@ -142,5 +148,90 @@ describe("a question the engine passes to the host's onInput", () => {
     );
 
     expect(asked).toEqual([{ error: "cloudpid could not read the answer to the question" }]);
+  });
+});
+
+/** Calls `sample` on a stateful Legacy server whose target says `sampling`, with `hooks` and `answers`. */
+const sampling = async (hooks: McpEngineHooks, flag: boolean, answers = true) => {
+  const sampled: Array<unknown> = [];
+  const server = legacyStatefulServer({ moreTools: [SAMPLE_TOOL], sampled: [] });
+
+  vi.stubGlobal("fetch", fetchTo(server));
+
+  const result = decode(
+    await Effect.runPromise(
+      request(
+        flag ? { ...target, sampling: true } : target,
+        {},
+        {
+          op: "tools/call",
+          tool: SAMPLE_TOOL,
+          arguments: { rounds: 2 },
+          ctx: answers
+            ? { origin: "agent", conversation: "c1", answers: { sampling: true } }
+            : { origin: "agent", conversation: "c1" },
+        },
+        hooks,
+        { version: "test", hold: () => undefined },
+      ).pipe(Effect.provide(Layer.mergeAll(ByteBudget.layer, Validators.layer))),
+    ),
+  );
+
+  const text =
+    result.kind === "complete" && result.result.kind === "inline"
+      ? JSON.stringify(result.result.value)
+      : "";
+
+  return { server, sampled, text };
+};
+
+const REPLY: McpInputAnswer = {
+  kind: "sampled",
+  result: { role: "assistant", content: { type: "text", text: "Hi" }, model: "m" },
+};
+
+describe("a Sampling request the engine passes to the host's onInput", () => {
+  it("is declared at initialize only for a target that says so, and answered with the reply", async () => {
+    const seen: Array<McpInputRequest> = [];
+
+    const onInput = (input: McpInputRequest): Promise<McpInputAnswer> => {
+      seen.push(input);
+
+      return Promise.resolve(REPLY);
+    };
+
+    const declared = await sampling({ onInput }, true);
+    const initialize = declared.server.received.find((each) => each.rpc?.method === "initialize");
+
+    expect(initialize?.rpc?.params).toMatchObject({ capabilities: { sampling: { tools: {} } } });
+    expect(seen).toMatchObject([{ kind: "sampling", mode: "live" }, { kind: "sampling" }]);
+    expect(declared.text).toContain("Hi");
+
+    seen.length = 0;
+
+    const undeclared = await sampling({ onInput }, false);
+    const plain = undeclared.server.received.find((each) => each.rpc?.method === "initialize");
+
+    expect(JSON.stringify(plain?.rpc?.params)).not.toContain("sampling");
+    expect(seen).toEqual([]);
+  });
+
+  it("is refused 'no conversation to sample in' when the call cannot answer it", async () => {
+    const seen: Array<McpInputRequest> = [];
+
+    const { text } = await sampling(
+      {
+        onInput: (input) => {
+          seen.push(input);
+
+          return Promise.resolve(REPLY);
+        },
+      },
+      true,
+      false,
+    );
+
+    expect(seen).toEqual([]);
+    expect(text).toContain("no conversation to sample in");
   });
 });
