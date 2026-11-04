@@ -1,9 +1,10 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain functions over the JSON of one translated entry, which the translation owns and changes in place.
-// What a translated entry is held to (`docs/architecture/mcp-endpoint.md` → Session import → Translation, D3.2). An entry is
+// What a translated entry is held to (`docs/architecture/mcp-endpoint.md` → Session import → Translation → Bounds). An entry is
 // one row of the Session's SQLite, which workerd caps at 8 MiB and a write over it fails the whole Session, so no entry
 // goes in over `MAX_IMPORTED_ENTRY_BYTES`. The live caps come first (an image the Session would not keep is a text
 // placeholder, as `read` and the browser leave one out); then the entry's largest text is cut in the middle until it
 // fits, which keeps the start and the end of what was said, where an end usually holds the answer or the error.
+import { MAX_IMAGE_CHARACTERS, MAX_RESULT_IMAGE_CHARACTERS } from "@cloudpid/extensions/images";
 import { INLINE_IMAGE_TYPES } from "@cloudpid/protocol";
 import type { ImageContent, JsonValue, Message, TextContent } from "@earendil-works/pi-ai";
 import type { EntryRecord } from "@earendil-works/pi-durable";
@@ -16,13 +17,6 @@ import * as Predicate from "effect/Predicate";
  * The rest of one tool result) stays within it, and it leaves the row's 8 MiB room for the entry's other fields.
  */
 export const MAX_IMPORTED_ENTRY_BYTES = 5_000_000;
-
-/**
- * The longest image an entry keeps, in base64 characters: what `read` and the browser hold an image to
- * (`MAX_IMAGE_CHARACTERS` in `@cloudpid/extensions/images`), since the entry is stored, sent to the model with every
- * request and sent to every client.
- */
-export const MAX_IMPORTED_IMAGE_CHARACTERS = 750_000;
 
 /** The shortest a part is cut to while others can still be: its start and end, with the note between. */
 const MIN_KEPT_CHARACTERS = 256;
@@ -45,23 +39,44 @@ const unkept = (part: ImageContent): string | undefined => {
     return `its type, ${part.mimeType}, is not one the models take`;
   }
 
-  return Predicate.isString(part.data) && part.data.length <= MAX_IMPORTED_IMAGE_CHARACTERS
+  return Predicate.isString(part.data) && part.data.length <= MAX_IMAGE_CHARACTERS
     ? undefined
     : "it is too large to keep";
 };
 
 /**
  * Replace the images of `content` that the Session would not keep with text, in place: one that is not of a type every
- * provider takes, and one over `MAX_IMPORTED_IMAGE_CHARACTERS`. Answers whether any was.
+ * provider takes, and one over `MAX_IMAGE_CHARACTERS` (what `read` and the browser hold an image to, since the entry is
+ * stored, sent to the model with every request and sent to every client). The content of a tool result (`result`) is also
+ * held to `MAX_RESULT_IMAGE_CHARACTERS` in all, as live results are: its images are kept in order until the next would
+ * take it over, and that one and every one after it is replaced. Answers whether any was.
  */
-export const capImages = (content: string | Array<TextContent | ImageContent>): boolean => {
+export const capImages = (
+  content: string | Array<TextContent | ImageContent>,
+  result = false,
+): boolean => {
   if (!Array.isArray(content)) return false;
 
   let changed = false;
+  let total = 0;
+  let spent = false;
 
   for (let at = 0; at < content.length; at++) {
     const part = content[at];
-    const why = part?.type === "image" ? unkept(part) : undefined;
+
+    if (part?.type !== "image") continue;
+
+    let why = unkept(part);
+
+    if (why === undefined && result) {
+      spent ||= total + part.data.length > MAX_RESULT_IMAGE_CHARACTERS;
+
+      if (spent) {
+        why = `a tool result holds at most ${MAX_RESULT_IMAGE_CHARACTERS.toLocaleString("en-US")} base64 characters of images`;
+      } else {
+        total += part.data.length;
+      }
+    }
 
     if (why !== undefined) {
       content[at] = placeholder(why);
@@ -289,7 +304,10 @@ export const fitEntry = (entry: EntryRecord, limit = MAX_IMPORTED_ENTRY_BYTES): 
   let cut = false;
 
   for (const message of messagesOf(entry)) {
-    if ((message.role === "user" || message.role === "toolResult") && capImages(message.content)) {
+    if (
+      (message.role === "user" || message.role === "toolResult") &&
+      capImages(message.content, message.role === "toolResult")
+    ) {
       cut = true;
     }
   }

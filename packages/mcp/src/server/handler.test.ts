@@ -743,6 +743,40 @@ describe("the import tools", () => {
     });
   });
 
+  it("session_import_finish advertises an optional boolean changes_carried and passes it to the api", async () => {
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), importing()));
+    const finish = result?.tools?.find((tool) => tool.name === "session_import_finish");
+
+    expect(finish?.inputSchema).toMatchObject({
+      properties: { changes_carried: { type: "boolean" } },
+      required: ["import_id", "sha256"],
+    });
+
+    const importFinish = vi.fn(() =>
+      Promise.resolve(
+        apiOk({
+          session_id: ID,
+          status: "idle" as const,
+          url: begun.url,
+          cursor: CURSOR,
+          warnings: [],
+        }),
+      ),
+    );
+
+    await call(
+      "session_import_finish",
+      { import_id: ID, sha256: "a".repeat(64), changes_carried: true },
+      importing({ importFinish }),
+    );
+
+    expect(importFinish).toHaveBeenCalledWith({
+      import_id: ID,
+      sha256: "a".repeat(64),
+      changes_carried: true,
+    });
+  });
+
   it("session_import_finish renders the summary and warnings, and names session_wait only for an import that goes on", async () => {
     const finished = {
       session_id: ID,

@@ -51,9 +51,17 @@ const FILL_KEY = "fork-copy";
 type Filling = {
   readonly ids: Readonly<Record<string, number>>;
   readonly import?: true;
+  /** The translation a Session import is writing, noted before its first page so that a run again can tell it is the same one. */
+  readonly translation?: WrittenTranslation;
   /** A Session import's entries are all in the root (`importTranslated`). */
   readonly written?: true;
 };
+
+/** What identifies a translation across runs: its version (`TRANSLATOR_VERSION`) and how many entries it makes. */
+export type WrittenTranslation = { readonly version: number; readonly count: number };
+
+/** How many of the root's entries a resumed import reads back at a time: an entry can be 5 MB, so a page stays small. */
+const READBACK_ENTRIES = 8;
 
 /**
  * Set on a source Session while a Fork or Clone carries its files to a new Workspace, in its key-value storage: until
@@ -327,32 +335,55 @@ export const sessionForks = (options: ForksOptions) => {
    * (`Translation.count`), and each head and edit names one: each is renumbered as its page is appended.
    *
    * The entries land in whole or not at all as far as anything can see: a page is one commit, and until the import ends
-   * the Session takes no message and no move (`importing`), so nothing reads, runs from or shows a root that holds only
-   * some of them; an import that is cancelled, expires or is given up deletes the Session with them. A translation that
+   * the Session takes no message and no move (`importing`), so nothing runs from a root that holds only some of
+   * them (a viewer sees it filling); an import that is cancelled, expires or is given up deletes the Session with them. A translation that
    * is cut off part way is run again (it is a function of the file, so its pages are the same), and finds the entries the
-   * root already has by reading their IDs back: it appends only the rest, with the heads and edits of the first ones
-   * still naming the entries they named. The flag `written` is set once the last page is in, so a retry after it
-   * only has to end the import.
+   * root already has by reading their IDs back, a few at a time: it appends only the rest, with the heads and edits of
+   * the first ones still naming the entries they named. The translation is noted before its first page (its version and
+   * how many entries it makes), and a run again that finds another (a deploy changed the translator between the runs) or a
+   * root with more entries than it makes does not resume: it answers why, and the import is given up. The flag `written`
+   * is set once the last page is in, so a retry after it only has to end the import.
    */
-  const importTranslated = (pages: Iterable<ReadonlyArray<EntryRecord>>) =>
+  const importTranslated = (
+    pages: Iterable<ReadonlyArray<EntryRecord>>,
+    translation: WrittenTranslation,
+  ) =>
     Effect.gen(function* () {
       const filling = kv.get<Filling | null>(FILL_KEY) ?? null;
 
       if (filling?.import !== true) return yield* refuse("This Session is not importing.");
+
+      const noted = filling.translation;
+
+      if (
+        noted !== undefined &&
+        (noted.version !== translation.version || noted.count !== translation.count)
+      ) {
+        return `The translation that was being written (version ${String(noted.version)}, ${String(noted.count)} entries) is not the one this run makes (version ${String(translation.version)}, ${String(translation.count)} entries), so the entries already written cannot be resumed.`;
+      }
+
+      if (noted === undefined) kv.put(FILL_KEY, { ...filling, translation } satisfies Filling);
 
       const root = yield* options.root;
 
       /** The entry the root gave each translated one, by the translation's own ID (its position, from 1). */
       const ids = new Map<number, number>();
 
+      // A translation not yet noted has written nothing: only a run again has entries to read back.
       let cursor: Cursor | undefined;
 
       do {
+        if (noted === undefined) break;
+
         const page = yield* attempt("entries", () =>
-          root.entries({ order: "ascending" }, EXPORT_PAGE_ENTRIES, cursor, context),
+          root.entries({ order: "ascending" }, READBACK_ENTRIES, cursor, context),
         );
 
         for (const entry of page.items) ids.set(ids.size + 1, entry.id);
+
+        if (ids.size > translation.count) {
+          return `The root conversation holds more entries than the ${String(translation.count)} the translation makes, so the entries already written cannot be resumed.`;
+        }
 
         cursor = page.next;
       } while (cursor !== undefined);
@@ -373,7 +404,9 @@ export const sessionForks = (options: ForksOptions) => {
         );
       }
 
-      kv.put(FILL_KEY, { ...filling, written: true } satisfies Filling);
+      kv.put(FILL_KEY, { ...filling, translation, written: true } satisfies Filling);
+
+      return undefined;
     });
 
   /** Whether every translated entry of a Session import is in the root (see `importTranslated`). */

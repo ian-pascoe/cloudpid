@@ -398,6 +398,7 @@ const sessionImport = (options: SessionImportOptions) =>
               repos: record.workspace.repos,
               warnings: chosen.warnings,
               tools,
+              changesCarried: record.changesCarried,
             },
           ),
         catch: (cause) => SessionError.make({ operation: "translate", message: String(cause) }),
@@ -418,7 +419,15 @@ const sessionImport = (options: SessionImportOptions) =>
       // The entries are written a page at a time (`host.importTranslated`), and until the import ends nothing reads them,
       // so they are in whole or not at all to anything that can see. A translation cut off part way resumes after the
       // pages the root already has.
-      if (record.held !== true) yield* host.importTranslated(translation.pages());
+      if (record.held !== true) {
+        const unresumable = yield* host.importTranslated(translation.pages(), {
+          version: translation.version,
+          count: translation.count,
+        });
+
+        // The entries the cut-off run wrote are of another translation: they are not built on, and the owner begins again.
+        if (unresumable !== undefined) return yield* failed(record, unresumable);
+      }
 
       // From here the entries are in the Session, and a Run may start from them: the import is no longer counted in
       // attempts, never given up and never expires. All that is left is to tell the Registry it ended.
@@ -530,7 +539,7 @@ const sessionImport = (options: SessionImportOptions) =>
       return fiber;
     });
 
-    const finish: SessionImportService["finish"] = ({ sha256 }) =>
+    const finish: SessionImportService["finish"] = ({ sha256, changes_carried }) =>
       guarded(
         Effect.gen(function* () {
           const record = staging.record();
@@ -576,6 +585,8 @@ const sessionImport = (options: SessionImportOptions) =>
               phase: "finishing",
               expiresAt: now + IMPORT_EXPIRY_MS,
               attempts: 0,
+              // From the finish that is accepted: a repeat of it, once the import is finishing, changes nothing.
+              changesCarried: changes_carried,
             });
             // The retry for a translation that is cut off.
             yield* host.settle;

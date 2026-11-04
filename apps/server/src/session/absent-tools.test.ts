@@ -13,6 +13,8 @@ import {
   absentToolFlatteningModels,
   FLATTEN_ABSENT_TOOL_CALLS,
   flattenAbsentToolCalls,
+  flattensFor,
+  mapFor,
 } from "./absent-tools.ts";
 import { proxyModels } from "./models.ts";
 
@@ -114,5 +116,27 @@ describe("flattening calls to absent tools", () => {
 
   it("is off for every provider until the probe says otherwise", () => {
     expect(Object.values(FLATTEN_ABSENT_TOOL_CALLS).some(Boolean)).toBe(false);
+    expect(flattensFor("anthropic")).toBe(false);
+    expect(flattensFor("unknown")).toBe(false);
+  });
+
+  it("maps a request's context by its model's provider: flattened when it flattens, as it is when it does not", () => {
+    const model = proxyModels({ url: "http://localhost", apiKey: "unused" }).getModel(
+      "anthropic",
+      "claude-haiku-5-5",
+    );
+
+    if (model === undefined) throw new Error("The catalog has no such model.");
+
+    const context: Context = {
+      messages: history,
+      tools: [{ name: "todo", description: "", parameters: {} }],
+    };
+
+    expect(mapFor(model, context, () => false)).toBe(context);
+    expect(JSON.stringify(mapFor(model, context, () => true).messages)).not.toContain(
+      '"name":"bash"',
+    );
+    expect(mapFor(model, context)).toBe(context);
   });
 });

@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain functions over a few counts and names.
-// The import notice (`docs/architecture/mcp-endpoint.md` → Session import → Translation, D10): one model-visible user message,
+// The import notice (`docs/architecture/mcp-endpoint.md` → Session import → Translation → The import notice): one model-visible user message,
 // always the last entry an import writes, that tells the agent where it is now and what did not come across.
 import type { ImportRepo, ImportSummary } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -17,6 +17,11 @@ export type ImportFacts = {
    * notice does not list any, and says nothing of them.
    */
   readonly tools?: ReadonlyArray<string> | undefined;
+  /**
+   * Whether the Local agent carried its uncommitted Changes (`session_import_finish`'s `changes_carried`). Not given: the
+   * notice says it is not told, and to look.
+   */
+  readonly changesCarried?: boolean | undefined;
 };
 
 /** How many laptop tools the notice names, before it says how many more there are. */
@@ -92,10 +97,18 @@ const lackingTools = (names: ReadonlyArray<string>): ReadonlyArray<string> => {
   ];
 };
 
+/** What the notice says of the laptop's uncommitted Changes: what finish said, or that it did not and the agent should look. */
+const changesSentence = (carriedChanges: boolean | undefined): string =>
+  carriedChanges === undefined
+    ? "Uncommitted Changes in the laptop's working tree are applied to the Repo of that directory only when the owner carried them, which this import is not told: run `git status` there before relying on either."
+    : carriedChanges
+      ? "The laptop's uncommitted Changes were carried: they are applied to the Repo of that directory in this Workspace, on top of the pushed branch."
+      : "The laptop's working tree had no uncommitted Changes to carry, so the Repo of that directory is the pushed branch as it was.";
+
 /**
  * The import notice: where the conversation continues, what came across and what did not, and how the owner gets work
- * back. Whether uncommitted Changes were carried is not said as a fact: the import is told neither (begin and finish
- * carry no such bit), so the agent is told to look.
+ * back. Whether uncommitted Changes were carried is said when finish said it (`facts.changesCarried`); from a client
+ * that does not, the agent is told to look.
  */
 export const importNotice = (
   facts: ImportFacts,
@@ -113,7 +126,7 @@ export const importNotice = (
   return Arr.join(
     [
       `[cloudpid import] This conversation was imported from a pi Session on the owner's laptop${details.cwd === undefined ? "" : ` (working directory ${details.cwd})`}. It continues in ${where}; commands that ran on the laptop cannot be run here.`,
-      "Uncommitted Changes in the laptop's working tree are applied to the Repo of that directory only when the owner carried them, which this import is not told: run `git status` there before relying on either.",
+      changesSentence(facts.changesCarried),
       carried(details),
       ...facts.warnings,
       counts(summary),

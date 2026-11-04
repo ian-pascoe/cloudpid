@@ -2,6 +2,7 @@
 // The Session import's translation (`docs/architecture/mcp-endpoint.md` → Session import → Translation).
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import * as Predicate from "effect/Predicate";
+import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   assistantMessage,
@@ -21,6 +22,7 @@ import {
   CONTEXT_EDIT_KIND,
   type ImportFacts,
   NOT_RUN_TEXT,
+  TOO_LARGE_TEXT,
   type Translation,
   translatePiSession,
   translated,
@@ -515,6 +517,92 @@ describe("bounds", () => {
     expect(entriesOf(out)[0]?.model?.[0]).toEqual(userMessage("run it"));
   });
 
+  describe("a tool result that cannot be cut to fit", () => {
+    /** A call and its result, the result being `result`. */
+    const answered = (result: {
+      readonly details?: Schema.Json;
+      readonly content?: Schema.Json;
+    }) => [
+      header,
+      message("a", null, userMessage("run it")),
+      message("b", "a", assistantMessage([toolCall("c1", "bash", { command: "dump" })], "toolUse")),
+      message("c", "b", { ...toolResultMessage("c1", "bash", "out"), ...result }),
+    ];
+
+    it("keeps the result with its details replaced, which the model never sees: the call is answered, and the cut is counted once", () => {
+      // 300,000 small objects: no string among them is long enough to be cut, so only the details can go.
+      const details = Array.from({ length: 300_000 }, (_value, at) => ({
+        name: "abcdefgh",
+        at,
+      }));
+
+      const out = translate(answered({ details }));
+      const entries = entriesOf(out);
+
+      expect(entries.map((entry) => entry.kind)).toEqual([
+        "pi.user",
+        "pi.assistant",
+        "pi.tool-result",
+        "pi.user",
+      ]);
+      expect(entries[2]?.model?.[0]).toMatchObject({
+        role: "toolResult",
+        toolCallId: "c1",
+        isError: false,
+        content: [{ type: "text", text: "out" }],
+        details: { reason: "import_too_large" },
+      });
+      expect(out.summary).toEqual({ cut: 1, dropped: {}, closed: 0 });
+    });
+
+    it("answers the call with an error result when the details were not what made it too large, and counts it closed", () => {
+      // 100,000 parts of 100 characters each: too many to hold, and none long enough to be cut.
+      const content = Array.from({ length: 100_000 }, () => ({
+        type: "text",
+        text: "x".repeat(100),
+      }));
+
+      const out = translate(answered({ content }));
+      const entries = entriesOf(out);
+
+      expect(entries.map((entry) => entry.kind)).toEqual([
+        "pi.user",
+        "pi.assistant",
+        "pi.tool-result",
+        "pi.user",
+      ]);
+      expect(entries[2]?.model?.[0]).toMatchObject({
+        role: "toolResult",
+        toolCallId: "c1",
+        toolName: "bash",
+        isError: true,
+        content: [{ type: "text", text: TOO_LARGE_TEXT }],
+      });
+      expect(out.summary).toEqual({ cut: 0, dropped: {}, closed: 1 });
+    });
+  });
+
+  it("holds the images of one tool result to the total a live result holds, in order", () => {
+    // Three images of 600,000 characters: two fit the 1,500,000 a result holds, the third does not.
+    const image = { type: "image", data: "x".repeat(600_000), mimeType: "image/png" };
+
+    const out = translate([
+      header,
+      message("a", null, userMessage("shoot")),
+      message("b", "a", assistantMessage([toolCall("c1", "shot", {})], "toolUse")),
+      message("c", "b", {
+        ...toolResultMessage("c1", "shot", "pictures"),
+        content: [{ type: "text", text: "pictures" }, image, image, image],
+      }),
+    ]);
+
+    const parts = partsOf(entriesOf(out)[2]);
+
+    expect(parts.map((part) => part.type)).toEqual(["text", "image", "image", "text"]);
+    expect(parts[3]?.text).toContain("a tool result holds at most 1,500,000");
+    expect(out.summary.cut).toBe(1);
+  });
+
   it("cuts the largest parts to one level, so a smaller one beside them stays whole, and withdraws a signature", () => {
     const out = translate([
       header,
@@ -615,6 +703,16 @@ describe("the notice", () => {
     expect(notice).toContain(
       "`git pull` on `feature/x`: commit and push your work there when you finish",
     );
+  });
+
+  it.each([
+    [true, "uncommitted Changes were carried"],
+    [false, "had no uncommitted Changes to carry"],
+    [undefined, "which this import is not told"],
+  ])("says what finish said of the Changes carried (%s)", (changesCarried, sentence) => {
+    const out = translate(conversation(), { ...facts, changesCarried });
+
+    expect(noticeOf(out)).toContain(sentence);
   });
 
   it("lists the laptop tools this Session lacks, at most 30 and then how many more, and none of an MCP tool", () => {

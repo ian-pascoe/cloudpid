@@ -1049,7 +1049,14 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
 
           if (!(yield* isImport(id))) return notAnImport(id);
 
-          const finished = yield* backend.stageImportFinish(id, { sha256: request.sha256 });
+          const staged = { sha256: request.sha256 };
+
+          const finished = yield* backend.stageImportFinish(
+            id,
+            request.changes_carried === undefined
+              ? staged
+              : { ...staged, changes_carried: request.changes_carried },
+          );
 
           if (!finished.ok) return finished;
 

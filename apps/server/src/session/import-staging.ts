@@ -50,6 +50,8 @@ export type ImportRecord = {
   readonly text?: string | undefined;
   readonly via: SessionVia;
   readonly workspace: { readonly branch: string; readonly repos: ReadonlyArray<ImportRepo> };
+  /** What the finish that was accepted said of the Local agent's uncommitted Changes (`changes_carried`); absent when it did not say. */
+  readonly changesCarried?: boolean | undefined;
   /** When the import expires (epoch ms): an hour after its last append, then after what ended it badly. Absent once it ended, or once the entries are held. */
   readonly expiresAt?: number | undefined;
   /**

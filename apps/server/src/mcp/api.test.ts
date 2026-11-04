@@ -1412,6 +1412,15 @@ describe("the import tools", () => {
       },
     });
 
+    // What the Local agent says of its Changes goes to the Session with the finish, and only when it says.
+    await run(api.importFinish({ import_id: ID, sha256: "ab", changes_carried: false }));
+
+    expect(stageImportFinish).toHaveBeenNthCalledWith(1, ID, { sha256: "ab" });
+    expect(stageImportFinish).toHaveBeenNthCalledWith(2, ID, {
+      sha256: "ab",
+      changes_carried: false,
+    });
+
     const plain = service({ stageImportAppend, stageImportFinish });
 
     expect(await run(plain.importAppend({ import_id: ID, offset: 0, data: "x" }))).toMatchObject({
@@ -1423,7 +1432,7 @@ describe("the import tools", () => {
       error: { code: "not_found" },
     });
     expect(stageImportAppend).toHaveBeenCalledTimes(1);
-    expect(stageImportFinish).toHaveBeenCalledTimes(1);
+    expect(stageImportFinish).toHaveBeenCalledTimes(2);
   });
 
   it("passes a Session's refusal on: offset_mismatch carries what is held", async () => {

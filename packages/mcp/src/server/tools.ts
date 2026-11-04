@@ -469,7 +469,7 @@ const sessionImportFinish = defineTool({
   name: "session_import_finish",
   title: "Finish a Session import",
   description: (enabled) =>
-    `For programs, never a model: end the import once every byte is sent and the branch and carry_ref are pushed. cloudpid checks the size and sha256, translates the file into the Session and waits up to 30 s; if it is not done the status stays importing${enabled.has("session_wait") ? " and session_wait from the cursor reports import_ended" : ""}. The summary counts what was cut, dropped and closed; warnings tell of a model that was replaced and of a context over the model's window. Finishing again returns the same result.`,
+    `For programs, never a model: end the import once every byte is sent and the branch and carry_ref are pushed. Send changes_carried (true when uncommitted Changes were pushed to carry_ref, false when there were none) so the Session's agent is told; leave it out when unknown. cloudpid checks the size and sha256, translates the file into the Session and waits up to 30 s; if it is not done the status stays importing${enabled.has("session_wait") ? " and session_wait from the cursor reports import_ended" : ""}. The summary counts what was cut, dropped and closed; warnings tell of a model that was replaced and of a context over the model's window. Finishing again returns the same result.`,
   annotations: WRITE_IDEMPOTENT,
   input: SessionImportFinishInput,
   output: SessionImportFinishResult,

@@ -1,13 +1,15 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain functions over pi's message arrays.
-// History that calls tools a request does not declare (`docs/architecture/mcp-endpoint.md` → Session import → Translation, D25).
+// History that calls tools a request does not declare (`docs/architecture/mcp-endpoint.md` → Session import → Translation → Tool calls).
 // An imported transcript calls the laptop's tools (`bash` there, `search` there), which a Session may not have. The import
 // keeps those calls, since providers accept history calls to tools the request does not declare when it declares at
 // least one, and every cloudpid request does. For a provider that refuses such history, this seam flattens the calls to
 // absent tools into text at the request, for that provider only (the stored history is untouched, so a Session that
 // moves to another provider sends its calls as they were).
 //
-// Which providers refuse is what the live probe finds (`import-provider-probe.test.ts`, run with the model proxy's key);
-// until it says one does, every provider keeps its calls: `FLATTEN_ABSENT_TOOL_CALLS` is that switch.
+// Which providers refuse is what the live probe finds (`import-provider-probe.test.ts`, run with the model proxy's key,
+// an owner check on the pull request); until it says one does, every provider keeps its calls: `FLATTEN_ABSENT_TOOL_CALLS`
+// is that switch.
+import { contextMappedModels } from "@cloudpid/extensions/models";
 import type {
   Api,
   Context,
@@ -17,12 +19,17 @@ import type {
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import * as Arr from "effect/Array";
-import * as Predicate from "effect/Predicate";
 
 /**
  * The providers whose requests have calls to tools the request does not declare flattened into text, by provider id. A
  * provider that is not here, or is `false`, keeps them. Set from the probe's result: it has not run against any
  * provider yet, so none is flattened.
+ *
+ * Turning one on has a cost: the flattening reaches every Session's requests to that provider, not only an imported
+ * one's (the seam sees messages, not where they came from), so a Session that is no import and whose history calls a
+ * tool that is not declared now (a deferred one, one a subagent had) has that call sent as text. The text is the same on
+ * every request, so the prompt cache holds from the second request on, but the first one after the switch is turned on
+ * misses it. A switch is turned on for a provider that refuses the calls, where the alternative is a request that fails.
  */
 export const FLATTEN_ABSENT_TOOL_CALLS = {
   anthropic: false,
@@ -96,38 +103,25 @@ const flattened = (context: Context): Context => {
   return messages === context.messages ? context : { ...context, messages: [...messages] };
 };
 
+/** Whether requests to `provider` have their calls to absent tools flattened (`FLATTEN_ABSENT_TOOL_CALLS`). */
+export const flattensFor = (provider: string): boolean =>
+  Object.entries(FLATTEN_ABSENT_TOOL_CALLS).some(([name, on]) => name === provider && on);
+
+/**
+ * `context` as a request to `model` carries it: its calls to absent tools flattened when the model's provider is one
+ * `flatten` says refuses them, as it is otherwise.
+ */
+export const mapFor = (
+  model: Model<Api>,
+  context: Context,
+  flatten: (provider: string) => boolean = flattensFor,
+): Context => (flatten(model.provider) ? flattened(context) : context);
+
 /**
  * `models` with the requests to the providers `flatten` names having their calls to absent tools flattened
  * (`flattenAbsentToolCalls`); the rest pass as they are.
  */
 export const absentToolFlatteningModels = (
   models: Models,
-  flatten: (provider: string) => boolean = (provider) =>
-    Object.entries(FLATTEN_ABSENT_TOOL_CALLS).some(([name, on]) => name === provider && on),
-): Models => {
-  const requests: Pick<Models, "stream" | "complete" | "streamSimple" | "completeSimple"> = {
-    stream: (model: Model<Api>, context, options) =>
-      models.stream(model, flatten(model.provider) ? flattened(context) : context, options),
-    complete: (model: Model<Api>, context, options) =>
-      models.complete(model, flatten(model.provider) ? flattened(context) : context, options),
-    streamSimple: (model: Model<Api>, context, options) =>
-      models.streamSimple(model, flatten(model.provider) ? flattened(context) : context, options),
-    completeSimple: (model: Model<Api>, context, options) =>
-      models.completeSimple(model, flatten(model.provider) ? flattened(context) : context, options),
-  };
-
-  return new Proxy(models, {
-    get: (target, key) => {
-      if (Object.hasOwn(requests, key)) {
-        // SAFETY: `key` is one of the request methods, checked just above.
-        return requests[key as keyof typeof requests];
-      }
-
-      // SAFETY: every other property is read from the models object itself, as its own type describes it.
-      const value: unknown = target[key as keyof Models];
-
-      // Methods run on the models object itself, whose private state a proxy would not have.
-      return Predicate.isFunction(value) ? value.bind(target) : value;
-    },
-  });
-};
+  flatten: (provider: string) => boolean = flattensFor,
+): Models => contextMappedModels(models, (model, context) => mapFor(model, context, flatten));

@@ -259,6 +259,26 @@ describe("a Session import in the Session object", () => {
     expect(texts.at(-1)).toContain("1 Note and the saved Handoff");
   });
 
+  it.each([
+    [true, "uncommitted Changes were carried"],
+    [false, "had no uncommitted Changes to carry"],
+    [undefined, "which this import is not told"],
+  ])("tells in the notice what finish said of the Changes carried (%s)", async (said, sentence) => {
+    const stub = fresh();
+    const file = [header, piMessage("a", null, userMessage("Hello"))].join("\n");
+
+    await begin(stub, file);
+    await send(stub, file);
+
+    const finish = { sha256: await sha256(file) };
+
+    okValue(
+      await stub.stageFinish(said === undefined ? finish : { ...finish, changes_carried: said }),
+    );
+
+    expect((await entriesOf(stub)).at(-1)?.text).toContain(sentence);
+  });
+
   it("lists the laptop tools this Session lacks in the notice, by the tools the Session's requests declare", async () => {
     const stub = fresh();
 
@@ -373,6 +393,69 @@ describe("a Session import in the Session object", () => {
       );
 
       await expectWhole(stub);
+    });
+  });
+
+  describe("a write that is cut off and resumed under another translation", () => {
+    const text = [
+      header,
+      ...Array.from({ length: 450 }, (_value, at) =>
+        piMessage(
+          `m${String(at)}`,
+          at === 0 ? null : `m${String(at - 1)}`,
+          userMessage(`message ${String(at)}`),
+        ),
+      ),
+    ].join("\n");
+
+    /** Cut a write off after its first page, then change the translation as `change` does, and run the import again. */
+    const resumedAfter = async (change: (instance: TestSession) => void, count?: number) => {
+      const stub = fresh();
+
+      if (count !== undefined) {
+        await runInDurableObject(stub, (instance: TestSession) =>
+          instance.importTranslationCount(count),
+        );
+      }
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importPagesFailAfter(1));
+      await begin(stub, text);
+      await send(stub, text);
+      okValue(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(await entriesOf(stub)).toHaveLength(200);
+
+      await runInDurableObject(stub, (instance: TestSession) => change(instance));
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await runInDurableObject(stub, (instance: TestSession) => instance.importState()))
+              .record?.phase,
+          ).toBe("failed"),
+        { timeout: 10_000 },
+      );
+
+      return stub;
+    };
+
+    it("gives the import up when the translator's version is not the one that wrote the first page", async () => {
+      const stub = await resumedAfter((instance) => instance.importTranslatorVersion(99));
+      const failed = errorOf(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(failed.code).toBe("invalid_argument");
+      expect(failed.message).toMatch(/cannot be resumed/u);
+      // Nothing was built on the entries written: no more went in, and the Session is not held.
+      expect(await entriesOf(stub)).toHaveLength(200);
+      expect(okValue(await stub.mcpStatus()).status).toBe("importing");
+    });
+
+    it("gives the import up when the root holds more entries than the translation makes", async () => {
+      const stub = await resumedAfter(() => {}, 100);
+      const failed = errorOf(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(failed.message).toMatch(/more entries than the 100/u);
+      expect(await entriesOf(stub)).toHaveLength(200);
     });
   });
 

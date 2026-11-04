@@ -1,5 +1,5 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain functions over the JSON of a few session entries.
-// The extension state a Session import carries (`docs/architecture/mcp-endpoint.md` → Session import → Translation, D13): the
+// The extension state a Session import carries (`docs/architecture/mcp-endpoint.md` → Session import → Translation → Extension state): the
 // three formats the owner's pi extensions write into a session file as `custom` entries, copied here as Effect Schemas
 // and checked against cloudpid's own limits, since the Todo List and the Notes are documents that every client is sent.
 //
@@ -16,7 +16,7 @@
 //
 // The fixtures (`import-pi-session.fixture.ts`) are shaped as real session files of the owner's, with their text replaced.
 // A record that is none of these, an unknown `version`, one that fails its Schema or one over a limit is not taken: the
-// import counts it as `custom:<type>` and goes on (D13).
+// import counts it as `custom:<type>` and goes on.
 import {
   type ContextState,
   MAX_NOTE_CHARACTERS,

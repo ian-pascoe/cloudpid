@@ -954,7 +954,16 @@ export class TestSession extends DurableObject {
               throw new Error("The translation failed.");
             }
 
-            const translation = translatePiSession(lines, facts);
+            const made = translatePiSession(lines, facts);
+
+            // A test makes the translator another version, as a deploy between two runs does.
+            const version = ctx.storage.kv.get<number>("import-translator-version");
+            const count = ctx.storage.kv.get<number>("import-translation-count");
+
+            const translation = translated(made)
+              ? { ...made, version: version ?? made.version, count: count ?? made.count }
+              : made;
+
             const after = ctx.storage.kv.get<number>("import-pages-fail-after");
 
             if (after === undefined || !translated(translation)) return translation;
@@ -1307,6 +1316,16 @@ export class TestSession extends DurableObject {
   /** Cut the next translation's writing off after `pages` pages (once), as a crash between two commits does. */
   importPagesFailAfter(pages: number): void {
     this.ctx.storage.kv.put("import-pages-fail-after", pages);
+  }
+
+  /** Make the next translations of another version, as a deploy that changed the translator does. */
+  importTranslatorVersion(version: number): void {
+    this.ctx.storage.kv.put("import-translator-version", version);
+  }
+
+  /** Make the translations say they make `count` entries, as a translator that has changed its mind does. */
+  importTranslationCount(count: number): void {
+    this.ctx.storage.kv.put("import-translation-count", count);
   }
 
   /** Make every translation fail (or not), as one that crashes the object does. */

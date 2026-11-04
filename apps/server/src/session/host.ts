@@ -173,7 +173,7 @@ import { type NavigateRequest, sessionBranches } from "./branches.ts";
 import { branchIds } from "./tree.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
 import { admissionLines } from "./admission.ts";
-import { fillingRefusal, sessionForks } from "./fork-host.ts";
+import { fillingRefusal, sessionForks, type WrittenTranslation } from "./fork-host.ts";
 import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -634,11 +634,13 @@ export type SessionHostService = {
   readonly importBegin: Effect.Effect<void, SessionError>;
   /**
    * Write a Session import's translated entries to the root conversation a page at a time, resuming after those a cut-off
-   * run wrote (`importTranslated`).
+   * run wrote (`importTranslated`). Answers why it could not resume, when `translation` is not the one the first run wrote
+   * (another version, or the root holds more entries than it makes): the import is then given up.
    */
   readonly importTranslated: (
     pages: Iterable<ReadonlyArray<EntryRecord>>,
-  ) => Effect.Effect<void, SessionError>;
+    translation: WrittenTranslation,
+  ) => Effect.Effect<string | undefined, SessionError>;
   /** Whether a Session import's translated entries are all in the root conversation. */
   readonly importWritten: Effect.Effect<boolean>;
   /**
