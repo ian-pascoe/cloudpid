@@ -13,6 +13,7 @@ import {
   type McpMenuServer,
   type McpPromptEntry,
   type McpResourceMenu,
+  MENU_STATE,
   rank,
 } from "@cloudpid/protocol";
 import type { ComposerCommand } from "./commands.ts";
@@ -113,22 +114,51 @@ const filesMenu = (query: string, files: FileResults): Completion => {
 /** What a server's muted row says of why its resources are not listed. */
 const resourceStateNote = (state: string): string =>
   Match.value(state).pipe(
-    Match.when("connecting", () => "connecting…"),
-    Match.when("sign_in", () => "sign-in needed"),
-    Match.when("stopped", () => "not running: its Container is stopped"),
+    Match.when(MENU_STATE.connecting, () => "connecting…"),
+    Match.when(MENU_STATE.signIn, () => "sign-in needed"),
+    Match.when(MENU_STATE.stopped, () => "not running: its Container is stopped"),
     Match.orElse(() => "unavailable"),
   );
 
-/** The resources `query` matches in `resources`, best first: by name or title, then by URI. Ties keep the server's order. */
+/** What a resource without an `annotations.priority` ranks as: between the server's low and high. */
+const NEUTRAL_PRIORITY = 0.5;
+
+/** A resource's `annotations.priority`, the neutral one when the server gave none. */
+const priorityOf = (resource: McpMenuResource): number => resource.priority ?? NEUTRAL_PRIORITY;
+
+/**
+ * `rows` that `query` matches by the first of `keys` that does, in passes: the matches of the first key best first, then
+ * the matches of the second among the rest, and so on. Within a pass by match, then by the server's `annotations.priority`
+ * (higher first), then in the order given.
+ */
+const rankedInPasses = <A>(
+  query: string,
+  rows: readonly A[],
+  keys: ReadonlyArray<(row: A) => string>,
+  priority: (row: A) => number,
+): readonly A[] => {
+  const ranked: A[] = [];
+
+  for (const key of keys) {
+    const rest = rows.filter((row) => !ranked.includes(row));
+
+    ranked.push(...rank(query, rest, key, (row) => -priority(row)));
+  }
+
+  return ranked;
+};
+
+/** The resources `query` matches in `resources`, best first: by name or title, then by URI (`rankedInPasses`). */
 const rankedResources = (
   query: string,
   resources: readonly McpMenuResource[],
-): readonly McpMenuResource[] => {
-  const byName = rank(query, resources, (resource) => resource.title ?? resource.name);
-  const rest = resources.filter((resource) => !byName.includes(resource));
-
-  return [...byName, ...rank(query, rest, (resource) => resource.uri)];
-};
+): readonly McpMenuResource[] =>
+  rankedInPasses(
+    query,
+    resources,
+    [(resource) => resource.title ?? resource.name, (resource) => resource.uri],
+    priorityOf,
+  );
 
 /** One resource as a row: its title or name, its URI muted after it, and the first line of its description. */
 const resourceRow = (server: McpMenuServer, resource: McpMenuResource): MenuEntry => ({
@@ -165,8 +195,9 @@ const narrowedTo = (
 
 /**
  * The MCP resources after the files: one section per server, "MCP · <server>" (plus "· from <repo>" for a Repo's), each
- * resource a row. The rows are ranked by how well they match what is typed, then by the servers' order and the order each
- * listed them in, and a server's section stands where its best row does. A server whose resources are not listed (it is
+ * resource a row. The rows are ranked by how well they match what is typed, then by the `annotations.priority` the server
+ * gave (higher first), then by the servers' order and the order each listed them in, and a server's section stands where its best
+ * row does. A server whose resources are not listed (it is
  * connecting, needs a sign-in, or is a stdio server whose Container is stopped, which the menu never starts) is a muted
  * row, shown while its name matches.
  */
@@ -176,26 +207,20 @@ const resourceSections = (
 ): readonly { readonly label: string; readonly rows: readonly MenuEntry[] }[] => {
   if (resources === null) return [];
 
-  const listed = resources.servers.filter((server) => server.state === "ok");
+  const listed = resources.servers.filter((server) => server.state === MENU_STATE.ok);
 
-  const ranked = rank(
+  // A row matches by its name or title, else by its URI, else by its server's name.
+  const rows = rankedInPasses(
     query,
     listed.flatMap((server) => server.resources.map((resource) => ({ server, resource }))),
-    ({ server, resource }) => `${resource.title ?? resource.name}\u0000${server.server}`,
+    [
+      ({ resource }) => resource.title ?? resource.name,
+      ({ resource }) => resource.uri,
+      ({ server }) => server.server,
+    ],
+    ({ resource }) => priorityOf(resource),
   );
 
-  // The rank above matches a name; a URI that matches is a row too, after those.
-  const byName = new Set(ranked.map(({ resource }) => resource));
-
-  const byUri = rank(
-    query,
-    listed.flatMap((server) =>
-      server.resources.flatMap((resource) => (byName.has(resource) ? [] : [{ server, resource }])),
-    ),
-    ({ resource }) => resource.uri,
-  );
-
-  const rows = [...ranked, ...byUri];
   const servers = [...new Set(rows.map(({ server }) => server))];
 
   const sections = servers.map((server) => ({
@@ -205,7 +230,7 @@ const resourceSections = (
 
   const muted = rank(
     query,
-    resources.servers.filter((server) => server.state !== "ok"),
+    resources.servers.filter((server) => server.state !== MENU_STATE.ok),
     (server) => server.server,
   ).map((server) => ({
     label: `MCP · ${server.server}`,
@@ -230,7 +255,7 @@ const mentionMenu = (
     const { server, rest } = narrowed;
 
     const rows: readonly MenuEntry[] =
-      server.state === "ok"
+      server.state === MENU_STATE.ok
         ? rankedResources(rest, server.resources).map((resource) => resourceRow(server, resource))
         : [mutedServerRow(server)];
 

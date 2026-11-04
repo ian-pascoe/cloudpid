@@ -407,6 +407,45 @@ describe("the MCP resources in the @ menu", () => {
     ]);
   });
 
+  it("ranks by match first and then by the server's priority, higher first, then in the server's order", () => {
+    const ranked: McpResourceMenu = {
+      servers: [
+        {
+          server: "docs",
+          source: "owner",
+          state: "ok",
+          resources: [
+            resource("note-low", "file:///1", { priority: 0.1 }),
+            resource("note-unset", "file:///2"),
+            resource("note-high", "file:///3", { priority: 0.9 }),
+            resource("note", "file:///4", { priority: 0 }),
+          ],
+        },
+      ],
+    };
+
+    // With nothing typed every row ties on match: priority decides, an unset one between low and high.
+    expect(menuFor("@", ranked)?.entries.map((entry) => entry.label)).toEqual([
+      "note-high",
+      "note-unset",
+      "note-low",
+      "note",
+    ]);
+    // An exact match stays ahead of a higher priority, and the prefix matches follow by priority.
+    expect(menuFor("@note", ranked)?.entries.map((entry) => entry.label)).toEqual([
+      "note",
+      "note-high",
+      "note-unset",
+      "note-low",
+    ]);
+    expect(menuFor("@docs:", ranked)?.entries.map((entry) => entry.label)).toEqual([
+      "note-high",
+      "note-unset",
+      "note-low",
+      "note",
+    ]);
+  });
+
   it("narrows to one server's resources after @server:", () => {
     const completion = menuFor("@docs:");
 

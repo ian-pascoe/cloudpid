@@ -68,14 +68,25 @@ const score = (query: string, { lower, base }: RankCandidate): number | null => 
 /**
  * `candidates` that match `query`, best first: an exact match, then a prefix, a word start, a substring, and the
  * query's letters in order. For a path, a match in its last segment (a folder's name, before its trailing `/`) beats
- * one only elsewhere. Ties keep their order, and an empty query keeps every candidate in order.
+ * one only elsewhere. Ties keep their order, and an empty query keeps every candidate in order. `then` breaks a tie of
+ * match before the order does (lower first): for an empty query, every candidate ties.
  */
 export const rank = <A>(
   query: string,
   candidates: readonly A[],
   key: (candidate: A) => string,
+  then?: (candidate: A) => number,
 ): A[] => {
-  if (query === "") return [...candidates];
+  const tiebreak = (candidate: A): number => then?.(candidate) ?? 0;
+
+  if (query === "") {
+    return then === undefined
+      ? [...candidates]
+      : candidates
+          .map((candidate, index) => ({ candidate, index }))
+          .toSorted((a, b) => tiebreak(a.candidate) - tiebreak(b.candidate) || a.index - b.index)
+          .map(({ candidate }) => candidate);
+  }
 
   const lower = query.toLowerCase();
   const scored: { candidate: A; score: number; index: number }[] = [];
@@ -87,7 +98,10 @@ export const rank = <A>(
   });
 
   return scored
-    .toSorted((a, b) => a.score - b.score || a.index - b.index)
+    .toSorted(
+      (a, b) =>
+        a.score - b.score || tiebreak(a.candidate) - tiebreak(b.candidate) || a.index - b.index,
+    )
     .map(({ candidate }) => candidate);
 };
 

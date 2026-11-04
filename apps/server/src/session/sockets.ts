@@ -820,32 +820,20 @@ export const sessionSocketsLayer = (
             const withPages =
               refs === undefined || refs.length === 0 ? typed : { ...typed, attachPages };
 
-            const withPrompt =
+            // What a server answers for a prompt or a resource is redacted of the Secrets held, as the rest of the message's text is.
+            const redactor = secrets.refresh.pipe(
+              Effect.as(<A>(value: A): A => secrets.redact(value)),
+            );
+
+            const withPagesAndPrompt =
               picked === undefined
                 ? withPages
-                : {
-                    ...withPages,
-                    mcpPrompt: {
-                      ref: picked,
-                      redact: secrets.refresh.pipe(
-                        Effect.as(<A>(value: A): A => secrets.redact(value)),
-                      ),
-                    },
-                  };
+                : { ...withPages, mcpPrompt: { ref: picked, redact: redactor } };
 
-            // What a server answers for a resource is redacted of the Secrets held, as the rest of the message's text is.
             const prompt =
               attached === undefined || attached.length === 0
-                ? withPrompt
-                : {
-                    ...withPrompt,
-                    resources: {
-                      refs: attached,
-                      redact: secrets.refresh.pipe(
-                        Effect.as(<A>(value: A): A => secrets.redact(value)),
-                      ),
-                    },
-                  };
+                ? withPagesAndPrompt
+                : { ...withPagesAndPrompt, resources: { refs: attached, redact: redactor } };
 
             // With drafts, it is a Review: its summary is what was typed.
             return (
@@ -1262,7 +1250,14 @@ export const sessionSocketsLayer = (
         yield* send(
           server,
           copying
-            ? { type: "hello", root, copying, appViews: true, mcpTasks: true, attachedResources: true }
+            ? {
+                type: "hello",
+                root,
+                copying,
+                appViews: true,
+                mcpTasks: true,
+                attachedResources: true,
+              }
             : { type: "hello", root, appViews: true, mcpTasks: true, attachedResources: true },
         );
         yield* host.picks.pipe(

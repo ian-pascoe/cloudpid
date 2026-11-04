@@ -12,6 +12,7 @@ import {
   MAX_ATTACHED_RESOURCES,
   MAX_ATTACHMENT_BYTES,
   type PageRef,
+  resourceKey,
   resourceLabel,
   type ResourceRef,
   type StoredAttachment,
@@ -229,7 +230,7 @@ export const sentResources = (state: AttachmentsState): readonly SentResource[] 
 const sameResource = (
   chip: Pick<ResourceChipState, "server" | "uri">,
   other: Pick<ResourceChipState, "server" | "uri">,
-): boolean => chip.server === other.server && chip.uri === other.uri;
+): boolean => resourceKey(chip) === resourceKey(other);
 
 /** Why a page's screen does not go with it, once it is known; undefined while it is being fitted, or when it goes. */
 export const screenNote = (state: AttachmentsState, chip: PageChipState): string | undefined => {

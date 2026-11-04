@@ -7,13 +7,14 @@
 
 import { RegistryContext, useAtomMount, useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useContext } from "react";
-import { Globe, ImageOff, X } from "lucide-react";
+import { Globe, ImageOff } from "lucide-react";
 import { Menu, MenuItem, MenuLabel } from "../components/ui/menu.tsx";
 import { ownerTabsAtom } from "../session/atoms.ts";
 import { latestScreenAtom } from "../live-view/owner-tab-screen.ts";
 import { askOwnerTabsAtom, offeredPages, pageLabel, toAttach } from "./attached-pages.ts";
 import type { AttachmentsState, PageToAttach } from "./attachments-state.ts";
 import { screenNote } from "./attachments-state.ts";
+import { ChipIcon, ChipList, ComposerChip } from "./chip-card.tsx";
 
 /** The chips of the pages attached to the message, each with a button that removes it. */
 export const PageChips = ({
@@ -22,68 +23,50 @@ export const PageChips = ({
 }: {
   state: AttachmentsState;
   onRemove: (ownerTabId: string) => void;
-}) =>
-  state.pages.length === 0 ? null : (
-    <ul
-      aria-label="Attached pages"
-      aria-live="polite"
-      aria-relevant="additions"
-      className="flex flex-wrap gap-2 px-2.5 pt-2.5"
-    >
-      {state.pages.map((chip) => {
-        const label = pageLabel(chip);
-        const screen = state.items.find((item) => item.id === chip.screenId);
-        const note = screenNote(state, chip);
+}) => (
+  <ChipList label="Attached pages" empty={state.pages.length === 0}>
+    {state.pages.map((chip) => {
+      const label = pageLabel(chip);
+      const screen = state.items.find((item) => item.id === chip.screenId);
+      const note = screenNote(state, chip);
 
-        return (
-          <li
-            key={chip.ownerTabId}
-            className="relative flex h-12 max-w-full min-w-0 items-center gap-2 rounded-md border bg-background pr-8 pl-2"
-          >
-            {screen?.preview !== undefined && note === undefined ? (
+      return (
+        <ComposerChip
+          key={chip.ownerTabId}
+          lead={
+            screen?.preview !== undefined && note === undefined ? (
               <img
                 src={screen.preview}
                 alt=""
                 className="size-8 shrink-0 rounded-sm border object-cover object-top"
               />
             ) : (
-              <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+              <ChipIcon>
                 <Globe className="size-4" aria-hidden />
-              </span>
-            )}
-            <div className="min-w-0 flex-1">
-              <p className="max-w-64 truncate text-sm" title={label}>
-                {label}
-              </p>
-              <p className="max-w-64 truncate text-xs text-muted-foreground">
-                {note === undefined ? (
-                  <>{chip.screenId === undefined ? "Open page" : "Open page · with its screen"}</>
-                ) : (
-                  <>
-                    <ImageOff className="mr-1 inline size-3 align-[-2px]" aria-hidden />
-                    {note}
-                  </>
-                )}
-              </p>
-            </div>
-            <button
-              type="button"
-              aria-label={`Remove page ${label}`}
-              title={`Remove page ${label}`}
-              onClick={() => {
-                onRemove(chip.ownerTabId);
-              }}
-              className="group absolute -top-1.5 -right-1.5 z-10 inline-flex size-11 items-center justify-center text-muted-foreground outline-none pointer-fine:pointer-events-none"
-            >
-              <span className="pointer-events-auto inline-flex size-5 items-center justify-center rounded-full border bg-background transition-colors group-hover:bg-accent group-hover:text-accent-foreground group-focus-visible:ring-2 group-focus-visible:ring-ring">
-                <X className="size-3" aria-hidden />
-              </span>
-            </button>
-          </li>
-        );
-      })}
-    </ul>
-  );
+              </ChipIcon>
+            )
+          }
+          title={label}
+          tooltip={label}
+          note={
+            note === undefined ? (
+              <>{chip.screenId === undefined ? "Open page" : "Open page · with its screen"}</>
+            ) : (
+              <>
+                <ImageOff className="mr-1 inline size-3 align-[-2px]" aria-hidden />
+                {note}
+              </>
+            )
+          }
+          removeLabel={`Remove page ${label}`}
+          onRemove={() => {
+            onRemove(chip.ownerTabId);
+          }}
+        />
+      );
+    })}
+  </ChipList>
+);
 
 /**
  * The toolbar's page button: a menu of the Session's Owner tabs, the one the Browser Pane shows first (and focused, so

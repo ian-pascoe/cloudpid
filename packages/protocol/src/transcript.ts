@@ -208,7 +208,8 @@ const withoutResourcesBlock = (
 
   if (at === -1) return [...parts];
 
-  let pictures = resources.filter((resource) => resource.kind === "image").length;
+  // One picture of the block's for each `images` the chips count: a chip's `kind` is only its first content's.
+  let pictures = resources.reduce((sum, resource) => sum + (resource.images ?? 0), 0);
 
   return parts.filter((part, index) => {
     if (index === at) return false;

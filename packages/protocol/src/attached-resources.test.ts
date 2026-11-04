@@ -14,6 +14,7 @@ import {
   resourceLabel,
   resourcesBlock,
 } from "./attached-resources.ts";
+import { rank } from "./ranking.ts";
 import { decodeClientMessage, ServerMessageJson } from "./session.ts";
 import { projectEntry } from "./transcript.ts";
 import { USER_ENTRY_KIND } from "./user-entry.ts";
@@ -99,18 +100,20 @@ describe("Attached resources in the transcript", () => {
     resourceElement({ server: "docs", uri: "file:///b.png", image: true }),
   ]);
 
+  const picture = (data: string) => ({ type: "image", data, mimeType: "image/png" });
+
   it("shows a chip for each instead of the block and the pictures that went in for them", () => {
     const message = projectEntry(
       entry(
         [
           { server: "docs", uri: "file:///a.md", name: "A", kind: "text" },
-          { server: "docs", uri: "file:///b.png", kind: "image" },
+          { server: "docs", uri: "file:///b.png", kind: "image", images: 1 },
         ],
         [
           { type: "text", text: "read these" },
           { type: "text", text: block },
-          { type: "image", data: "AAAA", mimeType: "image/png" },
-          { type: "image", data: "BBBB", mimeType: "image/png" },
+          picture("AAAA"),
+          picture("BBBB"),
         ],
       ),
     );
@@ -118,11 +121,71 @@ describe("Attached resources in the transcript", () => {
     expect(message?.parts).toEqual([
       { type: "text", text: "read these" },
       // The owner's own picture, after the resources' ones, stays.
-      { type: "image", data: "BBBB", mimeType: "image/png" },
+      picture("BBBB"),
     ]);
     expect(message?.resources).toEqual([
       { server: "docs", uri: "file:///a.md", name: "A", kind: "text" },
-      { server: "docs", uri: "file:///b.png", kind: "image" },
+      { server: "docs", uri: "file:///b.png", kind: "image", images: 1 },
+    ]);
+  });
+
+  it("removes the pictures a chip counts, not one for each chip whose first content is an image", () => {
+    // A text and an image in one resource: its kind is `text`, its picture is still the block's.
+    const mixed = projectEntry(
+      entry(
+        [{ server: "docs", uri: "file:///a", kind: "text", images: 1 }],
+        [
+          { type: "text", text: "go" },
+          { type: "text", text: block },
+          picture("AAAA"),
+          picture("OWN1"),
+        ],
+      ),
+    );
+
+    expect(mixed?.parts).toEqual([{ type: "text", text: "read these" }, picture("OWN1")]);
+
+    // Two images in one resource.
+    const twice = projectEntry(
+      entry(
+        [{ server: "docs", uri: "file:///b", kind: "image", images: 2 }],
+        [
+          { type: "text", text: "go" },
+          { type: "text", text: block },
+          picture("AAAA"),
+          picture("BBBB"),
+          picture("OWN1"),
+        ],
+      ),
+    );
+
+    expect(twice?.parts).toEqual([{ type: "text", text: "read these" }, picture("OWN1")]);
+
+    // A mix across chips: a text and an image, nothing, an error, and two images.
+    const across = projectEntry(
+      entry(
+        [
+          { server: "docs", uri: "file:///c", kind: "text", images: 1 },
+          { server: "docs", uri: "file:///d", kind: "text" },
+          { server: "docs", uri: "file:///e", kind: "error", error: "down" },
+          { server: "docs", uri: "file:///f", kind: "image", images: 2 },
+        ],
+        [
+          { type: "text", text: "go" },
+          { type: "text", text: block },
+          picture("P1"),
+          picture("P2"),
+          picture("P3"),
+          picture("OWN1"),
+          picture("OWN2"),
+        ],
+      ),
+    );
+
+    expect(across?.parts).toEqual([
+      { type: "text", text: "read these" },
+      picture("OWN1"),
+      picture("OWN2"),
     ]);
   });
 
@@ -133,6 +196,36 @@ describe("Attached resources in the transcript", () => {
 
     expect(message?.parts).toEqual([{ type: "text", text: "read these" }]);
     expect(message?.resources).toBeUndefined();
+  });
+});
+
+describe("ranking with a tie-break", () => {
+  const items = [
+    { name: "alpha", priority: 0.2 },
+    { name: "alpine", priority: 0.9 },
+    { name: "beta", priority: 0.9 },
+    { name: "alp", priority: 0.9 },
+  ];
+
+  const names = (query: string) =>
+    rank(
+      query,
+      items,
+      ({ name }) => name,
+      ({ priority }) => -priority,
+    ).map(({ name }) => name);
+
+  it("breaks a tie of match by it, then by order, and never overrides a better match", () => {
+    // `alp` is exact, then `alpine` and `alpha` are prefixes: by priority, higher first.
+    expect(names("alp")).toEqual(["alp", "alpine", "alpha"]);
+    // With no query every candidate ties: priority, then the given order.
+    expect(names("")).toEqual(["alpine", "beta", "alp", "alpha"]);
+    // Without a tie-break the order is the given one.
+    expect(rank("alp", items, ({ name }) => name).map(({ name }) => name)).toEqual([
+      "alp",
+      "alpha",
+      "alpine",
+    ]);
   });
 });
 

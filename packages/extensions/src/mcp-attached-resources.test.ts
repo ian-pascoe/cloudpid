@@ -117,6 +117,36 @@ describe("the @ menu's listing", () => {
     expect(requests(host).every((input) => input.ctx.origin === "owner")).toBe(true);
   });
 
+  it("keeps a server's annotations.priority from 0 to 1, and nothing for any other", async () => {
+    const { host, tools } = await started([store("Docs")]);
+
+    host.answer(() =>
+      Promise.resolve(
+        page({
+          resources: [
+            { uri: "file:///a", name: "a", annotations: { priority: 0.9, audience: ["user"] } },
+            { uri: "file:///b", name: "b", annotations: { priority: 0 } },
+            { uri: "file:///c", name: "c", annotations: { priority: 7 } },
+            { uri: "file:///d", name: "d", annotations: { priority: "high" } },
+            { uri: "file:///e", name: "e", annotations: ["not", "an", "object"] },
+            { uri: "file:///f", name: "f" },
+          ],
+        }),
+      ),
+    );
+
+    expect(
+      (await menu(tools)).servers[0]?.resources.map((each) => [each.name, each.priority]),
+    ).toEqual([
+      ["a", 0.9],
+      ["b", 0],
+      ["c", undefined],
+      ["d", undefined],
+      ["e", undefined],
+      ["f", undefined],
+    ]);
+  });
+
   it("leaves an App's ui:// resources out", async () => {
     const { host, tools } = await started([store("Docs")]);
 

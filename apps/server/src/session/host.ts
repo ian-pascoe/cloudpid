@@ -63,6 +63,7 @@ import {
   type AttachedResource,
   ATTACHED_RESOURCE_GONE,
   attachedResourceGoneMessage,
+  resourceKey,
   attachmentPath,
   INLINE_IMAGE_BUDGET,
   type McpPromptData,
@@ -175,6 +176,7 @@ import type { PromptCatalog } from "./mcp-prompt-catalog.ts";
 import { promptFileName, promptMessage, type PromptFile } from "./mcp-prompt.ts";
 import {
   type AttachedBudgets,
+  type AttachedMade,
   type AttachedMessage,
   attachedMessage,
   attachedResource,
@@ -276,6 +278,12 @@ const MAX_WITHDRAWN = 64;
 
 /** The longest `requestId` kept as withdrawn: a longer one is withdrawn, but a resend of it is not. */
 const MAX_WITHDRAWN_ID = 256;
+
+/** One part of a message's content, as a draft holds it. */
+type InputPart = Exclude<InputSubmissionDraft["content"], string>[number];
+
+/** What the image budget reads of a message's part: its type, and an image's data. */
+type MessagePart = { readonly type: string; readonly data?: string };
 
 type WithdrawnRequest = { readonly requestId: string; readonly at: number };
 
@@ -2083,15 +2091,16 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     return typed === undefined || typed.startsWith(`@${UPLOADS_ROOT}/`) ? "" : typed;
   };
 
-  const withPages = (
+  /**
+   * `draft`'s content with `inserted` (a block of text, and the images that belong with it) put before the first image from
+   * part `from` on: the owner's own parts, and an MCP prompt's before `from`, stay ahead of it. With what the draft's entry
+   * already keeps (`UserEntryData`), which a block adds its own to.
+   */
+  const withBlockBefore = (
     draft: InputSubmissionDraft,
-    input: UserInput,
-    pages: ReadonlyArray<AttachedPage>,
-    // The parts the pages go after: an MCP prompt's block and images, which come before the owner's own parts.
-    from = 0,
-  ): InputSubmissionDraft => {
-    const block = { type: "text" as const, text: pageBlock(pages) };
-
+    from: number,
+    inserted: ReadonlyArray<InputPart>,
+  ) => {
     const parts = Predicate.isString(draft.content)
       ? draft.content === ""
         ? []
@@ -2103,11 +2112,26 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       () => parts.length,
     );
 
-    const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
+    return {
+      content: [...parts.slice(0, at), ...inserted, ...parts.slice(at)],
+      data: userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data }),
+    };
+  };
+
+  const withPages = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    pages: ReadonlyArray<AttachedPage>,
+    // The parts the pages go after: an MCP prompt's block and images, which come before the owner's own parts.
+    from = 0,
+  ): InputSubmissionDraft => {
+    const { content, data } = withBlockBefore(draft, from, [
+      { type: "text" as const, text: pageBlock(pages) },
+    ]);
 
     return {
       ...draft,
-      content: [...parts.slice(0, at), block, ...parts.slice(at)],
+      content,
       // A Review's Annotations stay beside the pages.
       entry: ownerEntry({
         display: data?.display ?? typedBeside(input),
@@ -2629,7 +2653,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    */
   const attachedResources = (
     prompt: Prompt,
-    parts: ReadonlyArray<{ readonly type: string; readonly data?: string }>,
+    parts: ReadonlyArray<MessagePart>,
   ): Effect.Effect<AttachedMessage | undefined, SessionError> => {
     const { resources } = prompt;
 
@@ -2646,15 +2670,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const readAttachedResources = (
     prompt: Prompt,
     resources: NonNullable<Prompt["resources"]>,
-    parts: ReadonlyArray<{ readonly type: string; readonly data?: string }>,
+    parts: ReadonlyArray<MessagePart>,
   ): Effect.Effect<AttachedMessage | undefined, SessionError> =>
     Effect.gen(function* () {
       const redact = yield* resources.redact;
 
-      const refs = Arr.dedupeWith(
-        resources.refs,
-        (a, b) => a.server === b.server && a.uri === b.uri,
-      );
+      const refs = Arr.dedupeWith(resources.refs, (a, b) => resourceKey(a) === resourceKey(b));
 
       const attached = options.mcp?.attached;
       const [first] = refs;
@@ -2703,7 +2724,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         { concurrency: "unbounded" },
       );
 
-      const made: Array<Parameters<typeof attachedMessage>[0][number]> = [];
+      const made: Array<AttachedMade> = [];
 
       for (const [index, read] of reads.entries()) {
         const ref = refs[index];
@@ -2752,23 +2773,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     message: AttachedMessage,
     from: number,
   ): InputSubmissionDraft => {
-    const parts = partsOf(draft);
-
-    const at = Option.getOrElse(
-      Arr.findFirstIndex(parts, (part, index) => index >= from && part.type === "image"),
-      () => parts.length,
-    );
-
-    const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
+    const { content, data } = withBlockBefore(draft, from, [
+      { type: "text" as const, text: message.block },
+      ...message.images,
+    ]);
 
     return {
       ...draft,
-      content: [
-        ...parts.slice(0, at),
-        { type: "text" as const, text: message.block },
-        ...message.images,
-        ...parts.slice(at),
-      ],
+      content,
       entry: ownerEntry({
         display: data?.display ?? typedBeside(input),
         skills: data?.skills ?? [],

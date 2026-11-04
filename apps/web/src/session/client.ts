@@ -2011,22 +2011,25 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         return message;
       }, decodeFileMatches),
-    resourceMenu: (conversationId) =>
-      attachedResources === null
-        ? Effect.fail(SessionCommandError.make({ message: NOT_CONNECTED }))
-        : attachedResources
-          ? request((id) => {
-              const message: Types.Mutable<Extract<ClientMessage, { type: "mcp_resource_menu" }>> =
-                {
-                  type: "mcp_resource_menu",
-                  id,
-                };
+    resourceMenu: (conversationId) => {
+      // Nothing is known of the Session before its hello; one from before says nothing of resources and lists none.
+      if (attachedResources === null) {
+        return Effect.fail(SessionCommandError.make({ message: NOT_CONNECTED }));
+      }
 
-              addressTo(message, conversationId);
+      if (!attachedResources) return Effect.succeed({ servers: [] });
 
-              return message;
-            }, decodeResourceMenu)
-          : Effect.succeed({ servers: [] }),
+      return request((id) => {
+        const message: Types.Mutable<Extract<ClientMessage, { type: "mcp_resource_menu" }>> = {
+          type: "mcp_resource_menu",
+          id,
+        };
+
+        addressTo(message, conversationId);
+
+        return message;
+      }, decodeResourceMenu);
+    },
     command: (name, args, conversationId) =>
       request(
         (id) => {

@@ -7,6 +7,7 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off -- the Workspace's file writes are Promise-native; plain functions over short lists.
 import { normalizeMcpName } from "@cloudpid/config";
 import {
+  ATTACHED_KIND,
   type AttachedResource,
   boundedText,
   cleanText,
@@ -61,7 +62,7 @@ const chipOf = (known: Known): Mutable<AttachedResource> => {
   const chip: Mutable<AttachedResource> = {
     server: known.server,
     uri: lineOf(known.redact, known.ref.uri, MAX_RESOURCE_URI),
-    kind: "text",
+    kind: ATTACHED_KIND.text,
   };
 
   if (known.ref.name !== undefined) {
@@ -85,7 +86,7 @@ export const failedResource = (
 ): FailedResource => {
   const known: Known = { redact, server, ref };
   const error = lineOf(redact, why, MAX_RESOURCE_ERROR);
-  const chip = { ...chipOf(known), kind: "error", error };
+  const chip = { ...chipOf(known), kind: ATTACHED_KIND.error, error };
 
   return {
     element: resourceElement({
@@ -97,11 +98,104 @@ export const failedResource = (
   };
 };
 
+/** What one content of a resource became: its element, how it went in, its size, and the file or picture it made. */
+type Kept = {
+  readonly element: string;
+  readonly kind: string;
+  readonly bytes: number;
+  readonly mimeType: string | undefined;
+  readonly path?: string;
+  readonly image?: PromptImage;
+};
+
+/** `content` made into its element: inline text, an inline image, or a file `save` writes. Takes its room from `budgets`. */
+const keepContent = async (
+  input: {
+    readonly redact: <A>(value: A) => A;
+    readonly server: string;
+    readonly budgets: AttachedBudgets;
+    readonly save: (file: PromptFile) => Promise<string>;
+  },
+  content: AttachedContent,
+): Promise<Kept> => {
+  const { redact, budgets } = input;
+  const uri = lineOf(redact, content.uri, MAX_RESOURCE_URI);
+
+  const mimeType =
+    content.mimeType === undefined ? undefined : lineOf(redact, content.mimeType, 100);
+
+  const facts = { server: input.server, uri, mimeType };
+
+  if (content.text !== undefined) {
+    const text = redact(cleanText(content.text));
+    const bytes = encoder.encode(text).byteLength;
+
+    if (bytes <= MAX_RESOURCE_INLINE_TEXT_BYTES && bytes <= budgets.text) {
+      budgets.text -= bytes;
+
+      return {
+        element: resourceElement({ ...facts, text }),
+        kind: ATTACHED_KIND.text,
+        bytes,
+        mimeType,
+      };
+    }
+
+    const path = await input.save({
+      kind: "resource",
+      mimeType: content.mimeType,
+      bytes: encoder.encode(text),
+    });
+
+    return {
+      element: resourceElement({ ...facts, path }),
+      kind: ATTACHED_KIND.spill,
+      bytes,
+      mimeType,
+      path,
+    };
+  }
+
+  const blob = content.blob ?? "";
+  const bytes = base64Bytes(blob);
+
+  if (
+    content.mimeType !== undefined &&
+    isInlineImageType(content.mimeType) &&
+    blob.length <= budgets.images
+  ) {
+    budgets.images -= blob.length;
+
+    return {
+      element: resourceElement({ ...facts, image: true }),
+      kind: ATTACHED_KIND.image,
+      bytes,
+      mimeType,
+      image: { type: "image", data: blob, mimeType: content.mimeType },
+    };
+  }
+
+  const decoded = decodeBase64(blob);
+
+  if (decoded === undefined) throw new Error("The server's blob is not base64");
+
+  const path = await input.save({ kind: "resource", mimeType: content.mimeType, bytes: decoded });
+
+  return {
+    element: resourceElement({ ...facts, path }),
+    kind: ATTACHED_KIND.spill,
+    bytes,
+    mimeType,
+    path,
+  };
+};
+
 /**
  * The elements, images and chip of `ref`'s `contents`, as the server returned them. A text that fits the message's room
  * (`MAX_RESOURCE_INLINE_TEXT_BYTES` and what is left of the message's `budgets.text`) goes between the tags; any other text,
  * and a blob that is not an image the providers take or does not fit the image budget, goes to a file `save` writes, which
- * the element names by its `path`. Rejects when a file cannot be written.
+ * the element names by its `path`. The chip takes the first content's kind, type and path, the sizes together, and how many
+ * images went inline. Rejects when a file cannot be written.
  */
 export const attachedResource = async (input: {
   readonly redact: <A>(value: A) => A;
@@ -111,91 +205,33 @@ export const attachedResource = async (input: {
   readonly budgets: AttachedBudgets;
   readonly save: (file: PromptFile) => Promise<string>;
 }): Promise<AttachedMade> => {
-  const { redact, budgets } = input;
-  const known: Known = { redact, server: input.server, ref: input.ref };
+  const known: Known = { redact: input.redact, server: input.server, ref: input.ref };
   const server = normalizeMcpName(input.server);
-  const elements: Array<string> = [];
-  const images: Array<PromptImage> = [];
-  const chip = chipOf(known);
+  const kept: Array<Kept> = [];
 
-  let size = 0;
-  let first = true;
-
+  // One after another: each takes its room from the budgets the next one sees.
   for (const content of input.contents) {
-    const uri = lineOf(redact, content.uri, MAX_RESOURCE_URI);
-
-    const mimeType =
-      content.mimeType === undefined ? undefined : lineOf(redact, content.mimeType, 100);
-
-    const facts = { server, uri, mimeType };
-
-    const kept = (kind: string, bytes: number, path?: string) => {
-      size += bytes;
-
-      if (first) {
-        chip.kind = kind;
-
-        if (mimeType !== undefined) chip.mimeType = mimeType;
-
-        if (path !== undefined) chip.path = path;
-
-        first = false;
-      }
-    };
-
-    if (content.text !== undefined) {
-      const text = redact(cleanText(content.text));
-      const bytes = encoder.encode(text).byteLength;
-
-      if (bytes <= MAX_RESOURCE_INLINE_TEXT_BYTES && bytes <= budgets.text) {
-        budgets.text -= bytes;
-        elements.push(resourceElement({ ...facts, text }));
-        kept("text", bytes);
-
-        continue;
-      }
-
-      const path = await input.save({
-        kind: "resource",
-        mimeType: content.mimeType,
-        bytes: encoder.encode(text),
-      });
-
-      elements.push(resourceElement({ ...facts, path }));
-      kept("spill", bytes, path);
-
-      continue;
-    }
-
-    const blob = content.blob ?? "";
-    const bytes = base64Bytes(blob);
-
-    if (
-      content.mimeType !== undefined &&
-      isInlineImageType(content.mimeType) &&
-      blob.length <= budgets.images
-    ) {
-      budgets.images -= blob.length;
-      images.push({ type: "image", data: blob, mimeType: content.mimeType });
-      elements.push(resourceElement({ ...facts, image: true }));
-      kept("image", bytes);
-
-      continue;
-    }
-
-    const decoded = decodeBase64(blob);
-
-    if (decoded === undefined) throw new Error("The server's blob is not base64");
-
-    const path = await input.save({ kind: "resource", mimeType: content.mimeType, bytes: decoded });
-
-    elements.push(resourceElement({ ...facts, path }));
-    kept("spill", bytes, path);
+    kept.push(await keepContent({ ...input, server }, content));
   }
 
-  chip.size = size;
+  const chip = chipOf(known);
+  const [first] = kept;
 
-  return { elements, images, chip };
+  if (first !== undefined) {
+    chip.kind = first.kind;
+
+    if (first.mimeType !== undefined) chip.mimeType = first.mimeType;
+
+    if (first.path !== undefined) chip.path = first.path;
+  }
+
+  chip.size = Arr.reduce(kept, 0, (sum, each) => sum + each.bytes);
+
+  const images = Arr.flatMap(kept, ({ image }) => (image === undefined ? [] : [image]));
+
+  if (images.length > 0) chip.images = images.length;
+
+  return { elements: Arr.map(kept, ({ element }) => element), images, chip };
 };
 
 /** What Attached resources add to a message: the block (one text part) and the images after it, and the chips. */

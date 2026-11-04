@@ -169,6 +169,29 @@ describe("a resource of several contents", () => {
 
     expect(made.elements).toHaveLength(2);
     expect(made.chip).toMatchObject({ kind: "text", size: 5 });
+    expect(made.chip).not.toHaveProperty("images");
+  });
+
+  it("counts the images that went inline in its chip, whatever its first content was", async () => {
+    const png = (uri: string) => ({ uri, blob: "aGVsbG8=", mimeType: "image/png" });
+
+    const textAndImage = await make([{ uri: "file:///a.md", text: "abc" }, png("file:///a.png")]);
+
+    expect(textAndImage.made.chip).toMatchObject({ kind: "text", images: 1 });
+    expect(textAndImage.made.images).toHaveLength(1);
+
+    const two = await make([png("file:///1.png"), png("file:///2.png")]);
+
+    expect(two.made.chip).toMatchObject({ kind: "image", images: 2 });
+    expect(two.made.images).toHaveLength(2);
+
+    // An image that did not fit goes to a file and is not counted.
+    const over = await make([png("file:///1.png"), png("file:///2.png")], {
+      budgets: budgets({ images: 8 }),
+    });
+
+    expect(over.made.chip).toMatchObject({ kind: "image", images: 1 });
+    expect(over.saved).toHaveLength(1);
   });
 });
 

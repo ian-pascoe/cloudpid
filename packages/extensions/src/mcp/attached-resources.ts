@@ -25,6 +25,7 @@ import {
   ATTACHED_RESOURCE_READ_MS,
   boundedText,
   MAX_MENU_PAGES,
+  MENU_STATE,
   MAX_MENU_RESOURCES,
   MAX_RESOURCE_NAME,
   MAX_RESOURCE_URI,
@@ -74,8 +75,6 @@ export type AttachedResourcesDeps = {
   readonly noStart: boolean;
   /** How long past the server's timeout the Session waits for the host, `MCP_CALL_SLACK_MS` unless a test shortens it. */
   readonly slackMs?: number | undefined;
-  /** How long a read at send may take, `ATTACHED_RESOURCE_READ_MS` unless a test shortens it. */
-  readonly readMs?: number | undefined;
   /** How long a streamed result waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
   readonly slotWaitMs?: number | undefined;
 };
@@ -328,7 +327,6 @@ export const readAttachedResource = <A>(
   }
 
   const stdio = isStdio(server.value);
-  const readMs = deps.readMs ?? ATTACHED_RESOURCE_READ_MS;
 
   return Effect.gen(function* () {
     if (input.signal.aborted) return failed("The read was stopped");
@@ -352,12 +350,20 @@ export const readAttachedResource = <A>(
       ),
     };
 
-    const answer = yield* asked(deps, server.value, input.signal, request, readMs);
+    const answer = yield* asked(
+      deps,
+      server.value,
+      input.signal,
+      request,
+      ATTACHED_RESOURCE_READ_MS,
+    );
 
     return yield* Match.value(answer).pipe(
       Match.tag("Cancelled", () => Effect.succeed(failed("The read was stopped"))),
       Match.tag("Timeout", () =>
-        Effect.succeed(failed(`${input.server} did not answer in ${String(readMs / 1000)} s`)),
+        Effect.succeed(
+          failed(`${input.server} did not answer in ${String(ATTACHED_RESOURCE_READ_MS / 1000)} s`),
+        ),
       ),
       Match.tag("Answered", ({ answer: result }) => answeredWith(deps, input, result)),
       Match.exhaustive,
@@ -375,6 +381,7 @@ const ListedResource = Schema.Struct({
   description: Schema.optionalKey(Schema.String),
   mimeType: Schema.optionalKey(Schema.String),
   size: Schema.optionalKey(Schema.Finite),
+  annotations: Schema.optionalKey(Schema.Json),
 });
 
 const decodeListed = Schema.decodeUnknownOption(ListedResource);
@@ -390,6 +397,15 @@ const decodePage = Schema.decodeUnknownOption(
 const MAX_MENU_DESCRIPTION = 300;
 
 const oneLineOf = (text: string, max: number): string => flatLine(boundedText(text, max));
+
+/** The `annotations.priority` a server gave a resource, when it is a number from 0 to 1 (the spec's range). */
+const priorityOf = (annotations: Schema.Json | undefined): number | undefined => {
+  if (!isJsonObject(annotations)) return undefined;
+
+  const { priority } = annotations;
+
+  return Predicate.isNumber(priority) && priority >= 0 && priority <= 1 ? priority : undefined;
+};
 
 /** What the menu keeps of a listed resource: bounded and cleaned, or nothing for an App's or one with no usable URI. */
 const menuResourceOf = (entry: Schema.Json): ReadonlyArray<McpMenuResource> => {
@@ -420,6 +436,10 @@ const menuResourceOf = (entry: Schema.Json): ReadonlyArray<McpMenuResource> => {
     resource.size = Math.trunc(listed.value.size);
   }
 
+  const priority = priorityOf(listed.value.annotations);
+
+  if (priority !== undefined) resource.priority = priority;
+
   return [resource];
 };
 
@@ -431,40 +451,70 @@ const sourceOf = (server: McpBuildServer): string =>
 
 /** The state a menu row is muted for when the build says its server is not up yet: connecting, signing in, or neither. */
 const stateRow = (state: string): string => {
-  if (state === "sign_in" || state === "rejected") return "sign_in";
+  if (state === "sign_in" || state === "rejected") return MENU_STATE.signIn;
 
-  return state === "not_discovered" || state === "connecting" ? "connecting" : "unavailable";
+  return state === "not_discovered" || state === "connecting"
+    ? MENU_STATE.connecting
+    : MENU_STATE.unavailable;
 };
 
-/** What a failed list page makes of a server's menu row. */
-const failedState = (answer: Asked): string =>
+/** What the host answered to a request, or none when it was cancelled or did not answer in time. */
+const answeredOf = (answer: Asked): Option.Option<McpHostRequestResult | HostLost> =>
   Match.value(answer).pipe(
-    Match.tag("Answered", ({ answer: result }) =>
+    Match.tag("Answered", (each) => Option.some(each.answer)),
+    Match.orElse(() => Option.none()),
+  );
+
+/** The state a failed page mutes its server's row for. */
+const failedState = (answer: Asked): string =>
+  Option.match(answeredOf(answer), {
+    onNone: () => MENU_STATE.unavailable,
+    onSome: (result) =>
       Match.value(result).pipe(
         Match.tag("CallFailed", ({ error }) =>
           Match.value(error).pipe(
-            Match.tag("SignInRequired", "StepUpRequired", () => "sign_in"),
-            Match.tag("Unreachable", (each) => (each.stopped === true ? "stopped" : "unavailable")),
-            Match.orElse(() => "unavailable"),
+            Match.tag("SignInRequired", "StepUpRequired", () => MENU_STATE.signIn),
+            Match.tag("Unreachable", (each) =>
+              each.stopped === true ? MENU_STATE.stopped : MENU_STATE.unavailable,
+            ),
+            Match.orElse(() => MENU_STATE.unavailable),
           ),
         ),
-        Match.orElse(() => "unavailable"),
+        Match.orElse(() => MENU_STATE.unavailable),
       ),
+  });
+
+/** One page of a server's list: its resources (as the server wrote them) and the cursor of the next, or the state it mutes the row for. */
+const pageOf = (
+  answer: Asked,
+): Result.Result<
+  { readonly entries: ReadonlyArray<Schema.Json>; readonly cursor: string | undefined },
+  string
+> => {
+  const completed = Option.flatMap(answeredOf(answer), (result) =>
+    Match.value(result).pipe(
+      Match.tag("Completed", (done) => Option.some(done.result)),
+      Match.orElse(() => Option.none()),
     ),
-    Match.orElse(() => "unavailable"),
   );
 
-/** The result of a page the host answered, or none for any other ending. */
-const completedOf = (answer: Asked) =>
-  Match.value(answer).pipe(
-    Match.tag("Answered", ({ answer: result }) =>
-      Match.value(result).pipe(
-        Match.tag("Completed", (done) => Option.some(done.result)),
-        Match.orElse(() => Option.none()),
-      ),
-    ),
-    Match.orElse(() => Option.none()),
-  );
+  if (Option.isNone(completed)) return Result.fail(failedState(answer));
+
+  const { value: result } = completed;
+
+  // A page of a large list comes as a stream the menu does not read.
+  if (result.kind !== "inline") {
+    void result.body.cancel().catch(() => undefined);
+
+    return Result.fail(MENU_STATE.unavailable);
+  }
+
+  const read = decodePage(result.value);
+
+  return Option.isNone(read)
+    ? Result.fail(MENU_STATE.unavailable)
+    : Result.succeed({ entries: read.value.resources ?? [], cursor: read.value.nextCursor });
+};
 
 /** One server's resources, page by page: what the menu lists, bounded, or the state it is muted for. */
 const listServer = (
@@ -480,7 +530,7 @@ const listServer = (
     const muted = (state: string): McpMenuServer => ({ ...base, state, resources: [] });
 
     // A host that would drop `ctx.start` starts the Container: a stdio server is not listed through one.
-    if (stdio && !deps.noStart) return muted("unavailable");
+    if (stdio && !deps.noStart) return muted(MENU_STATE.unavailable);
 
     const resources: Array<McpMenuResource> = [];
     let cursor: string | undefined;
@@ -495,38 +545,17 @@ const listServer = (
       };
 
       const answer = yield* asked(deps, server, signal, request, MENU_PAGE_MS);
-      const completed = completedOf(answer);
+      const got = pageOf(answer);
 
       // What was listed before the page that failed stays; a first page that fails mutes the row.
-      if (Option.isNone(completed)) {
-        if (resources.length === 0) return muted(failedState(answer));
+      if (Result.isFailure(got)) {
+        if (resources.length === 0) return muted(got.failure);
 
         truncated = true;
         break;
       }
 
-      const { value: result } = completed;
-
-      // A page of a large list comes as a stream the menu does not read: the listing stops at what it has.
-      if (result.kind !== "inline") {
-        void result.body.cancel().catch(() => undefined);
-
-        if (resources.length === 0) return muted("unavailable");
-
-        truncated = true;
-        break;
-      }
-
-      const read = decodePage(result.value);
-
-      if (Option.isNone(read)) {
-        if (resources.length === 0) return muted("unavailable");
-
-        truncated = true;
-        break;
-      }
-
-      for (const entry of read.value.resources ?? []) {
+      for (const entry of got.success.entries) {
         if (resources.length >= MAX_MENU_RESOURCES) {
           truncated = true;
           break;
@@ -535,7 +564,7 @@ const listServer = (
         resources.push(...menuResourceOf(entry));
       }
 
-      cursor = read.value.nextCursor;
+      cursor = got.success.cursor;
 
       if (cursor === undefined || cursor === "") break;
 
@@ -543,8 +572,8 @@ const listServer = (
     }
 
     return truncated
-      ? { ...base, state: "ok", resources, truncated }
-      : { ...base, state: "ok", resources };
+      ? { ...base, state: MENU_STATE.ok, resources, truncated }
+      : { ...base, state: MENU_STATE.ok, resources };
   });
 
 /** What the menu is listing for. */

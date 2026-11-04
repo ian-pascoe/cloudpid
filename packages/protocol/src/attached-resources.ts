@@ -48,8 +48,20 @@ export const ResourceRef = Schema.Struct({
 
 export type ResourceRef = typeof ResourceRef.Type;
 
-/** What an Attached resource became in the message: its text `text` inline, an `image` inline, a file (`spill`) or an `error`. */
-export const ATTACHED_KINDS = ["text", "image", "spill", "error"] as const;
+/**
+ * What an Attached resource became in the message: its text inline, an image inline, a file (`spill`) or an `error`. The
+ * wire carries a string (`AttachedResource.kind`), so a kind a later build adds reaches an older client.
+ */
+export const ATTACHED_KIND = {
+  text: "text",
+  image: "image",
+  spill: "spill",
+  error: "error",
+} as const;
+
+/** The key of a resource among the others of a message: the server and the URI, which a message holds once. */
+export const resourceKey = (resource: { readonly server: string; readonly uri: string }): string =>
+  `${resource.server}\u0000${resource.uri}`;
 
 /**
  * What the owner's `cloudpid.user` entry keeps of an Attached resource (`UserEntryData.resources`), for the chip: where it
@@ -66,6 +78,11 @@ export const AttachedResource = Schema.Struct({
   kind: Schema.String,
   path: Schema.optionalKey(Schema.String),
   error: Schema.optionalKey(Schema.String),
+  /**
+   * How many inline pictures it put after the block (one for each content of it that went in as an image). `kind` is only the
+   * first content's, so the transcript removes exactly this many: absent for none.
+   */
+  images: Schema.optionalKey(Schema.Int),
 });
 
 export type AttachedResource = typeof AttachedResource.Type;
@@ -174,6 +191,8 @@ export const McpMenuResource = Schema.Struct({
   description: Schema.optionalKey(Schema.String),
   mimeType: Schema.optionalKey(Schema.String),
   size: Schema.optionalKey(Schema.Int),
+  /** The server's `annotations.priority` (0 to 1, 1 the most important): the menu ranks by match, then by it. */
+  priority: Schema.optionalKey(Schema.Finite),
 });
 
 export type McpMenuResource = typeof McpMenuResource.Type;
@@ -193,6 +212,15 @@ export const McpMenuServer = Schema.Struct({
 });
 
 export type McpMenuServer = typeof McpMenuServer.Type;
+
+/** A server's `McpMenuServer.state`. The wire carries a string, which a client reads as `unavailable` when it is not one it knows. */
+export const MENU_STATE = {
+  ok: "ok",
+  stopped: "stopped",
+  signIn: "sign_in",
+  connecting: "connecting",
+  unavailable: "unavailable",
+} as const;
 
 /** The `mcp_resource_menu` answer: the servers the resource tools reach, in the set's order. */
 export const McpResourceMenu = Schema.Struct({

@@ -12,11 +12,13 @@ import type {
   McpEngineRequestResult,
   McpHostRequest,
   McpHostRequestInput,
+  McpHostResourceRequest,
   McpRequestStart,
   McpSetEntry,
 } from "@cloudpid/mcp/types";
 import { env } from "cloudflare:workers";
 import type * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 import { describe, expect, it, vi } from "vitest";
 import type { EngineScript, RequestScript, TestMcpHost } from "./host.fixture.ts";
 
@@ -532,6 +534,87 @@ describe("a reload", () => {
     await settled(host);
     expect(await stateOf(host, "local")).toBe("connected");
     expect(await starts(host)).toEqual([true, true]);
+  });
+});
+
+/** A `resources/list` page of `server` from `workspace`, for the owner's composer: `start` is the context's key. */
+const listing = (
+  server: string,
+  workspace: string = WORKSPACE,
+  start?: boolean,
+): typeof McpHostResourceRequest.Encoded => {
+  const ctx: Types.Mutable<(typeof McpHostResourceRequest.Encoded)["ctx"]> = {
+    origin: "owner",
+    callId: "resource-menu",
+    session: "s-1",
+    conversation: "1",
+    workspace,
+  };
+
+  if (start !== undefined) ctx.start = start;
+
+  return { op: "resources/list", server, params: {}, ctx };
+};
+
+/** The engine's answer to a page asked for a stdio server whose Container is stopped, when the request may not start it. */
+const stoppedPage: RequestScript = {
+  op: "resources/list_page",
+  result: {
+    kind: "failed",
+    error: { _tag: "Unreachable", message: "The Workspace's Container is stopped", stopped: true },
+    state: {},
+  },
+};
+
+describe("a resource request that must not start the Container", () => {
+  /** A host with `local` discovered as a server with resources. */
+  const withResources = async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("local")));
+    await host.scriptEngine(keyOf("local"), [
+      found(["search"], { capabilities: { tools: {}, resources: {} } }),
+    ]);
+    await start(host, WORKSPACE, { waitFor: ["local"], waitMs: 5000 });
+    await settled(host);
+
+    return host;
+  };
+
+  it("sends the engine a target that does not start it, and answers Unreachable with `stopped` while it is stopped", async () => {
+    const host = await withResources();
+
+    await host.scriptRequest(keyOf("local"), [stoppedPage]);
+
+    expect(await host.request(listing("local", WORKSPACE, false), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "Unreachable", stopped: true },
+    });
+
+    const [sent] = await host.engineRequests();
+
+    expect(sent?.target).toMatchObject({ kind: "stdio", workspace: WORKSPACE, start: false });
+  });
+
+  it("starts it for a request that does not say so, as the owner's read at send may", async () => {
+    const host = await withResources();
+
+    await host.scriptRequest(keyOf("local"), [
+      {
+        op: "resources/list_page",
+        // SAFETY: a completed page, encoded as the engine sends it.
+        result: {
+          kind: "complete",
+          result: { kind: "inline", value: { resources: [] } },
+          cacheable: false,
+          fetchedAt: Date.now(),
+          state: {},
+        } as typeof McpEngineRequestResult.Encoded,
+      },
+    ]);
+
+    expect(await host.request(listing("local"), {})).toMatchObject({ _tag: "Completed" });
+    expect((await host.engineRequests())[0]?.target).toMatchObject({ start: true });
   });
 });
 
