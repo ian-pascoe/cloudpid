@@ -77,7 +77,7 @@ const started = async (
 };
 
 const run = (tools: Awaited<ReturnType<typeof started>>["tools"], input: McpAppRequestInput) =>
-  Effect.runPromise(tools.appRequest(input));
+  Effect.runPromise(Effect.map(tools.appRequest(input), (reply) => reply.answer));
 
 const requests = (host: Awaited<ReturnType<typeof started>>["host"]) =>
   host.calls.flatMap((each) => (each.method === "request" ? [each.input] : []));

@@ -380,6 +380,14 @@ const toolCall = (
       mayKeepPages: ctx.answers?.pages === true,
     });
 
+    // A task that an App tool's call became completes into the App's record: pinned to the origin of its Views, as a
+    // completed call's is (the page's hash is read when the record is mounted).
+    if (Predicate.isTagged(answer, "Task")) {
+      const id = viewHashOf(environment, view.server);
+
+      return id === undefined ? answer : { ...answer, viewHash: id };
+    }
+
     // Only a completed call answers an App's hash.
     if (!Predicate.isTagged(answer, "Completed")) return answer;
 

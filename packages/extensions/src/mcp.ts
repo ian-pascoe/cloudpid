@@ -39,7 +39,6 @@ import type { McpCaller, McpRequestStart } from "@cloudpid/mcp/types";
 import {
   conversationOfText,
   type McpAppHtmlAnswer,
-  type McpAppRequestAnswer,
   type McpResourceMenu,
   type McpCompletion,
   type McpResourcePreviewAnswer,
@@ -82,7 +81,7 @@ import { signsIn } from "./mcp/sign-in-tool.ts";
 import { MCP_RESOURCE_FEATURE } from "./mcp/resources.ts";
 import { type PromptAsk, type PromptAsking, promptAsking } from "./mcp/prompt-asking.ts";
 import { appToolsOf } from "./mcp/app-tools.ts";
-import { appRequestOf, type McpAppRequestInput } from "./mcp/app-request.ts";
+import { appRequestOf, type McpAppReply, type McpAppRequestInput } from "./mcp/app-request.ts";
 import { sweepViewTasks, viewTaskStore } from "./mcp/task-view-store.ts";
 import { appHtmlOf, MCP_APP_FEATURE, type McpAppHtmlInput } from "./mcp/apps.ts";
 import {
@@ -121,7 +120,7 @@ export { appToolsOf } from "./mcp/app-tools.ts";
 
 export { MCP_APP_FEATURE, type McpAppHtmlInput, type McpAppRecorder } from "./mcp/apps.ts";
 
-export { type McpAppRequestInput } from "./mcp/app-request.ts";
+export { type McpAppReply, type McpAppRequestInput } from "./mcp/app-request.ts";
 
 export { type McpAppView } from "./mcp/app-asking.ts";
 
@@ -431,7 +430,7 @@ export type McpToolsService = {
    * inventory the tools were last built from (a server not switched off or `hidden`, a tool whose visibility includes
    * `app`), sent to the host as an `app` request, and answered as the View is. Never fails.
    */
-  readonly appRequest: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
+  readonly appRequest: (input: McpAppRequestInput) => Effect.Effect<McpAppReply>;
   /**
    * The owner's MCP resources in the composer (`docs/architecture/mcp-in-a-session.md` → Attached resources), checked
    * against the inventory the tools were last built from and sent to the host as `owner` requests. `menu` lists them for
@@ -668,6 +667,9 @@ export const makeMcpTools = (
     stillShown: (conversation) => check(conversation),
   });
 
+  // Tells one App View request's questions from another's.
+  let appAsks = 0;
+
   // What the sweep needs of the App Views' task requests in flight (`./mcp/task-view-store.ts`).
   const viewTasks = options.tasks === undefined ? undefined : viewTaskStore(options.tasks.storage);
 
@@ -678,6 +680,7 @@ export const makeMcpTools = (
       : {
           ...options.tasks,
           apps: options.apps,
+          views: viewTasks,
           write:
             options.tasks.write ??
             ((conversation, note) => notices?.write?.(conversation, note) ?? Promise.resolve()),
@@ -1039,8 +1042,13 @@ export const makeMcpTools = (
           // A `tools/call` may be answered with an MCP task only when the host knows them and the Session follows them.
           tasking:
             viewTasks !== undefined && latest?.features.includes(MCP_TASKS_FEATURE) === true
-              ? { store: viewTasks, timing: options.tasks?.timing }
+              ? {
+                  store: viewTasks,
+                  timing: options.tasks?.timing,
+                  others: () => notices?.taskServers?.() ?? Promise.resolve([]),
+                }
               : undefined,
+          askId: () => (appAsks += 1),
         },
         input,
       ),
@@ -1099,11 +1107,9 @@ export const makeMcpTools = (
                 sweepTasks({ harness, client, origin: latest?.origin ?? {}, now: () => at }),
               ),
               // The App Views' tasks whose requests went with an earlier instance are cancelled too.
-              Effect.tryPromise(() =>
-                viewTasks === undefined
-                  ? Promise.resolve(0)
-                  : sweepViewTasks(viewTasks, client, latest?.origin.session),
-              ),
+              viewTasks === undefined
+                ? Effect.succeed(0)
+                : sweepViewTasks(viewTasks, client, latest?.origin.session),
               (called, viewed) => called + viewed,
             ),
           ).pipe(

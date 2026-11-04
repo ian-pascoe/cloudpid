@@ -371,8 +371,11 @@ export type Exchange = {
    * a host that lists `tasks`, when the Session follows MCP tasks. Whether a given call is offered one is `followsTasks`.
    */
   readonly tasking?: McpTasking | undefined;
-  /** The tool is an App tool of a host that keeps App records: a task its call turns into is recorded when it completes. */
-  readonly app?: boolean | undefined;
+  /**
+   * The tool is an App tool of a host that keeps App records: a task its call turns into is recorded when it completes,
+   * pinned to the origin of the server's Views when the host lists `app_html` (`pinsView`), as a completed call's is.
+   */
+  readonly app?: { readonly pinsView: boolean } | undefined;
 };
 
 /** The Session's means of following MCP tasks, as a tool's exchange holds them. */
@@ -396,7 +399,9 @@ export const followsTasks = async (
 
   const state = await api.snapshot(McpTasksDoc, context).catch(() => undefined);
 
-  return state === undefined || !atCap(state, exchange.server.name);
+  return (
+    state === undefined || !atCap(state, exchange.server.name, exchange.tasking.tasks.views?.held())
+  );
 };
 
 /**
@@ -798,7 +803,7 @@ export const send = async <A>(
         };
 
         // An App tool's task completes into its App record, so the View of the original call gets the result in the background too.
-        if (exchange.app === true && next.op === "tools/call") {
+        if (exchange.app !== undefined && next.op === "tools/call") {
           const parentCall = await parentCallOf(api, context);
 
           // SAFETY: the arguments the call was sent with, an object.
@@ -807,6 +812,9 @@ export const send = async <A>(
           };
 
           if (parentCall !== undefined) app.parentCall = parentCall;
+
+          if (exchange.app.pinsView && result.viewHash !== undefined)
+            app.viewHash = result.viewHash;
 
           start.app = app;
         }

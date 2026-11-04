@@ -48,6 +48,8 @@ export type SamplingCall = {
   readonly conversationId: ConversationId;
   /** Aborts when Stop does: a sample under way is stopped, and a card waiting is withdrawn. */
   readonly signal: AbortSignal | undefined;
+  /** Asked at each request: aborts when a card waiting for it is to be withdrawn (`McpSamplingAsk.withdraw`). */
+  readonly withdraw?: (() => AbortSignal) | undefined;
   /** What the server's definition says: `allow` answers without asking, `ask` asks the owner on a card first. */
   readonly decision: McpSampledMode;
   /** The call keeps a Modern server's questions for later: its `ask` requests are kept with the round, not shown live. */
@@ -120,6 +122,7 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
         resumed: kept,
         prompt: call.prompt,
         app: call.app,
+        withdraw: call.withdraw?.(),
         source: call.source,
         hold: call.hold,
       }),
@@ -203,6 +206,10 @@ export const wordsOf = (detail: McpSamplingDetail): string => {
   return `${detail.status === "refused" ? "refused" : "failed"}: ${why}`;
 };
 
+/** What a request that was not answered came to, in the words a refusal that ends a call is told with. */
+export const refusedWords = (detail: McpSamplingDetail): string =>
+  `${detail.server} asked for a model reply, which was ${wordsOf(detail)}`;
+
 /** What the model is told of one request that was not answered, in words that carry nothing the server wrote. */
 const lineOf = (detail: McpSamplingDetail): string | undefined =>
   detail.status === "answered"
@@ -220,7 +227,7 @@ export const samplingRefusedResult = (
   base: McpDetails,
 ): ToolExecutionResult<JsonValue> =>
   failedWith(
-    `${detail.server} asked for a model reply, which was ${wordsOf(detail)}. On this server's protocol that ends the call, which may have done part of its work (sampling_refused).`,
+    `${refusedWords(detail)}. On this server's protocol that ends the call, which may have done part of its work (sampling_refused).`,
     { ...base, error: "sampling_refused" },
   );
 

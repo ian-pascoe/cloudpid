@@ -67,9 +67,19 @@ const completed = McpHostCompleted.make({
 });
 
 const setup = async (
-  options: { readonly tasking?: boolean; readonly promptWaitMs?: number } = {},
+  options: {
+    readonly tasking?: boolean;
+    readonly promptWaitMs?: number;
+    readonly allowing?: boolean;
+  } = {},
 ) => {
-  const server = { ...DOCS, tools: [{ name: "go", _meta: { ui: { visibility: ["app"] } } }] };
+  const viewTools = [{ name: "go", _meta: { ui: { visibility: ["app"] } } }];
+
+  const server =
+    options.allowing === true
+      ? { ...DOCS, entry: { sampling: "allow" }, tools: viewTools }
+      : { ...DOCS, tools: viewTools };
+
   const host = fakeMcpHost([server]);
   const storage = memory();
   const told: string[] = [];
@@ -141,7 +151,6 @@ const setup = async (
     conversation: "1",
     signal: stop.signal,
     view,
-    notes,
   });
 
   return {
@@ -156,7 +165,14 @@ const setup = async (
       page.abort();
       page = new AbortController();
     },
-    run: (input: McpAppRequestInput) => Effect.runPromise(tools.appRequest(input)),
+    /** The View's answer; what the questions came to is kept in `notes`. */
+    run: async (input: McpAppRequestInput) => {
+      const reply = await Effect.runPromise(tools.appRequest(input));
+
+      notes.push(...reply.notes);
+
+      return reply.answer;
+    },
   };
 };
 
@@ -180,12 +196,14 @@ describe("an App View's tools/call", () => {
         answers: {
           elicitation: true,
           sampling: true,
-          livePages: true,
           inputWaitMs: expect.any(Number),
         },
       },
     });
     expect(sent(host)[0]?.ctx.answers?.defer).toBeUndefined();
+    // A live caller declares no `url` mode: only a prompt send's get waits at a page.
+    expect(sent(host)[0]?.ctx.answers?.livePages).toBeUndefined();
+    expect(sent(host)[0]?.ctx.answers?.pages).toBeUndefined();
     expect(sent(host)[0]?.ctx.allowTask).toBeUndefined();
     expect(sent(host)[0]?.ctx.answers?.inputWaitMs).toBeGreaterThan(MCP_PROMPT_QUESTION_WAIT_MS);
   });
@@ -228,7 +246,7 @@ describe("an App View's tools/call", () => {
 
     const [card] = await pending(questions);
 
-    expect(card).toMatchObject({ app: true, server: DOCS.name, tool: "mcp__Docs-Site__go" });
+    expect(card).toMatchObject({ app: true, server: DOCS.name, tool: "mcp__docs_site__go" });
     expect(card?.prompt).toBeUndefined();
     expect(card?.waits).toBeUndefined();
 
@@ -306,6 +324,22 @@ describe("an App View's tools/call", () => {
     await calling;
   });
 
+  it("lets a Sampling request that needs no card run when the page is hidden", async () => {
+    const { host, run, call, hide } = await setup({ allowing: true });
+    let given: unknown;
+
+    host.answer(async (_input, hooks) => {
+      hide();
+      given = await hooks.onInput?.(sampleAsk);
+
+      return completed;
+    });
+
+    await run(call());
+
+    expect(given).toMatchObject({ kind: "sampled" });
+  });
+
   it("withdraws every card when the View is torn down, and answers cancelled", async () => {
     const { host, run, call, questions, stop } = await setup();
 
@@ -357,7 +391,7 @@ describe("the View tasks' store", () => {
       conversation: "1",
     };
 
-    store.begin(entry);
+    store.offer("docs", [])?.begin(entry);
 
     expect(store.orphans()).toEqual([]);
     expect(viewTaskStore(storage).orphans()).toEqual([entry]);
@@ -366,22 +400,43 @@ describe("the View tasks' store", () => {
     expect(viewTaskStore(storage).orphans()).toEqual([]);
   });
 
-  it("stops offering a task at the Session's or the server's cap", () => {
+  it("stops offering a task at the Session's or the server's cap, counting the agent's tasks and the places held", () => {
+    const store = viewTaskStore(memory());
+    const places = [];
+
+    // Eight places held before any call has answered: the ninth is refused, so two calls never take the last one.
+    for (let each = 0; each < 8; each += 1) places.push(store.offer("docs", []));
+
+    expect(places.every((place) => place !== undefined)).toBe(true);
+    expect(store.offer("docs", [])).toBeUndefined();
+    expect(store.offer("other", [])).toBeDefined();
+    expect(store.held()).toHaveLength(9);
+
+    // A place given back (no task came) is free again.
+    places[0]?.release();
+    expect(store.offer("docs", [])).toBeDefined();
+  });
+
+  it("counts the agent's live tasks in the same caps", () => {
     const store = viewTaskStore(memory());
 
-    for (let each = 0; each < 8; each += 1) {
-      store.begin({
-        id: `${each}`,
-        server: "docs",
-        tool: "t",
-        taskId: "x",
-        conn: "c",
-        callId: "1",
-        conversation: "1",
-      });
-    }
-
-    expect(store.offers("docs")).toBe(false);
-    expect(store.offers("other")).toBe(true);
+    expect(
+      store.offer(
+        "docs",
+        Array.from({ length: 8 }, () => "docs"),
+      ),
+    ).toBeUndefined();
+    expect(
+      store.offer(
+        "other",
+        Array.from({ length: 8 }, () => "docs"),
+      ),
+    ).toBeDefined();
+    expect(
+      store.offer(
+        "other",
+        Array.from({ length: 16 }, () => "x"),
+      ),
+    ).toBeUndefined();
   });
 });

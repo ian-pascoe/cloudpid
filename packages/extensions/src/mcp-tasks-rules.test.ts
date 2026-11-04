@@ -482,6 +482,22 @@ describe("the record of a Session's tasks", () => {
 
     expect(atCap(doc, "third")).toBe(true);
   });
+
+  it("counts the App Views' tasks in the same caps", () => {
+    const doc = state();
+
+    for (let n = 0; n < 4; n += 1) recordIn(doc);
+
+    expect(atCap(doc, "docs", ["docs", "docs", "docs"])).toBe(false);
+    expect(atCap(doc, "docs", ["docs", "docs", "docs", "docs"])).toBe(true);
+    expect(
+      atCap(
+        doc,
+        "other",
+        Array.from({ length: 12 }, () => "x"),
+      ),
+    ).toBe(true);
+  });
 });
 
 const memoryStore = () => {

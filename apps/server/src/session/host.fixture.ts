@@ -832,7 +832,10 @@ export class TestSession extends DurableObject {
           : this.#mcpTools.appHtml(input),
       request: (input) =>
         this.#mcpTools === undefined
-          ? Effect.succeed(mcpAppError("failed", "No MCP tools", MCP_APP_INTERNAL_ERROR))
+          ? Effect.succeed({
+              answer: mcpAppError("failed", "No MCP tools", MCP_APP_INTERNAL_ERROR),
+              notes: [],
+            })
           : this.#mcpTools.appRequest(input),
       archived: Effect.sync(() => this.ctx.storage.kv.get<boolean>("archived") === true),
       // As the Session's: a deployed `prod` stage's, with no label.

@@ -8,9 +8,12 @@
 //   waiting area (never inside the View) for at most `MCP_PROMPT_QUESTION_WAIT_MS`, tells the owner nothing (they are at the
 //   View), and the call's clock stands still meanwhile (`hold`).
 // - **Teardown withdraws every card:** `signal` aborts when the View is torn down, cancels the request or its socket goes.
-// - **The page hidden withdraws a Sampling card only:** a hidden tab cannot show the owner what asked for a model, so the
-//   request is refused as stopped (`view.hidden`); a form stays, since the owner may answer it from any tab, and a page
-//   it asks for is another tab's business.
+// - **The page hidden withdraws a Sampling card that is waiting, and only that:** a hidden tab cannot show the owner what
+//   asked for a model, so the request is refused (`view.hidden`, `SamplingCall.withdraw`); a sample the owner has approved
+//   runs on, a request that needs no card (`allow`) is not refused, and a form stays, since the owner may answer it from
+//   any tab.
+// - **No pages:** a live caller declares no `url` but a prompt send's get does (`liveAnswers`); a View's call is asked forms
+//   and Sampling only.
 // - **One waiting elicitation per View:** another one the View's calls ask meanwhile is answered `cancel` and noted in the
 //   View's audit log (`view.takeSlot`).
 import { declaresSampling, samplingOf } from "@cloudpid/config";
@@ -21,9 +24,9 @@ import * as Effect from "effect/Effect";
 import type { Mutable } from "effect/Types";
 import type { McpElicitationDetail, McpSamplingDetail } from "./details.ts";
 import { type ClockHold, elicitingHooks, notAcceptedWords } from "./elicit.ts";
-import { liveAnswers, LIVE_PAGES } from "./prompt-asking.ts";
+import { liveAnswers } from "./prompt-asking.ts";
 import type { McpQuestionsService } from "./questions.ts";
-import { samplingHooks, wordsOf } from "./sample.ts";
+import { refusedWords, samplingHooks } from "./sample.ts";
 import type { McpSamplingService } from "./sampling.ts";
 import type { McpBuildServer } from "./tools.ts";
 
@@ -45,7 +48,10 @@ export type McpAppView = {
 export type AppAsk = {
   /** The configured name of the server the call is to. */
   readonly server: string;
-  /** The model-facing name of the tool the View calls: what a client from before the app origin reads. */
+  /**
+   * The model-facing name of the tool the View calls, the inventory's own (`mcp__<server>__<tool>`): what the question's
+   * `tool` says, which a client from before the app origin reads.
+   */
   readonly tool: string;
   /** The call's own ID, unique within the Session: what its questions are kept under and withdrawn by. */
   readonly callId: string;
@@ -83,9 +89,7 @@ const elicitationNote = (detail: McpElicitationDetail): string =>
 
 /** The line the audit log keeps of a Sampling request. */
 const samplingNote = (detail: McpSamplingDetail): string =>
-  detail.status === "answered"
-    ? "model reply given"
-    : `${detail.server} asked for a model reply, which was ${wordsOf(detail)}`;
+  detail.status === "answered" ? "model reply given" : refusedWords(detail);
 
 /** Why an elicitation was turned away: the View has one waiting. */
 const SLOT_TAKEN = "cloudpid cancelled a request for input: the App already has one waiting";
@@ -119,7 +123,6 @@ export const appAsking = (
     signal: ask.signal,
     source: server.source,
     hold,
-    livePages: LIVE_PAGES,
   });
 
   // A server whose definition says `off` (or a stdio one) is declared no sampling, so none is asked.
@@ -136,6 +139,7 @@ export const appAsking = (
           decision: samplingOf(server.server) === "allow" ? "allow" : "ask",
           source: server.source,
           hold,
+          withdraw: () => ask.view.hidden(),
         })
       : undefined;
 
@@ -164,15 +168,7 @@ export const appAsking = (
       await Effect.runPromise(hold.pause);
 
       try {
-        const hidden = ask.view.hidden();
-        const running = sampler.onInput(input);
-        const stop = () => sampler.onInputEnded(input.key);
-
-        // A page hidden withdraws the card (and stops the sample): the request is refused, as a Stop refuses it.
-        if (hidden.aborted) stop();
-        else hidden.addEventListener("abort", stop, { once: true });
-
-        return await running.finally(() => hidden.removeEventListener("abort", stop));
+        return await sampler.onInput(input);
       } finally {
         await Effect.runPromise(hold.resume);
       }
@@ -185,7 +181,7 @@ export const appAsking = (
   };
 
   return {
-    answers: liveAnswers(sampler !== undefined),
+    answers: liveAnswers(sampler !== undefined, false),
     hooks,
     settle: async () => {
       await Effect.runPromise(questions.settleCall(ask.callId));
@@ -194,9 +190,7 @@ export const appAsking = (
     sunk: () => {
       const detail = sampler?.sunk();
 
-      return detail === undefined
-        ? undefined
-        : `${detail.server} asked for a model reply, which was ${wordsOf(detail)}`;
+      return detail === undefined ? undefined : refusedWords(detail);
     },
     notes: () => [
       ...turnedAway,

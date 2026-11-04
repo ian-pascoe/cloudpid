@@ -25,7 +25,7 @@
 // when the host answers, when its View cancels it (`cancel`), or when its socket goes (`endViews`); a cancel aborts the
 // host's request. One span for each request, which names its server, method and outcome but never its arguments.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- the registry of what is in flight is plain mutable state, which the limits are counted in.
-import type { McpAppRequestInput, McpAppView } from "@cloudpid/extensions/mcp";
+import type { McpAppReply, McpAppRequestInput, McpAppView } from "@cloudpid/extensions/mcp";
 import { isWarningOrAbove, MCP_LOG_LEVELS, type JsonObject } from "@cloudpid/mcp/types";
 import {
   appAuditSummary,
@@ -63,8 +63,8 @@ export type AppCallRecord = {
 export type AppViewRequest = {
   /** The socket, which identifies the View's page: limits count and requests end with it. */
   readonly view: WebSocket;
-  /** Whether the socket has said its page is visible. */
-  readonly visible: boolean;
+  /** Whether the socket has said its page is visible now: read again for each question the server asks. */
+  readonly visible: () => boolean;
   readonly callId: string;
   readonly requestId: string;
   readonly method: string;
@@ -89,7 +89,7 @@ export type AppCallsOptions = {
   /** The kept record of call `callId`; none for a call that has none (evicted, or not an App's). */
   readonly record: (callId: string) => Option.Option<AppCallRecord>;
   /** The request, once the Session's own checks pass: the MCP tools' `appRequest`. */
-  readonly request: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
+  readonly request: (input: McpAppRequestInput) => Effect.Effect<McpAppReply>;
   /** Add `entry` to call `callId`'s audit log. Never fails. */
   readonly audit: (callId: string, entry: McpAppAuditEntry) => Effect.Effect<void>;
   /** The Secrets held, to redact what is returned and logged of them. */
@@ -180,30 +180,27 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
   // A View is a socket's mount of one call: its counts and what it has in flight are the registry's, under the call's id.
   const views = socketRequests(options.now);
 
-  /** What each socket's page says of its visibility, and the signal a hide aborts. */
-  const pages = new WeakMap<WebSocket, { visible: boolean; hide: AbortController }>();
+  /** The signal each socket's next hide aborts (its visibility itself is the socket's attachment). */
+  const hides = new WeakMap<WebSocket, AbortController>();
 
-  const pageOf = (socket: WebSocket) => {
-    let page = pages.get(socket);
+  const hideOf = (socket: WebSocket) => {
+    let hide = hides.get(socket);
 
-    if (page === undefined) {
-      page = { visible: false, hide: new AbortController() };
-      pages.set(socket, page);
+    if (hide === undefined) {
+      hide = new AbortController();
+      hides.set(socket, hide);
     }
 
-    return page;
+    return hide;
   };
 
   /** The elicitation each View has waiting: one at a time. */
   const slots = new WeakMap<WebSocket, Set<string>>();
 
   /** What the extension asks of the View of `socket`'s mount of call `callId`. */
-  const viewOf = (socket: WebSocket, callId: string): McpAppView => ({
-    hidden: () => {
-      const page = pageOf(socket);
-
-      return page.visible ? page.hide.signal : AbortSignal.abort();
-    },
+  const viewOf = (socket: WebSocket, callId: string, visible: () => boolean): McpAppView => ({
+    // Already aborted when the page is hidden now; else the signal its next hide aborts.
+    hidden: () => (visible() ? hideOf(socket).signal : AbortSignal.abort()),
     takeSlot: () => {
       let taken = slots.get(socket);
 
@@ -286,34 +283,28 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
         );
       }
 
-      const notes: Array<string> = [];
-
-      const answer = yield* options.request({
+      const reply = yield* options.request({
         ...what,
         server,
         callId: input.callId,
         conversation,
         viewHash,
         signal: stop.signal,
-        view: viewOf(input.view, input.callId),
-        notes,
+        view: viewOf(input.view, input.callId, input.visible),
         workspaceOf: Effect.suspend(() => input.workspaceOf(conversation)),
       });
 
-      return withNotes(ended(answer), notes);
+      return withNotes(ended(reply.answer), reply.notes);
     });
 
   const request: AppCalls["request"] = (input) =>
     Effect.gen(function* () {
-      if (!input.visible) {
+      if (!input.visible()) {
         return mcpAppError(
           "hidden",
           "The page is hidden: its App Views make no requests until it is visible",
         );
       }
-
-      // A page that says it is visible is, until it says otherwise: a Sampling card asked now is not withdrawn at once.
-      pageOf(input.view).visible = true;
 
       const view = views.of(input.view, input.callId);
 
@@ -434,15 +425,11 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
 
   const visibility: AppCalls["visibility"] = (view, visible) =>
     Effect.sync(() => {
-      const page = pageOf(view);
+      if (visible) return;
 
-      page.visible = visible;
-
-      // Aborted for the requests that asked of it, and made anew for the ones that come when it is shown again.
-      if (!visible) {
-        page.hide.abort();
-        page.hide = new AbortController();
-      }
+      // Aborted for the questions that asked of it, and made anew for the ones that come when it is shown again.
+      hideOf(view).abort();
+      hides.set(view, new AbortController());
     });
 
   return { request, cancel, log, endViews, visibility };

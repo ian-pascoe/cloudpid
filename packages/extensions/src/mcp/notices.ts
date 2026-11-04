@@ -31,6 +31,7 @@ import {
   type McpListing,
   mcpServersNotice,
 } from "./servers.ts";
+import { liveTasks, McpTasksDoc } from "./task-state.ts";
 import { MCP_WATCHES_KIND, MCP_WATCHES_NOTICE } from "./watches.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -64,6 +65,11 @@ export type McpNotices = {
   }) => Promise<ReadonlyArray<McpCheckResult>>;
   /** Every conversation of the Session. */
   readonly conversations: () => Promise<ReadonlyArray<ConversationId>>;
+  /**
+   * The server of each MCP task the agent has live: what an App View's task counts beside, so the caps are one set
+   * (`./task-state.ts` `atCap`). Absent: none is counted.
+   */
+  readonly taskServers?: () => Promise<ReadonlyArray<string>>;
   /**
    * Write `entry` to `conversation` as a `write` submission, placed at its next boundary and never starting a Run, once
    * for its `requestId`: how a task follower leaves a note for an end the owner caused (`./task-follow.ts`).
@@ -297,6 +303,11 @@ export const mcpNotices = (harness: Harness): McpNotices => {
         },
         context,
       );
+    },
+    taskServers: async () => {
+      const state = await harness.snapshot(McpTasksDoc, context).catch(() => undefined);
+
+      return state === undefined ? [] : Arr.map(liveTasks(state), (task) => task.server);
     },
     conversations: () =>
       harness.commit(async (tx) => {

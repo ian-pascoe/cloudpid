@@ -11,6 +11,7 @@
 // - **Never reaches the model:** the result goes back to the View as the server sent it (the store redacts the Secrets
 //   held); nothing is written into any conversation.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off newPromise:off -- builders over plain values; the host's abort hook is Promise-based.
+import { mcpToolName, mcpToolNames } from "@cloudpid/config";
 import {
   isJsonObject,
   type JsonObject,
@@ -46,7 +47,7 @@ import { isReachable } from "./exposure.ts";
 import type { McpQuestionsService } from "./questions.ts";
 import type { McpSamplingService } from "./sampling.ts";
 import { MCP_APP_TASK_WINDOW_MS, followViewTask, type ViewTaskEnd } from "./task-view.ts";
-import type { ViewTaskStore } from "./task-view-store.ts";
+import type { ViewTaskPlace, ViewTaskStore } from "./task-view-store.ts";
 import type { McpTasksTiming } from "./task-port.ts";
 import { listedTools, type McpBuildServer } from "./tools.ts";
 
@@ -66,8 +67,6 @@ export type McpAppRequestInput = {
   readonly signal: AbortSignal;
   /** What the Session knows of the View: its page's visibility and its one elicitation slot. Absent: no question is asked. */
   readonly view?: McpAppView | undefined;
-  /** Where a line of what the call's questions came to is added, for the View's audit log. */
-  readonly notes?: Array<string> | undefined;
 } & (
   | { readonly method: "tools/call"; readonly name: string; readonly arguments?: JsonObject }
   | { readonly method: "resources/read"; readonly uri: string }
@@ -90,12 +89,22 @@ export type McpAppRequestDeps = {
   readonly hostSamples?: boolean | undefined;
   /** What a `tools/call` is offered an MCP task with: present when the host lists `tasks` and the Session follows them. */
   readonly tasking?:
-    | { readonly store: ViewTaskStore; readonly timing?: McpTasksTiming | undefined }
+    | {
+        readonly store: ViewTaskStore;
+        readonly timing?: McpTasksTiming | undefined;
+        /** The servers of the agent's live tasks, which a View's task counts beside (`atCap`). */
+        readonly others?: (() => Promise<ReadonlyArray<string>>) | undefined;
+      }
     | undefined;
+  /** A number that tells one View request's questions from another's: never given twice by one Session's tools. */
+  readonly askId: () => number;
 };
 
-/** A counter that tells one View request's questions from another's, within an instance. */
-let asks = 0;
+/** What a View's request came to: its answer, and a line for each question it was asked, for the View's audit log. */
+export type McpAppReply = {
+  readonly answer: McpAppRequestAnswer;
+  readonly notes: ReadonlyArray<string>;
+};
 
 /** A promise that resolves when `signal` aborts, and never otherwise. */
 const abortedBy = (signal: AbortSignal) =>
@@ -142,6 +151,13 @@ const refusalOf = (
       );
 };
 
+/** The model-facing name of `tool` of `server`, as the inventory names it (`mcp__<server>__<tool>`, snake_case, collisions hashed). */
+const modelNameOf = (server: McpBuildServer, tool: string): string =>
+  mcpToolNames(
+    server.name,
+    Arr.map(listedTools(server), (each) => each.name),
+  ).get(tool) ?? mcpToolName(server.name, tool);
+
 /** What the host answers a request with. */
 type HostAnswer = McpHostRequestResult | HostLost;
 
@@ -151,10 +167,18 @@ type Sent =
   | { readonly kind: "task"; readonly started: McpHostTaskStarted };
 
 /** The View's answer for how its MCP task `end`ed. */
-const taskAnswerOf = (end: ViewTaskEnd, server: string): Effect.Effect<McpAppRequestAnswer> => {
+const taskAnswerOf = (
+  end: ViewTaskEnd,
+  server: string,
+  sunk: string | undefined,
+): Effect.Effect<McpAppRequestAnswer> => {
   switch (end.kind) {
     case "completed":
       return valueAnswer(end.result);
+    case "refused":
+      return Effect.succeed(
+        mcpAppError("refused", `${sunk ?? end.message}. ${server}'s MCP task was cancelled`),
+      );
     case "stopped":
       return Effect.succeed(mcpAppError("cancelled", "The request was cancelled"));
     case "bound":
@@ -299,14 +323,15 @@ const sunkAnswer = (words: string) =>
 export const appRequestOf = (
   deps: McpAppRequestDeps,
   input: McpAppRequestInput,
-): Effect.Effect<McpAppRequestAnswer> => {
+): Effect.Effect<McpAppReply> => {
   const server = Arr.findFirst(deps.servers, (each) => each.name === input.server);
   const refused = refusalOf(server, input);
 
   if (Option.isSome(refused) || Option.isNone(server)) {
-    return Effect.succeed(
-      Option.getOrElse(refused, () => mcpAppError("unavailable", "No such server")),
-    );
+    return Effect.succeed({
+      answer: Option.getOrElse(refused, () => mcpAppError("unavailable", "No such server")),
+      notes: [],
+    });
   }
 
   const cancelled = mcpAppError("cancelled", "The request was cancelled");
@@ -322,6 +347,9 @@ export const appRequestOf = (
     resume: Effect.suspend(() => clock?.resume ?? Effect.void),
   };
 
+  // The bound of a View's task passing withdraws the cards its questions wait on, as the View going does.
+  const expiry = new AbortController();
+
   const asking: AppAsking | undefined =
     isCall && input.view !== undefined && conversation !== undefined
       ? appAsking(
@@ -333,18 +361,26 @@ export const appRequestOf = (
           server.value,
           {
             server: input.server,
-            tool: `mcp__${input.server}__${input.method === "tools/call" ? input.name : ""}`,
-            callId: `app-${(asks += 1)}-${input.callId}`,
+            tool: modelNameOf(server.value, input.name),
+            callId: `app-${deps.askId()}-${input.callId}`,
             conversationId: conversation,
-            signal: input.signal,
+            signal: AbortSignal.any([input.signal, expiry.signal]),
             hold,
             view: input.view,
           },
         )
       : undefined;
 
+  // The place among the caps held for an MCP task, from the offer until the request is over.
+  let place: ViewTaskPlace | undefined;
+
+  const reply = (answer: McpAppRequestAnswer): McpAppReply => ({
+    answer,
+    notes: asking?.notes() ?? [],
+  });
+
   return Effect.gen(function* () {
-    if (input.signal.aborted) return cancelled;
+    if (input.signal.aborted) return reply(cancelled);
 
     // A stdio server runs in the Container of the call's conversation's Workspace, marked used before it may be started.
     let workspace = deps.origin.workspace;
@@ -361,9 +397,11 @@ export const appRequestOf = (
         (yield* Effect.promise(() => deps.ready?.(named) ?? Promise.resolve(true)));
 
       if (!ready) {
-        return mcpAppError(
-          "unavailable",
-          "The Workspace this server runs in did not answer; the request was not sent",
+        return reply(
+          mcpAppError(
+            "unavailable",
+            "The Workspace this server runs in did not answer; the request was not sent",
+          ),
         );
       }
     }
@@ -377,10 +415,14 @@ export const appRequestOf = (
 
     clock = lost;
 
-    const tasking =
-      isCall && deps.tasking !== undefined && deps.tasking.store.offers(input.server)
-        ? deps.tasking
-        : undefined;
+    const { tasking } = deps;
+
+    if (isCall && tasking !== undefined) {
+      // One set of caps with the agent's tasks: the place is taken before the call goes out, and given back at the end.
+      const others = yield* Effect.promise(() => tasking.others?.() ?? Promise.resolve([]));
+
+      place = tasking.store.offer(input.server, others);
+    }
 
     const hooks: Mutable<McpHostRequestHooks> = {
       // The View cancels, its page goes, or the Session gives up on the host: the host cancels the request.
@@ -391,7 +433,7 @@ export const appRequestOf = (
 
     const sending = requestOf(deps, input, workspace, {
       answers: asking?.answers,
-      allowTask: tasking !== undefined,
+      allowTask: place !== undefined,
     });
 
     const asked: Effect.Effect<Sent> = deps.client.request(sending, hooks).pipe(
@@ -428,7 +470,12 @@ export const appRequestOf = (
 
     let answer: McpAppRequestAnswer;
 
-    if (sent.kind === "task" && tasking !== undefined && conversation !== undefined) {
+    if (
+      sent.kind === "task" &&
+      place !== undefined &&
+      tasking !== undefined &&
+      conversation !== undefined
+    ) {
       // The ctx of the task's own requests: the View's, with no questions, no offer and no pin of its own.
       const ctx: Mutable<McpHostRequestContext> = { ...sending.ctx };
 
@@ -447,24 +494,26 @@ export const appRequestOf = (
         workspace: ctx.workspace,
       };
 
-      tasking.store.begin(entry);
+      place.begin(entry);
 
-      const end = yield* Effect.promise(() =>
-        followViewTask({
-          client: deps.client,
-          started: sent.started,
-          server: input.server,
-          tool: entry.tool,
-          modelTool: `mcp__${input.server}__${entry.tool}`,
-          ctx,
-          conversation,
-          transport: server.value.server.type === "stdio" ? "stdio" : "http",
-          signal: input.signal,
-          timing: tasking.timing,
-        }),
-      ).pipe(Effect.ensuring(Effect.sync(() => tasking.store.end(entry.id))));
+      const end = yield* followViewTask({
+        client: deps.client,
+        started: sent.started,
+        server: input.server,
+        tool: entry.tool,
+        modelTool: modelNameOf(server.value, entry.tool),
+        ctx,
+        conversation,
+        transport: server.value.server.type === "stdio" ? "stdio" : "http",
+        signal: input.signal,
+        timing: tasking.timing,
+        questions:
+          asking === undefined
+            ? undefined
+            : { answers: asking.answers, hooks: asking.hooks, expire: () => expiry.abort() },
+      });
 
-      answer = yield* taskAnswerOf(end, input.server);
+      answer = yield* taskAnswerOf(end, input.server, asking?.sunk());
     } else if (sent.kind === "task") {
       // A task nobody can follow (no conversation to follow it for): never offered, so never started.
       answer = mcpAppError(
@@ -480,12 +529,19 @@ export const appRequestOf = (
       const words = asking.sunk();
 
       // A Modern server's Sampling request that was refused ended the call in the core, the server told nothing.
-      if (words !== undefined && answer.status === "error") answer = sunkAnswer(words);
-
-      input.notes?.push(...asking.notes());
+      if (words !== undefined && answer.status === "error" && sent.kind !== "task") {
+        answer = sunkAnswer(words);
+      }
     }
 
     // A request cancelled while the host answered it is cancelled all the same: the View has stopped waiting.
-    return input.signal.aborted ? cancelled : answer;
-  }).pipe(Effect.ensuring(Effect.promise(() => asking?.settle() ?? Promise.resolve())));
+    return reply(input.signal.aborted ? cancelled : answer);
+  }).pipe(
+    Effect.ensuring(
+      Effect.promise(async () => {
+        place?.release();
+        await asking?.settle();
+      }),
+    ),
+  );
 };

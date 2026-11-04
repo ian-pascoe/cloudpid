@@ -286,6 +286,16 @@ describe("an MCP task the agent's call started", () => {
     await idle(stub);
 
     await settles(async () => expect(await appCalls()).toHaveLength(2));
+
+    // Pinned to the origin of the server's Views, as a completed call's record is, so a server shadowed since is not mounted.
+    for (const entry of await appCalls()) {
+      const mounted = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.appMount(entry.callId),
+      );
+
+      expect(mounted).toMatchObject({ status: "record", record: { viewHash: expect.any(String) } });
+    }
+
     expect(await appCalls()).toEqual([
       expect.objectContaining({ server: "docs", tool: "report", state: "kept" }),
       expect.objectContaining({ server: "docs", tool: "report", state: "kept" }),

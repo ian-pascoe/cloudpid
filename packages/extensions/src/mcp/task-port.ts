@@ -54,6 +54,11 @@ export type McpTasksOptions = {
    * original call gets the result whenever it arrives. Absent: none is kept.
    */
   readonly apps?: McpAppRecorder | undefined;
+  /**
+   * The servers of the App Views' tasks held now, which count toward the caps beside the agent's (`atCap`): present when
+   * the Session follows Views' tasks (`./task-view-store.ts`).
+   */
+  readonly views?: { readonly held: () => ReadonlyArray<string> } | undefined;
 };
 
 /**

@@ -1284,7 +1284,8 @@ export const TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
  * The tool the task server answers with a task. Its arguments pick what the task does: `region` goes in an
  * `Mcp-Param-Region` header; `polls` is how many `tasks/get` it takes to complete (default 1); `bytes` makes the
  * result that much text; `inline` answers at once as a synchronous call does, even to a client that declared the
- * extension; `ask` makes the task wait for an answer (`tasks/update`) before it completes; `fail` ends it `failed`.
+ * extension; `ask` makes the task wait for an answer to a form (`tasks/update`) before it completes, `sample` for the answer to
+ * a Sampling request; `fail` ends it `failed`.
  */
 export const REPORT_TOOL = {
   name: "report",
@@ -1297,6 +1298,7 @@ export const REPORT_TOOL = {
       bytes: { type: "number" },
       inline: { type: "boolean" },
       ask: { type: "boolean" },
+      sample: { type: "boolean" },
       fail: { type: "boolean" },
     },
   },
@@ -1310,6 +1312,8 @@ export interface FakeTask {
   readonly text: string;
   /** The answers `tasks/update` brought, by key. */
   answers: { readonly [key: string]: Json } | undefined;
+  /** The question it waits on is a Sampling request, not a form. */
+  readonly sample: boolean;
   readonly fail: boolean;
 }
 
@@ -1350,6 +1354,7 @@ const ReportCall = Schema.Struct({
       bytes: Schema.optionalKey(Schema.Int),
       inline: Schema.optionalKey(Schema.Boolean),
       ask: Schema.optionalKey(Schema.Boolean),
+      sample: Schema.optionalKey(Schema.Boolean),
       fail: Schema.optionalKey(Schema.Boolean),
     }),
   ),
@@ -1431,15 +1436,25 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
       case "input_required":
         return {
           ...view(task),
-          inputRequests: {
-            which: {
-              method: "elicitation/create",
-              params: {
-                message: "Which region?",
-                requestedSchema: { type: "object", properties: {} },
+          inputRequests: task.sample
+            ? {
+                summary: {
+                  method: "sampling/createMessage",
+                  params: {
+                    messages: [{ role: "user", content: { type: "text", text: "Summarize" } }],
+                    maxTokens: 100,
+                  },
+                },
+              }
+            : {
+                which: {
+                  method: "elicitation/create",
+                  params: {
+                    message: "Which region?",
+                    requestedSchema: { type: "object", properties: {} },
+                  },
+                },
               },
-            },
-          },
         };
       case "completed":
         return {
@@ -1503,10 +1518,11 @@ export const modernTaskServer = (options: TaskServerOptions = {}): TaskServer =>
 
     const task: FakeTask = {
       id: `task-${next}`,
-      status: given.ask === true ? "input_required" : "working",
+      status: given.ask === true || given.sample === true ? "input_required" : "working",
       pollsLeft: given.polls ?? 1,
       text,
       answers: undefined,
+      sample: given.sample === true,
       fail: given.fail === true,
     };
 

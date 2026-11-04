@@ -48,10 +48,14 @@ import type * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import type { McpSamplingDetail, McpSamplingWhy } from "./details.ts";
-import type { McpQuestionStorage, McpSamplingDecision } from "./question-records.ts";
+import {
+  askOriginOf,
+  type McpQuestionStorage,
+  type McpSamplingDecision,
+} from "./question-records.ts";
 import type { McpQuestionsService } from "./questions.ts";
 import { cardMessages, recordView } from "./sampling-card.ts";
-import { type McpSamplingCard, stoppedBy } from "./sampling-questions.ts";
+import { MCP_APP_HIDDEN_REASON, type McpSamplingCard, stoppedBy } from "./sampling-questions.ts";
 import {
   cutText,
   type McpSamplingRecord,
@@ -128,6 +132,11 @@ export type McpSamplingAsk = {
   readonly params: JsonObject;
   /** Aborts when Stop does. */
   readonly signal?: AbortSignal | undefined;
+  /**
+   * Aborts when only a card still waiting for the owner is to be withdrawn, an App View's page hidden: the request is
+   * refused as stopped. One that needs no card (`allow`), or whose owner has decided, is unaffected.
+   */
+  readonly withdraw?: AbortSignal | undefined;
   /** What the server's definition says: `allow` answers without asking, `ask` asks the owner on a card first. */
   readonly decision: McpSampledMode;
   /**
@@ -301,7 +310,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
               id,
               server: ask.server,
               tool: ask.tool,
-              origin: ask.app === true ? "app" : ask.prompt === undefined ? "agent" : "prompt",
+              origin: askOriginOf(ask),
               conversationId: ask.conversationId,
               callId: ask.callId,
               sequence,
@@ -696,6 +705,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
               .askSampling({ id, key: ask.key, card })
               .pipe(
                 Effect.raceFirst(stoppedBy(ask.signal)),
+                Effect.raceFirst(stoppedBy(ask.withdraw, MCP_APP_HIDDEN_REASON)),
                 Effect.ensuring(ask.hold?.resume ?? Effect.void),
               );
           }

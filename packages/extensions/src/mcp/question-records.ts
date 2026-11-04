@@ -342,6 +342,16 @@ export type McpWaitingKind = {
   readonly quiet?: true;
 };
 
+/** Whose question it is: an agent's call's, a prompt send's (`prompt` is its title) or an App View's call's (`app`). */
+export const askOriginOf = (origin: {
+  readonly prompt?: string | undefined;
+  readonly app?: true | undefined;
+}): "agent" | "prompt" | "app" => {
+  if (origin.app === true) return "app";
+
+  return origin.prompt === undefined ? "agent" : "prompt";
+};
+
 /**
  * How a question waits, by whether it is live: a prompt send's (`prompt` is its title) or an App View's call's (`app`). An
  * agent's call's question waits `waitMs` and tells the owner; a live one waits `promptWaitMs`
@@ -358,7 +368,7 @@ export const waitsOf = (waits: {
     readonly prompt?: string | undefined;
     readonly app?: true | undefined;
   }): { readonly waitMs: number; readonly quiet: boolean } =>
-    origin.prompt === undefined && origin.app !== true
+    askOriginOf(origin) === "agent"
       ? { waitMs: waits.waitMs, quiet: false }
       : { waitMs: promptWaitMs, quiet: true };
 };

@@ -175,7 +175,7 @@ export const appRecorderOf = (
         tool: record.tool,
         arguments: app.arguments,
         htmlHash: undefined,
-        viewHash: undefined,
+        viewHash: app.viewHash,
       },
       value,
     );

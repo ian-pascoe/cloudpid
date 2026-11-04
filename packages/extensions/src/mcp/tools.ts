@@ -207,7 +207,7 @@ const toolFor = (
     pages: keeps.pages,
     samples,
     tasking,
-    app,
+    app: app ? { pinsView: appHtml } : undefined,
   };
 
   return {

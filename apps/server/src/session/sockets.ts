@@ -1158,7 +1158,7 @@ export const sessionSocketsLayer = (
           case "mcp_app_request":
             return mcpApps.request({
               view: socket,
-              visible: readAttachment(socket).visible === true,
+              visible: () => readAttachment(socket).visible === true,
               callId: message.callId,
               requestId: message.requestId,
               method: message.method,

@@ -3,8 +3,9 @@
 // `McpEngine` → a fake Modern server. A form or a Sampling request waits on a card in the conversation's waiting area
 // (never inside the View), the owner answers over the socket and the View's call completes; nobody is notified; a hidden
 // page withdraws a Sampling card and not a form; the View's teardown withdraws both; one form waits for a View at a time. A
-// task is polled while the request is in flight, ends with `tasks/cancel` at the View's teardown or the bound, and is never
-// in `mcp_tasks`.
+// task is polled while the request is in flight, asks its questions the same way (the answers go with `tasks/update`, a
+// refusal ends it with `tasks/cancel`), ends with `tasks/cancel` at the View's teardown or the bound, and is never in
+// `mcp_tasks`.
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
@@ -390,6 +391,95 @@ describe("an App View's call that its server answers with an MCP task", () => {
     });
     expect(server.tasks.size).toBe(1);
     expect(client.tasks()).toMatchObject({ tasks: [] });
+  });
+
+  describe("that waits for input", () => {
+    const answerForm = (client: Awaited<ReturnType<typeof withView>>["client"]) =>
+      client.send({
+        type: "mcp_elicitation_answer",
+        id: `answer-${counter++}`,
+        request: client.forms()[0]?.id ?? "",
+        action: "accept",
+      });
+
+    it("asks its form on a card, sends the answer to the task, and completes after Submit", async () => {
+      const { client, call, server, pushes, audit } = await open();
+      const calling = call("report", { ask: true, region: "eu" }, "r1");
+
+      await settles(async () => expect(client.forms()).toHaveLength(1));
+      expect(client.forms()[0]).toMatchObject({ server: "docs", app: true });
+
+      answerForm(client);
+
+      expect(await calling).toMatchObject({
+        status: "result",
+        result: { content: [{ type: "text", text: "report:eu" }] },
+      });
+      expect([...server.tasks.values()][0]?.answers).toMatchObject({
+        which: { action: "accept" },
+      });
+      await settles(async () => expect(client.forms()).toEqual([]));
+      expect(client.tasks()).toMatchObject({ tasks: [] });
+      expect(await pushes()).toEqual([]);
+      expect((await audit()).join("\n")).toContain("form answered");
+    });
+
+    it("stays when the page is hidden, and is cancelled at the server with the View's teardown", async () => {
+      const { client, call, cancel, visible, server } = await open();
+      const calling = call("report", { ask: true }, "r1");
+
+      await settles(async () => expect(client.forms()).toHaveLength(1));
+      await visible(false);
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(client.forms()).toHaveLength(1);
+
+      cancel("r1");
+
+      expect(await calling).toMatchObject({ status: "error", reason: "cancelled" });
+      await settles(async () => expect(client.forms()).toEqual([]));
+      await settles(async () => expect([...server.tasks.values()][0]?.status).toBe("cancelled"));
+    });
+
+    it("withdraws a Sampling card when the page is hidden and cancels the task", async () => {
+      const { client, call, visible, server } = await open();
+      const calling = call("report", { sample: true }, "r1");
+
+      await settles(async () => expect(client.samples()).toHaveLength(1));
+      expect(client.samples()[0]).toMatchObject({ server: "docs", app: true });
+
+      await visible(false);
+
+      expect(await calling).toMatchObject({ status: "error", reason: "refused" });
+      await settles(async () => expect(client.samples()).toEqual([]));
+      await settles(async () => expect([...server.tasks.values()][0]?.status).toBe("cancelled"));
+    });
+
+    it("cancels the task when the owner refuses its Sampling request", async () => {
+      const { client, call, server } = await open();
+      const calling = call("report", { sample: true }, "r1");
+
+      await settles(async () => expect(client.samples()).toHaveLength(1));
+      client.send({
+        type: "mcp_sampling_answer",
+        id: "no",
+        request: client.samples()[0]?.id ?? "",
+        choice: "refuse",
+      });
+
+      expect(await calling).toMatchObject({ status: "error", reason: "refused" });
+      await settles(async () => expect([...server.tasks.values()][0]?.status).toBe("cancelled"));
+    });
+
+    it("withdraws its card and cancels the task when the bound passes", async () => {
+      const { client, call, server } = await open({ pollMs: 20, viewWindowMs: 500 });
+      const calling = call("report", { ask: true }, "r1");
+
+      await settles(async () => expect(client.forms()).toHaveLength(1));
+
+      expect(await calling).toMatchObject({ status: "error", reason: "failed" });
+      await settles(async () => expect(client.forms()).toEqual([]));
+      await settles(async () => expect([...server.tasks.values()][0]?.status).toBe("cancelled"));
+    });
   });
 
   it("is cancelled at the server when the View is torn down", async () => {

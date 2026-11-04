@@ -46,6 +46,7 @@ import {
   type McpQuestionUnseen,
   type McpSamplingDecision,
   type McpWaitingKind,
+  askOriginOf,
   eraDefault,
   eraOfAsk,
   pageIdentityOf,
@@ -924,7 +925,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
         // A page of a prompt send or an App View's call is waited for no longer than its question was: the call's clock is
         // not held for good by a page that is never finished (`deadline` is the ask's 5 min).
-        if (held.request.prompt === undefined && held.request.app !== true) return open;
+        if (askOriginOf(held.request) === "agent") return open;
 
         return Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) =>
