@@ -57,6 +57,7 @@ import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
+import type { McpQuestionsService } from "./mcp/questions.ts";
 import { type McpNotices } from "./mcp/notices.ts";
 import {
   cancelAsOwner,
@@ -829,6 +830,25 @@ export const makeMcpTools = (
     if (Option.isSome(next)) keep(read, next.value);
   });
 
+  /** The servers the owner has a question or a Sampling request waiting on that `inventory` no longer reaches. */
+  const waitingOnGone = (questions: McpQuestionsService, inventory: McpInventory) => {
+    const reached = new Set(
+      Arr.filterMap(inventory.servers, (server) =>
+        isReachable(server) ? Result.succeed(server.name) : Result.failVoid,
+      ),
+    );
+
+    return Effect.map(
+      Effect.all([questions.pending, questions.pendingSampling]),
+      ([asked, sampled]) =>
+        Arr.dedupe(
+          Arr.filterMap([...asked, ...sampled], (request) =>
+            reached.has(request.server) ? Result.failVoid : Result.succeed(request.server),
+          ),
+        ),
+    );
+  };
+
   /** A server of `before` the tools no longer reach in `after`: switched off, hidden or removed. */
   const unreachable = (before: McpInventory | undefined, after: McpInventory | undefined) =>
     Arr.filterMap(before?.servers ?? [], (server) => {
@@ -861,7 +881,15 @@ export const makeMcpTools = (
       // A question a server waits on for a call is withdrawn when the server is switched off, hidden or removed.
       const { questions, signIns } = options;
 
-      for (const name of unreachable(before, latest)) {
+      // So is one whose server is already gone from the inventory this start read, the change not having been seen by any
+      // earlier start (a server removed before the question was asked, or between two starts).
+      let gone: ReadonlyArray<string> = [];
+
+      if (questions !== undefined && latest !== undefined) {
+        gone = yield* waitingOnGone(questions, latest);
+      }
+
+      for (const name of Arr.dedupe([...unreachable(before, latest), ...gone])) {
         const why = `${name} was switched off, hidden or removed`;
 
         if (questions !== undefined) yield* questions.withdrawServer(name, why);

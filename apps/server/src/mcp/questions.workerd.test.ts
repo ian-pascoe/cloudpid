@@ -3,7 +3,7 @@
 // `InputRequired` with the server's `conn`, and `op: "resume"` sends it again with the answers, refused `ServerChanged`
 // with nothing sent when the server's `conn` is another. The host passes the `ResumeState` on and keeps nothing.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off newPromise:off
 // The engine's answers are written as they cross the edge, encoded, so their failures are plain `_tag` objects.
 /* oxlint-disable anti-slop-effect/no-manual-tagged-construction */
 import { ASK_TOOL, modernServer, rpcMethods } from "@cloudpid/mcp/testing";

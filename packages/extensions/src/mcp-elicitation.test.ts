@@ -5,6 +5,8 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
 import { type JsonObject, McpHostCompleted, type McpInputAnswer } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf, open, startOf } from "./mcp.fixture.ts";
@@ -464,6 +466,34 @@ describe("a Legacy server's elicitation", () => {
       expect(await Effect.runPromise(questions.pending)).toEqual([]);
       expect(seen).toEqual([{ kind: "answered", result: { action: "cancel" } }]);
     }
+  });
+
+  it("withdraws a card at a request start when its server is not in the inventory at all", async () => {
+    const { tools, questions, session: opening } = setup();
+
+    await (await opening).start(tools);
+
+    const waiting = Effect.runFork(
+      questions.ask({
+        key: "1",
+        callId: "call-ghost",
+        conversationId: ROOT_CONVERSATION_ID,
+        server: "Ghost",
+        tool: "mcp__ghost__ask",
+        message: "Who are you?",
+        form: { fields: [] },
+        notes: [],
+      }),
+    );
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(await Fiber.join(waiting).pipe(Effect.runPromise)).toMatchObject({
+      action: "cancel",
+      by: "cloudpid",
+    });
   });
 
   it("is refused with -32602 when the form is malformed", async () => {

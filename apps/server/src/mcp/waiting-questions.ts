@@ -7,7 +7,9 @@
 // and none comes while its only Run is blocked on the call), so the host tells it: `endWhere` runs after a set change and
 // ends each waiting question whose server is changed, switched off or removed.
 // @effect-diagnostics asyncFunction:off -- the hooks are Promise-based RPC stubs
-import type { McpEngineHooks, McpHostRequestHooks } from "@cloudpid/mcp/types";
+import type { McpEngineHooks, McpHostRequestHooks, McpInputAnswer } from "@cloudpid/mcp/types";
+
+type McpInputAnswerEncoded = typeof McpInputAnswer.Encoded;
 
 /** The server a waiting question was asked by: its name, and the connection key it asked on. */
 export type WaitingServer = { readonly name: string; readonly conn: string };
@@ -30,6 +32,16 @@ type Waiting = WaitingServer & {
   readonly end: (reason: string) => void;
   told: boolean;
 };
+
+/** What a server whose question was ended by a set change is answered if the owner's answer arrived anyway. */
+const CHANGED_ANSWER = (kind: "elicitation" | "sampling"): McpInputAnswerEncoded =>
+  kind === "elicitation"
+    ? { kind: "answered", result: { action: "cancel" } }
+    : {
+        kind: "refused",
+        message: "The server changed while the request waited, so it was not answered",
+        code: -1,
+      };
 
 export const waitingQuestions = (): WaitingQuestions => {
   const waiting = new Set<Waiting>();
@@ -56,7 +68,13 @@ export const waitingQuestions = (): WaitingQuestions => {
         waiting.add(entry);
 
         try {
-          return await onInput(request);
+          const answer = await onInput(request);
+
+          // The owner's answer that beat the host's word to the caller is not sent on to a server that has changed: what
+          // the owner entered was for the one that asked.
+          return entry.told && (answer.kind === "answered" || answer.kind === "sampled")
+            ? CHANGED_ANSWER(request.kind)
+            : answer;
         } finally {
           waiting.delete(entry);
         }
