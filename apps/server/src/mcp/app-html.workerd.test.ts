@@ -221,10 +221,10 @@ const foundLegacy = (): EngineScript => {
   };
 };
 
-/** `vi.waitFor` with a wait that a loaded machine does not run out of. */
 /** What an App's origin is named by: 26 lowercase base32 characters (`view-hash.ts`). */
 const VIEW_HASH = /^[a-z2-7]{26}$/;
 
+/** `vi.waitFor` with a wait that a loaded machine does not run out of. */
 const waitFor = <A>(check: () => A | Promise<A>) => vi.waitFor(check, { timeout: 8000 });
 
 describe("an App tool's call", () => {
@@ -247,7 +247,8 @@ describe("an App tool's call", () => {
     const [kept] = await host.appPages();
     const next = await completedWith(host, "app");
 
-    expect(next.app).toEqual({ htmlHash: kept?.hash });
+    // With the hash that names the server's origin, which its record pins.
+    expect(next.app).toEqual({ htmlHash: kept?.hash, viewHash: expect.stringMatching(VIEW_HASH) });
     expect(kept?.bytes).toBe("<p>hi</p>".length);
     expect(await requestsOf(host, "tools/call")).toHaveLength(2);
     expect(await requestsOf(host, "resources/read")).toEqual([
@@ -419,7 +420,10 @@ describe("an App tool's call", () => {
 
     const second = await completedWith(host, "app");
 
-    expect(second.app).toEqual({ htmlHash: (await host.appPages())[0]?.hash });
+    expect(second.app).toEqual({
+      htmlHash: (await host.appPages())[0]?.hash,
+      viewHash: expect.stringMatching(VIEW_HASH),
+    });
     expect(await requestsOf(host, "resources/read")).toHaveLength(1);
     expect(await host.appUiRows()).toEqual([
       { conn: "conn-docs", uri: URI, hash: second.app?.htmlHash, version: expect.any(String) },
@@ -1028,7 +1032,10 @@ describe("against a fixture App server", () => {
       html: "<main>fixture</main>",
       meta: { prefersBorder: true },
     });
-    expect((await callApp(host, "app")).app).toEqual({ htmlHash: hash });
+    expect((await callApp(host, "app")).app).toEqual({
+      htmlHash: hash,
+      viewHash: expect.stringMatching(VIEW_HASH),
+    });
     expect(server.received.filter((each) => each.rpc?.method === "resources/read")).toHaveLength(1);
   });
 

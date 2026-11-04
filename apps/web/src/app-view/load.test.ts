@@ -75,21 +75,70 @@ describe("loadAppView", () => {
   );
 
   it.effect(
-    "keeps a page by its server and hash: a second call of the App does not fetch it again",
+    "keeps a page by the viewHash of its record and its own hash: a second call does not fetch it again",
     () =>
       Effect.gen(function* () {
-        const { client, calls } = fake({ status: "record", record: record() }, html());
+        const { client, calls } = fake(
+          { status: "record", record: record({ viewHash: "v-one" }) },
+          html(),
+        );
 
         yield* loadAppView(client, "c1");
         yield* loadAppView(client, "c1");
         expect(calls).toEqual({ mount: 2, page: 1 });
-
-        // The same hash from another server is another entry: its origin is its own.
-        const other = fake({ status: "record", record: record({ server: "other" }) }, html());
-
-        yield* loadAppView(other.client, "c1");
-        expect(other.calls.page).toBe(1);
       }),
+  );
+
+  it.effect(
+    "never hands one server's origin to another: the same page of the same server in two Environments is two entries",
+    () =>
+      Effect.gen(function* () {
+        const other = "https://bbbbbbbbbbbbbbbbbbbbbbbbbb.ianpascoe.app";
+        const first = fake({ status: "record", record: record({ viewHash: "env-one" }) }, html());
+
+        const second = fake(
+          { status: "record", record: record({ viewHash: "env-two" }) },
+          html({ origin: other }),
+        );
+
+        const one = yield* loadAppView(first.client, "c1");
+        const two = yield* loadAppView(second.client, "c1");
+
+        expect(second.calls.page).toBe(1);
+        expect(one).toMatchObject({ status: "view", page: { origin: ORIGIN } });
+        expect(two).toMatchObject({ status: "view", page: { origin: other } });
+      }),
+  );
+
+  it.effect("does not share a page of a record that pins no viewHash", () =>
+    Effect.gen(function* () {
+      const { client, calls } = fake({ status: "record", record: record() }, html());
+
+      yield* loadAppView(client, "c1");
+      yield* loadAppView(client, "c1");
+      expect(calls.page).toBe(2);
+    }),
+  );
+
+  it.effect("is unavailable, never framed, for a server that is no longer the call's", () =>
+    Effect.gen(function* () {
+      const mounted: McpAppMounted = {
+        status: "record",
+        record: record({ viewHash: "was-this" }),
+      };
+
+      expect(
+        yield* loadAppView(
+          fake(mounted, { status: "unavailable", message: "Shadowed" }).client,
+          "c1",
+        ),
+      ).toEqual({ status: "unavailable" });
+
+      // A Session that sent the page of another server's anyway is not believed.
+      expect(yield* loadAppView(fake(mounted, html({ view: "now-this" })).client, "c1")).toEqual({
+        status: "unavailable",
+      });
+    }),
   );
 
   it.effect("is the summary for an evicted call and nothing for one with no record", () =>

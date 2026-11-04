@@ -44,6 +44,8 @@ const AppMount = ({
   switch (load.status) {
     case "view":
       return <AppFrame record={load.record} page={load.page} title={title} badge={badge} />;
+    case "unavailable":
+      return <AppNote>App unavailable</AppNote>;
     case "stub":
       return <AppNote>App data no longer kept</AppNote>;
     case "failed":

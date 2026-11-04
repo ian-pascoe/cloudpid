@@ -65,10 +65,13 @@ const recorder = (options: { readonly fails?: boolean } = {}) => {
   return { apps, drafts, told };
 };
 
-const completed = (value: JsonObject, htmlHash?: string) =>
+const completed = (value: JsonObject, htmlHash?: string, viewHash?: string) =>
   htmlHash === undefined
     ? McpHostCompleted.make({ result: { kind: "inline", value } })
-    : McpHostCompleted.make({ result: { kind: "inline", value }, app: { htmlHash } });
+    : McpHostCompleted.make({
+        result: { kind: "inline", value },
+        app: viewHash === undefined ? { htmlHash } : { htmlHash, viewHash },
+      });
 
 describe("an app-only tool", () => {
   it("is never declared to the model, in any Exposure, and tools.offered cannot lift it", async () => {
@@ -193,6 +196,12 @@ describe("the record of an App call", () => {
     });
     // The model's own result is as it was.
     expect(await session.texts("toolResult")).toEqual(["A page"]);
+  });
+
+  it("pins what named its server's origin, when the host said, so a shadowed server is not mistaken for it", async () => {
+    const { drafts } = await callPage(async () => completed({ content: [] }, "hash-1", "view-1"));
+
+    expect(drafts[0]).toMatchObject({ htmlHash: "hash-1", viewHash: "view-1" });
   });
 
   it("records an isError result too, and no call that did not complete", async () => {

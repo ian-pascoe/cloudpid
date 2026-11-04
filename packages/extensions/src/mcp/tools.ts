@@ -233,6 +233,7 @@ const toolFor = (
                 // SAFETY: the arguments pi-durable validated against the tool's `inputSchema`, an object.
                 arguments: args as JsonObject,
                 htmlHash: appHtml ? completed.app?.htmlHash : undefined,
+                viewHash: appHtml ? completed.app?.viewHash : undefined,
               },
               value,
             );

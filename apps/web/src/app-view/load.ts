@@ -1,15 +1,15 @@
 // docs/architecture/mcp-apps.md → App Views in the transcript (Remounting), Socket messages. Loading an App View's data
-// for a card: its record (`mcp_app_mount`), then its page and origin (`mcp_app_html`), kept in memory by (server, hash) so a
-// card that remounts, or another call of the same App, does not fetch the HTML again.
+// for a card: its record (`mcp_app_mount`), then its page and origin (`mcp_app_html`), kept in memory by the record's `viewHash`
+// (which names its Environment, source and server, so the origin) and the page's hash, so a card that remounts, or another
+// call of the same App, does not fetch the HTML again, and a page is never handed to a server whose origin is another.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- the cache is a native map in one module-level scope.
 import type { McpAppHtmlAnswer, McpAppRecord, McpAppStub } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import type { SessionClient } from "../session/client.ts";
+import { isSandboxOrigin } from "./frame-url.ts";
 
 /** What loading needs of the Session's client: its two App commands. */
 export type AppClient = Pick<SessionClient, "mountApp" | "appPage">;
-
-import { isSandboxOrigin } from "./frame-url.ts";
 
 /** A page the View is mounted with, and the origin it is served on. */
 export interface AppPage {
@@ -23,6 +23,8 @@ export interface AppPage {
 export type AppLoad =
   /** A record and its page: the View mounts. */
   | { readonly status: "view"; readonly record: McpAppRecord; readonly page: AppPage }
+  /** The call's server is no longer the one that made it (shadowed): "App unavailable", no mount. */
+  | { readonly status: "unavailable" }
   /** The record was evicted: the call's summary only. */
   | { readonly status: "stub"; readonly stub: McpAppStub }
   /** The Session has no record of the call (it came before records were kept): an ordinary card. */
@@ -59,9 +61,13 @@ export const forgetPages = (): void => {
   pages.clear();
 };
 
-/** The key a page is kept under: a page is by content, but its origin is its server's, so two servers' copies are two entries. */
-const keyOf = (record: McpAppRecord): string | undefined =>
-  record.htmlHash === undefined ? undefined : `${record.server}\0${record.htmlHash}`;
+/**
+ * The key a page is kept under: a page is by content, but its origin is its server's (and its Environment's, and its
+ * source's), which is what `viewHash` names; the same page of two servers, or of one server in two Environments, is two
+ * entries. A record that pins no `viewHash` has no key: its page is fetched each time, never shared.
+ */
+const keyOf = (record: McpAppRecord, hash: string | undefined): string | undefined =>
+  record.viewHash === undefined || hash === undefined ? undefined : `${record.viewHash}\0${hash}`;
 
 /**
  * The page of `record`: from memory when its server's copy under its hash is held, else the Session's (`mcp_app_html` by
@@ -70,18 +76,30 @@ const keyOf = (record: McpAppRecord): string | undefined =>
  */
 const pageOf = (client: AppClient, record: McpAppRecord): Effect.Effect<AppLoad> =>
   Effect.gen(function* () {
-    const key = keyOf(record);
+    const key = keyOf(record, record.htmlHash);
     const held = key === undefined ? undefined : pages.get(key);
 
     if (held !== undefined) return { status: "view", record, page: held } as const;
 
     const answer = yield* client.appPage(record.callId);
 
+    if (answer.status === "unavailable") return { status: "unavailable" } as const;
+
     if (answer.status !== "html" || !("html" in answer)) {
       const why =
         "message" in answer && answer.message !== undefined ? answer.message : answer.status;
 
       return { status: "failed", reason: why } as const;
+    }
+
+    // The Session checks this too; a page of another server than the call's is never framed, whoever says it is not.
+    if (
+      record.viewHash !== undefined &&
+      "view" in answer &&
+      answer.view !== undefined &&
+      answer.view !== record.viewHash
+    ) {
+      return { status: "unavailable" } as const;
     }
 
     if (!("origin" in answer) || answer.origin === undefined) {
@@ -94,7 +112,9 @@ const pageOf = (client: AppClient, record: McpAppRecord): Effect.Effect<AppLoad>
 
     const page: AppPage = { html: answer.html, meta: answer.meta, origin: answer.origin };
 
-    remember(`${record.server}\0${answer.hash}`, page);
+    const kept = keyOf(record, answer.hash);
+
+    if (kept !== undefined) remember(kept, page);
 
     return { status: "view", record, page } as const;
   }).pipe(

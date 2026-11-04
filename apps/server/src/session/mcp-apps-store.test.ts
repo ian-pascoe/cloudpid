@@ -461,6 +461,44 @@ describe("the Session's App records", () => {
       expect(asked).toEqual([]);
     });
 
+    it("is unavailable, and pins nothing, when the call's server has been shadowed by another of the same name", async () => {
+      // The call ran on the Repo's `docs` (origin abcd); an owner's `docs` has since taken its name (origin zzzz).
+      const { asked, service, store } = hosted((input) =>
+        "hash" in input
+          ? { status: "missing", message: "not kept here" }
+          : { ...page("newer"), view: "zzzz" },
+      );
+
+      store.service.setTools([docsPage]);
+      await run(service.put({ ...noHash("call-1"), viewHash: "abcd" }));
+
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "unavailable" });
+      expect(JSON.stringify(await run(service.mount("call-1")))).not.toContain("newer");
+      expect(Arr.map(asked, (input) => ("uri" in input ? "uri" : "hash"))).toEqual(["uri"]);
+    });
+
+    it("is unavailable for a pinned page the host answers for another server's origin, and by hash too", async () => {
+      const { service } = hosted((input) => ({
+        ...page("hash" in input ? input.hash : "x"),
+        view: "zzzz",
+      }));
+
+      await run(service.put({ ...draft("call-1", 1), viewHash: "abcd" }));
+
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "unavailable" });
+      expect(await run(service.html("hash-call-1"))).toMatchObject({ status: "unavailable" });
+    });
+
+    it("serves a page for a record whose viewHash is still its server's, and for one that pins none", async () => {
+      const { service } = hosted((input) => page("hash" in input ? input.hash : "x"));
+
+      await run(service.put({ ...draft("call-1", 1), viewHash: "abcd" }));
+      await run(service.put(draft("call-2", 1)));
+
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "html" });
+      expect(await run(service.pageOf("call-2"))).toMatchObject({ status: "html" });
+    });
+
     it("pins nothing when the host fails, and passes its reason on", async () => {
       const { service, store } = hosted(() => ({ status: "failed", message: "server said no" }));
 

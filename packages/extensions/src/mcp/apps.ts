@@ -40,6 +40,8 @@ export type McpAppCall = {
   readonly arguments: JsonObject;
   /** `Completed.app.htmlHash`, read only when the host lists `app_html`. */
   readonly htmlHash: string | undefined;
+  /** `Completed.app.viewHash`: what names the origin of the server's Views, as the call found it. */
+  readonly viewHash: string | undefined;
 };
 
 /** The draft of the record of `call`, whose `value` is the server's `CallToolResult`; none for a value that is no object. */
@@ -58,6 +60,8 @@ export const draftOf = (call: McpAppCall, value: Schema.Json): McpAppDraft | und
   if (call.parentCall !== undefined) draft.parentCall = call.parentCall;
 
   if (call.htmlHash !== undefined) draft.htmlHash = call.htmlHash;
+
+  if (call.viewHash !== undefined) draft.viewHash = call.viewHash;
 
   return draft;
 };

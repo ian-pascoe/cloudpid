@@ -1361,8 +1361,14 @@ export interface McpHostRequestHooks {
 export const McpHostCompleted = Schema.TaggedStruct("Completed", {
   result: McpEngineValue,
   structuredOutput: Schema.optionalKey(McpStructuredOutput),
-  /** An App tool's call: the hash its App's HTML is kept under (`ui/html`), once the host has it (`app_html`). */
-  app: Schema.optionalKey(Schema.Struct({ htmlHash: Schema.String })),
+  /**
+   * An App tool's call: the hash its App's HTML is kept under (`ui/html`), once the host has it (`app_html`), and the
+   * `viewHash` of the origin the server's Views are served on, when the host knows the Environment and source; the
+   * call's record pins it, so a record of a server that has since been shadowed is not mounted at its successor's origin.
+   */
+  app: Schema.optionalKey(
+    Schema.Struct({ htmlHash: Schema.String, viewHash: Schema.optionalKey(Schema.String) }),
+  ),
   /** A `resources/read`: the SHA-256 (lowercase hex) of its contents, the baseline of a Resource watch (`resources`). */
   sha256: Schema.optionalKey(Schema.String),
 });

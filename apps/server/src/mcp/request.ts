@@ -151,15 +151,18 @@ const mountedPage = (store: McpHostStoreService, hash: string) =>
  * `page` with the hash of its server's App sandbox origin (`viewHash`), when the host knows its Environment and the
  * server's source: the page itself is kept by content, never by server, so the origin is the asking server's.
  */
-const withViewHash = (page: AppPage, environment: string | undefined, server: StoredServer) => {
+const viewHashOf = (environment: string | undefined, server: StoredServer): string | undefined => {
   const source = viewSourceOf(server.source);
 
   return environment === undefined || source === undefined
-    ? page
-    : {
-        ...page,
-        viewHash: viewHash({ environment, source, normalizedName: normalizeMcpName(server.name) }),
-      };
+    ? undefined
+    : viewHash({ environment, source, normalizedName: normalizeMcpName(server.name) });
+};
+
+const withViewHash = (page: AppPage, environment: string | undefined, server: StoredServer) => {
+  const id = viewHashOf(environment, server);
+
+  return id === undefined ? page : { ...page, viewHash: id };
 };
 
 /** The hash an App tool's call answers: the page kept for this inventory, or the one a read already in flight has kept. */
@@ -320,7 +323,12 @@ const toolCall = (
         ? stored.hash
         : Option.getOrUndefined(yield* keptHash(Option.orElse(early, () => late)));
 
-    return htmlHash === undefined ? answer : { ...answer, app: { htmlHash } };
+    if (htmlHash === undefined) return answer;
+
+    // With the hash that names the origin of the server's Views: what later tells a record its server is still this one.
+    const id = viewHashOf(environment, view.server);
+
+    return { ...answer, app: id === undefined ? { htmlHash } : { htmlHash, viewHash: id } };
   });
 
 /**

@@ -77,6 +77,11 @@ export const McpAppRecord = Schema.Struct({
   arguments: Schema.Record(Schema.String, Schema.Json),
   /** The hash the App's page is kept under at the host (`mcp_app_html`), when the host had it. */
   htmlHash: Schema.optionalKey(Schema.String),
+  /**
+   * What named the origin of the server's Views when the call ran (`viewHash`: its Environment, source and name). A mount
+   * whose server now has another is not the same server (a Repo's `docs` shadowed by an owner's): it is "App unavailable".
+   */
+  viewHash: Schema.optionalKey(Schema.String),
   result: Schema.Record(Schema.String, Schema.Json),
   truncated: Schema.optionalKey(Schema.Boolean),
   /** The App View's calls and reads, newest last, at most `MAX_MCP_APP_AUDIT`. */
@@ -190,7 +195,8 @@ export type McpAppPageMeta = typeof McpAppPageMeta.Type;
 /**
  * What `mcp_app_html` answers: the page (`html`, with its `meta`), or why there is none: `missing` (no record pins the hash,
  * or the host no longer keeps it: the mount reads it by its URI, later), `unsupported` (the host does not serve it) or
- * `failed`. A status this build does not know reads as `failed`.
+ * `failed`, or `unavailable` (the call's server is no longer the one that made it: shadowed, so no page is shown). A status
+ * this build does not know reads as `failed`.
  *
  * A page comes with the `origin` its View is served on (`docs/architecture/mcp-apps.md` → The App sandbox): the Session
  * builds it from the host's `view` (the 26 characters that name the server's origin) and its own deploy-time label, and
@@ -208,6 +214,7 @@ export const McpAppHtmlAnswer = Schema.Union([
   Schema.Struct({ status: Schema.Literal("missing"), message: Schema.String }),
   Schema.Struct({ status: Schema.Literal("unsupported"), message: Schema.String }),
   Schema.Struct({ status: Schema.Literal("failed"), message: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), message: Schema.String }),
   Schema.Struct({ status: Schema.String, message: Schema.optionalKey(Schema.String) }),
 ]);
 
