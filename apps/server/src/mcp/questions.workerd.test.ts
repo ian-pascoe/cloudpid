@@ -272,3 +272,85 @@ describe("a server's questions through the real engine", () => {
     ]);
   });
 });
+
+describe("a Legacy question that waits while the set changes", () => {
+  const ASKED = {
+    key: "q1",
+    kind: "elicitation" as const,
+    mode: "live" as const,
+    params: { message: "Who are you?", requestedSchema: { type: "object", properties: {} } },
+  };
+
+  /** A call of `docs` that waits on its question, and what its caller was told of it. */
+  const waiting = async () => {
+    const host = await discovered(["search"], entry("docs"));
+
+    await host.scriptRequest(urlOf("docs"), [{ result: completed("done"), asks: [ASKED] }]);
+
+    const ended: Array<readonly [string, string | undefined]> = [];
+    let answer: () => void = () => undefined;
+    let asking: () => void = () => undefined;
+    const asked = new Promise<void>((resolve) => (asking = resolve));
+
+    const done = host.request(call("docs", "search"), {
+      onInput: () =>
+        new Promise((resolve) => {
+          answer = () => resolve({ kind: "answered", result: { action: "cancel" } });
+          asking();
+        }),
+      onInputEnded: (key, reason) => {
+        ended.push([key, reason]);
+      },
+    });
+
+    await asked;
+
+    return { host, ended, done, answer: () => answer() };
+  };
+
+  it.each([
+    [
+      "changed",
+      (name: string) => ({ ...entry(name), hash: "hash-2", conn: "conn-2" }),
+      "docs was changed",
+    ],
+    [
+      "switched off",
+      (name: string) => ({ ...entry(name, { enabled: false }), hash: "hash-2" }),
+      "docs was switched off or hidden",
+    ],
+  ])("ends it, with its reason, when its server is %s", async (_how, replaced, reason) => {
+    const { host, ended, done, answer } = await waiting();
+
+    await host.apply(setOf(replaced("docs")));
+
+    await vi.waitFor(() => expect(ended).toEqual([["q1", reason]]));
+
+    answer();
+    expect(await done).toMatchObject({ _tag: "Completed" });
+  });
+
+  it("ends it when its server is removed, and only once however many sets follow", async () => {
+    const { host, ended, done, answer } = await waiting();
+
+    await host.apply(setOf(entry("other")));
+    await host.apply(setOf(entry("other"), entry("more")));
+
+    await vi.waitFor(() => expect(ended).toEqual([["q1", "docs was removed"]]));
+
+    answer();
+    await done;
+  });
+
+  it("leaves it waiting when the set changes around its server", async () => {
+    const { host, ended, done, answer } = await waiting();
+
+    await host.apply(setOf(entry("docs"), entry("other")));
+    await host.apply(setOf(entry("docs"), entry("other"), entry("more")));
+
+    expect(ended).toEqual([]);
+
+    answer();
+    await done;
+  });
+});

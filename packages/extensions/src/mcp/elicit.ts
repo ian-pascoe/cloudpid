@@ -102,7 +102,7 @@ export type Eliciting = {
   readonly onInput: (
     request: typeof McpInputRequest.Encoded,
   ) => Promise<typeof McpInputAnswer.Encoded>;
-  readonly onInputEnded: (key: string) => Promise<void>;
+  readonly onInputEnded: (key: string, reason?: string) => Promise<void>;
   /** The server says the owner finished at the page question `key` asked them to open: its card closes. */
   readonly onInputComplete: (key: string) => Promise<void>;
   /** Resolves once every question the call asked has been answered and noted, however it ended. */
@@ -461,8 +461,11 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   return {
     onInput,
     idle: () => Promise.allSettled(answering).then(() => undefined),
-    onInputEnded: (key) =>
-      Effect.runPromise(call.questions.withdraw(call.callId, key, stoppedWaiting(call.server))),
+    // The server's own cancellation, or the host's word that a set change ended the question (`reason`).
+    onInputEnded: (key, reason) =>
+      Effect.runPromise(
+        call.questions.withdraw(call.callId, key, reason ?? stoppedWaiting(call.server)),
+      ),
     onInputComplete: (key) => {
       // The record of the page says the owner finished there, whether the call's note of it came first or not.
       finished.add(key);

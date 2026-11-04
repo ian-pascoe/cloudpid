@@ -219,6 +219,17 @@ const settleSet = (environment: string | undefined, before: ReadonlyArray<string
     // A server that changed, left or was switched off no longer holds its Resource watches.
     yield* reconcileWatches(views);
 
+    // Nor does a question it waits on for a call: the call's caller withdraws the card, and the server is told `cancel`.
+    store.endWhere((waiting) => {
+      const now = Arr.findFirst(views, (view) => view.server.name === waiting.name);
+
+      if (Option.isNone(now)) return `${waiting.name} was removed`;
+
+      if (now.value.reach === "off") return `${waiting.name} was switched off or hidden`;
+
+      return now.value.server.conn === waiting.conn ? undefined : `${waiting.name} was changed`;
+    });
+
     if (environment !== undefined) yield* startDue(environment, views, "set");
 
     yield* refreshVersions;

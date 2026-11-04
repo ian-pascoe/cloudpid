@@ -1472,8 +1472,13 @@ export interface McpHostRequestHooks {
   readonly onInput?: (
     request: typeof McpInputRequest.Encoded,
   ) => Promise<typeof McpInputAnswer.Encoded>;
-  /** The server stopped waiting for question `key` (its own cancellation): the caller withdraws its card. */
-  readonly onInputEnded?: (key: string) => void | Promise<void>;
+  /**
+   * The server stopped waiting for question `key` (its own cancellation): the caller withdraws its card. The host also
+   * calls it, with `reason`, for a question whose server a set change left changed, switched off or removed while the
+   * call waited (`docs/architecture/mcp-server-requests.md` → The waiting-question record, #569): a caller from before
+   * `reason` ignores it and says its own.
+   */
+  readonly onInputEnded?: (key: string, reason?: string) => void | Promise<void>;
   /**
    * The owner finished at the page URL question `key` asked them to open: the server said so on the call's own stream
    * (`notifications/elicitation/complete`), and the caller closes its card. The host keeps no `elicitationId`.

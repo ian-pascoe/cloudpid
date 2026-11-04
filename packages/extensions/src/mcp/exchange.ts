@@ -609,9 +609,9 @@ export const send = async <A>(
           ? sampling.onInput(input)
           : asking.onInput(input);
 
-      hooks.onInputEnded = async (key) => {
+      hooks.onInputEnded = async (key, reason) => {
         sampling.onInputEnded(key);
-        await asking?.onInputEnded(key);
+        await asking?.onInputEnded(key, reason);
       };
 
       // A page's completion is a form's business only: the sampling hook has none.
