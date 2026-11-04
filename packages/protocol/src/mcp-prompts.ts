@@ -41,7 +41,7 @@ export type McpPromptArgument = typeof McpPromptArgument.Type;
  * A prompt the `/` menu offers, from the Environment's MCP inventory (never read from a server): the Slash command
  * (`/mcp__<server>__<prompt>`), the configured `server` name and where its definition is (`owner`, or `repo:<owner/repo>`
  * for a Repo's `.pi/mcp.json`), the prompt's own `name`, its text, its arguments in declared order, and whether its
- * arguments complete (`completions`: the server declares the capability; always `false` until completions are built).
+ * arguments complete (`completions`: the server declares the capability, so the form asks it for suggestions).
  */
 export const McpPromptEntry = Schema.Struct({
   command: Schema.String,

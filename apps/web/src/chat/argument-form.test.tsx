@@ -1,8 +1,8 @@
 import type { McpPromptArgument } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { formKey } from "./argument-form.ts";
-import { ArgumentForm, requiredFilled } from "./argument-form.tsx";
+import { formKey, shownSuggestions, suggestionKey } from "./argument-form.ts";
+import { ArgumentForm, SuggestionList, requiredFilled } from "./argument-form.tsx";
 import { PromptChipView } from "./prompt-chip.tsx";
 
 const FIELDS: McpPromptArgument[] = [
@@ -143,5 +143,103 @@ describe("the chip", () => {
 
     expect(html).toContain("docs no longer offers Review PR");
     expect(html).toContain("border-dashed");
+  });
+});
+
+describe("the keys of a field's list of suggestions", () => {
+  const key = (name: string, place: { count?: number; highlighted?: number }, shiftKey = false) =>
+    suggestionKey(
+      { key: name, shiftKey, altKey: false, ctrlKey: false, metaKey: false },
+      { count: place.count ?? 3, highlighted: place.highlighted ?? -1 },
+    );
+
+  it("moves the highlight with the arrows, and takes the highlighted one with Enter or Tab", () => {
+    expect(key("ArrowDown", {})).toBe("down");
+    expect(key("ArrowUp", { highlighted: 1 })).toBe("up");
+    expect(key("Enter", { highlighted: 1 })).toBe("accept");
+    expect(key("Tab", { highlighted: 0 })).toBe("accept");
+  });
+
+  it("leaves Enter and Tab to the form until one is highlighted, and Shift+Enter a new line", () => {
+    expect(key("Enter", {})).toBeNull();
+    expect(key("Tab", {})).toBeNull();
+    expect(key("Enter", { highlighted: 1 }, true)).toBeNull();
+  });
+
+  it("closes the list on Escape, and has no say when there is no list", () => {
+    expect(key("Escape", {})).toBe("dismiss");
+    expect(key("Escape", { count: 0 })).toBeNull();
+    expect(key("ArrowDown", { count: 0 })).toBeNull();
+  });
+});
+
+describe("the suggestions a field lists", () => {
+  it("shows at most eight, and none when the only one is what is typed", () => {
+    const many = Array.from({ length: 20 }, (_, index) => `v${String(index)}`);
+
+    expect(shownSuggestions(many, "")).toHaveLength(8);
+    expect(shownSuggestions(["acme"], "acme")).toEqual([]);
+    expect(shownSuggestions(["acme", "acme-labs"], "acme")).toEqual(["acme", "acme-labs"]);
+  });
+
+  it("renders a listbox of options with the highlighted one selected", () => {
+    const html = renderToStaticMarkup(
+      <SuggestionList id="l" suggestions={["acme", "apex"]} highlighted={1} onAccept={() => {}} />,
+    );
+
+    expect(html).toContain('role="listbox"');
+    expect(html).toContain('id="l-0" role="option" aria-selected="false"');
+    expect(html).toContain('id="l-1" role="option" aria-selected="true"');
+  });
+});
+
+describe("the argument form with completions", () => {
+  const render = (
+    completion?: { scope: string; complete: () => Promise<never> },
+    preview?: string,
+  ) =>
+    renderToStaticMarkup(
+      <ArgumentForm
+        title="Review PR"
+        server="docs"
+        fields={FIELDS}
+        values={{ pr: "", focus: "" }}
+        completion={completion}
+        preview={preview}
+        onChange={() => {}}
+        onDone={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+  it("makes its fields comboboxes only when the server completes them", () => {
+    expect(render()).not.toContain('role="combobox"');
+    expect(
+      render({ scope: "s", complete: () => Promise.reject(new Error("not asked")) }),
+    ).toContain('role="combobox"');
+  });
+
+  it("shows the resource a template's values make so far under its title", () => {
+    expect(render(undefined, "repo://{owner}/web")).toContain("repo://{owner}/web");
+  });
+});
+
+describe("the argument form held for a reason of its own", () => {
+  it("shows why Done is held, and disables it, though every required field is filled in", () => {
+    const html = renderToStaticMarkup(
+      <ArgumentForm
+        title="Any"
+        server="docs"
+        fields={[{ name: "target", required: true }]}
+        values={{ target: "ui://docs/page" }}
+        blocked="An App's ui:// resource cannot be attached"
+        onChange={() => {}}
+        onDone={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(html).toContain("An App&#x27;s ui:// resource cannot be attached");
+    expect(html).toContain('type="button" disabled=""');
   });
 });

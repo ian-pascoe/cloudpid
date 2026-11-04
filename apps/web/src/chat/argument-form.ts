@@ -46,3 +46,53 @@ export const formKey = (
 
   return valid ? "done" : null;
 };
+
+/** What a key does in a field's open list of suggestions. */
+export type SuggestionKey = "down" | "up" | "accept" | "dismiss" | null;
+
+/** A field's open list: how many suggestions it holds and which one is highlighted (-1 when none). */
+export interface SuggestionPlace {
+  readonly count: number;
+  readonly highlighted: number;
+}
+
+/**
+ * The list's part in `key`, which comes before the form's own: the arrows move the highlight (it starts on none, so Tab
+ * and Enter keep moving between fields until the owner has chosen one), Enter and Tab take the highlighted suggestion,
+ * and Escape closes the list before it cancels the form. Shift+Enter is a new line in the value as ever.
+ */
+export const suggestionKey = (
+  key: {
+    readonly key: string;
+    readonly shiftKey: boolean;
+    readonly altKey: boolean;
+    readonly ctrlKey: boolean;
+    readonly metaKey: boolean;
+  },
+  { count, highlighted }: SuggestionPlace,
+): SuggestionKey => {
+  if (count === 0) return null;
+
+  if (key.altKey || key.ctrlKey || key.metaKey) return null;
+
+  if (key.key === "Escape") return "dismiss";
+
+  if (key.key === "ArrowDown") return "down";
+
+  if (key.key === "ArrowUp") return "up";
+
+  if (key.shiftKey) return null;
+
+  if ((key.key === "Enter" || key.key === "Tab") && highlighted >= 0) return "accept";
+
+  return null;
+};
+
+/** How many suggestions a field's list shows: the server may send a hundred, and the owner narrows by typing. */
+export const MAX_SHOWN_SUGGESTIONS = 8;
+
+/** The suggestions to list under a field holding `value`: at most `MAX_SHOWN_SUGGESTIONS`, none when the only one is what is typed. */
+export const shownSuggestions = (suggestions: readonly string[], value: string): string[] =>
+  suggestions.length === 1 && suggestions[0] === value
+    ? []
+    : suggestions.slice(0, MAX_SHOWN_SUGGESTIONS);

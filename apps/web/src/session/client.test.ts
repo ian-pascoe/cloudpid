@@ -3504,6 +3504,103 @@ describe("the App calls on a Session connection", () => {
       }),
   );
 
+  it.effect(
+    "sends a completion to a Session that says it takes them, and cancels it at the Session when the form gives up",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { mcpCompletions: true });
+
+        const asking = {
+          requestId: "r1",
+          field: "owner",
+          server: "repos",
+          ref: { type: "ref/prompt", name: "review" } as const,
+          argument: { name: "owner", value: "ac" },
+          context: { arguments: { repo: "web" } },
+        };
+
+        const asked = yield* client.complete(4, asking).pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const sent = latest()
+          .commands()
+          .find((command) => command.type === "mcp_complete");
+
+        expect(sent).toEqual({
+          type: "mcp_complete",
+          id: expect.any(String),
+          requestId: "r1",
+          field: "owner",
+          conversationId: 4,
+          server: "repos",
+          ref: { type: "ref/prompt", name: "review" },
+          argument: { name: "owner", value: "ac" },
+          context: { arguments: { repo: "web" } },
+        });
+        yield* latest().say({
+          type: "result",
+          id: sent?.id,
+          result: { status: "ok", values: ["acme"], hasMore: false },
+        });
+        expect(yield* Fiber.join(asked)).toEqual({
+          status: "ok",
+          values: ["acme"],
+          hasMore: false,
+        });
+
+        // The form asks for another value: the Session is told to end the request.
+        const stale = yield* client
+          .complete(undefined, { ...asking, requestId: "r2" })
+          .pipe(Effect.forkChild);
+
+        yield* settle;
+        yield* Fiber.interrupt(stale);
+        yield* settle;
+
+        const sentNow = latest().commands();
+
+        expect(
+          sentNow.filter((command) => command.type === "mcp_complete").at(-1),
+        ).not.toHaveProperty("conversationId");
+        expect(sentNow.at(-1)).toEqual({
+          type: "mcp_complete_cancel",
+          id: expect.any(String),
+          requestId: "r2",
+        });
+      }),
+  );
+
+  it.effect(
+    "sends a Session from before completions nothing, which would answer an error: the form is told it is unsupported",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+
+        expect(
+          yield* client.complete(undefined, {
+            requestId: "r1",
+            field: "owner",
+            server: "repos",
+            ref: { type: "ref/prompt", name: "review" },
+            argument: { name: "owner", value: "" },
+          }),
+        ).toEqual({ status: "unsupported", values: [], hasMore: false });
+        expect(
+          latest()
+            .commands()
+            .filter(
+              (command) =>
+                command.type === "mcp_complete" || command.type === "mcp_complete_cancel",
+            ),
+        ).toEqual([]);
+      }),
+  );
+
   it.effect("connects on a page whose `document` is a stub with no events or visibility", () =>
     Effect.gen(function* () {
       vi.stubGlobal("document", { body: {} });

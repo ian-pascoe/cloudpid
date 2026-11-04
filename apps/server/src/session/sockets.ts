@@ -33,6 +33,7 @@ import {
   type McpTask,
   type McpWatchEntry,
   type McpResourcePreviewAnswer,
+  type McpCompletion,
   type McpElicitationRequest,
   type McpSamplingRequest,
   type McpSamplingSessionGrant,
@@ -90,6 +91,7 @@ import { SessionReviews } from "./reviews.ts";
 import { McpApps } from "./mcp-apps.ts";
 import { McpWatches } from "./mcp-watches.ts";
 import { McpResourcePreviews, type SpillRead } from "./mcp-resource-previews.ts";
+import { socketCompletions } from "./mcp-completions.ts";
 import { ViewedStore } from "./viewed.ts";
 
 /**
@@ -277,6 +279,7 @@ const HELLO_FEATURES = {
   appMessages: true,
   appContext: true,
   mcpDecline: true,
+  mcpCompletions: true,
 } as const;
 
 /** The `mcp_app_tools` message for `tools`, which every client is sent after `hello` and whenever the inventory changes them. */
@@ -747,6 +750,26 @@ export const sessionSocketsLayer = (
           return fibers === undefined ? Effect.void : FiberMap.remove(fibers, conversationId);
         });
 
+      // The completions of each socket (`mcp-completions.ts`): counted, in flight by `requestId`, and a newer request for a
+      // form field ends the older one.
+      const completions = socketCompletions(Date.now);
+
+      /** One completion of a form field: its answer however it ends, which is never an error. Starts no Container. */
+      const complete = (
+        socket: WebSocket,
+        message: Extract<ClientMessage, { type: "mcp_complete" }>,
+      ) =>
+        completions.complete(socket, message, (signal) =>
+          host.mcpComplete({
+            conversationId: message.conversationId,
+            server: message.server,
+            ref: message.ref,
+            argument: message.argument,
+            context: message.context,
+            signal,
+          }),
+        );
+
       const command = (
         socket: WebSocket,
         message: ClientMessage,
@@ -770,6 +793,7 @@ export const sessionSocketsLayer = (
         | McpAppHtmlAnswer
         | McpAppRequestAnswer
         | McpResourcePreviewAnswer
+        | McpCompletion
         | null,
         | SessionError
         | SecretsError
@@ -1171,6 +1195,14 @@ export const sessionSocketsLayer = (
                 }),
               ),
             );
+          case "mcp_complete":
+            return complete(socket, message);
+          case "mcp_complete_cancel":
+            return Effect.sync(() => {
+              completions.cancel(socket, message.requestId);
+
+              return null;
+            });
           case "mcp_app_log":
             return mcpApps
               .log({
@@ -1304,6 +1336,7 @@ export const sessionSocketsLayer = (
             .endViews(socket)
             .pipe(
               Effect.andThen(resourcePreviews.endResourcePreviews(socket)),
+              Effect.andThen(Effect.sync(() => completions.end(socket))),
               Effect.andThen(fibers === undefined ? Effect.void : FiberMap.clear(fibers)),
             );
         });

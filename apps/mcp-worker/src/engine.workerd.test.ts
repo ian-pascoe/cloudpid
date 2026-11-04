@@ -316,6 +316,58 @@ describe("a prompts/get request", () => {
   });
 });
 
+describe("a completion/complete request", () => {
+  it("completes an argument with its context and returns the server's values, scrubbed of the token it was sent", async () => {
+    const server = { ...target("prompts", "complete"), redact: ["sk-echoed-secret-0123456789"] };
+
+    const result = decodeRequest(
+      await env.MCP_ENGINE.request(
+        server,
+        {},
+        {
+          op: "completion/complete",
+          ref: { type: "ref/prompt", name: "review" },
+          argument: { name: "pr", value: "12" },
+          context: { arguments: { owner: "ian" } },
+          ctx: AGENT,
+        },
+        patient(),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      kind: "complete",
+      cacheable: false,
+      result: {
+        kind: "inline",
+        value: { completion: { values: ["12-ian", "[REDACTED]"], total: 2 } },
+      },
+    });
+    expect((await seen(server)).methods).toContain("completion/complete");
+  });
+
+  it("is Unsupported, with nothing sent, for a server that declares no completions", async () => {
+    const server = target("modern", "complete-none");
+
+    const result = decodeRequest(
+      await env.MCP_ENGINE.request(
+        server,
+        {},
+        {
+          op: "completion/complete",
+          ref: { type: "ref/prompt", name: "review" },
+          argument: { name: "pr", value: "" },
+          ctx: AGENT,
+        },
+        patient(),
+      ),
+    );
+
+    expect(result.kind === "failed" && Predicate.isTagged(result.error, "Unsupported")).toBe(true);
+    expect((await seen(server)).methods).not.toContain("completion/complete");
+  });
+});
+
 describe("server logs", () => {
   const logging = (key: string) => ({
     ...target("logging", key),

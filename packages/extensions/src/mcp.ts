@@ -41,6 +41,7 @@ import {
   type McpAppHtmlAnswer,
   type McpAppRequestAnswer,
   type McpResourceMenu,
+  type McpCompletion,
   type McpResourcePreviewAnswer,
 } from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
@@ -92,6 +93,11 @@ import {
   type ResourceMenuInput,
 } from "./mcp/attached-resources.ts";
 import { MCP_NO_START_FEATURE } from "./mcp/no-start.ts";
+import {
+  completionOf,
+  MCP_COMPLETIONS_FEATURE,
+  type McpCompletionInput,
+} from "./mcp/completion.ts";
 import { type McpResourcePreviewInput, resourcePreviewOf } from "./mcp/resource-preview.ts";
 import {
   MCP_RESEND_FEATURE,
@@ -126,6 +132,12 @@ export {
 export { MCP_NO_START_FEATURE } from "./mcp/no-start.ts";
 
 export { type McpResourcePreviewInput } from "./mcp/resource-preview.ts";
+
+export {
+  completionAnswerOf,
+  MCP_COMPLETIONS_FEATURE,
+  type McpCompletionInput,
+} from "./mcp/completion.ts";
 
 export {
   MCP_WATCHES_FEATURE,
@@ -269,7 +281,8 @@ export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
  * them live; it keeps a Legacy server's `-32042` pages with `resend`, and without it that is the server's error; a
  * Legacy server whose definition says `sampling: "allow"` is answered its Sampling requests with `sampling`
  * (`./mcp/sample.ts`), and none is declared without it; a stdio server's resource is listed for the `@` menu, and read for
- * a preview, without starting its Container only with `no_start` (`./mcp/attached-resources.ts`, `./mcp/resource-preview.ts`).
+ * a preview, without starting its Container only with `no_start` (`./mcp/attached-resources.ts`, `./mcp/resource-preview.ts`);
+ * a form's arguments are completed only with `completions` (`./mcp/completion.ts`).
  */
 export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESOURCE_FEATURE,
@@ -280,6 +293,7 @@ export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_TASKS_FEATURE,
   MCP_WATCHES_FEATURE,
   MCP_NO_START_FEATURE,
+  MCP_COMPLETIONS_FEATURE,
 ];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */
@@ -433,6 +447,13 @@ export type McpToolsService = {
   readonly resourcePreview: (
     input: McpResourcePreviewInput,
   ) => Effect.Effect<McpResourcePreviewAnswer>;
+  /**
+   * The owner's completion of an argument in the composer's form (`docs/architecture/mcp-in-a-session.md` → Arguments and
+   * completions): checked against the inventory the tools were last built from (a server that declares `completions`, a host
+   * that lists the feature), sent to the host as an `owner` request that starts no Container, and answered as the form is
+   * told it. Never fails, and asks no server that does not declare the capability.
+   */
+  readonly complete: (input: McpCompletionInput) => Effect.Effect<McpCompletion>;
   /**
    * The hooks and `ctx.answers` of a prompt send's `prompts/get` (`docs/architecture/mcp-in-a-session.md` → Getting a prompt
    * at send), so a question its server asks is shown to the owner and answered live. None when the Session has no questions
@@ -982,6 +1003,7 @@ export const makeMcpTools = (
     servers: latest?.servers ?? [],
     origin: latest?.origin ?? {},
     noStart: latest?.features.includes(MCP_NO_START_FEATURE) === true,
+    completions: latest?.features.includes(MCP_COMPLETIONS_FEATURE) === true,
     slackMs: options.slackMs,
     slotWaitMs: options.streamWaitMs,
   });
@@ -1035,6 +1057,17 @@ export const makeMcpTools = (
           servers: latest?.servers ?? [],
           origin: latest?.origin ?? {},
           noStart: latest?.features.includes(MCP_NO_START_FEATURE) === true,
+          slackMs: options.slackMs,
+        },
+        input,
+      ),
+    complete: (input) =>
+      completionOf(
+        {
+          client,
+          servers: latest?.servers ?? [],
+          origin: latest?.origin ?? {},
+          supported: latest?.features.includes(MCP_COMPLETIONS_FEATURE) === true,
           slackMs: options.slackMs,
         },
         input,

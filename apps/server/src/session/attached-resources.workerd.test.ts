@@ -267,6 +267,22 @@ describe("an MCP resource attached to a message", () => {
     expect(await ownerMessages(stub)).toHaveLength(1);
   });
 
+  it("is refused as gone for an App's ui:// resource a template's values made, and nothing is asked of its server", async () => {
+    const { host, stub } = await discovered();
+
+    const refused = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.submitResources({
+        requestId: "r-app",
+        text: "go",
+        refs: [{ server: "docs", uri: "ui://docs/page" }],
+      }),
+    );
+
+    expect(refused).toMatchObject({ failure: { code: ATTACHED_RESOURCE_GONE, server: "docs" } });
+    expect(await reads(host)).toEqual([]);
+    expect(await ownerMessages(stub)).toHaveLength(1);
+  });
+
   it("is an error line in the block and an error chip when the server fails the read, and the message is sent", async () => {
     const { host, stub } = await discovered();
 

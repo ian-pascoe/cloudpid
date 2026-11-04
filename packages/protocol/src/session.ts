@@ -25,6 +25,12 @@ import {
   McpAppsMessage,
   McpAppToolsMessage,
 } from "./mcp-apps.ts";
+import {
+  MAX_MCP_COMPLETE_NAME_CHARS,
+  McpCompletionArgument,
+  McpCompletionContext,
+  McpCompletionRef,
+} from "./mcp-completion.ts";
 import { MAX_MCP_WATCH_KEY, McpWatchesMessage } from "./mcp-watches.ts";
 import { MAX_MCP_RESOURCE_KEY } from "./mcp-resources.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
@@ -853,6 +859,37 @@ export const McpResourceRead = Schema.Struct({
 });
 
 /**
+ * Complete `argument` of the prompt or resource template `ref` names, of MCP server `server`, for the argument form the owner
+ * is typing in (`docs/architecture/mcp-in-a-session.md` → Arguments and completions). `field` names the form's field: a
+ * field has one request in flight, so a newer one from this socket cancels the older, and `requestId` names the request for
+ * `mcp_complete_cancel`, unique among the socket's. `conversationId` is the conversation the composer is in (the active
+ * branch's when left out), whose Workspace a stdio server runs in; a completion never starts its Container. `context` holds the
+ * other fields' non-empty values. Answered with an `McpCompletion`, however it ends: an answer is never an `error` message.
+ * Sent only to a Session that says `mcpCompletions` in `hello`.
+ */
+export const McpComplete = Schema.Struct({
+  type: Schema.Literal("mcp_complete"),
+  id: CommandId,
+  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
+  field: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
+  conversationId: Schema.optionalKey(ConversationId),
+  server: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
+  ref: McpCompletionRef,
+  argument: McpCompletionArgument,
+  context: Schema.optionalKey(McpCompletionContext),
+});
+
+/**
+ * Cancel the completion `requestId` this socket sent, if it is still running: the host cancels it at the server, and its
+ * answer is `failed` (nothing reads it). Answered with null. Sent only to a Session that says `mcpCompletions` in `hello`.
+ */
+export const McpCompleteCancel = Schema.Struct({
+  type: Schema.Literal("mcp_complete_cancel"),
+  id: CommandId,
+  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
+});
+
+/**
  * Whether this page is visible (`document.visibilityState`): sent when the socket opens and whenever it changes. A socket
  * that has not said is not visible, so a page that cannot say has its App Views' requests refused, and no background tab
  * keeps a Container awake (`docs/architecture/mcp-apps.md` → An App View's calls). Answered with null.
@@ -905,6 +942,8 @@ export const ClientMessage = Schema.Union([
   McpTaskCancel,
   ContainerKeep,
   McpResourceRead,
+  McpComplete,
+  McpCompleteCancel,
   PageVisible,
   WatchTaskGraph,
   UnwatchTaskGraph,
@@ -932,7 +971,7 @@ export type ClientMessage = typeof ClientMessage.Type;
  * answers an error (`docs/architecture/mcp.md` → Deploys); `mcpTasks` says the same of `mcp_task_cancel` and
  * `container_keep`, and that it sends `mcp_tasks`. `attachedResources` says it takes `submit.resources` and
  * `mcp_resource_menu`, and `resourcePreviews` that it takes `mcp_resource_read`, which a client sends on the same terms; `mcpDecline` says it takes `scope` on
- * `mcp_elicitation_answer` and `mcp_elicitation_revoke`.
+ * `mcp_elicitation_answer` and `mcp_elicitation_revoke`; `mcpCompletions` that it takes `mcp_complete` and `mcp_complete_cancel`.
  * `appMessages` says it takes `submit.app`, and `appContext` that it takes `mcp_app_context`: a client holds an App's
  * message, and forwards its context, only for a Session that says so.
  */
@@ -947,6 +986,7 @@ export const Hello = Schema.Struct({
   appMessages: Schema.optionalKey(Schema.Boolean),
   appContext: Schema.optionalKey(Schema.Boolean),
   mcpDecline: Schema.optionalKey(Schema.Boolean),
+  mcpCompletions: Schema.optionalKey(Schema.Boolean),
 });
 
 /**

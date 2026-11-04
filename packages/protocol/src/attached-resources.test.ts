@@ -6,7 +6,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
+  attachableUriProblem,
   attachedResourceGoneMessage,
+  isAppResourceUri,
+  MAX_RESOURCE_URI,
   isResourcesBlock,
   RESOURCE_BLOCK_CLOSE,
   RESOURCE_BLOCK_OPEN,
@@ -295,5 +298,20 @@ describe("the socket messages of Attached resources", () => {
     expect(await Effect.runPromise(decode('{"type":"hello","root":1}'))).not.toHaveProperty(
       "attachedResources",
     );
+  });
+});
+
+describe("the URI a resource template makes", () => {
+  it("is attachable when it is a URI within the bound", () => {
+    expect(attachableUriProblem("repo://acme/web")).toBeUndefined();
+    expect(attachableUriProblem(`x://${"a".repeat(MAX_RESOURCE_URI - 4)}`)).toBeUndefined();
+  });
+
+  it("is refused empty, over the bound the Session decodes with, and as an App's resource in any case", () => {
+    expect(attachableUriProblem("")).toContain("Fill in");
+    expect(attachableUriProblem(`x://${"a".repeat(MAX_RESOURCE_URI)}`)).toContain("over the 2048");
+    expect(attachableUriProblem("ui://docs/page")).toContain("App");
+    expect(attachableUriProblem("UI://docs/page")).toContain("App");
+    expect(isAppResourceUri("file:///ui://a")).toBe(false);
   });
 });

@@ -23,6 +23,7 @@ import {
   type AttachedReadInput,
   type AttachedReadResult,
   MCP_TASK_FOLLOWER,
+  type McpCompletionInput,
   type McpNotices,
   mcpNotices,
   type McpQuestionCopy,
@@ -72,9 +73,12 @@ import {
   type McpPromptData,
   type McpPromptErrorCode,
   type McpPromptRef,
+  type McpCompletion,
   type McpResourceMenu,
+  MCP_COMPLETION_STATUS,
   MCP_PROMPT_NOT_PICKED_MESSAGE,
   MAX_RESOURCES_INLINE_TEXT_BYTES,
+  noCompletion,
   type ResourceRef,
   looksLikeMcpPromptCommand,
   promptArguments,
@@ -524,6 +528,11 @@ export type SessionHostMcp<R> = {
   readonly prompts?: SessionHostMcpPrompts;
   /** The owner's MCP resources. Absent: none are listed, and a send that attaches one is refused as gone. */
   readonly attached?: SessionHostMcpAttached;
+  /**
+   * The owner's completion of an argument in the composer's form (`McpTools.complete`): never starts a Container, never
+   * fails. Absent: no server is asked, and every completion is `unsupported`.
+   */
+  readonly complete?: (input: McpCompletionInput) => Effect.Effect<McpCompletion>;
 };
 
 export type SessionHostOptions<R = never> = {
@@ -965,6 +974,17 @@ export type SessionHostService = {
   readonly resourceMenu: (
     conversationId?: ConversationId,
   ) => Effect.Effect<McpResourceMenu, SessionError>;
+  /**
+   * The suggestions for an argument of an MCP prompt or resource template in the composer of the active branch, or of the
+   * conversation `conversationId` names (`docs/architecture/mcp-in-a-session.md` → Arguments and completions): through the
+   * host with the conversation's own Workspace, never starting a Container. `signal` aborts it (a newer keystroke, the
+   * socket gone). Never fails: it answers as the form is told, `unsupported` for a Session with no MCP servers.
+   */
+  readonly mcpComplete: (
+    request: Omit<McpCompletionInput, "conversation" | "workspaceOf"> & {
+      readonly conversationId?: ConversationId | undefined;
+    },
+  ) => Effect.Effect<McpCompletion, SessionError>;
   /**
    * The directory the active branch, or the conversation `conversationId` names, works in: where the paths its tools
    * are given resolve. Undefined for a Session without an environment.
@@ -2345,6 +2365,30 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
               signal: stop.signal,
             })
             .pipe(Effect.ensuring(Effect.sync(() => stop.abort())));
+        }),
+      ),
+    );
+  };
+
+  /**
+   * The suggestions for `request`, for `conversation`'s form: the MCP tools' completion, which asks no server that does not
+   * declare the capability and starts no Container. A Session with no MCP tools completes nothing.
+   */
+  const completeFor = (
+    conversation: Conversation,
+    request: Omit<McpCompletionInput, "conversation" | "workspaceOf">,
+  ): Effect.Effect<McpCompletion, SessionError> => {
+    const complete = options.mcp?.complete;
+
+    if (complete === undefined)
+      return Effect.succeed(noCompletion(MCP_COMPLETION_STATUS.unsupported));
+
+    return subagentWorkspaceOf(conversation.id).pipe(
+      Effect.flatMap((workspace) =>
+        complete({
+          ...request,
+          conversation: String(conversation.id),
+          workspaceOf: Effect.succeed(workspace?.object),
         }),
       ),
     );
@@ -4247,6 +4291,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     resourceMenu: (conversationId) =>
       addressed(conversationId).pipe(
         Effect.flatMap((conversation) => resourceMenuFor(conversation)),
+      ),
+    mcpComplete: ({ conversationId, ...request }) =>
+      addressed(conversationId).pipe(
+        Effect.flatMap((conversation) => completeFor(conversation, request)),
       ),
     spill: (conversationId, path, hold) =>
       !isMcpSpillPath(path)

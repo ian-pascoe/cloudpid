@@ -1,8 +1,8 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- the Workspaces' ages are read against the wall clock as the menu renders, and JSX lists of options are native arrays.
 
 import { NEW_WORKSPACE, type EnvironmentRecord, type WorkspaceRecord } from "@cloudpid/protocol";
-import { ArgumentForm } from "./chat/argument-form.tsx";
-import { draftPromptAtoms, promptTitle } from "./chat/mcp-prompt-state.ts";
+import { DraftPromptFormView } from "./chat/template-form.tsx";
+import { draftPromptAtoms } from "./chat/mcp-prompt-state.ts";
 import { PromptChipView } from "./chat/prompt-chip.tsx";
 import { usePromptChip } from "./chat/use-prompt-chip.ts";
 import {
@@ -751,12 +751,9 @@ const DraftPage = ({ box }: { box: RefObject<HTMLTextAreaElement | null> }) => {
         <form onSubmit={submit} className="relative flex flex-col">
           {form !== null && (
             <div className="mb-3">
-              <ArgumentForm
-                title={promptTitle(form.prompt)}
-                server={form.prompt.server}
-                fields={form.prompt.arguments}
-                values={form.values}
-                problem={form.problem}
+              <DraftPromptFormView
+                environment={environment}
+                form={form}
                 onChange={(values) => {
                   setForm({ ...form, values, problem: undefined });
                 }}

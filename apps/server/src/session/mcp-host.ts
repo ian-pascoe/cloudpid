@@ -43,6 +43,9 @@ import {
   mcpAppError,
   type McpAppHtmlAnswer,
   type McpAppRequestAnswer,
+  type McpCompletion,
+  MCP_COMPLETION_STATUS,
+  noCompletion,
   type McpResourcePreviewAnswer,
   MCP_PROMPT_REQUEST_ID_MAX,
   mcpPromptCallId,
@@ -707,6 +710,11 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
         )
       : held.tools.appRequest(input);
 
+  const complete: NonNullable<SessionHostMcp<never>["complete"]> = (input) =>
+    held === undefined
+      ? Effect.succeed<McpCompletion>(noCompletion(MCP_COMPLETION_STATUS.unsupported))
+      : held.tools.complete(input);
+
   const resourcePreview: SessionMcp["resourcePreview"] = (input) =>
     held === undefined
       ? Effect.succeed<McpResourcePreviewAnswer>(
@@ -731,6 +739,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     notify,
     prompts,
     attached,
+    complete,
     appHtml,
     appRequest,
     resourcePreview,

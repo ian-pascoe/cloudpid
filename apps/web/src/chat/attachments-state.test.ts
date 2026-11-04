@@ -31,6 +31,7 @@ import {
   sentResources,
   waitingFor,
 } from "./attachments-state.ts";
+import { templateDone, templatePick } from "./template-form.ts";
 import { chatRegistry, fakeImages, fakeUploads, live, sent } from "./chat.testing.ts";
 import { conversationKey } from "./conversation.ts";
 
@@ -565,6 +566,33 @@ describe("a composer's attached MCP resources", () => {
 
       expect(state().resources.map((chip) => chip.uri)).toEqual(["file:///b.md"]);
     }),
+  );
+
+  it.effect(
+    "hold the resource a template's values make as a chip, sent as the URI they fill in",
+    () =>
+      Effect.gen(function* () {
+        const { registry, state } = yield* setup;
+
+        const picked = templatePick(
+          "repos",
+          { uriTemplate: "repo://{owner}/{name}", name: "repo" },
+          true,
+        );
+
+        if (picked.kind !== "form") throw new Error("a template with variables opens its form");
+
+        const done = templateDone({ ...picked.form, values: { owner: "acme", name: "web" } });
+
+        if (!("resource" in done)) throw new Error("the values fill every required variable");
+
+        registry.set(addResourceAtom(ROOT), done.resource);
+        yield* settle;
+
+        expect(sentResources(state())).toEqual([
+          { ref: { server: "repos", uri: "repo://acme/web", name: "repo" }, label: "repo" },
+        ]);
+      }),
   );
 
   it.effect("hold a message's worth, no more", () =>

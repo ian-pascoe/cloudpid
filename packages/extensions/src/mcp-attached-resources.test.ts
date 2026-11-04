@@ -155,6 +155,7 @@ describe("the @ menu's listing", () => {
         page({
           resources: [
             { uri: "ui://docs/page", name: "view", mimeType: "text/html;profile=mcp-app" },
+            { uri: "UI://docs/other", name: "shouting" },
             { uri: "file:///a.md", name: "a" },
           ],
         }),
@@ -182,7 +183,8 @@ describe("the @ menu's listing", () => {
     expect(listed.servers).toEqual([
       { server: "Files", source: "owner", state: "stopped", resources: [] },
     ]);
-    expect(requests(host).map((input) => input.ctx.start)).toEqual([false]);
+    // The templates are asked beside the resources, so a muted row has asked both.
+    expect(requests(host).map((input) => input.ctx.start)).toEqual([false, false]);
   });
 
   it("starts no stdio server through a host that would drop `start: false`, and says so in a muted row", async () => {
@@ -200,9 +202,128 @@ describe("the @ menu's listing", () => {
       ["Files", "unavailable"],
       ["Docs", "ok"],
     ]);
-    expect(requests(host).map((input) => input.server)).toEqual(["Docs"]);
+    expect(requests(host).map((input) => input.server)).toEqual(["Docs", "Docs"]);
     // An HTTP server has no Container: its pages say nothing of `start`.
     expect(requests(host).every((input) => input.ctx.start === undefined)).toBe(true);
+  });
+
+  it("lists a server's resource templates beside its resources, bounded and cleaned, and leaves an App's out", async () => {
+    const { host, tools } = await started([store("Docs", { completions: true })]);
+
+    host.answer((input) =>
+      Promise.resolve(
+        input.op === "resources/templates/list"
+          ? !("cursor" in input.params)
+            ? page({
+                resourceTemplates: [
+                  {
+                    uriTemplate: "repo://{owner}/{name}",
+                    name: "repo",
+                    title: "A\nrepo",
+                    description: "Any\nrepo",
+                    mimeType: "text/plain",
+                  },
+                  { uriTemplate: "ui://app/{id}", name: "app" },
+                  { name: "no template" },
+                ],
+                nextCursor: "more",
+              })
+            : page({ resourceTemplates: [{ uriTemplate: "log://{day}", name: "log" }] })
+          : page({ resources: [{ uri: "file:///a.md", name: "a" }] }),
+      ),
+    );
+
+    const [row] = (await menu(tools)).servers;
+
+    expect(row?.templates).toEqual([
+      {
+        uriTemplate: "repo://{owner}/{name}",
+        name: "repo",
+        title: "A repo",
+        description: "Any repo",
+        mimeType: "text/plain",
+      },
+      { uriTemplate: "log://{day}", name: "log" },
+    ]);
+    expect(row?.completions).toBe(true);
+    expect(
+      requests(host)
+        .filter((input) => input.op === "resources/templates/list")
+        .every((input) => input.ctx.origin === "owner"),
+    ).toBe(true);
+  });
+
+  it("says a server's templates complete only when it declares it and the host lists `completions`", async () => {
+    const answer = () => Promise.resolve(page({ resources: [{ uri: "file:///a.md", name: "a" }] }));
+    const declared = await started([store("Docs", { completions: true })]);
+
+    declared.host.answer(answer);
+    expect((await menu(declared.tools)).servers[0]).toHaveProperty("completions", true);
+
+    const silent = await started([store("Docs")]);
+
+    silent.host.answer(answer);
+    expect((await menu(silent.tools)).servers[0]).not.toHaveProperty("completions");
+
+    const old = await started([store("Docs", { completions: true })], {}, [
+      "inventory",
+      "call",
+      "resources",
+    ]);
+
+    old.host.answer(answer);
+    expect((await menu(old.tools)).servers[0]).not.toHaveProperty("completions");
+  });
+
+  it("asks a server's templates beside its resources, not after them", async () => {
+    const { host, tools } = await started([store("Docs")]);
+    const answers: Array<() => void> = [];
+
+    host.answer(
+      (input) =>
+        new Promise((resolve) => {
+          answers.push(() => {
+            resolve(
+              page(
+                input.op === "resources/templates/list"
+                  ? { resourceTemplates: [] }
+                  : { resources: [] },
+              ),
+            );
+          });
+        }),
+    );
+
+    const listing = menu(tools);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Both are in flight before either is answered.
+    expect(requests(host).map((input) => input.op)).toEqual([
+      "resources/list",
+      "resources/templates/list",
+    ]);
+
+    for (const answer of answers) answer();
+    expect((await listing).servers[0]?.state).toBe("ok");
+  });
+
+  it("keeps the row as it is when its templates cannot be listed", async () => {
+    const { host, tools } = await started([store("Docs")]);
+
+    host.answer((input) =>
+      Promise.resolve(
+        input.op === "resources/templates/list"
+          ? McpHostCallFailed.make({ error: ServerError.make({ message: "no", code: -32601 }) })
+          : page({ resources: [{ uri: "file:///a.md", name: "a" }] }),
+      ),
+    );
+
+    const [row] = (await menu(tools)).servers;
+
+    expect(row?.state).toBe("ok");
+    expect(row?.resources).toHaveLength(1);
+    expect(row).not.toHaveProperty("templates");
   });
 
   it("mutes a server that needs a sign-in, and one that fails", async () => {
@@ -275,6 +396,36 @@ describe("the read at send", () => {
       status: "read",
       value: [{ blob: "aGk=", mimeType: "image/png" }],
     });
+  });
+
+  it("is gone for an App's `ui://` resource, which the menu leaves out and a template could still make, and asks nothing", async () => {
+    const { host, tools } = await started([store("Docs")]);
+
+    host.answer(() => Promise.resolve(contents({ uri: "ui://docs/page", text: "<html>" })));
+
+    for (const uri of ["ui://docs/page", "UI://docs/page"]) {
+      const answer = await read(tools, "Docs", uri);
+
+      expect(answer.status).toBe("gone");
+    }
+
+    expect(requests(host)).toEqual([]);
+  });
+
+  it("is gone for what the server answers with an App's MIME type, whatever the URI a template made", async () => {
+    const { host, tools } = await started([store("Docs")]);
+
+    host.answer(() =>
+      Promise.resolve(
+        contents({
+          uri: "https://docs.test/page",
+          text: "<html>",
+          mimeType: "text/html;profile=mcp-app",
+        }),
+      ),
+    );
+
+    expect((await read(tools, "Docs", "https://docs.test/page")).status).toBe("gone");
   });
 
   it("is gone for a resource the server does not have, and for a server that left", async () => {

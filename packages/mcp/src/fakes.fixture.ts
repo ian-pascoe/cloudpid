@@ -352,6 +352,25 @@ export interface FakeOptions {
   readonly listCache?: { readonly ttlMs: number; readonly cacheScope?: "public" | "private" };
   /** Declares `prompts`, lists these, and answers `prompts/get` for each by its name (an unknown one is an error). */
   readonly prompts?: ReadonlyArray<FakePrompt>;
+  /**
+   * Declares `completions` and answers `completion/complete` with what `complete` returns for the request's `params`
+   * (`ref`, `argument`, `context`); a throw is the server's error. With `hangs` it never answers until the request is
+   * cancelled, and notes the argument's name in `cancelled`.
+   */
+  readonly completions?: {
+    readonly complete: (params: {
+      readonly ref: { readonly type: string; readonly name?: string; readonly uri?: string };
+      readonly argument: { readonly name: string; readonly value: string };
+      readonly context?:
+        | { readonly arguments?: Readonly<Record<string, string>> | undefined }
+        | undefined;
+    }) => {
+      readonly values: ReadonlyArray<string>;
+      readonly total?: number;
+      readonly hasMore?: boolean;
+    };
+    readonly hangs?: true;
+  };
   /** List `big`, `hang`, `typed` and `region` after `echo` and `shout`; they answer whether listed or not. */
   readonly listMore?: boolean;
   /** What the server says of itself: its `instructions` (default `Use the echo tool.`) and the name in its `serverInfo`. */
@@ -447,6 +466,8 @@ const fakeMcp = (
   }
 
   if (options.prompts !== undefined) capabilities.prompts = { listChanged: true };
+
+  if (options.completions !== undefined) capabilities.completions = {};
 
   if (options.extensions !== undefined) capabilities.extensions = { ...options.extensions };
 
@@ -603,6 +624,31 @@ const fakeMcp = (
       unsubscribed.push(request.params.uri);
 
       return {};
+    });
+  }
+
+  if (options.completions !== undefined) {
+    const { completions } = options;
+
+    server.setRequestHandler("completion/complete", async (request, ctx) => {
+      if (completions.hangs === true) {
+        return untilAborted(ctx.mcpReq.signal, () =>
+          options.cancelled?.push(request.params.argument.name),
+        );
+      }
+
+      const { values, total, hasMore } = completions.complete(request.params);
+
+      // oxlint-disable-next-line anti-slop/no-known-value-widening -- the optional keys are added below, as the fake was told
+      const completion: { values: string[]; total?: number; hasMore?: boolean } = {
+        values: [...values],
+      };
+
+      if (total !== undefined) completion.total = total;
+
+      if (hasMore !== undefined) completion.hasMore = hasMore;
+
+      return { completion };
     });
   }
 

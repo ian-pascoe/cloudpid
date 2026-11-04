@@ -333,6 +333,8 @@ export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostA
  *   answers `request({ op: "resend" })` (`mcp-server-requests.md` → Elicitation requests, URL mode).
  * - `no_start`: a `resources/list`, `resources/templates/list` or `resources/read` with `ctx.start: false` never starts a
  *   stdio server's Container (`mcp-in-a-session.md` → Attached resources, Resource links and embedded resources).
+ * - `completions`: the host answers `request({ op: "completion/complete" })`, which never starts a Container, and says in
+ *   each server's inventory whether it declares the capability (`mcp-in-a-session.md` → Arguments and completions).
  *
  * The Session side names those of these its MCP tools use: `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`) the ones
  * they cannot be built without, `MCP_OPTIONAL_TOOL_FEATURES` the ones it does without when the host lacks them (`resources`).
@@ -349,6 +351,7 @@ export const MCP_HOST_FEATURES: ReadonlyArray<string> = [
   "sampling",
   "watches",
   "no_start",
+  "completions",
 ];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */
@@ -548,6 +551,8 @@ export const McpServerInventory = Schema.Struct({
   counts: Schema.Struct({ tools: Schema.Int, prompts: Schema.Int }),
   /** Whether the server offers resources. */
   resources: Schema.Boolean,
+  /** Whether the server declares the `completions` capability: absent for a host from before it, which reads as not. */
+  completions: Schema.optionalKey(Schema.Boolean),
   problems: Schema.Array(McpInventoryProblem),
   /** The `tools` part: the tools a Session registers, bounds applied. */
   tools: JsonRecord.pipe(Schema.Array, Schema.optionalKey),

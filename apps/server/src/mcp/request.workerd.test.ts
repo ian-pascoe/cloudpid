@@ -161,7 +161,7 @@ describe("a request", () => {
 
     // An `op` a later build sends, as it crosses the edge to this host (parsed, so it is not typed as ours).
     const later: typeof McpHostRequest.Encoded = JSON.parse(
-      JSON.stringify({ ...call("docs", "search"), op: "completion/complete" }),
+      JSON.stringify({ ...call("docs", "search"), op: "logging/setLevel" }),
     );
 
     expect(await tagOf(host, later)).toBe("HostUnsupported");
@@ -461,6 +461,125 @@ describe("a prompts/get request", () => {
       _tag: "CallFailed",
       error: { _tag: "ServerError", code: -32602 },
     });
+  });
+});
+
+/** A `completion/complete` of `argument` of the prompt `prompt` on `server`, as a Session sends it for the owner's form. */
+const complete = (
+  server: string,
+  prompt: string,
+  value: string,
+): typeof McpHostRequestInput.Encoded => ({
+  op: "completion/complete",
+  server,
+  params: {
+    ref: { type: "ref/prompt", name: prompt },
+    argument: { name: "repo", value },
+    context: { arguments: { owner: "ian" } },
+  },
+  ctx: { origin: "owner", session: "s-1", conversation: "1", workspace: "ws:w-1", start: false },
+});
+
+/** A host whose set is `entries`, each discovered with the capabilities `capabilities`. */
+const discoveredWith = async (
+  capabilities: Schema.Json,
+  ...entries: ReadonlyArray<McpSetEntry>
+) => {
+  const host = freshHost();
+
+  await host.apply(setOf(...entries));
+
+  const script = found([]);
+
+  for (const each of entries) {
+    await host.scriptEngine(urlOf(each.name), [
+      {
+        ...script,
+        // SAFETY: a discovered answer, encoded as the engine sends it.
+        result: { ...script.result, capabilities } as typeof McpEngineDiscoverResult.Encoded,
+      },
+    ]);
+  }
+
+  await host.requestStart({
+    caller: { session: "s-1", conversation: "1", workspace: "ws:w-1" },
+    waitFor: entries.map((each) => each.name),
+    waitMs: 5000,
+  });
+
+  return host;
+};
+
+describe("a completion/complete request", () => {
+  it("sends the owner's completion to a server that declares the capability, bounded at 5 s, with no answers, and answers the server's result", async () => {
+    const host = await discoveredWith(
+      { prompts: {}, completions: {} },
+      entry("docs", { timeout: 60 }),
+    );
+
+    const result = { completion: { values: ["cloud"], hasMore: false } };
+
+    await host.scriptRequest(urlOf("docs"), [
+      {
+        result: {
+          kind: "complete",
+          result: { kind: "inline", value: result },
+          cacheable: false,
+          fetchedAt: Date.now(),
+          state: {},
+        },
+      },
+    ]);
+
+    expect(await host.request(complete("docs", "review", "cl"), {})).toEqual({
+      _tag: "Completed",
+      result: { kind: "inline", value: result },
+    });
+
+    const [sent] = await host.engineRequests();
+
+    expect(sent?.request).toEqual({
+      op: "completion/complete",
+      ref: { type: "ref/prompt", name: "review" },
+      argument: { name: "repo", value: "cl" },
+      context: { arguments: { owner: "ian" } },
+      ctx: { origin: "owner", conversation: "1", workspace: "ws:w-1" },
+    });
+    expect(sent?.target.timeoutMs ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(5_000);
+  });
+
+  it("never asks a server that does not declare completions: it answers Unsupported and sends nothing", async () => {
+    const host = await discoveredWith({ prompts: {} }, entry("docs"));
+
+    expect(await host.request(complete("docs", "review", "cl"), {})).toMatchObject({
+      _tag: "CallFailed",
+      error: { _tag: "Unsupported" },
+    });
+    expect(await host.engineRequests()).toEqual([]);
+  });
+
+  it("refuses a server that is unknown or off and a malformed request, sending nothing", async () => {
+    const host = await discoveredWith(
+      { completions: {} },
+      entry("docs"),
+      entry("off", { enabled: false }),
+    );
+
+    expect(await tagOf(host, complete("nowhere", "review", ""))).toBe("UnknownServer");
+    expect(await tagOf(host, complete("off", "review", ""))).toBe("NotAllowed");
+    // SAFETY: a request whose params are not a completion's, as a broken caller sends it.
+    expect(await tagOf(host, { ...complete("docs", "review", ""), params: {} } as never)).toBe(
+      "NotAllowed",
+    );
+    expect(await host.engineRequests()).toEqual([]);
+  });
+
+  it("lists `completions` in the server's inventory only when it declares it", async () => {
+    const host = await discoveredWith({ completions: {} }, entry("docs"));
+    const quiet = await discoveredWith({ prompts: {} }, entry("docs"));
+
+    expect((await host.servers({ parts: [] })).servers[0]).toMatchObject({ completions: true });
+    expect((await quiet.servers({ parts: [] })).servers[0]).not.toHaveProperty("completions");
   });
 });
 

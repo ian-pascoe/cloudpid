@@ -68,8 +68,8 @@ const entryOf = (
     name,
     description: Predicate.isString(prompt["description"]) ? prompt["description"] : "",
     arguments: argumentsOf(prompt),
-    // Completions are the next ticket's: the host does not tell the Session what a server declares yet.
-    completions: false,
+    // Whether the server declares `completions`, as the host's inventory says (a host from before it says nothing: `false`).
+    completions: server.completions === true,
   };
 
   if (Predicate.isString(prompt["title"])) entry.title = prompt["title"];

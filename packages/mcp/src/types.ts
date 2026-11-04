@@ -687,6 +687,9 @@ export const MCP_LIST_WALK_TIMEOUT_MS = 120_000;
 /** What a `tasks/*` request may take, in the core and at the host: 30 s each (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions). */
 export const MCP_TASK_TIMEOUT_MS = 30_000;
 
+/** What a `completion/complete` waits at most (or the entry's lower `timeout`): 5 s, as the form shows it ("Suggestions unavailable" after). */
+export const MCP_COMPLETION_TIMEOUT_MS = 5_000;
+
 /** What a `prompts/get` waits at most (or the entry's lower `timeout`): `docs/architecture/mcp-connections.md` → Requests and Legacy sessions. */
 export const MCP_PROMPT_GET_TIMEOUT_MS = 30_000;
 
@@ -727,6 +730,29 @@ export const McpEngineListOp = Schema.Literals([
   "resources/list",
   "resources/templates/list",
 ]);
+
+/**
+ * What a `completion/complete` completes an argument of: a prompt by `name`, or a resource template by its
+ * `uriTemplate` (`docs/architecture/mcp-in-a-session.md` → Arguments and completions).
+ */
+export const McpCompletionRef = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("ref/prompt"), name: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("ref/resource"), uri: Schema.String }),
+]);
+
+export type McpCompletionRef = typeof McpCompletionRef.Type;
+
+/** The argument being completed and what the owner has typed of it. */
+export const McpCompletionArgument = Schema.Struct({ name: Schema.String, value: Schema.String });
+
+export type McpCompletionArgument = typeof McpCompletionArgument.Type;
+
+/** The other arguments' values, for a server whose suggestions depend on them. */
+export const McpCompletionContext = Schema.Struct({
+  arguments: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+});
+
+export type McpCompletionContext = typeof McpCompletionContext.Type;
 
 /** What `request` is asked to do. A new operation is a new `op` (`docs/architecture/mcp.md` → Deploys). */
 export const McpEngineRequest = Schema.Union([
@@ -794,6 +820,17 @@ export const McpEngineRequest = Schema.Union([
     op: Schema.Literal("prompts/get"),
     name: Schema.String,
     arguments: Schema.Record(Schema.String, Schema.String),
+    ctx: McpCallContext,
+  }),
+  /**
+   * One `completion/complete`: the suggestions for `argument` of the prompt or resource template `ref` names, given the
+   * other arguments in `context`. The value is the server's `CompleteResult`. A read: the core never retries it.
+   */
+  Schema.Struct({
+    op: Schema.Literal("completion/complete"),
+    ref: McpCompletionRef,
+    argument: McpCompletionArgument,
+    context: Schema.optionalKey(McpCompletionContext),
     ctx: McpCallContext,
   }),
   /**
@@ -1366,6 +1403,26 @@ export const McpHostPromptGet = Schema.Struct({
 export type McpHostPromptGet = typeof McpHostPromptGet.Type;
 
 /**
+ * `request({ op: "completion/complete" })`: suggestions for `params.argument` of the prompt or resource template
+ * `params.ref` of server `server`, the owner's (`docs/architecture/mcp-in-a-session.md` → Arguments and completions).
+ * Answered `Completed` with the server's `CompleteResult` as its result. It never starts a Container, whatever `ctx.start`
+ * says, and is bounded at `MCP_COMPLETION_TIMEOUT_MS`; a server that does not declare `completions` is not asked
+ * (`CallFailed` with `Unsupported`).
+ */
+export const McpHostCompletion = Schema.Struct({
+  op: Schema.Literal("completion/complete"),
+  server: Schema.String,
+  params: Schema.Struct({
+    ref: McpCompletionRef,
+    argument: McpCompletionArgument,
+    context: Schema.optionalKey(McpCompletionContext),
+  }),
+  ctx: McpHostRequestContext,
+});
+
+export type McpHostCompletion = typeof McpHostCompletion.Type;
+
+/**
  * `request({ op: "resources/read" })`: read the resource `params.uri` of server `server`, whether or not any list names it.
  * With `params.watch: true` the host starts a Resource watch on it (subscribing first, then reading) and answers
  * `Completed.watch` with whether it started; with `false` it ends the conversation's watch and still reads
@@ -1436,6 +1493,7 @@ export const McpHostRequestInput = Schema.Union([
   McpHostAppHtmlRequest,
   ...McpHostResourceRequest.members,
   McpHostPromptGet,
+  McpHostCompletion,
 ]);
 
 export type McpHostRequestInput = typeof McpHostRequestInput.Type;

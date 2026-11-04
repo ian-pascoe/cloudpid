@@ -16,6 +16,8 @@ import {
   type CallToolRequestOptions,
   type CallToolRequestParams,
   type CallToolResult,
+  type CompleteRequest,
+  type CompleteResult,
   Client,
   type ConnectOptions,
   type CreateMessageRequestParams,
@@ -87,6 +89,7 @@ import {
   MCP_LISTEN_ACK_MS,
   MCP_RESUME_STATE_EXPIRED,
   MCP_RESUME_STATE_MAX_BYTES,
+  MCP_COMPLETION_TIMEOUT_MS,
   MCP_LIST_WALK_TIMEOUT_MS,
   MCP_SAMPLING_REFUSED,
   MCP_SAMPLING_WAIT_MS,
@@ -94,6 +97,9 @@ import {
   MCP_TASKS_EXTENSION,
   type McpCallContext,
   type McpAuthChallenge,
+  type McpCompletionArgument,
+  type McpCompletionContext,
+  type McpCompletionRef,
   type McpError,
   type McpInputAnswer,
   type McpInputRequest,
@@ -453,6 +459,19 @@ export interface McpConnection {
     args: Readonly<Record<string, string>>,
     ctx: McpCallContext,
   ) => Effect.Effect<Complete<GetPromptResult>, McpError>;
+  /**
+   * One `completion/complete`: suggestions for `argument` of the prompt or resource template `ref` names, given the other
+   * arguments in `context` (`docs/architecture/mcp-in-a-session.md` → Arguments and completions). A server that does not
+   * declare `completions` is not asked: it fails `Unsupported`. Never sent again after a cut ("Completions are never
+   * retried"), and bounded at `MCP_COMPLETION_TIMEOUT_MS` or the entry's lower `timeout`; a caller that interrupts it has
+   * the SDK send `notifications/cancelled`. It declares nothing the server could ask a question with.
+   */
+  readonly complete: (
+    ref: McpCompletionRef,
+    argument: McpCompletionArgument,
+    context: McpCompletionContext | undefined,
+    ctx: McpCallContext,
+  ) => Effect.Effect<Complete<CompleteResult>, McpError>;
   /**
    * Opens a listen for `filter`, telling `onEvent` of each resource update and list change, until `closed`
    * (`docs/architecture/mcp-in-a-session.md` → Resource watches). A Modern server is sent `subscriptions/listen`, and
@@ -2552,6 +2571,46 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       } satisfies Complete<GetPromptResult>;
     });
 
+  /** A completion, once: a read the server may answer from its own list, which must never be sent again after a cut. */
+  const complete = (
+    ref: McpCompletionRef,
+    argument: McpCompletionArgument,
+    context: McpCompletionContext | undefined,
+    ctx: McpCallContext,
+  ) =>
+    Effect.gen(function* () {
+      if (live.capabilities.completions === undefined) {
+        return yield* Unsupported.make({ message: "The server does not offer completions" });
+      }
+
+      const meta = metaFor(noDeferral(ctx));
+      const sent: Mutable<CompleteRequest["params"]> = { ref, argument };
+
+      if (context?.arguments !== undefined) sent.context = { arguments: { ...context.arguments } };
+
+      if (meta !== undefined) sent._meta = meta;
+
+      const timeoutMs = Math.min(
+        target.timeoutMs ?? MCP_COMPLETION_TIMEOUT_MS,
+        MCP_COMPLETION_TIMEOUT_MS,
+      );
+
+      // `mayHaveRun: true` is not a claim about the server: it is what stops the request being sent once more after a cut.
+      const result = yield* request(
+        (client, signal) => client.complete(sent, { signal, timeout: timeoutMs }),
+        true,
+      );
+
+      const fetchedAt = yield* Clock.currentTimeMillis;
+
+      return {
+        kind: "complete",
+        value: result,
+        cacheable: false,
+        fetchedAt,
+      } satisfies Complete<CompleteResult>;
+    });
+
   /**
    * The Modern listen: `subscriptions/listen`, acknowledged within `MCP_LISTEN_ACK_MS`. An era drop or a lost session
    * recovers as any request's does.
@@ -2696,6 +2755,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     listPage,
     readResource,
     getPrompt,
+    complete,
     listen,
   };
 
