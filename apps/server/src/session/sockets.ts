@@ -29,6 +29,7 @@ import {
   type McpAppRequestAnswer,
   type McpAppTool,
   type McpTask,
+  type McpWatchEntry,
   type McpElicitationRequest,
   type McpSamplingRequest,
   type McpSamplingSessionGrant,
@@ -83,6 +84,7 @@ import { isWithdrawn, SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
 import { McpApps } from "./mcp-apps.ts";
+import { McpWatches } from "./mcp-watches.ts";
 import { ViewedStore } from "./viewed.ts";
 
 /**
@@ -304,6 +306,12 @@ const ownerCommandAnswer = <Outcome extends string, Took extends Outcome>(
   return Effect.fail(SessionError.make({ operation, message: refusals[refused] }));
 };
 
+/** The `mcp_watches` message for `watches`, which every client is sent after `hello` and whenever a watch starts or ends. */
+export const mcpWatchesMessage = (watches: ReadonlyArray<McpWatchEntry>): ServerMessage => ({
+  type: "mcp_watches",
+  watches,
+});
+
 /** The `mcp_apps` message for `conversationId`'s App calls, which each client watching it is sent. */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a plain helper, not an Effect operator.
 export const mcpAppsMessage = (
@@ -467,6 +475,7 @@ export const sessionSocketsLayer = (
   | AnnotationStore
   | ViewedStore
   | McpApps
+  | McpWatches
   | SessionReviews
 > =>
   Layer.effect(
@@ -479,6 +488,7 @@ export const sessionSocketsLayer = (
       const annotations = yield* AnnotationStore;
       const viewed = yield* ViewedStore;
       const mcpApps = yield* McpApps;
+      const mcpWatches = yield* McpWatches;
       const reviews = yield* SessionReviews;
       const secrets = yield* Secrets;
       const handoffs = yield* BrowserHandoffs;
@@ -997,6 +1007,14 @@ export const sessionSocketsLayer = (
               .pipe(Effect.as(null));
           case "mcp_sampling_get":
             return mcpSampling.view(message.request).pipe(Effect.map((view) => view ?? null));
+          case "mcp_watch_end":
+            return mcpWatches
+              .end({
+                conversation: message.conversationId,
+                server: message.server,
+                uri: message.uri,
+              })
+              .pipe(Effect.as(null));
           case "mcp_sampling_revoke":
             return mcpQuestions.revokeSampling(message.server).pipe(Effect.as(null));
           case "mcp_sign_in_answer":
@@ -1267,6 +1285,9 @@ export const sessionSocketsLayer = (
 
         // The inventory's App tools, an empty list too, so a client that reconnects drops one a server no longer has.
         yield* send(server, mcpAppToolsMessage(yield* mcpApps.tools));
+
+        // The agent's Resource watches, an empty list too, so a client that reconnects drops one that ended meanwhile.
+        yield* send(server, mcpWatchesMessage(yield* mcpWatches.list));
 
         // Where the Last run stands, null too, so a client that reconnects drops one that was replaced meanwhile.
         yield* send(server, { type: "last_run", lastRun: yield* runs.lastRun });

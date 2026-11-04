@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- assertions over what the fake socket recorded, in native arrays.
 
-import { EMPTY_VIEW, SESSION_DELETED_CLOSE_CODE } from "@cloudpid/protocol";
+import { type ConversationId, EMPTY_VIEW, SESSION_DELETED_CLOSE_CODE } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -796,6 +796,40 @@ describe("a Session connection", () => {
         const read = yield* Fiber.await(found);
 
         expect(Exit.isSuccess(read) ? read.value : undefined).toEqual(record);
+      }),
+    );
+  });
+
+  describe("MCP Resource watches", () => {
+    // SAFETY: a conversation's ID is a positive integer, which the socket carries as a number.
+    const watch = { conversationId: 1 as ConversationId, server: "docs", uri: "file:///guide.md" };
+
+    it.effect("keeps the list of a closed socket until the next one says, and sends the ✕", () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+
+        yield* watching(latest());
+        yield* latest().say({ type: "mcp_watches", watches: [watch] });
+        yield* latest().drop();
+
+        expect(state().mcpWatches).toEqual([watch]);
+
+        yield* advance(60_000);
+        yield* watching(latest());
+        yield* latest().say({ type: "mcp_watches", watches: [watch] });
+
+        const ending = yield* Effect.forkChild(client.endMcpWatch(watch));
+
+        yield* settle;
+
+        const ended = latest().commands().at(-1);
+
+        expect(ended).toEqual({ type: "mcp_watch_end", id: expect.any(String), ...watch });
+        yield* latest().say({ type: "result", id: ended?.id, result: null });
+        expect(Exit.isSuccess(yield* Fiber.await(ending))).toBe(true);
+
+        yield* latest().say({ type: "mcp_watches", watches: [] });
+        expect(state().mcpWatches).toEqual([]);
       }),
     );
   });

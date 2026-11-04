@@ -17,6 +17,7 @@ import {
   type McpHostRequestInput,
   type McpHostRequestResult,
   type McpRequestStart,
+  type McpRequestStartAnswer,
   type McpServerInventory,
   type McpServersRequest,
   UnknownServer,
@@ -223,6 +224,7 @@ export const fakeMcpHost = (initial: ReadonlyArray<FakeMcpServer> = []) => {
   let servers = initial;
   let features: ReadonlyArray<string> = MCP_HOST_FEATURES;
   let failing = false;
+  let watches: McpRequestStartAnswer["watches"] = { changed: [], ended: [] };
   let answer = echo;
   let applyAnswer = applied;
   const calls: Array<FakeMcpCall> = [];
@@ -250,7 +252,7 @@ export const fakeMcpHost = (initial: ReadonlyArray<FakeMcpServer> = []) => {
                   },
                 ]),
               ),
-              watches: { changed: [], ended: [] },
+              watches,
             };
       }),
     servers: (input) =>
@@ -303,6 +305,10 @@ export const fakeMcpHost = (initial: ReadonlyArray<FakeMcpServer> = []) => {
     },
     features: (next: ReadonlyArray<string>) => {
       features = next;
+    },
+    /** What `requestStart` says of the caller's Resource watches. */
+    watches: (next: McpRequestStartAnswer["watches"]) => {
+      watches = next;
     },
     fail: (next: boolean) => {
       failing = next;

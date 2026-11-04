@@ -25,11 +25,13 @@ import {
   type McpHostClientService,
   type McpNotices,
   type McpQuestionsService,
+  type McpRequestStartInput,
   type McpSamplingBinding,
   type McpSamplingService,
   type McpSignInsService,
   type McpTasksOptions,
   type McpToolOptions,
+  type McpWatchRecorder,
   type McpToolsService,
   type McpToolsStore,
   type SweepHarness,
@@ -252,6 +254,11 @@ export type SessionMcpOptions = {
   readonly session: string | undefined;
   /** The `McpHostClient` of Environment `environment`'s host. */
   readonly host: (environment: string) => McpHostClientService;
+  /**
+   * Runs an Effect the tools start from a hook of the harness (a model request's touch of the conversation's Resource
+   * watches) with the Session's services, its logger and tracer; a bare `Effect.runPromise` without.
+   */
+  readonly run?: (<A>(effect: Effect.Effect<A>) => Promise<A>) | undefined;
   /** Where the Session keeps what its MCP tools were built from. */
   readonly kv: McpToolsKv;
   /**
@@ -276,6 +283,12 @@ export type SessionMcpOptions = {
   readonly apps?: McpAppRecorder;
   /** What follows the MCP tasks of the agent's calls (`./mcp-tasks.ts`): with it, a root call is offered one. */
   readonly tasks?: McpTasksOptions;
+
+  /**
+   * The Session's Resource watches: with it, the tools say what they start and what the host ends, and a conversation
+   * that still holds a watch asks the host at its request start even with no server left (`./mcp-watches-store.ts`).
+   */
+  readonly watches?: McpWatchRecorder;
 };
 
 /** The Session host's MCP tools, and the page of an App record, which the sockets serve through the same host client. */
@@ -350,6 +363,12 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
       };
     }
 
+    if (options.watches !== undefined) toolOptions.watches = options.watches;
+
+    if (options.session !== undefined) toolOptions.session = options.session;
+
+    if (options.run !== undefined) toolOptions.run = options.run;
+
     const tools = makeMcpTools(
       options.host(environment),
       kvMcpToolsStore(options.kv, environment),
@@ -380,8 +399,11 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     // A Session in no Environment has no MCP host to ask.
     if (environment === null) return Effect.void;
 
-    const startFor = (workspace: string | null) =>
-      toolsOf(environment).requestStart({
+    // A conversation that holds a watch asks the host even with no server left: the host tells it what changed.
+    const watching = options.watches?.has(String(conversationId)) === true;
+
+    const startFor = (workspace: string | null) => {
+      const input: Mutable<McpRequestStartInput> = {
         // Not read without servers, whose host is never asked. A subagent's conversation asks as the Session's own: the
         // inventory is the Environment's, shared (D13); its calls name its own Subagent Workspace (`McpToolOptions.ready`).
         caller: {
@@ -393,7 +415,12 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
         servers: workspace === null ? 0 : servers,
         offered: values.toolSearch.offered,
         ready: workspace === null ? Effect.succeed(true) : readied(workspace),
-      });
+      };
+
+      if (watching) input.watching = true;
+
+      return toolsOf(environment).requestStart(input);
+    };
 
     if (servers === 0) return startFor(null);
 

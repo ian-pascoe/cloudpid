@@ -31,6 +31,7 @@ import {
   type McpListing,
   mcpServersNotice,
 } from "./servers.ts";
+import { MCP_WATCHES_KIND, MCP_WATCHES_NOTICE } from "./watches.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -71,6 +72,15 @@ export type McpNotices = {
     conversation: ConversationId,
     note: { readonly requestId: string; readonly entry: EntryDraft },
   ) => Promise<void>;
+  /**
+   * Tell `conversation` the news of its Resource watches (`./watches.ts`), `text` being the notice: one `write` submission,
+   * placed at the next boundary while the conversation is busy and at once when it is idle, never starting a Run.
+   * Nothing is written for a conversation that is gone.
+   */
+  readonly watches?: (input: {
+    readonly conversation: ConversationId;
+    readonly text: string;
+  }) => Promise<void>;
 };
 
 /** How many conversations a check reads at once. */
@@ -270,6 +280,23 @@ export const mcpNotices = (harness: Harness): McpNotices => {
       await Promise.all(Arr.makeBy(Math.min(CHECK_CONCURRENCY, conversations.length), worker));
 
       return results;
+    },
+    watches: async ({ conversation: id, text }) => {
+      const conversation = await harness.conversation(id, context);
+
+      if (conversation === undefined) return;
+
+      await conversation.submit(
+        {
+          type: "write",
+          entry: {
+            kind: MCP_WATCHES_KIND,
+            model: [{ role: "user", content: text, timestamp: Date.now() }],
+            data: { notice: MCP_WATCHES_NOTICE, from: "mcp" },
+          },
+        },
+        context,
+      );
     },
     conversations: () =>
       harness.commit(async (tx) => {

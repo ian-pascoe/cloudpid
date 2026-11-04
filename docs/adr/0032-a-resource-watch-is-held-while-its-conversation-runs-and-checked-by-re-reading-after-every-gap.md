@@ -22,3 +22,7 @@ An agent watches an MCP resource by reading it with `read_mcp_resource { watch: 
 - A resource whose content differs on every read is reported changed after every gap.
 - Watches end after 7 days without a request in their conversation, checked at its next request; nothing expires them by alarm.
 - Starting a Run on a resource change is left to later trigger work, and only adds to this.
+
+## As built
+
+The Session keeps its own list of the watches its agent started (for Session details and for its ends), the host's rows staying the truth, and ends them at the host (`apply({ kind: "end_watches" })`) for the owner's ✕, a deleted subagent, an archived or deleted Session and a moved Session branch; `docs/architecture/mcp-in-a-session.md` → Resource watches has the detail. One consequence the decision did not name: a branch the active one moved off loses its watches, and moving back does not restore them.

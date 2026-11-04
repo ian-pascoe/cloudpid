@@ -136,6 +136,8 @@ export const stopConversation = async (
 export type OwnerDeletion = {
   readonly deleted: ReadonlyArray<string>;
   readonly kept: ReadonlyArray<string>;
+  /** The conversations of the agents deleted: what they held (Resource watches, say) is let go. */
+  readonly conversations: ReadonlyArray<ConversationId>;
 };
 
 /**
@@ -156,7 +158,7 @@ export const deleteAgent = async (
   const agent = (await readState(harness, context)).agents[agentId];
 
   if (agent === undefined || agentId === ROOT_AGENT || agent.workspace?.id !== workspace) {
-    return { deleted: [], kept: [] };
+    return { deleted: [], kept: [], conversations: [] };
   }
 
   await stopConversation(harness, agent.conversationId, { subagents: true }, context, beforeAbort);
@@ -188,5 +190,9 @@ export const deleteAgent = async (
     }
   }
 
-  return { deleted: Arr.map(gone, (each) => each.id), kept };
+  return {
+    deleted: Arr.map(gone, (each) => each.id),
+    kept,
+    conversations: Arr.map(gone, (each) => each.conversationId),
+  };
 };

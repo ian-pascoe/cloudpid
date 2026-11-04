@@ -518,6 +518,8 @@ export type SessionHostOptions<R = never> = {
    * it copies, a page of entries at a time.
    */
   readonly apps?: McpAppCopies | undefined;
+  /** What the Session lets go of for a conversation its active branch moved off: its Resource watches, silently. */
+  readonly onBranchLeft?: ((conversation: ConversationId) => Effect.Effect<void>) | undefined;
   /**
    * When the object must wake although no work is live, such as when a held Secret expires; the alarm is deleted when
    * this is undefined too.
@@ -1229,6 +1231,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     preparing: (conversation) => admission.isPreparing(conversation),
     beforeAbort,
     inArrivalOrder,
+    left: options.onBranchLeft,
   });
 
   const { active, treeState } = branches;

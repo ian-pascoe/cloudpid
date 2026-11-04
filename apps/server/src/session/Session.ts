@@ -95,6 +95,7 @@ import { importStaging } from "./import-staging.ts";
 import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
 import { mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { sessionMcpApps } from "./mcp-apps-store.ts";
+import { sessionMcpWatches } from "./mcp-watches-store.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import {
@@ -648,14 +649,25 @@ export const SessionLive = Session.make(
         // (`./mcp-tasks.ts`).
         const mcpTasks = sessionMcpTasks({ storage: kv });
 
+        // The Resource watches the agent started: listed here, held by the hosts, ended through them
+        // (`./mcp-watches-store.ts`).
+        const mcpWatches = sessionMcpWatches({
+          storage: kv,
+          sockets: state.raw,
+          session: name,
+          host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
+        });
+
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
         const mcpTools = sessionMcp({
           apps: mcpApps.service,
           tasks: mcpTasks.options,
+          watches: mcpWatches.service,
           questions: mcpQuestions.service,
           sampling: mcpSampling.service,
           signIns: mcpSignIns.service,
           session: name,
+          run: (effect) => runtime.runPromise(effect),
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
           kv,
           workspace: Effect.tryPromise(() => placement()).pipe(
@@ -1000,6 +1012,8 @@ export const SessionLive = Session.make(
                 reload: reloadSessionExtensions,
                 mcp: mcpTools,
                 apps: mcpApps.service,
+                // The Resource watches of a branch the Session moved off are ended at the hosts.
+                onBranchLeft: mcpWatches.service.endConversation,
                 env: workspace.env,
                 // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,
@@ -1036,8 +1050,8 @@ export const SessionLive = Session.make(
             // The MCP servers' questions, checked against the Secrets, which are built below.
             // The sampler too, which redacts its records of the same Secrets.
             Layer.provideMerge(Layer.merge(mcpQuestions.layer, mcpSampling.layer)),
-            // The App records, redacted of the same Secrets.
-            Layer.provideMerge(mcpApps.layer),
+            // The App records, redacted of the same Secrets, and the Resource watches' list the sockets send and end.
+            Layer.provideMerge(Layer.merge(mcpApps.layer, mcpWatches.layer)),
             // The Sign-in requests, which redact the agent's words of the same Secrets.
             // The MCP tasks, which redact what a server writes of them of the same Secrets.
             Layer.provideMerge(Layer.merge(mcpSignIns.layer, mcpTasks.layer)),
@@ -1069,7 +1083,9 @@ export const SessionLive = Session.make(
         const mcp = Context.get(services, SessionMcp);
         const imports = Context.get(services, SessionImport);
 
-        wipeHere = destroySession({ state: state.raw, closeBrowser: browser.close }).pipe(
+        wipeHere = mcpWatches.service.endAll.pipe(
+          // Its watches are ended at the hosts first: the list goes with the storage.
+          Effect.andThen(destroySession({ state: state.raw, closeBrowser: browser.close })),
           Effect.provideService(SessionHost, host),
         );
 
@@ -1115,7 +1131,14 @@ export const SessionLive = Session.make(
           webSocketClose: (socket) => invoked("session.close", sockets.drop(socket.ws)),
           webSocketError: (socket) => invoked("session.close", sockets.drop(socket.ws)),
           stopAll: () =>
-            invoked("session.stop", stopSession.pipe(Effect.provideService(SessionHost, host))),
+            invoked(
+              "session.stop",
+              stopSession.pipe(
+                Effect.provideService(SessionHost, host),
+                // An archived Session keeps no Resource watch at the hosts.
+                Effect.tap(() => mcpWatches.service.endAll),
+              ),
+            ),
           forkSource: (request) => invoked("session.fork.source", host.forkSource(request)),
           exportEntries: (request) => invoked("session.fork.export", host.exportEntries(request)),
           importStart: () => invoked("session.fork.start", host.importStart),
@@ -1131,8 +1154,13 @@ export const SessionLive = Session.make(
             invoked(
               "session.subagent.delete",
               host.deleteSubagent(agent, workspace).pipe(
-                // The drafts addressed to it go with it.
+                // The drafts addressed to it go with it, and so do the Resource watches of its conversations.
                 Effect.tap(() => reviews.prune),
+                Effect.tap((deletion) =>
+                  Effect.forEach(deletion.conversations, mcpWatches.service.endConversation, {
+                    discard: true,
+                  }),
+                ),
                 Effect.map((deletion) => deletion.kept),
               ),
             ),

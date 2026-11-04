@@ -36,7 +36,11 @@
 // @effect-diagnostics missingPipeableSignature:off -- builders over plain values.
 import { samplingOf } from "@cloudpid/config";
 import type { McpCaller, McpRequestStart } from "@cloudpid/mcp/types";
-import type { McpAppHtmlAnswer, McpAppRequestAnswer } from "@cloudpid/protocol";
+import {
+  conversationOfText,
+  type McpAppHtmlAnswer,
+  type McpAppRequestAnswer,
+} from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
@@ -60,6 +64,7 @@ import {
   type TaskOwnerHarness,
 } from "./mcp/task-owner.ts";
 import { type SweepHarness, sweepTasks } from "./mcp/task-sweep.ts";
+import { MCP_WATCHES_FEATURE, type McpWatchNews, newsOf, watchesNotice } from "./mcp/watches.ts";
 import {
   EMPTY_LISTING,
   introFeaturesOf,
@@ -93,6 +98,13 @@ export { appToolsOf } from "./mcp/app-tools.ts";
 export { MCP_APP_FEATURE, type McpAppHtmlInput, type McpAppRecorder } from "./mcp/apps.ts";
 
 export { type McpAppRequestInput } from "./mcp/app-request.ts";
+
+export {
+  MCP_WATCHES_FEATURE,
+  MCP_WATCHES_KIND,
+  type McpWatched,
+  type McpWatchRecorder,
+} from "./mcp/watches.ts";
 
 export {
   createMcpSignIns,
@@ -218,10 +230,17 @@ export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESEND_FEATURE,
   MCP_SAMPLING_FEATURE,
   MCP_TASKS_FEATURE,
+  MCP_WATCHES_FEATURE,
 ];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */
 export const MCP_WAIT_MS = 10_000;
+
+/** How long a conversation's Resource watches are left untouched between two of its model requests. */
+export const WATCH_TOUCH_MS = 30_000;
+
+/** How long a model request waits on the host's answer to a touch before it goes on without it. */
+const WATCH_TOUCH_TIMEOUT = "5 seconds";
 
 /**
  * What the tools are built from: the inventory's version and servers (what the build reads of them, `McpBuildServer`),
@@ -308,6 +327,11 @@ export type McpRequestStartInput = {
    * answer: the start then calls nothing, and the tools stay as they were built.
    */
   readonly ready: Effect.Effect<boolean>;
+  /**
+   * Whether the conversation has Resource watches: its start then calls the host even where the set has no server, so
+   * the news of its watches (they ended with the set) reaches it.
+   */
+  readonly watching?: boolean | undefined;
 };
 
 /** What a reinstall installs: the `mcp` extension, and the servers for `codemode`'s namespaces. */
@@ -554,8 +578,6 @@ export const makeMcpTools = (
             ((conversation, note) => notices?.write?.(conversation, note) ?? Promise.resolve()),
         };
 
-  const sectionOptions: McpToolOptions = { ...options, tasks, sections: [section] };
-
   /** Keep `next`, read as number `read`, unless a later read was kept. */
   const keep = (read: number, next: McpInventory | undefined) => {
     if (read <= kept) return;
@@ -578,12 +600,87 @@ export const makeMcpTools = (
           ),
     );
 
+  /** Tell `conversation` the news of its Resource watches: the Session's list drops the ended ones, and a notice is written. */
+  const tellWatches = (conversation: string, news: McpWatchNews) =>
+    Effect.gen(function* () {
+      if (news.changes.length === 0 && news.ends.length === 0) return;
+
+      yield* options.watches?.ended(conversation, news.ends) ?? Effect.void;
+
+      const write = notices?.watches;
+      const text = watchesNotice(news);
+      const id = conversationOfText(conversation);
+
+      if (write === undefined || text === "" || id === undefined) return;
+
+      yield* Effect.tryPromise(() => write({ conversation: id, text })).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("The Resource watches notice could not be written", cause),
+        ),
+      );
+    });
+
+  /** When each conversation that holds a watch was last touched, by a request start or a model request. */
+  const touched = new Map<string, number>();
+
+  /**
+   * Before a model request of `conversation`: hold its Resource watches and tell it their news, when it has any and
+   * `watchTouchMs` has passed since the last time. A Run longer than the host's hold, and a subagent's conversation,
+   * which makes no request start, are kept this way; the news is written as the same notice a request start's is. The
+   * host call is stamped before it is made and ends after `WATCH_TOUCH_TIMEOUT`, so a host that is slow or failing costs a
+   * model request that long at most once in the throttle. Never fails: what goes wrong is logged.
+   */
+  const touchWatches = (conversation: string) =>
+    Effect.gen(function* () {
+      const { session } = options;
+
+      if (options.watches?.has(conversation) !== true) {
+        touched.delete(conversation);
+
+        return;
+      }
+
+      if (session === undefined || session === "") return;
+
+      const now = yield* Clock.currentTimeMillis;
+      const last = touched.get(conversation);
+
+      if (last !== undefined && now - last < (options.watchTouchMs ?? WATCH_TOUCH_MS)) return;
+
+      touched.set(conversation, now);
+
+      const started = yield* client
+        .requestStart({ caller: { session, conversation, workspace: "" } })
+        .pipe(Effect.timeout(WATCH_TOUCH_TIMEOUT));
+
+      if (Predicate.isTagged(started, "HostFailed")) return;
+
+      yield* tellWatches(conversation, newsOf(started.watches));
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("The Resource watches could not be held", cause),
+      ),
+    );
+
+  const sectionOptions: McpToolOptions = {
+    ...options,
+    tasks,
+    sections: [section],
+    beforeRequest:
+      options.watches === undefined
+        ? undefined
+        : (conversation) =>
+            options.run === undefined
+              ? Effect.runPromise(touchWatches(conversation))
+              : options.run(touchWatches(conversation)),
+  };
+
   /** What a request start reads: it keeps the newest inventory it can, and may leave the tools as they are. */
   const readInventory = Effect.fn("mcp.tools.read_inventory")(function* (
     input: McpRequestStartInput,
   ) {
     // No servers and no Resource watch: the host is never woken, and a set that emptied drops its tools.
-    if (input.servers === 0) return keep(++taken, undefined);
+    if (input.servers === 0 && input.watching !== true) return keep(++taken, undefined);
 
     // The Workspace did not answer: no host call before it has.
     if (!(yield* input.ready)) return;
@@ -608,6 +705,13 @@ export const makeMcpTools = (
 
     // A host that failed keeps the tools built: a request start never fails for it.
     if (Predicate.isTagged(started, "HostFailed")) return;
+
+    if (options.watches?.has(conversation) === true) {
+      touched.set(conversation, yield* Clock.currentTimeMillis);
+    }
+
+    // What the host says of the conversation's Resource watches reaches it as a notice, and the Session's list.
+    yield* tellWatches(input.caller.conversation, newsOf(started.watches));
 
     if (opening) store.openWindow(conversation, input.window);
 

@@ -1404,7 +1404,7 @@ describe("Subagent Workspaces", () => {
     // A Workspace left under the ID by another agent's spawn deletes no agent that does not work in it.
     expect(
       await deleteAgent(session.harness, "agent-1", "0000000f", workspaces.host, context, noop),
-    ).toEqual({ deleted: [], kept: [] });
+    ).toEqual({ deleted: [], kept: [], conversations: [] });
     expect(workspaces.removed).toEqual([]);
 
     expect(
@@ -1412,6 +1412,7 @@ describe("Subagent Workspaces", () => {
     ).toEqual({
       deleted: ["agent-1"],
       kept: [],
+      conversations: [expect.any(Number)],
     });
     expect((await session.state()).tombstones).toContain("agent-1");
     expect(workspaces.removed).toEqual(["00000001"]);
@@ -1422,6 +1423,7 @@ describe("Subagent Workspaces", () => {
     ).toEqual({
       deleted: [],
       kept: [],
+      conversations: [],
     });
   });
 

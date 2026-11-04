@@ -14,6 +14,7 @@ import {
   type McpSamplingRequest,
   type McpSamplingSessionGrant,
   type McpSignInRequest,
+  type McpWatchEntry,
   type OwnerTabDriver,
   type OwnerTabListing,
   type ClientMessage,
@@ -153,6 +154,8 @@ export interface SessionState {
   readonly mcpSamplingRequests: readonly McpSamplingRequest[];
   /** The Session's grants for MCP servers' Sampling requests (Allow or Refuse in this Session), which Session details list. */
   readonly mcpSamplingGrants: readonly McpSamplingSessionGrant[];
+  /** The Resource watches the agent holds (Session details list them, each with a way to end it), as of the last `mcp_watches`. */
+  readonly mcpWatches: readonly McpWatchEntry[];
   /** The Sign-in requests waiting for the owner: an agent asked them to sign in to an MCP server. */
   readonly mcpSignInRequests: readonly McpSignInRequest[];
   /**
@@ -228,6 +231,7 @@ export const INITIAL_SESSION_STATE: SessionState = {
   mcpElicitationRequests: [],
   mcpSamplingRequests: [],
   mcpSamplingGrants: [],
+  mcpWatches: [],
   mcpSignInRequests: [],
   mcpTasks: [],
   annotations: [],

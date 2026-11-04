@@ -31,6 +31,8 @@ export * from "./mcp-sampling.ts";
 
 export * from "./mcp-sign-in-requests.ts";
 
+export * from "./mcp-watches.ts";
+
 export * from "./mcp-status.ts";
 
 export * from "./mcp-sign-ins.ts";

@@ -55,6 +55,7 @@ import type {
   McpAppCopy,
   McpAppDraft,
   McpAppEntry,
+  McpWatchEntry,
   McpAppMounted,
   Catalog,
   ChangeFile,
@@ -86,6 +87,7 @@ import {
   addTask,
   emptyMcpExtension,
   type McpHostClientService,
+  type McpWatched,
   type McpQuestionsService,
   type McpSamplingService,
   rememberSampling,
@@ -146,6 +148,7 @@ import { samplingTotals, sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import type { McpSignInAskAnswer } from "@cloudpid/mcp/types";
+import { sessionMcpWatches } from "./mcp-watches-store.ts";
 import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpSampling } from "./mcp-sampling.ts";
@@ -823,6 +826,23 @@ export class TestSession extends DurableObject {
     return this.#mcpSampling().service;
   }
 
+  /** The Session's Resource watches, made once, over the test Worker's `McpHost` objects. */
+  #watches: ReturnType<typeof sessionMcpWatches> | undefined;
+
+  #mcpWatches(): ReturnType<typeof sessionMcpWatches> {
+    this.#watches ??= sessionMcpWatches({
+      storage: this.ctx.storage.kv,
+      sockets: this.ctx,
+      session: this.ctx.id.name,
+      host: (environment) =>
+        mcpHostClient(() =>
+          promisedMcpHost(this.env.MCP_HOSTS.getByName(mcpHostName(environment))),
+        ),
+    });
+
+    return this.#watches;
+  }
+
   #mcpTools: ReturnType<typeof sessionMcp> | undefined;
 
   /** Whether this Session has MCP tools (the tests that look at them name it so). */
@@ -850,6 +870,7 @@ export class TestSession extends DurableObject {
         enumerable: true,
         get: () => kv.get<McpTasksTiming>("mcp-task-timing"),
       }),
+      watches: this.#mcpWatches().service,
       questions: this.#mcpQuestions().service,
       sampling: this.#mcpSampling().service,
       signIns: this.#mcpSignIns().service,
@@ -1078,6 +1099,7 @@ export class TestSession extends DurableObject {
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               mcp: this.hostMcp(),
               apps: this.#mcpApps().service,
+              onBranchLeft: this.#mcpWatches().service.endConversation,
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
               // The Workspace's side of the hold cap: the activity noted is counted, and the held stops are what a
@@ -1269,7 +1291,7 @@ export class TestSession extends DurableObject {
             }),
           ),
           Layer.provideMerge(Layer.merge(this.#mcpQuestions().layer, this.#mcpSampling().layer)),
-          Layer.provideMerge(this.#mcpApps().layer),
+          Layer.provideMerge(Layer.merge(this.#mcpApps().layer, this.#mcpWatches().layer)),
           Layer.provideMerge(this.#mcpSignIns().layer),
           Layer.provideMerge(this.#mcpTasks().layer),
           Layer.provideMerge(
@@ -2465,6 +2487,18 @@ export class TestSession extends DurableObject {
         return Arr.map(live?.tools ?? [], (slot) => slot.details);
       }),
     );
+  }
+
+  /** The Resource watches the Session lists, as `mcp_watches` sends them. */
+  watchList(): Promise<ReadonlyArray<McpWatchEntry>> {
+    return Effect.runPromise(this.#mcpWatches().service.list);
+  }
+
+  /** Record a Resource watch as the MCP tools do when the host started one. */
+  async watchStarted(watch: McpWatched): Promise<void> {
+    // The runtime builds the layers the service is provided by.
+    await this.#runtime.runPromise(Effect.void);
+    await Effect.runPromise(this.#mcpWatches().service.started(watch));
   }
 
   /** The App calls of the root conversation, as `mcp_apps` lists them. */
