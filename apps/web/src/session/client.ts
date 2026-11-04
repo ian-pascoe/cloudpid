@@ -24,6 +24,8 @@ import {
   RunDiff,
   SessionTree,
   LiveViewLinks,
+  McpAppHtmlAnswer,
+  McpAppMounted,
   OwnerTabLinks,
   OwnerTabListing,
   type McpPromptRef,
@@ -407,6 +409,16 @@ export interface SessionClient {
   readonly showOwnerTab: (id: string) => Effect.Effect<OwnerTabListing, SessionCommandError>;
   /** Close Owner tab `id` and the windows it opened. */
   readonly closeOwnerTab: (id: string) => Effect.Effect<OwnerTabListing, SessionCommandError>;
+  /**
+   * Mount the App View of call `callId` (`docs/architecture/mcp-apps.md` → Socket messages): its record, its stub once the
+   * record was evicted, or none. The Session marks the record the most recently mounted. Fails as `catalog` does.
+   */
+  readonly mountApp: (callId: string) => Effect.Effect<McpAppMounted, SessionCommandError>;
+  /**
+   * The page of call `callId`'s App record, for the record's own server, and the origin its View is served on: or why there
+   * is none (an answer, not a failure). Fails as `catalog` does.
+   */
+  readonly appPage: (callId: string) => Effect.Effect<McpAppHtmlAnswer, SessionCommandError>;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -494,6 +506,10 @@ const decodeLiveViewLinks = Schema.decodeUnknownOption(LiveViewLinks);
 const decodeOwnerTabLinks = Schema.decodeUnknownOption(OwnerTabLinks);
 
 const decodeOwnerTabListing = Schema.decodeUnknownOption(OwnerTabListing);
+
+const decodeMcpAppMounted = Schema.decodeUnknownOption(McpAppMounted);
+
+const decodeMcpAppHtmlAnswer = Schema.decodeUnknownOption(McpAppHtmlAnswer);
 
 const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
 
@@ -718,6 +734,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "conversationChanges"
         | "lastRun"
         | "todos"
+        | "mcpAppTools"
+        | "mcpApps"
         | "activeBranch"
         | "treeVersion"
         | "copying"
@@ -1070,10 +1088,14 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         update({ viewed: message.viewed });
 
         return;
-      // The App tools and a conversation's App calls (`docs/architecture/mcp-apps.md` → Socket messages) are the App View's
-      // (#482): nothing shows them yet, and a tab that reads them as it does today keeps working.
+      // The App tools and a conversation's App calls (`docs/architecture/mcp-apps.md` → Socket messages), each whole.
       case "mcp_app_tools":
+        update({ mcpAppTools: message.tools });
+
+        return;
       case "mcp_apps":
+        update({ mcpApps: { ...current.mcpApps, [String(message.conversationId)]: message.apps } });
+
         return;
       case "events": {
         const thread = threadWatches.get(message.conversationId);
@@ -1864,6 +1886,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       ownerTabsRequest((id) => ({ type: "owner_tab_show", id, ownerTabId }), true),
     closeOwnerTab: (ownerTabId) =>
       ownerTabsRequest((id) => ({ type: "owner_tab_close", id, ownerTabId }), true),
+    mountApp: (callId) =>
+      request((id) => ({ type: "mcp_app_mount", id, callId }), decodeMcpAppMounted),
+    appPage: (callId) =>
+      request((id) => ({ type: "mcp_app_html", id, callId }), decodeMcpAppHtmlAnswer),
   };
 
   return client;
