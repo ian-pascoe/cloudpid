@@ -39,6 +39,7 @@ describe("MCP task messages", () => {
       tool: "mcp__docs__index",
       status: "working",
       background: true,
+      callId: "call-1",
       conversationId: 1,
       startedAt: 10,
     };

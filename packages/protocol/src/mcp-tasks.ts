@@ -24,6 +24,8 @@ export const McpTask = Schema.Struct({
   background: Schema.Boolean,
   /** A stdio server's task: it lives in the Workspace's Container, which an idle stop ends (`container_keep`). */
   stdio: Schema.optionalKey(Schema.Boolean),
+  /** The id of the tool call that started it, which a call card finds its task by. */
+  callId: Schema.String,
   /** The conversation that started it, which is told how it ends. */
   conversationId: ConversationId,
   /** The agent that started it: absent for the root agent, a subagent's ID otherwise. */

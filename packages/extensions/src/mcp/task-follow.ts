@@ -208,7 +208,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           timestamp: now,
         },
       ],
-      data: { task: record.handle, status, by },
+      data: { task: record.handle, status, by, notice: `MCP task ${record.handle}: ${status}` },
     };
 
     try {
@@ -437,6 +437,8 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
               entry: {
                 kind: MCP_TASK_ENDED_KIND,
                 data: {
+                  // Its title in the owner's transcript, where it shows as a notice (the text is the agent's).
+                  notice: `MCP task ${handle} ended: ${record.end?.status ?? record.status}`,
                   task: handle,
                   server: record.server,
                   tool: record.modelTool,

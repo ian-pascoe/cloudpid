@@ -42,6 +42,7 @@ export const viewOfTasks = (state: McpTasksState | undefined | null): ReadonlyAr
         tool: record.modelTool,
         status: record.end?.status ?? record.status,
         background: record.background,
+        callId: record.callId,
         conversationId: record.conversation,
         startedAt: record.createdAt,
       };

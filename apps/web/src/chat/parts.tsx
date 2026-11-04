@@ -31,6 +31,7 @@ import { changesOf, type ShownChange } from "./agent-change.ts";
 import { AppCall, AppStrip } from "../app-view/app-call.tsx";
 import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
 import { samplingsOf } from "./mcp-sampling-detail.ts";
+import { McpTaskCall } from "./mcp-task-strip.tsx";
 import { SamplingLines } from "./mcp-sampling-record.tsx";
 import { mcpStatusLabel, shownMcpStatus } from "./mcp-status.ts";
 import { NestedCall, OmittedCalls } from "./nested-calls.ts";
@@ -520,10 +521,14 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       <AppStrip parentId={toolCallId} />
     ) : null;
 
+  // The MCP task it started, while the call waits for it and after (`docs/architecture/mcp-server-requests.md` → MCP tasks).
+  const task = toolName.startsWith("mcp__") ? <McpTaskCall callId={toolCallId} /> : null;
+
   if (images.length === 0) {
     return (
       <>
         {card}
+        {task}
         {app}
       </>
     );
@@ -532,6 +537,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   return (
     <>
       {card}
+      {task}
       {app}
       {Arr.map(images, (image, index) => (
         <img

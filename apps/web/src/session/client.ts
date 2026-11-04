@@ -355,6 +355,18 @@ export interface SessionClient {
     reason?: string,
   ) => Effect.Effect<void, SessionCommandError>;
   /**
+   * Cancel MCP task `task` (its handle, as `mcpTasks` lists it) as the owner: the Session asks the server to cancel it and
+   * the task ends as the owner's cancel. Fails with the Session's message for a task that is gone or has ended, and for a
+   * Session from before the owner's cancel (its `hello` does not say `mcpTasks`).
+   */
+  readonly cancelMcpTask: (task: string) => Effect.Effect<void, SessionCommandError>;
+  /**
+   * Keep the Container of the stdio server's MCP task `task` running: owner activity in its Workspace, which resets the
+   * hour a Container is held for a task nothing else keeps awake. Fails as `cancelMcpTask` does, and for a task that is
+   * not a stdio server's.
+   */
+  readonly keepMcpContainer: (task: string) => Effect.Effect<void, SessionCommandError>;
+  /**
    * Abort the root conversation's work and withdraw its queued input, or a subagent's when `conversationId` names
    * it. With `subagents`, the agents below it stop too; otherwise they keep working.
    */
@@ -463,6 +475,9 @@ export interface SessionClient {
     message: string,
   ) => void;
 }
+
+/** What the owner is told of a command a Session from before does not take. */
+const OLDER_SESSION = "This Session is from an older version; reload it to cancel MCP tasks";
 
 /** A conversation ID as the protocol brands it. */
 const conversation = (id: number): ConversationId =>
@@ -659,6 +674,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   // either as an unreadable message and answers an error, which the owner would see on every connect and tab switch.
   let appViews = false;
 
+  // Whether it takes `mcp_task_cancel` and `container_keep`: one from before refuses both as unreadable.
+  let mcpTasks = false;
+
   /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
   const sendVisibility = (): void => {
     if (!appViews) return;
@@ -788,6 +806,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "mcpSamplingRequests"
         | "mcpSamplingGrants"
         | "mcpSignInRequests"
+        | "mcpTasks"
         | "annotations"
         | "viewed"
         | "browserHandoffRequests"
@@ -983,6 +1002,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     watched = false;
     // The next `hello` says whether the Session that answers takes the App Views' messages.
     appViews = false;
+    mcpTasks = false;
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of pending) submit.sent = false;
@@ -1024,6 +1044,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         root = message.root;
         appViews = message.appViews === true;
+        mcpTasks = message.mcpTasks === true;
         update({
           activeBranch: root,
           copying: message.copying === true,
@@ -1153,6 +1174,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       case "mcp_sign_in_requests":
         update({ mcpSignInRequests: message.requests });
+
+        return;
+      case "mcp_tasks":
+        update({ mcpTasks: message.tasks });
 
         return;
       case "annotations":
@@ -1875,6 +1900,22 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         () => Option.some(undefined),
         true,
       ),
+    cancelMcpTask: (task) =>
+      mcpTasks
+        ? request(
+            (id) => ({ type: "mcp_task_cancel", id, task }),
+            () => Option.some(undefined),
+            true,
+          )
+        : Effect.fail(SessionCommandError.make({ message: OLDER_SESSION })),
+    keepMcpContainer: (task) =>
+      mcpTasks
+        ? request(
+            (id) => ({ type: "container_keep", id, task }),
+            () => Option.some(undefined),
+            true,
+          )
+        : Effect.fail(SessionCommandError.make({ message: OLDER_SESSION })),
     abort: (target = {}) =>
       step(() => {
         if (connection === null) return;

@@ -451,6 +451,28 @@ export const declineMcpSignInAtom = Atom.family((sessionId: string) =>
   ),
 );
 
+/** Cancel one of Session `sessionId`'s MCP tasks as the owner. */
+export const cancelMcpTaskAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    (task: string, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.cancelMcpTask(task))),
+    { concurrent: true },
+  ),
+);
+
+/** Keep the Container of the stdio server's MCP task `task` of Session `sessionId`. */
+export const keepMcpContainerAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    (task: string, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.keepMcpContainer(task))),
+    { concurrent: true },
+  ),
+);
+
 /** Save a draft Annotation of Session `sessionId`, new or edited; each call hears how its own save ended. */
 export const saveAnnotationAtom = Atom.family((sessionId: string) =>
   appRuntime.fn(
@@ -485,6 +507,9 @@ export const answerSecretsAtom = Atom.family((sessionId: string) =>
     { concurrent: true },
   ),
 );
+
+/** The Session's MCP tasks (`mcp_tasks`), oldest first; empty until the Session says. */
+export const mcpTasksAtom = slice((state) => state.mcpTasks);
 
 /** The inventory's App tools (`mcp_app_tools`), null until the Session says. */
 export const mcpAppToolsAtom = slice((state) => state.mcpAppTools);

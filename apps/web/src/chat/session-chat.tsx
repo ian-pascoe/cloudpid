@@ -23,7 +23,7 @@ import type { ConnectionStatus } from "../session/state.ts";
 import { conversationKey, ShownSession } from "./conversation.ts";
 import { textOf } from "./queue-adapter.ts";
 import { showLayoutAtom } from "../session-layout-state.ts";
-import { SessionDetailsButton } from "./session-details.tsx";
+import { McpTasksChip, SessionDetailsButton } from "./session-details.tsx";
 import { leaveWhenDeletedAtom } from "./session-gone.ts";
 import { TreeBarScope, useForkNotice } from "./tree-actions.ts";
 import { TreeDialogs } from "./tree-dialogs.tsx";
@@ -159,6 +159,7 @@ const LiveSession = ({
                 actions={
                   <>
                     {menu}
+                    <McpTasksChip />
                     <SessionDetailsButton />
                     <PaneAreaToggle />
                   </>

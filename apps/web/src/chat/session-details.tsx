@@ -20,6 +20,7 @@ import { childrenOf } from "../session/agents.ts";
 import {
   conversationTodosAtom,
   mcpSamplingGrantsAtom,
+  mcpTasksAtom,
   revokeMcpSamplingAtom,
   sessionStatusAtom,
   taskGraphAtom,
@@ -32,6 +33,8 @@ import {
   useShownSessionId,
   useShownSubagent,
 } from "./conversation.ts";
+import { followedTasks, followingLabel, liveTasks } from "./mcp-task.ts";
+import { McpTaskStrip } from "./mcp-task-strip.tsx";
 import { AgentStatus, OpenPageLink } from "./subagent-card.tsx";
 import { TodoList } from "./todo-list.tsx";
 
@@ -55,17 +58,24 @@ const useDetails = () => {
   );
 
   const graph = useAtomValue(taskGraphAtom(sessionId));
+  const following = useAtomValue(mcpTasksAtom(sessionId), (tasks) => followedTasks(tasks).length);
 
   return {
+    following,
     items,
     agents: subagent === undefined ? (graph?.agents ?? []) : childrenOf(graph, subagent.agentId),
   };
 };
 
-/** Whether anything is going on: a Todo Item not done, or a subagent working. */
-const busy = (items: readonly TodoTask[], agents: readonly GraphAgent[]): boolean =>
+/** Whether anything is going on: a Todo Item not done, a subagent working, or an MCP task followed. */
+const busy = (
+  items: readonly TodoTask[],
+  agents: readonly GraphAgent[],
+  following: number,
+): boolean =>
   Arr.some(items, (item) => item.status !== "completed") ||
-  Arr.some(agents, (agent) => agent.status === "working");
+  Arr.some(agents, (agent) => agent.status === "working") ||
+  following > 0;
 
 /**
  * The header's button for Session details: it opens and closes them (Escape on it closes them too), and, while they are
@@ -73,8 +83,8 @@ const busy = (items: readonly TodoTask[], agents: readonly GraphAgent[]): boolea
  */
 export const SessionDetailsButton = () => {
   const [open, setOpen] = useAtom(detailsOpenAtom(useShownLayoutKey()));
-  const { items, agents } = useDetails();
-  const dot = !open && busy(items, agents);
+  const { items, agents, following } = useDetails();
+  const dot = !open && busy(items, agents, following);
   const label = open ? "Hide session details" : "Show session details";
 
   return (
@@ -218,6 +228,76 @@ const SamplingGrantsSection = () => {
   );
 };
 
+/** The tasks listed of an ended one: the newest few, which the Session keeps 50 of. */
+const ENDED_SHOWN = 5;
+
+/**
+ * The Session's MCP tasks (`docs/architecture/mcp-server-requests.md` → MCP tasks, The owner's UI): each live one with its
+ * status, how long it has gone on and Cancel, and the newest few that ended with how. A subagent's or a script's task is
+ * the Session's too: its agent is named.
+ */
+const McpTasksSection = () => {
+  const sessionId = useShownSessionId();
+  const tasks = useAtomValue(mcpTasksAtom(sessionId));
+
+  if (tasks.length === 0) return null;
+
+  const shown = [
+    ...liveTasks(tasks),
+    ...Arr.take(Arr.reverse(Arr.filter(tasks, (task) => task.endedAt !== undefined)), ENDED_SHOWN),
+  ];
+
+  return (
+    <section aria-label="MCP tasks">
+      <h4 className="text-xs font-medium text-muted-foreground">MCP tasks</h4>
+      <ul className="mt-1 text-sm">
+        {Arr.map(shown, (task) => (
+          <li key={task.task} className="py-1">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="min-w-0 truncate font-mono text-[0.8125rem]" title={task.tool}>
+                {task.tool}
+              </span>
+              {task.agent !== undefined && (
+                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs">
+                  {task.agent}
+                </span>
+              )}
+            </div>
+            <McpTaskStrip task={task} />
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
+/**
+ * The header's chip "Following n MCP tasks" while the Session follows some in the background or waits for them: it opens
+ * the Session details, which list them. Nothing while it follows none.
+ */
+export const McpTasksChip = () => {
+  const sessionId = useShownSessionId();
+  const [open, setOpen] = useAtom(detailsOpenAtom(useShownLayoutKey()));
+  const count = useAtomValue(mcpTasksAtom(sessionId), (tasks) => followedTasks(tasks).length);
+
+  if (count === 0) return null;
+
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      title="Show the MCP tasks"
+      onClick={() => {
+        setOpen(true);
+      }}
+      className="hidden shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground sm:flex"
+    >
+      <span aria-hidden className="pulse-dot size-1.5 rounded-full bg-success" />
+      {followingLabel(count)}
+    </button>
+  );
+};
+
 /**
  * The Session details of the Session shown, while the owner has them open: one section per thing to follow, each
  * headed by what it is, with no title of their own. Escape closes them and gives the focus back to the header's button.
@@ -229,6 +309,7 @@ export const SessionDetails = () => {
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
   const changed = useAtomValue(changesTotalsAtom(useShownChanges()), (totals) => totals.files > 0);
   const granted = useAtomValue(mcpSamplingGrantsAtom(sessionId), (grants) => grants.length > 0);
+  const tasked = useAtomValue(mcpTasksAtom(sessionId), (tasks) => tasks.length > 0);
 
   if (!open) return null;
 
@@ -252,12 +333,13 @@ export const SessionDetails = () => {
           Reconnecting: this may be out of date.
         </p>
       )}
-      {items.length === 0 && agents.length === 0 && !changed && !granted && (
+      {items.length === 0 && agents.length === 0 && !changed && !granted && !tasked && (
         <p className="text-sm text-muted-foreground">Nothing to show yet.</p>
       )}
       {items.length > 0 && <TodoList tasks={items} />}
       {agents.length > 0 && <SubagentsSection agents={agents} />}
       {changed && <ChangesSection />}
+      <McpTasksSection />
       <SamplingGrantsSection />
     </aside>
   );
