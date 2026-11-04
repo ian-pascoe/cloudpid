@@ -14,7 +14,7 @@ import { ROLE_NAMES, type RoleName, sha256Hex } from "@cloudpid/config";
 import type { McpEra } from "@cloudpid/mcp/types";
 import { holdsPlaceholder } from "../secrets/references.ts";
 import type { McpSamplingWhy } from "./details.ts";
-import type { McpSamplingGrant } from "./sampling-records.ts";
+import type { McpSamplingGrant, McpSamplingRecord } from "./sampling-records.ts";
 import type {
   ElicitationContent,
   ElicitationForm,
@@ -405,13 +405,27 @@ export const callKeysOf = (callId: string): ReadonlyArray<string> => {
   return keys;
 };
 
-/** What a Session does with the question records of a Fork or Clone (`ExportPage.questions`): which are its calls', and keeping them. */
+/**
+ * A record of a server's request that a Fork or Clone carries: a question's settled record, or a Sampling request's (kept
+ * as it was, a stub if it was one).
+ */
+export type McpQuestionCopy =
+  | { readonly kind: "question"; readonly record: McpQuestionRecord }
+  | { readonly kind: "sampling"; readonly record: McpSamplingRecord };
+
+/**
+ * What a Session does with the records of a Fork or Clone (`ExportPage.questions`): which are its calls', and keeping
+ * them.
+ */
 export type McpQuestionCopies = {
-  /** The settled records of the calls whose result entry is among `callIds`, and of the calls nested in them. */
-  readonly copiesFor: (callIds: ReadonlyArray<string>) => ReadonlyArray<McpQuestionRecord>;
-  /** Keep the records a Fork or Clone's source sent, as the calls of conversation `conversationId`; the bound of the newest 100 applies. */
+  /** The settled records, of questions and of Sampling requests, of the calls whose result entry is among `callIds`, and of the calls nested in them. */
+  readonly copiesFor: (callIds: ReadonlyArray<string>) => ReadonlyArray<McpQuestionCopy>;
+  /**
+   * Keep the records a Fork or Clone's source sent, as the calls of conversation `conversationId`; the bound of the
+   * newest 100 questions applies, and the Session's own bound of Sampling records.
+   */
   readonly adopt: (
-    records: ReadonlyArray<McpQuestionRecord>,
+    copies: ReadonlyArray<McpQuestionCopy>,
     conversationId: McpQuestionRecord["conversationId"],
   ) => void;
 };
@@ -515,7 +529,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
 
   const records = Effect.sync(settled);
 
-  const copiesFor: McpQuestionCopies["copiesFor"] = (callIds) => {
+  /** The settled question records of the calls whose result entry is among `callIds`, and of the calls nested in them. */
+  const recordsFor = (callIds: ReadonlyArray<string>): ReadonlyArray<McpQuestionRecord> => {
     if (callIds.length === 0) return [];
 
     const wanted = new Set(callIds);
@@ -525,7 +540,11 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     );
   };
 
-  const adopt: McpQuestionCopies["adopt"] = (copied, conversationId) => {
+  /** Keep `copied` as question records of conversation `conversationId`. */
+  const adoptRecords = (
+    copied: ReadonlyArray<McpQuestionRecord>,
+    conversationId: McpQuestionRecord["conversationId"],
+  ) => {
     for (const each of copied) {
       const record: McpQuestionRecord = { ...each, conversationId };
 
@@ -841,8 +860,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     keep,
     overturn,
     records,
-    copiesFor,
-    adopt,
+    recordsFor,
+    adoptRecords,
     callOf,
     pagesOf,
     openedPages,

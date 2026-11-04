@@ -364,6 +364,63 @@ describe("a Legacy MCP server's form in a Session", () => {
     owner.close();
   });
 
+  it("leaves its record, and a Sampling request's, to a Fork, whose own Session keeps both as its root conversation's", async () => {
+    const { stub } = await open([]);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([ask(TOKEN_FORM), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    const [, kept] =
+      (await storageDump(stub)).find(([key]) => key.startsWith("mcp-question:s:")) ?? [];
+
+    // SAFETY: a settled question record is a JSON object with its call's `callId`.
+    const callId = (kept as { readonly callId: string }).callId;
+
+    // A Sampling request the same call made, as the Session keeps it (`mcp-sampling:*`).
+    const sampling = {
+      id: `${callId}:s1`,
+      server: "docs",
+      tool: "mcp__docs__ask",
+      origin: "agent",
+      conversationId: 1,
+      callId,
+      sequence: 1,
+      status: "refused",
+      by: "owner",
+      reason: "the owner refused",
+      notes: [],
+      askedAt: 1,
+      settledAt: 2,
+    };
+
+    await runInDurableObject(stub, (_instance: TestSession, state) => {
+      state.storage.kv.put(`mcp-sampling:r:${sampling.id}`, sampling);
+      state.storage.kv.put("mcp-sampling:index", [
+        { id: sampling.id, bytes: 1, at: 2, stub: false },
+      ]);
+    });
+
+    const target = `fork-${counter++}`;
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.forkInto(target, { quiet: "none" }),
+    );
+
+    const copy = await storageDump(env.SESSIONS.getByName(target));
+
+    expect(copy.filter(([key]) => key.startsWith("mcp-question:s:"))).toEqual([
+      [expect.any(String), expect.objectContaining({ callId, action: "decline", by: "cloudpid" })],
+    ]);
+    expect(copy.filter(([key]) => key.startsWith("mcp-sampling:r:"))).toEqual([
+      [`mcp-sampling:r:${sampling.id}`, expect.objectContaining({ callId, status: "refused" })],
+    ]);
+  });
+
   it("is withdrawn from every client when Stop aborts the call", async () => {
     const { stub } = await open([]);
     const owner = await connect(stub);

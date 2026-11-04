@@ -12,7 +12,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
 import { elicitationLine, exportLinesOf, samplingLine } from "./mcp/export-lines.ts";
-import type { McpSamplingRecord } from "./mcp/sampling-records.ts";
+import { type McpSamplingRecord, samplingRecords } from "./mcp/sampling-records.ts";
 import {
   createMcpQuestions,
   type McpQuestionAsk,
@@ -267,7 +267,8 @@ describe("a question that ended", () => {
 
   test("is copied to a Fork with the call's result, under the new conversation, and a copy keeps no more than the newest 100", () =>
     Effect.gen(function* () {
-      const source = open(memoryStorage().storage);
+      const sourceStorage = memoryStorage().storage;
+      const source = open(sourceStorage);
 
       yield* source.unseen({
         callId: "call-1",
@@ -297,9 +298,38 @@ describe("a question that ended", () => {
         reason: "it asked for a credential ('API token')",
       });
 
+      // Sampling requests of the same calls, as their own records are kept.
+      const samples = samplingRecords(sourceStorage);
+
+      for (const callId of ["call-1", "call-2/c1", "call-3"]) {
+        samples.put(
+          {
+            id: `${callId}:s1`,
+            server: "demo",
+            tool: "mcp__demo__ask",
+            origin: "agent",
+            conversationId: 1,
+            callId,
+            sequence: 1,
+            status: "refused",
+            by: "owner",
+            reason: "the owner refused",
+            notes: [],
+            askedAt: 1,
+            settledAt: 2,
+          },
+          2,
+        );
+      }
+
       const copied = source.copies.copiesFor(["call-1", "call-2"]);
 
-      expect(copied.map((each) => each.callId)).toEqual(["call-1", "call-2/c1"]);
+      expect(copied.map((each) => [each.kind, each.record.callId])).toEqual([
+        ["question", "call-1"],
+        ["question", "call-2/c1"],
+        ["sampling", "call-1"],
+        ["sampling", "call-2/c1"],
+      ]);
 
       const target = memoryStorage();
       const forked = open(target.storage);
@@ -310,6 +340,15 @@ describe("a question that ended", () => {
       const records = yield* forked.records;
 
       expect(records.map((each) => [each.callId, each.conversationId])).toEqual([
+        ["call-1", 7],
+        ["call-2/c1", 7],
+      ]);
+      // The Sampling requests came too, as the new conversation's.
+      expect(
+        samplingRecords(target.storage)
+          .list()
+          .map((each) => [each.callId, each.conversationId]),
+      ).toEqual([
         ["call-1", 7],
         ["call-2/c1", 7],
       ]);

@@ -90,7 +90,7 @@ import {
   emptyMcpExtension,
   type McpHostClientService,
   type McpWatched,
-  type McpQuestionRecord,
+  type McpQuestionCopy,
   type McpQuestionsService,
   type McpSamplingService,
   rememberSampling,
@@ -2093,7 +2093,7 @@ export class TestSession extends DurableObject {
   importEntries(
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
-    questions?: ReadonlyArray<McpQuestionRecord>,
+    questions?: ReadonlyArray<McpQuestionCopy>,
   ): Promise<void> {
     return this.#runtime.runPromise(this.#host.importEntries(entries, apps, questions));
   }

@@ -5,7 +5,7 @@ import {
   SPARE_WORKSPACE_FIELD,
   textSize,
 } from "@cloudpid/config";
-import type { McpQuestionRecord } from "@cloudpid/extensions/mcp";
+import type { McpQuestionCopy } from "@cloudpid/extensions/mcp";
 import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
   DEFAULT_ENVIRONMENT,
@@ -96,7 +96,7 @@ export type SessionObjects = {
     id: string,
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
-    questions?: ReadonlyArray<McpQuestionRecord>,
+    questions?: ReadonlyArray<McpQuestionCopy>,
   ) => Effect.Effect<void>;
   /** Give new Session `id` what `plan` carries, and let it take messages (`SessionMethods.importFinish`). */
   readonly importFinish: (id: string, plan: ForkPlan) => Effect.Effect<void>;

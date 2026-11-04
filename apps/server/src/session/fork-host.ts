@@ -4,13 +4,8 @@
 // the rest. The main Worker drives both (`fillSession`). What is copied, in plain functions, is `fork.ts`'s.
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { TodoDoc } from "@cloudpid/extensions/todo";
-import type { McpQuestionCopies, McpQuestionRecord } from "@cloudpid/extensions/mcp";
-import type {
-  AttachedResource,
-  McpAppCopies,
-  McpAppCopy,
-  McpPromptData,
-} from "@cloudpid/protocol";
+import type { McpQuestionCopies, McpQuestionCopy } from "@cloudpid/extensions/mcp";
+import type { AttachedResource, McpAppCopies, McpAppCopy, McpPromptData } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AgentDoc,
@@ -315,7 +310,7 @@ export const sessionForks = (options: ForksOptions) => {
   const importEntries = (
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
-    questions?: ReadonlyArray<McpQuestionRecord>,
+    questions?: ReadonlyArray<McpQuestionCopy>,
   ) =>
     Effect.gen(function* () {
       const filling = kv.get<Filling | null>(FILL_KEY) ?? null;

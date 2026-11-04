@@ -25,7 +25,7 @@ import {
   MCP_TASK_FOLLOWER,
   type McpNotices,
   mcpNotices,
-  type McpQuestionRecord,
+  type McpQuestionCopy,
   type McpSamplingBinding,
   McpTasksDoc,
   type OwnerCancel,
@@ -818,7 +818,7 @@ export type SessionHostService = {
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
-    questions?: ReadonlyArray<McpQuestionRecord>,
+    questions?: ReadonlyArray<McpQuestionCopy>,
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents the plan carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;

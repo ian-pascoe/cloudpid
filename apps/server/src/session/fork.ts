@@ -5,7 +5,7 @@
 // appends them to its root conversation, renumbered, then takes the documents a fork carries (Notes, the Todo List) and
 // the agent as of the point.
 import type { ContextState } from "@cloudpid/extensions/context";
-import type { McpQuestionRecord } from "@cloudpid/extensions/mcp";
+import type { McpQuestionCopy } from "@cloudpid/extensions/mcp";
 import type { TodoState } from "@cloudpid/extensions/todo";
 import type {
   AttachedResource,
@@ -85,7 +85,7 @@ export type ExportPage = {
   readonly entries: ReadonlyArray<EntryRecord>;
   readonly next: number | null;
   readonly apps?: ReadonlyArray<McpAppCopy>;
-  readonly questions?: ReadonlyArray<McpQuestionRecord>;
+  readonly questions?: ReadonlyArray<McpQuestionCopy>;
 };
 
 /** The IDs of the tool calls whose results `entry` holds: the calls it copies, and the `codemode` calls that nested ones belong to. */
@@ -98,7 +98,7 @@ export const toolResultIds = (entry: EntryRecord): ReadonlyArray<string> =>
 export type AppCopier = (entry: EntryRecord) => ReadonlyArray<McpAppCopy>;
 
 /** What a copy of the entries carries of each besides: the settled question records of the calls whose results it holds. */
-export type QuestionCopier = (entry: EntryRecord) => ReadonlyArray<McpQuestionRecord>;
+export type QuestionCopier = (entry: EntryRecord) => ReadonlyArray<McpQuestionCopy>;
 
 /** What a record is left as when it does not fit a page: its stub (who the call was, and its time). */
 const stubOfCopy = (copy: McpAppCopy): McpAppCopy => {
@@ -153,7 +153,7 @@ export const exportPage = (
 ): ExportPage => {
   const kept: EntryRecord[] = [];
   const apps: McpAppCopy[] = [];
-  const questions: McpQuestionRecord[] = [];
+  const questions: McpQuestionCopy[] = [];
   let size = 0;
 
   for (const entry of entries) {
@@ -201,7 +201,7 @@ export type FillTarget<E, R> = {
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
-    questions?: ReadonlyArray<McpQuestionRecord>,
+    questions?: ReadonlyArray<McpQuestionCopy>,
   ) => Effect.Effect<void, E, R>;
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, E, R>;
 };

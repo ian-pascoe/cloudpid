@@ -26,8 +26,10 @@ import {
 } from "./deferred-questions.ts";
 import type { JsonObject } from "@cloudpid/mcp/types";
 import {
+  callKeysOf,
   cancelled,
   modeOf,
+  type McpQuestionBasics,
   questionBasics,
   MCP_CALL_ENDED_REASON,
   MCP_ELICITATION_CAP_REASON,
@@ -62,6 +64,7 @@ import {
   type McpSamplingRemember,
   type McpSamplingStanding,
 } from "./sampling-questions.ts";
+import { samplingRecords } from "./sampling-records.ts";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -104,6 +107,7 @@ export {
   type McpPageRef,
   type McpQuestionAsk,
   type McpQuestionCopies,
+  type McpQuestionCopy,
   callKeysOf,
   type McpQuestionOutcome,
   type McpQuestionRecord,
@@ -369,6 +373,46 @@ type Waiting = {
   readonly openClicked?: boolean | undefined;
   /** The Protocol era of the server that asked, for its settled record. */
   readonly era?: McpEra | undefined;
+};
+
+/** What a Fork or Clone carries of the Session's records of its calls' requests: the questions' and the Sampling requests'. */
+const copiesOf = (basics: McpQuestionBasics, storage: McpQuestionStorage): McpQuestionCopies => {
+  const sampling = samplingRecords(storage);
+
+  return {
+    copiesFor: (callIds) => {
+      const wanted = new Set(callIds);
+
+      const samples = Arr.filter(
+        sampling.list(),
+        (record) =>
+          wanted.size > 0 && Arr.some(callKeysOf(record.callId), (key) => wanted.has(key)),
+      );
+
+      return [
+        ...Arr.map(basics.recordsFor(callIds), (record) => ({ kind: "question", record }) as const),
+        ...Arr.map(samples, (record) => ({ kind: "sampling", record }) as const),
+      ];
+    },
+    adopt: (copies, conversationId) => {
+      basics.adoptRecords(
+        Arr.filterMap(copies, (copy) =>
+          copy.kind === "question" ? Result.succeed(copy.record) : Result.failVoid,
+        ),
+        conversationId,
+      );
+
+      for (const copy of copies) {
+        // The Session's own bound of Sampling records applies; a storage that cannot take one loses it, never the Fork.
+        if (copy.kind === "sampling") {
+          sampling.put(
+            { ...copy.record, conversationId },
+            copy.record.settledAt ?? copy.record.askedAt,
+          );
+        }
+      }
+    },
+  };
 };
 
 /** What names a question of a call in `answeredIds`. */
@@ -993,6 +1037,6 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     isDeclined: (server) => declinedServers().includes(server),
     revokeDeclined,
     records: basics.records,
-    copies: { copiesFor: basics.copiesFor, adopt: basics.adopt },
+    copies: copiesOf(basics, storage),
   } satisfies McpQuestionsService;
 };

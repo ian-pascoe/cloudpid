@@ -16,7 +16,7 @@ import { DeployCredentials, Environments } from "@cloudpid/extensions/environmen
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { InstructionsSettings } from "@cloudpid/extensions/instructions";
-import { type McpQuestionRecord, rememberSampling } from "@cloudpid/extensions/mcp";
+import { type McpQuestionCopy, rememberSampling } from "@cloudpid/extensions/mcp";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SettingsAccess } from "@cloudpid/extensions/settings";
@@ -202,7 +202,7 @@ export type SessionMethods = {
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
-    questions?: ReadonlyArray<McpQuestionRecord>,
+    questions?: ReadonlyArray<McpQuestionCopy>,
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents a Fork or Clone carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;

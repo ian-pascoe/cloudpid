@@ -1,7 +1,7 @@
 // @effect-diagnostics preferEffectArray:off -- plain arrays of fixtures.
 import type { AgentState, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
-import type { McpQuestionRecord } from "@cloudpid/extensions/mcp";
+import type { McpQuestionCopy, McpQuestionRecord } from "@cloudpid/extensions/mcp";
 import type { McpAppCopy } from "@cloudpid/protocol";
 import { copiedDraft, copyAgent, exportPage, MAX_COPY_PAGE_SIZE, toolResultIds } from "./fork.ts";
 
@@ -112,7 +112,12 @@ describe("the App records a page of a Fork carries", () => {
 });
 
 describe("the question records a page of a Fork carries", () => {
-  const recordOf = (callId: string): McpQuestionRecord => ({
+  const recordOf = (callId: string): McpQuestionCopy => ({
+    kind: "question",
+    record: recordIn(callId),
+  });
+
+  const recordIn = (callId: string): McpQuestionRecord => ({
     id: `${callId}:1`,
     callId,
     // SAFETY: a plain number stands in for the branded conversation ID, which a copy never reads.
