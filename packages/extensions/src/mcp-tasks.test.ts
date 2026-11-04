@@ -641,6 +641,28 @@ describe("a task the owner stopped everything for", () => {
     });
   });
 
+  it("sends a `tasks/cancel` at Stop all for a `sending` mark another instance left, however fresh", async () => {
+    const { session, taskServer } = await setup(10_000, TIMING, scripted());
+
+    await turn(session, "go");
+    // The agent's cancel was being sent by an instance a code update replaced: nothing says it went.
+    await session.harness.commit(async (tx) => {
+      const record = (await tx.doc(McpTasksDoc)).tasks["mcp-task-1"];
+
+      if (record !== undefined) record.cancel = { at: Date.now(), by: "agent", sent: "sending" };
+    }, context);
+
+    await session.root.abort(context, { background: true });
+    await session.until(ended(session), "the task to end");
+
+    // An orphan is worse than a duplicate: the cancel goes out once by this instance.
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+    expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({
+      status: "cancelled",
+      by: "stop",
+    });
+  });
+
   it("ends the task within two seconds of Stop all though the server never answers the cancel", async () => {
     const { session, taskServer, written } = await setup(10_000, TIMING, scripted(), {
       host: { cancelAnswer: () => new Promise(() => undefined) },
@@ -1151,6 +1173,23 @@ describe("the sweep at a wake", () => {
       await sweepTasks({ harness: session.harness, client, origin: {}, now: () => 9000 }),
     ).toBe(0);
     expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+  });
+
+  it("sends the cancels of several orphans together, so a server that never answers holds it for 2 s, not 2 s each", async () => {
+    const { session, taskServer, client } = await setup(1000, TIMING, scripted(), {
+      host: { cancelAnswer: () => new Promise(() => undefined) },
+    });
+
+    await leave(session, [{}, {}, {}]);
+
+    const started = Date.now();
+
+    expect(
+      await sweepTasks({ harness: session.harness, client, origin: {}, now: () => 9000 }),
+    ).toBe(3);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1900);
+    expect(Date.now() - started).toBeLessThan(3500);
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(3);
   });
 
   it("leaves an inline task whose call is still live", async () => {

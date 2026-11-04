@@ -117,7 +117,7 @@ const turnSettled = (stub: DurableObjectStub<TestSubagentSession>, status: strin
       (await instance.subagents())?.agents["agent-1"]?.turns.at(-1)?.status === status,
   );
 
-it("stops the subagents of a branch that is not active when everything is stopped", async () => {
+it("stops the subagents of a branch that is not active when the Session is archived (everything stopped)", async () => {
   const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
 
   await delegateQuietly(stub);

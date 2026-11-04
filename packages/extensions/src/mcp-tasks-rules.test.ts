@@ -25,6 +25,7 @@ import {
   endedHeader,
   endedText,
   MCP_TASK_CANCEL_SENDING_MS,
+  MCP_TASK_CONNECT_MARGIN_MS,
   MCP_TASK_FAILURE_LIMIT_MS,
   MCP_TASK_RESULT_KEPT_MS,
   MCP_TASK_UNKNOWN_GRACE_MS,
@@ -34,7 +35,7 @@ import {
   windowMsOf,
 } from "./mcp/task-policy.ts";
 import { endedRecord } from "./mcp/task-end.ts";
-import { cancelDue, taskAttributes } from "./mcp/task-host.ts";
+import { cancelDue, cancelStale, taskAttributes } from "./mcp/task-host.ts";
 import { applyDecision, cancelTook, decide } from "./mcp/task-poll.ts";
 import { MCP_TASK_POOL_BYTES, resultPool, type StoredResult } from "./mcp/task-results.ts";
 import {
@@ -573,23 +574,42 @@ describe("whether Stop all still has to send a `tasks/cancel`", () => {
   };
 
   it("sends one for a task that was never asked to cancel", () => {
-    expect(cancelDue(client, cancelled(undefined), 5_000)).toBe(true);
+    expect(cancelDue(client, cancelled(undefined))).toBe(true);
   });
 
   it("sends none for a cancel that went, or failed, which is not asked again", () => {
-    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "sent" }), 500_000)).toBe(
-      false,
-    );
-    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "failed" }), 500_000)).toBe(
-      false,
-    );
+    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "sent" }))).toBe(false);
+    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "failed" }))).toBe(false);
   });
 
-  it("leaves a `sending` one to its sender until it is older than the host's request bound", () => {
-    const sending = cancelled({ at: 1_000, by: "agent", sent: "sending" });
+  it("sends one for a `sending` another instance left, however fresh: an orphan is worse than a duplicate", () => {
+    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "sending" }))).toBe(true);
+  });
+});
 
-    expect(cancelDue(client, sending, 1_000 + MCP_TASK_CANCEL_SENDING_MS - 1)).toBe(false);
-    expect(cancelDue(client, sending, 1_000 + MCP_TASK_CANCEL_SENDING_MS)).toBe(true);
-    expect(MCP_TASK_CANCEL_SENDING_MS).toBeGreaterThan(2 * MCP_TASK_TIMEOUT_MS);
+describe("whether the follower sends a `sending` cancel again by itself", () => {
+  // SAFETY: only its identity is read: no request is made.
+  const client = {} as McpHostClientService;
+
+  const sending = () => {
+    const record = recordIn(state());
+
+    record.cancel = { at: 1_000, by: "agent", sent: "sending" };
+
+    return record;
+  };
+
+  it("leaves it to its sender until it is older than any send of a live call", () => {
+    expect(cancelStale(client, sending(), 1_000 + MCP_TASK_CANCEL_SENDING_MS - 1)).toBe(false);
+    expect(cancelStale(client, sending(), 1_000 + MCP_TASK_CANCEL_SENDING_MS)).toBe(true);
+    // A send, the wire's one resend of a cut, and the margin for connecting.
+    expect(MCP_TASK_CANCEL_SENDING_MS).toBe(2 * MCP_TASK_TIMEOUT_MS + MCP_TASK_CONNECT_MARGIN_MS);
+  });
+
+  it("is never for a cancel that went, or one this instance began", () => {
+    const sent = recordIn(state());
+
+    sent.cancel = { at: 1_000, by: "agent", sent: "sent" };
+    expect(cancelStale(client, sent, 500_000)).toBe(false);
   });
 });

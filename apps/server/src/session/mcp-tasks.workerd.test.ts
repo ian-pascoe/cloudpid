@@ -13,7 +13,7 @@ import { env } from "cloudflare:workers";
 import { modernTaskServer, rpcMethods, type TaskServer } from "@cloudpid/mcp/testing";
 import type { McpApplySet } from "@cloudpid/mcp/types";
 import type { ApiResult, SessionVia } from "@cloudpid/protocol";
-import { type ServerMessage, ServerMessageJson } from "@cloudpid/protocol";
+import { type ClientMessage, type ServerMessage, ServerMessageJson } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
@@ -194,7 +194,45 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
     received.push(Effect.runSync(decode(event.data)));
   });
 
-  return { received, close: () => socket.close() };
+  return {
+    received,
+    send: (message: ClientMessage) => socket.send(JSON.stringify(message)),
+    close: () => socket.close(),
+  };
+};
+
+/**
+ * The owner's Stop all, as a client sends it: the socket's `abort` with `subagents`. Says how long the Session took to
+ * answer it.
+ */
+const stopAll = async (stub: DurableObjectStub<TestSession>) => {
+  const owner = await connect(stub);
+  const started = Date.now();
+
+  owner.send({ type: "abort", id: "stop-all", subagents: true });
+  await settles(async () =>
+    expect(owner.received.some((message) => "id" in message && message.id === "stop-all")).toBe(
+      true,
+    ),
+  );
+
+  const took = Date.now() - started;
+
+  owner.close();
+
+  return took;
+};
+
+/** Move the Session tree to before the first message, which leaves the branch the task is on behind. */
+const leaveBranch = async (stub: DurableObjectStub<TestSession>) => {
+  const went = await runInDurableObject(stub, async (instance: TestSession) => {
+    const tree = await instance.tree();
+    const asked = tree.nodes.find((each) => each.role === "user" && each.text === "report");
+
+    return instance.navigate({ entryId: asked?.id ?? 0, position: "before" });
+  });
+
+  expect(went).toHaveProperty("navigated");
 };
 
 const logs: string[] = [];
@@ -521,16 +559,18 @@ describe("a Session that only follows an MCP task", () => {
   });
 });
 
-describe("the lifecycle of a background MCP task", () => {
-  it("is cancelled at the server by Stop all, which tells the agent in a notice and starts no Run", async () => {
+describe("Stop all of a Session that follows a background MCP task", () => {
+  it("is the socket's `abort` with `subagents`: it cancels the task at the server, tells the agent in a notice and starts no Run", async () => {
     const { stub, server } = await following();
 
-    await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
+    await stopAll(stub);
     await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
-    await settles(async () => expect((await reportedTasks(stub)).at(-1)).toBe(0));
+    await followingNone(stub);
 
     // No Run of its own: the owner heard of the turn's end only.
     expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(1);
+    // Sent once.
+    expect(callsOf(server, "tasks/cancel")).toBe(1);
 
     await submit(stub, "and?", "turn-2");
     await finishedRuns(stub, 2);
@@ -542,25 +582,56 @@ describe("the lifecycle of a background MCP task", () => {
     await expectNoServerId(stub);
   });
 
-  it("is cancelled when the Session is deleted", async () => {
+  it("leaves a plain Stop alone: the task is untouched", async () => {
+    const { stub, server } = await following();
+    const owner = await connect(stub);
+
+    owner.send({ type: "abort", id: "stop" });
+    await settles(async () =>
+      expect(owner.received.some((message) => "id" in message && message.id === "stop")).toBe(true),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(server.tasks.get("task-1")?.status).toBe("working");
+    owner.close();
+  });
+
+  it("does not reach a task of a branch that is not active", async () => {
+    const { stub, server } = await following();
+
+    await leaveBranch(stub);
+    await stopAll(stub);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    expect(server.tasks.get("task-1")?.status).toBe("working");
+    expect(await records(stub)).toEqual([{ status: "working" }]);
+    expect(callsOf(server, "tasks/cancel")).toBe(0);
+  });
+});
+
+describe("Archive and Delete of a Session that follows a background MCP task", () => {
+  it("cancel the task at the server (Archive stops everything), tell the agent in a notice and start no Run", async () => {
+    const { stub, server } = await following();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
+    await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
+    await followingNone(stub);
+
+    expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(1);
+    expect(callsOf(server, "tasks/cancel")).toBe(1);
+  });
+
+  it("cancel the task when the Session is deleted", async () => {
     const { stub, server } = await following();
 
     await runInDurableObject(stub, (instance: TestSession) => instance.destroy());
     await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
   });
 
-  it("is cancelled by Stop all on every branch, the one that is not active included", async () => {
+  it("cancel a task of every branch, the one that is not active included", async () => {
     const { stub, server } = await following();
 
-    // The Session tree moves to a branch before the turn, leaving the task's branch with its follower.
-    const went = await runInDurableObject(stub, async (instance: TestSession) => {
-      const tree = await instance.tree();
-      const asked = tree.nodes.find((each) => each.role === "user" && each.text === "report");
-
-      return instance.navigate({ entryId: asked?.id ?? 0, position: "before" });
-    });
-
-    expect(went).toHaveProperty("navigated");
+    await leaveBranch(stub);
     expect(server.tasks.get("task-1")?.status).toBe("working");
 
     await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
@@ -624,10 +695,25 @@ describe("a Session that only follows an MCP task, over the MCP endpoint", () =>
     await followingNone(stub);
     expect(okValue(await stub.mcpStatus()).status).toBe("idle");
   });
+
+  it("reads idle, and its Stop all is a no-op, when only a branch that is not active has a task", async () => {
+    const { stub, server } = await following();
+
+    await leaveBranch(stub);
+    expect(okValue(await stub.mcpStatus()).status).toBe("idle");
+
+    // Stop all reaches the active branch only, which follows nothing: the call is idempotent and stops nothing.
+    const result = okValue(await stub.mcpStop({ via, subagents: true }));
+
+    expect(result.status).toBe("idle");
+    expect(result.stopping).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(server.tasks.get("task-1")?.status).toBe("working");
+  });
 });
 
 describe("a server that never answers `tasks/cancel`", () => {
-  it("does not hold Stop all for longer than the bound: the cancels go out together and every record ends by Stop", async () => {
+  it("does not hold Archive for longer than the bound: the cancels go out together and every record ends by Stop", async () => {
     const { stub, wire, server } = await followingMany(2);
 
     wire.hangCancel = true;
@@ -653,6 +739,25 @@ describe("a server that never answers `tasks/cancel`", () => {
     await submit(stub, "and?", "turn-9");
     await finishedRuns(stub, 3);
     expect((await requests(stub)).at(-1) ?? "").toContain("[MCP task notice | task=mcp-task-1");
+  });
+
+  it("does not hold the owner's Stop all (the socket's `abort`) for longer than the bound, and ends every record by Stop", async () => {
+    const { stub, wire } = await followingMany(2);
+
+    wire.hangCancel = true;
+
+    const took = await stopAll(stub);
+
+    expect(took).toBeLessThan(3500);
+    await settles(async () =>
+      expect(await records(stub)).toEqual([
+        { status: "cancelled", by: "stop" },
+        { status: "cancelled", by: "stop" },
+      ]),
+    );
+    await followingNone(stub);
+    // The agent is told in a notice, and no Run was started for it.
+    expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(2);
   });
 
   it("does not hold the Session's deletion for longer than the bound either", async () => {
@@ -778,6 +883,32 @@ describe("the count of followed MCP tasks the Registry is told", () => {
     await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
 
     expect(await reportedTasks(stub)).toEqual([]);
+  });
+
+  it("is kept as unknown when the Registry is down, and told again once it answers", async () => {
+    const { stub } = await open();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.reports("failing"));
+    await script(stub, [REPORT({ polls: 100_000 }), "It runs in the background."]);
+    await submit(stub, "report");
+    await finishedRuns(stub, 1);
+    await settles(async () =>
+      expect(
+        await runInDurableObject(stub, (_instance: TestSession, state) =>
+          state.storage.kv.get<number>("mcp-tasks-reported"),
+        ),
+      ).toBe(-1),
+    );
+    // Nothing the Registry received.
+    expect(await reportedTasks(stub)).toEqual([]);
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.reports("working"));
+    await settles(async () => expect(await reportedTasks(stub)).toEqual([1]));
+    expect(
+      await runInDurableObject(stub, (_instance: TestSession, state) =>
+        state.storage.kv.get<number>("mcp-tasks-reported"),
+      ),
+    ).toBe(1);
   });
 
   it("is remembered across an eviction, so the new instance does not tell it again", async () => {
