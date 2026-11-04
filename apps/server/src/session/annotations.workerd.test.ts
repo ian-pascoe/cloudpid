@@ -919,25 +919,35 @@ describe("a Review", () => {
   it("keeps a draft saved again while it was being sent, with its new text", async () => {
     const stub = fresh();
 
-    // The last check waits on a listing of the Changes, which takes a while.
+    // The last check waits on a listing of the Changes, held until the test lets it through.
     await runInDurableObject(stub, (instance: TestSession) => {
-      instance.setChanges({ ...changes(FILE), delayMs: 300 });
+      instance.setChanges({ ...changes(FILE), held: true });
       instance.script(["Looked."]);
     });
+
+    const listings = () =>
+      runInDurableObject(stub, (instance: TestSession) => instance.changesCalls().length);
 
     const client = await connect(stub);
 
     client.send({ type: "annotation_save", id: "a", annotation: onChanges() });
     client.send({ type: "annotation_save", id: "b", annotation: onCall() });
     await client.answer("b");
+
+    const before = await listings();
+
     client.send({ type: "submit", id: "send", input: "", annotations: ["on-changes", "on-call"] });
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await poll(
+      async () => (await listings()) > before,
+      () => "The send never listed the Changes",
+    );
     client.send({
       type: "annotation_save",
       id: "edit",
       annotation: onChanges({ text: "Typed while it was sent." }),
     });
     await client.answer("edit");
+    await runInDurableObject(stub, (instance: TestSession) => instance.releaseChanges());
     expect(await client.answer("send")).toMatchObject({ type: "result" });
 
     // The edit was saved while the Review was being sent, before the Session answered it.
