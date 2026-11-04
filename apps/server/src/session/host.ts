@@ -20,6 +20,8 @@ import {
 import { clearTodoList, TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
 import { MAX_ROLLOVER_FOCUS, ownerRollover } from "@cloudpid/extensions/context";
 import {
+  type AttachedReadInput,
+  type AttachedReadResult,
   MCP_TASK_FOLLOWER,
   type McpNotices,
   mcpNotices,
@@ -27,6 +29,7 @@ import {
   McpTasksDoc,
   type OwnerCancel,
   type OwnerKeep,
+  type ResourceMenuInput,
   type SweepHarness,
   type TaskOwnerHarness,
   viewOfTasks,
@@ -57,12 +60,19 @@ import {
   type TodoTask,
   type Annotation,
   type AttachedPage,
+  type AttachedResource,
+  ATTACHED_RESOURCE_GONE,
+  attachedResourceGoneMessage,
+  resourceKey,
   attachmentPath,
   INLINE_IMAGE_BUDGET,
   type McpPromptData,
   type McpPromptErrorCode,
   type McpPromptRef,
+  type McpResourceMenu,
   MCP_PROMPT_NOT_PICKED_MESSAGE,
+  MAX_RESOURCES_INLINE_TEXT_BYTES,
+  type ResourceRef,
   looksLikeMcpPromptCommand,
   promptArguments,
   promptArgumentsProblem,
@@ -165,6 +175,14 @@ import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure }
 import type { PromptCatalog } from "./mcp-prompt-catalog.ts";
 import { promptFileName, promptMessage, type PromptFile } from "./mcp-prompt.ts";
 import {
+  type AttachedBudgets,
+  type AttachedMade,
+  type AttachedMessage,
+  attachedMessage,
+  attachedResource,
+  failedResource,
+} from "./mcp-attached.ts";
+import {
   imageCharacters,
   promptContent,
   promptData,
@@ -260,6 +278,12 @@ const MAX_WITHDRAWN = 64;
 
 /** The longest `requestId` kept as withdrawn: a longer one is withdrawn, but a resend of it is not. */
 const MAX_WITHDRAWN_ID = 256;
+
+/** One part of a message's content, as a draft holds it. */
+type InputPart = Exclude<InputSubmissionDraft["content"], string>[number];
+
+/** What the image budget reads of a message's part: its type, and an image's data. */
+type MessagePart = { readonly type: string; readonly data?: string };
 
 type WithdrawnRequest = { readonly requestId: string; readonly at: number };
 
@@ -402,6 +426,16 @@ export type SessionHostMcpPrompts = {
   ) => Effect.Effect<A, SessionError>;
 };
 
+/** The owner's MCP resources in the composer (`docs/architecture/mcp-in-a-session.md` → Attached resources). */
+export type SessionHostMcpAttached = {
+  /** The Session's name, where its files are kept (`/workspace/.cloudpid/uploads/<session>/`); undefined when unknown. */
+  readonly session: string | undefined;
+  /** The `@` menu's listing: never starts a Container. Never fails. */
+  readonly menu: (input: ResourceMenuInput) => Effect.Effect<McpResourceMenu>;
+  /** One read at send, which may start a stdio server's Container; `use` makes its message. Never fails. */
+  readonly read: <A>(input: AttachedReadInput<A>) => Effect.Effect<AttachedReadResult<A>>;
+};
+
 /** The Session's MCP tools, as the Session host runs them (`SessionHostOptions.mcp`). */
 export type SessionHostMcp<R> = {
   /**
@@ -466,6 +500,8 @@ export type SessionHostMcp<R> = {
   ) => Effect.Effect<void, never, R>;
   /** The owner's MCP prompts. Absent: none are offered, and a send that names one is refused. */
   readonly prompts?: SessionHostMcpPrompts;
+  /** The owner's MCP resources. Absent: none are listed, and a send that attaches one is refused as gone. */
+  readonly attached?: SessionHostMcpAttached;
 };
 
 export type SessionHostOptions<R = never> = {
@@ -596,6 +632,16 @@ export type Prompt = {
    */
   readonly mcpPrompt?: {
     readonly ref: McpPromptRef;
+    readonly redact: Effect.Effect<<A>(value: A) => A, SessionError>;
+  };
+  /**
+   * The MCP resources the owner attached from the `@` menu (`submit.resources`), read in the message's prepare step, once
+   * (not again for a `requestId` that was admitted), in parallel, outside the Session's lock: they reach the model as an
+   * untrusted `<mcp_resources>` block after the pages' (`docs/architecture/mcp-in-a-session.md` → Attached resources), and
+   * the owner's entry keeps what they became for the chips. `redact` takes the held Secrets out of what the servers answer.
+   */
+  readonly resources?: {
+    readonly refs: ReadonlyArray<ResourceRef>;
     readonly redact: Effect.Effect<<A>(value: A) => A, SessionError>;
   };
   /** What the input does while the conversation is busy; pi-durable queues it as a follow-up by default. */
@@ -854,6 +900,14 @@ export type SessionHostService = {
    * conversation without an environment, or whose environment cannot list files, has none; a listing that fails fails.
    */
   readonly files: (search: FileSearch) => Effect.Effect<FileMatches, SessionError>;
+  /**
+   * The MCP resources the `@` menu lists, for the active branch or the conversation `conversationId` names: from the
+   * servers' lists, never starting a Container (`docs/architecture/mcp-in-a-session.md` → Attached resources). A Session
+   * with no MCP servers lists none.
+   */
+  readonly resourceMenu: (
+    conversationId?: ConversationId,
+  ) => Effect.Effect<McpResourceMenu, SessionError>;
   /**
    * The directory the active branch, or the conversation `conversationId` names, works in: where the paths its tools
    * are given resolve. Undefined for a Session without an environment.
@@ -1983,6 +2037,34 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       Effect.mapError((error) => SessionError.make({ operation: "files", message: error.message })),
     );
 
+  /**
+   * The MCP resources `conversation`'s `@` menu lists: from the servers' lists, never starting a Container
+   * (`docs/architecture/mcp-in-a-session.md` → Attached resources). Without MCP resources there are none.
+   */
+  const resourceMenuFor = (
+    conversation: Conversation,
+  ): Effect.Effect<McpResourceMenu, SessionError> => {
+    const attached = options.mcp?.attached;
+
+    if (attached === undefined) return Effect.succeed({ servers: [] });
+
+    return subagentWorkspaceOf(conversation.id).pipe(
+      Effect.flatMap((workspace) =>
+        Effect.suspend(() => {
+          const stop = new AbortController();
+
+          return attached
+            .menu({
+              conversation: String(conversation.id),
+              workspaceOf: Effect.succeed(workspace?.object),
+              signal: stop.signal,
+            })
+            .pipe(Effect.ensuring(Effect.sync(() => stop.abort())));
+        }),
+      ),
+    );
+  };
+
   /** What `conversation`'s `@` menu offers for `query`. */
   const filesFor = (conversation: Conversation, query: string) =>
     environment(conversation, { lookup: true }).pipe(
@@ -2009,15 +2091,15 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     return typed === undefined || typed.startsWith(`@${UPLOADS_ROOT}/`) ? "" : typed;
   };
 
-  const withPages = (
+  /**
+   * `draft`'s content with `inserted` (a block of text, and the images that belong with it) put before the first image from
+   * part `from` on: the owner's own parts, and an MCP prompt's before `from`, stay ahead of it.
+   */
+  const withBlockBefore = (
     draft: InputSubmissionDraft,
-    input: UserInput,
-    pages: ReadonlyArray<AttachedPage>,
-    // The parts the pages go after: an MCP prompt's block and images, which come before the owner's own parts.
-    from = 0,
-  ): InputSubmissionDraft => {
-    const block = { type: "text" as const, text: pageBlock(pages) };
-
+    from: number,
+    inserted: ReadonlyArray<InputPart>,
+  ) => {
     const parts = Predicate.isString(draft.content)
       ? draft.content === ""
         ? []
@@ -2029,21 +2111,44 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       () => parts.length,
     );
 
+    return [...parts.slice(0, at), ...inserted, ...parts.slice(at)];
+  };
+
+  /**
+   * The `cloudpid.user` entry of `draft` with `changes` (the pages or the resources a block adds) over what it already
+   * keeps (`UserEntryData`): a Review's Annotations stay beside the pages, an MCP prompt's data beside both.
+   */
+  const entryKeeping = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    changes: {
+      readonly pages?: ReadonlyArray<AttachedPage>;
+      readonly resources?: ReadonlyArray<AttachedResource>;
+    } = {},
+  ) => {
     const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
 
-    return {
-      ...draft,
-      content: [...parts.slice(0, at), block, ...parts.slice(at)],
-      // A Review's Annotations stay beside the pages.
-      entry: ownerEntry({
-        display: data?.display ?? typedBeside(input),
-        skills: data?.skills ?? [],
-        pages: Arr.map(pages, (page) => clampPage(page)),
-        review: data?.review,
-        mcpPrompt: data?.mcpPrompt,
-      }),
-    };
+    return ownerEntry({
+      display: data?.display ?? typedBeside(input),
+      skills: data?.skills ?? [],
+      pages: changes.pages ?? data?.pages,
+      review: data?.review,
+      mcpPrompt: data?.mcpPrompt,
+      resources: changes.resources ?? data?.resources,
+    });
   };
+
+  const withPages = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    pages: ReadonlyArray<AttachedPage>,
+    // The parts the pages go after: an MCP prompt's block and images, which come before the owner's own parts.
+    from = 0,
+  ): InputSubmissionDraft => ({
+    ...draft,
+    content: withBlockBefore(draft, from, [{ type: "text" as const, text: pageBlock(pages) }]),
+    entry: entryKeeping(draft, input, { pages: Arr.map(pages, (page) => clampPage(page)) }),
+  });
 
   /** A Review's data as the entry stores it. */
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: a Review's data is strings, numbers, and arrays and objects of them, as its Schema says: JSON, only typed read-only.
@@ -2060,6 +2165,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     pages?: Array<AttachedPage>;
     review?: JsonValue;
     mcpPrompt?: JsonValue;
+    resources?: Array<AttachedResource>;
   };
 
   /**
@@ -2072,6 +2178,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     readonly pages?: ReadonlyArray<AttachedPage> | undefined;
     readonly review?: ReviewData | undefined;
     readonly mcpPrompt?: McpPromptData | undefined;
+    readonly resources?: ReadonlyArray<AttachedResource> | undefined;
   }) => {
     const data: OwnerEntryData = { display: kept.display, skills: [...kept.skills] };
 
@@ -2080,6 +2187,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     if (kept.review !== undefined) data.review = reviewJson(kept.review);
 
     if (kept.mcpPrompt !== undefined) data.mcpPrompt = mcpPromptJson(kept.mcpPrompt);
+
+    if (kept.resources !== undefined) data.resources = [...kept.resources];
 
     return { kind: USER_ENTRY_KIND, data };
   };
@@ -2118,6 +2227,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       attachPages: _attachPages,
       via: _via,
       mcpPrompt: _mcpPrompt,
+      resources: _resources,
       ...rest
     } = prompt;
 
@@ -2319,6 +2429,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         attachPages: _attachPages,
         via: _via,
         mcpPrompt: _mcpPrompt,
+        resources: _resources,
         ...rest
       } = prompt;
 
@@ -2423,14 +2534,20 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const draftOf = (prompt: Prompt): Effect.Effect<InputSubmissionDraft, SessionError> =>
     prepared(prompt).pipe(
       Effect.flatMap(({ expanded, from }) =>
-        attachedPages(prompt).pipe(
-          Effect.map(
-            (pages): DraftOf =>
-              (rendered) =>
-                pages.length === 0
-                  ? expanded(rendered)
-                  : withPages(expanded(rendered), prompt.input, pages, from),
-          ),
+        Effect.all(
+          [attachedPages(prompt), attachedResources(prompt, partsOf(expanded(undefined)))],
+          { concurrency: "unbounded" },
+        ).pipe(
+          Effect.map(([pages, resources]): DraftOf => (rendered) => {
+            const paged =
+              pages.length === 0
+                ? expanded(rendered)
+                : withPages(expanded(rendered), prompt.input, pages, from);
+
+            return resources === undefined
+              ? paged
+              : withResources(paged, prompt.input, resources, from);
+          }),
         ),
       ),
       Effect.flatMap((draft) => {
@@ -2533,6 +2650,144 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   };
 
   /**
+   * The Attached resources `prompt` names, read now, each once, in parallel, and made into the message's block, images
+   * and chips (`docs/architecture/mcp-in-a-session.md` → Attached resources). Not read for a `requestId` the conversation
+   * has already admitted. A resource that is not found, or whose server is gone, refuses the send with
+   * `ATTACHED_RESOURCE_GONE` (the first of them, in the order attached), and nothing is placed; any other failure becomes the
+   * resource's error line in the block. `parts` are the message's parts so far: the images among them have used the
+   * inline image budget.
+   */
+  const attachedResources = (
+    prompt: Prompt,
+    parts: ReadonlyArray<MessagePart>,
+  ): Effect.Effect<AttachedMessage | undefined, SessionError> => {
+    const { resources } = prompt;
+
+    if (resources === undefined || resources.refs.length === 0) return Effect.undefined;
+
+    return wasAdmitted(prompt).pipe(
+      Effect.flatMap((admitted) =>
+        admitted ? Effect.undefined : readAttachedResources(prompt, resources, parts),
+      ),
+    );
+  };
+
+  /** The reads of `resources`' refs, as `attachedResources` describes. */
+  const readAttachedResources = (
+    prompt: Prompt,
+    resources: NonNullable<Prompt["resources"]>,
+    parts: ReadonlyArray<MessagePart>,
+  ): Effect.Effect<AttachedMessage | undefined, SessionError> =>
+    Effect.gen(function* () {
+      const redact = yield* resources.redact;
+
+      const refs = Arr.dedupeWith(resources.refs, (a, b) => resourceKey(a) === resourceKey(b));
+
+      const attached = options.mcp?.attached;
+      const [first] = refs;
+
+      if (attached === undefined) {
+        return first === undefined
+          ? undefined
+          : yield* resourceGone(first, "This Session has no MCP servers", redact);
+      }
+
+      const conversation = yield* addressed(prompt.conversationId);
+      const workspace = yield* subagentWorkspaceOf(conversation.id);
+      const { save } = yield* promptFiles(conversation, attached.session);
+
+      // What the resources of this message share: the image budget the message's other images left, and the room for
+      // inline text. Whichever read arrives first takes room first.
+      const budgets: AttachedBudgets = {
+        images:
+          INLINE_IMAGE_BUDGET -
+          Arr.reduce(
+            parts,
+            0,
+            (sum, part) => sum + (part.type === "image" ? (part.data?.length ?? 0) : 0),
+          ),
+        text: MAX_RESOURCES_INLINE_TEXT_BYTES,
+      };
+
+      const reads = yield* Effect.forEach(
+        refs,
+        (ref) =>
+          Effect.suspend(() => {
+            const stop = new AbortController();
+
+            return attached
+              .read({
+                server: ref.server,
+                uri: ref.uri,
+                conversation: String(conversation.id),
+                workspaceOf: Effect.succeed(workspace?.object),
+                signal: stop.signal,
+                use: (contents) =>
+                  attachedResource({ redact, server: ref.server, ref, contents, budgets, save }),
+              })
+              .pipe(Effect.ensuring(Effect.sync(() => stop.abort())));
+          }),
+        { concurrency: "unbounded" },
+      );
+
+      const made: Array<AttachedMade> = [];
+
+      for (const [index, read] of reads.entries()) {
+        const ref = refs[index];
+
+        if (ref === undefined) continue;
+
+        if (read.status === "gone") return yield* resourceGone(ref, read.message, redact);
+
+        if (read.status === "read") {
+          made.push(read.value);
+
+          continue;
+        }
+
+        const failed = failedResource(redact, ref.server, ref, read.message);
+
+        made.push({ elements: [failed.element], images: [], chip: failed.chip });
+      }
+
+      return attachedMessage(made);
+    });
+
+  /** The refusal of a send whose resource `ref` is gone, with `why` redacted. */
+  const resourceGone = (
+    ref: ResourceRef,
+    why: string,
+    redact: <A>(value: A) => A,
+  ): Effect.Effect<never, SessionError> =>
+    Effect.fail(
+      SessionError.make({
+        operation: "submit",
+        message: redact(attachedResourceGoneMessage(ref.server, ref.uri, why)),
+        code: ATTACHED_RESOURCE_GONE,
+        server: ref.server,
+      }),
+    );
+
+  /**
+   * `draft` with the Attached resources' block as a text part of its own, and their inline images after it, before the
+   * first image from part `from` on (the pages' block, which was placed the same way, comes before it), and the entry that
+   * keeps what became of them for the chips.
+   */
+  const withResources = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    message: AttachedMessage,
+    from: number,
+  ): InputSubmissionDraft => ({
+    ...draft,
+    content: withBlockBefore(draft, from, [
+      { type: "text" as const, text: message.block },
+      ...message.images,
+    ]),
+    entry: entryKeeping(draft, input, { resources: message.chips }),
+  });
+
+  /**
    * Refuse `draft` when the Session could not store it: an image the providers do not take, or a message that would not
    * fit one row, alone or in the conversation's inbox beside the messages waiting there (`input-guard.ts`). Its
    * expansion is in it, so what is measured is what would be written. Run in arrival order, so the inbox read is not
@@ -2586,15 +2841,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ? Effect.succeed(draft)
       : Schema.encodeEffect(SessionVia)(via).pipe(
           Effect.map((encoded) => {
-            const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
-
-            const kept = ownerEntry({
-              display: data?.display ?? typedBeside(input),
-              skills: data?.skills ?? [],
-              pages: data?.pages,
-              review: data?.review,
-              mcpPrompt: data?.mcpPrompt,
-            });
+            const kept = entryKeeping(draft, input);
 
             return { ...draft, entry: { ...kept, data: { ...kept.data, via: encoded } } };
           }),
@@ -3662,6 +3909,10 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     files: ({ query, conversationId }) =>
       addressed(conversationId).pipe(
         Effect.flatMap((conversation) => filesFor(conversation, query)),
+      ),
+    resourceMenu: (conversationId) =>
+      addressed(conversationId).pipe(
+        Effect.flatMap((conversation) => resourceMenuFor(conversation)),
       ),
     history: ({ before, conversationId }) =>
       addressed(conversationId).pipe(

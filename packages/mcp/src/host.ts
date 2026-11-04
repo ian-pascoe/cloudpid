@@ -331,6 +331,8 @@ export const readMcpApplyResult: (answer: Schema.Json) => McpApplyResult = hostA
  *   `request({ op: "resume" })` (`mcp-server-requests.md` → Questions).
  * - `resend`: a `tools/call` with `ctx.answers.pages` may be answered `PagesRequired` (a Legacy `-32042`), and the host
  *   answers `request({ op: "resend" })` (`mcp-server-requests.md` → Elicitation requests, URL mode).
+ * - `no_start`: a `resources/read` with `ctx.start: false` never starts a stdio server's Container (`mcp-in-a-session.md` →
+ *   Resource links and embedded resources).
  *
  * The Session side names those of these its MCP tools use: `MCP_TOOL_FEATURES` (`@cloudpid/extensions/mcp`) the ones
  * they cannot be built without, `MCP_OPTIONAL_TOOL_FEATURES` the ones it does without when the host lacks them (`resources`).
@@ -346,6 +348,7 @@ export const MCP_HOST_FEATURES: ReadonlyArray<string> = [
   "resend",
   "sampling",
   "watches",
+  "no_start",
 ];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */

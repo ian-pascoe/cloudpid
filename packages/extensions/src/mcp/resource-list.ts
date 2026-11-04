@@ -52,7 +52,7 @@ type ListArgs = { readonly server?: string; readonly cursor?: string };
 // Pages
 
 /** `ui://` and `profile=mcp-app` resources are an App's, which the lists leave out (`docs/architecture/mcp-apps.md`). */
-const isAppResource = (uri: string, mimeType: string | undefined): boolean =>
+export const isAppResource = (uri: string, mimeType: string | undefined): boolean =>
   uri.startsWith("ui://") ||
   (mimeType?.toLowerCase().replaceAll(" ", "").includes(MCP_APP_PROFILE) ?? false);
 

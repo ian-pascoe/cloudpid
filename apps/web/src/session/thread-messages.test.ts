@@ -6,6 +6,7 @@ import {
   entriesOf,
   shownMcpPrompt,
   shownPages,
+  shownResources,
   shownReview,
   shownSkills,
   shownVia,
@@ -154,6 +155,21 @@ describe("the thread messages of a view", () => {
     expect(shownPages(message?.metadata?.custom)).toEqual([page]);
     expect(shownSkills(message?.metadata?.custom)).toEqual([]);
     expect(shownPages(undefined)).toEqual([]);
+  });
+
+  it("keeps the MCP resources attached to a user message, for its chips", () => {
+    const resources = [
+      { server: "docs", uri: "file:///guide.md", name: "Guide", kind: "text" },
+      { server: "docs", uri: "file:///gone.md", kind: "error", error: "The server is down" },
+    ];
+
+    const [message] = toThreadMessages(
+      view({ messages: [{ ...user("1", "read these"), resources }] }),
+    );
+
+    expect(shownResources(message?.metadata?.custom)).toEqual(resources);
+    expect(shownResources(undefined)).toEqual([]);
+    expect(shownPages(message?.metadata?.custom)).toEqual([]);
   });
 
   it("keeps who sent a message over the MCP endpoint, for its chip", () => {

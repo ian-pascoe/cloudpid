@@ -7,6 +7,7 @@ import {
   type ForkKind,
   type McpPromptData,
   NEW_WORKSPACE,
+  type ResourceRef,
   SAME_WORKSPACE,
   type TreePoint,
 } from "@cloudpid/protocol";
@@ -60,12 +61,21 @@ export const promptPrefillAtom = Atom.make<Readonly<Record<string, McpPromptData
   Atom.keepAlive,
 );
 
-/** Put `text`, and the MCP prompt it was sent with, in Session `sessionId`'s root composer. */
+/**
+ * The MCP resources attached to the owner's message a move or a Fork was made before, by Session id, for the root composer
+ * to hold as chips (`Navigated.resources`).
+ */
+export const resourcesPrefillAtom = Atom.make<Readonly<Record<string, readonly ResourceRef[]>>>(
+  {},
+).pipe(Atom.keepAlive);
+
+/** Put `text`, and the MCP prompt and resources it was sent with, in Session `sessionId`'s root composer. */
 const prefill = (
   get: Atom.FnContext,
   sessionId: string,
   text: string | null,
   mcpPrompt?: McpPromptData,
+  resources?: readonly ResourceRef[],
 ) => {
   if (text !== null && text.trim() !== "") {
     get.set(composerPrefillAtom, { ...get(composerPrefillAtom), [sessionId]: text });
@@ -73,6 +83,10 @@ const prefill = (
 
   if (mcpPrompt !== undefined) {
     get.set(promptPrefillAtom, { ...get(promptPrefillAtom), [sessionId]: mcpPrompt });
+  }
+
+  if (resources !== undefined && resources.length > 0) {
+    get.set(resourcesPrefillAtom, { ...get(resourcesPrefillAtom), [sessionId]: resources });
   }
 };
 
@@ -114,7 +128,7 @@ export const navigateAtom = Atom.family((sessionId: string) =>
         Effect.flatMap((client) => client.navigate(point, summary)),
         Effect.tap((navigated) =>
           Effect.sync(() => {
-            prefill(get, sessionId, navigated.text, navigated.mcpPrompt);
+            prefill(get, sessionId, navigated.text, navigated.mcpPrompt, navigated.resources);
           }),
         ),
       ),
@@ -171,7 +185,7 @@ export const forkSessionAtom = appRuntime.fn(
     return RegistryClient.use((registry) => registry("forkSession", request)).pipe(
       Effect.tap((forked) =>
         Effect.sync(() => {
-          prefill(get, forked.session.id, forked.text, forked.mcpPrompt);
+          prefill(get, forked.session.id, forked.text, forked.mcpPrompt, forked.resources);
           get.set(pathAtom, sessionPath(forked.session.id));
         }),
       ),

@@ -11,6 +11,7 @@ import { Annotation, AnnotationDraft, MAX_ANNOTATION_ID, MAX_ANNOTATIONS } from 
 import { WorkspaceChanges } from "./changes.ts";
 import { ComparisonSourceKind, MAX_VIEWED, ViewedFile } from "./comparison.ts";
 import { PageRef } from "./attached-pages.ts";
+import { AttachedResource, MAX_ATTACHED_RESOURCES, ResourceRef } from "./attached-resources.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
@@ -101,6 +102,13 @@ const CommandId = Schema.optionalKey(Schema.String);
  * refuses the send with an `error` that carries a `code` (`MCP_PROMPT_*`), and nothing is placed. It cannot be sent
  * with `annotations`, and a text that only looks like a prompt's command (`/mcp__…`) is refused without it.
  *
+ * With `resources`, the owner attached MCP resources from the `@` menu (`ResourceRef`): the Session reads each once, as the
+ * message is admitted (in its prepare step, at most 15 s per read, in parallel), and gives what the servers returned to the
+ * model as untrusted content in an `<mcp_resources>` block, apart from the owner's words (docs/architecture/mcp-in-a-session.md →
+ * Attached resources). A resource that is not found, or whose server is gone, refuses the send with an `error` whose `code` is
+ * `ATTACHED_RESOURCE_GONE`; any other failure sends the message with the error in its block. Sent only to a Session that says
+ * `attachedResources` in `hello`.
+ *
  * Stop also withdraws a message still being prepared, or waiting its turn behind one that is, in its conversation's
  * line (docs/architecture/mcp-in-a-session.md → Getting a prompt at send): nothing is placed, and the command is
  * answered with `null` instead, as a client takes withdrawn queued input, gone without a failure.
@@ -120,6 +128,11 @@ export const Submit = Schema.Struct({
     ),
   ),
   mcpPrompt: Schema.optionalKey(McpPromptRef),
+  resources: ResourceRef.pipe(
+    Schema.Array,
+    Schema.check(Schema.isMaxLength(MAX_ATTACHED_RESOURCES)),
+    Schema.optionalKey,
+  ),
 });
 
 /**
@@ -488,6 +501,18 @@ export const FilesRequest = Schema.Struct({
 });
 
 /**
+ * Ask which resources the MCP servers list, for the root conversation's composer or the subagent conversation
+ * `conversationId` names: the `@` menu's resource rows (docs/architecture/mcp-in-a-session.md → Attached resources). The
+ * Session reads the servers' lists (never starting a Container: a stopped stdio server is a muted row) and answers an
+ * `McpResourceMenu`. Sent only to a Session that says `attachedResources` in `hello`.
+ */
+export const McpResourceMenuRequest = Schema.Struct({
+  type: Schema.Literal("mcp_resource_menu"),
+  id: CommandId,
+  conversationId: Schema.optionalKey(ConversationId),
+});
+
+/**
  * Run the Session's Slash command `name` (without its `/`) with `args` (trimmed, `""` when none) on the root
  * conversation, or on the subagent conversation `conversationId` names. Answered with a `CommandOutcome`; a command that
  * cannot run fails with why.
@@ -776,6 +801,7 @@ export const ClientMessage = Schema.Union([
   Abort,
   CatalogRequest,
   FilesRequest,
+  McpResourceMenuRequest,
   RunCommand,
   HistoryRequest,
   Watch,
@@ -824,7 +850,8 @@ export type ClientMessage = typeof ClientMessage.Type;
  * still open across the deploy reads it as it did. `appViews` says the Session takes `page_visible` and `mcp_app_log`: a
  * client sends them only to a Session that says so, since one from before reads them as an unreadable message and
  * answers an error (`docs/architecture/mcp.md` → Deploys); `mcpTasks` says the same of `mcp_task_cancel` and
- * `container_keep`, and that it sends `mcp_tasks`.
+ * `container_keep`, and that it sends `mcp_tasks`. `attachedResources` says it takes `submit.resources` and
+ * `mcp_resource_menu`, which a client sends on the same terms.
  */
 export const Hello = Schema.Struct({
   type: Schema.Literal("hello"),
@@ -832,6 +859,7 @@ export const Hello = Schema.Struct({
   copying: Schema.optionalKey(Schema.Boolean),
   appViews: Schema.optionalKey(Schema.Boolean),
   mcpTasks: Schema.optionalKey(Schema.Boolean),
+  attachedResources: Schema.optionalKey(Schema.Boolean),
 });
 
 /**
@@ -894,6 +922,8 @@ export const Navigated = Schema.Struct({
   conversationId: ConversationId,
   text: Schema.NullOr(Schema.String),
   mcpPrompt: Schema.optionalKey(McpPromptData),
+  /** The MCP resources it attached, which the composer gets back as chips and reads again when it is sent. */
+  resources: AttachedResource.pipe(Schema.Array, Schema.optionalKey),
 });
 
 export type Navigated = typeof Navigated.Type;

@@ -6,7 +6,13 @@
 // the agent as of the point.
 import type { ContextState } from "@cloudpid/extensions/context";
 import type { TodoState } from "@cloudpid/extensions/todo";
-import type { McpAppCopy, McpAppStub, McpPromptData, TreePoint } from "@cloudpid/protocol";
+import type {
+  AttachedResource,
+  McpAppCopy,
+  McpAppStub,
+  McpPromptData,
+  TreePoint,
+} from "@cloudpid/protocol";
 import type {
   AgentState,
   ContextEdit,
@@ -49,6 +55,8 @@ export type ForkPlan = {
   readonly text: string | null;
   /** The MCP prompt that message had, which the new composer gets back as its chip (`Navigated.mcpPrompt`). */
   readonly mcpPrompt?: McpPromptData;
+  /** The MCP resources that message attached, which the new composer gets back as chips (`Navigated.resources`). */
+  readonly resources?: ReadonlyArray<AttachedResource>;
   /** The branch's agent as of the point: its model, thinking level, loaded tools and the rest of `pi.agent`. */
   readonly agent: AgentState;
   /** The model and thinking level the source picked itself, which the new Session keeps picked. */

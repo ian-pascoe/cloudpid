@@ -735,6 +735,8 @@ export const serveRegistryRpc = <R = never>(
 
           if (plan.mcpPrompt !== undefined) forked.mcpPrompt = plan.mcpPrompt;
 
+          if (plan.resources !== undefined) forked.resources = [...plan.resources];
+
           return forked;
         }),
       renameSession: ({ id, title }) =>

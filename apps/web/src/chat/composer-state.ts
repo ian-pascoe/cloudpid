@@ -5,6 +5,7 @@
 
 import type { CommandOutcome } from "@cloudpid/protocol";
 import * as Clipboard from "@effect/platform-browser/Clipboard";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
@@ -13,7 +14,7 @@ import { replying } from "../calls.ts";
 import { refusedFirstMessagesAtom } from "../draft-state.ts";
 import { appRuntime } from "../runtime.ts";
 import { sessionClientAtom } from "../session/atoms.ts";
-import { addAttachmentsAtom } from "./attachments-state.ts";
+import { addAttachmentsAtom, addResourcesAtom } from "./attachments-state.ts";
 import { askCatalogAtom, refreshCatalogAtom } from "./catalog.ts";
 import { detectTrigger, type Trigger } from "./completion.ts";
 import type { ConversationKey } from "./conversation.ts";
@@ -26,7 +27,8 @@ import {
   restoredChip,
   startingValues,
 } from "./mcp-prompt-state.ts";
-import { composerPrefillAtom, promptPrefillAtom } from "./tree-state.ts";
+import { composerPrefillAtom, promptPrefillAtom, resourcesPrefillAtom } from "./tree-state.ts";
+import { askResourceMenuAtom } from "./mcp-resource-menu.ts";
 
 /**
  * Whether Stop and `/stop` have something to stop: a Run is going, or a message of this conversation is still being sent
@@ -154,6 +156,8 @@ export interface ComposerLookups {
   readonly askCatalog: Atom.Writable<unknown, void>;
   /** Ask for it now, fresh or not (`refreshCatalogAtom`): a prompt's send was refused. */
   readonly refreshCatalog: Atom.Writable<unknown, void>;
+  /** Ask for the MCP resources the `@` menu lists, unless they are fresh (`askResourceMenuAtom`); absent where it lists none. */
+  readonly askResourceMenu?: Atom.Writable<unknown, void>;
 }
 
 /** The lookups of a conversation's composer: its Session's answers about the conversation's directory. */
@@ -161,6 +165,7 @@ export const conversationLookups = (key: ConversationKey): ComposerLookups => ({
   searchFiles: searchFilesAtom(key),
   askCatalog: askCatalogAtom(key),
   refreshCatalog: refreshCatalogAtom(key),
+  askResourceMenu: askResourceMenuAtom(key),
 });
 
 /**
@@ -314,6 +319,20 @@ export const composerState = (source: ComposerSource): ComposerState => {
       if (lists) get.set(askCatalog, undefined);
     });
 
+    const { askResourceMenu } = source.lookups;
+
+    // The `@` menu lists the MCP resources after the files: asked for as it opens, again once the listing is stale.
+    if (askResourceMenu !== undefined) {
+      get.mount(askResourceMenu);
+      get.subscribe(
+        fileQuery,
+        (query) => {
+          if (query !== null) get.set(askResourceMenu, undefined);
+        },
+        { immediate: true },
+      );
+    }
+
     const { key } = source;
 
     if (key === undefined || key.conversationId !== undefined) return;
@@ -322,6 +341,7 @@ export const composerState = (source: ComposerSource): ComposerState => {
 
     // Where a refused first message's files go back to.
     get.mount(addAttachmentsAtom(key));
+    get.mount(addResourcesAtom(key));
 
     get.subscribe(
       refusedFirstMessagesAtom,
@@ -377,6 +397,26 @@ export const composerState = (source: ComposerSource): ComposerState => {
           get.set(promptPrefillAtom, others);
           get.set(source.prompt.chip, restoredChip(data, null));
           get.set(askCatalog, undefined);
+        });
+      },
+      { immediate: true },
+    );
+
+    // The MCP resources of that message, as chips: the Session says whether each is still there when it is sent.
+    get.subscribe(
+      resourcesPrefillAtom,
+      (prefills) => {
+        const { [sessionId]: refs, ...others } = prefills;
+
+        if (refs === undefined) return;
+
+        Atom.batch(() => {
+          get.set(resourcesPrefillAtom, others);
+
+          get.set(
+            addResourcesAtom(key),
+            Arr.map(refs, (ref) => ({ server: ref.server, uri: ref.uri, name: ref.name ?? "" })),
+          );
         });
       },
       { immediate: true },

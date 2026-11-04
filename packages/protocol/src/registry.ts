@@ -11,6 +11,7 @@ import * as Arr from "effect/Array";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
+import { AttachedResource } from "./attached-resources.ts";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { MarkedOrigin } from "./mcp-api.ts";
 import { McpPromptData } from "./mcp-prompts.ts";
@@ -248,6 +249,8 @@ export const ForkedSession = Schema.Struct({
   session: SessionRecord,
   text: Schema.NullOr(Schema.String),
   mcpPrompt: Schema.optionalKey(McpPromptData),
+  /** The MCP resources that message attached, as `Navigated.resources` carries them. */
+  resources: AttachedResource.pipe(Schema.Array, Schema.optionalKey),
 });
 
 export type ForkedSession = typeof ForkedSession.Type;

@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AttachedPage } from "./attached-pages.ts";
+import { AttachedResource } from "./attached-resources.ts";
 import { SessionVia } from "./mcp-api.ts";
 import { McpPromptData, mcpPromptLabel } from "./mcp-prompts.ts";
 import { ReviewData } from "./review.ts";
@@ -32,6 +33,12 @@ export const UserEntryData = Schema.Struct({
   display: Schema.String,
   skills: Schema.Array(ExpandedSkill),
   pages: AttachedPage.pipe(Schema.Array, Schema.optionalKey),
+  // The MCP resources attached to the message, as they were read at send: a resource this version cannot read leaves the entry readable, without the chip.
+  resources: AttachedResource.pipe(
+    Schema.Array,
+    Schema.optionalKey,
+    Schema.catchDecoding(() => Effect.succeedNone),
+  ),
   review: Schema.optionalKey(ReviewData),
   // A prompt this version cannot read leaves the entry readable, without it.
   mcpPrompt: Schema.optionalKey(McpPromptData).pipe(Schema.catchDecoding(() => Effect.succeedNone)),

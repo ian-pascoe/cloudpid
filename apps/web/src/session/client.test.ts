@@ -2556,6 +2556,91 @@ describe("the catalog and Slash commands", () => {
   );
 
   it.effect(
+    "asks for the MCP resources of the `@` menu only of a Session that says in its hello it takes them",
+    () =>
+      Effect.gen(function* () {
+        const { client, sockets, latest } = yield* setup();
+
+        // Before the hello nothing is known about the Session.
+        expect(yield* Effect.flip(client.resourceMenu())).toMatchObject({
+          message: expect.any(String),
+        });
+
+        yield* latest().open();
+        yield* latest().say({ type: "hello", root: 1 });
+
+        // An older Session: no request is sent, and the menu has no resource rows.
+        expect(yield* client.resourceMenu()).toEqual({ servers: [] });
+        expect(
+          latest()
+            .commands()
+            .filter((c) => c.type === "mcp_resource_menu"),
+        ).toEqual([]);
+
+        // A reconnect to a Session that takes them.
+        yield* latest().drop();
+        yield* advance(1_000);
+
+        const reconnected = sockets[1]!;
+
+        yield* reconnected.open();
+        yield* reconnected.say({ type: "hello", root: 1, attachedResources: true });
+
+        const asked = yield* asking(client.resourceMenu(2));
+        const [ask] = reconnected.commands().filter((c) => c.type === "mcp_resource_menu");
+
+        expect(ask).toEqual({ type: "mcp_resource_menu", id: ask?.id, conversationId: 2 });
+
+        const MENU = {
+          servers: [
+            {
+              server: "docs",
+              source: "owner",
+              state: "ok",
+              resources: [{ uri: "file:///a", name: "a" }],
+            },
+          ],
+        };
+
+        yield* reconnected.say({ type: "result", id: ask?.id, result: MENU });
+        expect(yield* Fiber.join(asked)).toEqual(MENU);
+      }),
+  );
+
+  it.effect(
+    "refuses a submit that attaches MCP resources to a Session that has not said it takes them",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const outcomes: Array<string | null> = [];
+
+        yield* submitTold(client, outcomes, {
+          input: "go",
+          display: "go",
+          resources: [{ server: "docs", uri: "file:///a.md" }],
+        });
+
+        expect(
+          latest()
+            .commands()
+            .filter((c) => c.type === "submit"),
+        ).toEqual([]);
+        expect(outcomes).toEqual([expect.stringMatching(/cannot take attached MCP resources/)]);
+
+        // A message without resources goes as ever.
+        yield* submitTold(client, outcomes, "plain");
+        expect(
+          latest()
+            .commands()
+            .filter((c) => c.type === "submit"),
+        ).toHaveLength(1);
+      }),
+  );
+
+  it.effect(
     "mints Live View links for a Browser Handoff, and says why when the handoff is over",
     () =>
       Effect.gen(function* () {

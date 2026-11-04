@@ -9,8 +9,12 @@
 
 import {
   MAX_ATTACHED_PAGES,
+  MAX_ATTACHED_RESOURCES,
   MAX_ATTACHMENT_BYTES,
   type PageRef,
+  resourceKey,
+  resourceLabel,
+  type ResourceRef,
   type StoredAttachment,
   type WhenBusy,
   Refusal,
@@ -43,6 +47,7 @@ import {
   requestedName,
   type SentAttachment,
   type SentPage,
+  type SentResource,
 } from "./attachments.ts";
 import type { ConversationKey } from "./conversation.ts";
 import { type Fit, fitImages, UNPREPARED } from "./image-budget.ts";
@@ -90,6 +95,17 @@ export interface PageChipState {
   readonly screenId: string | undefined;
 }
 
+/**
+ * An MCP resource attached to the message being written (`docs/architecture/mcp-in-a-session.md` → Attached resources):
+ * the server's configured name, the URI, and the name the `@` menu listed it under. The Session reads it when the message
+ * is sent; nothing is read now.
+ */
+export interface ResourceChipState {
+  readonly server: string;
+  readonly uri: string;
+  readonly name: string;
+}
+
 /** The Owner tab to attach, with the Browser Pane's current frame as a picture when it is the one shown. */
 export interface PageToAttach {
   readonly ownerTabId: string;
@@ -103,13 +119,21 @@ export interface AttachmentsState {
   readonly items: readonly AttachmentItem[];
   /** The Owner tabs attached to the message, in the order they were attached. */
   readonly pages: readonly PageChipState[];
+  /** The MCP resources attached to the message, in the order they were attached. */
+  readonly resources: readonly ResourceChipState[];
   /** How each picture goes, by its ID: inline, or as a file only and why. Absent while it is being prepared. */
   readonly fits: ReadonlyMap<string, Fit>;
   /** The pictures `fits` was made for (`picturesOf`): a set that changed since is being fitted again. */
   readonly fitted: string;
 }
 
-const EMPTY: AttachmentsState = { items: [], pages: [], fits: new Map(), fitted: "" };
+const EMPTY: AttachmentsState = {
+  items: [],
+  pages: [],
+  resources: [],
+  fits: new Map(),
+  fitted: "",
+};
 
 /** The pictures among `items`, as one key that changes when the set does. */
 const picturesOf = (items: readonly AttachmentItem[]): string =>
@@ -192,6 +216,22 @@ export const sentPages = (state: AttachmentsState): readonly SentPage[] =>
     return { ref, title: chip.title, screen };
   });
 
+/** The attached MCP resources as the message sends them: the ref of each, and the label its lane shows. */
+export const sentResources = (state: AttachmentsState): readonly SentResource[] =>
+  state.resources.map((chip) => {
+    const ref: Types.Mutable<ResourceRef> = { server: chip.server, uri: chip.uri };
+
+    if (chip.name !== "") ref.name = chip.name;
+
+    return { ref, label: resourceLabel(chip) };
+  });
+
+/** Whether `chip` is the resource `other` names. */
+const sameResource = (
+  chip: Pick<ResourceChipState, "server" | "uri">,
+  other: Pick<ResourceChipState, "server" | "uri">,
+): boolean => resourceKey(chip) === resourceKey(other);
+
 /** Why a page's screen does not go with it, once it is known; undefined while it is being fitted, or when it goes. */
 export const screenNote = (state: AttachmentsState, chip: PageChipState): string | undefined => {
   if (chip.screenId === undefined) return undefined;
@@ -221,6 +261,14 @@ export interface Attachments {
   readonly addPage: (page: PageToAttach) => Effect.Effect<void>;
   /** Take an attached Owner tab off the message, with its screen. */
   readonly removePage: (ownerTabId: string) => Effect.Effect<void>;
+  /** Attach an MCP resource to the message; one already attached stays as it is, and a message holds `MAX_ATTACHED_RESOURCES`. */
+  readonly addResource: (resource: ResourceChipState) => Effect.Effect<void>;
+  /** Attach MCP resources to the message, one after another, as `addResource` does each. */
+  readonly addResources: (resources: readonly ResourceChipState[]) => Effect.Effect<void>;
+  /** Take an attached MCP resource off the message. */
+  readonly removeResource: (
+    resource: Pick<ResourceChipState, "server" | "uri">,
+  ) => Effect.Effect<void>;
   /** Take them all off the composer while their message is submitted; their names stay taken until released. */
   readonly hold: Effect.Effect<Held>;
 }
@@ -491,9 +539,33 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
       })).pipe(Effect.andThen(chip.screenId === undefined ? Effect.void : remove(chip.screenId)));
     });
 
+  const addResource = (resource: ResourceChipState): Effect.Effect<void> =>
+    Effect.suspend(() =>
+      current.resources.length >= MAX_ATTACHED_RESOURCES ||
+      current.resources.some((chip) => sameResource(chip, resource))
+        ? Effect.void
+        : step((before) => ({ ...before, resources: [...before.resources, resource] })),
+    );
+
+  const addResources = (resources: readonly ResourceChipState[]): Effect.Effect<void> =>
+    Effect.forEach(resources, addResource, { discard: true });
+
+  const removeResource = (
+    resource: Pick<ResourceChipState, "server" | "uri">,
+  ): Effect.Effect<void> =>
+    Effect.suspend(() =>
+      current.resources.some((chip) => sameResource(chip, resource))
+        ? step((before) => ({
+            ...before,
+            resources: before.resources.filter((chip) => !sameResource(chip, resource)),
+          }))
+        : Effect.void,
+    );
+
   const hold = Effect.suspend(() => {
     const taken = current.items;
     const takenPages = current.pages;
+    const takenResources = current.resources;
 
     for (const item of taken) held.add(item);
 
@@ -501,7 +573,7 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
       for (const item of taken) held.delete(item);
     });
 
-    return step((before) => ({ ...before, items: [], pages: [] })).pipe(
+    return step((before) => ({ ...before, items: [], pages: [], resources: [] })).pipe(
       Effect.as<Held>({
         restore: unhold.pipe(
           // A page attached again meanwhile gives way to the one that was refused, screen and all: the screen it
@@ -521,6 +593,13 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
                   ...takenPages,
                   ...before.pages.filter((chip) => !asked.has(chip.ownerTabId)),
                 ],
+                // A resource attached again meanwhile gives way to the one that was refused.
+                resources: [
+                  ...takenResources,
+                  ...before.resources.filter(
+                    (chip) => !takenResources.some((each) => sameResource(each, chip)),
+                  ),
+                ].slice(0, MAX_ATTACHED_RESOURCES),
               })).pipe(Effect.andThen(Effect.forEach(stale, forget, { discard: true })));
             }),
           ),
@@ -530,7 +609,17 @@ export const makeAttachments = Effect.fnUntraced(function* (sessionId: Effect.Ef
     );
   });
 
-  return { state, add, remove, addPage, removePage, hold } satisfies Attachments;
+  return {
+    state,
+    add,
+    remove,
+    addPage,
+    removePage,
+    addResource,
+    addResources,
+    removeResource,
+    hold,
+  } satisfies Attachments;
 });
 
 /** The atom of a composer's Attachments (`makeAttachments`), which the atoms below read and write through. */
@@ -577,6 +666,34 @@ const removePageFrom = (program: AttachmentsProgram) =>
     { concurrent: true },
   );
 
+/** Attach an MCP resource to `program`'s message. */
+const addResourceTo = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (resource: ResourceChipState, get) =>
+      get.result(program).pipe(Effect.flatMap((attachments) => attachments.addResource(resource))),
+    { concurrent: true },
+  );
+
+/** Attach MCP resources to `program`'s message together: what a Branch or a Fork gave back. */
+const addResourcesTo = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (resources: readonly ResourceChipState[], get) =>
+      get
+        .result(program)
+        .pipe(Effect.flatMap((attachments) => attachments.addResources(resources))),
+    { concurrent: true },
+  );
+
+/** Take an attached MCP resource off `program`'s message. */
+const removeResourceFrom = (program: AttachmentsProgram) =>
+  appRuntime.fn(
+    (resource: Pick<ResourceChipState, "server" | "uri">, get) =>
+      get
+        .result(program)
+        .pipe(Effect.flatMap((attachments) => attachments.removeResource(resource))),
+    { concurrent: true },
+  );
+
 /** The conversation's Attachments, while a composer of it reads them. */
 const attachmentsProgramAtom = Atom.family((key: ConversationKey) =>
   appRuntime.atom(makeAttachments(Effect.succeed(key.sessionId))),
@@ -605,6 +722,21 @@ export const addPageAtom = Atom.family((key: ConversationKey) =>
 /** Take an attached Owner tab off the conversation's message. */
 export const removePageAtom = Atom.family((key: ConversationKey) =>
   removePageFrom(attachmentsProgramAtom(key)),
+);
+
+/** Attach an MCP resource to the conversation's message (`docs/architecture/mcp-in-a-session.md` → Attached resources). */
+export const addResourceAtom = Atom.family((key: ConversationKey) =>
+  addResourceTo(attachmentsProgramAtom(key)),
+);
+
+/** Attach several MCP resources to the conversation's message at once (what a Branch or a Fork gave back). */
+export const addResourcesAtom = Atom.family((key: ConversationKey) =>
+  addResourcesTo(attachmentsProgramAtom(key)),
+);
+
+/** Take an attached MCP resource off the conversation's message. */
+export const removeResourceAtom = Atom.family((key: ConversationKey) =>
+  removeResourceFrom(attachmentsProgramAtom(key)),
 );
 
 /** Why a message with Attachments was not sent: they were not ready, or the Session refused it. */
@@ -663,7 +795,7 @@ export const sendAttachedAtom = Atom.family((key: ConversationKey) =>
 
           const held = yield* attachments.hold;
 
-          const plain = outgoingMessage(typed, sent, sentPages(ready));
+          const plain = outgoingMessage(typed, sent, sentPages(ready), sentResources(ready));
           const message = prompt === undefined ? plain : withPrompt(plain, prompt);
 
           yield* client

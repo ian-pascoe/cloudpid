@@ -1151,6 +1151,13 @@ export const McpHostRequestContext = Schema.Struct({
    * (`docs/architecture/mcp-apps.md` → An App View's calls). Optional, so a host that does not know it checks nothing more.
    */
   viewHash: Schema.optionalKey(Schema.String),
+  /**
+   * `false`: the request never starts a Container. A stdio server whose Workspace's Container is not running is refused as
+   * `Unreachable` with `stopped`, and a running one is read as usual. Only the owner's own reads set it (a preview of a
+   * resource link, `docs/architecture/mcp-in-a-session.md` → Resource links and embedded resources); a host that lacks the
+   * `no_start` feature drops the key and would start the Container, so a Session sends it only to one that lists it.
+   */
+  start: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpHostRequestContext = typeof McpHostRequestContext.Type;

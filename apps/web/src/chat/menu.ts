@@ -9,7 +9,11 @@ import * as Match from "effect/Match";
 import {
   type CatalogEntry,
   type McpCatalogServer,
+  type McpMenuResource,
+  type McpMenuServer,
   type McpPromptEntry,
+  type McpResourceMenu,
+  MENU_STATE,
   rank,
 } from "@cloudpid/protocol";
 import type { ComposerCommand } from "./commands.ts";
@@ -25,6 +29,8 @@ export type MenuPick =
   | { readonly kind: "run"; readonly command: ComposerCommand; readonly args: string }
   /** An MCP prompt: it leaves the text, and the composer asks for its arguments, or holds it as a chip at once. */
   | { readonly kind: "prompt"; readonly prompt: McpPromptEntry }
+  /** An MCP resource of the `@` menu: it leaves the text, and the composer holds it as a chip to attach. */
+  | { readonly kind: "resource"; readonly server: string; readonly resource: McpMenuResource }
   /** A muted row (a server whose prompts are not there yet): it cannot be picked. */
   | { readonly kind: "none" };
 
@@ -103,6 +109,186 @@ const filesMenu = (query: string, files: FileResults): Completion => {
         : "No matching files or folders.";
 
   return { label: "Files", sections: [], entries: [], notice };
+};
+
+/** What a server's muted row says of why its resources are not listed. */
+const resourceStateNote = (state: string): string =>
+  Match.value(state).pipe(
+    Match.when(MENU_STATE.connecting, () => "connecting…"),
+    Match.when(MENU_STATE.signIn, () => "sign-in needed"),
+    Match.when(MENU_STATE.stopped, () => "not running: its Container is stopped"),
+    Match.orElse(() => "unavailable"),
+  );
+
+/** What a resource without an `annotations.priority` ranks as: between the server's low and high. */
+const NEUTRAL_PRIORITY = 0.5;
+
+/** A resource's `annotations.priority`, the neutral one when the server gave none. */
+const priorityOf = (resource: McpMenuResource): number => resource.priority ?? NEUTRAL_PRIORITY;
+
+/**
+ * `rows` that `query` matches by the first of `keys` that does, in passes: the matches of the first key best first, then
+ * the matches of the second among the rest, and so on. Within a pass by match, then by the server's `annotations.priority`
+ * (higher first), then in the order given.
+ */
+const rankedInPasses = <A>(
+  query: string,
+  rows: readonly A[],
+  keys: ReadonlyArray<(row: A) => string>,
+  priority: (row: A) => number,
+): readonly A[] => {
+  const ranked: A[] = [];
+  const seen = new Set<A>();
+
+  for (const key of keys) {
+    const rest = rows.filter((row) => !seen.has(row));
+
+    for (const row of rank(query, rest, key, (each) => -priority(each))) {
+      ranked.push(row);
+      seen.add(row);
+    }
+  }
+
+  return ranked;
+};
+
+/** The resources `query` matches in `resources`, best first: by name or title, then by URI (`rankedInPasses`). */
+const rankedResources = (
+  query: string,
+  resources: readonly McpMenuResource[],
+): readonly McpMenuResource[] =>
+  rankedInPasses(
+    query,
+    resources,
+    [(resource) => resource.title ?? resource.name, (resource) => resource.uri],
+    priorityOf,
+  );
+
+/** One resource as a row: its title or name, its URI muted after it, and the first line of its description. */
+const resourceRow = (server: McpMenuServer, resource: McpMenuResource): MenuEntry => ({
+  id: `resource:${server.server}:${resource.uri}`,
+  label: resource.title ?? resource.name,
+  detail: resource.uri,
+  description: firstLine(resource.description ?? "") || resource.mimeType,
+  pick: { kind: "resource", server: server.server, resource },
+});
+
+/** The row of a server whose resources are not listed: muted, with why. */
+const mutedServerRow = (server: McpMenuServer): MenuEntry => ({
+  id: `resource-server:${server.server}`,
+  label: server.server,
+  description: resourceStateNote(server.state),
+  muted: true,
+  pick: { kind: "none" },
+});
+
+/** The `@<server>:` a query starts with, when it names a server the menu lists; and what follows it. */
+const narrowedTo = (
+  query: string,
+  resources: McpResourceMenu | null,
+): { readonly server: McpMenuServer; readonly rest: string } | undefined => {
+  const found = /^([^\s:]+):(.*)$/u.exec(query);
+
+  if (found === null || resources === null) return undefined;
+
+  const wanted = normalizeMcpName(found[1] ?? "");
+  const server = resources.servers.find((each) => normalizeMcpName(each.server) === wanted);
+
+  return server === undefined ? undefined : { server, rest: found[2] ?? "" };
+};
+
+/**
+ * The MCP resources after the files: one section per server, "MCP · <server>" (plus "· from <repo>" for a Repo's), each
+ * resource a row. The rows are ranked by how well they match what is typed, then by the `annotations.priority` the server
+ * gave (higher first), then by the servers' order and the order each listed them in, and a server's section stands where its best
+ * row does. A server whose resources are not listed (it is
+ * connecting, needs a sign-in, or is a stdio server whose Container is stopped, which the menu never starts) is a muted
+ * row, shown while its name matches.
+ */
+const resourceSections = (
+  query: string,
+  resources: McpResourceMenu | null,
+): readonly { readonly label: string; readonly rows: readonly MenuEntry[] }[] => {
+  if (resources === null) return [];
+
+  const listed = resources.servers.filter((server) => server.state === MENU_STATE.ok);
+
+  // A row matches by its name or title, else by its URI, else by its server's name.
+  const rows = rankedInPasses(
+    query,
+    listed.flatMap((server) => server.resources.map((resource) => ({ server, resource }))),
+    [
+      ({ resource }) => resource.title ?? resource.name,
+      ({ resource }) => resource.uri,
+      ({ server }) => server.server,
+    ],
+    ({ resource }) => priorityOf(resource),
+  );
+
+  const servers = [...new Set(rows.map(({ server }) => server))];
+
+  const sections = servers.map((server) => ({
+    label: `MCP · ${server.server}${sourceNote(server.source)}`,
+    rows: rows.flatMap((row) => (row.server === server ? [resourceRow(server, row.resource)] : [])),
+  }));
+
+  const muted = rank(
+    query,
+    resources.servers.filter((server) => server.state !== MENU_STATE.ok),
+    (server) => server.server,
+  ).map((server) => ({
+    label: `MCP · ${server.server}`,
+    rows: [mutedServerRow(server)],
+  }));
+
+  return [...sections, ...muted];
+};
+
+/**
+ * The `@` menu: the files and folders (`filesMenu`), then the MCP resources by server. `@<server>:` lists that server's
+ * resources alone, narrowed by what follows the colon. With no rows it says what `filesMenu` does.
+ */
+const mentionMenu = (
+  query: string,
+  files: FileResults,
+  resources: McpResourceMenu | null,
+): Completion => {
+  const narrowed = narrowedTo(query, resources);
+
+  if (narrowed !== undefined) {
+    const { server, rest } = narrowed;
+
+    const rows: readonly MenuEntry[] =
+      server.state === MENU_STATE.ok
+        ? rankedResources(rest, server.resources).map((resource) => resourceRow(server, resource))
+        : [mutedServerRow(server)];
+
+    return rows.length > 0
+      ? {
+          label: "MCP resources",
+          sections: [{ label: `MCP · ${server.server}${sourceNote(server.source)}`, rows }],
+          entries: rows,
+        }
+      : {
+          label: "MCP resources",
+          sections: [],
+          entries: [],
+          notice: `No matching resources in ${server.server}.`,
+        };
+  }
+
+  const found = filesMenu(query, files);
+  const sections = resourceSections(query, resources);
+
+  if (sections.length === 0) return found;
+
+  const all = [...found.sections, ...sections];
+
+  return {
+    label: found.sections.length > 0 ? "Files and MCP resources" : "MCP resources",
+    sections: all,
+    entries: [...found.entries, ...sections.flatMap((section) => section.rows)],
+  };
 };
 
 /** What a prompt's arguments look like in a row: `<required> [optional]`, in declared order. */
@@ -212,6 +398,7 @@ export const completionFor = (
   commands: readonly ComposerCommand[],
   catalog: MenuCatalog = NO_CATALOG,
   files: FileResults = NOT_SEARCHED,
+  resources: McpResourceMenu | null = null,
 ): Completion | null => {
   if (trigger.kind === "command") {
     return menu("Commands", [
@@ -293,7 +480,7 @@ export const completionFor = (
     ]);
   }
 
-  return filesMenu(trigger.query, files);
+  return mentionMenu(trigger.query, files, resources);
 };
 
 /** What a key does in an open menu with `rows` rows: move the highlight, pick, close it, or nothing (it types on). */

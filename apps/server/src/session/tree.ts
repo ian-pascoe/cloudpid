@@ -7,6 +7,7 @@
 import { isSessionBranch, SubagentsDoc } from "@cloudpid/extensions/subagents";
 import {
   type ConversationId,
+  type AttachedResource,
   type McpPromptData,
   type SessionTree,
   type TreeBranch,
@@ -134,6 +135,18 @@ export const ownerMessageText = (entry: EntryRecord): string => {
  */
 export const ownerMessagePrompt = (entry: EntryRecord): McpPromptData | undefined =>
   userEntryData(entry)?.mcpPrompt;
+
+/**
+ * The MCP resources `entry` attached, as they were kept: what the composer gets back as chips when the owner goes back
+ * before the message (`Navigated.resources`), to be read again when it is sent.
+ */
+export const ownerMessageResources = (
+  entry: EntryRecord,
+): ReadonlyArray<AttachedResource> | undefined => {
+  const resources = userEntryData(entry)?.resources;
+
+  return resources === undefined || resources.length === 0 ? undefined : resources;
+};
 
 /** What the tree shows of `entry`, or nothing for one the transcript does not show. */
 export const nodeOf = (

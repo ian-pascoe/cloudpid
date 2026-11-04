@@ -8,7 +8,8 @@ import {
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
 import * as Arr from "effect/Array";
-import { ChevronRight, Globe } from "lucide-react";
+import { ChevronRight, FileText, Globe } from "lucide-react";
+import * as Match from "effect/Match";
 import * as Predicate from "effect/Predicate";
 import {
   KeptDetails,
@@ -27,11 +28,19 @@ import {
   type ShownSkill,
   shownMcpPrompt,
   shownPages,
+  shownResources,
   shownReview,
   shownSkills,
   shownVia,
 } from "../session/thread-messages.ts";
-import type { AttachedPage } from "@cloudpid/protocol";
+import {
+  ATTACHED_KIND,
+  type AttachedPage,
+  type AttachedResource,
+  resourceKey,
+  resourceLabel,
+} from "@cloudpid/protocol";
+import { SentChip } from "./chip-card.tsx";
 import { pageHost, pageLabel } from "./attached-pages.ts";
 import { entryIdOf } from "../session/tree.ts";
 import { AnswerBar, BranchChevrons, OwnerMessageBar } from "./tree-bar.tsx";
@@ -54,25 +63,62 @@ const SkillDisclosure = ({ skill, messageId }: { skill: ShownSkill; messageId: s
   </KeptDetails>
 );
 
+/** What a chip says of the pictures its resource put in the message: none, one, or how many. */
+const imagesNote = (images: number): string | undefined =>
+  Match.value(images).pipe(
+    Match.when(0, () => undefined),
+    Match.when(1, () => "image"),
+    Match.orElse(() => `${String(images)} images`),
+  );
+
+/**
+ * An MCP resource the owner attached: a chip with its name, its server and what became of it (read as text or an image,
+ * kept as a file, or not read, with why). The model got a block of the server's content the Session added; the chip stands
+ * for it (docs/architecture/mcp-in-a-session.md → Attached resources).
+ */
+const ResourceChip = ({ resource }: { resource: AttachedResource }) => {
+  const images = resource.images ?? 0;
+
+  const note = Arr.join(
+    Arr.filter(
+      [
+        `MCP · ${resource.server}`,
+        imagesNote(images),
+        resource.path === undefined ? undefined : "saved as a file",
+      ],
+      Predicate.isNotUndefined,
+    ),
+    " · ",
+  );
+
+  return (
+    <SentChip
+      icon={<FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+      title={resourceLabel(resource)}
+      tooltip={resource.uri}
+      note={note}
+    >
+      {resource.kind === ATTACHED_KIND.error && (
+        <p className="mt-1 text-xs text-destructive">
+          Could not be read{resource.error === undefined ? "" : `: ${resource.error}`}
+        </p>
+      )}
+    </SentChip>
+  );
+};
+
 /**
  * A page the owner attached, as the transcript shows it: a chip with its title and host, and, if they had text selected
  * in it, that text under a closed disclosure. What the model got is a block of page content the Session added; the chip
  * stands for it (docs/architecture/client-and-protocol.md → Attached pages).
  */
 const PageChip = ({ page }: { page: AttachedPage }) => (
-  <li className="rounded-md border bg-background px-2.5 py-1.5 text-sm whitespace-normal">
-    <div className="flex items-center gap-2">
-      <Globe className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-      <span className="min-w-0">
-        <span className="block truncate" title={page.url}>
-          {pageLabel(page)}
-        </span>
-        <span className="block truncate text-xs text-muted-foreground">
-          {pageHost(page.url)}
-          {page.screen === true ? " · with its screen" : ""}
-        </span>
-      </span>
-    </div>
+  <SentChip
+    icon={<Globe className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+    title={pageLabel(page)}
+    tooltip={page.url}
+    note={`${pageHost(page.url)}${page.screen === true ? " · with its screen" : ""}`}
+  >
     {page.selection !== undefined && (
       <details className="group mt-1">
         <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground select-none [&::-webkit-details-marker]:hidden">
@@ -87,7 +133,7 @@ const PageChip = ({ page }: { page: AttachedPage }) => (
         </pre>
       </details>
     )}
-  </li>
+  </SentChip>
 );
 
 /** An image in the owner's message (an Attachment's), at most 256 px high. */
@@ -112,6 +158,7 @@ const UserMessage = () => {
   const id = useAuiState((state) => state.message.id);
   const skills = shownSkills(custom);
   const pages = shownPages(custom);
+  const resources = shownResources(custom);
   const review = shownReview(custom);
   const via = shownVia(custom);
   const prompt = shownMcpPrompt(custom);
@@ -127,6 +174,13 @@ const UserMessage = () => {
           <ul aria-label="Attached pages" className="mt-1.5 flex flex-col gap-1.5">
             {Arr.map(pages, (page) => (
               <PageChip key={page.ownerTabId} page={page} />
+            ))}
+          </ul>
+        )}
+        {resources.length > 0 && (
+          <ul aria-label="Attached MCP resources" className="mt-1.5 flex flex-col gap-1.5">
+            {Arr.map(resources, (resource) => (
+              <ResourceChip key={resourceKey(resource)} resource={resource} />
             ))}
           </ul>
         )}

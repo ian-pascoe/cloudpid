@@ -584,6 +584,19 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
 
   const prompts: SessionHostMcpPrompts = { session: options.session, catalog, get: getPrompt };
 
+  /** The owner's MCP resources in the composer: through the tools as they were built, which a Session with none has not. */
+  const attached: NonNullable<SessionHostMcp<never>["attached"]> = {
+    session: options.session,
+    menu: (input) =>
+      held === undefined
+        ? Effect.succeed({ servers: [] })
+        : held.tools.attachedResources.menu(input),
+    read: (input) =>
+      held === undefined
+        ? Effect.succeed({ status: "gone", message: "This Session has no MCP servers" })
+        : held.tools.attachedResources.read(input),
+  };
+
   const appHtml: SessionMcp["appHtml"] = (input) =>
     held === undefined
       ? Effect.succeed<McpAppHtmlAnswer>({
@@ -615,6 +628,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     keepContainer,
     notify,
     prompts,
+    attached,
     appHtml,
     appRequest,
   };

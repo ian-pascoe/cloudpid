@@ -4,7 +4,7 @@
 
 // @effect-diagnostics preferEffectArray:off -- the menu's rows are native arrays.
 
-import type { McpPromptEntry } from "@cloudpid/protocol";
+import type { McpMenuResource, McpPromptEntry, McpResourceMenu } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { type KeyboardEvent, useId } from "react";
 import type { ComposerCommand } from "./commands.ts";
@@ -27,12 +27,16 @@ export type CompletionOptions = {
   readonly catalog: MenuCatalog | undefined;
   /** The answers to the `@` menu (`fileResults`). */
   readonly files: FileResults;
+  /** The MCP resources the `@` menu lists with the files; null until the Session has answered. */
+  readonly resources?: McpResourceMenu | null;
   /** Put a pick's text in the composer, the caret where it goes. */
   readonly edit: (next: Edited) => void;
   /** Run a command picked from the menu; absent where the composer runs none. */
   readonly run?: (command: ComposerCommand, args: string) => void;
   /** An MCP prompt picked from the menu: the composer asks for its arguments, or holds it as a chip. */
   readonly pickPrompt?: (prompt: McpPromptEntry) => void;
+  /** An MCP resource picked from the `@` menu: the composer holds it as a chip to attach. */
+  readonly pickResource?: (server: string, resource: McpMenuResource) => void;
 };
 
 export type CompletionMenuState = {
@@ -64,9 +68,11 @@ export const useCompletion = ({
   commands,
   catalog,
   files,
+  resources = null,
   edit,
   run,
   pickPrompt,
+  pickResource,
 }: CompletionOptions): CompletionMenuState => {
   const id = useId();
   const text = useAtomValue(state.text);
@@ -77,7 +83,7 @@ export const useCompletion = ({
   const completion =
     trigger === null || trigger.start === dismissed
       ? null
-      : completionFor(trigger, commands, catalog, files);
+      : completionFor(trigger, commands, catalog, files, resources);
 
   const menu =
     completion !== null && (completion.entries.length > 0 || completion.notice !== undefined)
@@ -107,6 +113,10 @@ export const useCompletion = ({
       // The `/name` typed so far leaves the text: the prompt is a chip above it, never text.
       edit(replaceTrigger(text, trigger, "", { space: false }));
       pickPrompt?.(picked.prompt);
+    } else if (picked.kind === "resource") {
+      // The `@query` typed so far leaves the text: the resource is a chip above it, never text.
+      edit(replaceTrigger(text, trigger, "", { space: false }));
+      pickResource?.(picked.server, picked.resource);
     } else if (picked.kind === "insert") {
       edit(replaceTrigger(text, trigger, picked.text, { space: picked.continues !== true }));
     }

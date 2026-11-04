@@ -21,11 +21,11 @@ import {
   wideAtom,
 } from "./composer-state.ts";
 import { refusedFirstMessagesAtom } from "../draft-state.ts";
-import { attachmentsAtom } from "./attachments-state.ts";
+import { addResourcesAtom, attachmentsAtom } from "./attachments-state.ts";
 import { conversationKey } from "./conversation.ts";
 import { FILE_SEARCH_DEBOUNCE_MS, fileSearchAtom } from "./file-search.ts";
 import { conversationPromptAtoms } from "./mcp-prompt-state.ts";
-import { promptPrefillAtom } from "./tree-state.ts";
+import { promptPrefillAtom, resourcesPrefillAtom } from "./tree-state.ts";
 
 /** A page whose links and clipboard the test watches, and whose width it sets. */
 const stubPage = () => {
@@ -577,6 +577,60 @@ describe("one composer's state", () => {
         // Only this Session's prompt is taken; the catalog is asked about it.
         expect(Record.keys(registry.get(promptPrefillAtom))).toEqual(["s2"]);
         expect(sent(latest(), "catalog")).toHaveLength(1);
+      }),
+  );
+
+  it.effect("holds the chips of the MCP resources a Branch or a Fork gave back", () =>
+    Effect.gen(function* () {
+      const { registry, latest } = chatRegistry();
+      const composer = composerOf();
+      const { state } = composer;
+
+      registry.mount(sessionStatusAtom("s1"));
+      registry.mount(attachmentsAtom(conversationKey("s1", undefined)));
+      registry.mount(addResourcesAtom(conversationKey("s1", undefined)));
+      registry.mount(state.effects);
+      yield* settle;
+      yield* live(latest());
+      registry.set(resourcesPrefillAtom, {
+        s1: [
+          { server: "docs", uri: "file:///guide.md", name: "Guide" },
+          { server: "docs", uri: "file:///b.md" },
+        ],
+        s2: [{ server: "other", uri: "file:///x" }],
+      });
+      yield* settle;
+
+      expect(registry.get(attachmentsAtom(conversationKey("s1", undefined))).resources).toEqual([
+        { server: "docs", uri: "file:///guide.md", name: "Guide" },
+        { server: "docs", uri: "file:///b.md", name: "" },
+      ]);
+      // Only this Session's resources are taken.
+      expect(Record.keys(registry.get(resourcesPrefillAtom))).toEqual(["s2"]);
+    }),
+  );
+
+  it.effect(
+    "asks the Session for the MCP resources as the @ menu opens, and not for other triggers",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest } = chatRegistry();
+        const composer = composerOf();
+        const { state } = composer;
+
+        registry.mount(sessionStatusAtom("s1"));
+        registry.mount(state.effects);
+        yield* settle;
+        yield* live(latest(), { attachedResources: true });
+        registry.set(state.focused, true);
+
+        composer.type("/");
+        yield* settle;
+        expect(sent(latest(), "mcp_resource_menu")).toEqual([]);
+
+        composer.type("@do");
+        yield* settle;
+        expect(sent(latest(), "mcp_resource_menu")).toHaveLength(1);
       }),
   );
 

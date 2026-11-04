@@ -6,9 +6,11 @@
 import {
   freeAttachmentName,
   type PageRef,
+  type ResourceRef,
   sanitizeAttachmentName,
   type UserInput,
 } from "@cloudpid/protocol";
+import type * as Types from "effect/Types";
 import type { OutgoingMessage } from "../session/state.ts";
 import type { Encoded } from "./image-budget.ts";
 
@@ -24,6 +26,12 @@ export type SentPage = {
   readonly ref: PageRef;
   readonly title: string;
   readonly screen?: Encoded | undefined;
+};
+
+/** An attached MCP resource as a message sends it: its ref, and the label its lane shows. */
+export type SentResource = {
+  readonly ref: ResourceRef;
+  readonly label: string;
 };
 
 /** The name to upload `fileName` under: sanitised, and apart from the names the composer's other Attachments have. */
@@ -53,13 +61,19 @@ export const outgoingMessage = (
   typed: string,
   attachments: readonly SentAttachment[],
   pages: readonly SentPage[] = [],
+  resources: readonly SentResource[] = [],
 ): OutgoingMessage => {
   const display = laneText(typed, [
     ...attachments.map((attachment) => attachment.name),
     ...pages.map((page) => page.title),
+    ...resources.map((resource) => resource.label),
   ]);
 
-  if (attachments.length === 0 && pages.length === 0) return { input: typed, display };
+  if (attachments.length === 0 && pages.length === 0) {
+    return resources.length === 0
+      ? { input: typed, display }
+      : { input: typed, display, resources: resources.map((resource) => resource.ref) };
+  }
 
   const input: UserInput = typed.trim() === "" ? [] : [{ type: "text", text: typed }];
 
@@ -78,9 +92,13 @@ export const outgoingMessage = (
     if (attachment.inline !== undefined) input.push({ type: "image", ...attachment.inline });
   }
 
-  return pages.length === 0
-    ? { input, display }
-    : { input, display, pages: pages.map((page) => page.ref) };
+  const message: Types.Mutable<OutgoingMessage> = { input, display };
+
+  if (pages.length > 0) message.pages = pages.map((page) => page.ref);
+
+  if (resources.length > 0) message.resources = resources.map((resource) => resource.ref);
+
+  return message;
 };
 
 const KIB = 1024;
