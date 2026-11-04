@@ -268,6 +268,17 @@ export const viewedMessage = (viewed: ReadonlyArray<ViewedFile>): ServerMessage 
   viewed,
 });
 
+/** What every `hello` says this Session takes (a client gates the commands and requests on them). */
+const HELLO_FEATURES = {
+  appViews: true,
+  mcpTasks: true,
+  attachedResources: true,
+  resourcePreviews: true,
+  appMessages: true,
+  appContext: true,
+  mcpDecline: true,
+} as const;
+
 /** The `mcp_app_tools` message for `tools`, which every client is sent after `hello` and whenever the inventory changes them. */
 export const mcpAppToolsMessage = (tools: ReadonlyArray<McpAppTool>): ServerMessage => ({
   type: "mcp_app_tools",
@@ -1371,29 +1382,8 @@ export const sessionSocketsLayer = (
         yield* send(
           server,
           copying
-            ? {
-                type: "hello",
-                root,
-                copying,
-                appViews: true,
-                mcpTasks: true,
-                attachedResources: true,
-                resourcePreviews: true,
-                appMessages: true,
-                appContext: true,
-                mcpDecline: true,
-              }
-            : {
-                type: "hello",
-                root,
-                appViews: true,
-                mcpTasks: true,
-                attachedResources: true,
-                resourcePreviews: true,
-                appMessages: true,
-                appContext: true,
-                mcpDecline: true,
-              },
+            ? { type: "hello", root, copying, ...HELLO_FEATURES }
+            : { type: "hello", root, ...HELLO_FEATURES },
         );
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),

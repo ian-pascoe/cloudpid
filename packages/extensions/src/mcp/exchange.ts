@@ -60,6 +60,7 @@ import {
   interruptedResult,
   streamFailure,
 } from "./result.ts";
+import { restartedWhileWaiting } from "./question-records.ts";
 import { type McpDeferredRound, McpRoundState, type McpQuestionsService } from "./questions.ts";
 import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
@@ -240,10 +241,6 @@ const failedAfterAsking = (result: McpHostRequestResult): boolean =>
     result.result.kind === "inline" &&
     isJsonObject(result.result.value) &&
     result.result.value["isError"] === true);
-
-/** What a call that was answered by another process than the one that asked says. */
-const restartedWhileWaiting = (server: string): string =>
-  `${server}'s process restarted while it waited for your answer, so it may have lost track; calling it again starts over`;
 
 /** How long the Session waits for a request to `server` since its start or its last progress, in ms. */
 export const waitOf = (server: McpBuildServer, slackMs: number): number => {

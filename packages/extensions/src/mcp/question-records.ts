@@ -62,6 +62,14 @@ export const MCP_PAGE_NOT_KEPT_REASON = "the call cannot wait for a page";
 export const MCP_DECLINED_IN_SESSION_REASON =
   "the owner chose to decline this server's requests in this Session";
 
+/** What a call that was answered by another process than the one that asked says (a stdio server that restarted while its questions waited). */
+export const restartedWhileWaiting = (server: string): string =>
+  `${server}'s process restarted while it waited for your answer, so it may have lost track; calling it again starts over`;
+
+/** The note on a question a stdio server asks again from another process than the round's before. */
+export const restartedSinceAsked = (server: string): string =>
+  `${server} restarted since it last asked`;
+
 /** Why a question is cancelled when its call is over: it ended, or it went with an earlier instance. */
 export const MCP_CALL_ENDED_REASON = "the server's call ended";
 

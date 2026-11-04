@@ -57,6 +57,7 @@ import {
   pageIdentityOf,
   questionId,
   refusedBy,
+  restartedSinceAsked,
 } from "./question-records.ts";
 import { samplingRecords } from "./sampling-records.ts";
 import * as Arr from "effect/Array";
@@ -693,10 +694,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
                 ...question,
                 request: {
                   ...question.request,
-                  notes: [
-                    ...question.request.notes,
-                    `${record.server} restarted since it last asked`,
-                  ],
+                  notes: [...question.request.notes, restartedSinceAsked(record.server)],
                 },
               });
             }

@@ -200,33 +200,46 @@ const grantText = (grant: McpSamplingSessionGrant): string => {
   }
 };
 
-/**
- * The Session's grants for MCP servers' Sampling requests (`docs/architecture/mcp-server-requests.md` → Sampling requests,
- * The card): "Allow in this Session" and "Refuse in this Session", each with a ✕ that takes it back, so the server's next
- * request asks again.
- */
-const SamplingGrantsSection = () => {
-  const sessionId = useShownSessionId();
-  const grants = useAtomValue(mcpSamplingGrantsAtom(sessionId));
-  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
-  const revoke = useAtomSet(revokeMcpSamplingAtom(sessionId));
+/** One choice the owner made for this Session about a server, which a ✕ takes back. */
+type TakeBackEntry = {
+  readonly server: string;
+  /** What the choice says. */
+  readonly text: string;
+  /** What the ✕ is for a screen reader. */
+  readonly label: string;
+  /** What the ✕'s tooltip says it does. */
+  readonly hint: string;
+};
 
-  if (grants.length === 0) return null;
+/** A list of the Session's choices for MCP servers under `title`, each with a ✕ that takes it back, and nothing when none. */
+const TakeBackSection = ({
+  title,
+  entries,
+  takeBack,
+}: {
+  title: string;
+  entries: readonly TakeBackEntry[];
+  takeBack: (server: string) => void;
+}) => {
+  const sessionId = useShownSessionId();
+  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
+
+  if (entries.length === 0) return null;
 
   return (
-    <section aria-label="Model use">
-      <h4 className="text-xs font-medium text-muted-foreground">Model use</h4>
+    <section aria-label={title}>
+      <h4 className="text-xs font-medium text-muted-foreground">{title}</h4>
       <ul className="mt-1 text-sm">
-        {Arr.map(grants, (grant) => (
-          <li key={grant.server} className="flex items-center justify-between gap-2">
-            <span className="min-w-0 break-words">{grantText(grant)}</span>
+        {Arr.map(entries, (entry) => (
+          <li key={entry.server} className="flex items-center justify-between gap-2">
+            <span className="min-w-0 break-words">{entry.text}</span>
             <button
               type="button"
               disabled={!live}
-              aria-label={`Take back this Session's choice for ${grant.server}`}
-              title="Take it back: the next request asks again"
+              aria-label={entry.label}
+              title={entry.hint}
               onClick={() => {
-                revoke(grant.server);
+                takeBack(entry.server);
               }}
               className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5"
             >
@@ -240,6 +253,30 @@ const SamplingGrantsSection = () => {
 };
 
 /**
+ * The Session's grants for MCP servers' Sampling requests (`docs/architecture/mcp-server-requests.md` → Sampling requests,
+ * The card): "Allow in this Session" and "Refuse in this Session", each with a ✕ that takes it back, so the server's next
+ * request asks again.
+ */
+const SamplingGrantsSection = () => {
+  const sessionId = useShownSessionId();
+  const grants = useAtomValue(mcpSamplingGrantsAtom(sessionId));
+  const revoke = useAtomSet(revokeMcpSamplingAtom(sessionId));
+
+  return (
+    <TakeBackSection
+      title="Model use"
+      entries={Arr.map(grants, (grant) => ({
+        server: grant.server,
+        text: grantText(grant),
+        label: `Take back this Session's choice for ${grant.server}`,
+        hint: "Take it back: the next request asks again",
+      }))}
+      takeBack={revoke}
+    />
+  );
+};
+
+/**
  * The servers the owner chose to decline in this Session ("Decline in this Session",
  * `docs/architecture/mcp-server-requests.md` → Elicitation requests, Several at once), each with a ✕ that takes it back,
  * so the server's next question asks the owner again.
@@ -247,36 +284,19 @@ const SamplingGrantsSection = () => {
 const DeclinedServersSection = () => {
   const sessionId = useShownSessionId();
   const declined = useAtomValue(mcpElicitationDeclinedAtom(sessionId));
-  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
   const revoke = useAtomSet(revokeMcpElicitationAtom(sessionId));
 
-  if (declined.length === 0) return null;
-
   return (
-    <section aria-label="Questions declined">
-      <h4 className="text-xs font-medium text-muted-foreground">Questions declined</h4>
-      <ul className="mt-1 text-sm">
-        {Arr.map(declined, (server) => (
-          <li key={server} className="flex items-center justify-between gap-2">
-            <span className="min-w-0 break-words">
-              {server}'s requests for input are declined in this Session
-            </span>
-            <button
-              type="button"
-              disabled={!live}
-              aria-label={`Ask for ${server}'s requests for input again`}
-              title="Take it back: the server's next question asks you again"
-              onClick={() => {
-                revoke(server);
-              }}
-              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5"
-            >
-              <X aria-hidden />
-            </button>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <TakeBackSection
+      title="Questions declined"
+      entries={Arr.map(declined, (server) => ({
+        server,
+        text: `${server}'s requests for input are declined in this Session`,
+        label: `Ask for ${server}'s requests for input again`,
+        hint: "Take it back: the server's next question asks you again",
+      }))}
+      takeBack={revoke}
+    />
   );
 };
 
