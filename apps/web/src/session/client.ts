@@ -43,6 +43,7 @@ import {
   type ConversationId,
   type McpElicitationAction,
   type McpSamplingChoice,
+  type McpWatchEntry,
   McpSamplingRecordView,
   type McpSamplingRole,
   type ElicitationContent,
@@ -341,6 +342,8 @@ export interface SessionClient {
   ) => Effect.Effect<void, SessionCommandError>;
   /** Take back the Session's grant for `server`; its next request asks again. */
   readonly revokeMcpSampling: (server: string) => Effect.Effect<void, SessionCommandError>;
+  /** End the Resource watch `watch` (its conversation, server and URI); the agent is told at its next request. */
+  readonly endMcpWatch: (watch: McpWatchEntry) => Effect.Effect<void, SessionCommandError>;
   /** The settled Sampling request `request` (a call's `details.sampling` id), or `null` when none is kept. */
   readonly getMcpSampling: (
     request: string,
@@ -805,6 +808,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "mcpElicitationRequests"
         | "mcpSamplingRequests"
         | "mcpSamplingGrants"
+        | "mcpWatches"
         | "mcpSignInRequests"
         | "mcpTasks"
         | "annotations"
@@ -1170,6 +1174,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         return;
       case "mcp_sampling_requests":
         update({ mcpSamplingRequests: message.requests, mcpSamplingGrants: message.grants });
+
+        return;
+      case "mcp_watches":
+        update({ mcpWatches: message.watches });
 
         return;
       case "mcp_sign_in_requests":
@@ -1889,6 +1897,12 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     revokeMcpSampling: (server) =>
       request(
         (id) => ({ type: "mcp_sampling_revoke", id, server }),
+        () => Option.some(undefined),
+        true,
+      ),
+    endMcpWatch: ({ conversationId, server, uri }) =>
+      request(
+        (id) => ({ type: "mcp_watch_end", id, conversationId, server, uri }),
         () => Option.some(undefined),
         true,
       ),

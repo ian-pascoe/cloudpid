@@ -21,6 +21,7 @@ import {
   McpAppsMessage,
   McpAppToolsMessage,
 } from "./mcp-apps.ts";
+import { MAX_MCP_WATCH_KEY, McpWatchesMessage } from "./mcp-watches.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
 import { McpTask } from "./mcp-tasks.ts";
 import {
@@ -73,7 +74,7 @@ export const UserInput = Schema.Union([
 
 export type UserInput = typeof UserInput.Type;
 
-export { ConversationId } from "./conversation-id.ts";
+export { ConversationId, conversationOfText } from "./conversation-id.ts";
 
 /** A command's correlation ID: an answered command gets a `result` or an `error` with it. */
 const CommandId = Schema.optionalKey(Schema.String);
@@ -244,6 +245,19 @@ export const McpSamplingRevoke = Schema.Struct({
   type: Schema.Literal("mcp_sampling_revoke"),
   id: CommandId,
   server: Schema.String,
+});
+
+/**
+ * End the Resource watch of `server`'s `uri` in conversation `conversationId` (Session details' ✕,
+ * `docs/architecture/mcp-in-a-session.md` → Resource watches): answered with `null`, also when there was none. The agent is told
+ * at its next request that it ended.
+ */
+export const McpWatchEndCommand = Schema.Struct({
+  type: Schema.Literal("mcp_watch_end"),
+  id: CommandId,
+  conversationId: ConversationId,
+  server: Schema.String.check(Schema.isMaxLength(MAX_MCP_WATCH_KEY)),
+  uri: Schema.String.check(Schema.isMaxLength(MAX_MCP_WATCH_KEY)),
 });
 
 /**
@@ -773,6 +787,7 @@ export const ClientMessage = Schema.Union([
   McpSamplingAnswer,
   McpSamplingGet,
   McpSamplingRevoke,
+  McpWatchEndCommand,
   McpSignInAnswer,
   AnnotationSave,
   AnnotationDelete,
@@ -1598,6 +1613,7 @@ export const ServerMessage = Schema.Union([
   McpAppsMessage,
   McpAppToolsMessage,
   McpTasksMessage,
+  McpWatchesMessage,
 ]);
 
 export type ServerMessage = typeof ServerMessage.Type;

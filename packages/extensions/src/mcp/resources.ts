@@ -20,6 +20,7 @@ import { listTool } from "./resource-list.ts";
 import { readTool } from "./resource-read.ts";
 import { hasResources } from "./resource-targets.ts";
 import type { McpBuild, McpBuildServer } from "./tools.ts";
+import { MCP_WATCHES_FEATURE } from "./watches.ts";
 
 export { MAX_LISTED_BYTES, MAX_LISTED_ITEMS } from "./resource-list.ts";
 
@@ -82,6 +83,15 @@ export const resourceTools = (
   return [
     listTool({ ...shared, what: "resources", name: list }, exposureOf(list)),
     listTool({ ...shared, what: "templates", name: templates }, exposureOf(templates)),
-    readTool({ ...shared, name: read, pages, samples: samplesOf(build) }, exposureOf(read)),
+    readTool(
+      {
+        ...shared,
+        name: read,
+        pages,
+        samples: samplesOf(build),
+        watches: build.features?.includes(MCP_WATCHES_FEATURE) === true,
+      },
+      exposureOf(read),
+    ),
   ];
 };

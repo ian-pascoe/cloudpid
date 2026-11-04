@@ -43,6 +43,7 @@ import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { agentOf, conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
 import type { McpAppRecorder } from "./apps.ts";
+import type { McpWatchRecorder } from "./watches.ts";
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails, McpElicitationDetail, McpSamplingDetail } from "./details.ts";
 import { elicitingHooks, withElicitation } from "./elicit.ts";
@@ -146,6 +147,28 @@ export type McpToolOptions = {
    * registers `mcp_tasks`, `mcp_task_wait` and `mcp_task_cancel`. Without it nothing is offered.
    */
   readonly tasks?: McpTasksOptions | undefined;
+  /**
+   * Where the Resource watches the agent started are kept (`./watches.ts`): with it, a read that starts a watch, a
+   * `watch: false` and the ends the host tells are recorded, and a conversation with watches calls the host at its request
+   * start even where the Environment has no MCP server. Without it nothing is.
+   */
+  readonly watches?: McpWatchRecorder | undefined;
+  /**
+   * Runs before each model request of a conversation, with its ID as the Session's text: the `mcp` extension's hook of
+   * the generation task (`./tools.ts`), which the build sets with `watches`. It keeps the conversation's Resource watches
+   * held and tells it their news while a Run goes on, and a subagent's conversation, which makes no request start of its
+   * own, gets both (`McpTools`, `touchWatches`). Never fails.
+   */
+  readonly beforeRequest?: ((conversation: string) => Promise<void>) | undefined;
+  /**
+   * The Session's name, which a model request's touch of a conversation's watches asks the host as: it is known from the
+   * start, so a Session that restarted and made no request start yet still touches (`touchWatches`).
+   */
+  readonly session?: string | undefined;
+  /** Runs the touch's Effect with the Session's services (its logger and tracer); a bare `Effect.runPromise` without. */
+  readonly run?: (<A>(effect: Effect.Effect<A>) => Promise<A>) | undefined;
+  /** How long a conversation's watches are left untouched between two model requests: `WATCH_TOUCH_MS` unless a test shortens it. */
+  readonly watchTouchMs?: number | undefined;
 };
 
 /** Who the Session's calls are made for: the Session and its Workspace (`ws:<id>`). */

@@ -12,3 +12,10 @@ export const ConversationId = Schema.declare(
 );
 
 export type ConversationId = typeof ConversationId.Type;
+
+/** The conversation whose ID was written as its text (`String(id)`, as the host's requests carry it); none for any other text. */
+export const conversationOfText = (text: string): ConversationId | undefined => {
+  const id = Number(text);
+
+  return Schema.is(ConversationId)(id) ? id : undefined;
+};

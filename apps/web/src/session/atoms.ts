@@ -12,6 +12,7 @@ import {
   type SecretKeep,
   type TodoTask,
   type WhenBusy,
+  type McpWatchEntry,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
@@ -96,6 +97,9 @@ export const mcpElicitationRequestsAtom = slice((state) => state.mcpElicitationR
 /** The MCP servers' Sampling requests waiting for the owner, and the Session's grants for them. */
 export const mcpSamplingRequestsAtom = slice((state) => state.mcpSamplingRequests);
 export const mcpSamplingGrantsAtom = slice((state) => state.mcpSamplingGrants);
+
+/** The Resource watches the agent holds. */
+export const mcpWatchesAtom = slice((state) => state.mcpWatches);
 
 /** The Sign-in requests waiting for the owner. */
 export const mcpSignInRequestsAtom = slice((state) => state.mcpSignInRequests);
@@ -436,6 +440,17 @@ export const revokeMcpSamplingAtom = Atom.family((sessionId: string) =>
       get
         .result(sessionClientAtom(sessionId))
         .pipe(Effect.flatMap((client) => client.revokeMcpSampling(server))),
+    { concurrent: true },
+  ),
+);
+
+/** End one of Session `sessionId`'s Resource watches: the agent is told at its next request. */
+export const endMcpWatchAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    (watch: McpWatchEntry, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.endMcpWatch(watch))),
     { concurrent: true },
   ),
 );

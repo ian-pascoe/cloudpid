@@ -13,6 +13,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import type { ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
@@ -225,12 +226,101 @@ const modelPieces = async (
     : [{ content: textOf(`[${oneLine(uri, URI_LINE_LIMIT)} has no contents]`), note: true }];
 };
 
+/** The parameters of the read: `watch` only when the host has Resource watches. */
+const parametersOf = (watches: boolean) => {
+  const fields = {
+    server: Type.String({
+      description: "The server the resource is of, as the mcp_servers section names it",
+    }),
+    uri: Type.String({
+      description: "The resource's URI, expanded: a template is filled in first",
+    }),
+  };
+
+  return watches
+    ? {
+        ...fields,
+        watch: Type.Optional(
+          Type.Boolean({
+            description:
+              "true to also watch the resource: you are told at your next request when it changes or the watch ends, and read it again to see how. false stops watching it, and still reads. At most 20 watches per conversation.",
+          }),
+        ),
+      }
+    : fields;
+};
+
+/** The request's parameters: the `watch` asked for, only where the host has Resource watches. */
+const paramsOf = (
+  args: { readonly uri: string; readonly watch?: boolean | undefined },
+  watches: boolean,
+) => {
+  const params: Mutable<{ uri: string; watch?: boolean }> = { uri: args.uri };
+
+  if (watches && args.watch !== undefined) params.watch = args.watch;
+
+  return params;
+};
+
+/** What the read says of its watch: whether it started, and why not; undefined when the read did not ask to watch. */
+type WatchSaid = { readonly started: boolean; readonly reason?: string | undefined };
+
+/**
+ * Keep what the read did to the Session's Resource watches: one the host started is listed, `watch: false` ends the
+ * conversation's. Gives what the model and a script are told of it.
+ */
+const recordWatch = async (
+  tool: ReadTool,
+  args: { readonly server: string; readonly uri: string; readonly watch?: boolean | undefined },
+  said: WatchSaid | undefined,
+  conversation: string,
+): Promise<WatchSaid | undefined> => {
+  const recorder = tool.options.watches;
+
+  if (tool.watches !== true || recorder === undefined) return said;
+
+  const server = serverNamed(tool.servers, args.server)?.name ?? args.server;
+
+  if (args.watch === false) {
+    await Effect.runPromise(recorder.ended(conversation, [{ server, uri: args.uri }]));
+  } else if (said?.started === true && tool.options.environment !== undefined) {
+    await Effect.runPromise(
+      recorder.started({
+        environment: tool.options.environment,
+        conversation,
+        server,
+        uri: args.uri,
+      }),
+    );
+  }
+
+  return said;
+};
+
+/** The line that tells the model whether its watch started. */
+const watchPieces = (said: WatchSaid | undefined): ReadonlyArray<Piece> => {
+  if (said === undefined) return [];
+
+  const note = said.started
+    ? "[Watching this resource: you will be told at a later request when it changes or the watch ends.]"
+    : `[${oneLine(said.reason ?? "not watched", 300)}]`;
+
+  return [{ content: textOf(note), note: true }];
+};
+
 /** The schema of the read's value, for scripts. */
 const READ_SCHEMA: JsonObject = {
   type: "object",
   properties: {
     server: { type: "string" },
     uri: { type: "string" },
+    watch: {
+      type: "object",
+      description: "Present when the read asked to watch: whether the watch started, and why not",
+      properties: { started: { type: "boolean" }, reason: { type: "string" } },
+      required: ["started"],
+      additionalProperties: false,
+    },
     contents: {
       type: "array",
       items: {
@@ -270,6 +360,8 @@ type ReadTool = {
   readonly samples?: boolean | undefined;
   /** Whether the host resends a Legacy `-32042` (its `resend` feature): the read then keeps its pages for the owner. */
   readonly pages: boolean;
+  /** Whether the host lists `watches`: the read then takes `watch`, which starts or ends a Resource watch. */
+  readonly watches?: boolean | undefined;
 };
 
 /** The tool that reads a resource, at `exposure`. */
@@ -280,18 +372,15 @@ export const readTool = (
   name: tool.name,
   description:
     "Read a resource of an MCP server by its URI: a `uri` from list_mcp_resources, a filled-in resource template, or a resource link a tool result named. It need not be listed. `server` is the name the mcp_servers section gives (mcp__ left off). The text comes back as it is, images are shown, and any other binary data is saved to a file whose path is given; a long text is cut and saved whole.",
-  parameters: Type.Object({
-    server: Type.String({
-      description: "The server the resource is of, as the mcp_servers section names it",
-    }),
-    uri: Type.String({
-      description: "The resource's URI, expanded: a template is filled in first",
-    }),
-  }),
+  parameters: Type.Object(parametersOf(tool.watches === true)),
   structuredOutputSchema: READ_SCHEMA,
   replay: "safe",
   ...flagsOf(exposure),
-  execute: async (args: { readonly server: string; readonly uri: string }, api, context) => {
+  execute: async (
+    args: { readonly server: string; readonly uri: string; readonly watch?: boolean | undefined },
+    api,
+    context,
+  ) => {
     const target = serverNamed(tool.servers, args.server);
 
     if (target === undefined) {
@@ -320,25 +409,41 @@ export const readTool = (
       (workspace, answers) => ({
         op: "resources/read",
         server: target.name,
-        params: { uri: args.uri },
+        params: paramsOf(args, tool.watches === true),
         ctx: contextOf(
           { ...tool.origin, workspace },
           { callId: api.callId, conversation: String(api.conversationId) },
           answers,
         ),
       }),
-      async (value, _completed, caller): Promise<ToolExecutionResult<JsonValue>> => {
+      async (value, completed, caller): Promise<ToolExecutionResult<JsonValue>> => {
         const read = readOf(value);
 
         if (read === undefined) {
           return failedWith("The server answered with a result this build cannot read", details);
         }
 
+        // The Session keeps its agent's Resource watches: one the host started, or one `watch: false` ended.
+        const watch = await recordWatch(tool, args, completed.watch, String(api.conversationId));
+
         const spill = spillTo(api.env, context);
 
         if (caller === "script") {
           const scripted = await scriptContents(args.uri, read.contents, spill);
-          const result: JsonObject = { server: shown, uri: args.uri, contents: scripted.value };
+
+          const result: Mutable<JsonObject> = {
+            server: shown,
+            uri: args.uri,
+            contents: scripted.value,
+          };
+
+          if (watch !== undefined) {
+            const said: Mutable<JsonObject> = { started: watch.started };
+
+            if (watch.reason !== undefined) said["reason"] = watch.reason;
+
+            result["watch"] = said;
+          }
 
           // SAFETY: a `JsonObject` is JSON, which `JsonValue` describes.
           return scriptResultOf(
@@ -352,7 +457,7 @@ export const readTool = (
         const minimal: JsonObject = { server: shown, uri: args.uri, contents: [] };
 
         return modelResultOf(
-          await modelPieces(args.uri, read, spill),
+          [...(await modelPieces(args.uri, read, spill)), ...watchPieces(watch)],
           { kind: "model", details, spill },
           // SAFETY: a `JsonObject` is JSON, which `JsonValue` describes.
           minimal as JsonValue,

@@ -77,11 +77,17 @@ export type BranchesOptions = {
   readonly beforeAbort: BeforeAbort;
   /** Runs `effect` in turn with the owner's messages, so none lands on a branch being left. */
   readonly inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  /**
+   * What the Session lets go of for a conversation whose branch the active one has moved off (its Resource watches,
+   * silently). Never fails; a branch moved back to starts again. Runs once the move has committed.
+   */
+  readonly left?: ((conversation: ConversationId) => Effect.Effect<void>) | undefined;
 };
 
 /** The Session tree's moves, and the reads the Session host shares with them. */
 export const sessionBranches = (options: BranchesOptions) => {
   const { harness, root, inArrivalOrder, beforeAbort } = options;
+  const left = (conversation: ConversationId) => options.left?.(conversation) ?? Effect.void;
 
   /** The Session tree as the Session keeps it: the root conversation active until a branch is made. */
   const treeState = attempt("snapshot", () => harness.snapshot(SessionTreeDoc, context)).pipe(
@@ -314,6 +320,8 @@ export const sessionBranches = (options: BranchesOptions) => {
         }, context),
       );
 
+      if (target !== current.id) yield* left(current.id);
+
       return navigated(target);
     }).pipe(inArrivalOrder);
 
@@ -335,6 +343,8 @@ export const sessionBranches = (options: BranchesOptions) => {
       yield* attempt("switchBranch", () =>
         harness.commit((tx) => activateBranch(tx, conversationId, now), context),
       );
+
+      yield* left(current.id);
     }).pipe(inArrivalOrder);
 
   /**

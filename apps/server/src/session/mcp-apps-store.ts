@@ -47,14 +47,11 @@ import * as Stream from "effect/Stream";
 import type { Mutable } from "effect/Types";
 import { appCallsOver } from "./mcp-app-calls.ts";
 import { McpApps, type McpAppsService } from "./mcp-apps.ts";
+import type { SessionKv } from "./session-kv.ts";
 import { mcpAppToolsMessage, send, type SocketState } from "./sockets.ts";
 
 /** The object's synchronous key-value storage, as the records use it. */
-export type McpAppsStorage = {
-  get<T>(key: string): T | undefined;
-  put<T>(key: string, value: T): void;
-  delete(key: string): boolean;
-};
+export type McpAppsStorage = SessionKv;
 
 /** The index of every record and stub, oldest first. */
 const INDEX_KEY = "cloudpid:mcp-apps";

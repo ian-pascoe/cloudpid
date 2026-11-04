@@ -31,7 +31,13 @@ import {
   type McpHostRequestContext,
 } from "@cloudpid/mcp/types";
 import type { TSchema } from "@earendil-works/pi-ai";
-import { defineExtension, type Extension, type ToolRegistration } from "@earendil-works/pi-durable";
+import {
+  defineExtension,
+  type Extension,
+  GenerationTask,
+  hook,
+  type ToolRegistration,
+} from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -285,6 +291,19 @@ export type McpBuild = {
 };
 
 /**
+ * The hook that keeps a conversation's Resource watches held and tells it their news: before each model request of any
+ * conversation (a subagent's included), `touch` is told which one, and the result is never used for the request.
+ */
+const watchHook = (touch: (conversation: string) => Promise<void>) =>
+  hook(GenerationTask, {
+    beforeRequest: async (_request, api) => {
+      await touch(String(api.conversationId));
+
+      return undefined;
+    },
+  });
+
+/**
  * The `mcp` extension over `build`: each server's tools (those its inventory lists) by their model-facing names
  * (`mcp__<server>__<tool>`), registered by their Exposure (`./exposure.ts`), then the resource tools when the host lists
  * the `resources` feature and a server has resources (`./resources.ts`). A server switched off or `hidden` registers
@@ -373,6 +392,7 @@ export const mcpExtension = (
   });
 
   const asking = signInTool(build.servers, client, options);
+  const { beforeRequest } = options;
 
   return defineExtension({
     name: extensionName,
@@ -384,6 +404,7 @@ export const mcpExtension = (
     ],
     sections: options.sections ?? [],
     tasks: follower === undefined ? [] : [follower],
+    hooks: beforeRequest === undefined ? [] : [watchHook(beforeRequest)],
   });
 };
 

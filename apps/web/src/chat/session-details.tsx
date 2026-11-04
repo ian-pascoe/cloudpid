@@ -1,13 +1,19 @@
 // Session details (GLOSSARY.md → Session details): a small panel over the top right of the chat with what the owner
 // follows of the Session while reading, in sections: the root agent's Todo List, the Session's subagents, each
 // subagent opening its Subagent Pane (or its Subagent page), and the Changes in its Workspace, each file opening the
-// Diff pane at it, and the Session's grants for MCP servers' Sampling requests. On a Subagent page they are the subagent's: its Todo List, the subagents below it, and the Changes
+// Diff pane at it, the Session's grants for MCP servers' Sampling requests, and the Resource watches its agent holds. On a Subagent page they are the subagent's: its Todo List, the subagents below it, and the Changes
 // of its Workspace. An icon button in the page's header opens and closes it, whatever there is to show; whether it is
 // open is kept in the page's layout.
 
-import type { GraphAgent, McpSamplingSessionGrant, TodoTask } from "@cloudpid/protocol";
+import type {
+  GraphAgent,
+  McpSamplingSessionGrant,
+  McpWatchEntry,
+  TodoTask,
+} from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import { PanelRightOpen, SquareMenu, X } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
@@ -19,8 +25,10 @@ import { panesAtom } from "../panes-state.ts";
 import { childrenOf } from "../session/agents.ts";
 import {
   conversationTodosAtom,
+  endMcpWatchAtom,
   mcpSamplingGrantsAtom,
   mcpTasksAtom,
+  mcpWatchesAtom,
   revokeMcpSamplingAtom,
   sessionStatusAtom,
   taskGraphAtom,
@@ -37,6 +45,7 @@ import { followedTasks, followingLabel, liveTasks } from "./mcp-task.ts";
 import { McpTaskStrip } from "./mcp-task-strip.tsx";
 import { AgentStatus, OpenPageLink } from "./subagent-card.tsx";
 import { TodoList } from "./todo-list.tsx";
+import { WatchedResources } from "./watched-resources.tsx";
 
 /** The panel's element, which the header's button controls: a Session page has one. */
 const PANEL_ID = "session-details";
@@ -298,6 +307,26 @@ export const McpTasksChip = () => {
   );
 };
 
+/** The Resource watches the agent holds, as the Session lists them (`./watched-resources.tsx`). */
+const WatchedResourcesSection = () => {
+  const sessionId = useShownSessionId();
+  const watches = useAtomValue(mcpWatchesAtom(sessionId));
+  const graph = useAtomValue(taskGraphAtom(sessionId));
+  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
+  const end = useAtomSet(endMcpWatchAtom(sessionId));
+
+  const holder = (watch: McpWatchEntry): string | undefined =>
+    Arr.findFirst(
+      graph?.agents ?? [],
+      (agent) => agent.conversationId === watch.conversationId,
+    ).pipe(
+      Option.map((agent) => agent.id),
+      Option.getOrUndefined,
+    );
+
+  return <WatchedResources watches={watches} holder={holder} live={live} onEnd={end} />;
+};
+
 /**
  * The Session details of the Session shown, while the owner has them open: one section per thing to follow, each
  * headed by what it is, with no title of their own. Escape closes them and gives the focus back to the header's button.
@@ -310,6 +339,7 @@ export const SessionDetails = () => {
   const changed = useAtomValue(changesTotalsAtom(useShownChanges()), (totals) => totals.files > 0);
   const granted = useAtomValue(mcpSamplingGrantsAtom(sessionId), (grants) => grants.length > 0);
   const tasked = useAtomValue(mcpTasksAtom(sessionId), (tasks) => tasks.length > 0);
+  const watched = useAtomValue(mcpWatchesAtom(sessionId), (watches) => watches.length > 0);
 
   if (!open) return null;
 
@@ -333,7 +363,7 @@ export const SessionDetails = () => {
           Reconnecting: this may be out of date.
         </p>
       )}
-      {items.length === 0 && agents.length === 0 && !changed && !granted && !tasked && (
+      {items.length === 0 && agents.length === 0 && !changed && !granted && !tasked && !watched && (
         <p className="text-sm text-muted-foreground">Nothing to show yet.</p>
       )}
       {items.length > 0 && <TodoList tasks={items} />}
@@ -341,6 +371,7 @@ export const SessionDetails = () => {
       {changed && <ChangesSection />}
       <McpTasksSection />
       <SamplingGrantsSection />
+      <WatchedResourcesSection />
     </aside>
   );
 };
