@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics preferEffectArray:off -- native array methods over plain values (the bundle carries no Effect runtime).
 /**
  * The active pi Session as the import sends it (docs/architecture/mcp-endpoint.md → Session import → Translation): the
  * file's header line and the active branch's entries (`getBranch()`), one `JSON.stringify` per line, byte-identical to

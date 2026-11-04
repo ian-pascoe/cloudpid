@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics preferEffectArray:off processEnv:off -- native array methods over plain values (the bundle carries no Effect runtime); reads the owner's environment.
 /**
  * Where the endpoint is and how `/cloudpid` gets in (docs/architecture/mcp-endpoint.md → The `/cloudpid` command →
  * Configuration): `CLOUDPID_URL` and the Local agent's service token, from the environment pi runs in. Never `mcp.json`.

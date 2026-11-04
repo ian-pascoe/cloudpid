@@ -323,7 +323,9 @@ jobs:
   pi-cloudpid:
     name: Publish pi-cloudpid
     needs: deploy
-    if: needs.deploy.result == 'success'
+    # `!cancelled()`, as on `deploy`: without a status function the condition carries an implicit `success()`, which also
+    # needs every job `deploy` waits on, and `docs` and `manifests` are skipped on a push, so this never ran.
+    if: ${{ !cancelled() && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -333,9 +335,11 @@ jobs:
       group: pi-cloudpid
       cancel-in-progress: false
     steps:
+      # The whole history: the append step asks whether the branch already holds a build of a newer `main` commit.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -346,9 +350,11 @@ jobs:
         with:
           node-version: lts/*
 
-      - run: bun install --frozen-lockfile
+      # Only this package's dependencies (and the workspace packages it names): the job builds nothing else.
+      - run: bun install --frozen-lockfile --filter @cloudpid/pi-cloudpid
 
-      - run: bun --cwd packages/pi-cloudpid run build
+      - run: bun run build
+        working-directory: packages/pi-cloudpid
         env:
           PI_CLOUDPID_SHA: ${{ github.sha }}
 
@@ -364,6 +370,16 @@ jobs:
           git init --quiet --initial-branch=pi-cloudpid
           git remote add origin "https://github.com/$GITHUB_REPOSITORY.git"
           if git -c "http.extraheader=$auth" fetch --quiet --depth=1 origin pi-cloudpid; then
+            # A rerun of an older run must not put an older build on top of a newer one: skip when the build at the tip
+            # was made from a `main` commit that has this run's commit in its history.
+            tip="$(git log -1 --format=%s FETCH_HEAD | sed -n 's/^pi-cloudpid: build of main \([0-9a-f]\{40\}\)$/\1/p')"
+            if [ -n "$tip" ] && [ "$tip" != "$GITHUB_SHA" ]; then
+              git -C "$GITHUB_WORKSPACE" -c "http.extraheader=$auth" fetch --quiet origin main
+              if git -C "$GITHUB_WORKSPACE" merge-base --is-ancestor "$GITHUB_SHA" "$tip"; then
+                echo "pi-cloudpid already has a build of $tip, which is newer than $GITHUB_SHA."
+                exit 0
+              fi
+            fi
             git reset --quiet --soft FETCH_HEAD
           fi
           cp -R "$GITHUB_WORKSPACE/packages/pi-cloudpid/dist/." .

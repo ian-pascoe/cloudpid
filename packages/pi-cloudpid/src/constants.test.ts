@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a test, on the owner's machine, not Effect code.
+// @effect-diagnostics preferEffectRecord:off nodeBuiltinImport:off -- native object methods over plain values; runs on node, on the owner's machine.
 import { readFileSync } from "node:fs";
 import { THINKING_LEVELS as CONFIG_THINKING_LEVELS } from "@cloudpid/config";
 import {

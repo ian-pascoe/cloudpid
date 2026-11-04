@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a test, on the owner's machine, not Effect code.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as pi's extension API and child processes give them; runs on node, on the owner's machine.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import {
   defaultBranchOf,
   deleteRemoteRef,
   gitIn,
+  GitMissing,
   headOf,
   planPush,
   pushBranch,
@@ -56,6 +57,23 @@ const makeChanges = () => {
   writeFileSync(at("build", "out.js"), "x\n");
   rmSync(at("README.md"));
 };
+
+describe("running git", () => {
+  it("fails as GitMissing when git cannot be started", async () => {
+    await expect(gitIn(join(checkout.directory, "gone"))(["status"])).rejects.toBeInstanceOf(
+      GitMissing,
+    );
+    await expect(gitIn(join(checkout.directory, "gone"))(["status"])).rejects.toThrow(
+      /it is not installed, or not on PATH/,
+    );
+  });
+
+  it("has git's own answer for a failed command", async () => {
+    const result = await gitIn(checkout.work)(["rev-parse", "--verify", "nope"]);
+
+    expect(result.code).not.toBe(0);
+  });
+});
 
 describe("the checkout", () => {
   it("finds the repo's root and the origin as its config has it, not as insteadOf rewrites it", async () => {

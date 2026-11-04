@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics extendsNativeError:off -- errors the command tells apart with instanceof.
 import type { JsonObject } from "./json.ts";
 
 /** A refusal the owner reads as it is: what is wrong and what to do (never a stack trace). */

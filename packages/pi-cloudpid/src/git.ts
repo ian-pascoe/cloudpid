@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics preferEffectArray:off asyncFunction:off missingPipeableSignature:off nodeBuiltinImport:off extendsNativeError:off newPromise:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as pi's extension API and child processes give them; plain functions over values, called directly; runs on node, on the owner's machine; errors the command tells apart with instanceof; wraps a callback API (a child process, a timer).
 /**
  * The owner's git (docs/architecture/mcp-endpoint.md → Session import → The working tree): the repo's `origin`, the
  * branch and what of it is on the remote, and the one commit of uncommitted Changes read through a private index and
@@ -29,6 +29,11 @@ export class GitError extends Error {
   override readonly name = "GitError";
 }
 
+/** Git could not be run at all: it is not installed (or not on `PATH`), or the directory is gone. */
+export class GitMissing extends Error {
+  override readonly name = "GitMissing";
+}
+
 /** Git in `cwd`. It never prompts for a credential on the terminal pi owns, and never runs a hook it is told to skip. */
 export const gitIn =
   (cwd: string): Git =>
@@ -47,7 +52,15 @@ export const gitIn =
 
       child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
       child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
-      child.on("error", reject);
+      child.on("error", (error: NodeJS.ErrnoException) => {
+        reject(
+          error.code === "ENOENT"
+            ? new GitMissing(`could not run git in ${cwd}: it is not installed, or not on PATH`, {
+                cause: error,
+              })
+            : error,
+        );
+      });
       child.on("close", (code) => {
         resolve({
           code: code ?? 1,
@@ -101,6 +114,10 @@ export const checkoutOf = async (git: Git): Promise<Checkout | undefined> => {
 
   return { root, origin: origin === "" ? undefined : origin };
 };
+
+/** `origin`'s URL as git resolves it, with `url.<base>.insteadOf` applied: what a clone of it would use. */
+export const expandedOriginOf = (git: Git): Promise<string | undefined> =>
+  tryRead(git, ["remote", "get-url", "origin"]);
 
 export interface Head {
   /** HEAD's commit; none in a repo with no commit. */

@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a test, on the owner's machine, not Effect code.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as pi's extension API and child processes give them; runs on node, on the owner's machine.
 /**
  * `/cloudpid` against a stub endpoint (docs/architecture/mcp-endpoint.md → Session import → The working tree, The
  * `/cloudpid` command): cloudpid's own MCP handler over a fake `api`, a checkout with a bare remote, and pi's own
@@ -13,7 +13,7 @@ import type { Config } from "./config.ts";
 import { ENDPOINT_OLDER, TOKEN_REJECTED } from "./endpoint.ts";
 import { Refusal } from "./errors.ts";
 import { type Deps, type Host, type ImportRecord, importSession, type Outcome } from "./flow.ts";
-import { gitIn } from "./git.ts";
+import { type Git, GitMissing, gitIn } from "./git.ts";
 import { snapshotOf } from "./session.ts";
 import { sha256Hex, fileBytes } from "./slices.ts";
 import {
@@ -66,6 +66,10 @@ interface Setup {
   readonly saved?: boolean;
   readonly env?: { readonly [name: string]: string | undefined };
   readonly marker?: boolean;
+  /** Wraps the real git of each directory. */
+  readonly git?: (real: Git) => Git;
+  /** Pi's `appendEntry` throws. */
+  readonly appendThrows?: boolean;
 }
 
 /** One `/cloudpid` run. */
@@ -95,12 +99,18 @@ const run = async (setup: Setup = {}) => {
     model: "anthropic/claude-sonnet",
     thinking: "high",
     ui,
-    appendEntry: (type, data) => entries.push({ type, data }),
+    appendEntry: (type, data) => {
+      if (setup.appendThrows === true) throw new Error("the session file is read-only");
+
+      entries.push({ type, data });
+    },
   };
+
+  const wrap = setup.git;
 
   const deps: Deps = {
     env: setup.env ?? ENV,
-    git: gitIn,
+    git: wrap === undefined ? gitIn : (cwd) => wrap(gitIn(cwd)),
     endpoint: (config: Config) => stub.endpoint(config),
     exists: (file) => (setup.saved ?? true) && existsSync(file),
   };
@@ -121,6 +131,16 @@ const run = async (setup: Setup = {}) => {
 
 const remoteRef = (ref: string) =>
   git(checkout.remote, "for-each-ref", "--format=%(objectname)", ref);
+
+/** The remote refuses every push of a branch. */
+const refuseBranchPushes = () => {
+  mkdirSync(join(checkout.remote, "hooks"), { recursive: true });
+  writeFileSync(
+    join(checkout.remote, "hooks", "pre-receive"),
+    '#!/bin/sh\nwhile read old new ref; do case "$ref" in refs/heads/*) echo "no pushes" >&2; exit 1;; esac; done\n',
+    { mode: 0o755 },
+  );
+};
 
 const worktreeFingerprint = () => ({
   status: git(checkout.work, "status", "--porcelain=v1", "--ignored"),
@@ -279,6 +299,85 @@ describe("an import from a checkout on its own branch", () => {
     expect(result.ui.notices.at(-1)?.message).toContain("git switch feature && git pull --ff-only");
   });
 
+  it("pulls the branch it pushed when the local branch tracked origin's main", async () => {
+    git(checkout.work, "branch", "--set-upstream-to=origin/main");
+    commitFile("b.txt", "add b");
+
+    const main = remoteRef("refs/heads/main");
+    const result = await run({ ui: { confirm: [true, false] } });
+
+    expect(result.stub.imports[0]?.request.branch).toBe("feature");
+    expect(remoteRef("refs/heads/feature")).toBe(git(checkout.work, "rev-parse", "HEAD"));
+    expect(remoteRef("refs/heads/main")).toBe(main);
+    // The plain `git pull --ff-only` the owner is told to run pulls what was pushed, not main.
+    expect(git(checkout.work, "rev-parse", "--abbrev-ref", "feature@{upstream}")).toBe(
+      "origin/feature",
+    );
+    expect(result.ui.notices.at(-1)?.message).toContain("git switch feature && git pull --ff-only");
+  });
+
+  it("names the branch in the pull when it could not set the upstream", async () => {
+    git(checkout.work, "branch", "--set-upstream-to=origin/main");
+
+    const result = await run({
+      ui: { confirm: [true, false] },
+      git: (real) => (args, options) =>
+        args[0] === "branch" && args.some((arg) => arg.startsWith("--set-upstream-to"))
+          ? Promise.resolve({ code: 1, stdout: "", stderr: "no" })
+          : real(args, options),
+    });
+
+    expect(result.outcome?.kind).toBe("imported");
+    expect(git(checkout.work, "rev-parse", "--abbrev-ref", "feature@{upstream}")).toBe(
+      "origin/main",
+    );
+    expect(result.ui.notices.at(-1)?.message).toContain(
+      "git switch feature && git pull --ff-only origin feature",
+    );
+  });
+
+  it("sends changes_carried only to an endpoint that declares it", async () => {
+    const declared = await run({
+      stub: { declaresChangesCarried: true },
+      ui: { confirm: [true, false] },
+    });
+
+    expect(declared.stub.finishArguments).toHaveLength(1);
+    expect(declared.stub.finishArguments[0]).toMatchObject({ changes_carried: true });
+
+    const older = await run({ ui: { confirm: [true, false] } });
+
+    expect(older.outcome?.kind).toBe("imported");
+    expect(older.stub.finishArguments).toHaveLength(1);
+    expect(Object.keys(older.stub.finishArguments[0] ?? {})).toEqual(["import_id", "sha256"]);
+  });
+
+  it("says changes_carried is false when there was nothing to carry", async () => {
+    git(checkout.work, "stash", "push", "--include-untracked", "--quiet");
+
+    const result = await run({ stub: { declaresChangesCarried: true } });
+
+    expect(result.outcome?.kind).toBe("imported");
+    expect(result.stub.finishArguments[0]).toMatchObject({ changes_carried: false });
+  });
+
+  it("keeps a finished import when what comes after it fails", async () => {
+    const result = await run({ appendThrows: true, ui: { confirm: [true, true] } });
+    const [held] = result.stub.imports;
+
+    expect(result.failure).toBeUndefined();
+    expect(result.outcome).toMatchObject({ kind: "imported", stashed: true });
+    // Nothing was cancelled, and the carry ref the Workspace clones from is still there.
+    expect(held?.finished).toBeDefined();
+    expect(held?.cancelled).toBe(false);
+    expect(remoteRef(`refs/cloudpid/import/${held?.id ?? ""}`)).not.toBe("");
+    // The owner is told, and still given the URL.
+    expect(result.ui.notices.map((notice) => notice.message)).toContainEqual(
+      expect.stringContaining("could not record the import in this pi session"),
+    );
+    expect(result.ui.notices.at(-1)?.message).toContain("cloudpid: imported: https://");
+  });
+
   it("is a fast-forward push when origin has the branch already", async () => {
     git(checkout.work, "push", "--quiet", "origin", "feature");
     commitFile("b.txt", "add b");
@@ -419,6 +518,19 @@ describe("an import from the default branch or a detached HEAD", () => {
     );
   });
 
+  it("says which branch the owner is on when the import fails after git switch -c", async () => {
+    refuseBranchPushes();
+
+    const result = await run({ ui: { confirm: [true, false], editor: ["flaky-test-fix"] } });
+
+    expect(result.failure?.message).toMatch(/git push failed/);
+    expect(result.stub.imports[0]?.cancelled).toBe(true);
+    expect(git(checkout.work, "branch", "--show-current")).toBe("flaky-test-fix");
+    expect(result.ui.notices.map((notice) => notice.message)).toContainEqual(
+      expect.stringContaining("you are now on flaky-test-fix (was main); `git switch main`"),
+    );
+  });
+
   it("asks again for a name git refuses, or one that is the default branch, and gives up when the owner does", async () => {
     git(checkout.work, "branch", "exists");
 
@@ -523,13 +635,7 @@ describe("a failed import", () => {
   });
 
   it("cancels the import and takes the carry ref off when the push fails", async () => {
-    // The remote refuses every new branch.
-    mkdirSync(join(checkout.remote, "hooks"), { recursive: true });
-    writeFileSync(
-      join(checkout.remote, "hooks", "pre-receive"),
-      '#!/bin/sh\nwhile read old new ref; do case "$ref" in refs/heads/*) echo "no pushes" >&2; exit 1;; esac; done\n',
-      { mode: 0o755 },
-    );
+    refuseBranchPushes();
 
     const result = await run();
     const [held] = result.stub.imports;
@@ -668,6 +774,7 @@ describe("refusals", () => {
     const noOrigin = await run();
 
     expect(noOrigin.failure?.message).toMatch(/no `origin`/);
+    expect(noOrigin.failure?.message).toContain("add this Repo to an Environment first");
 
     const outside = join(checkout.directory, "outside");
 
@@ -693,7 +800,45 @@ describe("refusals", () => {
         "",
         { env: ENV, git: gitIn, endpoint: stub.endpoint, exists: existsSync },
       ),
-    ).rejects.toThrow(/not in a git repository/);
+    ).rejects.toThrow(/not in a git repository: .*add this Repo to an Environment first/);
+  });
+
+  it("refuses, as for a Repo with no Environment, when git cannot be run", async () => {
+    const result = await run({
+      git: () => () =>
+        Promise.reject(
+          new GitMissing("could not run git in /x: it is not installed, or not on PATH"),
+        ),
+    });
+
+    expect(result.failure).toBeInstanceOf(Refusal);
+    expect(result.failure?.message).toContain("it is not installed, or not on PATH");
+    expect(result.failure?.message).toContain("add this Repo to an Environment first");
+    expect(result.stub.headers).toEqual([]);
+  });
+
+  it("matches the Environment on the URL git resolves when the configured one matches none", async () => {
+    // `url.<base>.insteadOf` in the owner's config: `origin` is written one way and cloned another.
+    const mirror = "https://mirror.example/acme/app.git";
+
+    git(checkout.work, "config", "remote.origin.url", mirror);
+    git(checkout.work, "config", `url.${checkout.remote}.insteadOf`, mirror);
+
+    const unresolved = await run();
+
+    expect(unresolved.failure?.message).toContain("add this Repo to an Environment first");
+    expect(unresolved.failure?.message).toContain("https://mirror.example/acme/app");
+
+    const resolved = await run({
+      ui: { confirm: [true, false] },
+      git: (real) => (args, options) =>
+        args.join(" ") === "remote get-url origin"
+          ? Promise.resolve({ code: 0, stdout: `${ORIGIN}\n`, stderr: "" })
+          : real(args, options),
+    });
+
+    expect(resolved.failure).toBeUndefined();
+    expect(resolved.outcome?.kind).toBe("imported");
   });
 
   it("refuses a repo with no commit", async () => {

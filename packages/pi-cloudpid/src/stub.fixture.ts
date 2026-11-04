@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a test fixture, on the owner's machine, not Effect code.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off processEnv:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as `fetch` gives them; runs on node, on the owner's machine; reads the owner's environment.
 /**
  * The test fixtures of `/cloudpid`: a stub endpoint (cloudpid's own handler, `serveMcp`, over a fake `api` that keeps
  * an import in memory), a checkout with a bare remote to import from, and a scripted pi UI.
@@ -14,6 +14,7 @@ import { serveMcp, toolGate, unobserved, type McpServerApi } from "@cloudpid/mcp
 import { apiFailure, apiOk, MAX_MCP_SLICE_BYTES, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
 import { MCP_TOOL_OPERATIONS } from "@cloudpid/protocol/mcp-tools";
 import type { Config } from "./config.ts";
+import { isJson, type Json, type JsonObject, objectField, toObject } from "./json.ts";
 import { connectEndpoint, type Endpoint } from "./endpoint.ts";
 import type { Ui } from "./flow.ts";
 
@@ -60,12 +61,16 @@ export interface StubOptions {
   readonly carryRef?: string;
   /** The HTTP status to answer every request with, as Access does for a token it does not know. */
   readonly httpStatus?: number;
+  /** `tools/list` declares `changes_carried` on `session_import_finish`, as an endpoint that has #474 does. */
+  readonly declaresChangesCarried?: boolean;
 }
 
 export interface Stub {
   readonly imports: Array<StubImport>;
   /** The headers of every request that reached the endpoint. */
   readonly headers: Array<Headers>;
+  /** The arguments of every `session_import_finish` call, as the endpoint received them. */
+  readonly finishArguments: Array<JsonObject>;
   readonly fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
   readonly endpoint: (config: Config) => Promise<Endpoint>;
 }
@@ -74,9 +79,63 @@ const textOf = (chunks: ReadonlyArray<Buffer>): string => Buffer.concat(chunks).
 
 export const receivedText = (held: StubImport): string => textOf(held.chunks);
 
+/** A JSON-RPC message body, when it is one object. */
+const rpcOf = (text: string): JsonObject | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(text);
+
+    return isJson(parsed) ? toObject(parsed) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** `value` with `changes_carried` among `session_import_finish`'s input properties, wherever the tool is listed. */
+const addChangesCarried = (value: Json): Json => {
+  if (Array.isArray(value)) return value.map(addChangesCarried);
+
+  if (!Predicate.isObject(value)) return value;
+
+  const fields = toObject(value) ?? {};
+  const schema = objectField(fields, "inputSchema");
+
+  if (fields["name"] === "session_import_finish" && schema !== undefined) {
+    const properties = objectField(schema, "properties") ?? {};
+
+    return {
+      ...fields,
+      inputSchema: {
+        ...schema,
+        properties: { ...properties, changes_carried: { type: "boolean" } },
+      },
+    };
+  }
+
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, field]) => [key, addChangesCarried(field)]),
+  );
+};
+
+/** The body of a `tools/list` answer, plain JSON or server-sent events, with `changes_carried` declared. */
+const withChangesCarried = (body: string): string => {
+  const whole = rpcOf(body);
+
+  if (whole !== undefined) return JSON.stringify(addChangesCarried(whole));
+
+  return body
+    .split("\n")
+    .map((line) => {
+      const data = line.startsWith("data:") ? rpcOf(line.slice("data:".length)) : undefined;
+
+      return data === undefined ? line : `data: ${JSON.stringify(addChangesCarried(data))}`;
+    })
+    .join("\n");
+};
+
 export const stubEndpoint = (options: StubOptions = {}): Stub => {
   const imports: Array<StubImport> = [];
   const headers: Array<Headers> = [];
+  const finishArguments: Array<JsonObject> = [];
   let appends = 0;
   let mismatched = false;
 
@@ -231,21 +290,43 @@ export const stubEndpoint = (options: StubOptions = {}): Stub => {
 
   const gate = toolGate();
 
-  const fetch = (url: string | URL, init?: RequestInit): Promise<Response> => {
+  const fetch = async (url: string | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(url, init);
 
     headers.push(request.headers);
 
     if (options.httpStatus !== undefined) {
-      return Promise.resolve(new Response("Forbidden", { status: options.httpStatus }));
+      return new Response("Forbidden", { status: options.httpStatus });
     }
 
-    return serveMcp(request, { api, version: "stub", gate, observe: unobserved });
+    const sent = request.method === "POST" ? rpcOf(await request.clone().text()) : undefined;
+    const params = sent === undefined ? undefined : objectField(sent, "params");
+    const called = params === undefined ? undefined : objectField(params, "arguments");
+
+    if (
+      params !== undefined &&
+      called !== undefined &&
+      params["name"] === "session_import_finish"
+    ) {
+      finishArguments.push(called);
+    }
+
+    const response = await serveMcp(request, { api, version: "stub", gate, observe: unobserved });
+
+    if (options.declaresChangesCarried !== true || sent?.["method"] !== "tools/list") {
+      return response;
+    }
+
+    return new Response(withChangesCarried(await response.text()), {
+      status: response.status,
+      headers: response.headers,
+    });
   };
 
   return {
     imports,
     headers,
+    finishArguments,
     fetch,
     endpoint: (config) => connectEndpoint(config, { fetch, sleep: () => Promise.resolve() }),
   };

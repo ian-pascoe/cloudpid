@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics asyncFunction:off nodeBuiltinImport:off -- plain Promises, as pi's extension API and child processes give them; runs on node, on the owner's machine.
 /**
  * `/cloudpid [instruction]`: imports the active pi Session into cloudpid (docs/architecture/mcp-endpoint.md → Session
  * import → The `/cloudpid` command). Dev loop: `pi -e packages/pi-cloudpid/src/index.ts`. It registers a command and

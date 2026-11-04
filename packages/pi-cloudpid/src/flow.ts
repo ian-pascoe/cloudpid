@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics preferEffectArray:off asyncFunction:off missingPipeableSignature:off cryptoRandomUUID:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as pi's extension API and child processes give them; plain functions over values, called directly; the request_id of begin.
 /**
  * `/cloudpid [instruction]` (docs/architecture/mcp-endpoint.md → Session import → The `/cloudpid` command, The working
  * tree): refuse unless idle and saved, match the checkout to an Environment, say what will go and ask, then begin, push
@@ -28,11 +28,14 @@ import { ApiFailure, Refusal } from "./errors.ts";
 import {
   branchNameProblem,
   type Carry,
+  type Checkout,
   checkoutOf,
   commitCarry,
   defaultBranchOf,
   deleteRemoteRef,
+  expandedOriginOf,
   type Git,
+  GitMissing,
   headOf,
   planPush,
   type PushPlan,
@@ -461,17 +464,29 @@ export const importSession = async (
   }
 
   const here = deps.git(host.cwd);
-  const checkout = await checkoutOf(here);
+  let checkout: Checkout | undefined;
+
+  try {
+    checkout = await checkoutOf(here);
+  } catch (error) {
+    if (error instanceof GitMissing) {
+      throw new Refusal(
+        `${error.message}, so /cloudpid cannot tell which Repo this is: install git, and add this Repo to an Environment first.`,
+      );
+    }
+
+    throw error;
+  }
 
   if (checkout === undefined) {
     throw new Refusal(
-      `${host.cwd} is not in a git repository: run /cloudpid from the Repo's checkout, after adding the Repo to an Environment first.`,
+      `${host.cwd} is not in a git repository: run /cloudpid from the Repo's checkout, and add this Repo to an Environment first.`,
     );
   }
 
   if (checkout.origin === undefined) {
     throw new Refusal(
-      `${checkout.root} has no \`origin\` remote: push it to GitHub and add the Repo to an Environment first.`,
+      `${checkout.root} has no \`origin\` remote: push it to GitHub, then add this Repo to an Environment first.`,
     );
   }
 
@@ -479,7 +494,19 @@ export const importSession = async (
   const endpoint = await deps.endpoint(config);
 
   try {
-    const environment = await chooseEnvironment(ui, await endpoint.environments(), checkout.origin);
+    const environments = await endpoint.environments();
+    let origin = checkout.origin;
+
+    // The URL as the config has it matches nothing: try the one git resolves (`url.<base>.insteadOf`) before refusing.
+    if (matchEnvironments(environments, origin).length === 0) {
+      const expanded = await expandedOriginOf(git);
+
+      if (expanded !== undefined && matchEnvironments(environments, expanded).length > 0) {
+        origin = expanded;
+      }
+    }
+
+    const environment = await chooseEnvironment(ui, environments, origin);
 
     if (environment === undefined) return cancelled;
 
@@ -582,9 +609,14 @@ export const importSession = async (
     }
 
     const imported = begun;
+    let switched = false;
+    let finished: FinishResult;
 
     try {
-      if (target.create) await switchNew(git, target.name);
+      if (target.create) {
+        await switchNew(git, target.name);
+        switched = true;
+      }
 
       ui.setStatus(STATUS_KEY, `cloudpid: pushing ${target.name}`);
 
@@ -605,18 +637,7 @@ export const importSession = async (
 
       ui.setStatus(STATUS_KEY, "cloudpid: finishing");
 
-      const finished = await endpoint.finish(imported.importId, sha256Hex(bytes));
-
-      ui.setStatus(STATUS_KEY, undefined);
-
-      return await afterImport(host, git, finished, instruction, {
-        branch: target.name,
-        // The branch to come back to: the one made here, else the one the owner is on.
-        local: target.create ? target.name : (head.branch ?? target.name),
-        environment: environment.name,
-        carried: carry !== undefined,
-        newBranch: target.create || head.upstream === undefined,
-      });
+      finished = await endpoint.finish(imported.importId, sha256Hex(bytes), carry !== undefined);
     } catch (error) {
       ui.setStatus(STATUS_KEY, undefined);
 
@@ -624,8 +645,28 @@ export const importSession = async (
 
       for (const problem of problems) ui.notify(`cloudpid: ${problem}.`, "warning");
 
+      if (switched) {
+        ui.notify(
+          `cloudpid: you are now on ${target.name} (was ${head.branch ?? `a detached HEAD at ${commit.slice(0, 8)}`}); \`git switch ${head.branch ?? commit}\` goes back.`,
+          "warning",
+        );
+      }
+
       throw error;
     }
+
+    // The import is made: nothing after this cancels it (that would delete the new Session and the carry ref).
+    ui.setStatus(STATUS_KEY, undefined);
+
+    return await afterImport(host, git, finished, instruction, {
+      branch: target.name,
+      // The branch to come back to: the one made here, else the one the owner is on.
+      local: target.create ? target.name : (head.branch ?? target.name),
+      environment: environment.name,
+      carried: carry !== undefined,
+      // `git pull --ff-only` must pull the branch just pushed: a branch made here, or one that tracks another.
+      setUpstream: target.create || head.upstream !== target.name,
+    });
   } finally {
     ui.setStatus(STATUS_KEY, undefined);
 
@@ -639,11 +680,14 @@ interface Landed {
   readonly local: string;
   readonly environment: string;
   readonly carried: boolean;
-  /** The local branch has no upstream on origin yet: set it, so `git pull --ff-only` works. */
-  readonly newBranch: boolean;
+  /** The local branch does not track `origin/<branch>` yet: set it, so `git pull --ff-only` pulls that branch. */
+  readonly setUpstream: boolean;
 }
 
-/** The import is in: the stash, the marker, and what the owner reads. */
+/**
+ * The import is in: the upstream, the stash, the marker, and what the owner reads. None of it can undo the import, so
+ * a step that fails is told in the notice and the rest goes on.
+ */
 const afterImport = async (
   host: Host,
   git: Git,
@@ -652,12 +696,23 @@ const afterImport = async (
   landed: Landed,
 ): Promise<Outcome> => {
   const { ui } = host;
+  const trouble: Array<string> = [];
 
-  if (landed.newBranch) {
+  let pull = "git pull --ff-only";
+
+  if (landed.setUpstream) {
     // Best effort: a branch pushed by commit id has no upstream, and `git pull --ff-only` needs one.
-    await git(["branch", `--set-upstream-to=origin/${landed.branch}`, landed.local]).catch(
-      () => undefined,
+    const set = await git([
+      "branch",
+      `--set-upstream-to=origin/${landed.branch}`,
+      landed.local,
+    ]).then(
+      (result) => result.code === 0,
+      () => false,
     );
+
+    // Without it, a plain pull would pull what the branch tracked before (if anything).
+    if (!set) pull = `git pull --ff-only origin ${landed.branch}`;
   }
 
   let stashed = false;
@@ -665,33 +720,46 @@ const afterImport = async (
   if (landed.carried) {
     const message = `cloudpid: imported as ${finished.url}`;
 
-    const wants = await ui.confirm(
-      "Put your uncommitted changes aside?",
-      `The work goes on in cloudpid, with these changes. \`git stash push -u -m "${message}"\` keeps your copy out of the way here.`,
-    );
+    try {
+      const wants = await ui.confirm(
+        "Put your uncommitted changes aside?",
+        `The work goes on in cloudpid, with these changes. \`git stash push -u -m "${message}"\` keeps your copy out of the way here.`,
+      );
 
-    if (wants) {
-      try {
-        await stashAll(git, message);
-        stashed = true;
-      } catch (error) {
-        ui.notify(
-          `cloudpid: could not stash: ${error instanceof Error ? error.message : "unknown error"}`,
-          "warning",
-        );
+      if (wants) {
+        try {
+          await stashAll(git, message);
+          stashed = true;
+        } catch (error) {
+          trouble.push(
+            `could not stash: ${error instanceof Error ? error.message : "unknown error"}`,
+          );
+        }
       }
+    } catch (error) {
+      trouble.push(
+        `could not ask about the stash: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
     }
   }
 
-  host.appendEntry(IMPORT_MARKER, {
-    session: finished.sessionId,
-    url: finished.url,
-    branch: landed.branch,
-    environment: landed.environment,
-  });
+  try {
+    host.appendEntry(IMPORT_MARKER, {
+      session: finished.sessionId,
+      url: finished.url,
+      branch: landed.branch,
+      environment: landed.environment,
+    });
+  } catch (error) {
+    trouble.push(
+      `could not record the import in this pi session: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+
+  for (const problem of trouble) ui.notify(`cloudpid: ${problem}.`, "warning");
 
   const comeBack = [
-    `To come back: git switch ${landed.local} && git pull --ff-only${stashed ? ", then git stash drop" : ""}`,
+    `To come back: git switch ${landed.local} && ${pull}${stashed ? ", then git stash drop" : ""}`,
   ];
 
   ui.notify(describeResult(finished, instruction, comeBack), "info");

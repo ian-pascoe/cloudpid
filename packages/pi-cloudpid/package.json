@@ -21,8 +21,8 @@
     "@cloudpid/config": "workspace:*",
     "@cloudpid/mcp": "workspace:*",
     "@cloudpid/protocol": "workspace:*",
-    "@earendil-works/pi-coding-agent": "1.4.0",
-    "@types/node": "26.6.5"
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@types/node": "^26.6.5"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

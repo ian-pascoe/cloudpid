@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a test, on the owner's machine, not Effect code.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values.
 import { describe, expect, it } from "vitest";
 import { bundleProblems, type Metafile } from "../build-check.ts";
 

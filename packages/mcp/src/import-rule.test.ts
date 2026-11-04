@@ -124,6 +124,29 @@ describe("packages/pi-cloudpid runs on the owner's machine", () => {
       [`import { Todo } from "@cloudpid/extensions";`, true],
     ]);
   });
+
+  it("imports the SDK's client and nothing else of the SDK", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import { Client } from "@modelcontextprotocol/client";`, false],
+      [`import { createMcpHandler } from "@modelcontextprotocol/server";`, true],
+      [`import { ZodError } from "@modelcontextprotocol/core";`, true],
+      [`import { tasks } from "@modelcontextprotocol/ext-tasks";`, true],
+      [`import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";`, true],
+    ]);
+  });
+
+  it("imports only types from @cloudpid/protocol", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import type { SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";`, false],
+      [`import { type SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";`, false],
+      [`import type { MAX_TITLE_LENGTH } from "@cloudpid/protocol";`, false],
+      [`export type { ApiResult } from "@cloudpid/protocol/mcp-api";`, false],
+      [`import { MAX_TITLE_LENGTH } from "@cloudpid/protocol";`, true],
+      [`import { apiOk } from "@cloudpid/protocol/mcp-api";`, true],
+      [`import { type ApiResult, apiOk } from "@cloudpid/protocol/mcp-api";`, true],
+      [`import "@cloudpid/protocol/mcp-tools";`, true],
+    ]);
+  });
 });
 
 describe("apps/web imports types only from @modelcontextprotocol/ext-apps", () => {

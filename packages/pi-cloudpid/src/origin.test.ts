@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a test, on the owner's machine, not Effect code.
+// @effect-diagnostics preferEffectArray:off -- native array methods over plain values (the bundle carries no Effect runtime).
 import { describe, expect, it } from "vitest";
 import { matchEnvironments, normalizeRepoUrl } from "./origin.ts";
 

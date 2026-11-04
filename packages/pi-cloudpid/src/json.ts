@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain functions over values, called directly.
 /**
  * The endpoint's answers as JSON values, read field by field. The SDK hands `structuredContent` over as `unknown`;
  * {@link toJson} is the one place it is checked, and everything after it reads typed values.

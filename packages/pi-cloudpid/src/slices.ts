@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics missingPipeableSignature:off nodeBuiltinImport:off -- plain functions over values, called directly; runs on node, on the owner's machine.
 /**
  * The file as the endpoint takes it (docs/architecture/mcp-endpoint.md → Session import → The import channel): slices cut
  * by UTF-8 byte offset, each at a character boundary and at most `max` bytes, and the SHA-256 of the whole.

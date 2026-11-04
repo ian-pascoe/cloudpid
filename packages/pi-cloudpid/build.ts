@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a build script on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off processEnv:off globalConsole:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; runs on node, on the owner's machine; reads the owner's environment; a build script's output.
 /**
  * Builds the extension (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Distribution): `bun build
  * --target=node --format=esm` makes one `dist/index.js`, with the pi host packages external; `dist/package.json` has

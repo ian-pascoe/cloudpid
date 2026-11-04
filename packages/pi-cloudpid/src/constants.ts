@@ -1,4 +1,3 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
 /**
  * What `/cloudpid` shares with the endpoint (`docs/architecture/mcp-endpoint.md` → The `/cloudpid` command). The
  * values are copies of `@cloudpid/protocol`'s: that package builds its Schemas on `effect`, which the bundle must not

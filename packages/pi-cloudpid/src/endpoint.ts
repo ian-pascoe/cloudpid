@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a program on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as pi's extension API and child processes give them; plain functions over values, called directly; wraps a callback API (a child process, a timer); the wait between retries.
 /**
  * The MCP endpoint as `/cloudpid` calls it (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Configuration,
  * Compatibility): one connection with the Local agent's service token, the tools it needs checked in `tools/list`, and
@@ -84,7 +84,15 @@ export interface Endpoint {
   readonly begin: (input: BeginInput) => Promise<BeginResult>;
   /** The bytes the endpoint holds after the slice. An `offset_mismatch` is an {@link ApiFailure} with `receivedOf`. */
   readonly append: (importId: string, offset: number, data: string) => Promise<number>;
-  readonly finish: (importId: string, sha256: string) => Promise<FinishResult>;
+  /**
+   * `changesCarried` (whether a carry commit was pushed) goes only to an endpoint whose `session_import_finish` declares
+   * it: an older one may refuse a property it does not know.
+   */
+  readonly finish: (
+    importId: string,
+    sha256: string,
+    changesCarried: boolean,
+  ) => Promise<FinishResult>;
   readonly cancel: (importId: string) => Promise<void>;
   readonly close: () => Promise<void>;
 }
@@ -242,6 +250,8 @@ export const connectEndpoint = async (
   const transportFailure = (error: Error): Error =>
     isRejected(statusOf(error)) ? new Refusal(TOKEN_REJECTED) : error;
 
+  let finishTakesChangesCarried = false;
+
   try {
     await client.connect(transport);
 
@@ -250,7 +260,14 @@ export const connectEndpoint = async (
     for (let cursor: string | undefined; ;) {
       const page = await client.listTools(cursor === undefined ? undefined : { cursor });
 
-      for (const tool of page.tools) names.add(tool.name);
+      for (const tool of page.tools) {
+        names.add(tool.name);
+
+        if (tool.name === "session_import_finish") {
+          finishTakesChangesCarried =
+            tool.inputSchema.properties?.["changes_carried"] !== undefined;
+        }
+      }
 
       cursor = page.nextCursor;
 
@@ -359,8 +376,14 @@ export const connectEndpoint = async (
       return received;
     },
 
-    finish: async (importId, sha256) => {
-      const result = await call("session_import_finish", { import_id: importId, sha256 });
+    finish: async (importId, sha256, changesCarried) => {
+      const args = { import_id: importId, sha256 };
+
+      const result = await call(
+        "session_import_finish",
+        finishTakesChangesCarried ? { ...args, changes_carried: changesCarried } : args,
+      );
+
       const url = stringField(result, "url");
       const status = stringField(result, "status");
 

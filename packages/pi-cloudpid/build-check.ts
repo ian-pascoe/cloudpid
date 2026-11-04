@@ -1,4 +1,4 @@
-// @effect-diagnostics *:off -- a build script on the owner's machine, not Effect code (the bundle carries only `effect/Predicate`).
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain functions over values, called directly.
 /**
  * What the build checks of the bundle (docs/architecture/mcp-endpoint.md → The `/cloudpid` command): it runs on the
  * owner's laptop, so nothing of the Workers side may be in it, and what it leaves external must be there to find: Node's
