@@ -4,6 +4,7 @@
 // hibernation restarts them, each with a fresh snapshot, on sockets that never closed.
 import {
   type Annotation,
+  type ApprovalRequest,
   type Catalog,
   type ChangeFile,
   type CommandOutcome,
@@ -210,17 +211,23 @@ export const mcpSignInRequests = (requests: ReadonlyArray<McpSignInRequest>): Se
  */
 export const approvalRequests = (requests: ReadonlyArray<ApprovalAsk>): ServerMessage => ({
   type: "approval_requests",
-  requests: Arr.map(requests, (request) => ({
-    id: request.id,
-    // SAFETY: a request's conversation is the asking call's, a pi-durable conversation ID.
-    conversationId: request.conversationId as ConversationId,
-    tool: request.tool,
-    target: request.target,
-    change: request.change,
-    before: request.before,
-    after: request.after,
-    reason: request.reason,
-  })),
+  requests: Arr.map(requests, (request) => {
+    const shown: Types.Mutable<ApprovalRequest> = {
+      id: request.id,
+      // SAFETY: a request's conversation is the asking call's, a pi-durable conversation ID.
+      conversationId: request.conversationId as ConversationId,
+      tool: request.tool,
+      target: request.target,
+      change: request.change,
+      before: request.before,
+      after: request.after,
+      reason: request.reason,
+    };
+
+    if (request.notes !== undefined) shown.notes = request.notes;
+
+    return shown;
+  }),
 });
 
 /** The `annotations` message for `drafts`, which every client is sent whenever they change. */

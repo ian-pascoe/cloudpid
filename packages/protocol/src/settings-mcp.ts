@@ -158,6 +158,24 @@ export type SettingsMcpReach = {
   readonly environment: SettingsMcpEnvironment;
   readonly reached: boolean;
   readonly widening: ReadonlyArray<McpWidening>;
+  /**
+   * With `reads` asked: what each `${NAME}` is there (a Secret of the Environment's or Global's, a Variable, or missing), by
+   * name only. Absent from a Registry from before it.
+   */
+  readonly reads?:
+    | ReadonlyArray<{ readonly name: string; readonly kind: SettingsMcpReadKind }>
+    | undefined;
+};
+
+/**
+ * What the Registry checks again inside the transaction of an agent's MCP change (`changeSettings`'s `guard`;
+ * `docs/architecture/mcp-configuration.md` → Approval, Applying): that it widens nothing (a change made without asking,
+ * checked as narrowing a moment ago), and, at an Environment, that every `${NAME}` its entry reads resolves there.
+ */
+export type McpChangeGuard = {
+  readonly name: string;
+  readonly widening?: true | undefined;
+  readonly reads?: ReadonlyArray<string> | undefined;
 };
 
 /**

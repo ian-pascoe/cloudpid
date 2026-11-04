@@ -5,405 +5,32 @@
 // owner's resolver (`resolveMcpServerSet`) and the widening check is the real `checkMcpWidening`, so what the tools find is
 // what the Registry would; the hosts are the in-memory fake.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off
-import {
-  checkMcpWidening,
-  type McpResolvedServer,
-  overridesFrom,
-  resolveMcpServerSet,
-  resolveOverridesLeniently,
-} from "@cloudpid/config";
-import type {
-  AgentChange,
-  SettingsMcpChangeCheck,
-  SettingsMcpServer,
-  SettingsMcpView,
-} from "@cloudpid/protocol";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import {
-  ROOT_CONVERSATION_ID,
-  type ToolExecutionApi,
-  type ToolRegistration,
-} from "@earendil-works/pi-durable";
+import type { FakeMcpServer } from "./mcp.testing.ts";
 import * as Arr from "effect/Array";
-import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
-import * as Record from "effect/Record";
-import * as Result from "effect/Result";
-import type * as Schema from "effect/Schema";
-import type { Mutable } from "effect/Types";
 import { describe, expect, it } from "vitest";
-import { AgentChangeLog, DeployCredentials } from "./environment.ts";
-import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
-import { Secrets, type SecretsService } from "./secrets/store.ts";
+import { GLOBAL_SETTINGS_SCOPE } from "./settings.ts";
+import { nextToolKeys } from "./settings-mcp-changes.ts";
 import {
-  GLOBAL_SETTINGS_SCOPE,
-  SettingsAccess,
-  SettingsAccessError,
-  type SettingsAccessService,
-  SettingsReload,
-  type SettingsView,
-} from "./settings.ts";
-import {
-  changeGlobalSettings,
-  changeSettingsOverrides,
-  resolvedGlobal,
-} from "./settings.fixture.ts";
-import type { RecordedField } from "./settings.fixture.ts";
-import { SettingsMcpAccess, type SettingsMcpAccessService } from "./settings-mcp-access.ts";
-import {
-  McpChangeTools,
-  McpChanges,
-  nextToolKeys,
-  refuseWidening,
-} from "./settings-mcp-changes.ts";
-
-const DEFAULT = "default";
-const STAGING = "staging";
-
-const FILES = { command: "node", args: ["files.js"] };
-const DOCS = { url: "https://docs.example/mcp", toolExposure: { "delete_*": "hidden" } };
-
-const field = (key: string, name = "files") => `mcp.servers.${name}.${key}`;
-
-type World = {
-  global: Schema.Json;
-  environments: Record<string, { name: string; overrides: Schema.Json }>;
-};
-
-/** The world as a test sets it up, with the tools over fakes of the Registry's reads, writes and check. */
-const setup = async (
-  start: {
-    readonly global?: Schema.Json;
-    readonly overrides?: Readonly<Record<string, Schema.Json>>;
-    readonly own?: string;
-    readonly hostServers?: ReadonlyArray<FakeMcpServer>;
-    readonly offered?: ReadonlyArray<string>;
-  } = {},
-) => {
-  const world: World = {
-    global: start.global ?? {},
-    environments: {
-      [DEFAULT]: { name: "Default", overrides: start.overrides?.[DEFAULT] ?? {} },
-      [STAGING]: { name: "Staging", overrides: start.overrides?.[STAGING] ?? {} },
-    },
-  };
-
-  const own = start.own ?? DEFAULT;
-  const recorded: AgentChange[] = [];
-  const logged: Array<{ tool: string; field: string }> = [];
-  const events: string[] = [];
-  const host = fakeMcpHost(start.hostServers ?? []);
-
-  const record = (
-    made: Omit<AgentChange, "id" | "at" | "actor" | "session" | "reverts" | "revertedBy">,
-  ): AgentChange => {
-    const change: AgentChange = {
-      id: recorded.length + 1,
-      at: 1_000,
-      actor: "agent",
-      session: "s-1",
-      reverts: null,
-      revertedBy: null,
-      ...made,
-    };
-
-    recorded.push(change);
-
-    return change;
-  };
-
-  const dummy = (made: RecordedField): AgentChange => ({
-    id: 0,
-    at: 0,
-    actor: "agent",
-    session: null,
-    conversation: null,
-    tool: null,
-    reason: "",
-    reverts: null,
-    revertedBy: null,
-    ...made,
-  });
-
-  const setOf = (environment: string | undefined, global = world.global, overrides?: Schema.Json) =>
-    resolveMcpServerSet(
-      global,
-      environment === undefined
-        ? {}
-        : (overrides ?? world.environments[environment]?.overrides ?? {}),
-      [],
-    );
-
-  const missing = (id: string) =>
-    SettingsAccessError.make({ message: `No Environment has the id ${JSON.stringify(id)}.` });
-
-  const settings: SettingsAccessService = {
-    get: (scope) =>
-      Effect.suspend((): Effect.Effect<SettingsView, SettingsAccessError> => {
-        if (scope === GLOBAL_SETTINGS_SCOPE) {
-          const resolved = resolvedGlobal(world.global);
-
-          return Effect.succeed({
-            scope: GLOBAL_SETTINGS_SCOPE,
-            settings: resolved,
-            overrides: overridesFrom(resolved),
-            overriddenIn: {},
-          });
-        }
-
-        const environment = world.environments[scope];
-
-        if (environment === undefined) return Effect.fail(missing(scope));
-
-        const lenient = resolveOverridesLeniently(world.global, environment.overrides);
-
-        return Effect.succeed({
-          scope,
-          name: environment.name,
-          settings: lenient.settings,
-          overrides: lenient.overrides,
-          global: lenient.global,
-          instructions: "",
-        });
-      }),
-    own: Effect.succeed(own),
-    change: ({ scope, changes, author: { conversation, tool, reason } }) =>
-      Effect.suspend(() => {
-        events.push(
-          `change ${scope} ${Arr.join(
-            Arr.map(changes, (each) => each.field),
-            ",",
-          )}`,
-        );
-
-        if (scope === GLOBAL_SETTINGS_SCOPE) {
-          const changed = changeGlobalSettings(world.global, changes, (made) =>
-            record({ ...made, conversation, tool, reason }),
-          );
-
-          world.global = changed.global;
-
-          return Effect.succeed(changed.answer);
-        }
-
-        const environment = world.environments[scope];
-
-        if (environment === undefined) return Effect.fail(missing(scope));
-
-        const changed = changeSettingsOverrides(
-          world.global,
-          environment.overrides,
-          scope,
-          changes,
-          (made) => record({ ...made, conversation, tool, reason }),
-        );
-
-        environment.overrides = changed.overrides;
-
-        return Effect.succeed(changed.answer);
-      }),
-  };
-
-  const serverOf = (resolved: McpResolvedServer): SettingsMcpServer => ({
-    server: resolved,
-    origins: { enabled: "default", exposure: "default", toolExposure: "default" },
-    reads: [],
-    resetFields: [],
-    signIn: null,
-    hints: [],
-    problems: [],
-  });
-
-  const access: SettingsMcpAccessService = {
-    view: ({ scope, name }) =>
-      Effect.suspend(() => {
-        const global = scope === GLOBAL_SETTINGS_SCOPE;
-        const environment = world.environments[scope];
-
-        if (!global && environment === undefined) return Effect.fail(missing(scope));
-
-        const set = setOf(global ? undefined : scope);
-        const shown = Arr.filter(set.servers, (each) => name === undefined || each.name === name);
-
-        const definedIn =
-          global && name !== undefined && shown.length === 0
-            ? Arr.filterMap(Record.toEntries(world.environments), ([id, each]) =>
-                Arr.some(setOf(id).servers, (server) => server.name === name)
-                  ? Result.succeed({ id, name: each.name })
-                  : Result.failVoid,
-              )
-            : undefined;
-
-        const view: Mutable<SettingsMcpView> = {
-          scope,
-          name: global ? "Global" : (environment?.name ?? scope),
-          servers: Arr.map(shown, serverOf),
-          names: Arr.map(set.servers, (each) => each.name),
-          layers: null,
-          repos: [],
-          orphans: set.orphans,
-          problems: set.problems,
-          offered: start.offered ?? [],
-          warnings: [],
-        };
-
-        if (definedIn !== undefined) view.definedIn = definedIn;
-
-        return Effect.succeed(view);
-      }),
-    own: Effect.succeed(own),
-    check: ({ scope, name, changes }) =>
-      Effect.sync((): SettingsMcpChangeCheck => {
-        const ids = scope === GLOBAL_SETTINGS_SCOPE ? Record.keys(world.environments) : [scope];
-
-        return {
-          environments: Arr.filterMap(ids, (id) => {
-            const before = Arr.findFirst(setOf(id).servers, (each) => each.name === name);
-            const environment = world.environments[id];
-            let afterSet = setOf(id);
-
-            if (scope === GLOBAL_SETTINGS_SCOPE) {
-              const changed = changeGlobalSettings(world.global, changes, dummy);
-
-              afterSet = setOf(id, changed.global);
-            } else if (environment !== undefined) {
-              const changed = changeSettingsOverrides(
-                world.global,
-                environment.overrides,
-                id,
-                changes,
-                dummy,
-              );
-
-              afterSet = setOf(id, world.global, changed.overrides);
-            }
-
-            const after = Arr.findFirst(afterSet.servers, (each) => each.name === name);
-
-            if (Option.isNone(before) && Option.isNone(after)) return Result.failVoid;
-
-            return Result.succeed({
-              environment: { id, name: environment?.name ?? id },
-              reached:
-                JSON.stringify(Option.getOrUndefined(before)?.server) !==
-                JSON.stringify(Option.getOrUndefined(after)?.server),
-              widening: checkMcpWidening(
-                Option.getOrUndefined(before),
-                Option.getOrUndefined(after),
-              ),
-            });
-          }),
-        };
-      }),
-    reload: () => Effect.die("unused"),
-    pushes: (environment) =>
-      Effect.sync(() => {
-        events.push(`pushes ${environment}`);
-
-        return [{ kind: "set" as const, hash: `hash-${environment}`, revision: 7, entries: [] }];
-      }),
-    pushed: ({ environment }) =>
-      Effect.sync(() => {
-        events.push(`pushed ${environment}`);
-      }),
-    host: () => host.client,
-  };
-
-  const secrets: Pick<SecretsService, "refresh" | "redact"> = {
-    refresh: Effect.void,
-    redact: (value) => value,
-  };
-
-  const provided = <A, E>(
-    effect: Effect.Effect<
-      A,
-      E,
-      | SettingsMcpAccess
-      | SettingsAccess
-      | SettingsReload
-      | AgentChangeLog
-      | DeployCredentials
-      | Secrets
-    >,
-  ) =>
-    effect.pipe(
-      Effect.provideService(SettingsMcpAccess, access),
-      Effect.provideService(SettingsAccess, settings),
-      Effect.provideService(SettingsReload, {
-        apply: Effect.succeed({ picked: { model: false, thinkingLevel: false } }),
-      }),
-      Effect.provideService(AgentChangeLog, {
-        record: (change) =>
-          Effect.sync(() => {
-            logged.push({ tool: change.tool, field: change.field });
-          }),
-      }),
-      Effect.provideService(DeployCredentials, { values: [] }),
-      // SAFETY: the tools use only `refresh` and `redact`.
-      Effect.provideService(Secrets, secrets as SecretsService),
-    );
-
-  const extension = await Effect.runPromise(McpChangeTools.pipe(provided));
-  const changes = await Effect.runPromise(McpChanges.pipe(provided));
-
-  const tool = (name: string): ToolRegistration =>
-    Option.getOrThrowWith(
-      Arr.findFirst(extension, (each) => each.name === name),
-      () => new Error(`no tool ${name}`),
-    );
-
-  return { world, recorded, logged, events, host, tool, changes };
-};
-
-// SAFETY: the tools read only the calling conversation from the invocation's API.
-const api = { conversationId: ROOT_CONVERSATION_ID } as ToolExecutionApi;
-
-type Outcome = Awaited<ReturnType<ToolRegistration["execute"]>>;
-
-const run = (tool: ToolRegistration, args: Readonly<Record<string, unknown>>): Promise<Outcome> =>
-  // SAFETY: the arguments are the tool's JSON parameters.
-  tool.execute(args as never, api, BACKGROUND_CONTEXT);
-
-const text = (result: Outcome): string =>
-  Arr.join(
-    Arr.map(result.output ?? [], (part) => (part.type === "text" ? part.text : "")),
-    "",
-  );
-
-const failure = async (call: Promise<Outcome>) => {
-  const result = await call;
-
-  expect(result.isError).toBe(true);
-
-  return text(result);
-};
-
-const REASON = "Not used by this project";
-
-/** What `settings_reset` does for an MCP field, as `McpChanges.resetField` runs it. */
-const reset = (
-  changes: Awaited<ReturnType<typeof setup>>["changes"],
-  scope: string,
-  fieldName: string,
-) =>
-  Effect.runPromise(
-    changes
-      .resetField({ scope, field: fieldName, reason: REASON, conversation: ROOT_CONVERSATION_ID })
-      .pipe(
-        // SAFETY: `resetField` yields the tool's outcome, whose shape `Outcome` names.
-        Effect.map((result) => ({ ok: true as const, text: text(result as Outcome) })),
-        Effect.catch((error: SettingsAccessError) =>
-          Effect.succeed({ ok: false as const, text: error.message }),
-        ),
-      ),
-  );
+  DEFAULT,
+  DOCS,
+  FILES,
+  REASON,
+  STAGING,
+  failure,
+  field,
+  reset,
+  run,
+  setup,
+  text,
+} from "./settings-mcp.fixture.ts";
 
 describe("the changing tools' properties", () => {
-  it("are three: disable runs alone and is not replayed, the exposure tools run alone and are replayed safely", async () => {
+  it("are four: disable runs alone and is not replayed, enable and the exposure tools run alone and are replayed safely (they may wait for an Approval)", async () => {
     const { tool } = await setup();
 
     const names = [
       "settings_mcp_disable",
+      "settings_mcp_enable",
       "settings_mcp_exposure_set",
       "settings_mcp_tool_exposure_set",
     ];
@@ -412,9 +39,10 @@ describe("the changing tools' properties", () => {
       "sequential",
       "sequential",
       "sequential",
+      "sequential",
     ]);
 
-    expect(Arr.map(names, (name) => tool(name).replay)).toEqual(["unsafe", "safe", "safe"]);
+    expect(Arr.map(names, (name) => tool(name).replay)).toEqual(["unsafe", "safe", "safe", "safe"]);
 
     for (const name of names) {
       expect(tool(name).parameters).toMatchObject({
@@ -641,24 +269,62 @@ describe("settings_mcp_exposure_set", () => {
     expect(world.global).toEqual({ mcp: { servers: { files: FILES } } });
   });
 
-  it("refuses to take a hidden server out of hidden, asking nobody and saving nothing", async () => {
-    const { tool, recorded, events } = await setup({
+  it("asks the user to take a hidden server out of hidden, and writes what they approve, recorded as approved", async () => {
+    const { tool, recorded, asked, world, changeCalls } = await setup({
       global: { mcp: { servers: { files: { ...FILES, exposure: "hidden" } } } },
     });
 
-    const shown = await failure(
-      run(tool("settings_mcp_exposure_set"), {
-        scope: GLOBAL_SETTINGS_SCOPE,
-        name: "files",
-        exposure: "direct",
-        reason: REASON,
-      }),
-    );
+    const result = await run(tool("settings_mcp_exposure_set"), {
+      scope: GLOBAL_SETTINGS_SCOPE,
+      name: "files",
+      exposure: "direct",
+      reason: REASON,
+    });
 
-    expect(shown).toContain("needs the user's Approval");
-    expect(shown).toContain("takes the server out of hidden");
+    expect(result.isError).not.toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ tool: "settings_mcp_exposure_set", reason: REASON });
+    expect(asked[0]?.notes?.join("\n")).toContain("takes the server out of hidden");
+    expect(world.global).toEqual({ mcp: { servers: { files: { ...FILES, exposure: "direct" } } } });
+    expect(recorded).toHaveLength(1);
+    expect(changeCalls).toMatchObject([{ approved: true }]);
+    expect(text(result)).toContain("approved");
+  });
+
+  it("changes nothing when the user declines, and says their reason", async () => {
+    const { tool, recorded, events, world } = await setup({
+      global: { mcp: { servers: { files: { ...FILES, exposure: "hidden" } } } },
+      answers: [{ approve: false, reason: "Keep it hidden" }],
+    });
+
+    const result = await run(tool("settings_mcp_exposure_set"), {
+      scope: GLOBAL_SETTINGS_SCOPE,
+      name: "files",
+      exposure: "direct",
+      reason: REASON,
+    });
+
+    expect(text(result)).toContain("The user declined");
+    expect(text(result)).toContain("Keep it hidden");
     expect(recorded).toEqual([]);
     expect(events).toEqual([]);
+    expect(world.global).toEqual({ mcp: { servers: { files: { ...FILES, exposure: "hidden" } } } });
+  });
+
+  it("makes a narrowing change at once, asking nobody", async () => {
+    const { tool, asked, recorded } = await setup({
+      global: { mcp: { servers: { files: FILES } } },
+    });
+
+    await run(tool("settings_mcp_exposure_set"), {
+      scope: DEFAULT,
+      name: "files",
+      exposure: "hidden",
+      reason: REASON,
+    });
+
+    expect(asked).toEqual([]);
+    expect(recorded).toHaveLength(1);
   });
 
   it("says an exposure in force already is, and names the tools.offered pattern that lifts a tool to direct", async () => {
@@ -686,25 +352,6 @@ describe("settings_mcp_exposure_set", () => {
 
     expect(text(result)).toContain("mcp__files__*");
     expect(text(result)).toContain("lifts a matching tool to direct");
-  });
-});
-
-describe("refuseWidening", () => {
-  it("words a widening kind it does not know as a plain widening, since the kinds cross the RPC", async () => {
-    const check = {
-      environments: [
-        {
-          environment: { id: "default", name: "Default" },
-          reached: true,
-          // A kind a later Registry adds.
-          widening: [JSON.parse('{"kind":"from_a_later_registry"}')],
-        },
-      ],
-    };
-
-    const refused = await Effect.runPromise(refuseWidening(check, "this change").pipe(Effect.flip));
-
-    expect(refused.message).toContain("it makes something reachable that was not");
   });
 });
 
@@ -912,47 +559,45 @@ describe("settings_mcp_tool_exposure_set", () => {
     expect(Object.keys(recorded[0]?.after ?? {})).toEqual(["c_*", "a_*", "b_*"]);
   });
 
-  it("refuses removing a hidden key, loosening one, and putting a non-hidden key ahead of one", async () => {
-    const { tool, recorded } = await setup({ global: { mcp: { servers: { docs: DOCS } } } });
+  it("asks to remove a hidden key, to loosen one and to put a non-hidden key ahead of one, saying why in the card's notes", async () => {
+    const { tool, recorded, asked, world } = await setup({
+      global: { mcp: { servers: { docs: DOCS } } },
+      answers: [{ approve: false }, { approve: false }, { approve: false }],
+    });
 
-    const removed = await failure(
-      run(tool("settings_mcp_tool_exposure_set"), {
-        scope: DEFAULT,
-        name: "docs",
-        tool: "delete_*",
-        exposure: null,
-        reason: REASON,
-      }),
-    );
+    await run(tool("settings_mcp_tool_exposure_set"), {
+      scope: DEFAULT,
+      name: "docs",
+      tool: "delete_*",
+      exposure: null,
+      reason: REASON,
+    });
 
-    expect(removed).toContain('removes the hidden toolExposure key "delete_*"');
+    await run(tool("settings_mcp_tool_exposure_set"), {
+      scope: DEFAULT,
+      name: "docs",
+      tool: "delete_*",
+      exposure: "direct",
+      reason: REASON,
+    });
 
-    expect(
-      await failure(
-        run(tool("settings_mcp_tool_exposure_set"), {
-          scope: DEFAULT,
-          name: "docs",
-          tool: "delete_*",
-          exposure: "direct",
-          reason: REASON,
-        }),
-      ),
-    ).toContain("loosens the hidden toolExposure key");
+    await run(tool("settings_mcp_tool_exposure_set"), {
+      scope: DEFAULT,
+      name: "docs",
+      tool: "get_*",
+      exposure: "direct",
+      before: "delete_*",
+      reason: REASON,
+    });
 
-    expect(
-      await failure(
-        run(tool("settings_mcp_tool_exposure_set"), {
-          scope: DEFAULT,
-          name: "docs",
-          tool: "get_*",
-          exposure: "direct",
-          before: "delete_*",
-          reason: REASON,
-        }),
-      ),
-    ).toContain("ahead of the hidden key");
+    const notes = Arr.map(asked, (each) => (each.notes ?? []).join("\n"));
 
+    expect(notes[0]).toContain('removes the hidden toolExposure key "delete_*"');
+    expect(notes[1]).toContain("loosens the hidden toolExposure key");
+    expect(notes[2]).toContain("ahead of the hidden key");
+    // Declined: nothing is written or recorded.
     expect(recorded).toEqual([]);
+    expect(world.global).toEqual({ mcp: { servers: { docs: DOCS } } });
   });
 
   it("removes a key that is not hidden and says a key already so changes nothing", async () => {
@@ -1030,7 +675,7 @@ describe("settings_reset of an MCP field", () => {
     const done = await reset(changes, DEFAULT, "mcp.servers.files");
 
     expect(done.ok).toBe(false);
-    expect(done.text).toContain("Settings page");
+    expect(done.text).toContain("settings_mcp_remove");
   });
 
   it("refuses a key of the Environment's own entry, pointing to the disable and exposure tools", async () => {
@@ -1046,17 +691,34 @@ describe("settings_reset of an MCP field", () => {
     expect(recorded).toEqual([]);
   });
 
-  it("refuses a reset that falls back to a switched-on server, which needs the user's Approval", async () => {
-    const { changes, recorded, world } = await setup({
+  it("asks before a reset that falls back to a switched-on server, and makes it once approved", async () => {
+    const { changes, recorded, asked, world, changeCalls } = await setup({
       global: { mcp: { servers: { files: FILES } } },
       overrides: { [DEFAULT]: { mcp: { servers: { files: { enabled: false } } } } },
     });
 
     const done = await reset(changes, DEFAULT, field("enabled"));
 
-    expect(done.ok).toBe(false);
-    expect(done.text).toContain("needs the user's Approval");
-    expect(done.text).toContain("switches the server on");
+    expect(done.ok).toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ tool: "settings_reset" });
+    expect(asked[0]?.notes?.join("\n")).toContain("switches the server on");
+    expect(recorded).toHaveLength(1);
+    expect(changeCalls).toMatchObject([{ approved: true }]);
+    expect(world.environments[DEFAULT]?.overrides).toEqual({});
+  });
+
+  it("changes nothing when the user declines that reset", async () => {
+    const { changes, recorded, world } = await setup({
+      global: { mcp: { servers: { files: FILES } } },
+      overrides: { [DEFAULT]: { mcp: { servers: { files: { enabled: false } } } } },
+      answers: [{ approve: false }],
+    });
+
+    const done = await reset(changes, DEFAULT, field("enabled"));
+
+    expect(done.ok).toBe(true);
+    expect(done.text).toContain("The user declined");
     expect(recorded).toEqual([]);
     expect(world.environments[DEFAULT]?.overrides).toEqual({
       mcp: { servers: { files: { enabled: false } } },

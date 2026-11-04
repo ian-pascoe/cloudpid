@@ -183,6 +183,21 @@ describe("toolSummary", () => {
         exposure: null,
       }),
     ).toBe("linear · delete_*: removed at Global");
+    expect(toolSummary("settings_mcp_enable", { scope: "env-1", name: "linear" })).toBe(
+      "linear in env-1",
+    );
+    expect(toolSummary("settings_mcp_add", { scope: "*", name: "linear", entry: {} })).toBe(
+      "linear at Global",
+    );
+    expect(
+      toolSummary("settings_mcp_add", { scope: "env-1", name: "linear", from_repo: "app" }),
+    ).toBe("linear from app in env-1");
+    expect(toolSummary("settings_mcp_update", { scope: "env-1", name: "linear", set: {} })).toBe(
+      "linear in env-1",
+    );
+    expect(toolSummary("settings_mcp_remove", { scope: "env-1", name: "linear" })).toBe(
+      "linear in env-1",
+    );
     expect(toolSummary("settings_mcp_disable", { scope: "*" })).toBeUndefined();
     expect(toolSummary("settings_compaction_set", { reason: "more room\nplease" })).toBe(
       "more room",

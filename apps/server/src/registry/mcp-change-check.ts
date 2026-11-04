@@ -14,12 +14,19 @@ import {
   sortedJson,
   withOverrideFields,
 } from "@cloudpid/config";
-import type { McpFieldChange, SettingsMcpChangeCheck, SettingsMcpReach } from "@cloudpid/protocol";
+import type {
+  McpChangeGuard,
+  McpFieldChange,
+  SettingsMcpChangeCheck,
+  SettingsMcpReach,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import type { McpSetStore } from "./mcp-registry.ts";
 import { mcpRepoLayers } from "./mcp-repo-files.ts";
 import { mcpServerNamed, resolvedMcpServers } from "./mcp-set.ts";
+import { type McpSettingsStore, mcpNameKinds } from "./mcp-settings-view.ts";
+import type { SettingsGuard } from "./settings-changes.ts";
 import {
   mcpLayersOf,
   readSettings,
@@ -38,14 +45,16 @@ const sameEntry = (left: McpResolvedServer | undefined, right: McpResolvedServer
  * Environment's set before and after. Null when no Environment has the id.
  */
 export const mcpChangeCheck = (
-  store: McpSetStore & SettingsStore,
+  store: McpSetStore & SettingsStore & McpSettingsStore,
   input: {
     readonly environment: string | undefined;
     readonly name: string;
     readonly changes: ReadonlyArray<McpFieldChange>;
+    /** The `${NAME}`s the change's entry reads: each Environment reached says what they are there. */
+    readonly reads?: ReadonlyArray<string> | undefined;
   },
 ): SettingsMcpChangeCheck | null => {
-  const { environment, name, changes } = input;
+  const { environment, name, changes, reads } = input;
 
   const reach = (
     id: string,
@@ -63,6 +72,7 @@ export const mcpChangeCheck = (
           environment: { id, name: label },
           reached: !sameEntry(was, now),
           widening: checkMcpWidening(was, now),
+          reads: reads === undefined ? undefined : mcpNameKinds(store, id, reads),
         };
   };
 
@@ -140,3 +150,65 @@ export const mcpDefinedIn = (
       ? Result.failVoid
       : Result.succeed({ id: each.id, name: each.name });
   });
+
+/**
+ * Why the agent's change `changes` to server `guard.name`, at `environment` (absent: Global), is refused by what the Registry
+ * checks again in the transaction that writes it (`docs/architecture/mcp-configuration.md` → Approval, Applying): it widens
+ * some Environment's set when it was asked as one that narrows (a Global hide or the owner's save landed between the check and
+ * the write), or an entry's `${NAME}` no longer resolves in the Environment. Null when it passes. Never echoes a value.
+ */
+export const mcpGuardRefusal = (
+  store: McpSetStore & SettingsStore & McpSettingsStore,
+  input: {
+    readonly environment: string | undefined;
+    readonly guard: McpChangeGuard;
+    readonly changes: ReadonlyArray<McpFieldChange>;
+  },
+): string | null => {
+  const { environment, guard, changes } = input;
+
+  if (guard.widening === true) {
+    const check = mcpChangeCheck(store, { environment, name: guard.name, changes });
+
+    const widened = Arr.filter(check?.environments ?? [], (each) => each.widening.length > 0);
+
+    if (widened.length > 0) {
+      return `the change would now make something reachable that is switched off or hidden in ${Arr.join(
+        Arr.map(widened, (each) => JSON.stringify(each.environment.name)),
+        ", ",
+      )}: it needs the user's Approval, and something changed since it was checked as narrowing. Call again.`;
+    }
+  }
+
+  if (environment !== undefined && guard.reads !== undefined && guard.reads.length > 0) {
+    const missing = Arr.filter(
+      mcpNameKinds(store, environment, guard.reads),
+      ({ kind }) => kind === "missing",
+    );
+
+    if (missing.length > 0) {
+      return `${Arr.join(
+        Arr.map(missing, ({ name }) => "${" + name + "}"),
+        ", ",
+      )} is neither a Secret nor a Variable of this Environment (or Global) now: keep it first, then ask again.`;
+    }
+  }
+
+  return null;
+};
+
+/** `mcpGuardRefusal` as the `changeSettings` transaction runs it, over the fields that would change. */
+export const mcpGuard =
+  (
+    store: McpSetStore & SettingsStore & McpSettingsStore,
+    environment: string | undefined,
+    guard: McpChangeGuard,
+  ): SettingsGuard =>
+  (differing) =>
+    mcpGuardRefusal(store, {
+      environment,
+      guard,
+      changes: Arr.map(differing, ({ field, value, reset }): McpFieldChange =>
+        reset === true ? { field, value: null, reset } : { field, value },
+      ),
+    });

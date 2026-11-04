@@ -582,6 +582,9 @@ export const SessionLive = Session.make(
           registry: registries.getByName(REGISTRY_NAME),
           session: name,
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
+          workspace: Effect.tryPromise(() => placement()).pipe(
+            Effect.map(({ workspace: id, object }) => (id === null ? null : object)),
+          ),
         });
 
         // The agent's asks that the owner sign in to an MCP server: durable, shown on the sockets, pushed once for each

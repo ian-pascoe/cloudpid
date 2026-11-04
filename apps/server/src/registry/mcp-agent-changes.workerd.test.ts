@@ -7,7 +7,7 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
-import { DEFAULT_ENVIRONMENT, SETTINGS_SCOPE } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, type McpChangeGuard, SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
@@ -15,7 +15,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
-import { mcpChangeCheck } from "./mcp-change-check.ts";
+import { mcpChangeCheck, mcpGuard } from "./mcp-change-check.ts";
 import { mcpSettingsView } from "./mcp-settings-view.ts";
 import { readSettingsOverrides, updateSettingsOverrides, writeSettings } from "./settings.ts";
 import {
@@ -28,6 +28,9 @@ import { noSkills, type TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
 
 const STAGING = "5a5a5a5a";
+
+/** A sealed value as the store keeps it: nothing here may ever show it. */
+const SEALED = { version: 1, iv: "SEALED-iv", ciphertext: "SEALED-text" } as const;
 
 const author: AgentChangeAuthor = {
   session: "s-1",
@@ -50,10 +53,12 @@ const inRegistry = <A>(
     readonly setOverrides: (environment: string, overrides: Schema.Json) => void;
     readonly changeGlobal: (
       changes: ReadonlyArray<SettingsFieldChange>,
+      guard?: McpChangeGuard,
     ) => ReturnType<typeof changeSettings>;
     readonly changeAt: (
       environment: string,
       changes: ReadonlyArray<SettingsFieldChange>,
+      guard?: McpChangeGuard,
     ) => ReturnType<typeof changeSettingsOverrides>;
     readonly revertGlobal: (id: number) => ReturnType<typeof revertSettingsChange>;
     readonly revertAt: (environment: string, id: number) => ReturnType<typeof revertAgentChange>;
@@ -78,15 +83,23 @@ const inRegistry = <A>(
 
         if (saved === null || Result.isFailure(saved)) throw new Error("bad Overrides");
       },
-      changeGlobal: (wanted) =>
-        changeSettings(storage, store, changes, { changes: wanted, author }, 1_000),
-      changeAt: (environment, wanted) =>
+      changeGlobal: (wanted, guard) =>
+        changeSettings(
+          storage,
+          store,
+          changes,
+          { changes: wanted, author },
+          1_000,
+          guard === undefined ? undefined : mcpGuard(store, undefined, guard),
+        ),
+      changeAt: (environment, wanted, guard) =>
         changeSettingsOverrides(
           storage,
           store,
           changes,
           { environment, changes: wanted, author },
           1_000,
+          guard === undefined ? undefined : mcpGuard(store, environment, guard),
         ),
       revertGlobal: (id) => revertSettingsChange(storage, store, changes, { id }, 2_000),
       revertAt: (environment, id) =>
@@ -443,5 +456,133 @@ describe("mcpSettingsView of a name Global does not have", () => {
 
       expect(view?.servers).toEqual([]);
       expect(view?.definedIn).toEqual([{ id: STAGING, name: "Staging" }]);
+    }));
+});
+
+describe("mcpChangeCheck's reads", () => {
+  it("says what each ${NAME} is at every Environment reached, by name only, a Secret winning over a Variable", () =>
+    inRegistry(({ store, setGlobal }) => {
+      setGlobal({ mcp: { servers: { docs: DOCS } } });
+      store.putEnvironmentSecret(
+        { environment: STAGING, name: "STAGING_TOKEN", sealed: SEALED },
+        1,
+      );
+      store.putEnvironmentSecret({ environment: null, name: "GLOBAL_TOKEN", sealed: SEALED }, 1);
+
+      const check = mcpChangeCheck(store, {
+        environment: undefined,
+        name: "docs",
+        changes: [{ field: "mcp.servers.docs", value: { url: "https://docs.example/mcp" } }],
+        reads: ["STAGING_TOKEN", "GLOBAL_TOKEN", "NOWHERE"],
+      });
+
+      const staging = check?.environments.find((each) => each.environment.id === STAGING);
+      const other = check?.environments.find((each) => each.environment.id === DEFAULT_ENVIRONMENT);
+
+      expect(staging?.reads).toEqual([
+        { name: "STAGING_TOKEN", kind: "secret" },
+        { name: "GLOBAL_TOKEN", kind: "secret" },
+        { name: "NOWHERE", kind: "missing" },
+      ]);
+
+      expect(other?.reads).toEqual([
+        { name: "STAGING_TOKEN", kind: "missing" },
+        { name: "GLOBAL_TOKEN", kind: "secret" },
+        { name: "NOWHERE", kind: "missing" },
+      ]);
+
+      expect(JSON.stringify(check)).not.toContain("SEALED");
+    }));
+
+  it("is absent when no reads are asked", () =>
+    inRegistry(({ store, setGlobal }) => {
+      setGlobal({ mcp: { servers: { files: FILES } } });
+
+      const check = mcpChangeCheck(store, {
+        environment: STAGING,
+        name: "files",
+        changes: [{ field: field("enabled"), value: false }],
+      });
+
+      expect(check?.environments[0]?.reads).toBeUndefined();
+    }));
+});
+
+describe("the guard of an agent's MCP change", () => {
+  it("refuses, writing and recording nothing, a change made without asking that now widens (the owner's save landed since the check)", () =>
+    inRegistry(({ setGlobal, changeGlobal, changes }) => {
+      // Checked as narrowing (a switch-off); the owner switched the server off in a save, so this change now switches it on.
+      setGlobal({ mcp: { servers: { files: { ...FILES, enabled: false } } } });
+
+      const answer = changeGlobal([{ field: field("enabled"), value: true }], {
+        name: "files",
+        widening: true,
+      });
+
+      expect(answer).toMatchObject({ status: "rejected" });
+      expect(JSON.stringify(answer)).toContain("needs the user's Approval");
+      expect(changes.list(SETTINGS_SCOPE)).toEqual([]);
+    }));
+
+  it("lets the same change through when it was asked (an approved change sets no widening guard)", () =>
+    inRegistry(({ setGlobal, changeGlobal }) => {
+      setGlobal({ mcp: { servers: { files: { ...FILES, enabled: false } } } });
+
+      changed(changeGlobal([{ field: field("enabled"), value: true }], { name: "files" }));
+    }));
+
+  it("lets a narrowing change through with the guard set", () =>
+    inRegistry(({ setGlobal, changeGlobal }) => {
+      setGlobal({ mcp: { servers: { files: FILES } } });
+
+      changed(
+        changeGlobal([{ field: field("enabled"), value: false }], {
+          name: "files",
+          widening: true,
+        }),
+      );
+    }));
+
+  it("refuses an entry at an Environment whose ${NAME} is neither a Secret nor a Variable there, naming the name and never a value", () =>
+    inRegistry(({ store, changeAt, setOverrides }) => {
+      store.putEnvironmentSecret({ environment: STAGING, name: "KEPT", sealed: SEALED }, 1);
+
+      const entry = { url: "https://docs.example/mcp", headers: { "X-Org": "${ORG_ID}" } };
+
+      const refused = changeAt(STAGING, [{ field: "mcp.servers.docs", value: entry }], {
+        name: "docs",
+        reads: ["ORG_ID"],
+      });
+
+      expect(refused).toMatchObject({ status: "rejected" });
+      expect(JSON.stringify(refused)).toContain("ORG_ID");
+      expect(JSON.stringify(refused)).not.toContain("SEALED");
+
+      // A Secret kept there passes, and the entry is written.
+      const kept = { url: "https://docs.example/mcp", headers: { "X-Org": "${KEPT}" } };
+
+      changed(
+        changeAt(STAGING, [{ field: "mcp.servers.docs", value: kept }], {
+          name: "docs",
+          reads: ["KEPT"],
+        }),
+      );
+
+      setOverrides(STAGING, { mcp: { servers: { docs: kept } } });
+    }));
+
+  it("never checks the ${NAME}s of an entry at Global, where each Environment has its own", () =>
+    inRegistry(({ changeGlobal }) => {
+      changed(
+        changeGlobal(
+          [
+            {
+              field: "mcp.servers.docs",
+              value: { url: "https://docs.example/mcp", headers: { A: "${NOWHERE}" } },
+            },
+          ],
+          { name: "docs", reads: ["NOWHERE"] },
+        ),
+      );
     }));
 });

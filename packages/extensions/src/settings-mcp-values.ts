@@ -171,7 +171,7 @@ const decide = (
   });
 
 /** The server's inventory as a value gives it: from the host's row, or what the entry alone says when it has none. */
-const inventoryOutput = (
+export const inventoryOutput = (
   entry: SettingsMcpServer,
   offered: ReadonlyArray<string>,
   inventory: McpServerInventory | undefined,

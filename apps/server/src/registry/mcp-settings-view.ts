@@ -125,6 +125,21 @@ const kindOf = (names: Names, name: string, secrets: boolean): SettingsMcpRead["
   return names.variables.has(name) ? "variable" : "missing";
 };
 
+/**
+ * What each of `names` is where an agent's MCP entry at `environment` (`undefined`: Global, which has no Secrets or Variables
+ * of its own to resolve against but each Environment's) reads it: a Secret, a Variable or missing, by name only. An MCP
+ * server of the Settings reads Secrets, and a Secret wins over a Variable of the same name.
+ */
+export const mcpNameKinds = (
+  store: McpSettingsStore,
+  environment: string,
+  names: ReadonlyArray<string>,
+): ReadonlyArray<{ readonly name: string; readonly kind: SettingsMcpRead["kind"] }> => {
+  const held = environmentNames(store, environment);
+
+  return Arr.map(names, (name) => ({ name, kind: kindOf(held, name, true) }));
+};
+
 /** Each `${NAME}` the server's entry reads, by name, marked by what `names` has; at Global, with where it is missing. */
 const readsOf = (
   resolved: McpResolvedServer,

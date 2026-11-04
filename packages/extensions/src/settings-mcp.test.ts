@@ -29,6 +29,8 @@ import type { McpHostClientService } from "./mcp/client.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { runSized } from "./program.fixture.ts";
 import { storedBytes } from "./stored-bytes.ts";
+import { Approvals } from "./approvals.ts";
+import { unusedApprovals } from "./approvals.fixture.ts";
 import { AgentChangeLog, DeployCredentials } from "./environment.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import {
@@ -286,6 +288,7 @@ const toolsOver = async (
       Effect.provideService(AgentChangeLog, { record: () => Effect.die("No Settings") }),
       Effect.provideService(DeployCredentials, { values: [] }),
       Effect.provideService(Secrets, secretsOf()),
+      Effect.provideService(Approvals, unusedApprovals),
     ),
   );
 

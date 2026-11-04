@@ -103,6 +103,7 @@ import {
   scopeName,
   scopeWhere,
   SettingsAccess,
+  settingsTarget,
   SettingsAccessError,
   SettingsChanges,
   type SettingsFieldChange,
@@ -267,12 +268,6 @@ const WORKSPACES_LIMIT: SettingsLimit = {
 };
 
 const SETTINGS_LIMITS: ReadonlyArray<SettingsLimit> = [SPEND_LIMIT, DEPTH_LIMIT, WORKSPACES_LIMIT];
-
-/** The Settings a card names as the target: Global's, or an Environment's by name. */
-const settingsTarget = (view: SettingsView): string =>
-  isGlobalView(view)
-    ? "the Global Settings"
-    : `Environment ${JSON.stringify(view.name)}'s Settings`;
 
 /** What a Limit at an Environment was when the owner was asked: its value in force, and whether it was inherited. */
 const LimitAtEnvironment = Schema.Struct({
@@ -712,7 +707,7 @@ export const ApprovalTools: Effect.Effect<
         `Resetting a Limit (${Arr.join(
           Arr.map(SETTINGS_LIMITS, (limit) => limit.field),
           ", ",
-        )}) waits for the user's Approval at either Scope, as the Limit tools do: ${APPROVAL} Any other field is reset at once. An MCP server's field (mcp.servers.<name>.enabled, .exposure or .toolExposure) is reset only at an Environment, and only where it is an adjustment of a server Global or a Repo defines (settings_mcp_list shows the fields it holds); it is refused at "*", for a key of the Environment's own entry (use settings_mcp_disable or the exposure tools) and for mcp.servers.<name> itself (removing a server is made by the user on the Settings page for now). A reset that would make a switched-off server or a hidden tool reachable again needs the user's Approval and is refused.`,
+        )}) waits for the user's Approval at either Scope, as the Limit tools do: ${APPROVAL} Any other field is reset at once. An MCP server's field (mcp.servers.<name>.enabled, .exposure or .toolExposure) is reset only at an Environment, and only where it is an adjustment of a server Global or a Repo defines (settings_mcp_list shows the fields it holds); it is refused at "*", for a key of the Environment's own entry (use settings_mcp_disable or the exposure tools) and for mcp.servers.<name> itself (settings_mcp_remove removes a server). A reset that would make a switched-off server or a hidden tool reachable again waits for the user's Approval, as settings_mcp_enable does.`,
         CHANGE_NOTE,
       ],
       "\n\n",
@@ -747,9 +742,9 @@ export const ApprovalTools: Effect.Effect<
           });
         }
 
-        // An MCP server's adjustment: only at an Environment, and never one that falls back to something reachable.
+        // An MCP server's adjustment: only at an Environment; one that falls back to something reachable waits for the user's Approval.
         if (field.startsWith("mcp.")) {
-          return yield* mcp.resetField({ scope, field, reason, conversation: api.conversationId });
+          return yield* mcp.resetField({ scope, field, reason, api });
         }
 
         const view = yield* access.get(scope);

@@ -84,7 +84,7 @@ export const sessionSettingsAccess = ({
       : Effect.suspend(() => registry.sessionSettings({ session })).pipe(
           Effect.map(({ environment }) => environment),
         ),
-  change: ({ scope, changes, author }) =>
+  change: ({ scope, changes, author, guard }) =>
     Effect.gen(function* () {
       if (session === undefined) {
         return yield* SettingsAccessError.make({
@@ -96,6 +96,7 @@ export const sessionSettingsAccess = ({
         environment: scope === GLOBAL_SETTINGS_SCOPE ? undefined : scope,
         changes,
         author: { session, ...author },
+        guard,
       });
 
       switch (answer.status) {
