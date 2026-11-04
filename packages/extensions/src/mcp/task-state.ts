@@ -98,7 +98,13 @@ export type McpTaskRecord = {
   conn: string;
   identity?: string;
   source?: { kind: string; slug?: string };
-  transport: "http";
+  transport: "http" | "stdio";
+  /**
+   * A stdio server's task: the Workspace (`ws:<id>`) whose Container runs its process, which `tasks/*` requests go to
+   * (never the Session's), and the process's spawn id when the task started: another one is a process that ended.
+   */
+  workspace?: string;
+  spawn?: string;
   /** Made by a `codemode` script's nested call: its end is delivered to the script's conversation like any other. */
   nested?: boolean;
   /** The MCP sign-in id of the token the task was started with. */

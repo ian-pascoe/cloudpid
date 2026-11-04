@@ -339,6 +339,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
             pollIntervalMs: record.pollIntervalMs,
             background: true,
             ownerOnly: record.status === "input_required",
+            stdio: record.transport === "stdio",
             jitter: Math.random(),
           });
 

@@ -40,15 +40,20 @@ export type Cadence = {
   readonly background: boolean;
   /** Whether every question the task waits on is the owner's: nothing the server does changes it soon. */
   readonly ownerOnly: boolean;
+  /** Whether the server is a stdio one: its polls are at most a minute apart. */
+  readonly stdio?: boolean | undefined;
   /** A number in `[0, 1)` for the jitter, so the rule stays pure. */
   readonly jitter: number;
 };
 
+/** The longest wait between a stdio task's polls: a minute. */
+export const MCP_TASK_STDIO_POLL_MAX_MS = 60_000;
+
 /**
  * How long to wait before the next `tasks/get`: the server's `pollIntervalMs` (clamped, read again from each answer);
  * without one 2 s until the task is a minute old, 5 s until 10 minutes, then 30 s. At least 5 s in the background, at
- * least 30 s while every question waits on the owner, and 0–10 % more, so a Session's tasks do not poll in step. (At most
- * 60 s for a stdio server comes with stdio tasks.)
+ * least 30 s while every question waits on the owner, and 0–10 % more, so a Session's tasks do not poll in step. At most
+ * 60 s for a stdio server, whose polls are uses of its Container.
  */
 export const pollDelayMs = (cadence: Cadence): number => {
   let base =
@@ -63,6 +68,8 @@ export const pollDelayMs = (cadence: Cadence): number => {
   if (cadence.background) base = Math.max(base, 5000);
 
   if (cadence.ownerOnly) base = Math.max(base, 30_000);
+
+  if (cadence.stdio === true) base = Math.min(base, MCP_TASK_STDIO_POLL_MAX_MS);
 
   return Math.round(base * (1 + 0.1 * cadence.jitter));
 };
@@ -151,8 +158,60 @@ const failedPoll = (
     Match.orElse(() => ({ kind: "retry", why: "the server could not be reached" }) as const),
   );
 
-/** What `answer` of a `tasks/get` comes to. */
-export const readPoll = (answer: McpHostRequestResult | HostLost): PollOutcome => {
+/**
+ * What a stdio task's poll says once it is read as the process's: a task lives in the process that started it, so a poll
+ * answered by another spawn, a `-32602` (a process that restarted cannot know it), a Container that is stopped (the poll
+ * never starts it) or a Workspace that is gone says the task is lost, `unknown`, with the reason. A poll that was only cut
+ * is retried: the next one finds the spawn.
+ */
+const readStdioPoll = (
+  record: Pick<McpTaskRecord, "spawn">,
+  answer: McpHostRequestResult | HostLost,
+  outcome: PollOutcome,
+): PollOutcome => {
+  if (outcome.kind === "state") {
+    const spawn = Predicate.isTagged(answer, "TaskState") ? answer.spawn : undefined;
+
+    return record.spawn !== undefined && spawn !== undefined && spawn !== record.spawn
+      ? { kind: "unknown", reason: "the server's process was restarted, which ended the task" }
+      : outcome;
+  }
+
+  if (outcome.kind === "gone") {
+    return { kind: "unknown", reason: "the server's process no longer knows it: it was restarted" };
+  }
+
+  if (Predicate.isTagged(answer, "CallFailed") && Predicate.isTagged(answer.error, "Unreachable")) {
+    if (answer.error.stopped === true) {
+      return {
+        kind: "unknown",
+        reason: "the Workspace's Container stopped, which ended the server's process",
+      };
+    }
+
+    if (answer.error.status === 404) {
+      return { kind: "unknown", reason: "the Workspace the server ran in no longer exists" };
+    }
+  }
+
+  return outcome;
+};
+
+/**
+ * What `answer` of a `tasks/get` comes to. `record`, for a stdio server's task, is what the answer is read against
+ * (`readStdioPoll`).
+ */
+export const readPoll = (
+  answer: McpHostRequestResult | HostLost,
+  record?: Pick<McpTaskRecord, "transport" | "spawn">,
+): PollOutcome => {
+  const outcome = readHttpPoll(answer);
+
+  return record?.transport === "stdio" ? readStdioPoll(record, answer, outcome) : outcome;
+};
+
+/** What `answer` of a `tasks/get` comes to, as an HTTP server's. */
+const readHttpPoll = (answer: McpHostRequestResult | HostLost): PollOutcome => {
   if (Predicate.isTagged(answer, "TaskState")) {
     return { kind: "state", snapshot: answer.task, result: answer };
   }
@@ -214,12 +273,18 @@ export const detachedText = (record: McpTaskRecord): string => {
     record.status === "input_required" ? "waiting for input" : "working"
   } after ${durationText(record.windowMs)}.`;
 
+  // A stdio server's task lives in its Workspace's Container, which stops when it has been idle for a while.
+  const container =
+    record.transport === "stdio"
+      ? ` ${record.server} runs in the Workspace's Container: if the Container stops (an hour with no owner or agent activity, or a restart), the task is lost and you are told it is unknown.`
+      : "";
+
   // A script's call has no result to wait for: it ends with this, and the conversation is told when the task does.
   return record.nested === true
     ? `${standing} This call returns without its result, and the task goes on in the background: the conversation is told when it ends. ` +
-        `mcp_task_wait waits for it (task "${record.handle}"), mcp_task_cancel stops it, mcp_tasks lists the conversation's MCP tasks; tool_search loads them.`
+        `mcp_task_wait waits for it (task "${record.handle}"), mcp_task_cancel stops it, mcp_tasks lists the conversation's MCP tasks; tool_search loads them.${container}`
     : `${standing} It goes on in the background and you are told when it ends. ` +
-        `mcp_task_wait waits for it now (task "${record.handle}"), mcp_task_cancel stops it, mcp_tasks lists your MCP tasks.`;
+        `mcp_task_wait waits for it now (task "${record.handle}"), mcp_task_cancel stops it, mcp_tasks lists your MCP tasks.${container}`;
 };
 
 /** The header of the entry that tells the agent a task ended: cloudpid's words only, never the server's text. */

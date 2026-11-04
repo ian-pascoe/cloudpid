@@ -62,7 +62,13 @@ import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
 import type { McpTaskFollower } from "./task-follow.ts";
-import { followInline, recordOfCall, startTask, type TaskCall } from "./task-inline.ts";
+import {
+  followInline,
+  recordOfCall,
+  startTask,
+  type TaskCall,
+  type TaskStart,
+} from "./task-inline.ts";
 import { windowMsOf } from "./task-policy.ts";
 import type { McpTasksOptions } from "./task-port.ts";
 import type { McpResultPool } from "./task-results.ts";
@@ -331,8 +337,8 @@ export type McpTasking = {
 
 /**
  * Whether this call is offered an MCP task (`allowTask`): the one place the line is drawn. An agent's call (the root's, a
- * subagent's, or a `codemode` script's nested call) to an HTTP server, while the Session and the server are under their
- * caps; an App View's call comes with #498.
+ * subagent's, or a `codemode` script's nested call) to an HTTP server or a stdio one, while the Session and the server are
+ * under their caps; an App View's call comes with #498.
  */
 export const followsTasks = async (
   exchange: Exchange,
@@ -340,8 +346,6 @@ export const followsTasks = async (
   context: Context,
 ): Promise<boolean> => {
   if (exchange.tasking === undefined || exchange.subject !== "tool") return false;
-
-  if (exchange.server.server.type === "stdio") return false;
 
   const state = await api.snapshot(McpTasksDoc, context).catch(() => undefined);
 
@@ -712,13 +716,21 @@ export const send = async <A>(
       const following = taskCall();
 
       if (Predicate.isTagged(result, "Task") && following !== undefined) {
-        const record = await startTask(following, result, {
+        const start: Mutable<TaskStart> = {
           server: server.name,
           tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
           modelTool: tool,
           windowMs: following.tasks.timing?.windowMs ?? windowMsOf(server.server.timeout),
           source: server.source,
-        });
+        };
+
+        // A stdio server's task is the Workspace's it was started in.
+        if (server.server.type === "stdio" && workspace !== undefined) {
+          start.transport = "stdio";
+          start.workspace = workspace;
+        }
+
+        const record = await startTask(following, result, start);
 
         return failed(await followInline(following, record));
       }

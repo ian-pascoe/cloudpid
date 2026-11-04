@@ -24,7 +24,6 @@ import {
   type McpHostRequestContext,
   type McpHostRequestHooks,
   type McpHostRequestResult,
-  HostUnsupported,
   isMcpHostTaskRequest,
   NotAllowed,
   ServerChanged,
@@ -183,16 +182,6 @@ export const resolve = (
       );
     }
 
-    // MCP tasks do not run on stdio servers yet (#494); a stdio call is made as it always was.
-    if (reach === "stdio" && task !== undefined) {
-      return Result.fail(
-        HostUnsupported.make({
-          message: `MCP server ${name} runs in a Workspace; MCP tasks on stdio servers are not supported yet`,
-          op: task.op,
-        }),
-      );
-    }
-
     // A stdio server runs in the Workspace of the caller: with none named, there is no Container to call it in.
     const workspace = reach === "stdio" ? (ctx.workspace ?? "") : undefined;
 
@@ -261,11 +250,12 @@ const blockedError = (
 /** `resolved`'s server's target and access, or why a request is not sent to it. */
 export const reachServer = (
   resolved: Resolved,
+  options: { readonly start?: boolean } = {},
 ): Effect.Effect<Result.Result<Reached, Refused>, never, McpDiscoveryServices> =>
   Effect.gen(function* () {
     const { environment, view, workspace } = resolved;
     const { server } = view;
-    const target = yield* targetOf(environment, server, workspace);
+    const target = yield* targetOf(environment, server, workspace, options.start ?? true);
 
     if (Result.isFailure(target)) {
       return Result.fail(callFailed(Unreachable.make({ message: target.failure.message })));

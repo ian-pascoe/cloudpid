@@ -107,6 +107,15 @@ const completed = (
   } as typeof McpEngineRequestResult.Encoded,
 });
 
+/** A task the server started, as the engine reports it. */
+const TASK = {
+  taskId: "task-1",
+  status: "working",
+  createdAt: "2026-01-01T00:00:00Z",
+  lastUpdatedAt: "2026-01-01T00:00:00Z",
+  ttlMs: 60_000,
+} as const;
+
 const caller = (workspace: string) => ({ session: "s-1", conversation: "1", workspace });
 
 const start = (host: Host, workspace: string = WORKSPACE, more: Partial<McpRequestStart> = {}) =>
@@ -545,29 +554,97 @@ describe("a call", () => {
     expect(sent?.request).toMatchObject({ ctx: { workspace: WORKSPACE } });
   });
 
-  it("is never offered an MCP task, and a task request for it is unsupported until #494, sending nothing", async () => {
+  it("is offered an MCP task like an HTTP server's call, which comes back with its spawn", async () => {
     const host = await discovered(["search"]);
 
-    await host.scriptRequest(keyOf("local"), [completed("found")]);
+    await host.scriptRequest(keyOf("local"), [
+      {
+        // SAFETY: a task the server started, as the engine reports it, with the child's spawn id.
+        result: {
+          kind: "task",
+          task: TASK,
+          state: {},
+          spawn: "spawn-1",
+        } as typeof McpEngineRequestResult.Encoded,
+      },
+    ]);
 
     const offered = call("local", "search");
 
-    await host.request({ ...offered, ctx: { ...offered.ctx, allowTask: true } }, {});
+    expect(
+      await host.request({ ...offered, ctx: { ...offered.ctx, allowTask: true } }, {}),
+    ).toMatchObject({ _tag: "Task", spawn: "spawn-1" });
+    expect((await host.engineRequests())[0]?.request.ctx).toMatchObject({ allowTask: true });
+    expect((await host.engineRequests())[0]?.target).toMatchObject({ start: true });
+  });
 
-    expect((await host.engineRequests())[0]?.request.ctx).not.toHaveProperty("allowTask");
+  it("answers a task's requests in the Workspace the request names, and never starts its Container", async () => {
+    const host = await discovered(["search"]);
+
+    await host.scriptRequest(keyOf("local"), [
+      {
+        // SAFETY: a task's state, as the engine reports it.
+        result: {
+          kind: "task_state",
+          task: TASK,
+          fetchedAt: Date.now(),
+          state: {},
+          spawn: "spawn-1",
+        } as typeof McpEngineRequestResult.Encoded,
+      },
+      // SAFETY: an acknowledgement, as the engine reports it.
+      { result: { kind: "task_ack", state: {} } as typeof McpEngineRequestResult.Encoded },
+    ]);
+
+    const ctx = { ...call("local", "search").ctx, workspace: ELSEWHERE };
+
+    const got = await host.request(
+      {
+        op: "tasks/get",
+        server: "local",
+        params: { taskId: "task-1", tool: "search", conn: "conn-local" },
+        ctx,
+      },
+      {},
+    );
+
+    expect(got).toMatchObject({ _tag: "TaskState", spawn: "spawn-1" });
+
+    const cancelled = await host.request(
+      {
+        op: "tasks/cancel",
+        server: "local",
+        params: { taskId: "task-1", tool: "search", conn: "conn-local" },
+        ctx,
+      },
+      {},
+    );
+
+    expect(cancelled).toMatchObject({ _tag: "TaskAck" });
+
+    const sent = (await host.engineRequests()).slice(-2);
+
+    expect(sent.map((each) => each.target)).toEqual([
+      expect.objectContaining({ kind: "stdio", workspace: ELSEWHERE, start: false }),
+      expect.objectContaining({ kind: "stdio", workspace: ELSEWHERE, start: false }),
+    ]);
+  });
+
+  it("refuses a task request that names no Workspace, sending nothing", async () => {
+    const host = await discovered(["search"]);
 
     const asked = await host.request(
       {
         op: "tasks/get",
         server: "local",
         params: { taskId: "task-1", tool: "search", conn: "conn-local" },
-        ctx: offered.ctx,
+        ctx: call("local", "search", "").ctx,
       },
       {},
     );
 
-    expect(asked).toMatchObject({ _tag: "HostUnsupported", op: "tasks/get" });
-    expect(await host.engineRequests()).toHaveLength(1);
+    expect(asked).toMatchObject({ _tag: "NotAllowed" });
+    expect(await host.engineRequests()).toHaveLength(0);
   });
 
   it("is refused when it names no Workspace: a stdio server runs in the caller's", async () => {

@@ -34,7 +34,7 @@ export const pollOnce = async (
     client.request(request, { untilAborted: () => abortedBy(stop === undefined ? [] : [stop]) }),
   );
 
-  const outcome = readPoll(answer);
+  const outcome = readPoll(answer, record);
 
   return outcome.kind === "state" && redact !== undefined
     ? { ...outcome, snapshot: await redactedSnapshot(outcome.snapshot, redact) }
@@ -59,7 +59,7 @@ const redactedSnapshot = async (
 /** What a `tasks/cancel` is made of: a record, or what a call holds of a task it could not record. */
 export type CancelTarget = Pick<
   McpTaskRecord,
-  "handle" | "taskId" | "server" | "tool" | "conn" | "callId" | "conversation"
+  "handle" | "taskId" | "server" | "tool" | "conn" | "callId" | "conversation" | "workspace"
 >;
 
 /**

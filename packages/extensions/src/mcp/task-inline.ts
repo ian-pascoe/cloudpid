@@ -79,6 +79,9 @@ export type TaskStart = {
   readonly modelTool: string;
   readonly windowMs: number;
   readonly source?: McpTaskDraft["source"];
+  /** `stdio`, with the Workspace whose Container runs the server; absent for an HTTP server's. */
+  readonly transport?: "stdio";
+  readonly workspace?: string;
 };
 
 /**
@@ -99,7 +102,7 @@ export const startTask = async (
     tool: start.tool,
     modelTool: start.modelTool,
     conn: started.conn,
-    transport: "http",
+    transport: start.transport ?? "http",
     conversation: api.conversationId,
     agent: call.agent,
     callId: api.callId,
@@ -111,6 +114,10 @@ export const startTask = async (
   };
 
   if (call.caller === "script") draft.nested = true;
+
+  if (start.workspace !== undefined) draft.workspace = start.workspace;
+
+  if (started.spawn !== undefined) draft.spawn = started.spawn;
 
   if (started.identity !== undefined) draft.identity = started.identity;
 
@@ -358,6 +365,7 @@ export const followInline = async (call: TaskCall, first: McpTaskRecord): Promis
         pollIntervalMs: record.pollIntervalMs,
         background: false,
         ownerOnly: record.status === "input_required",
+        stdio: record.transport === "stdio",
         jitter: Math.random(),
       });
 

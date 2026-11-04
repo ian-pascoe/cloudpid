@@ -48,10 +48,13 @@ export type McpTasksOptions = {
   readonly redact?: ((text: string) => Promise<string>) | undefined;
 };
 
-/** The context of a `tasks/*` request for `record`: the agent's, in the conversation that started it. */
+/**
+ * The context of a `tasks/*` request for `record`: the agent's, in the conversation that started it, and for a stdio
+ * server's task in the Workspace whose Container runs it.
+ */
 export const taskContext = (
   origin: McpCallOrigin,
-  record: Pick<McpTaskRecord, "callId" | "conversation">,
+  record: Pick<McpTaskRecord, "callId" | "conversation" | "workspace">,
 ): McpHostRequestContext => {
   const ctx: Mutable<McpHostRequestContext> = {
     origin: "agent",
@@ -61,7 +64,10 @@ export const taskContext = (
 
   if (origin.session !== undefined) ctx.session = origin.session;
 
-  if (origin.workspace !== undefined) ctx.workspace = origin.workspace;
+  // A stdio server's task is the Workspace's it started in, not the Session's.
+  const workspace = record.workspace ?? origin.workspace;
+
+  if (workspace !== undefined) ctx.workspace = workspace;
 
   return ctx;
 };

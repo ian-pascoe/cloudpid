@@ -41,6 +41,8 @@ export type TaskHostOptions = {
   readonly message?: string;
   /** What the host answers the `n`th `tasks/get` instead of the task's state (1-based); `undefined`: the state. */
   readonly getAnswer?: (n: number) => ReturnType<FakeMcpAnswer> | undefined;
+  /** The process a stdio server's task runs in, by the poll that asks (0 is the call): the spawn id the host answers. */
+  readonly spawnOf?: (n: number) => string | undefined;
   /** What the host answers `tasks/cancel` instead of an acknowledgement. */
   readonly cancelAnswer?: () => ReturnType<FakeMcpAnswer>;
 };
@@ -59,6 +61,12 @@ export const taskHost = (polls: number, options: TaskHostOptions = {}) => {
       statusMessage: options.message ?? "Making the report",
     }) as McpTaskSnapshot;
 
+  const spawned = (n: number) => {
+    const spawn = options.spawnOf?.(n);
+
+    return spawn === undefined ? {} : { spawn };
+  };
+
   const completed = (text = "a plain result") =>
     McpHostCompleted.make({
       result: { kind: "inline", value: { content: [{ type: "text", text }] } },
@@ -71,7 +79,11 @@ export const taskHost = (polls: number, options: TaskHostOptions = {}) => {
       // A call not offered a task is answered at once, as a server does.
       case "tools/call":
         return input.ctx.allowTask === true
-          ? McpHostTaskStarted.make({ task: snapshot("working"), conn: "conn-docs" })
+          ? McpHostTaskStarted.make({
+              task: snapshot("working"),
+              conn: "conn-docs",
+              ...spawned(0),
+            })
           : completed();
       case "tasks/get": {
         gets += 1;
@@ -84,13 +96,14 @@ export const taskHost = (polls: number, options: TaskHostOptions = {}) => {
 
         return gets >= polls
           ? McpHostTaskState.make({
+              ...spawned(gets),
               task: snapshot("completed"),
               result: {
                 kind: "inline",
                 value: { content: [{ type: "text", text: "the report" }] },
               },
             })
-          : McpHostTaskState.make({ task: snapshot("working") });
+          : McpHostTaskState.make({ task: snapshot("working"), ...spawned(gets) });
       }
 
       case "tasks/cancel":

@@ -754,19 +754,6 @@ describe("which calls are offered a task", () => {
     ]);
     await session.root.abort(context, { background: true });
   });
-
-  it("is not offered to a stdio server's call", async () => {
-    const stdio: FakeMcpServer = { ...SERVER, entry: { type: "stdio", command: "npx" } };
-
-    const { session, taskServer } = await setup(10, TIMING, scripted(), {
-      servers: [stdio],
-      ready: async () => true,
-    });
-
-    await turn(session, "go");
-
-    expect(offers(taskServer)).toEqual([false]);
-  });
 });
 
 describe("a Session a code update replaced", () => {
