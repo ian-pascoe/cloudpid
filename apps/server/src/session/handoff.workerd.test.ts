@@ -100,6 +100,9 @@ const isRequests = (message: ServerMessage): message is Requests =>
 const isPending = (message: ServerMessage): message is Requests =>
   isRequests(message) && message.requests.length > 0;
 
+const isEmpty = (message: ServerMessage): message is Requests =>
+  isRequests(message) && message.requests.length === 0;
+
 const only = (message: Requests): BrowserHandoffRequest => {
   const [request] = message.requests;
 
@@ -332,11 +335,14 @@ describe("Browser Handoffs over the Session socket", () => {
     const waiting = await connect(slow);
 
     waiting.send({ type: "submit", id: "go", input: "Log me in" });
-    await waiting.next(isPending);
+
+    const pending = await waiting.next(isPending);
+
     await idle(slow);
 
     expect((await results(slow)).at(-1)).toMatch(/timed out after 30 minutes/);
-    expect((await waiting.next(isRequests, waiting.received.length - 1)).requests).toEqual([]);
+    // A list after the pending one withdraws it, whatever the Session sent after that.
+    await waiting.next(isEmpty, waiting.received.indexOf(pending) + 1);
   });
 
   it("withdraws the request and ends the handoff when the run is stopped", async () => {
