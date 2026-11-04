@@ -455,6 +455,64 @@ describe("a Modern server's form", () => {
     ]);
   });
 
+  it("is withdrawn while the round waits, with no request start, when its server is removed", async () => {
+    const { host, questions, session } = await setup();
+    const resumes: Array<Sent> = [];
+
+    // The Session looks at the server every 20 ms of the wait; a host holds no request for a round kept for later, so it
+    // cannot tell the Session of a set change as it does a live question.
+    const tools = makeMcpTools(host.client, memoryMcpToolsStore(), {
+      slackMs: 0,
+      questions,
+      roundWatchMs: 20,
+    });
+
+    host.answer(deferring([], resumes));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+    host.set([]);
+    await until(async () => (await Effect.runPromise(questions.pending)).length === 0);
+    await submitted.wait(context);
+
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "Docs-Site was switched off, hidden or removed",
+      }),
+    ]);
+  });
+
+  it("is withdrawn while the round waits when its server's connection is no longer the one that asked", async () => {
+    const { host, questions, session } = await setup();
+
+    const tools = makeMcpTools(host.client, memoryMcpToolsStore(), {
+      slackMs: 0,
+      questions,
+      roundWatchMs: 20,
+    });
+
+    // The round says it asked on `conn-docs`; the host's inventory now has the server on another connection.
+    host.answer(deferring([], []));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.records)).length > 0);
+    await submitted.wait(context);
+
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "Docs-Site was changed",
+      }),
+    ]);
+  });
+
   it("is cancelled in the round's retry when the Session's storage cannot keep it (a replaced Session)", async () => {
     const memory = memoryStorage();
     const { host, tools, session } = await setup(memory);

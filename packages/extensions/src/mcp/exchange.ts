@@ -62,7 +62,7 @@ import {
 } from "./result.ts";
 import { restartedWhileWaiting } from "./question-records.ts";
 import { type McpDeferredRound, McpRoundState, type McpQuestionsService } from "./questions.ts";
-import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
+import { MCP_ROUND_WATCH_MS, resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
 import type { McpTaskFollower } from "./task-follow.ts";
@@ -109,6 +109,8 @@ export type McpToolOptions = {
   readonly slackMs?: number;
   /** How long a result's stream may be quiet, `MCP_STREAM_IDLE_MS` unless a test shortens it. */
   readonly streamIdleMs?: number;
+  /** How often a round of questions kept for later looks at its server, `MCP_ROUND_WATCH_MS` unless a test shortens it. */
+  readonly roundWatchMs?: number;
   /** How long a result's stream waits for the decode slot, `MCP_STREAM_SLOT_WAIT_MS` unless a test shortens it. */
   readonly streamWaitMs?: number;
   /**
@@ -461,7 +463,9 @@ export const send = async <A>(
     questions.defers;
 
   const rounds: Rounds | undefined =
-    (deferring || paging) && questions !== undefined ? { questions, api, context } : undefined;
+    (deferring || paging) && questions !== undefined
+      ? { questions, api, context, client, watchMs: options.roundWatchMs ?? MCP_ROUND_WATCH_MS }
+      : undefined;
 
   let waiting: McpDeferredRound | undefined;
 
