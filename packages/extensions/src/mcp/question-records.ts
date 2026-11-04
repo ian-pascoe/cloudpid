@@ -7,6 +7,7 @@
 import {
   answeredFields,
   MCP_ELICITATIONS_PER_CALL,
+  MCP_PROMPT_QUESTION_WAIT_MS,
   validateElicitation,
 } from "@cloudpid/mcp/types";
 import { ROLE_NAMES, type RoleName, sha256Hex } from "@cloudpid/config";
@@ -145,8 +146,13 @@ export type McpQuestionAsk = {
   /** The server's configured name, and where its definition is. */
   readonly server: string;
   readonly source?: McpElicitationSource;
-  /** The model-facing name of the tool the call is to. */
+  /** The model-facing name of the tool the call is to; for a prompt send, the prompt's command. */
   readonly tool: string;
+  /**
+   * The title of the MCP prompt whose send asks it, when it is a question of a `prompts/get`: such a question waits live
+   * for `MCP_PROMPT_QUESTION_WAIT_MS` and tells the owner nothing (`docs/architecture/mcp-server-requests.md` → Questions).
+   */
+  readonly prompt?: string;
   readonly message: string;
   /** A page question has a form with no fields: the card draws its `page`. */
   readonly form: ElicitationForm;
@@ -287,6 +293,23 @@ export type McpWaitingKind = {
   readonly page?: true;
   /** The owner is not told at all: a page the server asks for again, which they were told of already. */
   readonly quiet?: true;
+};
+
+/**
+ * How a question waits, by whether it is a prompt send's (`prompt` is its title): a call's question waits `waitMs` and
+ * tells the owner, a prompt send's waits `promptWaitMs` (`MCP_PROMPT_QUESTION_WAIT_MS` unless a test shortens it) and
+ * tells them nothing, as they are at the composer. One rule for the forms and the Sampling requests alike.
+ */
+export const waitsOf = (waits: {
+  readonly waitMs: number;
+  readonly promptWaitMs?: number | undefined;
+}) => {
+  const promptWaitMs = waits.promptWaitMs ?? MCP_PROMPT_QUESTION_WAIT_MS;
+
+  return (prompt: string | undefined): { readonly waitMs: number; readonly quiet: boolean } =>
+    prompt === undefined
+      ? { waitMs: waits.waitMs, quiet: false }
+      : { waitMs: promptWaitMs, quiet: true };
 };
 
 /** A question's id: unique within the Session, and within its call whatever the server's own request ids are. */
@@ -523,7 +546,10 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
 
   /** A request turned away at the call's cap, recorded. */
   const turnedAway = (
-    ask: Omit<McpQuestionAsk, "key" | "form" | "notes" | "source" | "page" | "retry" | "era"> & {
+    ask: Omit<
+      McpQuestionAsk,
+      "key" | "form" | "notes" | "source" | "page" | "retry" | "era" | "prompt"
+    > & {
       readonly form?: ElicitationForm;
       readonly notes?: ReadonlyArray<string>;
       readonly page?: { readonly url: string } | { readonly origin: string };
@@ -606,6 +632,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       };
 
       if (ask.source !== undefined) request.source = ask.source;
+
+      if (ask.prompt !== undefined) request.prompt = ask.prompt;
 
       if (shown.page !== undefined) {
         const page: Mutable<McpElicitationPage> = { ...shown.page, opened: false };

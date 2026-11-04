@@ -410,11 +410,16 @@ export type SessionHostMcpPromptGet = {
   readonly server: string;
   /** The prompt's own name. */
   readonly name: string;
+  /** The prompt's Slash command and the title its questions' cards say ("getting prompt <title>"), as the catalog lists them. */
+  readonly command: string;
+  readonly title: string;
   /** The arguments to send: only those the prompt declares, cleaned. */
   readonly arguments: Readonly<Record<string, string>>;
   readonly conversationId: ConversationId;
   /** The Subagent Workspace (`ws:<id>`) the conversation works in; undefined for the Session's own. */
   readonly workspace: string | undefined;
+  /** The message's `requestId`, which its questions' cards are tied to its lane row by (`mcpPromptCallId`). */
+  readonly requestId?: string | undefined;
 };
 
 /** The Session's MCP prompts (`docs/architecture/mcp-in-a-session.md` → The `/` menu and the catalog, Getting a prompt at send). */
@@ -2556,9 +2561,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           {
             server: ref.server,
             name: ref.name,
+            command: entry.command,
+            title: entry.title ?? entry.name,
             arguments: sent,
             conversationId: conversation.id,
             workspace: workspace?.object,
+            requestId: prompt.requestId,
           },
           (result) =>
             promptMessage({

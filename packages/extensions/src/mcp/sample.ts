@@ -18,6 +18,7 @@ import {
 } from "@cloudpid/mcp/types";
 import type { McpSampledMode } from "@cloudpid/config";
 import type { McpDeferredSample } from "./deferred-questions.ts";
+import type { ClockHold } from "./elicit.ts";
 import type { McpElicitationSource } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
@@ -37,8 +38,10 @@ import type { McpSamplingOutcome, McpSamplingService } from "./sampling.ts";
 export type SamplingCall = {
   readonly sampling: McpSamplingService;
   readonly server: string;
-  /** The model-facing name of the tool. */
+  /** The model-facing name of the tool; for a prompt send, the prompt's command. */
   readonly tool: string;
+  /** The title of the MCP prompt whose `prompts/get` asks: its requests wait live for 5 min and tell the owner nothing. */
+  readonly prompt?: string | undefined;
   readonly callId: string;
   readonly conversationId: ConversationId;
   /** Aborts when Stop does: a sample under way is stopped, and a card waiting is withdrawn. */
@@ -50,9 +53,7 @@ export type SamplingCall = {
   /** Where the server's definition is, for the card's badge. */
   readonly source?: McpElicitationSource | undefined;
   /** Stop the call's own clock while the owner decides, and start it again. */
-  readonly hold?:
-    | { readonly pause: Effect.Effect<void>; readonly resume: Effect.Effect<void> }
-    | undefined;
+  readonly hold?: ClockHold | undefined;
 };
 
 /** The hook of a call whose server may sample, and the requests it made. */
@@ -115,6 +116,7 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
         decision: call.decision,
         defers: call.defers === true && modern,
         resumed: kept,
+        prompt: call.prompt,
         source: call.source,
         hold: call.hold,
       }),
@@ -175,7 +177,7 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
 };
 
 /** How one request that was not answered ended, in words that carry nothing the server wrote. */
-const wordsOf = (detail: McpSamplingDetail): string => {
+export const wordsOf = (detail: McpSamplingDetail): string => {
   if (detail.by === "owner" || detail.by === "grant") return "refused by you";
 
   // Nothing the server wrote is in a reason, but the model's own failure may carry the provider's words: kept short and plain.

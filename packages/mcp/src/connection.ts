@@ -527,6 +527,13 @@ interface Asked {
 /** A `resources/read`'s params: the URI, and the request's `_meta`. */
 type ReadParams = { readonly uri: string; readonly _meta?: RequestMeta };
 
+/** A `prompts/get`'s params: the prompt, its arguments, and the request's `_meta`. */
+type PromptParams = {
+  readonly name: string;
+  readonly arguments: Readonly<Record<string, string>>;
+  readonly _meta?: RequestMeta;
+};
+
 /** `ctx` with no deferral: a request with no resume (a read) answers what it would defer with `cancel`. */
 const noDeferral = (ctx: McpCallContext): McpCallContext =>
   ctx.answers?.defer === undefined ? ctx : { ...ctx, answers: Struct.omit(ctx.answers, ["defer"]) };
@@ -2383,26 +2390,79 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       } satisfies Complete<ListedPage<ListItems[K]>>;
     });
 
+  /**
+   * Gets the prompt once, or with `retry` the answers to a round of questions: its result, or (Modern) a round of
+   * questions, which the get's own rounds answer (`getPrompt`). A Legacy server's question during it is tied to the
+   * call by the header (`withAsking`), and the get's clock stands still while it waits.
+   */
+  const promptOnce = (params: PromptParams, ctx: McpCallContext, retry?: Retry) => {
+    const timeoutMs = readTimeoutMs();
+
+    return withAsking(ctx, timeoutMs, (own) =>
+      request((client, signal) => {
+        const timing: Mutable<RequestOptions> = timingOf(own, signal, timeoutMs);
+
+        // A Modern server's questions come back to the core, which answers them itself: never the SDK's own loop.
+        if (live.era === "modern") timing.allowInputRequired = true;
+
+        return sendWith(own, undefined, (headers) =>
+          client.request(
+            { method: "prompts/get", params: { ...params, ...retry } },
+            headers === undefined ? timing : { ...timing, headers },
+          ),
+        );
+      }, false),
+    );
+  };
+
+  /**
+   * Gets a prompt. A Modern server may answer with a round of questions (`input_required`), which the get answers at once,
+   * as a read's rounds are answered (`readResource`): Roots by the core, an elicitation or a Sampling request through
+   * `onInput`, then the get is sent again with every answer and the server's `requestState`, at most `MCP_INPUT_ROUNDS`
+   * rounds. A get is never kept for later: a question the caller would defer is a `cancel`. A get after questions is not
+   * cacheable.
+   */
   const getPrompt = (name: string, args: Readonly<Record<string, string>>, ctx: McpCallContext) =>
     Effect.gen(function* () {
-      const meta = metaFor(ctx);
+      // A get has no resume: its caller's deferrals are cancels, so it declares no page either.
+      const asking = noDeferral(ctx);
+      const meta = metaFor(asking);
       const sent = { name, arguments: { ...args } };
-      const params = meta === undefined ? sent : { ...sent, _meta: meta };
+      const params: PromptParams = meta === undefined ? sent : { ...sent, _meta: meta };
 
-      const value = yield* request(
-        (client, signal) =>
-          client.request({ method: "prompts/get", params }, { signal, timeout: PAGE_TIMEOUT_MS }),
-        false,
-      );
+      let value: GetPromptResult | Result = yield* promptOnce(params, asking);
+      let round = 1;
 
+      while (value["resultType"] === "input_required") {
+        if (round > MCP_INPUT_ROUNDS) {
+          return yield* ProtocolViolation.make({
+            message: `The server asked questions for more than ${MCP_INPUT_ROUNDS} rounds`,
+          });
+        }
+
+        const asked = yield* askedOf(value);
+
+        if (asked.kind !== "asked") return yield* notMcp("its questions are malformed");
+
+        const { answered } = yield* answerRound(asked, asking);
+        const retry: Mutable<Retry> = { inputResponses: answered };
+
+        if (asked.requestState !== undefined) retry.requestState = asked.requestState;
+
+        value = yield* promptOnce(params, asking, retry);
+        round += 1;
+      }
+
+      // SAFETY: anything but `input_required` is the result the SDK validated as a `GetPromptResult`.
+      const got = value as GetPromptResult;
       const fetchedAt = yield* Clock.currentTimeMillis;
 
       return {
         kind: "complete",
-        value,
-        cacheable: true,
+        value: got,
+        cacheable: round === 1,
         fetchedAt,
-        ...Option.getOrUndefined(decodeCacheHints(value)),
+        ...Option.getOrUndefined(decodeCacheHints(got)),
       } satisfies Complete<GetPromptResult>;
     });
 

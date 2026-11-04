@@ -28,6 +28,12 @@ import { isJsonObject, JsonObject } from "./json.ts";
 /** How long a Legacy elicitation waits for the owner, from the ask: 10 minutes (`ctx.answers.inputWaitMs`). */
 export const MCP_ELICITATION_WAIT_MS = 10 * 60 * 1000;
 
+/**
+ * How long a question waits for the owner during a prompt send's `prompts/get`, from the ask: 5 minutes, in either era and
+ * both kinds (`docs/architecture/mcp-server-requests.md` → Questions). The get's own bound pauses meanwhile.
+ */
+export const MCP_PROMPT_QUESTION_WAIT_MS = 5 * 60 * 1000;
+
 /** The most requests of this kind one call may make (the Session cancels the rest). */
 export const MCP_ELICITATIONS_PER_CALL = 10;
 

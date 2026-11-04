@@ -61,8 +61,10 @@ export const credentialReason = (field: string): string =>
 export type ElicitingCall = {
   readonly questions: McpQuestionsService;
   readonly server: string;
-  /** The model-facing name of the tool. */
+  /** The model-facing name of the tool; for a prompt send, the prompt's command. */
   readonly tool: string;
+  /** The title of the MCP prompt whose `prompts/get` asks: its questions wait live for 5 min and tell the owner nothing. */
+  readonly prompt?: string | undefined;
   readonly callId: string;
   readonly conversationId: ConversationId;
   /** Where the server's definition is. */
@@ -79,7 +81,12 @@ export type ElicitingCall = {
    * round of pages ends the read as `pages_required`, and the read is sent again once they are done.
    */
   readonly keepsPages?: boolean | undefined;
-  /** Stop the call's own clock while a question waits, and start it again. */
+  /** The call's own clock: stopped while a question waits, and started again. */
+  readonly hold: ClockHold;
+};
+
+/** What stops and starts a call's own clock. */
+export type ClockHold = {
   readonly pause: Effect.Effect<void>;
   readonly resume: Effect.Effect<void>;
 };
@@ -224,6 +231,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     if (call.source !== undefined) question.source = call.source;
 
+    if (call.prompt !== undefined) question.prompt = call.prompt;
+
     if (request.era !== undefined) question.era = request.era;
 
     return question;
@@ -326,7 +335,7 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       return CANCELLED;
     }
 
-    await Effect.runPromise(call.pause);
+    await Effect.runPromise(call.hold.pause);
 
     const outcome: McpQuestionOutcome = await Effect.runPromise(
       call.questions.ask(question),
@@ -343,9 +352,9 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     // A page the owner opened: the server goes on, and the call's clock stays stopped until the page is finished.
     if (page !== undefined && outcome.action === "accept") {
       void Effect.runPromise(call.questions.whileOpen(call.callId, question.key)).finally(() =>
-        Effect.runPromise(call.resume),
+        Effect.runPromise(call.hold.resume),
       );
-    } else await Effect.runPromise(call.resume);
+    } else await Effect.runPromise(call.hold.resume);
 
     if (outcome.action === "accept") {
       note("accept", "owner", [...fieldsOf(form, outcome.content)], undefined, seen);

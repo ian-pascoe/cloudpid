@@ -717,6 +717,18 @@ export class TestSession extends DurableObject {
   /** The Session's MCP questions, made once: the MCP tools ask through its service, the runtime provides its layer. */
   #questions: ReturnType<typeof sessionMcpQuestions> | undefined;
 
+  /**
+   * The wait of a prompt send's question, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`: 300 ms),
+   * and for those that test the get's own clock against it (`mcp-short-clock-*`: 1.5 s, past the clock's 400 ms).
+   */
+  #promptWaitMs(): number | undefined {
+    const name = this.ctx.id.name ?? "";
+
+    if (name.startsWith("mcp-short-wait-")) return 300;
+
+    return name.startsWith("mcp-short-clock-") ? 1500 : undefined;
+  }
+
   #mcpQuestions(): ReturnType<typeof sessionMcpQuestions> {
     this.#questions ??= sessionMcpQuestions({
       storage: this.ctx.storage.kv,
@@ -726,6 +738,7 @@ export class TestSession extends DurableObject {
       // The 10-minute bound, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`).
       waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
       samplingWaitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
+      promptWaitMs: this.#promptWaitMs(),
       // *Always allow* and *Never* on a Sampling card, written to the test Registry the test names (`samplingRegistry`) as a
       // Session writes them. The Session is the Registry's own only when the test registers it there, as a Session of an
       // Environment: until then (or never) it has nowhere to write, and its card offers no Always or Never.
@@ -890,6 +903,8 @@ export class TestSession extends DurableObject {
       sampling: this.#mcpSampling().service,
       signIns: this.#mcpSignIns().service,
       session: this.ctx.id.name,
+      // The Session's 40 s get clock for a prompt send, shortened for the Sessions that test it (`mcp-short-clock-*`).
+      promptGetWaitMs: this.ctx.id.name?.startsWith("mcp-short-clock-") === true ? 400 : undefined,
       host: (environment) =>
         mcpHostClient(() => promisedMcpHost(hosts.getByName(mcpHostName(environment)))),
       kv,

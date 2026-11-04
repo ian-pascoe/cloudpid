@@ -32,16 +32,15 @@ import {
 } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
 import {
-  countdown,
   enteredOf,
   type FieldValue,
   type FormValues,
   initialValues,
   ownValue,
   refusalOf,
-  sourceLabel,
   timeZoneName,
 } from "./mcp-elicitation-form.ts";
+import { endsLine, McpOriginLine } from "./mcp-origin-line.tsx";
 import { requestCardId } from "./request-anchor.ts";
 
 /** A choice with at most this many options is shown as radios; more, as a `select`. */
@@ -293,8 +292,6 @@ const FormCard = ({ request, disabled, now: fixedNow, agent, onAnswer }: CardPro
   const checked = validateElicitation(request.form, enteredOf(request.form, values));
   const gate = request.form.fields.length === 0;
 
-  const origin = sourceLabel(request.source);
-
   /** The answer, which stays on the card (every input and button back on, the reason shown) if the Session refuses it. */
   const answer = (action: McpElicitationAction, content?: ElicitationContent) => {
     setSent(true);
@@ -318,13 +315,7 @@ const FormCard = ({ request, disabled, now: fixedNow, agent, onAnswer }: CardPro
           <MessageCircleQuestion className="size-4 shrink-0" aria-hidden />
           {request.server} asks for your input
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          during <span className="font-mono">{request.tool}</span> ·{" "}
-          {agent === undefined ? "the agent" : `subagent ${agent}`}
-          {origin === undefined ? null : (
-            <span className="ml-2 rounded border px-1 py-0.5 text-[0.7rem]">{origin}</span>
-          )}
-        </p>
+        <McpOriginLine request={request} agent={agent} />
       </div>
       <form
         className="flex min-h-0 flex-1 flex-col gap-3"
@@ -440,7 +431,7 @@ const FormCard = ({ request, disabled, now: fixedNow, agent, onAnswer }: CardPro
               ? "Reconnecting…"
               : request.waits === "owner"
                 ? `${request.server} waits for your answer`
-                : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
+                : endsLine(request, request.deadline, now)}
           </span>
           <div className="flex gap-2">
             <Button
@@ -525,7 +516,6 @@ const PageCard = ({
   const [refusal, setRefusal] = useState<string | null>(null);
   const now = useNow(fixedNow);
   const off = disabled || sent;
-  const origin = sourceLabel(request.source);
   const parts = addressParts(page);
   const goesOn = page.retry !== true;
 
@@ -550,13 +540,7 @@ const PageCard = ({
           <ExternalLink className="size-4 shrink-0" aria-hidden />
           {request.server} asks you to open a page
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          during <span className="font-mono">{request.tool}</span> ·{" "}
-          {agent === undefined ? "the agent" : `subagent ${agent}`}
-          {origin === undefined ? null : (
-            <span className="ml-2 rounded border px-1 py-0.5 text-[0.7rem]">{origin}</span>
-          )}
-        </p>
+        <McpOriginLine request={request} agent={agent} />
       </div>
       <div
         className="min-h-12 flex-1 overflow-y-auto"
@@ -607,7 +591,7 @@ const PageCard = ({
                   ? `Opened · press Done when you have finished at ${page.host}`
                   : request.waits === "owner"
                     ? `${request.server} waits for you`
-                    : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
+                    : endsLine(request, request.deadline, now)}
         </span>
         <div className="flex gap-2">
           {page.finished === true || (page.opened && goesOn) ? null : (

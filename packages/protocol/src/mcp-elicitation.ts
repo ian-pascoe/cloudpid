@@ -159,6 +159,15 @@ export const McpElicitationPage = Schema.Struct({
 export type McpElicitationPage = typeof McpElicitationPage.Type;
 
 /**
+ * The `callId` of the get a prompt send's questions wait on, from the send's `requestId` (a client's UUID, kept by the
+ * Session as the message's identity): a client ties each lane row of a send to its cards by it, with no text compared.
+ */
+export const mcpPromptCallId = (requestId: string): string => `prompt-${requestId}`;
+
+/** The longest `requestId` a prompt send's `callId` is made from: it ends up in storage keys, so a longer one is not used. */
+export const MCP_PROMPT_REQUEST_ID_MAX = 200;
+
+/**
  * One waiting question (`mcp_elicitation_requests`), as the card shows it. Every string is plain text. `deadline` is
  * the moment, in epoch milliseconds, the Session answers `cancel` for the owner, so the countdown follows the Session's
  * clock; a question with `waits: "owner"` has none, and its `deadline` is only for a client from before `waits` (a far
@@ -175,8 +184,13 @@ export const McpElicitationRequest = Schema.Struct({
   server: Schema.String,
   /** Where the definition is, for the card's badge; absent when the Session does not know. */
   source: Schema.optionalKey(McpElicitationSource),
-  /** The model-facing name of the tool the call is to (`mcp__<server>__<tool>`). */
+  /** The model-facing name of the tool the call is to (`mcp__<server>__<tool>`); for a prompt send, the prompt's command. */
   tool: Schema.String,
+  /**
+   * The title of the MCP prompt whose send waits for the answer ("getting prompt <title>"): the question was asked during
+   * its `prompts/get`, not a tool's call. A client from before it reads `tool`, the prompt's command.
+   */
+  prompt: Schema.optionalKey(Schema.String),
   /** The server's message, cut and cleaned. */
   message: Schema.String,
   /** A page question's `form` has no fields: the card draws `page` instead. */

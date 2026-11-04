@@ -516,7 +516,7 @@ export const send = async <A>(
           source: server.source,
           defers: deferring,
           keepsPages: paging,
-          ...hold,
+          hold,
         });
 
   // A Legacy HTTP server whose definition does not say `off` has its Sampling requests answered on the Session's models,

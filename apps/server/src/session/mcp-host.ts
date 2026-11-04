@@ -43,13 +43,17 @@ import {
   type McpAppHtmlAnswer,
   type McpAppRequestAnswer,
   type McpResourcePreviewAnswer,
+  MCP_PROMPT_REQUEST_ID_MAX,
+  mcpPromptCallId,
   resourceUnavailable,
 } from "@cloudpid/protocol";
 import {
   HostFailed,
+  pausableDeadline,
   type McpApplyResult,
   type McpErrorWire,
   type McpHostPromptGet,
+  type McpHostRequestHooks,
   type McpHostRequestResult,
   type McpRequestStartResult,
   type McpServersResult,
@@ -192,8 +196,24 @@ export const kvMcpToolsStore = (kv: McpToolsKv, environment: string): McpToolsSt
   };
 };
 
-/** How long the Session waits for the host's answer to a prompt get: the host's own 30 s bound, and its slack. */
+/**
+ * How long the Session waits for the host's answer to a prompt get: the host's own 30 s bound, and its slack. The wait
+ * stands still while a question of the server waits for the owner.
+ */
 const PROMPT_GET_WAIT_MS = 40_000;
+
+/**
+ * A prompt get's ID, what its questions are kept and withdrawn under: from the send's `requestId`, a client's UUID, so the
+ * web ties the lane row to the cards. It is unique per conversation (a conversation admits a `requestId` once, and a
+ * resend of a get that was never admitted reuses it, taking the place of the first). A send with none, or whose `requestId`
+ * is over `MCP_PROMPT_REQUEST_ID_MAX` (the ID is part of storage keys: `mcp-question:s:<callId>:<n>`), gets a UUID of its
+ * own, which no lane row is tied to.
+ */
+const promptCallId = (requestId: string | undefined): string =>
+  requestId !== undefined && requestId.length <= MCP_PROMPT_REQUEST_ID_MAX
+    ? mcpPromptCallId(requestId)
+    : // @effect-diagnostics-next-line cryptoRandomUUID:off
+      mcpPromptCallId(crypto.randomUUID());
 
 /** The longest an arguments refusal's message is, in characters. */
 const PROMPT_ARGUMENTS_MESSAGE = 300;
@@ -259,6 +279,8 @@ const abortedBy = (signal: AbortSignal) =>
 export type SessionMcpOptions = {
   /** The Session's name, its ID in the Registry; undefined when unknown, and then it has no MCP tools. */
   readonly session: string | undefined;
+  /** How long the Session waits for the host's answer to a prompt get: `PROMPT_GET_WAIT_MS` unless a test shortens it. */
+  readonly promptGetWaitMs?: number | undefined;
   /** The `McpHostClient` of Environment `environment`'s host. */
   readonly host: (environment: string) => McpHostClientService;
   /**
@@ -551,46 +573,95 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
           )
         : Effect.succeed(call.workspace);
 
-    return workspaceOf.pipe(
-      Effect.flatMap((workspace) => {
-        const ctx: Mutable<McpHostPromptGet["ctx"]> = {
-          origin: "owner",
-          session,
-          conversation: String(call.conversationId),
-        };
+    return Effect.gen(function* () {
+      const workspace = yield* workspaceOf;
 
-        if (workspace !== undefined) ctx.workspace = workspace;
+      // The get's own clock: the host's 30 s bound and its slack. It stands still while a question of the server waits for
+      // the owner (up to 5 min, `MCP_PROMPT_QUESTION_WAIT_MS`); a question that is never answered ends in `cancel`, and
+      // the get goes on from there.
+      const clock = yield* pausableDeadline(
+        options.promptGetWaitMs ?? PROMPT_GET_WAIT_MS,
+        () => new Error("The get timed out"),
+      );
 
-        const request: McpHostPromptGet = {
-          op: "prompts/get",
-          server: call.server,
-          params: { name: call.name, arguments: { ...call.arguments } },
-          ctx,
-        };
+      // Aborts when the send is withdrawn (Stop) or the get ends: the host cancels the get, and a card that waits is withdrawn.
+      const stopped = yield* Effect.abortSignal;
 
-        return Effect.tryPromise({
-          // The signal aborts when the send is withdrawn (Stop): the host then cancels the get.
-          try: (signal) => getFrom(options.host(environment), request, signal, use),
-          catch: (cause) =>
-            refused(
-              refusalOf(
-                "MCP_PROMPT_FAILED",
-                cause instanceof Error ? cause.message : "The prompt could not be read",
-              ),
+      const asking = toolsOf(environment).promptAsking({
+        server: call.server,
+        callId: promptCallId(call.requestId),
+        command: call.command,
+        title: call.title,
+        conversationId: call.conversationId,
+        signal: stopped,
+        hold: { pause: clock.pause, resume: clock.resume },
+      });
+
+      const ctx: Mutable<McpHostPromptGet["ctx"]> = {
+        origin: "owner",
+        session,
+        conversation: String(call.conversationId),
+      };
+
+      if (workspace !== undefined) ctx.workspace = workspace;
+
+      // The questions the get may be asked are answered live (`ctx.answers`, and the hooks the host passes on to the engine).
+      if (asking !== undefined) ctx.answers = asking.answers;
+
+      const request: McpHostPromptGet = {
+        op: "prompts/get",
+        server: call.server,
+        params: { name: call.name, arguments: { ...call.arguments } },
+        ctx,
+      };
+
+      const get = Effect.tryPromise({
+        // The signal aborts when the send is withdrawn (Stop) or the get's clock runs out: the host then cancels the get.
+        try: (signal) =>
+          getFrom(
+            options.host(environment),
+            request,
+            AbortSignal.any([signal, stopped, clock.signal]),
+            use,
+            asking?.hooks,
+          ),
+        catch: (cause) =>
+          refused(
+            refusalOf(
+              "MCP_PROMPT_FAILED",
+              cause instanceof Error ? cause.message : "The prompt could not be read",
             ),
-        });
-      }),
-      Effect.timeoutOrElse({
-        duration: PROMPT_GET_WAIT_MS,
-        orElse: () =>
+          ),
+      });
+
+      const timedOut = Effect.promise(() => abortedBy(clock.signal)).pipe(
+        Effect.andThen(
           Effect.fail(
             refused(refusalOf("MCP_PROMPT_FAILED", `${call.server} did not answer in time`)),
           ),
-      }),
-      Effect.flatMap((got) =>
-        got.ok ? Effect.succeed(got.value) : Effect.fail(refused(got.refusal)),
-      ),
-    );
+        ),
+      );
+
+      const got = yield* get.pipe(
+        Effect.raceFirst(timedOut),
+        Effect.ensuring(
+          Effect.andThen(
+            clock.clear,
+            Effect.promise(() => asking?.settle() ?? Promise.resolve()),
+          ),
+        ),
+      );
+
+      // A Modern server's Sampling request that was refused ended the get in the core, the server told nothing: the send
+      // says so, whatever the core's own words for it were.
+      const sunk = asking?.sunk();
+
+      if (!got.ok && sunk !== undefined) {
+        return yield* refused(refusalOf("MCP_PROMPT_FAILED", sunk));
+      }
+
+      return got.ok ? got.value : yield* refused(got.refusal);
+    }).pipe(Effect.scoped);
   };
 
   const prompts: SessionHostMcpPrompts = { session: options.session, catalog, get: getPrompt };
@@ -664,9 +735,10 @@ const getFrom = async <A>(
   request: McpHostPromptGet,
   signal: AbortSignal,
   use: (result: Schema.Json) => Promise<A>,
+  asking: Pick<McpHostRequestHooks, "onInput" | "onInputEnded" | "onInputComplete"> | undefined,
 ): Promise<Got<A>> => {
   const result = await Effect.runPromise(
-    client.request(request, { untilAborted: () => abortedBy(signal) }),
+    client.request(request, { ...asking, untilAborted: () => abortedBy(signal) }),
   );
 
   const failed = failureOf(result, request.server);

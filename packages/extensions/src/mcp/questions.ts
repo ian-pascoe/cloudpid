@@ -41,7 +41,9 @@ import {
   type McpQuestionStorage,
   type McpQuestionUnseen,
   type McpSamplingDecision,
+  type McpWaitingKind,
   questionId,
+  waitsOf,
 } from "./question-records.ts";
 import type {
   McpElicitationRequest,
@@ -147,7 +149,7 @@ export type McpQuestionsService = {
   readonly complete: (callId: string, key: string) => Effect.Effect<void>;
   /**
    * Waits until page question `key` of call `callId`, which the owner opened, has ended: finished, withdrawn, or its call
-   * over. At once for a question that has.
+   * over; a prompt send's, at most until its question's own wait is up. At once for a question that has.
    */
   readonly whileOpen: (callId: string, key: string) => Effect.Effect<void>;
   /** Whether `host` is one of cloudpid's own (`McpQuestionsOptions.ownHost`). */
@@ -293,6 +295,8 @@ export type McpQuestionsOptions = {
   readonly holdsSecret: (text: string) => Effect.Effect<boolean>;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
+  /** How long a question of a prompt send waits, `MCP_PROMPT_QUESTION_WAIT_MS` unless a test shortens it. */
+  readonly promptWaitMs?: number | undefined;
   /** How long a page the server says is finished reads "Finished at <host>" before its card goes, `MCP_PAGE_FINISHED_SHOWN_MS` unless a test shortens it. */
   readonly finishedShownMs?: number | undefined;
   /**
@@ -319,6 +323,7 @@ type Waiting = {
 export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsService => {
   const { storage, announce } = options;
   const waitMs = options.waitMs ?? MCP_ELICITATION_WAIT_MS;
+  const waitFor = waitsOf({ waitMs, promptWaitMs: options.promptWaitMs });
   const finishedShownMs = options.finishedShownMs ?? MCP_PAGE_FINISHED_SHOWN_MS;
   const waiting = new Map<string, Waiting>();
   const basics = questionBasics(options);
@@ -339,6 +344,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     basics,
     announce: options.announceSampling ?? (() => Effect.void),
     waitMs: options.samplingWaitMs,
+    promptWaitMs: options.promptWaitMs,
     remember: options.remember,
     deferred,
   });
@@ -410,7 +416,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       const id = questionId(question.callId, sequence);
       const now = yield* Clock.currentTimeMillis;
-      const request = yield* basics.requestOf(question, id, now + waitMs);
+      const { waitMs: wait, quiet } = waitFor(question.prompt);
+      const request = yield* basics.requestOf(question, id, now + wait);
 
       const entry: WaitingEntry = {
         id,
@@ -452,16 +459,16 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         era: question.era,
       });
       yield* tell;
-      yield* basics.startWaiting(
-        question.callId,
-        question.server,
-        1,
-        now,
-        question.page === undefined ? {} : { page: true },
-      );
+      const kind: Mutable<McpWaitingKind> = {};
+
+      if (question.page !== undefined) kind.page = true;
+
+      if (quiet) kind.quiet = true;
+
+      yield* basics.startWaiting(question.callId, question.server, 1, now, kind);
 
       yield* Deferred.await(outcome).pipe(
-        Effect.timeoutOption(waitMs),
+        Effect.timeoutOption(wait),
         Effect.flatMap(
           Option.match({
             onNone: () => finish(id, cancelled("the owner did not answer in time")),
@@ -610,7 +617,20 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   const whileOpen = (callId: string, key: string) =>
     Option.match(waitingFor(callId, key), {
       onNone: () => Effect.void,
-      onSome: ([, held]) => Deferred.await(held.closed),
+      onSome: ([, held]) => {
+        const open = Deferred.await(held.closed);
+
+        // A page of a prompt send is waited for no longer than its question was: the get's clock is not held for good by a
+        // page that is never finished (`deadline` is the ask's 5 min).
+        if (held.request.prompt === undefined) return open;
+
+        return Clock.currentTimeMillis.pipe(
+          Effect.flatMap((now) =>
+            Effect.timeoutOption(open, Math.max(0, held.request.deadline - now)),
+          ),
+          Effect.asVoid,
+        );
+      },
     });
 
   const unseen: McpQuestionsService["unseen"] = (form) =>

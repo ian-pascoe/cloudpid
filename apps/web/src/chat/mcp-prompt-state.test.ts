@@ -1,9 +1,11 @@
 // @effect-diagnostics preferEffectRecord:off -- assertions over the arguments of one prompt.
 
-import type { McpPromptData, McpPromptEntry } from "@cloudpid/protocol";
+import { type McpPromptData, type McpPromptEntry, mcpPromptCallId } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import { describe, expect, it } from "vitest";
+import type { SendingEntry } from "../session/state.ts";
 import {
+  awaitedLine,
   chipProblem,
   chipStanding,
   chipText,
@@ -18,6 +20,7 @@ import {
   restoredChip,
   sendGate,
   startingValues,
+  sendingRows,
   withPrompt,
 } from "./mcp-prompt-state.ts";
 
@@ -88,6 +91,77 @@ describe("the MCP prompt chip", () => {
     });
     expect(promptLane(chip({}), "")).toBe("docs · Review PR");
     expect(gettingText(chip({}))).toBe("Getting Review PR from docs…");
+  });
+});
+
+describe("the lane row of a prompt being got", () => {
+  /** A row as the client makes it: keyed by its command id (`c<n>`), its `requestId` a UUID of its own. */
+  const row = (n: number, requestId: string, text: string): SendingEntry => ({
+    id: `c${n}`,
+    requestId,
+    text,
+  });
+
+  const [R1, R2, R3] = ["0a1b-1", "0a1b-2", "0a1b-3"] as const;
+
+  const rows = [
+    row(4, R1, "Getting Review PR from docs…"),
+    row(5, R2, "Getting Summarize from wiki…"),
+    row(6, R3, "a plain message"),
+  ];
+
+  const asked = (requestId: string, prompt: string | undefined = "Review PR", server = "docs") => ({
+    callId: mcpPromptCallId(requestId),
+    server,
+    prompt,
+  });
+
+  it("says it waits for the owner's answer while the send's get asks one", () => {
+    expect(sendingRows(rows, [asked(R1)])).toEqual([
+      row(4, R1, "Getting Review PR from docs · waiting for your answer"),
+      rows[1],
+      rows[2],
+    ]);
+  });
+
+  it("does not take the row's command id for the send's identity", () => {
+    // The card of send R1 is not the row whose command id happens to spell it.
+    expect(sendingRows(rows, [asked("c5")])).toEqual(rows);
+  });
+
+  it("is left as it is when nothing is asked, or another send's get is", () => {
+    expect(sendingRows(rows, [])).toEqual(rows);
+    expect(sendingRows(rows, [asked("other")])).toEqual(rows);
+    // A question of a tool's call carries no prompt.
+    expect(sendingRows(rows, [{ callId: mcpPromptCallId(R1), server: "docs" }])).toEqual(rows);
+  });
+
+  it("finds a row whose title the card cleaned or cut", () => {
+    const long = "A very long title ".repeat(20);
+    const spaced = "Review   the\n  PR";
+    const cut = long.slice(0, 119).trimEnd() + "…";
+
+    const titled = [
+      row(1, "long", `Getting ${long} from docs…`),
+      row(2, "spaced", `Getting ${spaced} from docs…`),
+    ];
+
+    expect(sendingRows(titled, [asked("long", cut), asked("spaced", "Review the PR")])).toEqual([
+      row(1, "long", awaitedLine(cut, "docs")),
+      row(2, "spaced", awaitedLine("Review the PR", "docs")),
+    ]);
+  });
+
+  it("marks only the send that waits when two sends are of the same prompt", () => {
+    const twice = [
+      row(1, "first", "Getting Review PR from docs…"),
+      row(2, "second", "Getting Review PR from docs…"),
+    ];
+
+    expect(sendingRows(twice, [asked("second")])).toEqual([
+      twice[0],
+      row(2, "second", awaitedLine("Review PR", "docs")),
+    ]);
   });
 });
 

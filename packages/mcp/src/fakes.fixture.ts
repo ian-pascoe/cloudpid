@@ -319,6 +319,17 @@ export interface FakePrompt {
     readonly description?: string;
     readonly messages: GetPromptResult["messages"];
   };
+  /**
+   * A question the server asks before it answers (a Legacy server on the get's own stream, a Modern one as `input_required`
+   * with the `requestState` `prompt-1`): a form (`message`) or a model reply (`sample`). The prompt's one assistant message
+   * is then the answer as JSON, in place of `get`'s.
+   */
+  readonly asks?:
+    | { readonly message: string }
+    | { readonly sample: string }
+    | { readonly url: string; readonly holdMs?: number };
+  /** The get never answers until the call is cancelled (a server that does not answer in time). */
+  readonly hangs?: true;
 }
 
 /** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
@@ -584,18 +595,107 @@ const fakeMcp = (
     const { prompts } = options;
 
     server.setRequestHandler("prompts/list", async () => ({
-      prompts: prompts.map(({ get: _get, arguments: args, ...listed }) => {
-        const entry: Prompt = { ...listed };
+      prompts: prompts.map(
+        ({ get: _get, asks: _asks, hangs: _hangs, arguments: args, ...listed }) => {
+          const entry: Prompt = { ...listed };
 
-        if (args !== undefined) entry.arguments = [...args];
+          if (args !== undefined) entry.arguments = [...args];
 
-        return entry;
-      }),
+          return entry;
+        },
+      ),
     }));
-    server.setRequestHandler("prompts/get", async (request) => {
+    server.setRequestHandler("prompts/get", async (request, ctx) => {
       const found = prompts.find((each) => each.name === request.params.name);
 
       if (found === undefined) throw new Error(`No prompt ${request.params.name}`);
+
+      if (found.hangs === true) {
+        return untilAborted(ctx.mcpReq.signal, () => options.cancelled?.push(request.params.name));
+      }
+
+      const { asks } = found;
+
+      if (asks !== undefined) {
+        const answered = (answer: Json | undefined): GetPromptResult => ({
+          messages: [
+            { role: "assistant", content: { type: "text", text: JSON.stringify(answer) } },
+          ],
+        });
+
+        // A Modern server asks in its answer: `input_required` first, then the get answered with the round's responses.
+        if (modern) {
+          const responses = ctx.mcpReq.inputResponses;
+
+          if (responses === undefined) {
+            return inputRequired({
+              inputRequests: {
+                q1:
+                  "message" in asks
+                    ? inputRequired.elicit({
+                        message: asks.message,
+                        requestedSchema: { type: "object", properties: {} },
+                      })
+                    : "url" in asks
+                      ? inputRequired.elicitUrl({ url: asks.url, message: "Open the page" })
+                      : inputRequired.createMessage({
+                          messages: [
+                            { role: "user", content: { type: "text", text: asks.sample } },
+                          ],
+                          maxTokens: 100,
+                        }),
+              },
+              requestState: "prompt-1",
+            });
+          }
+
+          // SAFETY: the client's answers are JSON.
+          options.asked?.push({
+            round: 1,
+            state: ctx.mcpReq.requestState<string>() ?? "",
+            responses: { ...responses } as Json,
+          });
+
+          // SAFETY: the client's answers are JSON.
+          return answered(responses["q1"] as Json);
+        }
+
+        const answer = await ctx.mcpReq.send(
+          "message" in asks
+            ? {
+                method: "elicitation/create",
+                params: {
+                  message: asks.message,
+                  requestedSchema: { type: "object", properties: {} },
+                },
+              }
+            : "url" in asks
+              ? {
+                  method: "elicitation/create",
+                  params: {
+                    mode: "url",
+                    elicitationId: "e1",
+                    url: asks.url,
+                    message: "Open the page",
+                  },
+                }
+              : {
+                  method: "sampling/createMessage",
+                  params: {
+                    messages: [{ role: "user", content: { type: "text", text: asks.sample } }],
+                    maxTokens: 100,
+                  },
+                },
+        );
+
+        // A page's answer is told at once; the server then goes on for a while, as a call to a slow server does.
+        if ("url" in asks && asks.holdMs !== undefined) {
+          await new Promise((resolve) => setTimeout(resolve, asks.holdMs));
+        }
+
+        // SAFETY: the client's answer is JSON.
+        return answered({ ...answer } as Json);
+      }
 
       const got = found.get(request.params.arguments ?? {});
 

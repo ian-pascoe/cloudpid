@@ -1162,6 +1162,19 @@ describe("a Session connection", () => {
         expect(state().sending.map((entry) => entry.text)).toEqual([
           "Getting Review PR from docs…",
         ]);
+        // The row carries the `requestId` the submit went out with: the Session's cards for its get are tied to it
+        // (`mcpPromptCallId`), not to the client's command id the row is keyed by.
+        const sent = latest().commands().at(-1);
+
+        expect(sent).toMatchObject({ type: "submit", requestId: expect.any(String) });
+        expect(state().sending).toEqual([
+          {
+            id: sent?.id,
+            requestId: sent !== undefined && "requestId" in sent ? sent.requestId : undefined,
+            text: "Getting Review PR from docs…",
+          },
+        ]);
+        expect(state().sending[0]?.requestId).not.toBe(state().sending[0]?.id);
 
         yield* latest().say({
           type: "error",
@@ -1446,7 +1459,9 @@ describe("a Session connection", () => {
         yield* latest().drop();
         yield* client.submit("offline", "followUp");
 
-        expect(state().sending).toEqual([{ id: expect.any(String), text: "offline" }]);
+        expect(state().sending).toEqual([
+          { id: expect.any(String), requestId: expect.any(String), text: "offline" },
+        ]);
 
         yield* advance(500);
         yield* watching(latest());
@@ -1766,8 +1781,9 @@ describe("a subagent's thread on a Session connection", () => {
             .some((command) => command.type === "submit"),
         ).toBe(false);
         expect(state().threads[2]?.sending).toEqual([
-          { id: expect.any(String), text: "take a look" },
+          { id: expect.any(String), requestId: expect.any(String), text: "take a look" },
         ]);
+        const held = state().threads[2]?.sending[0]?.requestId;
         expect(state().sending).toEqual([]);
 
         yield* watchingThread(latest(), 2);
@@ -1783,7 +1799,7 @@ describe("a subagent's thread on a Session connection", () => {
             conversationId: 2,
             input: "take a look",
             whenBusy: "steer",
-            requestId: expect.any(String),
+            requestId: held,
           },
         ]);
       }),

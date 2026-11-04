@@ -751,7 +751,13 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   ): readonly SendingEntry[] => {
     const next = pending.flatMap((submit) =>
       submit.conversationId === conversationId
-        ? [{ id: submit.commandId, text: submit.getting ?? submit.text }]
+        ? [
+            {
+              id: submit.commandId,
+              requestId: submit.requestId,
+              text: submit.getting ?? submit.text,
+            },
+          ]
         : [],
     );
 
@@ -773,7 +779,13 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
     const next = pending.flatMap((submit) =>
       submit.conversationId === undefined
-        ? [{ id: submit.commandId, text: submit.getting ?? submit.text }]
+        ? [
+            {
+              id: submit.commandId,
+              requestId: submit.requestId,
+              text: submit.getting ?? submit.text,
+            },
+          ]
         : [],
     );
 

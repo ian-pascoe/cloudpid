@@ -21,7 +21,7 @@
 //   from a cursor, kept in the list cache for a Modern server's `ttlMs`; and a read with the SHA-256 of its contents
 //   (`resources.ts`).
 // - **`prompts/get`** (#463): the owner's pick of a prompt of a server whose inventory lists it, a read through the engine
-//   with the checks of a call, bounded at 30 s (or the entry's lower `timeout`).
+//   with the checks of a call, bounded at 30 s (or the entry's lower `timeout`), its questions answered live (#492).
 // - **`resume`** (#480): a `tools/call` answered `InputRequired` (only to a caller with `ctx.answers.defer`), sent
 //   again with the answers to its deferred questions. It carries the tool, the `conn` the server asked on (another one
 //   now is `ServerChanged`, nothing sent) and the `ResumeState`, which the host passes on unread and never keeps; it is
@@ -517,8 +517,8 @@ const unknownName = (answer: McpHostRequestResult): boolean =>
  * mcp-in-a-session.md` → Getting a prompt at send). The checks of a call (a server that may be called, in the request's
  * Workspace if it is stdio) and a prompt the server's inventory lists; it is a read, so the server cannot have run
  * anything if it is cut. Bounded at 30 s, or the entry's lower `timeout`. `ctx.answers` and `onInput` are passed on as
- * a call's are, when the caller has them; the Session does not yet (#492), so a question the server asks during the
- * get is cancelled.
+ * a call's are, when the caller has them; the Session has them (#492), so a question the server asks during the get is
+ * answered live by its card, and the core's 30 s clock stands still while it waits.
  */
 const promptGet = (
   environment: string | undefined,

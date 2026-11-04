@@ -35,6 +35,8 @@ export type SessionMcpQuestionsOptions = {
   readonly ownHost?: ((host: string) => boolean) | undefined;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
+  /** How long a question of a prompt send waits, `MCP_PROMPT_QUESTION_WAIT_MS` unless a test shortens it. */
+  readonly promptWaitMs?: number | undefined;
   /** How long a Sampling request waits, `MCP_SAMPLING_ASK_WAIT_MS` unless a test shortens it. */
   readonly samplingWaitMs?: number | undefined;
   /** Where the Sampling card's *Always allow* and *Never* write the server's definition; without it the card cannot. */
@@ -118,6 +120,7 @@ export const sessionMcpQuestions = (options: SessionMcpQuestionsOptions): Sessio
         return held.redact(text) !== text || holdsCredential(text);
       }),
     waitMs: options.waitMs,
+    promptWaitMs: options.promptWaitMs,
     ownHost: options.ownHost,
     vault:
       kept === undefined || session === undefined

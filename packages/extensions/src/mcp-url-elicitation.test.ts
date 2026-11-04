@@ -923,6 +923,73 @@ describe("a page the server says is finished", () => {
   });
 });
 
+describe("how long a call waits for a page the owner opened (`whileOpen`)", () => {
+  const opened = async (prompt: string | undefined) => {
+    const questions = createMcpQuestions({
+      storage: memoryStorage().storage,
+      announce: () => Effect.void,
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+      // The wait of a question, shortened for both kinds: the opened page's bound is this far from the ask.
+      waitMs: 60,
+      promptWaitMs: 60,
+    });
+
+    const asked = {
+      key: "page-1",
+      callId: "call-9",
+      conversationId: ROOT_CONVERSATION_ID,
+      server: "Docs-Site",
+      tool: "mcp__docs_site__search",
+      message: "Authorize the app",
+      form: { fields: [] },
+      notes: [],
+      page: { url: PAGE, host: "auth.example.com", domain: "example.com" },
+    } satisfies McpQuestionAsk;
+
+    const ask: McpQuestionAsk = prompt === undefined ? asked : { ...asked, prompt };
+
+    const outcome = Effect.runPromise(questions.ask(ask));
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length === 1);
+
+    const [request] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "opened" }));
+    expect(await outcome).toMatchObject({ action: "accept" });
+
+    return { questions, ask };
+  };
+
+  /** What `whileOpen` came to within `ms`: "ended", or "waiting" when it was still waiting. */
+  const within = (
+    questions: Awaited<ReturnType<typeof opened>>["questions"],
+    ask: McpQuestionAsk,
+    ms: number,
+  ) =>
+    Promise.race([
+      Effect.runPromise(questions.whileOpen(ask.callId, ask.key)).then(() => "ended" as const),
+      new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), ms)),
+    ]);
+
+  it("holds an agent call's clock until the page is finished, however long that takes", async () => {
+    const { questions, ask } = await opened(undefined);
+
+    // Well past the question's own wait (60 ms): an agent's call has no 5 min bound after Open.
+    expect(await within(questions, ask, 300)).toBe("waiting");
+
+    await Effect.runPromise(questions.complete(ask.callId, ask.key));
+    expect(await within(questions, ask, 300)).toBe("ended");
+  });
+
+  it("holds a prompt send's clock only until its question's own wait is up", async () => {
+    const { questions, ask } = await opened("Review PR");
+
+    // Never finished: it still ends, with the question's wait.
+    expect(await within(questions, ask, 1000)).toBe("ended");
+  });
+});
+
 describe("a Legacy server's -32042 on read_mcp_resource", () => {
   const READ = { server: "File-Store", uri: "file:///a.txt" };
 
