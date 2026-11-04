@@ -133,6 +133,7 @@ import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
@@ -1864,16 +1865,30 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("expand-timeout-ms", ms);
   }
 
-  /** What the Workspace holds at a Result Spill's `path`, as a card's preview reads it (`SessionHost.spill`). */
-  spill(path: string, held: Array<number> = [], slotAfterMs = 0): Promise<SpillRead> {
-    // The slot is given after `slotAfterMs`, and the sizes it was asked for are told in `held`.
+  /**
+   * What the Workspace holds at a Result Spill's `path`, as a card's preview reads it (`SessionHost.spill`). The read
+   * runs on a test clock, which only the slot's wait moves: its Workspace time limit counts the wait, should the wait
+   * fall inside it, and never the time a loaded runner takes to answer its Workspace calls.
+   */
+  spill(
+    path: string,
+    held: Array<number> = [],
+    slotAfterMs = 0,
+    duringWait: () => Promise<void> = async () => {},
+  ): Promise<SpillRead> {
+    // The slot is given once `duringWait` is done and `slotAfterMs` have passed on the read's clock, and the sizes it was
+    // asked for are told in `held`.
     return this.#runtime.runPromise(
-      this.#host.spill(undefined, path, (bytes) =>
-        Effect.sleep(slotAfterMs).pipe(
-          Effect.as("held" as const),
-          Effect.tap(() => Effect.sync(() => held.push(bytes))),
-        ),
-      ),
+      this.#host
+        .spill(undefined, path, (bytes) =>
+          Effect.promise(duringWait).pipe(
+            Effect.andThen(TestClock.adjust(slotAfterMs)),
+            Effect.as("held" as const),
+            Effect.tap(() => Effect.sync(() => held.push(bytes))),
+          ),
+        )
+        // @effect-diagnostics-next-line strictEffectProvide:off -- the read's own entry point: its clock is the test's.
+        .pipe(Effect.provide(TestClock.layer())),
     );
   }
 

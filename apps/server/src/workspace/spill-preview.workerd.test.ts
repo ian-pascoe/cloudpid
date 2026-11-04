@@ -15,15 +15,18 @@ import { describe, expect, it } from "vitest";
 import type { TestWorkspaceSession } from "./session.fixture.ts";
 import { uniqueWorkspace } from "./session.workerd.helpers.ts";
 
-/** A Session on Workspace `slug`, and the Workspace's environment as the MCP extension spills through it. */
-const withSpills = (slug: string) => {
-  const stub = env.WORKSPACE_SESSIONS.get(env.WORKSPACE_SESSIONS.newUniqueId());
-
-  const workspace = new ComputerExecutionEnv({
+/** Workspace `slug`'s environment as the MCP extension spills through it, over a stub of the caller's own. */
+const workspaceOf = (slug: string) =>
+  new ComputerExecutionEnv({
     workspace: env.WORKSPACES.getByName(slug),
     id: `computer:${slug}`,
     cwd: "/workspace",
   });
+
+/** A Session on Workspace `slug`, and the Workspace's environment as the MCP extension spills through it. */
+const withSpills = (slug: string) => {
+  const stub = env.WORKSPACE_SESSIONS.get(env.WORKSPACE_SESSIONS.newUniqueId());
+  const workspace = workspaceOf(slug);
 
   const spill = async (data: string | Uint8Array, suffix: string) => {
     const saved = await spillTo(workspace, BACKGROUND_CONTEXT)(data, suffix);
@@ -33,13 +36,21 @@ const withSpills = (slug: string) => {
     return saved.path;
   };
 
-  const read = (path: string, held: Array<number> = [], slotAfterMs = 0, expandMs?: number) =>
+  // The read runs on a test clock that only the wait for the slot moves (`TestWorkspaceSession.spill`): a Workspace call
+  // a loaded runner is slow to answer is never what times it out.
+  const read = (
+    path: string,
+    held: Array<number> = [],
+    slotAfterMs = 0,
+    expandMs?: number,
+    duringWait?: () => Promise<void>,
+  ) =>
     runInDurableObject(stub, async (instance: TestWorkspaceSession) => {
       instance.bindWorkspace(slug);
 
       if (expandMs !== undefined) instance.expandTimeoutMs(expandMs);
 
-      return instance.spill(path, held, slotAfterMs);
+      return instance.spill(path, held, slotAfterMs, duringWait);
     });
 
   return { spill, read, workspace };
@@ -163,8 +174,26 @@ describe("a Result Spill read for a preview", () => {
     const { spill, read } = withSpills(uniqueWorkspace());
     const path = await spill(new Uint8Array(PREVIEW_SLOT_OVER + 5), ".bin");
 
-    // The Workspace's limit is 1 s here, and the slot comes after 1.5 s.
+    // The Workspace's limit is 1 s here, and the slot comes after 1.5 s of the read's clock.
     expect(await read(path, [], 1500, 1000)).toMatchObject({ kind: "base64" });
+  });
+
+  it("reads the file it opened when cleanup removes it during the wait for the slot", async () => {
+    const slug = uniqueWorkspace();
+    const { spill, read } = withSpills(slug);
+    const path = await spill(new Uint8Array(PREVIEW_SLOT_OVER + 5), ".bin");
+
+    // Run in the Session, which reaches the Workspace through a stub of its own.
+    const removed = async () => {
+      getOrThrow(await workspaceOf(slug).remove(path, { force: true }, BACKGROUND_CONTEXT));
+    };
+
+    // The file was opened before the wait, so the wait outliving the file does not take it from the read.
+    expect(await read(path, [], 0, undefined, removed)).toMatchObject({
+      kind: "base64",
+      base64: btoa("\0".repeat(PREVIEW_SLOT_OVER + 5)),
+    });
+    expect(await read(path)).toEqual({ kind: "missing" });
   });
 
   it("is too large past a preview's bytes, which it does not read", async () => {
