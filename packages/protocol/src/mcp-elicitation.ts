@@ -188,9 +188,10 @@ export const McpElicitationRequest = Schema.Struct({
   deadline: Schema.Finite,
   /**
    * `"owner"` for a Modern server's question, which waits for the owner with no deadline (it is answered in the call's
-   * resume): the card says so, and ignores `deadline`.
+   * resume): the card says so, and ignores `deadline`. A string, so a value a later build adds is kept and not a decode
+   * failure for the whole message.
    */
-  waits: Schema.optionalKey(Schema.Literal("owner")),
+  waits: Schema.optionalKey(Schema.String),
 });
 
 export type McpElicitationRequest = typeof McpElicitationRequest.Type;
