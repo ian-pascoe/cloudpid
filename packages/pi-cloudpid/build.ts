@@ -6,7 +6,7 @@
  * `PI_CLOUDPID_SHA` (the CI job sets it to the `main` commit) is the build's commit, sent as `X-Cloudpid-Client`;
  * without it, `git rev-parse HEAD`.
  *
- *   bun --cwd packages/pi-cloudpid run build
+ *   bun run --cwd packages/pi-cloudpid build
  */
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

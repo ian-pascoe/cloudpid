@@ -22,7 +22,7 @@ export const SETUP_STEPS = [
   "  CLOUDPID_URL=https://<your cloudpid host>/mcp",
   "  CLOUDPID_ACCESS_CLIENT_ID=<the Local agent's client ID>",
   "  CLOUDPID_ACCESS_CLIENT_SECRET=<its secret>",
-  "From a cloudpid checkout, `bun --cwd infra run local-agent-token --stage <stage>` prints the last two. The extension's README has the rest.",
+  "From a cloudpid checkout, `bun run --cwd infra local-agent-token --stage <stage>` prints the last two. The extension's README has the rest.",
 ].join("\n");
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);

@@ -30,12 +30,12 @@ You need Node, Bun (the version in `package.json`'s `packageManager`, which `mis
 ```sh
 bun install
 bun run check                               # typecheck, lint, test, format check
-bun --cwd infra run dev                     # workerd on http://localhost:1337
-bun --cwd apps/web run dev                  # the web app, proxied to the dev server
+bun run --cwd infra dev                     # workerd on http://localhost:1337
+bun run --cwd apps/web dev                  # the web app, proxied to the dev server
 ```
 
 Deploying needs the secrets listed in [`docs/development/infra.md`](docs/development/infra.md) → _Secrets and variables_:
 
 ```sh
-bun --cwd infra run deploy --stage dev_$USER
+bun run --cwd infra deploy --stage dev_$USER
 ```

@@ -203,8 +203,9 @@ jobs:
   # (`packages/mcp/conformance`; `docs/architecture/mcp.md` → Testing and tracing → Conformance), once per mode: the spec
   # version picks the scenarios the runner starts, client then server.
   # A failure outside `baseline.json` fails the job, and so does a baseline entry that now passes, so the baseline only
-  # shrinks. The runner is pinned to the SDK's own CI version (`packages/mcp/package.json`), so it runs the same
-  # scenarios the SDK passes. A run takes seconds: the setup (install) is the cost.
+  # shrinks; so does a side that ran no scenario. The runner is pinned to the SDK's own CI version
+  # (`packages/mcp/package.json`), so it runs the same scenarios the SDK passes. A run takes seconds: the setup (install)
+  # is the cost.
   conformance:
     name: Conformance (${{ matrix.mode }})
     needs: changes
@@ -225,7 +226,16 @@ jobs:
       # Bun, Node, Bun's packages (cached by lockfile, with a fallback), and the install.
       - uses: ./.github/actions/setup
 
-      - run: bun --cwd packages/mcp run conformance ${{ matrix.mode }}
+      # `--cwd` after `run`: before it, Bun 1.4 prints its usage and exits 0, so every mode once passed without running a
+      # scenario (#619). So the step also needs `run.ts`'s last line, with a scenario run on each side: a command that
+      # never reaches `run.ts`, or a runner that runs nothing, fails it. `shell: bash` sets `pipefail`, so `tee` keeps
+      # `run.ts`'s exit code.
+      - shell: bash
+        run: |
+          bun run --cwd packages/mcp conformance "$MODE" | tee "$RUNNER_TEMP/conformance.log"
+          grep -q "^Conformance ($MODE): [1-9][0-9]* client and [1-9][0-9]* server scenarios ran$" "$RUNNER_TEMP/conformance.log"
+        env:
+          MODE: ${{ matrix.mode }}
 
   # The one status the `main` ruleset requires (`Check`), and what the deploy jobs wait for: it passes only when every
   # part did, or for a docs-only change when `docs` did. It runs when one fails too (`!cancelled()`), so a failure

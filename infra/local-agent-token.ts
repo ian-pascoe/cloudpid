@@ -3,7 +3,7 @@
  * (docs/architecture/mcp-endpoint.md → The Local agent's service token): the client ID and secret as the variables the
  * extension reads, and when the token expires. From a workstation with the alchemy profile the deploys use:
  *
- *   bun --cwd infra run local-agent-token --stage <stage> [--profile <profile>]
+ *   bun run --cwd infra local-agent-token --stage <stage> [--profile <profile>]
  *
  * It reads the token's record from alchemy's state (`alchemy state read`), where the provider keeps the secret, since
  * Cloudflare shows a secret only on create and rotate. It prints the secret to stdout and nowhere else; CI never runs it.
@@ -26,7 +26,7 @@ const { values: args } = parseArgs({
 
 if (args.stage === undefined || args.stage === "") {
   console.error(
-    "usage: bun --cwd infra run local-agent-token --stage <stage> [--profile <profile>]",
+    "usage: bun run --cwd infra local-agent-token --stage <stage> [--profile <profile>]",
   );
   process.exit(2);
 }

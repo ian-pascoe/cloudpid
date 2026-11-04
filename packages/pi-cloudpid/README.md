@@ -12,7 +12,7 @@ The design is [`docs/architecture/mcp-endpoint.md`](https://github.com/ian-pasco
    pi install git:github.com/ian-pascoe/cloudpid@pi-cloudpid
    ```
 
-2. **Give it the Local agent's service token.** From a cloudpid checkout, `bun --cwd infra run local-agent-token --stage prod` prints the client ID and secret. Keep them in Keychain or 1Password and put them in the environment pi runs in:
+2. **Give it the Local agent's service token.** From a cloudpid checkout, `bun run --cwd infra local-agent-token --stage prod` prints the client ID and secret. Keep them in Keychain or 1Password and put them in the environment pi runs in:
 
    ```sh
    export CLOUDPID_URL=https://pi.ianpascoe.dev/mcp
@@ -57,8 +57,8 @@ Everything after `/cloudpid` is the instruction, sent to the new Session when th
 
 ```sh
 pi -e packages/pi-cloudpid/src/index.ts      # the dev loop, from the repo root
-bun --cwd packages/pi-cloudpid run test      # includes an import against a stub endpoint
-bun --cwd packages/pi-cloudpid run build     # dist/index.js and dist/package.json
+bun run --cwd packages/pi-cloudpid test      # includes an import against a stub endpoint
+bun run --cwd packages/pi-cloudpid build     # dist/index.js and dist/package.json
 ```
 
 It is the one package with a build: `bun build --target=node --format=esm` makes a single `dist/index.js` with the pi host packages (`@earendil-works/pi-*`, `typebox`) external as peer dependencies, and `dist/package.json` carries `pi.extensions` and nothing to install. `build.ts` fails the build if the bundle reaches Workers code (`cloudflare:*`, workerd, alchemy, pi-durable, `@cloudpid/extensions`). `PI_CLOUDPID_SHA` (CI sets it to the `main` commit, else `git rev-parse HEAD`) is built in and sent as `X-Cloudpid-Client: pi-cloudpid/<sha>`. After `Deploy prod` succeeds, CI appends a commit with `dist/` to the orphan branch `pi-cloudpid` ([`docs/development/infra.md`](https://github.com/ian-pascoe/cloudpid/blob/main/docs/development/infra.md) → _CI_).

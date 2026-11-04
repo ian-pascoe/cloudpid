@@ -31,7 +31,7 @@ import {
 } from "./json.ts";
 
 export const TOKEN_REJECTED =
-  "service token rejected or expired: run `local-agent-token` (`bun --cwd infra run local-agent-token --stage <stage>` in a cloudpid checkout) and update CLOUDPID_ACCESS_CLIENT_ID and CLOUDPID_ACCESS_CLIENT_SECRET.";
+  "service token rejected or expired: run `local-agent-token` (`bun run --cwd infra local-agent-token --stage <stage>` in a cloudpid checkout) and update CLOUDPID_ACCESS_CLIENT_ID and CLOUDPID_ACCESS_CLIENT_SECRET.";
 
 export const ENDPOINT_OLDER = "the endpoint is older than this extension";
 
