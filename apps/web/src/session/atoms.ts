@@ -6,6 +6,7 @@ import {
   type AnnotationDraft,
   type BrowserHandoffRequest,
   type McpElicitationAction,
+  type McpElicitationScope,
   type McpSamplingChoice,
   type McpSamplingRole,
   type ElicitationContent,
@@ -97,6 +98,7 @@ export const mcpElicitationRequestsAtom = slice((state) => state.mcpElicitationR
 /** The MCP servers' Sampling requests waiting for the owner, and the Session's grants for them. */
 export const mcpSamplingRequestsAtom = slice((state) => state.mcpSamplingRequests);
 export const mcpSamplingGrantsAtom = slice((state) => state.mcpSamplingGrants);
+export const mcpElicitationDeclinedAtom = slice((state) => state.mcpElicitationDeclined);
 
 /** The Resource watches the agent holds. */
 export const mcpWatchesAtom = slice((state) => state.mcpWatches);
@@ -391,15 +393,19 @@ export interface McpElicitationAnswerInput {
   readonly request: string;
   readonly action: McpElicitationAction;
   readonly content?: ElicitationContent;
+  /** `call`: "Decline all"; `session`: "Decline in this Session". Only a Decline has one. */
+  readonly scope?: McpElicitationScope;
 }
 
 /** Answer one of Session `sessionId`'s MCP elicitation requests; a refusal fails with its message. */
 export const answerMcpElicitationAtom = Atom.family((sessionId: string) =>
   appRuntime.fn(
-    ({ request, action, content }: McpElicitationAnswerInput, get) =>
+    ({ request, action, content, scope }: McpElicitationAnswerInput, get) =>
       get
         .result(sessionClientAtom(sessionId))
-        .pipe(Effect.flatMap((client) => client.answerMcpElicitation(request, action, content))),
+        .pipe(
+          Effect.flatMap((client) => client.answerMcpElicitation(request, action, content, scope)),
+        ),
     { concurrent: true },
   ),
 );
@@ -429,6 +435,17 @@ export const getMcpSamplingAtom = Atom.family((sessionId: string) =>
       get
         .result(sessionClientAtom(sessionId))
         .pipe(Effect.flatMap((client) => client.getMcpSampling(request))),
+    { concurrent: true },
+  ),
+);
+
+/** Take back "Decline in this Session" for one of Session `sessionId`'s servers. */
+export const revokeMcpElicitationAtom = Atom.family((sessionId: string) =>
+  appRuntime.fn(
+    (server: string, get) =>
+      get
+        .result(sessionClientAtom(sessionId))
+        .pipe(Effect.flatMap((client) => client.revokeMcpElicitation(server))),
     { concurrent: true },
   ),
 );

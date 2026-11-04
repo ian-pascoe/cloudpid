@@ -93,7 +93,7 @@ export const sessionMcpQuestions = (options: SessionMcpQuestionsOptions): Sessio
     storage: options.storage,
     announce: (requests) =>
       Effect.forEach(options.sockets.getWebSockets(), (socket) =>
-        send(socket, mcpElicitationRequests(requests)),
+        send(socket, mcpElicitationRequests(requests, service.declinedServers())),
       ).pipe(Effect.asVoid),
     notify:
       options.notify === undefined

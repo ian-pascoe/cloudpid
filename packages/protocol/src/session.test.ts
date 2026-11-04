@@ -602,6 +602,41 @@ describe("the Session socket messages", () => {
     ).toMatchObject({ requests: [{ waits: "owner" }] });
   });
 
+  it("carry the servers the owner declined for the Session beside the elicitation requests", async () => {
+    const text = JSON.stringify({
+      type: "mcp_elicitation_requests",
+      requests: [],
+      declined: ["docs"],
+    });
+
+    expect(await readServer(text)).toEqual(JSON.parse(text));
+    // A Session from before it sends none.
+    expect(
+      await readServer(JSON.stringify({ type: "mcp_elicitation_requests", requests: [] })),
+    ).toEqual({ type: "mcp_elicitation_requests", requests: [] });
+  });
+
+  it("read a Decline's scope and a revoke, and refuse a scope that is not one", async () => {
+    const answer = {
+      type: "mcp_elicitation_answer",
+      id: "c1",
+      request: "call-1:1",
+      action: "decline",
+    };
+
+    expect(await readClient(JSON.stringify({ ...answer, scope: "call" }))).toEqual(
+      Option.some({ ...answer, scope: "call" }),
+    );
+    expect(await readClient(JSON.stringify({ ...answer, scope: "session" }))).toEqual(
+      Option.some({ ...answer, scope: "session" }),
+    );
+    expect(await readClient(JSON.stringify({ ...answer, scope: "server" }))).toEqual(Option.none());
+
+    const revoke = { type: "mcp_elicitation_revoke", id: "c2", server: "docs" };
+
+    expect(await readClient(JSON.stringify(revoke))).toEqual(Option.some(revoke));
+  });
+
   it("carry the Sampling requests and grants, and keep a Role, an action, a status or a deciding party a later build adds", async () => {
     const request = {
       id: "call-1:1",

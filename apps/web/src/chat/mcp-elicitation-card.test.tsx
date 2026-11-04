@@ -1,3 +1,4 @@
+// @effect-diagnostics preferEffectArray:off -- plain arrays of fixtures.
 import type {
   ConversationId,
   ElicitationForm,
@@ -6,7 +7,7 @@ import type {
 } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { McpElicitationCard } from "./mcp-elicitation-card.tsx";
+import { groupByCall, McpElicitationCard } from "./mcp-elicitation-card.tsx";
 import { elicitationLine } from "./mcp-elicitation-detail.ts";
 import {
   countdown,
@@ -85,6 +86,81 @@ const render = (req: McpElicitationRequest, disabled = false, agent?: string) =>
       onAnswer={() => Promise.resolve(null)}
     />,
   );
+
+describe("several questions of one call", () => {
+  const second = (id: string, callId = "call-1") => request(FORM, { id, callId });
+
+  it("are grouped by call, in the order each call first asked, each in the order listed", () => {
+    const groups = groupByCall([
+      second("call-1:1"),
+      second("call-2:1", "call-2"),
+      second("call-1:2"),
+    ]);
+
+    expect(groups.map((group) => group.map((each) => each.id))).toEqual([
+      ["call-1:1", "call-1:2"],
+      ["call-2:1"],
+    ]);
+  });
+
+  it("show their place, with Decline all and the Session's decline, only when more than one waits", () => {
+    const alone = renderToStaticMarkup(
+      <McpElicitationCard
+        request={request(FORM)}
+        disabled={false}
+        now={1000}
+        position={{ at: 1, of: 1, move: () => undefined }}
+        onAnswer={() => Promise.resolve(null)}
+      />,
+    );
+
+    const several = renderToStaticMarkup(
+      <McpElicitationCard
+        request={request(FORM)}
+        disabled={false}
+        now={1000}
+        position={{ at: 1, of: 3, move: () => undefined }}
+        onAnswer={() => Promise.resolve(null)}
+      />,
+    );
+
+    expect(alone).not.toContain("of 1 from");
+    expect(alone).not.toContain("Decline all");
+    expect(several).toContain("1 of 3 from github");
+    expect(several).toContain("Decline all 3");
+    expect(several).toContain("Decline in this Session");
+    // The first of three has nothing before it.
+    expect(several).toMatch(
+      /aria-label="Previous question"[^>]*disabled|disabled[^>]*aria-label="Previous question"/,
+    );
+  });
+
+  it("show a page's place too", () => {
+    const markup = renderToStaticMarkup(
+      <McpElicitationCard
+        request={request(
+          { fields: [] },
+          {
+            page: {
+              url: "https://a.example.com/x",
+              host: "a.example.com",
+              domain: "example.com",
+              opened: false,
+              retry: true,
+            },
+          },
+        )}
+        disabled={false}
+        now={1000}
+        position={{ at: 2, of: 3, move: () => undefined }}
+        onAnswer={() => Promise.resolve(null)}
+      />,
+    );
+
+    expect(markup).toContain("2 of 3 from github");
+    expect(markup).toContain("Decline all 3");
+  });
+});
 
 describe("McpElicitationCard", () => {
   it("names the server, shows the message as plain text, and the standing footer", () => {

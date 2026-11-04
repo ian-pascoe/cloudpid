@@ -26,9 +26,11 @@ import { childrenOf } from "../session/agents.ts";
 import {
   conversationTodosAtom,
   endMcpWatchAtom,
+  mcpElicitationDeclinedAtom,
   mcpSamplingGrantsAtom,
   mcpTasksAtom,
   mcpWatchesAtom,
+  revokeMcpElicitationAtom,
   revokeMcpSamplingAtom,
   sessionStatusAtom,
   taskGraphAtom,
@@ -237,6 +239,47 @@ const SamplingGrantsSection = () => {
   );
 };
 
+/**
+ * The servers the owner chose to decline in this Session ("Decline in this Session",
+ * `docs/architecture/mcp-server-requests.md` → Elicitation requests, Several at once), each with a ✕ that takes it back,
+ * so the server's next question asks the owner again.
+ */
+const DeclinedServersSection = () => {
+  const sessionId = useShownSessionId();
+  const declined = useAtomValue(mcpElicitationDeclinedAtom(sessionId));
+  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
+  const revoke = useAtomSet(revokeMcpElicitationAtom(sessionId));
+
+  if (declined.length === 0) return null;
+
+  return (
+    <section aria-label="Questions declined">
+      <h4 className="text-xs font-medium text-muted-foreground">Questions declined</h4>
+      <ul className="mt-1 text-sm">
+        {Arr.map(declined, (server) => (
+          <li key={server} className="flex items-center justify-between gap-2">
+            <span className="min-w-0 break-words">
+              {server}'s requests for input are declined in this Session
+            </span>
+            <button
+              type="button"
+              disabled={!live}
+              aria-label={`Ask for ${server}'s requests for input again`}
+              title="Take it back: the server's next question asks you again"
+              onClick={() => {
+                revoke(server);
+              }}
+              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5"
+            >
+              <X aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
 /** The tasks listed of an ended one: the newest few, which the Session keeps 50 of. */
 const ENDED_SHOWN = 5;
 
@@ -338,6 +381,7 @@ export const SessionDetails = () => {
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
   const changed = useAtomValue(changesTotalsAtom(useShownChanges()), (totals) => totals.files > 0);
   const granted = useAtomValue(mcpSamplingGrantsAtom(sessionId), (grants) => grants.length > 0);
+  const declined = useAtomValue(mcpElicitationDeclinedAtom(sessionId), (each) => each.length > 0);
   const tasked = useAtomValue(mcpTasksAtom(sessionId), (tasks) => tasks.length > 0);
   const watched = useAtomValue(mcpWatchesAtom(sessionId), (watches) => watches.length > 0);
 
@@ -363,14 +407,19 @@ export const SessionDetails = () => {
           Reconnecting: this may be out of date.
         </p>
       )}
-      {items.length === 0 && agents.length === 0 && !changed && !granted && !tasked && !watched && (
-        <p className="text-sm text-muted-foreground">Nothing to show yet.</p>
-      )}
+      {items.length === 0 &&
+        agents.length === 0 &&
+        !changed &&
+        !granted &&
+        !declined &&
+        !tasked &&
+        !watched && <p className="text-sm text-muted-foreground">Nothing to show yet.</p>}
       {items.length > 0 && <TodoList tasks={items} />}
       {agents.length > 0 && <SubagentsSection agents={agents} />}
       {changed && <ChangesSection />}
       <McpTasksSection />
       <SamplingGrantsSection />
+      <DeclinedServersSection />
       <WatchedResourcesSection />
     </aside>
   );

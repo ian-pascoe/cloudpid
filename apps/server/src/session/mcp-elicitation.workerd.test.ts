@@ -227,6 +227,15 @@ describe("a Legacy MCP server's form in a Session", () => {
     // The server got the owner's answer.
     expect(asked).toEqual([{ action: "accept", content: { name: SENTINEL } }]);
 
+    // `/export` says what the form came to under the call's result: the names of the fields, never a value.
+    const exported = await runInDurableObject(stub, async (instance: TestSession) => {
+      const result = await instance.command("export", "");
+
+      return "outcome" in result ? (result.outcome.file?.content ?? "") : result.failure;
+    });
+
+    expect(exported).toContain("Elicitation: docs · form · submitted (name)");
+
     // The owner was told once, never what is asked.
     const told = await inputPushes(stub);
 
@@ -278,6 +287,58 @@ describe("a Legacy MCP server's form in a Session", () => {
       );
       owner.close();
     }
+  });
+
+  it("is declined in this Session: the server's next question is declined unseen, until the owner takes it back", async () => {
+    const { stub, asked } = await open([]);
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([ask(NAME_FORM), ask(NAME_FORM), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "ask" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    // The Session says it takes a Decline's scope, so a client may send one.
+    expect(owner.received[0]).toMatchObject({ type: "hello", mcpDecline: true });
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "never",
+      request: owner.requests()[0]?.id ?? "",
+      action: "decline",
+      scope: "session",
+    });
+
+    // The second question is declined with no card: both are told `decline`.
+    await settles(async () =>
+      expect(asked).toEqual([{ action: "decline" }, { action: "decline" }]),
+    );
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+    expect(owner.requests()).toEqual([]);
+
+    const last = owner.received.findLast((message) => message.type === "mcp_elicitation_requests");
+
+    expect(last).toMatchObject({ requests: [], declined: ["docs"] });
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.join("\n")).toContain(
+      "cloudpid declined docs's request for input: the owner chose to decline this server's requests in this Session",
+    );
+
+    // The owner's ✕ takes it back, and the clients are told.
+    owner.send({ type: "mcp_elicitation_revoke", id: "back", server: "docs" });
+    await settles(async () =>
+      expect(
+        owner.received.findLast((message) => message.type === "mcp_elicitation_requests"),
+      ).toEqual({ type: "mcp_elicitation_requests", requests: [] }),
+    );
+    owner.close();
   });
 
   it("is declined unseen when it asks for a credential: no card, no Notification", async () => {

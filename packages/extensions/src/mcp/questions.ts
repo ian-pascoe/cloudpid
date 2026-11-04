@@ -67,6 +67,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import type { Mutable } from "effect/Types";
 
 export {
@@ -90,6 +91,7 @@ export {
 
 export {
   MCP_CALL_ENDED_REASON,
+  MCP_DECLINED_IN_SESSION_REASON,
   MCP_ELICITATION_CAP_REASON,
   type McpSamplingDecision,
   MCP_QUESTION_RECORDS,
@@ -110,6 +112,9 @@ export {
 } from "./question-records.ts";
 
 const WAITING_KEY = "mcp-question:waiting";
+
+/** The servers the owner chose to decline in this Session (`mcp-question:declined`), which survives a restart. */
+const DECLINED_KEY = "mcp-question:declined";
 
 /** How long a page the server says is finished reads "Finished at <host>" before its card goes, in ms. */
 export const MCP_PAGE_FINISHED_SHOWN_MS = 4000;
@@ -176,6 +181,23 @@ export type McpQuestionsService = {
   readonly expireStale: Effect.Effect<void>;
   /** The settled records, newest last. */
   readonly records: Effect.Effect<ReadonlyArray<McpQuestionRecord>>;
+  /**
+   * The owner's "Decline all" (`scope: "call"`) or "Decline in this Session" (`scope: "session"`) on question `id`: it is
+   * declined, and with `call` the call's other waiting questions, with `session` the server's other waiting questions in
+   * every call, and the server's later ones are declined unseen (`isDeclined`) until `revokeDeclined`. A page that is open
+   * can only be cancelled, which is what it is answered. Fails when `id` waits no more, or when the Session could not keep
+   * the choice (nothing is then declined).
+   */
+  readonly declineScoped: (
+    id: string,
+    scope: "call" | "session",
+  ) => Effect.Effect<void, McpQuestionsError>;
+  /** The servers the owner chose to decline in this Session, oldest first. */
+  readonly declinedServers: () => ReadonlyArray<string>;
+  /** Whether the owner chose to decline `server`'s requests in this Session. */
+  readonly isDeclined: (server: string) => boolean;
+  /** Take back "Decline in this Session" for `server`: the clients are told. */
+  readonly revokeDeclined: (server: string) => Effect.Effect<void>;
   /** What a Fork or Clone carries of the settled records, and keeps of the ones it was sent. */
   readonly copies: McpQuestionCopies;
   /**
@@ -615,6 +637,78 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       yield* tell;
     });
 
+  const declinedServers = (): ReadonlyArray<string> => {
+    try {
+      return storage.get<string[]>(DECLINED_KEY) ?? [];
+    } catch {
+      return [];
+    }
+  };
+
+  /** `id` answered `decline`, or `cancel` where the question cannot be declined (a page that is open). */
+  const declineOrCancel = (id: string) =>
+    answer(id, { action: "decline" }).pipe(Effect.catch(() => answer(id, { action: "cancel" })));
+
+  const declineScoped: McpQuestionsService["declineScoped"] = (id, scope) =>
+    Effect.gen(function* () {
+      const waitingNow = yield* pending;
+      const asked = Arr.findFirst(waitingNow, (request) => request.id === id);
+
+      if (Option.isNone(asked))
+        return yield* McpQuestionsError.make({ message: "This request ended" });
+
+      const { server, callId } = asked.value;
+
+      // The choice is kept first: a storage that cannot take it declines nothing.
+      const added = scope === "session" && !declinedServers().includes(server);
+
+      if (added) {
+        const kept = yield* Effect.try(() =>
+          storage.put(DECLINED_KEY, [...declinedServers(), server]),
+        ).pipe(Effect.option);
+
+        if (Option.isNone(kept)) {
+          return yield* McpQuestionsError.make({
+            message: "The choice could not be kept; try again",
+          });
+        }
+      }
+
+      const declined = yield* declineOrCancel(id).pipe(Effect.result);
+
+      // The card that was answered ended before the choice could take it: the choice is undone, as it was never made.
+      if (Result.isFailure(declined)) {
+        if (added) yield* revokeDeclined(server);
+
+        return yield* declined.failure;
+      }
+
+      for (const other of waitingNow) {
+        if (other.id === id) continue;
+
+        if (scope === "call" ? other.callId === callId : other.server === server) {
+          // Already ended or answered meanwhile: nothing to decline.
+          yield* declineOrCancel(other.id).pipe(Effect.ignore);
+        }
+      }
+
+      if (scope === "session") yield* tell;
+    });
+
+  const revokeDeclined: McpQuestionsService["revokeDeclined"] = (server) =>
+    Effect.suspend(() => {
+      const held = declinedServers();
+
+      if (!held.includes(server)) return Effect.void;
+
+      return Effect.try(() => {
+        const left = held.filter((each) => each !== server);
+
+        if (left.length === 0) storage.delete(DECLINED_KEY);
+        else storage.put(DECLINED_KEY, left);
+      }).pipe(Effect.ignore, Effect.andThen(tell));
+    });
+
   const answer: McpQuestionsService["answer"] = (id, given) =>
     Effect.gen(function* () {
       const held = waiting.get(id);
@@ -853,6 +947,10 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       );
       yield* tell;
     }),
+    declineScoped,
+    declinedServers,
+    isDeclined: (server) => declinedServers().includes(server),
+    revokeDeclined,
     records: basics.records,
     copies: { copiesFor: basics.copiesFor, adopt: basics.adopt },
   } satisfies McpQuestionsService;

@@ -48,6 +48,7 @@ import {
   type TreePoint,
   type ConversationId,
   type McpElicitationAction,
+  type McpElicitationScope,
   type McpSamplingChoice,
   type McpWatchEntry,
   McpSamplingRecordView,
@@ -334,7 +335,13 @@ export interface SessionClient {
     request: string,
     action: McpElicitationAction,
     content?: ElicitationContent,
+    scope?: McpElicitationScope,
   ) => Effect.Effect<void, SessionCommandError>;
+  /**
+   * Take back "Decline in this Session" for `server`: its next question is asked of the owner again. Fails for a Session
+   * from before it (its `hello` does not say `mcpDecline`).
+   */
+  readonly revokeMcpElicitation: (server: string) => Effect.Effect<void, SessionCommandError>;
   /**
    * Answer MCP Sampling request `request` (`docs/architecture/mcp-server-requests.md` → Sampling requests) by `choice`, with
    * `role` the Role picked to run it on (absent, the card's own). The Session's next `mcp_sampling_requests` closes the
@@ -526,7 +533,7 @@ export interface SessionClient {
 }
 
 /** What the owner is told of a command a Session from before does not take. */
-const OLDER_SESSION = "This Session is from an older version; reload it to use MCP task commands";
+const OLDER_SESSION = "This Session is from an older version; reload it to use this command";
 
 /** A conversation ID as the protocol brands it. */
 const conversation = (id: number): ConversationId =>
@@ -744,6 +751,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   // Whether it takes `submit.app` (`hello.appMessages`) and `mcp_app_context` (`hello.appContext`), on the same terms.
   let appMessages = false;
   let appContext = false;
+  let mcpDecline = false;
 
   /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
   const sendVisibility = (): void => {
@@ -883,6 +891,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "secretLifetimeMinutes"
         | "approvalRequests"
         | "mcpElicitationRequests"
+        | "mcpElicitationDeclined"
         | "mcpSamplingRequests"
         | "mcpSamplingGrants"
         | "mcpWatches"
@@ -1121,6 +1130,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     appMessages = false;
     appContext = false;
     resourcePreviews = false;
+    mcpDecline = false;
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of pending) submit.sent = false;
@@ -1167,6 +1177,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         resourcePreviews = message.resourcePreviews === true;
         appMessages = message.appMessages === true;
         appContext = message.appContext === true;
+        mcpDecline = message.mcpDecline === true;
         update({
           activeBranch: root,
           copying: message.copying === true,
@@ -1287,7 +1298,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         return;
       case "mcp_elicitation_requests":
-        update({ mcpElicitationRequests: message.requests });
+        update({
+          mcpElicitationRequests: message.requests,
+          mcpElicitationDeclined: message.declined ?? [],
+        });
 
         return;
       case "mcp_sampling_requests":
@@ -1993,19 +2007,33 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         send(answer);
       }),
-    answerMcpElicitation: (asked, action, content) =>
-      request(
-        (id) => {
-          const answer: Types.Mutable<Extract<ClientMessage, { type: "mcp_elicitation_answer" }>> =
-            { type: "mcp_elicitation_answer", id, request: asked, action };
+    answerMcpElicitation: (asked, action, content, scope) =>
+      // `scope` is sent only to a Session that takes it: one from before refuses a key it does not know as unreadable.
+      scope !== undefined && !mcpDecline
+        ? Effect.fail(SessionCommandError.make({ message: OLDER_SESSION }))
+        : request(
+            (id) => {
+              const answer: Types.Mutable<
+                Extract<ClientMessage, { type: "mcp_elicitation_answer" }>
+              > = { type: "mcp_elicitation_answer", id, request: asked, action };
 
-          if (action === "accept" && content !== undefined) answer.content = content;
+              if (action === "accept" && content !== undefined) answer.content = content;
 
-          return answer;
-        },
-        () => Option.some(undefined),
-        true,
-      ),
+              if (scope !== undefined) answer.scope = scope;
+
+              return answer;
+            },
+            () => Option.some(undefined),
+            true,
+          ),
+    revokeMcpElicitation: (server) =>
+      mcpDecline
+        ? request(
+            (id) => ({ type: "mcp_elicitation_revoke", id, server }),
+            () => Option.some(undefined),
+            true,
+          )
+        : Effect.fail(SessionCommandError.make({ message: OLDER_SESSION })),
     answerMcpSampling: (asked, choice, role) =>
       request(
         (id) => {

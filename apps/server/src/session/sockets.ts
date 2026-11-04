@@ -53,7 +53,7 @@ import { type ApprovalAsk, Approvals, type ApprovalsError } from "@cloudpid/exte
 import {
   McpQuestions,
   McpSampling,
-  type McpQuestionsError,
+  McpQuestionsError,
   McpSignIns,
   type McpSignInsError,
 } from "@cloudpid/extensions/mcp";
@@ -208,10 +208,15 @@ export const ownerTabDriversMessage = (drivers: ReadonlyArray<OwnerTabDriver>): 
   drivers,
 });
 
-/** The `mcp_elicitation_requests` message for `requests`, which every client is sent. */
+/** The `mcp_elicitation_requests` message for `requests` and the servers declined for this Session, which every client is sent. */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- builds a message, not a combinator.
 export const mcpElicitationRequests = (
   requests: ReadonlyArray<McpElicitationRequest>,
-): ServerMessage => ({ type: "mcp_elicitation_requests", requests });
+  declined: ReadonlyArray<string> = [],
+): ServerMessage =>
+  declined.length === 0
+    ? { type: "mcp_elicitation_requests", requests }
+    : { type: "mcp_elicitation_requests", requests, declined };
 
 /** The `mcp_sampling_requests` message for `requests` and the Session's `grants`, which every client is sent. */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- builds a message, not a combinator.
@@ -1050,6 +1055,12 @@ export const sessionSocketsLayer = (
               })
               .pipe(Effect.as(null));
           case "mcp_elicitation_answer":
+            if (message.scope !== undefined) {
+              return message.action === "decline"
+                ? mcpQuestions.declineScoped(message.request, message.scope).pipe(Effect.as(null))
+                : Effect.fail(McpQuestionsError.make({ message: "Only a Decline has a scope" }));
+            }
+
             return mcpQuestions
               .answer(
                 message.request,
@@ -1077,6 +1088,8 @@ export const sessionSocketsLayer = (
                 uri: message.uri,
               })
               .pipe(Effect.as(null));
+          case "mcp_elicitation_revoke":
+            return mcpQuestions.revokeDeclined(message.server).pipe(Effect.as(null));
           case "mcp_sampling_revoke":
             return mcpQuestions.revokeSampling(message.server).pipe(Effect.as(null));
           case "mcp_sign_in_answer":
@@ -1367,6 +1380,7 @@ export const sessionSocketsLayer = (
                 resourcePreviews: true,
                 appMessages: true,
                 appContext: true,
+                mcpDecline: true,
               }
             : {
                 type: "hello",
@@ -1377,6 +1391,7 @@ export const sessionSocketsLayer = (
                 resourcePreviews: true,
                 appMessages: true,
                 appContext: true,
+                mcpDecline: true,
               },
         );
         yield* host.picks.pipe(
@@ -1400,7 +1415,10 @@ export const sessionSocketsLayer = (
 
         // MCP servers' questions live only as long as their calls wait; sent when none waits too, so a client clears the
         // cards it held.
-        yield* send(server, mcpElicitationRequests(yield* mcpQuestions.pending));
+        yield* send(
+          server,
+          mcpElicitationRequests(yield* mcpQuestions.pending, mcpQuestions.declinedServers()),
+        );
 
         // MCP servers' Sampling requests live only as long as their calls wait too, and the Session's grants survive;
         // sent when none waits too, so a client clears the cards and the grants it held.

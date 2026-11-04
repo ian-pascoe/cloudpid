@@ -98,7 +98,7 @@ const setup = (
 
   const session = open((request) => (request.text === "go" ? call(tool) : answer("ok")));
 
-  return { host, tools, questions, dump, told, session, answerWhenAsked };
+  return { host, tools, questions, dump, told, session, answerWhenAsked, storage };
 };
 
 /** A host that asks `schema` through the call's hooks, records what the server was answered, then completes. */
@@ -294,6 +294,38 @@ describe("a Legacy server's elicitation", () => {
     expect((await session.texts("toolResult"))[0]).toContain(
       "the user can give the server a key through its MCP server definition",
     );
+  });
+
+  it("is declined unseen once the owner chose to decline the server in this Session, and asked again once they take it back", async () => {
+    const { host, tools, questions, told, session: opening, storage } = setup();
+    const seen: Answer[] = [];
+
+    host.answer(asking(NAME_FORM, seen));
+    storage.put("mcp-question:declined", ["Docs-Site"]);
+
+    const session = await opening;
+
+    await session.start(tools);
+    await session.prompt("go");
+
+    expect(seen).toEqual([{ kind: "answered", result: { action: "decline" } }]);
+    expect(told).toEqual([]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+
+    const [details] = await detailsOf(session);
+
+    expect(details).toMatchObject({
+      elicitation: [
+        {
+          action: "decline",
+          by: "cloudpid",
+          reason: "the owner chose to decline this server's requests in this Session",
+        },
+      ],
+    });
+
+    await Effect.runPromise(questions.revokeDeclined("Docs-Site"));
+    expect(questions.isDeclined("Docs-Site")).toBe(false);
   });
 
   it("names a credential in the words the model reads without letting the server shape them", async () => {

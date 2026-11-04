@@ -58,6 +58,10 @@ export const MCP_QUESTION_UNRECORDED_REASON = "cloudpid could not record the que
 /** Why a page a call cannot wait for is cancelled: a Modern server asked for one the call never declared it could take. */
 export const MCP_PAGE_NOT_KEPT_REASON = "the call cannot wait for a page";
 
+/** Why a request is declined unseen once the owner chose "Decline in this Session" for its server. */
+export const MCP_DECLINED_IN_SESSION_REASON =
+  "the owner chose to decline this server's requests in this Session";
+
 /** Why a question is cancelled when its call is over: it ended, or it went with an earlier instance. */
 export const MCP_CALL_ENDED_REASON = "the server's call ended";
 

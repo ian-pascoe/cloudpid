@@ -51,7 +51,7 @@ import {
   type McpQuestionUnseen,
   originOf,
 } from "./questions.ts";
-import { MCP_PAGE_NOT_KEPT_REASON } from "./question-records.ts";
+import { MCP_DECLINED_IN_SESSION_REASON, MCP_PAGE_NOT_KEPT_REASON } from "./question-records.ts";
 
 /** What a form that asks for the credential `field` is declined with: the server is told, the agent reads why. */
 export const credentialReason = (field: string): string =>
@@ -258,6 +258,13 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     }
 
     const { message, mode, requestedSchema } = params.value;
+
+    // "Decline in this Session": the server's requests are declined unseen, as a credential form is.
+    if (call.questions.isDeclined(call.server)) {
+      const capped = await endUnseen(message, "decline", MCP_DECLINED_IN_SESSION_REASON);
+
+      return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
+    }
 
     if (mode === "url") return answerPage(request, params.value);
 

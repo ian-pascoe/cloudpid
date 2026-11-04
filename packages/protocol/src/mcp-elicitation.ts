@@ -115,6 +115,14 @@ export const McpElicitationAction = Schema.Union([
 
 export type McpElicitationAction = typeof McpElicitationAction.Type;
 
+/**
+ * How far a Decline reaches (`mcp_elicitation_answer`'s `scope`): `call` is "Decline all" (every question of its call that
+ * waits), `session` is "Decline in this Session" (the server's other waiting questions, and its later ones, unseen).
+ */
+export const McpElicitationScope = Schema.Literals(["call", "session"]);
+
+export type McpElicitationScope = typeof McpElicitationScope.Type;
+
 /** Where the server's definition is: Global, the Environment, or a Repo's `.pi/mcp.json` (then its `owner/repo`). */
 export const McpElicitationSource = Schema.Struct({
   kind: Schema.String,

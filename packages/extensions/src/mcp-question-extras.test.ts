@@ -291,3 +291,88 @@ describe("a question that ended", () => {
       expect(target.dump()).not.toContain("call-3");
     }));
 });
+
+describe("Decline all and Decline in this Session", () => {
+  /** Ask `ask` as call `callId` of `server`, with question `key`. */
+  const asking = (questions: ReturnType<typeof open>, over: Partial<McpQuestionAsk>) =>
+    Effect.forkChild(questions.ask({ ...ASK, ...over }));
+
+  test("decline the question and the call's others, and no other call's", () =>
+    Effect.gen(function* () {
+      const questions = open(memoryStorage().storage);
+      const first = yield* asking(questions, { key: "1" });
+      const second = yield* asking(questions, { key: "2" });
+      const other = yield* asking(questions, { key: "1", callId: "call-2" });
+
+      yield* settle;
+      yield* questions.declineScoped("call-1:1", "call");
+
+      expect(yield* Fiber.join(first)).toEqual({ action: "decline", by: "owner" });
+      expect(yield* Fiber.join(second)).toEqual({ action: "decline", by: "owner" });
+      expect((yield* questions.pending).map((request) => request.id)).toEqual(["call-2:1"]);
+      expect(questions.isDeclined("demo")).toBe(false);
+
+      yield* questions.answer("call-2:1", { action: "cancel" });
+      yield* Fiber.join(other);
+    }));
+
+  test("decline the server's waiting questions in every call, keep the choice, and give it back", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const questions = open(storage);
+      const first = yield* asking(questions, { key: "1" });
+      const other = yield* asking(questions, { key: "1", callId: "call-2" });
+      const elsewhere = yield* asking(questions, { key: "1", callId: "call-3", server: "other" });
+
+      yield* settle;
+      yield* questions.declineScoped("call-1:1", "session");
+
+      expect(yield* Fiber.join(first)).toEqual({ action: "decline", by: "owner" });
+      expect(yield* Fiber.join(other)).toEqual({ action: "decline", by: "owner" });
+      expect((yield* questions.pending).map((request) => request.server)).toEqual(["other"]);
+      expect(questions.isDeclined("demo")).toBe(true);
+      expect(questions.isDeclined("other")).toBe(false);
+      expect(questions.declinedServers()).toEqual(["demo"]);
+
+      // It outlives the instance, which the storage keeps it for.
+      expect(open(storage).isDeclined("demo")).toBe(true);
+
+      yield* questions.revokeDeclined("demo");
+
+      expect(questions.isDeclined("demo")).toBe(false);
+
+      yield* questions.answer("call-3:1", { action: "cancel" });
+      yield* Fiber.join(elsewhere);
+    }));
+
+  test("keep nothing, and decline nothing, when the choice cannot be kept or the question has ended", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+
+      const refusing: McpQuestionStorage = {
+        ...storage,
+        put: (key, value) => {
+          if (key === "mcp-question:declined") throw new Error("storage refuses");
+
+          storage.put(key, value);
+        },
+      };
+
+      const questions = open(refusing);
+      const waiting = yield* asking(questions, {});
+
+      yield* settle;
+
+      const refused = yield* questions.declineScoped("call-1:1", "session").pipe(Effect.flip);
+
+      expect(refused.message).toBe("The choice could not be kept; try again");
+      expect(yield* questions.pending).toHaveLength(1);
+
+      const gone = yield* questions.declineScoped("call-9:1", "call").pipe(Effect.flip);
+
+      expect(gone.message).toBe("This request ended");
+
+      yield* questions.answer("call-1:1", { action: "cancel" });
+      yield* Fiber.join(waiting);
+    }));
+});
