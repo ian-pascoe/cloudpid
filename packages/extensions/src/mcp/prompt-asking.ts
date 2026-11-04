@@ -23,6 +23,7 @@ import { type ClockHold, elicitingHooks, notAcceptedWords, stoppedWaiting } from
 import { samplingHooks, wordsOf } from "./sample.ts";
 import { type McpSamplingService, SAMPLING_SAMPLE_MS } from "./sampling.ts";
 import type { McpQuestionsService } from "./questions.ts";
+import { MCP_CALL_ENDED_REASON } from "./question-records.ts";
 import type { McpBuildServer } from "./tools.ts";
 
 /** The longest a prompt's title is, as the card says it, in characters. */
@@ -194,10 +195,15 @@ export const promptAsking = (
       sampling: [...(sampler?.asked ?? [])],
     }),
     answerLine: () => {
-      // A card withdrawn because its round was settled by another's answer is not the answer that ended the get.
+      // The answer that ended the get is the last one that was not an accept: another page's Done may have reached the
+      // Session after the decline, and a card the round's settling withdrew (the core's notice, or the get's end if it
+      // came late) is not an answer at all.
       const last = Arr.findLast(
         asking.asked,
-        (detail) => detail.reason !== stoppedWaiting(server.name),
+        (detail) =>
+          detail.action !== "accept" &&
+          detail.reason !== stoppedWaiting(server.name) &&
+          detail.reason !== MCP_CALL_ENDED_REASON,
       );
 
       const words = Option.flatMapNullishOr(last, (detail) => notAcceptedWords(detail, "You"));

@@ -465,3 +465,60 @@ describe("what a get's questions came to (`summaries`)", () => {
     });
   });
 });
+
+describe("what a failed get says of the owner's answer (`answerLine`)", () => {
+  const second = {
+    ...pageAsk("legacy"),
+    key: "page-2",
+    params: { ...pageAsk("legacy").params, elicitationId: "page-2" },
+  };
+
+  const both = async (questions: Awaited<ReturnType<typeof setup>>["questions"]) => {
+    await vi.waitFor(async () => {
+      expect(await Effect.runPromise(questions.pending)).toHaveLength(2);
+    });
+
+    // The cards are numbered in the order the pages were asked.
+    const [first, other] = await Effect.runPromise(questions.pending);
+
+    return { first: first?.id ?? "", other: other?.id ?? "" };
+  };
+
+  it("names the decline, though the other page's Done reached the Session after it", async () => {
+    const { tools, questions, ask } = await setup();
+    const asking = tools.promptAsking(ask());
+    const a = asking?.hooks.onInput?.(pageAsk("legacy"));
+    const b = asking?.hooks.onInput?.(second);
+    const ids = await both(questions);
+
+    await Effect.runPromise(questions.answer(ids.first, { action: "decline" }));
+    await a;
+    await Effect.runPromise(questions.answer(ids.other, { action: "opened" }));
+    await Effect.runPromise(questions.answer(ids.other, { action: "done" }));
+    await b;
+
+    expect(asking?.answerLine()).toBe("You declined Docs-Site's request for input.");
+  });
+
+  it("names the decline, though the other page was withdrawn because the get's call ended", async () => {
+    const { tools, questions, ask } = await setup();
+    const asking = tools.promptAsking(ask());
+    const a = asking?.hooks.onInput?.(pageAsk("legacy"));
+    const b = asking?.hooks.onInput?.(second);
+    const ids = await both(questions);
+
+    await Effect.runPromise(questions.answer(ids.first, { action: "decline" }));
+    await a;
+    // The core's notice to withdraw the other card has not landed when the get settles.
+    await asking?.settle();
+    await b;
+
+    expect(asking?.answerLine()).toBe("You declined Docs-Site's request for input.");
+  });
+
+  it("is none when every question was accepted, and for a get that asked none", async () => {
+    const { tools, ask } = await setup();
+
+    expect(tools.promptAsking(ask())?.answerLine()).toBeUndefined();
+  });
+});

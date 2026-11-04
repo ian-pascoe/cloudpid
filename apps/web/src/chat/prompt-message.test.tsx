@@ -102,8 +102,12 @@ describe("an MCP prompt in the owner's message", () => {
       ],
       sampling: [
         { server: "docs", status: "refused", by: "cloudpid", reason: "over the budget" },
+        { server: "docs", status: "refused", by: "grant", grant: "session" },
         { server: "docs", status: "refused", by: "owner" },
         { server: "docs", status: "answered", by: "owner" },
+        { server: "docs", status: "answered", by: "grant", grant: "call" },
+        { server: "docs", status: "answered", by: "definition" },
+        { server: "docs", status: "failed", by: "cloudpid", reason: "the model failed" },
       ],
     });
 
@@ -113,9 +117,16 @@ describe("an MCP prompt in the owner's message", () => {
     expect(markup).toContain(
       "cloudpid refused docs&#x27;s request to use a model: over the budget",
     );
+    // A refusal by the owner's standing choice for the Session is told too: they were not there for this request.
+    expect(markup).toContain(
+      "You refused docs&#x27;s request to use a model, as you chose for this Session",
+    );
+    expect(markup).not.toContain("used a model");
+    expect(markup).not.toContain("failed");
     expect(markup).not.toContain("You answered");
-    expect(markup).not.toContain("You refused");
     expect(markup).not.toContain("You declined");
+    // The owner's own refusal at a card is not repeated: only the standing choice's line has "You refused".
+    expect(markup.split("You refused")).toHaveLength(2);
   });
 
   it("shows no line for the questions of a prompt that asked none, or only the owner answered", () => {

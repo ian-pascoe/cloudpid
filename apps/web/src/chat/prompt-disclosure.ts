@@ -50,7 +50,7 @@ export const promptUnseenDeclines = (
   ...Arr.map(
     Arr.filter(
       prompt.sampling ?? [],
-      (request) => request.status === "refused" && request.by !== "owner" && request.by !== "grant",
+      (request) => request.status === "refused" && request.by !== "owner",
     ),
     samplingLine,
   ),
