@@ -64,6 +64,7 @@ import { appToolsOf } from "./mcp/app-tools.ts";
 import { appHtmlOf, MCP_APP_FEATURE, type McpAppHtmlInput } from "./mcp/apps.ts";
 import {
   MCP_RESUME_FEATURE,
+  MCP_SAMPLING_FEATURE,
   McpBuildServer,
   mcpExtension,
   mcpNamespaces,
@@ -113,6 +114,19 @@ export {
 } from "./mcp/questions.ts";
 
 export {
+  createMcpSampling,
+  MCP_SAMPLINGS_PER_CALL,
+  McpSampling,
+  type McpSamplingAsk,
+  type McpSamplingBinding,
+  type McpSamplingOptions,
+  type McpSamplingOutcome,
+  type McpSamplingRoles,
+  type McpSamplingRecord,
+  type McpSamplingService,
+} from "./mcp/sampling.ts";
+
+export {
   EMPTY_LISTING,
   emptyMcpExtension,
   type McpListing,
@@ -127,6 +141,7 @@ export {
   extensionName,
   MCP_CALL_SLACK_MS,
   MCP_RESUME_FEATURE,
+  MCP_SAMPLING_FEATURE,
   type McpBuild,
   McpBuildServer,
   type McpCallOrigin,
@@ -146,12 +161,14 @@ export const MCP_TOOL_FEATURES: ReadonlyArray<string> = ["inventory", "call"];
  * `resources` (`./mcp/resources.ts`), and a host without it gets every other tool as before, none of these; an App
  * tool's call reads `app.htmlHash` of its answer, and `mcp_app_html` is served, only with `app_html` (`./mcp/apps.ts`);
  * a call keeps its Modern server's questions for later with `resume` (`./mcp/exchange.ts`), and without it answers
- * them live.
+ * them live; a Legacy server whose definition says `sampling: "allow"` is answered its Sampling requests with
+ * `sampling` (`./mcp/sample.ts`), and none is declared without it.
  */
 export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESOURCE_FEATURE,
   MCP_APP_FEATURE,
   MCP_RESUME_FEATURE,
+  MCP_SAMPLING_FEATURE,
 ];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */

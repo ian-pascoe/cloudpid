@@ -54,6 +54,7 @@ import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
+import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { sessionSettingsMcpAccess } from "./settings-mcp-access.ts";
@@ -577,6 +578,10 @@ export const SessionLive = Session.make(
           session: state.raw.id.toString(),
         });
 
+        // The sampler that answers an allowing Legacy server's Sampling requests on this Session's models, its records kept
+        // in this object's storage (`./mcp-sampling.ts`).
+        const mcpSampling = sessionMcpSampling({ storage: kv });
+
         // The `settings_mcp_*` tools' read of the Registry, and their pushes of a changed set.
         const settingsMcp = sessionSettingsMcpAccess({
           registry: registries.getByName(REGISTRY_NAME),
@@ -609,6 +614,7 @@ export const SessionLive = Session.make(
         const mcpTools = sessionMcp({
           apps: mcpApps.service,
           questions: mcpQuestions.service,
+          sampling: mcpSampling.service,
           signIns: mcpSignIns.service,
           session: name,
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
@@ -995,7 +1001,8 @@ export const SessionLive = Session.make(
               }),
             ),
             // The MCP servers' questions, checked against the Secrets, which are built below.
-            Layer.provideMerge(mcpQuestions.layer),
+            // The sampler too, which redacts its records of the same Secrets.
+            Layer.provideMerge(Layer.merge(mcpQuestions.layer, mcpSampling.layer)),
             // The App records, redacted of the same Secrets.
             Layer.provideMerge(mcpApps.layer),
             // The Sign-in requests, which redact the agent's words of the same Secrets.

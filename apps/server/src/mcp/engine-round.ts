@@ -47,6 +47,7 @@ import {
   targetOf,
   type McpDiscoveryServices,
 } from "./discovery.ts";
+import { deprecationHook } from "./deprecation-notes.ts";
 import { McpEngineClient } from "./engine.ts";
 import { type EngineCallKind, McpLoadCaps } from "./limits.ts";
 import { recordLogs } from "./logs.ts";
@@ -316,8 +317,17 @@ export const sendToEngine = (
     const run = Effect.runPromiseWith(yield* Effect.context<never>());
     const { auth } = access;
 
+    // The server's first Sampling request, on whatever path it comes (a call's stream, the standalone one, one refused for
+    // want of a conversation), is noted on its status and logged, once per server per host lifetime (SEP-2577 deprecates
+    // sampling: `mcp-server-requests.md` → Sampling requests, Deprecation). An engine from before never calls the hook.
+    const noting: Pick<McpEngineHooks, "onDeprecated"> = {
+      onDeprecated: deprecationHook(store, server, run),
+    };
+
     const engineHooks: McpEngineHooks =
-      auth === undefined ? hooks : { ...hooks, auth: (stale) => run(auth(stale)) };
+      auth === undefined
+        ? { ...hooks, ...noting }
+        : { ...hooks, ...noting, auth: (stale) => run(auth(stale)) };
 
     /** Whether the engine was given the call: an abort before it was cannot have run anything. */
     let sent = false;

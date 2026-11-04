@@ -24,6 +24,8 @@ import {
   type McpHostClientService,
   type McpNotices,
   type McpQuestionsService,
+  type McpSamplingBinding,
+  type McpSamplingService,
   type McpSignInsService,
   type McpToolOptions,
   type McpToolsService,
@@ -260,6 +262,11 @@ export type SessionMcpOptions = {
   readonly codemode: (namespaces: ReadonlyArray<CodemodeNamespace>) => Extension;
   /** The Session's MCP questions: with them, a Legacy server's elicitation form is shown to the owner. */
   readonly questions?: McpQuestionsService;
+  /**
+   * The Session's sampler: with it, a call to a Legacy server whose definition says `sampling: "allow"` is answered its
+   * Sampling requests, on the models the host binds (`SessionHostMcp.bindSampling`).
+   */
+  readonly sampling?: McpSamplingService;
   /** The Session's Sign-in requests: with them, the build registers `mcp_sign_in_ask` when the set has a server that can need one. */
   readonly signIns?: McpSignInsService;
   /** Where the records of App calls and the inventory's App tools are kept (`./mcp-apps-store.ts`). */
@@ -308,6 +315,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     };
 
     if (options.questions !== undefined) toolOptions.questions = options.questions;
+
+    if (options.sampling !== undefined) toolOptions.sampling = options.sampling;
 
     if (options.signIns !== undefined) toolOptions.signIns = options.signIns;
 
@@ -513,7 +522,12 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
         })
       : held.tools.appHtml(input);
 
-  return { start, reinstall, bind, notify, prompts, appHtml };
+  /** The models, Roles, limit and Usage the sampler works with, once the host's Harness is open. */
+  const bindSampling = (binding: McpSamplingBinding) => {
+    options.sampling?.bind(binding);
+  };
+
+  return { start, reinstall, bind, bindSampling, notify, prompts, appHtml };
 };
 
 /** What a prompt get came to: the result `use` made, or why it is refused. */

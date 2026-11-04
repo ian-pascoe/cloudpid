@@ -172,6 +172,35 @@ const AskArguments = Schema.Struct({
   roots: Schema.optionalKey(Schema.Boolean),
 });
 
+/**
+ * The fakes' tool that asks the client for a model reply (`sampling/createMessage`) during the call, `rounds` times (a
+ * tool loop of the server's own; default 1), each with the request's `params` as given (a one-message request with
+ * `maxTokens` 100 when it gives none), and answers with the last reply as JSON text, or, when the client refused a
+ * request, `isError` with the error's `code` and message. Every reply or error is recorded in `sampled`.
+ */
+export const SAMPLE_TOOL = {
+  name: "sample",
+  description: "Ask the client for a model reply, then answer with what it said.",
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      rounds: { type: "number" },
+      params: { type: "object" },
+      standalone: { type: "boolean" },
+      giveUpMs: { type: "number" },
+    },
+  },
+};
+
+const SampleArguments = Schema.Struct({
+  rounds: Schema.optionalKey(Schema.Int),
+  params: Schema.optionalKey(Schema.Json),
+  /** Ask on the server's standalone stream (the GET stream), not on the call's own. */
+  standalone: Schema.optionalKey(Schema.Boolean),
+  /** Stop waiting for the reply after this many milliseconds: the server cancels its own request. */
+  giveUpMs: Schema.optionalKey(Schema.Int),
+});
+
 /** The MIME type of an MCP App's HTML (`docs/architecture/mcp-apps.md` → Declaring and reading Apps). */
 export const APP_MIME_TYPE = "text/html;profile=mcp-app";
 
@@ -263,6 +292,8 @@ export interface FakeOptions {
   readonly cancelled?: Array<string>;
   /** What the client answered the `ask` tool's questions with (`{ action, content? }`), or the error it refused with. */
   readonly asked?: Array<Json>;
+  /** What the client answered the `sample` tool's requests with (a `CreateMessageResult`), or `{ error, code }`. */
+  readonly sampled?: Array<Json>;
   /** Further tools listed last, which answer as `echo` does unless something in front of the server answers first. */
   readonly moreTools?: ReadonlyArray<Tool>;
   /**
@@ -569,6 +600,49 @@ const fakeMcp = (
           options.asked?.push({ error: text });
 
           return { isError: true, content: [{ type: "text", text }] };
+        }
+      }
+
+      case "sample": {
+        const { rounds, params, standalone, giveUpMs } = Schema.decodeUnknownSync(SampleArguments)(
+          request.params.arguments,
+        );
+
+        // SAFETY: the test gives the request's parameters, which the SDK's own check reads.
+        const asked = {
+          messages: [{ role: "user", content: { type: "text", text: "Hello" } }],
+          maxTokens: 100,
+          ...(params as object),
+        } as never;
+
+        let answer: unknown;
+
+        try {
+          for (let round = 0; round < (rounds ?? 1); round++) {
+            answer =
+              standalone === true
+                ? await server.createMessage(asked)
+                : await ctx.mcpReq.send(
+                    { method: "sampling/createMessage", params: asked },
+                    giveUpMs === undefined ? undefined : { signal: AbortSignal.timeout(giveUpMs) },
+                  );
+
+            // SAFETY: a sampling result is JSON.
+            options.sampled?.push({ ...(answer as object) } as Json);
+          }
+
+          return { content: [{ type: "text", text: JSON.stringify(answer) }] };
+        } catch (error) {
+          const text = error instanceof Error ? error.message : "failed";
+
+          const code =
+            Predicate.hasProperty(error, "code") && Predicate.isNumber(error.code)
+              ? error.code
+              : undefined;
+
+          options.sampled?.push({ error: text, code: code ?? null });
+
+          return { isError: true, content: [{ type: "text", text: `${code ?? "?"}: ${text}` }] };
         }
       }
 

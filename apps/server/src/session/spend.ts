@@ -13,7 +13,9 @@ import {
 } from "@earendil-works/pi-ai/utils/event-stream";
 import type { UsageState } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import * as Record from "effect/Record";
+import type { Mutable } from "effect/Types";
 import type { SettingsKv } from "./settings.ts";
 
 /** Token counts and cost (US dollars) added up. */
@@ -80,6 +82,62 @@ export const unledgeredTotals = (kv: SettingsKv): Totals =>
 export const recordUnledgeredUsage = (kv: SettingsKv, usage: Spend): void =>
   kv.put(UNLEDGERED_USAGE_KEY, addTotals(unledgeredTotals(kv), usage));
 
+/**
+ * Where the Sampling requests' usage is kept: an MCP server's requests run on the Session's models but belong to no
+ * conversation's ledger, so they are counted here, by the conversation whose call carried the request and the server that
+ * made it (`docs/architecture/mcp-server-requests.md` → Sampling requests, Usage).
+ */
+const SAMPLING_USAGE_KEY = "mcp-sampling-usage";
+
+/** What one conversation's calls of one server cost in Sampling requests. */
+export type SamplingEntry = Totals & {
+  readonly conversationId: number;
+  readonly server: string;
+  /** The requests made, answered or not once they reached a model. */
+  readonly requests: number;
+};
+
+/** What the Sampling requests have cost the Session, and how many reached a model. */
+export type SamplingTotals = Totals & { readonly requests: number };
+
+/** The Sampling usage kept, by conversation and server. */
+export const samplingEntries = (kv: SettingsKv): ReadonlyArray<SamplingEntry> =>
+  kv.get<ReadonlyArray<SamplingEntry>>(SAMPLING_USAGE_KEY) ?? [];
+
+/** The Sampling usage of the whole Session. */
+export const samplingTotals = (kv: SettingsKv): SamplingTotals =>
+  Arr.reduce(
+    samplingEntries(kv),
+    { ...NO_TOTALS, requests: 0 },
+    (total: SamplingTotals, entry): SamplingTotals => ({
+      ...plusTotals(total, entry),
+      requests: total.requests + entry.requests,
+    }),
+  );
+
+/** Add one Sampling request's usage to what `server`'s calls in `conversationId` have cost. */
+export const recordSamplingUsage = (
+  kv: SettingsKv,
+  who: { readonly conversationId: number; readonly server: string },
+  usage: Spend,
+): void => {
+  const entries = samplingEntries(kv);
+
+  const held = Arr.findFirst(
+    entries,
+    (each) => each.conversationId === who.conversationId && each.server === who.server,
+  ).pipe(Option.getOrUndefined);
+
+  const next: SamplingEntry = {
+    ...addTotals(held ?? NO_TOTALS, usage),
+    conversationId: who.conversationId,
+    server: who.server,
+    requests: (held?.requests ?? 0) + 1,
+  };
+
+  kv.put(SAMPLING_USAGE_KEY, [...Arr.filter(entries, (each) => each !== held), next]);
+};
+
 /** `left` and `right` added. */
 export const plusTotals = (left: Totals, right: Totals): Totals => ({
   input: left.input + right.input,
@@ -93,9 +151,12 @@ export const plusTotals = (left: Totals, right: Totals): Totals => ({
 /** What of the Harness the Session reads its spend from. */
 export type Ledger = { readonly usage: (context: Context) => Promise<UsageState> };
 
-/** What the Session has spent: every conversation's ledger summed, and the title calls'. */
+/** What the Session has spent: every conversation's ledger summed, the title calls' and the Sampling requests'. */
 export const sessionTotals = async (ledger: Ledger, kv: SettingsKv): Promise<Totals> =>
-  plusTotals(totalsOf(await ledger.usage(BACKGROUND_CONTEXT)), unledgeredTotals(kv));
+  plusTotals(
+    plusTotals(totalsOf(await ledger.usage(BACKGROUND_CONTEXT)), unledgeredTotals(kv)),
+    samplingTotals(kv),
+  );
 
 /**
  * What a client is shown: the totals, the limit in force, what the Workspace's Containers cost and how full the active
@@ -106,11 +167,17 @@ export const usageMessage = (
   limit: number | null,
   container: ContainerUsage | null = null,
   context: ContextUsage | null = null,
+  sampling: SamplingTotals | null = null,
 ): SessionUsage => {
-  const message: SessionUsage = { ...totals, limit };
-  const withContainer = container === null ? message : { ...message, container };
+  const message: Mutable<SessionUsage> = { ...totals, limit };
 
-  return context === null ? withContainer : { ...withContainer, context };
+  if (container !== null) message.container = container;
+
+  if (context !== null) message.context = context;
+
+  if (sampling !== null && sampling.requests > 0) message.sampling = sampling;
+
+  return message;
 };
 
 /** Whether `spent` has reached `limit`. */
@@ -119,6 +186,10 @@ export const isOverLimit = (spent: number, limit: number): boolean => spent >= l
 /** Cents, or the first digit of an amount under a cent, so a small limit does not read as zero. */
 const dollars = (amount: number): string =>
   `${amount > 0 && amount < 0.01 ? amount.toPrecision(1) : amount.toFixed(2)} US dollars`;
+
+/** Why a Sampling request is refused at the limit, in a clause: the owner reads it on the call. */
+export const spendReason = (spent: number, limit: number): string =>
+  `it has spent ${dollars(spent)} of its ${dollars(limit)} limit`;
 
 /**
  * What a refused request ends with, and so what the owner reads (in the assistant message and in the push of the failed
@@ -197,3 +268,42 @@ export const limitingModels = (models: Models, gate: SpendGate): Models =>
 
     return stream;
   });
+
+/**
+ * Why the spend limit stops a request now, in a clause (`spendReason`), or undefined when it does not: the limit in force
+ * against what `gate` reports spent, a spend that cannot be read letting the request through as it does the Harness's.
+ */
+export const overLimitReason = async (gate: SpendGate): Promise<string | undefined> => {
+  const limit = gate.limit();
+
+  if (limit === null) return undefined;
+
+  const spent = await gate.spent();
+
+  return spent !== undefined && isOverLimit(spent, limit) ? spendReason(spent, limit) : undefined;
+};
+
+/**
+ * The gate over the Session's spend: its `limit`, and what is spent read from `ledger` (the open Harness, absent until it
+ * is: a request made before that is not held) and the Session's own storage. One gate holds the Harness's requests and a
+ * Sampling request alike.
+ */
+export const ledgerGate = (input: {
+  readonly limit: () => number | null;
+  readonly ledger: () => Ledger | undefined;
+  readonly kv: SettingsKv;
+  readonly failed?: ((reason: string) => void) | undefined;
+}): SpendGate => {
+  const gate: Mutable<SpendGate> = {
+    limit: input.limit,
+    spent: async () => {
+      const ledger = input.ledger();
+
+      return ledger === undefined ? undefined : (await sessionTotals(ledger, input.kv)).cost;
+    },
+  };
+
+  if (input.failed !== undefined) gate.failed = input.failed;
+
+  return gate;
+};

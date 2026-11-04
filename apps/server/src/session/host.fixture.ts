@@ -131,12 +131,13 @@ import type { HeldStop } from "../workspace/idle.ts";
 import { sessionOwnerTabDriversLayer } from "./owner-tab-drivers.ts";
 import { pricedModels, REQUEST_COST } from "./priced.fixture.ts";
 import { isWithdrawn } from "./errors.ts";
-import { sessionTotals } from "./spend.ts";
+import { samplingTotals, sessionTotals } from "./spend.ts";
 import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import type { McpSignInAskAnswer } from "@cloudpid/mcp/types";
 import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
+import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
 import {
   instructionsSettings,
@@ -716,6 +717,15 @@ export class TestSession extends DurableObject {
     return this.#mcpQuestions().service;
   }
 
+  /** The Session's MCP sampler, made once: the MCP tools sample through its service, the runtime provides its layer. */
+  #sampling: ReturnType<typeof sessionMcpSampling> | undefined;
+
+  #mcpSampling(): ReturnType<typeof sessionMcpSampling> {
+    this.#sampling ??= sessionMcpSampling({ storage: this.ctx.storage.kv });
+
+    return this.#sampling;
+  }
+
   /**
    * The Session's Sign-in requests, made once, over a Registry that answers what `scriptSignIn` says and records what it is
    * asked (`signInAsks`): the tools ask through its service, the runtime provides its layer.
@@ -788,6 +798,7 @@ export class TestSession extends DurableObject {
     const mcp = sessionMcp({
       apps: this.#mcpApps().service,
       questions: this.#mcpQuestions().service,
+      sampling: this.#mcpSampling().service,
       signIns: this.#mcpSignIns().service,
       session: this.ctx.id.name,
       host: (environment) =>
@@ -1199,7 +1210,7 @@ export class TestSession extends DurableObject {
               notify: (event) => Effect.ignore(Effect.tryPromise(() => this.#notify(event))),
             }),
           ),
-          Layer.provideMerge(this.#mcpQuestions().layer),
+          Layer.provideMerge(Layer.merge(this.#mcpQuestions().layer, this.#mcpSampling().layer)),
           Layer.provideMerge(this.#mcpApps().layer),
           Layer.provideMerge(this.#mcpSignIns().layer),
           Layer.provideMerge(
@@ -1708,6 +1719,16 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /** What the MCP servers' Sampling requests have cost this Session, and how many reached a model. */
+  samplingUsage() {
+    return samplingTotals(this.ctx.storage.kv);
+  }
+
+  /** The records of the Sampling requests, oldest first. */
+  samplingRecords() {
+    return Effect.runPromise(this.#mcpSampling().service.records);
+  }
+
   /** Whether no work is live; reads only, so it never runs work itself. */
   idle(): Promise<boolean> {
     return Effect.runPromise(this.#host.idle);
@@ -2205,6 +2226,18 @@ export class TestSession extends DurableObject {
   /** Offer `offered` in the Settings of a Session with MCP tools, and read them again as a settings change does. */
   mcpOffered(offered: ReadonlyArray<string>): Promise<void> {
     this.ctx.storage.kv.put("mcp-global", { tools: { offered } });
+
+    return Effect.runPromise(this.#host.sync);
+  }
+
+  /** Hold a Session with MCP tools to a spend limit of `perSession` US dollars, and read the settings again. */
+  mcpSpendLimit(perSession: number): Promise<void> {
+    const { kv } = this.ctx.storage;
+
+    kv.put("mcp-global", {
+      ...kv.get<Record<string, Schema.Json>>("mcp-global"),
+      spendLimit: { perSession },
+    });
 
     return Effect.runPromise(this.#host.sync);
   }

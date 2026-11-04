@@ -14,9 +14,11 @@
 // round ends as `InputRequired`, is stored whole and marked (`mcp.wait.<r>`), and the call waits with no clock running;
 // once the owner has answered, `mcp.resumed.<r>` is written and the resume sent. A rerun after a restart waits again
 // for a round so marked, and settles any other call it finds sent as one that may have run.
+import { samplingOf } from "@cloudpid/config";
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
+  MCP_SAMPLING_WAIT_MS,
   type McpAnswers,
   type McpHostCompleted,
   type McpHostRequest,
@@ -41,9 +43,11 @@ import type { Mutable } from "effect/Types";
 import { agentOf, conversationWorkspace, SubagentsDoc } from "../subagents/state.ts";
 import type { McpAppRecorder } from "./apps.ts";
 import type { McpHostClientService } from "./client.ts";
-import type { McpDetails, McpElicitationDetail } from "./details.ts";
+import type { McpDetails, McpElicitationDetail, McpSamplingDetail } from "./details.ts";
 import { elicitingHooks, withElicitation } from "./elicit.ts";
 import type { Subject } from "./ended.ts";
+import { samplingHooks, withSampling } from "./sample.ts";
+import type { McpSamplingService } from "./sampling.ts";
 import {
   failedWith,
   failureResult,
@@ -70,6 +74,18 @@ export const MCP_CALL_SLACK_MS = 3 * MCP_CONNECT_TIMEOUT_MS + 15_000;
 /** The longest a result's stream may be quiet while the Session reads it before it is read as lost, in ms. */
 export const MCP_STREAM_IDLE_MS = 30_000;
 
+/**
+ * The host feature a call answers a Legacy server's Sampling requests with: a host that lists it declares `sampling` to a
+ * server whose definition says `allow` (`docs/architecture/mcp-server-requests.md` → Sampling requests). Without it no
+ * server is told it may sample, so none asks.
+ */
+export const MCP_SAMPLING_FEATURE = "sampling";
+
+/** Whether the host lists `sampling`: a call to a server that `allow`s it may then say it can answer its requests. */
+export const samplesOf = (build: {
+  readonly features?: ReadonlyArray<string> | undefined;
+}): boolean => build.features?.includes(MCP_SAMPLING_FEATURE) === true;
+
 /** How the tools wait: the slack past a call's timeout, `MCP_CALL_SLACK_MS` unless a test shortens it. */
 export type McpToolOptions = {
   readonly slackMs?: number;
@@ -89,6 +105,12 @@ export type McpToolOptions = {
    * without them, every question a server asks is cancelled.
    */
   readonly questions?: McpQuestionsService;
+  /**
+   * The Session's sampler. With it, a call to a Legacy server whose definition says `sampling: "allow"`, on a host that
+   * lists `sampling`, says it can answer the server's Sampling requests (`ctx.answers`), which run on the Session's
+   * models (`docs/architecture/mcp-server-requests.md` → Sampling requests); without it none is declared or answered.
+   */
+  readonly sampling?: McpSamplingService | undefined;
   /**
    * The Session's Sign-in requests, and the Environment they are for: with both, the build registers `mcp_sign_in_ask` when
    * its set has a server that can need a sign-in (`docs/architecture/mcp-sign-in.md` → Sign-in requests).
@@ -126,6 +148,19 @@ const ELICITATION_ANSWERS: McpAnswers = {
  * `input_required`, and the call waits for the owner after it.
  */
 const DEFERRING_ANSWERS: McpAnswers = { ...ELICITATION_ANSWERS, defer: true };
+
+/** What a call says it can answer when its server may sample: for as long as a sample may take, and a little more. */
+const SAMPLING_ANSWERS: McpAnswers = {
+  sampling: true,
+  inputWaitMs: MCP_SAMPLING_WAIT_MS + 15_000,
+};
+
+/** `answers` and what a call that samples adds to it (the larger wait of the two). */
+const withSamplingAnswers = (answers: McpAnswers | undefined): McpAnswers => ({
+  ...answers,
+  ...SAMPLING_ANSWERS,
+  inputWaitMs: Math.max(answers?.inputWaitMs ?? 0, SAMPLING_ANSWERS.inputWaitMs ?? 0),
+});
 
 /** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
 const SENT = "mcp.sent";
@@ -240,6 +275,8 @@ export type Exchange = {
    * later, when the Session's questions can (`McpQuestionsService.defers`).
    */
   readonly defers?: boolean | undefined;
+  /** Whether the host lists `sampling`: a call or read to a server that may sample says it can answer (`options.sampling`). */
+  readonly samples?: boolean | undefined;
 };
 
 /**
@@ -260,7 +297,13 @@ export type OnValue<A> = (
 
 /** What a request came to: what `onValue` made of its value and the questions asked, or the result that says why not. */
 export type Sent<A> =
-  | { readonly ok: true; readonly value: A; readonly asked: Array<McpElicitationDetail> }
+  | {
+      readonly ok: true;
+      readonly value: A;
+      readonly asked: Array<McpElicitationDetail>;
+      /** The Sampling requests the server made, answered or not. */
+      readonly sampled: Array<McpSamplingDetail>;
+    }
   | { readonly ok: false; readonly result: ToolExecutionResult<JsonValue> };
 
 /**
@@ -352,12 +395,31 @@ export const send = async <A>(
           resume: Effect.suspend(() => clock?.resume ?? Effect.void),
         });
 
+  // A Legacy HTTP server whose definition says `allow` is answered its Sampling requests on the Session's models, on a
+  // tool's call and a resource read (`exchange.samples`); a stdio server declares none until #569.
+  const sampling =
+    options.sampling !== undefined &&
+    exchange.samples === true &&
+    samplingOf(server.server) === "answer"
+      ? samplingHooks({
+          sampling: options.sampling,
+          server: server.name,
+          tool,
+          callId: api.callId,
+          conversationId: api.conversationId,
+          signal: context.abortSignal,
+        })
+      : undefined;
+
   // A rerun's call tells of the questions its earlier rounds were asked, as the instance that asked them would have.
   if (waiting !== undefined) asking?.asked.push(...waiting.asked);
 
+  const questionAnswers =
+    questions === undefined ? undefined : deferring ? DEFERRING_ANSWERS : ELICITATION_ANSWERS;
+
   const request = build(
     workspace,
-    questions === undefined ? undefined : deferring ? DEFERRING_ANSWERS : ELICITATION_ANSWERS,
+    sampling === undefined ? questionAnswers : withSamplingAnswers(questionAnswers),
   );
 
   // Durable before the request leaves, so a restart finds the call sent.
@@ -382,9 +444,20 @@ export const send = async <A>(
         ),
     };
 
-    if (asking !== undefined) {
+    if (asking !== undefined && sampling === undefined) {
       hooks.onInput = asking.onInput;
       hooks.onInputEnded = asking.onInputEnded;
+    } else if (sampling !== undefined) {
+      // A request goes to the hook of its kind.
+      hooks.onInput = (input) =>
+        input.kind === "sampling" || asking === undefined
+          ? sampling.onInput(input)
+          : asking.onInput(input);
+
+      hooks.onInputEnded = async (key) => {
+        sampling.onInputEnded(key);
+        await asking?.onInputEnded(key);
+      };
     }
 
     const result = await Promise.race([
@@ -414,6 +487,7 @@ export const send = async <A>(
       ok: true,
       value: await onValue(value, result, caller),
       asked: [],
+      sampled: [],
     });
 
     if (result.result.kind !== "stream") return done(result.result.value);
@@ -505,13 +579,19 @@ export const send = async <A>(
 
     await asking?.idle();
 
+    // A sample the server stopped waiting for ends too (its request is aborted), and is told in `details` all the same.
+    await sampling?.idle();
+
     const asked = asking?.asked ?? [];
+    const sampled = sampling?.asked ?? [];
 
     return sent.ok
-      ? { ok: true, value: sent.value, asked }
-      : { ok: false, result: withElicitation(sent.result, asked) };
+      ? { ok: true, value: sent.value, asked, sampled }
+      : { ok: false, result: withSampling(withElicitation(sent.result, asked), sampled) };
   } finally {
     // However it ended, nothing is left waiting (a second settle is a no-op).
     if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
+
+    await sampling?.settle();
   }
 };

@@ -48,9 +48,11 @@ import {
   type McpCallOrigin,
   type McpToolOptions,
   parentCallOf,
+  samplesOf,
   send,
 } from "./exchange.ts";
 import { withElicitation } from "./elicit.ts";
+import { withSampling } from "./sample.ts";
 import { exposureKeys, flagsOf, isReachable, reachesModel } from "./exposure.ts";
 import { type McpResultContext, resultFor } from "./result.ts";
 import { resourceTools } from "./resources.ts";
@@ -58,7 +60,7 @@ import { signInTool } from "./sign-in-tool.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { spillTo } from "./spill.ts";
 
-export { MCP_CALL_SLACK_MS, MCP_STREAM_IDLE_MS } from "./exchange.ts";
+export { MCP_CALL_SLACK_MS, MCP_SAMPLING_FEATURE, MCP_STREAM_IDLE_MS } from "./exchange.ts";
 
 export type { McpCallOrigin, McpToolOptions } from "./exchange.ts";
 
@@ -90,6 +92,8 @@ export const McpBuildServer = Schema.Struct({
     type: Schema.optionalKey(Schema.Json),
     timeout: Schema.optionalKey(Schema.Json),
     description: Schema.optionalKey(Schema.Json),
+    /** `ask`, `allow` or `off` (`ask` by default): only `allow` has its Sampling requests answered, on the Session's models, for now (`samplingOf`). */
+    sampling: Schema.optionalKey(Schema.Json),
     exposure: Schema.optionalKey(Schema.Json),
     toolExposure: Schema.optionalKey(Schema.Json),
   }),
@@ -153,6 +157,7 @@ const toolFor = (
   readServer: string | undefined,
   appHtml: boolean,
   defers: boolean,
+  samples: boolean,
 ): ToolRegistration => {
   const base = baseDetails(server.name, tool);
   const app = options.apps !== undefined && appUriOfMeta(tool._meta) !== undefined;
@@ -166,6 +171,7 @@ const toolFor = (
     details: base,
     subject: "tool",
     defers,
+    samples,
   };
 
   return {
@@ -226,7 +232,9 @@ const toolFor = (
         },
       );
 
-      return sent.ok ? withElicitation(sent.value, sent.asked) : sent.result;
+      return sent.ok
+        ? withSampling(withElicitation(sent.value, sent.asked), sent.sampled)
+        : sent.result;
     },
   };
 };
@@ -276,6 +284,9 @@ export const mcpExtension = (
   // A Modern server's questions wait for the owner past their round only on a host that resumes the call.
   const defers = build.features?.includes(MCP_RESUME_FEATURE) === true;
 
+  // A Legacy server's Sampling requests are answered only on a host that lists `sampling` (it declares them to the server).
+  const samples = samplesOf(build);
+
   const tools = Arr.flatMap(build.servers, (server) => {
     const listed = listedTools(server);
 
@@ -312,6 +323,7 @@ export const mcpExtension = (
               readServerOf(server),
               appHtml,
               defers,
+              samples,
             ),
           );
     });

@@ -28,6 +28,7 @@ export {
   ROOTS_TOOL,
   type RpcBody,
   rpcMethods,
+  SAMPLE_TOOL,
   SHOUT_TOOL,
   sse,
   TASKS_EXTENSION,

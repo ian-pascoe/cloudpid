@@ -111,6 +111,8 @@ export const McpServerStatusView = Schema.Struct({
   failures: Schema.Int,
   nextRetryAt: Schema.optionalKey(Schema.Finite),
   lastOkAt: Schema.optionalKey(Schema.Finite),
+  /** What the server has used that the MCP spec deprecated (`sampling`), as the host saw it since it started. */
+  deprecated: Schema.Array(Schema.String).pipe(Schema.optionalKey),
 });
 
 export type McpServerStatusView = typeof McpServerStatusView.Type;

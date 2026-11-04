@@ -108,7 +108,7 @@ const ringOf = async (host: Host, server: string) => {
 };
 
 describe("a discovery's logs", () => {
-  it("come back in the result of a discovery that passed no hooks, and are kept, oldest first", async () => {
+  it("come back in the result of a discovery that passed only the deprecation hook, and are kept, oldest first", async () => {
     const host = freshHost();
 
     await host.apply(setOf(entry("docs")));
@@ -116,7 +116,7 @@ describe("a discovery's logs", () => {
 
     const [call] = await host.engineCalls();
 
-    expect(call?.hooks).toEqual([]);
+    expect(call?.hooks).toEqual(["onDeprecated"]);
     expect(await ringOf(host, "docs")).toEqual([
       log(1, "info"),
       log(2, "warning", "disk"),

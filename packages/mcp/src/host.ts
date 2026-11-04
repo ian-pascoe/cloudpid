@@ -315,6 +315,7 @@ export const MCP_HOST_FEATURES: ReadonlyArray<string> = [
   "app_html",
   "resources",
   "resume",
+  "sampling",
 ];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */
@@ -463,6 +464,8 @@ export const McpServerStatus = Schema.Struct({
   failures: Schema.Int,
   nextRetryAt: Schema.optionalKey(Schema.Finite),
   lastOkAt: Schema.optionalKey(Schema.Finite),
+  /** What the server has used that the spec deprecated (`sampling`), as the host saw it since it started. */
+  deprecated: Schema.Array(Schema.String).pipe(Schema.optionalKey),
 });
 
 export type McpServerStatus = typeof McpServerStatus.Type;

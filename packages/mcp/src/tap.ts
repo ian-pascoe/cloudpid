@@ -312,7 +312,8 @@ const watchStream = (
         // A question on this call's stream is tied to the call, before the SDK is given the event that carries it.
         if (
           tie !== undefined &&
-          message.method === "elicitation/create" &&
+          (message.method === "elicitation/create" ||
+            message.method === "sampling/createMessage") &&
           message.id !== undefined &&
           message.id !== null
         ) {

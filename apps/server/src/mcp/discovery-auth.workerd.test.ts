@@ -139,14 +139,14 @@ const discovered = async (
 };
 
 describe("the token in a discovery", () => {
-  it("is asked of the Registry and sent as the target's Authorization header, with no callback", async () => {
+  it("is asked of the Registry and sent as the target's Authorization header, with no callback but the deprecation note", async () => {
     const host = await discovered([ok(TOKEN)], [found(["issues"])]);
 
     expect(await stateOf(host, "sentry")).toBe("connected");
     expect(await sent(host)).toEqual([`Bearer ${TOKEN}`]);
     expect(await host.tokenAsks()).toEqual([{ environment: expect.any(String), server: "sentry" }]);
     // A background discovery passes no hook: a function stub would not outlive its invocation.
-    expect((await host.engineCalls()).map((call) => call.hooks)).toEqual([[]]);
+    expect((await host.engineCalls()).map((call) => call.hooks)).toEqual([["onDeprecated"]]);
     // A server that was not waiting for a sign-in is not reported to the Registry as working.
     expect(await host.reports()).toEqual([]);
   });
