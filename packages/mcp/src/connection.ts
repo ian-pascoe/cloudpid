@@ -284,7 +284,10 @@ export interface InputRequired {
 export interface PagesRequired {
   readonly kind: "pages_required";
   readonly requests: ReadonlyArray<McpInputRequest>;
-  readonly resend: ResendStateV1;
+  /** The server's own error. */
+  readonly message: string;
+  /** What `resend` sends the call again from; absent for a `resources/read`, which the caller sends again as it was. */
+  readonly resend?: ResendStateV1;
   readonly fetchedAt: number;
 }
 
@@ -420,7 +423,7 @@ export interface McpConnection {
     uri: string,
     ctx: McpCallContext,
     options?: ReadOptions,
-  ) => Effect.Effect<ReadComplete, McpError>;
+  ) => Effect.Effect<ReadComplete | PagesRequired, McpError>;
   /**
    * One `prompts/get` of prompt `name` with `args`: a read of a server's own template, so it is sent once more after a
    * cut. The owner's request, never the agent's (`docs/architecture/mcp-in-a-session.md` → Getting a prompt at send).
@@ -1545,18 +1548,15 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     });
 
   /**
-   * A Legacy server's `-32042`, round `round` of its call: the call ran nothing, so it waits for the owner and is sent
-   * again. Each page it lists goes to `onInput` as a question to keep (`defer`), and the call ends as `input_required`
-   * with a `ResumeState` that `resume` sends the original request again from, on a new id, once every page is answered
-   * `accept`. A page the caller does not keep (it declined it unseen), and the call's eleventh `-32042`, end the call
-   * with the server's own error: the latter says the server kept asking, and the call is never sent again.
+   * A Legacy server's `-32042`, round `round` of its request: it ran nothing, so it waits for the owner and is sent
+   * again. Each page it lists goes to `onInput` as a question to keep (`defer`). A page the caller does not keep (it
+   * declined it unseen), and the eleventh `-32042`, end the request with the server's own error: the latter says the
+   * server kept asking, and the request is never sent again.
    */
-  const keepPages = (
-    params: CallToolParams,
-    ctx: McpCallContext,
+  const deferPages = (
     answer: UrlRequired,
     round: number,
-  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+  ): Effect.Effect<ReadonlyArray<McpInputRequest>, McpError> =>
     Effect.gen(function* () {
       const { onInput } = deps;
       const error = ServerError.make({ message: answer.message, code: URL_REQUIRED_CODE });
@@ -1585,6 +1585,22 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         deferred.push(input);
       }
 
+      return deferred;
+    });
+
+  /**
+   * A Legacy `tools/call`'s `-32042` (round `round`): each page it lists is kept, and the call ends as `pages_required`
+   * with the `ResendState` that `resend` sends the original request again from, on a new id, once every page is
+   * answered `accept`.
+   */
+  const keepPages = (
+    params: CallToolParams,
+    answer: UrlRequired,
+    round: number,
+  ): Effect.Effect<Outcome<CallToolResult>, McpError> =>
+    Effect.gen(function* () {
+      const deferred = yield* deferPages(answer, round);
+
       const state: ResendStateV1 = {
         v: 1,
         method: "tools/call",
@@ -1605,6 +1621,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       return {
         kind: "pages_required",
         requests: deferred,
+        message: answer.message,
         resend: state,
         fetchedAt: yield* Clock.currentTimeMillis,
       } satisfies PagesRequired;
@@ -1629,7 +1646,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       let round = firstRound;
 
       while (answer.kind === "asked" || answer.kind === "url_required") {
-        if (answer.kind === "url_required") return yield* keepPages(params, ctx, answer, round);
+        if (answer.kind === "url_required") return yield* keepPages(params, answer, round);
 
         if (round > MCP_INPUT_ROUNDS) {
           return yield* ProtocolViolation.make({
@@ -2078,6 +2095,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     ctx: McpCallContext,
     more: Readonly<Record<string, string>> | undefined,
     retry?: Retry,
+    keepsPages = false,
   ) => {
     const timeoutMs = readTimeoutMs();
 
@@ -2093,6 +2111,14 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
             { method: "resources/read", params: { ...params, ...retry } },
             headers === undefined ? timing : { ...timing, headers },
           ),
+        ).then(
+          (value) => value,
+          (error: Error) => {
+            // A `-32042` is a question for a read that keeps pages; to any other it is the server's error.
+            const url = keepsPages ? urlRequiredOf(error) : undefined;
+
+            return url === undefined ? Promise.reject(error) : url;
+          },
         );
       }, false),
     );
@@ -2112,7 +2138,21 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       // A read has no resume: its caller's deferrals are cancels.
       const asking = noDeferral(ctx);
 
-      let value: ReadResourceResult | Result = yield* readOnce(params, asking, more);
+      const first = yield* readOnce(params, asking, more, undefined, mayKeepPages(ctx));
+
+      // A Legacy server's `-32042` on a read: its pages are kept for the owner, and the caller sends the read again as it
+      // was once they are done (a read has no state; the caller counts the rounds and ends the eleventh).
+      if (isUrlRequired(first)) {
+        return {
+          kind: "pages_required",
+          requests: yield* deferPages(first, 1),
+          message: first.message,
+          fetchedAt: yield* Clock.currentTimeMillis,
+        } satisfies PagesRequired;
+      }
+
+      // SAFETY: a `-32042` returned above; anything else is the result the SDK validated.
+      let value = first as ReadResourceResult | Result;
       let round = 1;
 
       while (value["resultType"] === "input_required") {
@@ -2131,7 +2171,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
         if (asked.requestState !== undefined) retry.requestState = asked.requestState;
 
-        value = yield* readOnce(params, asking, more, retry);
+        // SAFETY: a round's retry is sent without `keepsPages`, so it is never answered as a `-32042`.
+        value = (yield* readOnce(params, asking, more, retry)) as ReadResourceResult | Result;
         round += 1;
       }
 
@@ -2337,6 +2378,10 @@ const decodeUrlElicitations = Schema.decodeUnknownOption(
     ),
   }),
 );
+
+/** Whether a read's answer is a Legacy server's `-32042` rather than a result. */
+const isUrlRequired = (answer: ReadResourceResult | Result | UrlRequired): answer is UrlRequired =>
+  answer["kind"] === "url_required";
 
 /** A Legacy server's `-32042` and the pages it lists, when `error` is one that lists any. */
 const urlRequiredOf = (error: Error): UrlRequired | undefined => {

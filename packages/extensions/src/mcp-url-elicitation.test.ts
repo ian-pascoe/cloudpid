@@ -328,6 +328,7 @@ const gated =
         return replies.every((reply) => reply?.kind === "defer")
           ? McpHostPagesRequired.make({
               requests: pages.map((key) => visit(PAGE, "deferrable", key)),
+              message: "Authorization needed",
               resend: { ...STATE, deferred: pages, round: 2 },
               conn: "conn-docs",
             })
@@ -344,6 +345,7 @@ const gated =
     return replies.every((reply) => reply?.kind === "defer")
       ? McpHostPagesRequired.make({
           requests: pages.map((key) => visit(PAGE, "deferrable", key)),
+          message: "Authorization needed",
           resend: { ...STATE, deferred: pages },
           conn: "conn-docs",
         })
@@ -539,6 +541,7 @@ const restartable = async () => {
 
     return McpHostPagesRequired.make({
       requests: [visit(PAGE, "deferrable")],
+      message: "Authorization needed",
       resend: STATE,
       conn: "conn-docs",
     });
@@ -793,5 +796,153 @@ describe("a page the server says is finished", () => {
     // The call's clock is not held for it any more.
     await Effect.runPromise(questions.whileOpen(ask.callId, ask.key));
     await until(async () => (await Effect.runPromise(questions.pending)).length === 0);
+  });
+});
+
+describe("a Legacy server's -32042 on read_mcp_resource", () => {
+  const READ = { server: "File-Store", uri: "file:///a.txt" };
+
+  const FILES = {
+    name: "File-Store",
+    exposure: "direct",
+    resources: true,
+    tools: [],
+  };
+
+  /** A read whose host answers `-32042` for its first `times` reads, then the contents. */
+  const reading = async (times: number) => {
+    const host = fakeMcpHost([FILES]);
+    const sent: Array<Sent> = [];
+    const vault = await testVault();
+
+    host.answer(async (input, hooks) => {
+      sent.push(input);
+
+      if (sent.length > times) {
+        return McpHostCompleted.make({
+          result: {
+            kind: "inline",
+            value: { contents: [{ uri: READ.uri, text: "the notes" }] },
+          },
+        });
+      }
+
+      await hooks.onInput?.(visit(PAGE, "deferrable"));
+
+      return McpHostPagesRequired.make({
+        requests: [visit(PAGE, "deferrable")],
+        message: "Authorization needed",
+        conn: "conn-files",
+      });
+    });
+
+    const questions = createMcpQuestions({
+      storage: memoryStorage().storage,
+      announce: () => Effect.void,
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+      vault,
+    });
+
+    const extension = mcpExtension(
+      {
+        servers: [
+          {
+            name: "File-Store",
+            state: "connected",
+            discoveredAt: 1,
+            server: { exposure: "direct" },
+            resources: true,
+          },
+        ],
+        offered: [],
+        features: MCP_HOST_FEATURES,
+      },
+      host.client,
+      {},
+      { slackMs: 0, questions },
+    );
+
+    const tool = Option.getOrThrow(
+      Arr.findFirst(extension.tools ?? [], (each) => each.name === "read_mcp_resource"),
+    );
+
+    const api = apiWith({
+      callId: "call-1",
+      conversationId: ROOT_CONVERSATION_ID,
+      env: undefined,
+      getTask: async () => undefined,
+      details: async () => undefined,
+      memo: memoryMemo(new Map()),
+    });
+
+    return { questions, sent, run: () => tool.execute(READ, api, context) };
+  };
+
+  /** The owner opens the page that waits and presses Done. */
+  const done = async (questions: Awaited<ReturnType<typeof reading>>["questions"]) => {
+    await until(async () => (await Effect.runPromise(questions.pending)).length === 1);
+
+    const [request] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "done" }));
+  };
+
+  it("is kept for the owner, and the read is sent again as it was once Done is pressed", async () => {
+    const { questions, sent, run } = await reading(1);
+    const running = run();
+
+    await done(questions);
+
+    const result = await running;
+
+    expect(JSON.stringify(result.output)).toContain("the notes");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(sent[0]).toMatchObject({
+      op: "resources/read",
+      params: { uri: READ.uri },
+      ctx: { answers: { elicitation: true, defer: true, pages: true } },
+    });
+  });
+
+  it("ends with the server's error when the owner declines the page, and the agent is told", async () => {
+    const { questions, sent, run } = await reading(1);
+    const running = run();
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length === 1);
+
+    const [request] = await Effect.runPromise(questions.pending);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" }));
+
+    const result = await running;
+    const text = JSON.stringify(result.output);
+
+    expect(result.isError).toBe(true);
+    expect(text).toContain("Authorization needed");
+    expect(JSON.stringify(result.diagnostics)).toContain(
+      "The user declined File-Store's request for input.",
+    );
+    expect(sent).toHaveLength(1);
+  });
+
+  it("stops at the eleventh -32042 with the server's error, and says it kept asking", async () => {
+    const { questions, sent, run } = await reading(1000);
+    const running = run();
+
+    for (let round = 1; round <= 10; round += 1) {
+      await done(questions);
+      await until(async () => sent.length === round + 1);
+    }
+
+    const result = await running;
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.output)).toContain(
+      "Authorization needed. File-Store kept asking for the same page; stopped after 10 tries",
+    );
+    expect(sent).toHaveLength(11);
   });
 });

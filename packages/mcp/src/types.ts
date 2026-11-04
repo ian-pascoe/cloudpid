@@ -913,14 +913,17 @@ export const McpEngineInputRequired = Schema.Struct({
 export type McpEngineInputRequired = typeof McpEngineInputRequired.Type;
 
 /**
- * A Legacy `tools/call` (or its `resend`) whose server answered `-32042`, returned only to a call whose
- * `ctx.answers.pages` is set: the pages as `requests`, scrubbed of the call's tokens, and the `ResendState` a `resend`
- * goes on from, as the core made it.
+ * A Legacy `tools/call` (or its `resend`) or `resources/read` whose server answered `-32042`, returned only to a call
+ * whose `ctx.answers.pages` is set: the pages as `requests`, scrubbed of the call's tokens, and for a call the
+ * `ResendState` a `resend` goes on from, as the core made it.
  */
 export const McpEnginePagesRequired = Schema.Struct({
   kind: Schema.Literal("pages_required"),
   requests: Schema.Array(McpInputRequest),
-  resend: Schema.Json,
+  /** The server's own error, `-32042`'s message. */
+  message: Schema.String,
+  /** The `ResendState`; absent for a `resources/read`, which the caller sends again as it was. */
+  resend: Schema.optionalKey(Schema.Json),
   ...RefreshedTools,
   ...EngineLogs,
   ...EngineSpawn,
@@ -1417,13 +1420,17 @@ export const McpHostInputRequired = Schema.TaggedStruct("InputRequired", {
 export type McpHostInputRequired = typeof McpHostInputRequired.Type;
 
 /**
- * A `tools/call` (or its `resend`) whose Legacy server answered `-32042`, returned only to a call whose
- * `ctx.answers.pages` is set: the pages as questions, and the `ResendState` a `resend` sends with their answers, opaque
- * to the caller, who keeps it. The rest is as `InputRequired`'s.
+ * A `tools/call` (or its `resend`) or `resources/read` whose Legacy server answered `-32042`, returned only to a call
+ * whose `ctx.answers.pages` is set: the pages as questions, and for a call the `ResendState` a `resend` sends with
+ * their answers, opaque to the caller, who keeps it; a read is sent again by the caller as it was. The rest is as
+ * `InputRequired`'s.
  */
 export const McpHostPagesRequired = Schema.TaggedStruct("PagesRequired", {
   requests: Schema.Array(McpInputRequest),
-  resend: Schema.Json,
+  /** The server's own error, `-32042`'s message. */
+  message: Schema.String,
+  /** The `ResendState`; absent for a `resources/read`, which the caller sends again as it was. */
+  resend: Schema.optionalKey(Schema.Json),
   conn: Schema.String,
   identity: Schema.optionalKey(Schema.String),
   ...McpHostTaskOrigin,

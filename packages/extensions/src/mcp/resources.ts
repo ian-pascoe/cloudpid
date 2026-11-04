@@ -9,7 +9,7 @@ import { type McpExposure, MCP_RESOURCE_TOOL_NAMES, resolveExposure } from "@clo
 import type { ToolRegistration } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import type { McpHostClientService } from "./client.ts";
-import { type McpCallOrigin, type McpToolOptions, samplesOf } from "./exchange.ts";
+import { MCP_RESEND_FEATURE, type McpCallOrigin, type McpToolOptions, samplesOf } from "./exchange.ts";
 import { exposureKeys } from "./exposure.ts";
 import { listTool } from "./resource-list.ts";
 import { readTool } from "./resource-read.ts";
@@ -72,10 +72,11 @@ export const resourceTools = (
   const exposureOf = (name: string) => widestExposure(servers, name, build.offered);
   const [list, templates, read] = MCP_RESOURCE_TOOL_NAMES;
   const shared = { servers, client, origin, options };
+  const pages = build.features?.includes(MCP_RESEND_FEATURE) === true;
 
   return [
     listTool({ ...shared, what: "resources", name: list }, exposureOf(list)),
     listTool({ ...shared, what: "templates", name: templates }, exposureOf(templates)),
-    readTool({ ...shared, name: read, samples: samplesOf(build) }, exposureOf(read)),
+    readTool({ ...shared, name: read, pages, samples: samplesOf(build) }, exposureOf(read)),
   ];
 };

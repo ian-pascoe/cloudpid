@@ -343,6 +343,8 @@ export interface FakeOptions {
     readonly pages?: number;
     readonly url?: string;
   };
+  /** Like `gate`, for `resources/read`: it answers `-32042` for its first `times` reads, and counts them in `calls`. */
+  readonly gateReads?: { readonly times: number; calls: number; readonly url?: string };
   /** What the client answered the `ask` tool's questions with (`{ action, content? }`), or the error it refused with. */
   readonly asked?: Array<Json>;
   /** What the client answered the `sample` tool's requests with (a `CreateMessageResult`), or `{ error, code }`. */
@@ -462,6 +464,26 @@ const fakeMcp = (
     });
 
     server.setRequestHandler("resources/read", async (request, ctx) => {
+      const { gateReads } = options;
+
+      if (gateReads !== undefined) {
+        gateReads.calls += 1;
+
+        if (gateReads.calls <= gateReads.times) {
+          throw new UrlElicitationRequiredError(
+            [
+              {
+                mode: "url" as const,
+                elicitationId: "page-1",
+                url: gateReads.url ?? "https://example.com/authorize",
+                message: "Authorize first",
+              },
+            ],
+            "Authorization needed",
+          );
+        }
+      }
+
       const found = resources.find((each) => each.uri === request.params.uri);
 
       if (found === undefined) throw new Error(`No resource ${request.params.uri}`);

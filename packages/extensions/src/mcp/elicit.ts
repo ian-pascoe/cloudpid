@@ -74,6 +74,11 @@ export type ElicitingCall = {
    * and the call waits for the owner after it. Otherwise it is answered live, as a Legacy one.
    */
   readonly defers?: boolean | undefined;
+  /**
+   * Whether a Legacy server's `-32042` pages are kept for later though a Modern form is not (a resource's read): the
+   * round of pages ends the read as `pages_required`, and the read is sent again once they are done.
+   */
+  readonly keepsPages?: boolean | undefined;
   /** Stop the call's own clock while a question waits, and start it again. */
   readonly pause: Effect.Effect<void>;
   readonly resume: Effect.Effect<void>;
@@ -278,7 +283,10 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     // A Modern server's question, or a Legacy `-32042`'s, is kept for later: the round ends, and the call waits for the
     // owner after it.
-    if (request.mode === "deferrable" && call.defers === true) {
+    if (
+      request.mode === "deferrable" &&
+      (call.defers === true || (call.keepsPages === true && page !== undefined))
+    ) {
       const kept = await Effect.runPromise(call.questions.defer(question));
 
       if (kept === "deferred") return { kind: "defer" };

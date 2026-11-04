@@ -29,7 +29,10 @@ export type Answer =
       Effect.Success<ReturnType<McpConnection["callTool"]>>,
       { readonly kind: "complete" }
     >["value"]
-  | Effect.Success<ReturnType<McpConnection["readResource"]>>["value"]
+  | Extract<
+      Effect.Success<ReturnType<McpConnection["readResource"]>>,
+      { readonly kind: "complete" }
+    >["value"]
   | Effect.Success<ReturnType<McpConnection["getPrompt"]>>["value"]
   | ReadonlyArray<ListItems[ListKind]>
   | { readonly [key: string]: ReadonlyArray<ListItems[ListKind]> | string };

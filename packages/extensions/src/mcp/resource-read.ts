@@ -268,6 +268,8 @@ type ReadTool = {
   readonly options: McpToolOptions;
   /** Whether the host lists `sampling` (`samplesOf`). */
   readonly samples?: boolean | undefined;
+  /** Whether the host resends a Legacy `-32042` (its `resend` feature): the read then keeps its pages for the owner. */
+  readonly pages: boolean;
 };
 
 /** The tool that reads a resource, at `exposure`. */
@@ -308,6 +310,7 @@ export const readTool = (
       details,
       subject: "resource",
       samples: tool.samples,
+      pages: tool.pages,
     };
 
     const sent = await send(

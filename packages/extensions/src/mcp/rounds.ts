@@ -6,11 +6,14 @@
 import type {
   McpHostRequest,
   McpHostRequestContext,
+  McpHostResourceRequest,
   McpTaskInputResponses,
 } from "@cloudpid/mcp/types";
 import type { Context } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { Mutable } from "effect/Types";
 import type { McpElicitationDetail } from "./details.ts";
@@ -72,9 +75,14 @@ export const storeRound = async (
   return Result.isSuccess(shown);
 };
 
-/** How the wait for a round's answers ended: the resume to send, Stop, or the round gone before it was answered. */
+/**
+ * How the wait for a round's answers ended: the request to send, Stop, the round gone before it was answered, or (for a
+ * read's pages, which are sent again as the read was) an answer that is not an `accept`, which ends the read with the
+ * server's own error.
+ */
 export type Resumed =
-  | { readonly kind: "resume"; readonly request: McpHostRequest }
+  | { readonly kind: "resume"; readonly request: McpHostRequest | McpHostResourceRequest }
+  | { readonly kind: "refused" }
   | { readonly kind: "stopped" }
   | { readonly kind: "withdrawn" };
 
@@ -89,6 +97,8 @@ export const resumeOf = async (
     readonly server: string;
     readonly ctx: McpHostRequestContext;
     readonly asked: Array<McpElicitationDetail> | undefined;
+    /** The read the round's pages are for: it has no state to resend, so it is sent again as it was. */
+    readonly read?: McpHostResourceRequest | undefined;
   },
 ): Promise<Resumed> => {
   const { questions, api, context } = rounds;
@@ -129,6 +139,12 @@ export const resumeOf = async (
   // Durable before the resume leaves, so a restart never sends it again; the sealed answers go once it is.
   await api.memo(resumedMarker(round.round), true, context);
   await Effect.runPromise(questions.endRound(api.callId));
+
+  if (call.read !== undefined) {
+    return Arr.every(Record.values(answers), (each) => each["action"] === "accept")
+      ? { kind: "resume", request: call.read }
+      : { kind: "refused" };
+  }
 
   return {
     kind: "resume",

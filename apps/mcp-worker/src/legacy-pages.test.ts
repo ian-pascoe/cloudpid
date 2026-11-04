@@ -86,7 +86,7 @@ describe("a Legacy server's -32042 through the engine", () => {
       {
         op: "resend",
         tool: GATED_TOOL,
-        resend: first.resend,
+        resend: first.resend ?? null,
         answers: { "page-1": { action: "accept" }, "page-2": { action: "accept" } },
         ctx: KEEPING,
       },

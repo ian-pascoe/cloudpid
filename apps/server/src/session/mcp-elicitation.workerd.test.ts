@@ -101,7 +101,7 @@ const open = async (
   asked: Array<Schema.Json>,
   cancelled: Array<string> = [],
   name = "mcp",
-  more: Pick<FakeOptions, "gate"> = {},
+  more: Pick<FakeOptions, "gate" | "gateReads" | "resources"> = {},
 ) => {
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
@@ -591,6 +591,115 @@ describe("a Legacy MCP server's page in a Session", () => {
     expect(results.join("\n")).toContain(
       "Authorization needed. docs kept asking for the same page; stopped after 10 tries",
     );
+    owner.close();
+  });
+
+  it("is a -32042 on read_mcp_resource: Done sends the same read again, which now returns", async () => {
+    const gateReads = { times: 1, calls: 0, url: PAGE_URL };
+    const uri = "file:///notes.txt";
+
+    const { stub } = await open([], [], "mcp", {
+      gateReads,
+      resources: [{ uri, name: "notes", contents: [{ uri, text: "the notes" }] }],
+    });
+
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([
+        `call:read_mcp_resource:${JSON.stringify({ server: "docs", uri })}`,
+        "done",
+      ]);
+      await instance.submit({ requestId: "turn-1", text: "read" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    const [request] = owner.requests();
+
+    expect(request?.page).toMatchObject({ url: PAGE_URL, opened: false, retry: true });
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "open",
+      request: request?.id ?? "",
+      action: "opened",
+    });
+    await settles(async () => expect(owner.requests()[0]?.page?.opened).toBe(true));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "done",
+      request: request?.id ?? "",
+      action: "done",
+    });
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    expect(gateReads.calls).toBe(2);
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.join("\n")).toContain("the notes");
+    owner.close();
+  });
+
+  it("stops a -32042 read at its eleventh try with the server's error", async () => {
+    const gateReads = { times: 1000, calls: 0, url: PAGE_URL };
+    const uri = "file:///notes.txt";
+
+    const { stub } = await open([], [], "mcp", {
+      gateReads,
+      resources: [{ uri, name: "notes", contents: [{ uri, text: "the notes" }] }],
+    });
+
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([
+        `call:read_mcp_resource:${JSON.stringify({ server: "docs", uri })}`,
+        "done",
+      ]);
+      await instance.submit({ requestId: "turn-1", text: "read" });
+    });
+
+    for (let round = 1; round <= 10; round += 1) {
+      await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+      const [request] = owner.requests();
+
+      owner.send({
+        type: "mcp_elicitation_answer",
+        id: `open-${round}`,
+        request: request?.id ?? "",
+        action: "opened",
+      });
+      await settles(async () => expect(owner.requests()[0]?.page?.opened).toBe(true));
+      owner.send({
+        type: "mcp_elicitation_answer",
+        id: `done-${round}`,
+        request: request?.id ?? "",
+        action: "done",
+      });
+      await settles(async () => expect(gateReads.calls).toBe(round + 1));
+
+      if (round < 10) {
+        await settles(async () => expect(owner.requests()[0]?.page?.again).toBe(true));
+      }
+    }
+
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+    expect(gateReads.calls).toBe(11);
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.join("\n")).toContain("kept asking for the same page; stopped after 10 tries");
     owner.close();
   });
 });

@@ -675,12 +675,16 @@ const callAnswer = Effect.fnUntraced(function* (
 
   // A `-32042` is what a call with `ctx.answers.pages` may be answered with, and only such a call is.
   if (sent.success.kind === "pages_required") {
-    return {
+    const pages: Mutable<Omit<McpEnginePagesRequired, "state">> = {
       kind: "pages_required",
       requests: scrubValues(sent.success.requests, call.tokens),
-      resend: sent.success.resend,
+      message: sent.success.message,
       ...extras,
-    } satisfies RequestOutcome;
+    };
+
+    if (sent.success.resend !== undefined) pages.resend = sent.success.resend;
+
+    return pages satisfies RequestOutcome;
   }
 
   // Questions are what a call with `ctx.answers.defer` may be answered with, and only such a call is.
@@ -776,11 +780,18 @@ const runRead = Effect.fnUntraced(function* (
   req: ResourceRead,
   env: CallEnvironment,
 ) {
-  const {
-    value,
-    kind: _kind,
-    ...meta
-  } = yield* connection.readResource(req.uri, req.ctx, { app: req.app === true });
+  const read = yield* connection.readResource(req.uri, req.ctx, { app: req.app === true });
+
+  // A Legacy server's `-32042`: the pages, scrubbed of the call's tokens; the caller sends the read again.
+  if (read.kind === "pages_required") {
+    return {
+      kind: "pages_required",
+      requests: scrubValues(read.requests, call.tokens),
+      message: read.message,
+    } satisfies RequestOutcome;
+  }
+
+  const { value, kind: _kind, ...meta } = read;
 
   return {
     kind: "complete",

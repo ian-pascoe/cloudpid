@@ -309,7 +309,7 @@ describe("a Legacy server's -32042", () => {
             const first = yield* connection.callTool({ tool: GATED_TOOL }, KEEPING);
 
             return yield* connection.resend(
-              first.kind === "pages_required" ? first.resend : null,
+              first.kind === "pages_required" ? (first.resend ?? null) : null,
               { "page-1": { action: "accept" }, "page-2": { action } },
               GATED_TOOL,
               KEEPING,
@@ -372,7 +372,7 @@ describe("a Legacy server's -32042", () => {
           for (let resends = 1; step.kind === "pages_required"; resends += 1) {
             expect(resends).toBeLessThanOrEqual(MCP_INPUT_ROUNDS);
             step = yield* connection.resend(
-              step.resend,
+              step.resend ?? null,
               { "page-1": { action: "accept" } },
               GATED_TOOL,
               KEEPING,
@@ -415,7 +415,7 @@ describe("a ResendState and a ResumeState", () => {
           return {
             resumed: yield* Effect.result(
               connection.resume(
-                first.kind === "pages_required" ? first.resend : null,
+                first.kind === "pages_required" ? (first.resend ?? null) : null,
                 answers,
                 GATED_TOOL,
                 KEEPING,
@@ -448,5 +448,48 @@ describe("a ResendState and a ResumeState", () => {
       "Unsupported",
     );
     expect(server.received.filter((r) => r.rpc?.method === "tools/call")).toHaveLength(1);
+  });
+});
+
+describe("a Legacy server's -32042 on a read", () => {
+  const NOTES = {
+    uri: "file:///notes",
+    name: "notes",
+    contents: [{ uri: "file:///notes", text: "# Notes" }],
+  };
+
+  const read = (server: FakeServer, ctx: McpCallContext) =>
+    gated(
+      server,
+      () => Effect.succeed(DEFER),
+      (connection) => connection.readResource(NOTES.uri, ctx),
+    );
+
+  it("is kept for the owner as pages_required with no state: the caller sends the read again as it was", async () => {
+    const gateReads = { times: 1, calls: 0 };
+    const server = legacyStatefulServer({ resources: [NOTES], gateReads });
+    const kept = await read(server, KEEPING);
+
+    expect(
+      Result.isSuccess(kept) && kept.success.kind === "pages_required"
+        ? [kept.success.requests.map((each) => each.key), kept.success.message, kept.success.resend]
+        : undefined,
+    ).toEqual([["page-1"], "Authorization needed", undefined]);
+
+    const again = await read(server, KEEPING);
+
+    expect(Result.isSuccess(again) && again.success.kind).toBe("complete");
+    expect(gateReads.calls).toBe(2);
+  });
+
+  it("is the server's error to a read whose caller keeps no pages", async () => {
+    const server = legacyStatefulServer({
+      resources: [NOTES],
+      gateReads: { times: 1, calls: 0 },
+    });
+
+    expect(failureOf(await read(server, DEFERRING))).toEqual(
+      ServerError.make({ message: "Authorization needed", code: -32042 }),
+    );
   });
 });

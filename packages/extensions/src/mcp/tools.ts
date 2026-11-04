@@ -45,6 +45,7 @@ import { baseDetails } from "./details.ts";
 import {
   contextOf,
   type Exchange,
+  MCP_RESEND_FEATURE,
   type McpCallOrigin,
   type McpToolOptions,
   parentCallOf,
@@ -60,7 +61,7 @@ import { signInTool } from "./sign-in-tool.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { spillTo } from "./spill.ts";
 
-export { MCP_CALL_SLACK_MS, MCP_SAMPLING_FEATURE, MCP_STREAM_IDLE_MS } from "./exchange.ts";
+export { MCP_CALL_SLACK_MS, MCP_RESEND_FEATURE, MCP_SAMPLING_FEATURE, MCP_STREAM_IDLE_MS } from "./exchange.ts";
 
 export type { McpCallOrigin, McpToolOptions } from "./exchange.ts";
 
@@ -72,13 +73,6 @@ export const extensionName = "mcp";
  * server's form is answered live.
  */
 export const MCP_RESUME_FEATURE = "resume";
-
-/**
- * The host feature a call keeps a Legacy server's `-32042` pages for later with: a host that lists it answers a call
- * with `ctx.answers.pages` `PagesRequired`, and resends it (`docs/architecture/mcp-server-requests.md` → Elicitation
- * requests, URL mode). Without it, a `-32042` is the server's error.
- */
-export const MCP_RESEND_FEATURE = "resend";
 
 /** What the host can keep for later for a call: a Modern round of questions, and a Legacy `-32042`'s pages. */
 type HostKeeps = { readonly defers: boolean; readonly pages: boolean };

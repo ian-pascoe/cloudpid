@@ -650,7 +650,9 @@ const answered = (
         return about.mayKeepPages
           ? McpHostPagesRequired.make({
               requests: result.requests,
-              resend: result.resend,
+              message: result.message,
+              // A call's `ResendState`; a read, which has none, is not answered on this path.
+              resend: result.resend ?? null,
               conn: about.conn,
               identity: about.identity,
               ...origin,
