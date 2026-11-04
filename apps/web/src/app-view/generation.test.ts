@@ -2,7 +2,14 @@
 // @effect-diagnostics preferEffectArray:off -- messages and entries in native lists.
 import type { McpAppEntry, TranscriptMessage } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
-import { callsOfScript, isAppLive, liveGeneration, STRIP_ROWS, stripRows } from "./generation.ts";
+import {
+  callsOfScript,
+  isAppLive,
+  liveGeneration,
+  runningAppCalls,
+  STRIP_ROWS,
+  stripRows,
+} from "./generation.ts";
 
 const assistant = (...calls: string[]): TranscriptMessage => ({
   id: calls.join(),
@@ -195,5 +202,45 @@ describe("the rows a strip shows", () => {
   it("shows everything once expanded, and every row of a short strip", () => {
     expect(stripRows(many, new Set(), new Set(), true)).toEqual({ shown: many, earlier: 0 });
     expect(stripRows(many.slice(0, 3), new Set(), new Set(), false).earlier).toBe(0);
+  });
+});
+
+describe("the App calls that are running", () => {
+  const tools = [{ name: "mcp__docs__page", server: "docs", tool: "page" }];
+
+  const call = (id: string, name = "mcp__docs__page"): TranscriptMessage => ({
+    id,
+    role: "assistant",
+    timestamp: 0,
+    parts: [{ type: "tool-call", id, name, arguments: {} }],
+  });
+
+  const result = (id: string): TranscriptMessage => ({
+    id: `r-${id}`,
+    role: "tool",
+    timestamp: 0,
+    parts: [{ type: "tool-result", id, name: "x", content: [], error: false }],
+  });
+
+  it("are the App tools' calls of the turn that have no result and no record yet, as the newest generation", () => {
+    const messages = [user, call("a"), result("a"), call("b"), call("o", "mcp__docs__other")];
+
+    const running = runningAppCalls(messages, tools, [entry("a")], true);
+
+    expect(running).toEqual([
+      expect.objectContaining({ callId: "b", server: "docs", tool: "page" }),
+    ]);
+
+    // They place the generation: the call that runs is the newest, so the earlier View collapses.
+    expect(live(messages, [entry("a"), ...running])).toEqual(["b"]);
+  });
+
+  it("are none once the run ended, for a call with a record, or for an earlier turn", () => {
+    const messages = [user, call("a"), user, call("b")];
+
+    expect(runningAppCalls(messages, tools, [], false)).toEqual([]);
+    expect(runningAppCalls(messages, tools, [entry("b")], true)).toEqual([]);
+    expect(runningAppCalls(messages, [], [], true)).toEqual([]);
+    expect(runningAppCalls(messages, tools, [], true).map((each) => each.callId)).toEqual(["b"]);
   });
 });

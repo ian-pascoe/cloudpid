@@ -26,6 +26,7 @@ import {
   SessionTree,
   LiveViewLinks,
   McpAppHtmlAnswer,
+  McpAppTool,
   McpAppContextAnswer,
   McpAppRequestAnswer,
   McpAppMounted,
@@ -478,6 +479,15 @@ export interface SessionClient {
    */
   readonly appPage: (callId: string) => Effect.Effect<McpAppHtmlAnswer, SessionCommandError>;
   /**
+   * The page of App tool `tool` (its model-facing name), for call `callId` of it that is still running and has no record
+   * yet, so its View mounts as the call streams, and the origin it is served on. A Session that predates it answers
+   * `missing`, as for a call it keeps no record of. Fails as `catalog` does.
+   */
+  readonly appToolPage: (
+    tool: string,
+    callId: string,
+  ) => Effect.Effect<McpAppHtmlAnswer, SessionCommandError>;
+  /**
    * An App View's request (`docs/architecture/mcp-apps.md` → An App View's calls): `method` (`tools/call` or `resources/read`)
    * with the View's `params`, for the View of call `callId`; `requestId` names it for the cancel. The Session's answer is
    * the result or the View's error (an answer, not a failure); fails as `catalog` does when the socket is down ("connection
@@ -656,6 +666,28 @@ const submissionIdOf = (result: ServerMessage & { type: "result" }): string | un
     onNone: () => undefined,
     onSome: ({ submissionId }) => String(submissionId),
   });
+
+/** The sets of App tool names already made, by the list `mcp_app_tools` last told, which a streamed call is looked up in. */
+const streamed = new WeakMap<readonly McpAppTool[], ReadonlySet<string>>();
+
+/**
+ * The tools whose streamed arguments the transcript keeps: the Session's App tools, which `mcp_app_tools` told (none, until
+ * it has), whose View is sent the arguments as the call streams (`docs/architecture/mcp-apps.md` → Lifecycle).
+ */
+const streamedToolsOf = (state: SessionState): ReadonlySet<string> | undefined => {
+  const { mcpAppTools } = state;
+
+  if (mcpAppTools === null) return undefined;
+
+  let names = streamed.get(mcpAppTools);
+
+  if (names === undefined) {
+    names = new Set(mcpAppTools.map((tool) => tool.name));
+    streamed.set(mcpAppTools, names);
+  }
+
+  return names;
+};
 
 const NO_SENDING: readonly SendingEntry[] = [];
 
@@ -1342,7 +1374,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         if (message.conversationId !== root) {
           if (thread !== undefined) {
-            thread.view = reduceEvents(thread.view, message.events);
+            thread.view = reduceEvents(thread.view, message.events, streamedToolsOf(current));
             thread.status = "live";
             thread.failure = null;
             update({}, message.conversationId);
@@ -1351,7 +1383,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           return;
         }
 
-        const view = reduceEvents(current.view, message.events);
+        const view = reduceEvents(current.view, message.events, streamedToolsOf(current));
 
         if (message.events.some((event) => event.type === "snapshot")) {
           // What the snapshot's inbox no longer holds has been placed, or was withdrawn.
@@ -2231,6 +2263,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       request((id) => ({ type: "mcp_app_mount", id, callId }), decodeMcpAppMounted),
     appPage: (callId) =>
       request((id) => ({ type: "mcp_app_html", id, callId }), decodeMcpAppHtmlAnswer),
+    appToolPage: (tool, callId) =>
+      request((id) => ({ type: "mcp_app_html", id, tool, callId }), decodeMcpAppHtmlAnswer),
     appLog: (callId, level, logger, message) => {
       if (!appViews) return;
 

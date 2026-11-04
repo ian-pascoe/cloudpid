@@ -115,6 +115,118 @@ describe("a View's frame in its card", () => {
     expect(view.sent.every((each) => each.target === ORIGIN)).toBe(true);
   });
 
+  describe("mounted as its call streams", () => {
+    const running = (args: Record<string, string> | undefined, final = false) => ({
+      record: undefined,
+      running: { callId: "c1", server: "docs", tool: "page", arguments: args, final },
+    });
+
+    const partials = (view: ReturnType<typeof frameOf>) =>
+      view.sent.flatMap((each) =>
+        each.data["method"] === "ui/notifications/tool-input-partial"
+          ? [(each.data["params"] as { arguments: unknown }).arguments]
+          : [],
+      );
+
+    it("sends the partial input at most every 250 ms, then the final input, then the result, in the one frame", async () => {
+      render(running({ text: "He" }));
+
+      const view = frameOf();
+
+      view.handshake();
+      expect(partials(view)).toEqual([{ text: "He" }]);
+
+      // Faster than the interval: only the latest goes, when it is up.
+      render(running({ text: "Hel" }));
+      render(running({ text: "Hell" }));
+      expect(partials(view)).toHaveLength(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(partials(view)).toEqual([{ text: "He" }, { text: "Hell" }]);
+
+      // The commit: the final arguments once, and no partial after them.
+      render(running({ text: "Hello" }, true));
+      render(running({ text: "Hello" }, true));
+      expect(view.methods().filter((method) => method === "ui/notifications/tool-input")).toEqual([
+        "ui/notifications/tool-input",
+      ]);
+
+      // The record: its result, into the frame that is there, which was never torn down.
+      render({ record: { ...record, arguments: { text: "Hello" } }, running: undefined });
+      expect(view.methods().at(-1)).toBe("ui/notifications/tool-result");
+      expect(view.methods()).not.toContain("ui/resource-teardown");
+      expect(host.querySelector("iframe")).toBe(view.element);
+      expect(partials(view)).toEqual([{ text: "He" }, { text: "Hell" }]);
+    });
+
+    it("sends no partial input once the arguments are past 1 MiB, and still sends the final input", () => {
+      render(running({ text: "a".repeat(1024 * 1024 + 1) }));
+
+      const view = frameOf();
+
+      view.handshake();
+      expect(partials(view)).toEqual([]);
+
+      render(running({ text: "a".repeat(1024 * 1024 + 2) }, true));
+      expect(view.methods()).toContain("ui/notifications/tool-input");
+    });
+
+    it("tells a View its call did not finish when it ends, once, and before any teardown", async () => {
+      const closed = vi.fn();
+
+      render({ ...running({ text: "He" }), onClosed: closed });
+
+      const view = frameOf();
+
+      view.handshake();
+
+      render({ ...running(undefined), cancelled: "The call did not finish", onClosed: closed });
+      expect(view.methods().at(-1)).toBe("ui/notifications/tool-cancelled");
+
+      // Closing it later says it again to no one, and tears down after.
+      render({
+        ...running(undefined),
+        cancelled: "The call did not finish",
+        onClosed: closed,
+        closing: true,
+      });
+
+      const methods = view.methods();
+
+      expect(methods.filter((method) => method === "ui/notifications/tool-cancelled")).toHaveLength(
+        1,
+      );
+      expect(methods.at(-1)).toBe("ui/resource-teardown");
+    });
+
+    it("tells a View torn down before its call has a result that the call is over, first, and a finished one nothing", () => {
+      render({ ...running({ text: "He" }) });
+
+      const view = frameOf();
+
+      view.handshake();
+      render({ ...running({ text: "He" }), closing: true });
+      expect(view.methods().slice(-2)).toEqual([
+        "ui/notifications/tool-cancelled",
+        "ui/resource-teardown",
+      ]);
+    });
+
+    it("tells a View whose record has come nothing of a cancel when it is torn down", () => {
+      render({ ...running({ text: "He" }) });
+
+      const view = frameOf();
+
+      view.handshake();
+      render({ record, running: undefined });
+      render({ record, running: undefined, closing: true });
+      expect(view.methods()).not.toContain("ui/notifications/tool-cancelled");
+      expect(view.methods().at(-1)).toBe("ui/resource-teardown");
+    });
+  });
+
   it("keeps its frame in the document until its View has answered the teardown, then says it may go", async () => {
     const closed = vi.fn();
 

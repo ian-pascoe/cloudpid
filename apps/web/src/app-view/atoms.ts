@@ -6,14 +6,21 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Atom from "effect/reactivity/Atom";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { appRuntime } from "../runtime.ts";
 import type { ConversationKey } from "../chat/conversation.ts";
 import { appEntries } from "../session/apps.ts";
-import { mcpAppsAtom, sessionClientAtom, sessionViewAtom, threadAtom } from "../session/atoms.ts";
+import {
+  mcpAppsAtom,
+  mcpAppToolsAtom,
+  sessionClientAtom,
+  sessionViewAtom,
+  threadAtom,
+} from "../session/atoms.ts";
 import { mcpStatusesAtom } from "../settings/mcp-state.ts";
 import { sessionListAtom } from "../sessions.ts";
-import { liveGeneration, NO_LIVE_CALLS } from "./generation.ts";
-import { type AppLoad, loadAppView } from "./load.ts";
+import { liveGeneration, NO_LIVE_CALLS, runningAppCalls } from "./generation.ts";
+import { type AppLoad, loadAppView, loadRunningView } from "./load.ts";
 
 /** The key of one call's View: the Session it ran in, and the call. */
 export interface AppKey {
@@ -48,6 +55,32 @@ export const appLoadAtom = Atom.family((key: string) =>
   }),
 );
 
+/** The key of a running call's View: its Session, the call and the model-facing name of its App tool. */
+export const runningKey = (sessionId: string, callId: string, toolName: string): string =>
+  `${sessionId}\0${callId}\0${toolName}`;
+
+/**
+ * The page of the View of a call that is still running (`loadRunningView`): it has no record, so the page is its tool's. It
+ * loads when the card of a running call reads it, and again on Retry; the call's record, once there is one, is
+ * `appLoadAtom`'s.
+ */
+export const appRunningAtom = Atom.family((key: string) =>
+  appRuntime.atom((get) => {
+    const [sessionId = "", callId = "", toolName = ""] = key.split("\0");
+
+    return get
+      .result(sessionClientAtom(sessionId))
+      .pipe(
+        Effect.flatMap((client): Effect.Effect<AppLoad> =>
+          loadRunningView(client, toolName, callId, window.location.origin),
+        ),
+      );
+  }),
+);
+
+/** What a card reads while it wants no running call's page: nothing is loaded. */
+export const NO_RUNNING_PAGE = Atom.make(AsyncResult.initial<AppLoad>());
+
 /** The Environment Session `sessionId` runs in, whose servers its Apps' are: undefined until the list names it. */
 export const sessionEnvironmentAtom = Atom.family((sessionId: string) =>
   Atom.readable((get) =>
@@ -73,8 +106,10 @@ export const sessionMcpStatusesAtom = Atom.family((sessionId: string) =>
 export const appGenerationAtom = Atom.family((key: ConversationKey) =>
   Atom.make((get): ReadonlySet<string> => {
     const apps = appEntries(get(mcpAppsAtom(key.sessionId)));
+    const tools = get(mcpAppToolsAtom(key.sessionId)) ?? [];
 
-    if (apps.length === 0) return NO_LIVE_CALLS;
+    // Nothing to place, and nothing that could be: a transcript's every token costs such a conversation nothing.
+    if (apps.length === 0 && tools.length === 0) return NO_LIVE_CALLS;
 
     const view =
       key.conversationId === undefined
@@ -83,10 +118,18 @@ export const appGenerationAtom = Atom.family((key: ConversationKey) =>
 
     if (view === undefined) return NO_LIVE_CALLS;
 
-    return liveGeneration(
-      [...view.earlier, ...view.messages, ...(view.live !== null ? [view.live] : [])],
-      apps,
-    );
+    const messages = [
+      ...view.earlier,
+      ...view.messages,
+      ...(view.live !== null ? [view.live] : []),
+    ];
+
+    // The calls still streaming or running have no entry yet, and are the newest generation all the same.
+    const running = runningAppCalls(messages, tools, apps, view.running);
+
+    return apps.length + running.length === 0
+      ? NO_LIVE_CALLS
+      : liveGeneration(messages, [...apps, ...running]);
   }),
 );
 

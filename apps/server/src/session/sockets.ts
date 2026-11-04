@@ -1113,6 +1113,11 @@ export const sessionSocketsLayer = (
           case "mcp_app_mount":
             return mcpApps.mount(message.callId);
           case "mcp_app_html":
+            // A running call's page, by its tool; an older client sends none, and the call's is the record's.
+            if (message.tool !== undefined) {
+              return mcpApps.pageOfTool(message.tool, message.callId ?? "");
+            }
+
             if (message.callId !== undefined) return mcpApps.pageOf(message.callId);
 
             return message.hash === undefined

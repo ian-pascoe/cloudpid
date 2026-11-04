@@ -428,6 +428,32 @@ describe("the Session's App records", () => {
       });
     });
 
+    it("reads a running call's page by its tool's URI, with the origin, and pins nothing", async () => {
+      const { asked, service, store } = hosted((input) => page("uri" in input ? "found" : "x"));
+
+      store.service.setTools([docsPage]);
+
+      expect(await run(service.pageOfTool("mcp__docs__page", "call-9"))).toEqual({
+        ...page("found"),
+        origin: "https://abcd.ianpascoe.app",
+      });
+      expect(asked).toEqual([
+        { server: "docs", uri: "ui://docs/page", callId: "call-9", conversation: "" },
+      ]);
+      expect(await run(service.list(conversation(1)))).toEqual([]);
+    });
+
+    it("has no page for a tool the inventory does not list as an App's", async () => {
+      const { asked, service, store } = hosted(() => page("x"));
+
+      store.service.setTools([docsPage]);
+
+      expect(await run(service.pageOfTool("mcp__docs__other", "call-9"))).toMatchObject({
+        status: "missing",
+      });
+      expect(asked).toEqual([]);
+    });
+
     it("reads again by the URI when the host no longer keeps the pinned page", async () => {
       const { asked, service, store } = hosted((input) =>
         "hash" in input ? { status: "missing", message: "evicted" } : page("again"),

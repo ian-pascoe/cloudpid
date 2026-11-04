@@ -26,9 +26,10 @@
 // and it keeps the messages of earlier Context Windows (`earlier`, `before`, `withEarlier`) where the example's dropped
 // them at a reset. Formatted for this repository.
 
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off preferEffectRecord:off -- plain TypeScript over pi's arrays, as the example is.
 
-import type { AssistantMessage, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { AssistantMessage, JsonValue, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import * as Predicate from "effect/Predicate";
 import type * as Types from "effect/Types";
 import type {
   AgentEvent,
@@ -211,9 +212,54 @@ const blockPart = (block: AssistantMessage["content"][number]): TranscriptPart |
     LIVE_ID,
   ).parts[0];
 
+type JsonPath = readonly (string | number)[];
+
+/**
+ * `value` with `text` appended to the string `path` leads to, never changing `value` itself. A path that leads to no string
+ * (the container is not there yet) returns `value` as it is: the whole block that comes with the next change that is not an
+ * append carries what it was missing.
+ */
+const appendedAt = (value: JsonValue, path: JsonPath, text: string): JsonValue => {
+  const [key, ...rest] = path;
+
+  if (key === undefined) return Predicate.isString(value) ? value + text : value;
+
+  if (Array.isArray(value)) {
+    if (!Predicate.isNumber(key)) return value;
+
+    const slot = value[key];
+
+    if (slot === undefined) return value;
+
+    const next = appendedAt(slot, rest, text);
+
+    return next === slot ? value : value.with(key, next);
+  }
+
+  if (Predicate.isObject(value)) {
+    const slot = Object.hasOwn(value, String(key)) ? value[String(key)] : undefined;
+
+    if (slot === undefined) return value;
+
+    const next = appendedAt(slot, rest, text);
+
+    return next === slot ? value : { ...value, [String(key)]: next };
+  }
+
+  return value;
+};
+
+/**
+ * The names of the tools whose streamed arguments the view keeps (the Session's App tools,
+ * `docs/architecture/mcp-apps.md` → Lifecycle): the other tools' `toolcall_delta` is dropped, since appending to a growing
+ * argument for every token costs a transcript that no card draws until the call ends. `undefined` keeps none.
+ */
+export type StreamedTools = ReadonlySet<string> | undefined;
+
 const applyChanges = (
   live: TranscriptMessage | null,
   changes: readonly MessageChange[],
+  streamed: StreamedTools,
 ): TranscriptMessage | null => {
   let message = live;
 
@@ -256,7 +302,16 @@ const applyChanges = (
 
         break;
       case "toolcall_delta":
-        // Partial argument JSON; the call renders once its block completes.
+        // The arguments of the call as they stream, for the calls whose card draws them (an App's View is sent them); the
+        // others render once their block completes.
+        if (previous?.type === "tool-call" && streamed?.has(previous.name) === true) {
+          const args = appendedAt(previous.arguments, change.path, change.delta);
+
+          if (args !== previous.arguments) {
+            parts[change.contentIndex] = { ...previous, arguments: args };
+          }
+        }
+
         break;
     }
 
@@ -335,7 +390,11 @@ const withoutDescendants = (
  * Fold one of pi's agent events into the view. Pure: pi's events are the wire format, and this reducer is the only
  * code that interprets them.
  */
-export const reduceView = (view: SessionView, event: AgentEvent): SessionView => {
+export const reduceView = (
+  view: SessionView,
+  event: AgentEvent,
+  streamed?: StreamedTools,
+): SessionView => {
   switch (event.type) {
     case "snapshot": {
       const partial = event.generation?.message;
@@ -369,7 +428,7 @@ export const reduceView = (view: SessionView, event: AgentEvent): SessionView =>
         ? { ...view, live: projectMessage(event.message, LIVE_ID) }
         : view;
     case "message_update":
-      return { ...view, live: applyChanges(view.live, event.changes) };
+      return { ...view, live: applyChanges(view.live, event.changes, streamed) };
     case "message_end": {
       const next = append(view, event.entry);
 
@@ -493,6 +552,9 @@ export const reduceView = (view: SessionView, event: AgentEvent): SessionView =>
   }
 };
 
-/** Fold a batch of events, in order. */
-export const reduceEvents = (view: SessionView, events: readonly AgentEvent[]): SessionView =>
-  events.reduce(reduceView, view);
+/** Fold a batch of events, in order. `streamed` names the tools whose calls' streamed arguments are kept. */
+export const reduceEvents = (
+  view: SessionView,
+  events: readonly AgentEvent[],
+  streamed?: StreamedTools,
+): SessionView => events.reduce((folded, event) => reduceView(folded, event, streamed), view);

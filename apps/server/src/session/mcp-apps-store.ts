@@ -542,6 +542,23 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       ).pipe(Effect.map(withOrigin));
     });
 
+  const pageOfTool: McpAppsService["pageOfTool"] = (name, callId) =>
+    Effect.suspend(() => {
+      const declared = Arr.findFirst(tools, (each) => each.name === name);
+
+      if (Option.isNone(declared)) {
+        return Effect.succeed<McpAppHtmlAnswer>({
+          status: "missing",
+          message: `The inventory has no App tool ${name}`,
+        });
+      }
+
+      const { server, uri } = declared.value;
+
+      // The call has no record, so no conversation of its own is known here: the host's log names the call only.
+      return options.html({ server, uri, callId, conversation: "" }).pipe(Effect.map(withOrigin));
+    });
+
   const copiesFor: McpAppsService["copiesFor"] = (callIds) => {
     if (callIds.length === 0) return [];
 
@@ -688,6 +705,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     mount,
     html,
     pageOf,
+    pageOfTool,
     copiesFor,
     adopt,
   };

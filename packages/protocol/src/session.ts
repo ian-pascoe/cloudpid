@@ -742,13 +742,17 @@ export const McpAppMount = Schema.Struct({
  * With `callId`, the page of that call's record, for the record's own server: through its pinned `htmlHash`, or, when the
  * record pins none or the host no longer keeps it, read by the `ui://` resource the server's tool declares, which the
  * Session then pins to the record (the first mount's read, D4). With `hash` alone, the page of the newest record that pins
- * it, for that record's server. Only when the host lists `app_html`. A message with neither is answered `missing`.
+ * it, for that record's server. With `tool` (the model-facing name of an App tool of the inventory), the page of the `ui://`
+ * resource that tool declares, for a call that has no record yet because it is still running (`callId` is that call, for
+ * the host's log; an App View mounts as its call streams): a Session that predates it takes `callId` for a record's and
+ * answers `missing`. Only when the host lists `app_html`. A message with none of the three is answered `missing`.
  */
 export const McpAppHtml = Schema.Struct({
   type: Schema.Literal("mcp_app_html"),
   id: CommandId,
   hash: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY))),
   callId: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY))),
+  tool: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY))),
 });
 
 /**
