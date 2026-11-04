@@ -25,7 +25,11 @@ export type FollowState = {
    * conversation that only follows MCP tasks is idle (`docs/architecture/mcp-server-requests.md` → MCP tasks).
    */
   readonly idle: boolean;
-  /** Whether a follower of an MCP task is live: only Stop all (`session_stop` with `subagents`) reaches it. */
+  /**
+   * Whether a follower of an MCP task of the addressed conversation (the active branch's, by default) is live: only Stop all
+   * (`session_stop` with `subagents`) reaches it. A follower of a branch that is not active is not counted, since Stop all
+   * does not reach it.
+   */
   readonly following: boolean;
   /** Whether an input of the conversation is queued or being answered. */
   readonly unsettled: boolean;

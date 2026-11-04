@@ -3,7 +3,11 @@
 // the inline window, how often to poll, how long to back off, what each way a poll can fail comes to (the Failures
 // table), and the words the agent reads. Pure, so each rule is tested over values, and the inline window and the
 // follower decide alike.
-import type { McpHostRequestResult, McpTaskSnapshot } from "@cloudpid/mcp/types";
+import {
+  MCP_TASK_TIMEOUT_MS,
+  type McpHostRequestResult,
+  type McpTaskSnapshot,
+} from "@cloudpid/mcp/types";
 import * as Match from "effect/Match";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
@@ -82,12 +86,16 @@ export const MCP_TASK_FOLLOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** How long an ignored `tasks/cancel` is waited for before cloudpid stops following: 2 minutes. */
 export const MCP_TASK_CANCEL_GRACE_MS = 2 * 60 * 1000;
 
+/** What a `tasks/cancel` may spend connecting before its request is sent: 15 seconds (an engine that is starting, a sign-in's token). */
+export const MCP_TASK_CONNECT_MARGIN_MS = 15_000;
+
 /**
- * How long a cancel marked `sending` is left to its sender before the follower sends it again: 75 seconds, past the
- * host's 30 s request bound and the wire's one resend of a cut, so the send of a call that is still alive has ended. (A
- * send in this instance's memory is never sent again at all: `cancelInFlight`.)
+ * How long a cancel marked `sending` is left to its sender before the follower sends it again: 75 seconds, which is
+ * longer than any send of a call that is still alive: the request's bound (`MCP_TASK_TIMEOUT_MS`, 30 s), the wire's one
+ * resend of a cut (another 30 s) and `MCP_TASK_CONNECT_MARGIN_MS`. A send in this instance's memory is never sent again
+ * at all (`cancelAttempted`), and Stop all, Archive, Delete and the sweep do not wait for this age (`cancelDue`).
  */
-export const MCP_TASK_CANCEL_SENDING_MS = 75_000;
+export const MCP_TASK_CANCEL_SENDING_MS = 2 * MCP_TASK_TIMEOUT_MS + MCP_TASK_CONNECT_MARGIN_MS;
 
 /**
  * How long Stop all, Archive and Delete wait for a server to take the `tasks/cancel` they send before the task's record

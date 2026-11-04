@@ -82,8 +82,7 @@ export const sendCancel = async (
 /**
  * The handles whose `tasks/cancel` a Session's client has sent, or is sending: it is never sent twice by one instance,
  * whether the first is still out or its call has gone. Kept by the client, so another Session's handles, which repeat
- * (`mcp-task-1`), are never mistaken for these. A cancel another instance marked `sending` is left alone for
- * `MCP_TASK_CANCEL_SENDING_MS` (`cancelDue`).
+ * (`mcp-task-1`), are never mistaken for these. The rule is therefore once per instance (`cancelDue`).
  */
 const attempts = new WeakMap<McpHostClientService, Set<string>>();
 
@@ -106,18 +105,28 @@ export const cancelAttempted = (
 ): boolean => attemptsOf(client).has(record.handle);
 
 /**
- * Whether Stop all, Archive, Delete or the sweep still has to send `record`'s `tasks/cancel`: it is sent once, so not when
- * one went (`sent`, or `failed`, which is not asked again), nor when this Session's instance has sent one, nor while
- * another instance's `sending` is younger than `MCP_TASK_CANCEL_SENDING_MS`.
+ * Whether Stop all, Archive, Delete or the sweep still has to send `record`'s `tasks/cancel`. Once per instance: not when
+ * one went (`sent`, or `failed`, which is not asked again), nor when this Session's instance has sent one. Another
+ * instance's `sending` mark, however fresh, does not stop it: that instance may be gone (a code update replaced it), and a
+ * second cancel of a task is harmless where a task nobody cancels runs on for its TTL. After an eviction the new instance
+ * may therefore send a cancel the old one had sent.
  */
-export const cancelDue = (
+export const cancelDue = (client: McpHostClientService, record: McpTaskRecord): boolean =>
+  !cancelAttempted(client, record) &&
+  (record.cancel === undefined || record.cancel.sent === "sending");
+
+/**
+ * Whether the follower, left to itself, sends `record`'s cancel again: another instance marked it `sending` and the
+ * mark is older than any send of a call that is alive (`MCP_TASK_CANCEL_SENDING_MS`), so the send went with its instance.
+ */
+export const cancelStale = (
   client: McpHostClientService,
   record: McpTaskRecord,
   now: number,
 ): boolean =>
-  !cancelAttempted(client, record) &&
-  (record.cancel === undefined ||
-    (record.cancel.sent === "sending" && now - record.cancel.at >= MCP_TASK_CANCEL_SENDING_MS));
+  record.cancel?.sent === "sending" &&
+  now - record.cancel.at >= MCP_TASK_CANCEL_SENDING_MS &&
+  !cancelAttempted(client, record);
 
 /**
  * `sendCancel`, waiting no longer than `ms` for the answer (`MCP_TASK_STOP_CANCEL_MS`): whether the server took it in time.

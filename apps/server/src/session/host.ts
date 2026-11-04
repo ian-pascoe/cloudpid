@@ -3382,7 +3382,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         activeBranch: current.id,
         copying,
         idle: working(tasks).length === 0 && submissions.length === 0 && !admission.anyPreparing(),
-        following: Arr.some(tasks, isFollower),
+        // The addressed conversation's own: what Stop all of it reaches (a branch that is not active is Archive's and Delete's).
+        following: Arr.some(
+          tasks,
+          (task) => isFollower(task) && task.record.conversationId === conversation.id,
+        ),
         unsettled,
         stalled,
         newestEntry: read.newestEntry,

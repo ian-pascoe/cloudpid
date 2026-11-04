@@ -265,7 +265,7 @@ const finish = async (
 const stopped = async (call: TaskCall, record: McpTaskRecord): Promise<StoredResult> => {
   const decision: Decision = { patch: {}, failures: record.failures, changed: true };
 
-  const sending = cancelDue(call.client, record, call.api.now())
+  const sending = cancelDue(call.client, record)
     ? sendCancelWithin(call.client, record, call.origin)
     : Promise.resolve(false);
 

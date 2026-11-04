@@ -47,18 +47,27 @@ export const sweepTasks = async (sweep: TaskSweep): Promise<number> => {
     Arr.map((await harness.inspect(context)).tasks, (task) => String(task.record.id)),
   );
 
+  const gone = Arr.filter(
+    orphans,
+    // A record from before the call's task was kept cannot be told from one whose call is live.
+    (record) => record.callTask !== undefined && !live.has(String(record.callTask)),
+  );
+
+  const at = now();
+
+  // The cancels go out together, each bound to 2 s, so the settle that runs the sweep is held for 2 s and not N times 2 s.
+  // Once per instance (a Stop that ended the call may have sent it), and best effort: the end stands without the cancel,
+  // and the server's TTL ends the task.
+  await Promise.all(
+    Arr.map(gone, (record) =>
+      cancelDue(client, record) ? sendCancelWithin(client, record, origin) : Promise.resolve(false),
+    ),
+  );
+
   let ended = 0;
 
-  for (const record of orphans) {
-    // A record from before the call's task was kept cannot be told from one whose call is live.
-    if (record.callTask === undefined || live.has(String(record.callTask))) continue;
-
-    const end: McpTaskEnd = { status: "cancelled", by: "stop", at: now() };
-
-    // Once (a Stop that ended the call may have sent it), and not for longer than the bound: the end stands without the
-    // cancel, and the server's TTL ends the task.
-    if (cancelDue(client, record, end.at)) await sendCancelWithin(client, record, origin);
-
+  for (const record of gone) {
+    const end: McpTaskEnd = { status: "cancelled", by: "stop", at };
     const closed = endedRecord(record, end, {});
     let wrote = false;
 
