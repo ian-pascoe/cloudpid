@@ -133,6 +133,7 @@ import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
@@ -562,6 +563,18 @@ export const destroyedWorkspaces = (globalThis.testDestroyedWorkspaces ??= new M
 
 /** Text submitted to the root conversation, as the tests write it. */
 type TestPrompt = { readonly requestId: string; readonly text: string };
+
+/** How a test reads a Result Spill for a preview (`TestSession.spill`). */
+export type TestSpillRead = {
+  /** Told each size the read asks the decode slot for. */
+  readonly held?: Array<number>;
+  /** How long the wait for the slot takes, on the read's test clock. */
+  readonly slotAfterMs?: number;
+  /** The Workspace's limit for this Session's calls, in ms (`expandTimeoutMs`); `EXPAND_TIMEOUT` when left out. */
+  readonly expandMs?: number;
+  /** Run during the wait for the slot, before it is given. */
+  readonly duringWait?: () => Promise<void>;
+};
 
 /** The test Worker's `SECRETS_ENCRYPTION_KEY`. */
 const SECRETS_KEY = Redacted.make("test-secrets-encryption-key-0123456789abcdef");
@@ -1876,16 +1889,31 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("expand-timeout-ms", ms);
   }
 
-  /** What the Workspace holds at a Result Spill's `path`, as a card's preview reads it (`SessionHost.spill`). */
-  spill(path: string, held: Array<number> = [], slotAfterMs = 0): Promise<SpillRead> {
-    // The slot is given after `slotAfterMs`, and the sizes it was asked for are told in `held`.
+  /**
+   * What the Workspace holds at a Result Spill's `path`, as a card's preview reads it (`SessionHost.spill`). The read
+   * runs on a test clock, which only the slot's wait moves, so the Workspace's limit counts test-clock time only: a
+   * loaded runner's slow Workspace call never times the read out. That path (a Workspace call over the limit, `missing`)
+   * is therefore not covered here.
+   */
+  spill(
+    path: string,
+    { held = [], slotAfterMs = 0, expandMs, duringWait = async () => {} }: TestSpillRead = {},
+  ): Promise<SpillRead> {
+    if (expandMs !== undefined) this.expandTimeoutMs(expandMs);
+
+    // The slot is given once `duringWait` is done and `slotAfterMs` have passed on the read's clock, and the sizes it was
+    // asked for are told in `held`.
     return this.#runtime.runPromise(
-      this.#host.spill(undefined, path, (bytes) =>
-        Effect.sleep(slotAfterMs).pipe(
-          Effect.as("held" as const),
-          Effect.tap(() => Effect.sync(() => held.push(bytes))),
-        ),
-      ),
+      this.#host
+        .spill(undefined, path, (bytes) =>
+          Effect.promise(duringWait).pipe(
+            Effect.andThen(TestClock.adjust(slotAfterMs)),
+            Effect.as("held" as const),
+            Effect.tap(() => Effect.sync(() => held.push(bytes))),
+          ),
+        )
+        // @effect-diagnostics-next-line strictEffectProvide:off -- the read's own entry point: its clock is the test's.
+        .pipe(Effect.provide(TestClock.layer())),
     );
   }
 
