@@ -240,6 +240,31 @@ describe("a question that ended", () => {
       ]);
     }));
 
+  test("logs nothing for a cancel cloudpid made unseen", () =>
+    Effect.gen(function* () {
+      const logged: string[] = [];
+
+      const collector = Logger.make((options) => {
+        logged.push(String(Arr.ensure(options.message)[0]));
+      });
+
+      const questions = open(memoryStorage().storage);
+
+      yield* questions
+        .unseen({
+          callId: "call-1",
+          conversationId: ROOT_CONVERSATION_ID,
+          server: "demo",
+          tool: "mcp__demo__ask",
+          message: "Open this page",
+          action: "cancel",
+          reason: "it asked to open a page",
+        })
+        .pipe(Effect.provideService(Logger.CurrentLoggers, new Set([collector])));
+
+      expect(logged).toEqual([]);
+    }));
+
   test("is copied to a Fork with the call's result, under the new conversation, and a copy keeps no more than the newest 100", () =>
     Effect.gen(function* () {
       const source = open(memoryStorage().storage);
@@ -316,7 +341,7 @@ describe("Decline all and Decline in this Session", () => {
       yield* Fiber.join(other);
     }));
 
-  test("decline the server's waiting questions in every call, keep the choice, and give it back", () =>
+  test("decline this question only, keep the choice for the server's later ones, and give it back", () =>
     Effect.gen(function* () {
       const { storage } = memoryStorage();
       const questions = open(storage);
@@ -328,8 +353,11 @@ describe("Decline all and Decline in this Session", () => {
       yield* questions.declineScoped("call-1:1", "session");
 
       expect(yield* Fiber.join(first)).toEqual({ action: "decline", by: "owner" });
-      expect(yield* Fiber.join(other)).toEqual({ action: "decline", by: "owner" });
-      expect((yield* questions.pending).map((request) => request.server)).toEqual(["other"]);
+      // The questions it already waits on stay on their cards: Decline all is for those.
+      expect((yield* questions.pending).map((request) => request.id)).toEqual([
+        "call-2:1",
+        "call-3:1",
+      ]);
       expect(questions.isDeclined("demo")).toBe(true);
       expect(questions.isDeclined("other")).toBe(false);
       expect(questions.declinedServers()).toEqual(["demo"]);
@@ -341,7 +369,9 @@ describe("Decline all and Decline in this Session", () => {
 
       expect(questions.isDeclined("demo")).toBe(false);
 
+      yield* questions.answer("call-2:1", { action: "cancel" });
       yield* questions.answer("call-3:1", { action: "cancel" });
+      yield* Fiber.join(other);
       yield* Fiber.join(elsewhere);
     }));
 

@@ -231,10 +231,10 @@ export const ApprovalAnswer = Schema.Struct({
  * records that the owner opened it (Open's click; a server that goes on by itself is told `accept` then) and `done` that
  * they finished there ("Done, try again": every page of the call's round must be opened first). Answered with `null`;
  * fails when no such request waits (answered, ended or withdrawn), and, for a bad `content`, with the fields to fix.
- * `scope` widens a `decline`: `call` ("Decline all") declines every question of the request's call that waits, and
- * `session` ("Decline in this Session") also declines the server's other waiting questions and its later ones unseen,
- * until the owner takes it back (`mcp_elicitation_revoke`). Sent only to a Session that says `mcpDecline` in `hello`
- * (`docs/architecture/mcp-server-requests.md` → Elicitation requests).
+ * `scope` widens a `decline` (it is refused on any other action): `call` ("Decline all") declines every question of the
+ * request's call that waits, and `session` ("Decline in this Session") declines this one and the server's later
+ * requests unseen, until the owner takes it back (`mcp_elicitation_revoke`). Sent only to a Session that says
+ * `mcpDecline` in `hello` (`docs/architecture/mcp-server-requests.md` → Elicitation requests).
  */
 export const McpElicitationAnswer = Schema.Struct({
   type: Schema.Literal("mcp_elicitation_answer"),
@@ -243,7 +243,14 @@ export const McpElicitationAnswer = Schema.Struct({
   action: McpElicitationAction,
   content: Schema.optionalKey(ElicitationContent),
   scope: Schema.optionalKey(McpElicitationScope),
-});
+}).pipe(
+  Schema.check(
+    Schema.makeFilter(
+      (answer: { readonly action: string; readonly scope?: unknown }) =>
+        answer.scope === undefined || answer.action === "decline" || "Only a Decline has a scope",
+    ),
+  ),
+);
 
 /**
  * Take back "Decline in this Session" for `server` (the Session's details list them): its next question is asked of the

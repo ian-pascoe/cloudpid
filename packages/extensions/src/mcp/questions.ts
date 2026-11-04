@@ -51,6 +51,7 @@ import {
 } from "./question-records.ts";
 import type {
   McpElicitationRequest,
+  McpElicitationScope,
   McpSamplingRequest,
   McpSamplingSessionGrant,
 } from "@cloudpid/protocol";
@@ -183,14 +184,14 @@ export type McpQuestionsService = {
   readonly records: Effect.Effect<ReadonlyArray<McpQuestionRecord>>;
   /**
    * The owner's "Decline all" (`scope: "call"`) or "Decline in this Session" (`scope: "session"`) on question `id`: it is
-   * declined, and with `call` the call's other waiting questions, with `session` the server's other waiting questions in
-   * every call, and the server's later ones are declined unseen (`isDeclined`) until `revokeDeclined`. A page that is open
-   * can only be cancelled, which is what it is answered. Fails when `id` waits no more, or when the Session could not keep
-   * the choice (nothing is then declined).
+   * declined, and with `call` the call's other waiting questions too; with `session` only this one, and the server's later
+   * requests are declined unseen (`isDeclined`) until `revokeDeclined`, the questions already waiting staying on their
+   * cards. A page that is open can only be cancelled, which is what it is answered. Fails when `id` waits no more, or when
+   * the Session could not keep the choice (nothing is then declined).
    */
   readonly declineScoped: (
     id: string,
-    scope: "call" | "session",
+    scope: McpElicitationScope,
   ) => Effect.Effect<void, McpQuestionsError>;
   /** The servers the owner chose to decline in this Session, oldest first. */
   readonly declinedServers: () => ReadonlyArray<string>;
@@ -659,7 +660,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       const { server, callId } = asked.value;
 
-      // The choice is kept first: a storage that cannot take it declines nothing.
+      // The choice is kept first: a storage that cannot take it declines nothing. `session` declines this question and the
+      // server's later ones; the others it already waits on stay on their cards (Decline all is for those).
       const added = scope === "session" && !declinedServers().includes(server);
 
       if (added) {
@@ -686,7 +688,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       for (const other of waitingNow) {
         if (other.id === id) continue;
 
-        if (scope === "call" ? other.callId === callId : other.server === server) {
+        if (scope === "call" && other.callId === callId) {
           // Already ended or answered meanwhile: nothing to decline.
           yield* declineOrCancel(other.id).pipe(Effect.ignore);
         }
@@ -821,15 +823,18 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   // The servers whose unseen declines were logged: once per server for as long as this instance lives.
   const warned = new Set<string>();
 
-  /** A `warning` log, once per server, that cloudpid declined or cancelled a request of it unseen. Names no value. */
+  /**
+   * A `warning` log, once per server, that cloudpid declined a request of it unseen (a credential asked for, an address
+   * refused, the owner's "Decline in this Session"); a `cancel` of a malformed form is only recorded. Names no value.
+   */
   const warnOnce = (server: string, action: "decline" | "cancel") =>
     Effect.suspend(() => {
-      if (warned.has(server)) return Effect.void;
+      if (action !== "decline" || warned.has(server)) return Effect.void;
 
       warned.add(server);
 
       return Effect.logWarning(
-        `cloudpid ${action === "decline" ? "declined" : "cancelled"} a request for input from MCP server ${server} unseen; later ones are recorded, not logged`,
+        `cloudpid declined a request for input from MCP server ${server} unseen; later ones are recorded, not logged`,
       );
     });
 

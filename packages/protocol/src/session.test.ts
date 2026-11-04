@@ -616,7 +616,7 @@ describe("the Session socket messages", () => {
     ).toEqual({ type: "mcp_elicitation_requests", requests: [] });
   });
 
-  it("read a Decline's scope and a revoke, and refuse a scope that is not one", async () => {
+  it("read a Decline's scope and a revoke, read a scope it does not know as `call`, and refuse a scope on another action", async () => {
     const answer = {
       type: "mcp_elicitation_answer",
       id: "c1",
@@ -630,7 +630,14 @@ describe("the Session socket messages", () => {
     expect(await readClient(JSON.stringify({ ...answer, scope: "session" }))).toEqual(
       Option.some({ ...answer, scope: "session" }),
     );
-    expect(await readClient(JSON.stringify({ ...answer, scope: "server" }))).toEqual(Option.none());
+    // A scope a later build adds reads as the narrower `call`.
+    expect(await readClient(JSON.stringify({ ...answer, scope: "server" }))).toEqual(
+      Option.some({ ...answer, scope: "call" }),
+    );
+    // A scope on any other action is refused by the schema.
+    expect(
+      await readClient(JSON.stringify({ ...answer, action: "cancel", scope: "call" })),
+    ).toEqual(Option.none());
 
     const revoke = { type: "mcp_elicitation_revoke", id: "c2", server: "docs" };
 

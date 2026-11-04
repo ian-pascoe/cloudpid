@@ -1055,10 +1055,11 @@ export const sessionSocketsLayer = (
               })
               .pipe(Effect.as(null));
           case "mcp_elicitation_answer":
+            // The schema refuses a scope on any other action.
             if (message.scope !== undefined) {
-              return message.action === "decline"
-                ? mcpQuestions.declineScoped(message.request, message.scope).pipe(Effect.as(null))
-                : Effect.fail(McpQuestionsError.make({ message: "Only a Decline has a scope" }));
+              return mcpQuestions
+                .declineScoped(message.request, message.scope)
+                .pipe(Effect.as(null));
             }
 
             return mcpQuestions

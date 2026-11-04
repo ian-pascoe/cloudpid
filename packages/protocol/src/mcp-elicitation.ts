@@ -117,9 +117,13 @@ export type McpElicitationAction = typeof McpElicitationAction.Type;
 
 /**
  * How far a Decline reaches (`mcp_elicitation_answer`'s `scope`): `call` is "Decline all" (every question of its call that
- * waits), `session` is "Decline in this Session" (the server's other waiting questions, and its later ones, unseen).
+ * waits), `session` is "Decline in this Session" (the server's later requests, unseen; the questions already waiting stay
+ * on their cards). A scope a later build adds reads as `call`, the narrower of the two: it declines what the owner sees on
+ * that call and keeps no choice for later (`docs/architecture/mcp.md` → Deploys).
  */
-export const McpElicitationScope = Schema.Literals(["call", "session"]);
+export const McpElicitationScope = Schema.Literals(["call", "session"]).pipe(
+  Schema.catchDecoding(() => Effect.succeedSome("call" as const)),
+);
 
 export type McpElicitationScope = typeof McpElicitationScope.Type;
 

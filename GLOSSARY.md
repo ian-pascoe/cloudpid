@@ -451,7 +451,7 @@ An MCP server's ask, during a call the agent or the owner made or an MCP task su
 _Avoid_: Approval (that is for an Agent change), consent, completion request, sampling (alone, for one request)
 
 **Elicitation request**:
-An MCP server's ask, during a call the agent or the owner made or an MCP task such a call started, for the owner's own answer: a form to fill in, or a page to open in the owner's browser. It is shown as a card in that call's conversation, and only the owner answers it, by submitting, declining or cancelling it; the answer goes only to the server.
+An MCP server's ask, during a call the agent or the owner made or an MCP task such a call started, for the owner's own answer: a form to fill in, or a page to open in the owner's browser. It is shown as a card in that call's conversation, and only the owner answers it, by submitting, declining or cancelling it; the answer goes only to the server. **Decline all** declines every question of one call that waits; **Decline in this Session** declines a server's later requests until the owner takes it back (questions already waiting stay on their cards).
 _Avoid_: Approval (that is for an Agent change), Sign-in request (that is the agent's ask for an MCP sign-in), input request, question or form (alone), elicitation (alone, for one request)
 
 **MCP task**:
