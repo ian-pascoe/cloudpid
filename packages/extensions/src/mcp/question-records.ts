@@ -175,6 +175,13 @@ export type McpCallState = {
  */
 export type McpCallPages = { readonly opened: ReadonlyArray<string>; readonly repeated: number };
 
+/** The most pages of a call that are kept as opened, and the longest a kept key is: a server's `elicitationId` is its own. */
+export const MCP_PAGES_KEPT = 64;
+export const MCP_PAGE_KEY_CHARS = 200;
+
+/** A page's key as the call's pages keep it: cut, so a server's long `elicitationId` cannot make the record large. */
+export const pageKeyOf = (key: string): string => key.slice(0, MCP_PAGE_KEY_CHARS);
+
 const pagesKey = (callId: string) => `mcp-question:pages:${callId}`;
 
 /** How a question that waits tells the owner: the first of a call does, a later one only after a pause. */
@@ -329,7 +336,11 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
 
     storage.put(pagesKey(callId), {
       ...held,
-      opened: Arr.dedupe([...held.opened, ...keys]),
+      // The newest are kept: a call that outruns the bound forgets its oldest page, which then reads as new.
+      opened: Arr.takeRight(
+        Arr.dedupe([...held.opened, ...Arr.map(keys, pageKeyOf)]),
+        MCP_PAGES_KEPT,
+      ),
     } satisfies McpCallPages);
   };
 

@@ -19,6 +19,7 @@ const BROWSER_WORKER = here("../../../apps/browser/src/worker.ts");
 const CORE = here("./index.ts");
 const TYPES = here("./types.ts");
 const OAUTH = here("./oauth.ts");
+const ELICITATION_URL = here("./elicitation-url.ts");
 
 const SDK_PACKAGES = "@modelcontextprotocol/";
 const PLANTED_ENTRY = "\0planted-entry";
@@ -131,6 +132,15 @@ describe("@cloudpid/mcp entries", () => {
 
   it("./types loads nothing from the SDK", async () => {
     expect(await sdkReferences(TYPES)).toEqual([]);
+  });
+
+  // `./elicitation-url` carries the Public Suffix List (`tldts`, about 190 KB minified), which the web never runs since
+  // a card's `domain` arrives on the wire: `./types`, which the web imports, must not reach it.
+  it("./elicitation-url loads tldts, and ./types does not", async () => {
+    expect((await bundleReferences(ELICITATION_URL)).some((id) => id.includes("/tldts"))).toBe(
+      true,
+    );
+    expect((await bundleReferences(TYPES)).filter((id) => id.includes("/tldts"))).toEqual([]);
   });
 
   it("./oauth loads nothing from the SDK", async () => {

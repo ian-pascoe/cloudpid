@@ -22,9 +22,16 @@ import { type FakeMcpAnswer, fakeMcpHost } from "./mcp.testing.ts";
 import {
   createMcpQuestions,
   type McpQuestionAsk,
+  McpRoundState,
   type McpQuestionStorage,
   type McpQuestionVault,
 } from "./mcp/questions.ts";
+import {
+  MCP_PAGE_KEY_CHARS,
+  MCP_PAGES_KEPT,
+  pageKeyOf,
+  questionBasics,
+} from "./mcp/question-records.ts";
 import { openKeptVault } from "./secrets/vault.ts";
 import { answer, call, context } from "./subagents/harness.fixture.ts";
 
@@ -96,7 +103,7 @@ const until = async (check: () => Promise<boolean>) => {
   }
 };
 
-const setup = async () => {
+const setup = async (finishedShownMs?: number) => {
   const host = fakeMcpHost([DOCS]);
   const memory = memoryStorage();
   const told: Array<{ server: string; page?: true }> = [];
@@ -113,6 +120,7 @@ const setup = async () => {
     holdsSecret: () => Effect.succeed(false),
     ownHost: (hostname) => hostname === "pi.ianpascoe.dev",
     vault,
+    finishedShownMs,
   });
 
   const tools = makeMcpTools(host.client, memoryMcpToolsStore(), { slackMs: 0, questions });
@@ -128,10 +136,9 @@ const setup = async () => {
 
 describe("a Legacy server's page during its call", () => {
   it("is shown as a card; Open answers the server accept at once and the card stays until the page is finished", async () => {
-    const { host, questions, tools, session, pending } = await setup();
+    const { host, questions, tools, session, pending } = await setup(150);
     const replies: Array<Answer> = [];
     const finished: Array<string> = [];
-    const cardSaid: Array<Array<string>> = [];
 
     host.answer(async (_input, hooks) => {
       const reply = await hooks.onInput?.(visit());
@@ -143,10 +150,7 @@ describe("a Legacy server's page during its call", () => {
       await hooks.onInputComplete?.("page-1");
       finished.push("page-1");
 
-      // The card says so for a moment ("Finished at <host>") before it goes, and the call's clock is on again.
-      await until(async () => (await pending()).some((each) => each.page?.finished === true));
-      cardSaid.push((await pending()).map((each) => each.page?.host ?? ""));
-
+      // The server's result follows its `complete` at once, as a real server's does.
       return DONE;
     });
     await session.start(tools);
@@ -183,8 +187,12 @@ describe("a Legacy server's page during its call", () => {
 
     expect(replies).toEqual([{ kind: "answered", result: { action: "accept" } }]);
     expect(finished).toEqual(["page-1"]);
-    expect(cardSaid).toEqual([["auth.example.com"]]);
-    expect(await pending()).toEqual([]);
+
+    // The call is over, and its card still says "Finished at <host>" for a moment before it goes.
+    expect((await pending()).map((each) => each.page)).toEqual([
+      expect.objectContaining({ host: "auth.example.com", opened: true, finished: true }),
+    ]);
+    await until(async () => (await pending()).length === 0);
     expect(await detailsOf(session)).toEqual([
       expect.objectContaining({
         elicitation: [
@@ -687,8 +695,7 @@ describe("a page the owner was done at, when the server asks for it again", () =
     round: 1,
     conn: "conn-docs",
     tool: "search",
-    resume: STATE,
-    resend: true as const,
+    state: McpRoundState.Resend({ state: STATE }),
     asked: [],
   };
 
@@ -711,6 +718,36 @@ describe("a page the owner was done at, when the server asks for it again", () =
     await Effect.runPromise(questions.commitRound({ ...ROUND, callId: ask.callId }));
     await Effect.runPromise(questions.showRound(ask.callId));
   };
+
+  it("keeps a round's state under its tag: a read's pages hold none", async () => {
+    const memory = memoryStorage();
+    const before = await instance(memory, []);
+
+    expect(await Effect.runPromise(before.defer(ASK))).toBe("deferred");
+    await Effect.runPromise(
+      before.commitRound({ ...ROUND, callId: ASK.callId, state: McpRoundState.Read() }),
+    );
+
+    const after = await instance(memory, []);
+
+    expect(await Effect.runPromise(after.deferredRound(ASK.callId))).toMatchObject({
+      state: McpRoundState.Read(),
+    });
+  });
+
+  it("keeps a call's resend state under its tag", async () => {
+    const memory = memoryStorage();
+    const before = await instance(memory, []);
+
+    expect(await Effect.runPromise(before.defer(ASK))).toBe("deferred");
+    await Effect.runPromise(before.commitRound({ ...ROUND, callId: ASK.callId }));
+
+    const after = await instance(memory, []);
+
+    expect(await Effect.runPromise(after.deferredRound(ASK.callId))).toMatchObject({
+      state: McpRoundState.Resend({ state: STATE }),
+    });
+  });
 
   it("is brought back as not finished after a restart, with no new Notification and no count toward the cap", async () => {
     const memory = memoryStorage();
@@ -753,6 +790,33 @@ describe("a page the owner was done at, when the server asks for it again", () =
     // The call's end takes what it came to with it.
     await Effect.runPromise(after.settleCall(ASK.callId));
     expect(memory.keys().some((key) => key.startsWith("mcp-question:pages:"))).toBe(false);
+  });
+});
+
+describe("the pages a call keeps as opened", () => {
+  it("are bounded in how many, and in how long a key is", () => {
+    const { storage } = memoryStorage();
+
+    const basics = questionBasics({
+      storage,
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+    });
+
+    basics.openedPages("call-1", ["x".repeat(5000)]);
+    basics.openedPages(
+      "call-1",
+      Arr.makeBy(100, (n) => `page-${n}`),
+    );
+
+    const { opened } = basics.pagesOf("call-1");
+
+    expect(opened).toHaveLength(MCP_PAGES_KEPT);
+    expect(opened.at(-1)).toBe("page-99");
+    expect(opened.every((key) => key.length <= MCP_PAGE_KEY_CHARS)).toBe(true);
+
+    basics.openedPages("call-2", ["x".repeat(5000)]);
+    expect(basics.pagesOf("call-2").opened).toEqual([pageKeyOf("x".repeat(5000))]);
   });
 });
 

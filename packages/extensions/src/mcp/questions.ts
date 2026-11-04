@@ -54,6 +54,7 @@ export {
   MCP_DEFERRED_DEADLINE_MS,
   type McpDeferredAnswer,
   type McpDeferredRound,
+  McpRoundState,
   type McpQuestionVault,
 } from "./deferred-questions.ts";
 
@@ -444,7 +445,12 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
   const settleCall = (callId: string) =>
     Effect.gen(function* () {
-      yield* endWhere((held) => held.request.callId === callId, MCP_CALL_ENDED_REASON);
+      // A page the server said is finished is left to its own timer, so the card reads "Finished at <host>" after the
+      // call that usually ends right behind `complete` (`complete`).
+      yield* endWhere(
+        (held) => held.request.callId === callId && held.request.page?.finished !== true,
+        MCP_CALL_ENDED_REASON,
+      );
       yield* deferred.settleCall(callId, MCP_CALL_ENDED_REASON);
       basics.calls.delete(callId);
     });

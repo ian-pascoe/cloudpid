@@ -2087,16 +2087,21 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const readTimeoutMs = () => Math.min(target.timeoutMs ?? PAGE_TIMEOUT_MS, PAGE_TIMEOUT_MS);
 
   /**
-   * Reads `uri` once, or with `retry` the answers to a round of questions: its result, or (Modern) a round of
-   * questions, which the read's own rounds answer (`readResource`).
+   * Reads `uri` once, or with `options.retry` the answers to a round of questions: its result, or (Modern) a round of
+   * questions, which the read's own rounds answer (`readResource`). `options.recover` reads a failure as a value
+   * instead: a read that keeps pages recovers a Legacy `-32042` as a `UrlRequired`.
    */
-  const readOnce = (
+  const readOnce = <Recovered = never>(
     params: ReadParams,
     ctx: McpCallContext,
     more: Readonly<Record<string, string>> | undefined,
-    retry?: Retry,
-    keepsPages = false,
+    options: {
+      readonly retry?: Retry | undefined;
+      readonly recover?: ((error: Error) => Recovered | undefined) | undefined;
+    } = {},
   ) => {
+    const { retry, recover } = options;
+
     const timeoutMs = readTimeoutMs();
 
     return withAsking(ctx, timeoutMs, (own) =>
@@ -2114,10 +2119,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         ).then(
           (value) => value,
           (error: Error) => {
-            // A `-32042` is a question for a read that keeps pages; to any other it is the server's error.
-            const url = keepsPages ? urlRequiredOf(error) : undefined;
+            const recovered = recover?.(error);
 
-            return url === undefined ? Promise.reject(error) : url;
+            return recovered === undefined ? Promise.reject(error) : recovered;
           },
         );
       }, false),
@@ -2138,7 +2142,10 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       // A read has no resume: its caller's deferrals are cancels.
       const asking = noDeferral(ctx);
 
-      const first = yield* readOnce(params, asking, more, undefined, mayKeepPages(ctx));
+      const first = yield* readOnce(params, asking, more, {
+        // A `-32042` is a question for a read that keeps pages; to any other it is the server's error.
+        recover: mayKeepPages(ctx) ? urlRequiredOf : undefined,
+      });
 
       // A Legacy server's `-32042` on a read: its pages are kept for the owner, and the caller sends the read again as it
       // was once they are done (a read has no state; the caller counts the rounds and ends the eleventh).
@@ -2151,8 +2158,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         } satisfies PagesRequired;
       }
 
-      // SAFETY: a `-32042` returned above; anything else is the result the SDK validated.
-      let value = first as ReadResourceResult | Result;
+      let value: ReadResourceResult | Result = first;
       let round = 1;
 
       while (value["resultType"] === "input_required") {
@@ -2171,8 +2177,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
         if (asked.requestState !== undefined) retry.requestState = asked.requestState;
 
-        // SAFETY: a round's retry is sent without `keepsPages`, so it is never answered as a `-32042`.
-        value = (yield* readOnce(params, asking, more, retry)) as ReadResourceResult | Result;
+        // A round's retry is sent without `keepsPages`, so it is never answered as a `-32042`.
+        value = yield* readOnce(params, asking, more, { retry });
         round += 1;
       }
 

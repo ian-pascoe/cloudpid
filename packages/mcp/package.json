@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./oauth": "./src/oauth.ts",
     "./types": "./src/types.ts",
+    "./elicitation-url": "./src/elicitation-url.ts",
     "./testing": "./src/testing.ts",
     "./server": "./src/server/index.ts"
   },

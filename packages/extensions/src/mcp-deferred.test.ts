@@ -22,6 +22,7 @@ import {
   createMcpQuestions,
   MCP_DEFERRED_DEADLINE_MS,
   type McpQuestionAsk,
+  McpRoundState,
   type McpQuestionStorage,
   type McpQuestionVault,
 } from "./mcp/questions.ts";
@@ -459,7 +460,7 @@ describe("a Modern server's form", () => {
       round: 1,
       conn: "conn-docs",
       tool: "search",
-      resume: STATE,
+      state: McpRoundState.Resume({ state: STATE }),
     });
 
     // No call of the new instance waits for it: the Session going idle withdraws it.
@@ -497,7 +498,7 @@ describe("a deferred round in the Session's storage", () => {
     round: 1,
     conn: "conn-docs",
     tool: "search",
-    resume: STATE,
+    state: McpRoundState.Resume({ state: STATE }),
     asked: [],
   };
 

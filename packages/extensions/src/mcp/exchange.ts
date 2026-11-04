@@ -56,7 +56,7 @@ import {
   interruptedResult,
   streamFailure,
 } from "./result.ts";
-import type { McpDeferredRound, McpQuestionsService } from "./questions.ts";
+import { type McpDeferredRound, McpRoundState, type McpQuestionsService } from "./questions.ts";
 import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
@@ -597,7 +597,8 @@ export const send = async <A>(
       if (Predicate.isTagged(result, "PagesRequired")) {
         pagesMessage = result.message;
 
-        // A tool's call is ended by the core at its eleventh `-32042`; a read, which keeps no state, is ended here.
+        // A tool's call is ended by the core at its eleventh `-32042`; a read, which keeps no state, is ended here, so
+        // its count is this instance's: a restart sends the read afresh, bounded by the Session's restart limit.
         if ((round?.round ?? 0) >= MCP_INPUT_ROUNDS) {
           return failed(
             failedWith(
@@ -614,10 +615,11 @@ export const send = async <A>(
         round: (round?.round ?? 0) + 1,
         conn: result.conn,
         tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
-        resume: Predicate.isTagged(result, "PagesRequired")
-          ? (result.resend ?? null)
-          : result.resume,
-        resend: Predicate.isTagged(result, "PagesRequired") ? true : undefined,
+        state: Predicate.isTagged(result, "PagesRequired")
+          ? result.resend === undefined
+            ? McpRoundState.Read()
+            : McpRoundState.Resend({ state: result.resend })
+          : McpRoundState.Resume({ state: result.resume }),
         asked: [...(asking?.asked ?? [])],
       };
 

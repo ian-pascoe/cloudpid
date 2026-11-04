@@ -5,7 +5,7 @@
  */
 import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
-import { checkElicitationUrl, ELICITATION_URL_MAX, registrableDomain } from "./types.ts";
+import { checkElicitationUrl, ELICITATION_URL_MAX, registrableDomain } from "./elicitation-url.ts";
 
 const OWN = new Set(["pi.ianpascoe.dev", "cloudpid-server-dev.ian-g-pascoe.workers.dev"]);
 

@@ -18,7 +18,7 @@ import * as Result from "effect/Result";
 import type { Mutable } from "effect/Types";
 import type { McpElicitationDetail } from "./details.ts";
 import { mutableContent } from "./elicit.ts";
-import type { McpDeferredRound, McpQuestionsService } from "./questions.ts";
+import { type McpDeferredRound, McpRoundState, type McpQuestionsService } from "./questions.ts";
 
 /** The marker written once round `round`'s questions are stored: a rerun that finds it waits for them again. */
 const waitMarker = (round: number) => `mcp.wait.${round}`;
@@ -140,27 +140,30 @@ export const resumeOf = async (
   await api.memo(resumedMarker(round.round), true, context);
   await Effect.runPromise(questions.endRound(api.callId));
 
-  if (call.read !== undefined) {
-    return Arr.every(Record.values(answers), (each) => each["action"] === "accept")
-      ? { kind: "resume", request: call.read }
-      : { kind: "refused" };
-  }
-
-  return {
-    kind: "resume",
-    request:
-      round.resend === true
-        ? {
-            op: "resend",
-            server: call.server,
-            params: { tool: round.tool, conn: round.conn, resend: round.resume, answers },
-            ctx: call.ctx,
-          }
-        : {
-            op: "resume",
-            server: call.server,
-            params: { tool: round.tool, conn: round.conn, resume: round.resume, answers },
-            ctx: call.ctx,
-          },
-  };
+  // A read's round keeps no state: the read is sent again as it was, once every page is accepted.
+  return McpRoundState.$match(round.state, {
+    Read: (): Resumed =>
+      call.read !== undefined &&
+      Arr.every(Record.values(answers), (each) => each["action"] === "accept")
+        ? { kind: "resume", request: call.read }
+        : { kind: "refused" },
+    Resend: ({ state }): Resumed => ({
+      kind: "resume",
+      request: {
+        op: "resend",
+        server: call.server,
+        params: { tool: round.tool, conn: round.conn, resend: state, answers },
+        ctx: call.ctx,
+      },
+    }),
+    Resume: ({ state }): Resumed => ({
+      kind: "resume",
+      request: {
+        op: "resume",
+        server: call.server,
+        params: { tool: round.tool, conn: round.conn, resume: state, answers },
+        ctx: call.ctx,
+      },
+    }),
+  });
 };

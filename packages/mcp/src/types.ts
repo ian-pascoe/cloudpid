@@ -24,8 +24,6 @@ export * from "./deadline.ts";
 
 export * from "./elicitation.ts";
 
-export * from "./elicitation-url.ts";
-
 export * from "./host.ts";
 
 export * from "./log.ts";

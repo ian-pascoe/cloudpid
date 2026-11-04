@@ -4,7 +4,7 @@
 // round, and a Legacy server's `-32042` (its pages, #487), end the call as `input_required` or `pages_required` and are
 // stored whole, so they survive the instance: a rerun of the call finds the round and waits again, and the cards show
 // from it, so an answer the owner gives while no call waits is still kept. A round of pages is sent again by `resend`
-// (`McpDeferredRound.resend`), a Modern round by `resume`.
+// (`McpRoundState` `Resend`), a Modern round by `Resume`.
 //
 // - **The storage** (an implementation word): the call's record `mcp-question:d:<callId>` (its server, its questions'
 //   ids, and once stored, the round: the server's `conn`, the round's number, the server's name for the tool, what
@@ -41,12 +41,15 @@ import {
   type McpQuestionOutcome,
   McpQuestionsError,
   type McpQuestionStorage,
+  pageKeyOf,
   questionId,
 } from "./question-records.ts";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
+import * as Data from "effect/Data";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -113,8 +116,8 @@ type DeferredRecord = {
     readonly tool: string;
     /** How many chunks the `ResumeState` is stored in. */
     readonly chunks: number;
-    /** The state is a `ResendState`: a round of pages. */
-    readonly resend?: true | undefined;
+    /** What the state is: absent, a `ResumeState`; a `ResendState` of a call's pages; or nothing, for a read's pages. */
+    readonly state?: "resend" | "read" | undefined;
     readonly asked: ReadonlyArray<McpElicitationDetail>;
     /** The requests the call had made, toward its cap, so a rerun counts on from them. */
     readonly count: number;
@@ -122,6 +125,9 @@ type DeferredRecord = {
     readonly shown?: boolean;
   };
 };
+
+/** How a round's state is named in its record: a `ResumeState` is not, as before pages. */
+const stateOf = { Resume: undefined, Resend: "resend", Read: "read" } as const;
 
 const kindOf = (question: DeferredQuestion): DeferredKind => question.kind ?? "elicitation";
 
@@ -141,7 +147,20 @@ export type McpDeferredAnswer = {
   readonly page?: { readonly host: string };
 };
 
-/** A Modern call's round of questions, stored whole: what a resume is sent from. */
+/**
+ * What a stored round is sent again from, by the request that asked its questions: a Modern call's (or a Legacy form's)
+ * `ResumeState`, a Legacy `tools/call`'s `-32042` as its `ResendState`, or a read's `-32042`, which keeps nothing: the
+ * Session sends the read again as it was.
+ */
+export type McpRoundState = Data.TaggedEnum<{
+  Resume: { readonly state: Schema.Json };
+  Resend: { readonly state: Schema.Json };
+  Read: {};
+}>;
+
+export const McpRoundState = Data.taggedEnum<McpRoundState>();
+
+/** A call's round of questions, stored whole: what the request that follows is sent from. */
 export type McpDeferredRound = {
   readonly callId: string;
   /** The round's number, from 1: the `mcp.wait.<r>` and `mcp.resumed.<r>` markers name it. */
@@ -150,10 +169,8 @@ export type McpDeferredRound = {
   readonly conn: string;
   /** The server's own name for the tool. */
   readonly tool: string;
-  /** The `ResumeState`, as the host gave it; for a round of pages (`resend`), the `ResendState`. */
-  readonly resume: Schema.Json;
-  /** The round is a Legacy `-32042`'s pages: the call is sent again with `resend`, not `resume`. */
-  readonly resend?: true | undefined;
+  /** The state the host gave, as the request that follows is built from it. */
+  readonly state: McpRoundState;
   /** What became of the call's questions so far, for its `details`: never a value. */
   readonly asked: ReadonlyArray<McpElicitationDetail>;
 };
@@ -323,9 +340,9 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       // cap. The pages the owner was done at are kept, so this holds across a restart.
       const again =
         ask.page !== undefined &&
-        (yield* Effect.try(() => basics.pagesOf(ask.callId).opened.includes(ask.key)).pipe(
-          Effect.orElseSucceed(() => false),
-        ));
+        (yield* Effect.try(() =>
+          basics.pagesOf(ask.callId).opened.includes(pageKeyOf(ask.key)),
+        ).pipe(Effect.orElseSucceed(() => false)));
 
       let sequence: number | string | undefined;
 
@@ -409,9 +426,13 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       if (record === undefined || record.questions.length === 0) return yield* unrecorded();
 
-      const text = yield* Schema.encodeEffect(JsonText)(round.resume).pipe(
-        Effect.mapError(unrecorded),
-      );
+      const text = yield* Schema.encodeEffect(JsonText)(
+        McpRoundState.$match(round.state, {
+          Resume: ({ state }) => state,
+          Resend: ({ state }) => state,
+          Read: () => null,
+        }),
+      ).pipe(Effect.mapError(unrecorded));
 
       const chunks = Math.max(1, Math.ceil(text.length / RESUME_CHUNK));
       const { asked } = basics.callOf(callId);
@@ -427,7 +448,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
             chunks,
             asked: round.asked,
             count: asked,
-            resend: round.resend,
+            state: stateOf[round.state._tag],
           },
         });
 
@@ -519,9 +540,12 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         round: round.n,
         conn: round.conn,
         tool: round.tool,
-        resume: resume.value,
+        state: Match.value(round.state).pipe(
+          Match.when("read", () => McpRoundState.Read()),
+          Match.when("resend", () => McpRoundState.Resend({ state: resume.value })),
+          Match.orElse(() => McpRoundState.Resume({ state: resume.value })),
+        ),
         asked: round.asked,
-        resend: round.resend,
       } satisfies McpDeferredRound;
     });
 
