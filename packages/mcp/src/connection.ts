@@ -823,7 +823,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       fetch,
       requestInit,
       onInsufficientScope: "throw",
-      // No resumption yet, Legacy included: a request stream that ends without its answer is a cut (D15; #542).
+      // The SDK never resumes a request stream, Legacy included: the tap does, for a Legacy one that carried an event id
+      // (D15; `tap.ts`), and every other stream that ends without its answer is a cut.
       reconnectionOptions: {
         maxRetries: 0,
         initialReconnectionDelay: 1000,

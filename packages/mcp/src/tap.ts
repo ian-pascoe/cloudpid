@@ -8,8 +8,11 @@
  * - **Redirects:** a redirect to another origin fails the request, with no further request.
  * - **Byte limits:** counted over the raw body or the whole SSE stream; a `Content-Length` over the limit is refused
  *   before reading.
- * - **Cuts:** an SSE stream that ends without its answer fails its request at once, since the SDK neither reconnects
- *   nor fails it (it drops `onRequestStreamEnd` for requests).
+ * - **Resumes:** a Legacy request stream that ends without its answer, having carried an event id, is resumed by the
+ *   tap itself with `GET` and `Last-Event-ID`, after the server's `retry` (0.5–10 s); the SDK is handed one stream, and
+ *   only the request's own events from the resumed one. Two resumes failing in a row is a cut (D15; #542).
+ * - **Cuts:** an SSE stream that ends without its answer, and cannot be resumed, fails its request at once, since the
+ *   SDK neither reconnects nor fails it (it drops `onRequestStreamEnd` for requests).
  * - **Not MCP:** a 2xx answer to a request that is neither JSON-RPC JSON nor an SSE stream.
  * - **The GET stream:** a Legacy session's GET stream ends at an event over 1 MiB (D16), which the core does not
  *   reopen; the span without it is a gap.
@@ -25,6 +28,7 @@
 import type { FetchLike } from "@modelcontextprotocol/client";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { MODERN_PROTOCOL_VERSION } from "./protocol.ts";
 import {
   Cut,
   MCP_APP_READ_BYTES,
@@ -215,15 +219,16 @@ const decodeMessage = Schema.decodeUnknownOption(
   ),
 );
 
-/** A message on a call's response stream: its id and method, and the `elicitationId` a completion notice carries. */
-const decodeStreamMessage = Schema.decodeUnknownOption(
-  Schema.fromJsonString(
-    Schema.Struct({
-      id: Schema.optionalKey(JsonRpcId),
-      method: Schema.optionalKey(Schema.String),
-      params: Schema.optionalKey(Schema.Unknown),
-    }),
-  ),
+/** A message on a call's response stream: its id and method, and the `params` a completion notice carries. */
+const StreamMessage = Schema.Struct({
+  id: Schema.optionalKey(JsonRpcId),
+  method: Schema.optionalKey(Schema.String),
+  params: Schema.optionalKey(Schema.Unknown),
+});
+
+/** An event's data: one message, or a batch (the first Legacy revision's), tried as the batch first. */
+const decodeStreamMessages = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Union([Schema.Array(StreamMessage), StreamMessage])),
 );
 
 /** The `params` of a `notifications/elicitation/complete`: the page that was finished. */
@@ -326,38 +331,120 @@ const encoder = new TextEncoder();
 /** Lets go of a body the tap will not pass on. */
 const drain = (body: ReadableStream<Uint8Array> | null) => body?.cancel().catch(() => undefined);
 
+/** The most one event on a GET stream, or on a resumed request stream, may be (D16). */
+const EVENT_LIMIT = MiB;
+
+/** How many resumes in a row may fail before the request is cut: the SDK's own `maxRetries` (D15). */
+const MAX_RESUME_FAILURES = 2;
+
+/** The server's `retry` is waited out within these bounds (D15); with none, the SDK's own first delay. */
+const MIN_RESUME_MS = 500;
+const MAX_RESUME_MS = 10_000;
+const DEFAULT_RESUME_MS = 1000;
+
+/** What opening a resumed stream came to: its body, or whether trying again could help. */
+type Reopened = { readonly body: ReadableStream<Uint8Array> } | { readonly transient: boolean };
+
+/** How the tap reopens a Legacy request's stream with `GET` and `Last-Event-ID` (D15). */
+interface Resume {
+  readonly open: (lastEventId: string) => Promise<Reopened>;
+  readonly sleep: (ms: number) => Promise<void>;
+  /** The request was aborted, so nothing more is wanted of it. */
+  readonly aborted: () => boolean;
+}
+
+/** An SSE event's `id`, `retry` and `data`; the last `id` and `retry` win (WHATWG HTML, server-sent events). */
+const eventFields = (event: string) => {
+  let id: string | undefined;
+  let retry: number | undefined;
+  const data: Array<string> = [];
+
+  for (const line of event.split(/\r\n|\n|\r/)) {
+    if (line.startsWith(":")) continue;
+
+    const colon = line.indexOf(":");
+    const name = colon === -1 ? line : line.slice(0, colon);
+    const raw = colon === -1 ? "" : line.slice(colon + 1);
+    const value = raw.startsWith(" ") ? raw.slice(1) : raw;
+
+    if (name === "data") data.push(value);
+    else if (name === "id" && !value.includes("\u0000")) id = value;
+    else if (name === "retry" && /^\d+$/.test(value)) retry = Number(value);
+  }
+
+  return { id, retry, data: data.join("\n") };
+};
+
+/** Whether `text` is over the per-event cap, in bytes. */
+const overEventLimit = (text: string) =>
+  text.length * 3 > EVENT_LIMIT && encoder.encode(text).byteLength > EVENT_LIMIT;
+
 /**
- * `body` as it arrives, counted against the request's limit, watched for the answer to `request`: when the stream
- * ends or breaks without it, or runs over the limit, the stream ends with the verdict instead. With no resumption yet
- * (D15; #542), a break is a cut and the limit spans the whole stream; both change when resumption lands.
+ * Written to the SDK where a stream's unfinished last event is left behind to resume: its own `event` type overrides
+ * the unfinished event's, so the SDK ignores that event instead of joining it to the first resumed one.
+ */
+const DISCARD_EVENT = "\nevent: cloudpid-discard\n\n";
+
+const eventTooLarge = () =>
+  TooLarge.make({
+    message: `An event on the resumed stream is over ${EVENT_LIMIT / MiB} MiB; the answer was dropped`,
+    limit: EVENT_LIMIT,
+  });
+
+/**
+ * `body` as it arrives, counted against the request's limit, watched for the answer to `request`. A stream that ends
+ * or breaks without it is resumed when `resume` is given and the stream carried an event id (D15): the SDK is handed
+ * one stream, the first's events and then the resumed ones, and of those only the request's own (an answer to another
+ * request never reaches it). The resumed bytes count toward the same limit, and an event over 1 MiB on a resumed
+ * stream fails the request. With no way to resume, or once resuming fails, the stream ends with the verdict instead,
+ * as it does over the limit.
  */
 const watchStream = (
   body: ReadableStream<Uint8Array>,
   request: Outgoing,
   verdicts: Verdicts,
   call?: CallStream,
+  resume?: Resume,
 ) => {
   const limit = request.policy.limit;
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
+  let reader = body.getReader();
+  let decoder = new TextDecoder();
   let bytes = 0;
   let pending = "";
   let answered = false;
+  let cancelled = false;
+  /** The last event id and `retry` the server sent, over every stream so far. */
+  let lastEventId: string | undefined;
+  let retryMs: number | undefined;
+  /** Whether the reader is a resumed stream, the event id it was asked from, and the resumes failed in a row. */
+  let resumed = false;
+  let resumedFrom: string | undefined;
+  let failures = 0;
 
+  /** The whole events of `text` the SDK may be given, or `undefined` when one is over the per-event cap. */
   const scan = (text: string) => {
     const events = (pending + text).split(/\r?\n\r?\n/);
 
     pending = events.pop() ?? "";
 
-    for (const event of events) {
-      const data = event
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).trimStart())
-        .join("\n");
+    const kept: Array<string> = [];
 
-      // An answer to the request has its id and no method (a server's own request has one).
-      Option.map(decodeStreamMessage(data), (message) => {
+    for (const event of events) {
+      if (resumed && overEventLimit(event)) return undefined;
+
+      const { id, retry, data } = eventFields(event);
+
+      if (id !== undefined) lastEventId = id === "" ? undefined : id;
+
+      if (retry !== undefined) retryMs = retry;
+
+      const messages = Option.match(decodeStreamMessages(data), {
+        onNone: () => [],
+        onSome: (decoded) => (Array.isArray(decoded) ? decoded : [decoded]),
+      });
+
+      for (const message of messages) {
+        // An answer to the request has its id and no method (a server's own request has one).
         if (message.id === request.id && message.method === undefined) {
           answered = true;
         }
@@ -379,7 +466,70 @@ const watchStream = (
             call.complete(elicitationId);
           });
         }
-      });
+      }
+
+      // The SDK matches an answer to its request by id, so an answer to another request must never reach it.
+      const foreign = messages.some(
+        (message) =>
+          message.method === undefined && message.id !== undefined && message.id !== request.id,
+      );
+
+      if (!foreign) kept.push(event);
+    }
+
+    return resumed && overEventLimit(pending) ? undefined : kept;
+  };
+
+  /**
+   * The stream ended or broke without its answer: `resumed` once a resumed stream is the reader, `stop` when nothing
+   * more is wanted (the stream was cancelled or the request aborted), else the cut.
+   */
+  const resumeOrCut = async (broke: boolean): Promise<McpError | "resumed" | "stop"> => {
+    if (resumed) {
+      failures = lastEventId === resumedFrom ? failures + 1 : 0;
+    }
+
+    if (resume === undefined || lastEventId === undefined) {
+      return cut(
+        request,
+        broke
+          ? "The stream broke before its answer arrived"
+          : "The stream ended before its answer arrived",
+      );
+    }
+
+    const failed = () =>
+      cut(request, "The stream ended before its answer arrived, and resuming it failed");
+
+    for (;;) {
+      if (failures >= MAX_RESUME_FAILURES) return failed();
+
+      await resume.sleep(
+        Math.min(Math.max(retryMs ?? DEFAULT_RESUME_MS, MIN_RESUME_MS), MAX_RESUME_MS),
+      );
+
+      if (cancelled || resume.aborted()) return "stop";
+
+      const opened = await resume.open(lastEventId);
+
+      if (cancelled || resume.aborted()) {
+        if ("body" in opened) await drain(opened.body);
+
+        return "stop";
+      }
+
+      if ("body" in opened) {
+        resumed = true;
+        resumedFrom = lastEventId;
+        reader = opened.body.getReader();
+        decoder = new TextDecoder();
+
+        return "resumed";
+      }
+
+      if (!opened.transient) return failed();
+
+      failures += 1;
     }
   };
 
@@ -395,39 +545,81 @@ const watchStream = (
         controller.close();
       };
 
-      let chunk: ReadableStreamReadResult<Uint8Array>;
+      // Until something is handed to the SDK: a resumed stream may give nothing of what it reads (another request's
+      // events), and a pull that enqueues nothing is not called again.
+      for (;;) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        let broke = false;
 
-      try {
-        chunk = await reader.read();
-      } catch {
-        return answered
-          ? controller.close()
-          : end(cut(request, "The stream broke before its answer arrived"));
+        try {
+          chunk = await reader.read();
+        } catch {
+          chunk = { done: true, value: undefined };
+          broke = true;
+        }
+
+        if (cancelled) return;
+
+        if (chunk.done) {
+          if (answered) return controller.close();
+
+          // The first stream is handed over as it came, so an event it left unfinished is cut off for the SDK.
+          const unfinished = !resumed && pending.trim() !== "";
+          const next = await resumeOrCut(broke);
+
+          if (cancelled) return;
+
+          if (next === "stop") return controller.close();
+
+          if (next !== "resumed") return end(next);
+
+          pending = "";
+
+          if (unfinished) {
+            controller.enqueue(encoder.encode(DISCARD_EVENT));
+
+            return;
+          }
+
+          continue;
+        }
+
+        bytes += chunk.value.byteLength;
+
+        if (bytes > limit) {
+          await reader.cancel().catch(() => undefined);
+
+          return request.policy.probe ? controller.error(tooLarge(limit)) : end(tooLarge(limit));
+        }
+
+        const kept = scan(decoder.decode(chunk.value, { stream: true }));
+
+        if (kept === undefined) {
+          await reader.cancel().catch(() => undefined);
+
+          return end(eventTooLarge());
+        }
+
+        if (!resumed) {
+          controller.enqueue(chunk.value);
+
+          return;
+        }
+
+        if (kept.length > 0) {
+          controller.enqueue(encoder.encode(kept.map((event) => `${event}\n\n`).join("")));
+
+          return;
+        }
       }
-
-      if (chunk.done) {
-        return answered
-          ? controller.close()
-          : end(cut(request, "The stream ended before its answer arrived"));
-      }
-
-      bytes += chunk.value.byteLength;
-
-      if (bytes > limit) {
-        await reader.cancel().catch(() => undefined);
-
-        return request.policy.probe ? controller.error(tooLarge(limit)) : end(tooLarge(limit));
-      }
-
-      scan(decoder.decode(chunk.value, { stream: true }));
-      controller.enqueue(chunk.value);
     },
-    cancel: (reason) => reader.cancel(reason),
+    cancel: (reason) => {
+      cancelled = true;
+
+      return reader.cancel(reason);
+    },
   });
 };
-
-/** The most one event on a GET stream may be (D16). */
-const EVENT_LIMIT = MiB;
 
 /** A blank line, which ends an SSE event. */
 const EVENT_END = /\r\n\r\n|\n\n|\r\r/g;
@@ -588,6 +780,62 @@ export const tapFetch = (
     }
   };
 
+  /**
+   * How `request`'s stream is resumed (D15): a Legacy request only, never the probe or a Modern request (its headers
+   * say which). The `GET` takes the POST's headers (session, version, authorization, the entry's own), without the
+   * body's, and asks for a stream after the last event id; its failures are the caller's to count, never thrown.
+   */
+  const resumeOf = (
+    input: string | URL,
+    init: RequestInit | undefined,
+    request: Outgoing,
+  ): Resume | undefined => {
+    if (init === undefined || request.policy.probe) return undefined;
+
+    const post = new Headers(init.headers);
+
+    if (post.has("mcp-method") || post.get("mcp-protocol-version") === MODERN_PROTOCOL_VERSION) {
+      return undefined;
+    }
+
+    return {
+      sleep: clock.sleep,
+      aborted: () => init.signal?.aborted === true,
+      open: async (lastEventId) => {
+        const headers = new Headers(post);
+
+        headers.delete("content-type");
+        headers.delete("content-length");
+        headers.set("accept", "text/event-stream");
+        headers.set("last-event-id", lastEventId);
+
+        let response: Response;
+
+        try {
+          response = await fetch(input, { ...init, method: "GET", headers, body: null });
+        } catch {
+          return { transient: true };
+        }
+
+        const transient =
+          response.status === 408 || response.status === 429 || response.status >= 500;
+
+        if (
+          !response.ok ||
+          response.body === null ||
+          mediaType(response) !== "text/event-stream" ||
+          redirectedAway(input, response) !== undefined
+        ) {
+          await drain(response.body);
+
+          return { transient };
+        }
+
+        return { body: response.body };
+      },
+    };
+  };
+
   return async (input, given) => {
     const { init, token, app } = withoutCoreHeaders(given);
     const request = outgoing(init, app);
@@ -668,6 +916,7 @@ export const tapFetch = (
                   tie: (id) => ties.tie(id, token),
                   complete: (elicitationId) => ties.complete(token, elicitationId),
                 },
+            resumeOf(input, init, request),
           ),
           response,
         );

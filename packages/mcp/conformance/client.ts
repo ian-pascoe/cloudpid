@@ -233,8 +233,8 @@ const SCENARIOS = new Map<string, Scenario>([
       }),
   ],
 
-  // The core does not resume a Legacy SSE stream yet (#394 D15; #542), so this call fails the way a cut stream does,
-  // and the scenario's retry checks fail with it.
+  // The scenario's server ends the call's stream after a priming event and answers the `GET` that resumes it, after
+  // the `retry` it sent and with the `Last-Event-ID` it gave (#394 D15; #542).
   [
     "sse-retry",
     (connection) =>

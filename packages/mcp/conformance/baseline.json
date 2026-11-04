@@ -95,10 +95,6 @@
         "entries": ["elicitation-sep1034-client-defaults"]
       },
       {
-        "reason": "Remote Legacy SSE resume with `Last-Event-ID` is kept (#394 D15; `mcp-connections.md` → Requests and Legacy sessions) but not built yet (#542)",
-        "entries": ["sse-retry:client-sse-retry-timing", "sse-retry:client-sse-last-event-id"]
-      },
-      {
         "reason": "The OAuth flow is the Registry's sign-in, through `@cloudpid/mcp/oauth`, never the core's or the SDK's (`mcp-sign-in.md` → Tokens reach the host object → Code): the scenario client has no sign-in, so it answers no 401. These stay baselined unless the client is given a sign-in of its own",
         "entries": [
           "auth/metadata-default",
