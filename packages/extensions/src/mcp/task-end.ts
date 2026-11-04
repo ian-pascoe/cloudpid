@@ -56,6 +56,9 @@ export const endInDoc = (
 
   current.delivery = change.delivery;
 
+  // A wait that claims the result at the end is the agent being told.
+  if (change.delivery === "wait") current.toldAt = end.at;
+
   return endTask(doc, handle, end);
 };
 

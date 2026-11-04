@@ -24,7 +24,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { replying } from "../calls.ts";
 import { appRuntime } from "../runtime.ts";
 import type { ConversationKey } from "./conversation-key.ts";
-import { make } from "./client.ts";
+import { make, type SessionClient, type SessionCommandError } from "./client.ts";
 import {
   INITIAL_SESSION_STATE,
   type AbortTarget,
@@ -451,26 +451,26 @@ export const declineMcpSignInAtom = Atom.family((sessionId: string) =>
   ),
 );
 
+/** An owner's command on one of Session `sessionId`'s MCP tasks, by its handle. */
+const mcpTaskCommandAtom = (
+  command: (client: SessionClient, task: string) => Effect.Effect<void, SessionCommandError>,
+) =>
+  Atom.family((sessionId: string) =>
+    appRuntime.fn(
+      (task: string, get) =>
+        get
+          .result(sessionClientAtom(sessionId))
+          .pipe(Effect.flatMap((client) => command(client, task))),
+      { concurrent: true },
+    ),
+  );
+
 /** Cancel one of Session `sessionId`'s MCP tasks as the owner. */
-export const cancelMcpTaskAtom = Atom.family((sessionId: string) =>
-  appRuntime.fn(
-    (task: string, get) =>
-      get
-        .result(sessionClientAtom(sessionId))
-        .pipe(Effect.flatMap((client) => client.cancelMcpTask(task))),
-    { concurrent: true },
-  ),
-);
+export const cancelMcpTaskAtom = mcpTaskCommandAtom((client, task) => client.cancelMcpTask(task));
 
 /** Keep the Container of the stdio server's MCP task `task` of Session `sessionId`. */
-export const keepMcpContainerAtom = Atom.family((sessionId: string) =>
-  appRuntime.fn(
-    (task: string, get) =>
-      get
-        .result(sessionClientAtom(sessionId))
-        .pipe(Effect.flatMap((client) => client.keepMcpContainer(task))),
-    { concurrent: true },
-  ),
+export const keepMcpContainerAtom = mcpTaskCommandAtom((client, task) =>
+  client.keepMcpContainer(task),
 );
 
 /** Save a draft Annotation of Session `sessionId`, new or edited; each call hears how its own save ended. */

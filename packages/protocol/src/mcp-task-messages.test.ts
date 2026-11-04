@@ -64,6 +64,16 @@ describe("MCP task messages", () => {
       ),
     ).toBe(true);
     expect(Option.isSome(decodeServer({ type: "mcp_tasks", tasks: [] }))).toBe(true);
+
+    // A value a later build adds must not drop the whole list from a tab that is older.
+    const later = decodeServer({
+      type: "mcp_tasks",
+      tasks: [{ ...task, waitingFor: "someone-else", toldAt: 5 }],
+    });
+
+    expect(Option.isSome(later)).toBe(true);
+
+    expect(JSON.stringify(Option.getOrNull(later))).toContain("someone-else");
   });
 
   it("says in hello whether the Session takes them, and a hello without it still reads", () => {

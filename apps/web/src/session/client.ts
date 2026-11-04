@@ -477,7 +477,7 @@ export interface SessionClient {
 }
 
 /** What the owner is told of a command a Session from before does not take. */
-const OLDER_SESSION = "This Session is from an older version; reload it to cancel MCP tasks";
+const OLDER_SESSION = "This Session is from an older version; reload it to use MCP task commands";
 
 /** A conversation ID as the protocol brands it. */
 const conversation = (id: number): ConversationId =>
@@ -1455,6 +1455,17 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   };
 
   /**
+   * An owner command on an MCP task (`mcp_task_cancel`, `container_keep`): sent only to a Session whose `hello` said it takes
+   * them (`mcpTasks`), which a Session from before refuses as unreadable; to one that does not it fails at once, sending nothing.
+   */
+  const mcpTaskCommand = (
+    message: (id: string) => ClientMessage,
+  ): Effect.Effect<void, SessionCommandError> =>
+    mcpTasks
+      ? request(message, () => Option.some(undefined), true)
+      : Effect.fail(SessionCommandError.make({ message: OLDER_SESSION }));
+
+  /**
    * Send `message` (made with its command ID) and wait for its answer, read by `read`. `acts` says whether it changes
    * the Session, as a command does and a catalog request does not.
    */
@@ -1900,22 +1911,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         () => Option.some(undefined),
         true,
       ),
-    cancelMcpTask: (task) =>
-      mcpTasks
-        ? request(
-            (id) => ({ type: "mcp_task_cancel", id, task }),
-            () => Option.some(undefined),
-            true,
-          )
-        : Effect.fail(SessionCommandError.make({ message: OLDER_SESSION })),
-    keepMcpContainer: (task) =>
-      mcpTasks
-        ? request(
-            (id) => ({ type: "container_keep", id, task }),
-            () => Option.some(undefined),
-            true,
-          )
-        : Effect.fail(SessionCommandError.make({ message: OLDER_SESSION })),
+    cancelMcpTask: (task) => mcpTaskCommand((id) => ({ type: "mcp_task_cancel", id, task })),
+    keepMcpContainer: (task) => mcpTaskCommand((id) => ({ type: "container_keep", id, task })),
     abort: (target = {}) =>
       step(() => {
         if (connection === null) return;

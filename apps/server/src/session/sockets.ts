@@ -268,20 +268,33 @@ export const mcpTasksMessage = (tasks: ReadonlyArray<McpTask>): ServerMessage =>
   tasks,
 });
 
-/** Why an owner's cancel of an MCP task was not sent, for the client to show. */
-const mcpTaskCancelRefusal = {
+/** Why an owner's cancel of an MCP task was not sent, by what it came to; the others (`sent`, `already_sent`) took. */
+const MCP_TASK_CANCEL_REFUSALS = {
   failed: "The server could not be asked to cancel the task; try again",
   ended: "The task has ended",
   unknown: "The Session has no such MCP task",
 } as const;
 
-/** Why Keep the Container did not, for the client to show. */
-const containerKeepRefusal = {
+/** Why Keep the Container did not, by what it came to; `kept` took. */
+const CONTAINER_KEEP_REFUSALS = {
   not_stdio: "Only a stdio server's task keeps a Container",
   ended: "The task has ended",
   unknown: "The Session has no such MCP task",
   failed: "The Container could not be kept; try again",
 } as const;
+
+/** The answer to an owner's MCP task command that came to `outcome`: `null` when it took, else the refusal's words. */
+const ownerCommandAnswer = (
+  operation: string,
+  outcome: string,
+  refusals: { readonly [outcome: string]: string },
+): Effect.Effect<null, SessionError> => {
+  const message = refusals[outcome];
+
+  return message === undefined
+    ? Effect.succeed(null)
+    : Effect.fail(SessionError.make({ operation, message }));
+};
 
 /** The `mcp_apps` message for `conversationId`'s App calls, which each client watching it is sent. */
 // @effect-diagnostics-next-line missingPipeableSignature:off -- a plain helper, not an Effect operator.
@@ -1025,31 +1038,21 @@ export const sessionSocketsLayer = (
           case "mcp_app_cancel":
             return mcpApps.cancel(socket, message.callId, message.requestId).pipe(Effect.as(null));
           case "mcp_task_cancel":
-            return host.mcpTaskCancel(message.task).pipe(
-              Effect.flatMap((took) =>
-                took === "sent" || took === "already_sent"
-                  ? Effect.succeed(null)
-                  : Effect.fail(
-                      SessionError.make({
-                        operation: "mcp_task_cancel",
-                        message: mcpTaskCancelRefusal[took],
-                      }),
-                    ),
-              ),
-            );
+            return host
+              .mcpTaskCancel(message.task)
+              .pipe(
+                Effect.flatMap((took) =>
+                  ownerCommandAnswer("mcp_task_cancel", took, MCP_TASK_CANCEL_REFUSALS),
+                ),
+              );
           case "container_keep":
-            return host.mcpTaskKeep(message.task).pipe(
-              Effect.flatMap((kept) =>
-                kept === "kept"
-                  ? Effect.succeed(null)
-                  : Effect.fail(
-                      SessionError.make({
-                        operation: "container_keep",
-                        message: containerKeepRefusal[kept],
-                      }),
-                    ),
-              ),
-            );
+            return host
+              .mcpTaskKeep(message.task)
+              .pipe(
+                Effect.flatMap((kept) =>
+                  ownerCommandAnswer("container_keep", kept, CONTAINER_KEEP_REFUSALS),
+                ),
+              );
           case "viewed_set":
             return viewed
               .set({ repo: message.repo, pull: message.pull, path: message.path }, message.blob)

@@ -3,20 +3,20 @@
 // the call card, the Session details row and the header chip, from the Session's `mcp_tasks` list. `status` and `by` are
 // strings, so one a later build adds reads as itself. Nothing here is the server's: `statusMessage` and a reason are
 // redacted and cut by the Session before they get here, and they are drawn as plain text.
-import type { McpTask } from "@cloudpid/protocol";
+import { holdCapText, type McpTask } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 
-/** The tasks that go on: not ended. */
+/** Whether `task` goes on: not ended. */
+export const isLive = (task: McpTask): boolean => task.endedAt === undefined;
+
+/** The tasks that go on. */
 export const liveTasks = (tasks: readonly McpTask[]): readonly McpTask[] =>
-  Arr.filter(tasks, (task) => task.endedAt === undefined);
+  Arr.filter(tasks, isLive);
 
 /** The tasks the Session follows in the background: live ones whose call has returned (an inline one is part of its call). */
 export const followedTasks = (tasks: readonly McpTask[]): readonly McpTask[] =>
-  Arr.filter(tasks, (task) => task.endedAt === undefined && task.background);
-
-/** Whether `task` goes on. */
-export const isLive = (task: McpTask): boolean => task.endedAt === undefined;
+  Arr.filter(liveTasks(tasks), (task) => task.background);
 
 /** The task a call started, if the Session lists it. */
 export const taskOfCall = (tasks: readonly McpTask[], callId: string): McpTask | undefined =>
@@ -101,7 +101,11 @@ export const taskLine = (task: McpTask, now: number): string => {
   if (task.endedAt !== undefined) {
     parts.push(endText(task));
     parts.push(`ran ${clock(task.endedAt - task.startedAt)}`);
-    parts.push(`ended ${timeOfDay(task.endedAt)}`);
+    parts.push(
+      task.toldAt === undefined
+        ? `ended ${timeOfDay(task.endedAt)}`
+        : `told the agent at ${timeOfDay(task.toldAt)}`,
+    );
 
     return Arr.join(parts, " · ");
   }
@@ -123,5 +127,5 @@ export const taskLine = (task: McpTask, now: number): string => {
 };
 
 /** What a stdio server's task warns of, which the card shows once the call has gone on in the background. */
-export const STDIO_WARNING =
-  "This task runs in the Workspace's Container, which stops after an hour with no activity of yours; the task then ends.";
+export const stdioWarning = (): string =>
+  `This task runs in the Workspace's Container, which stops after ${holdCapText()} with no activity of yours; the task then ends.`;

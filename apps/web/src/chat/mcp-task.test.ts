@@ -65,6 +65,12 @@ describe("an MCP task's words", () => {
     expect(taskLine(task({ status: "failed", startedAt: 0, endedAt: 65_000 }), 70_000)).toMatch(
       /^Failed · ran 1:05 · ended /,
     );
+    expect(
+      taskLine(
+        task({ status: "completed", startedAt: 0, endedAt: 65_000, toldAt: 70_000 }),
+        80_000,
+      ),
+    ).toMatch(/^Completed · ran 1:05 · told the agent at /);
   });
 
   it("finds a call's task and the live ones", () => {

@@ -106,16 +106,20 @@ export const stopConversation = async (
 
     if (fresh.length === 0) return;
 
-    for (const agent of fresh) {
-      stopped.add(agent.id);
+    for (const agent of fresh) stopped.add(agent.id);
 
-      await beforeAbort(agent.conversationId);
-      await (
-        await harness.conversation(agent.conversationId, context)
-      )?.abort(context, {
-        background: true,
-      });
-    }
+    // Side by side: an abort waits for its agent's followers' `tasks/cancel` (2 s at most each), so one after another a
+    // Session of n agents with servers that never answer would take n times that.
+    await Promise.all(
+      Arr.map(fresh, async (agent) => {
+        await beforeAbort(agent.conversationId);
+        await (
+          await harness.conversation(agent.conversationId, context)
+        )?.abort(context, {
+          background: true,
+        });
+      }),
+    );
   }
 };
 

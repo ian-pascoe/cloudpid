@@ -249,7 +249,10 @@ export const taskTools = (
     await api.commit(async (tx) => {
       const current = (await tx.doc(McpTasksDoc)).tasks[record.handle];
 
-      if (current?.delivery === "pending") current.delivery = "wait";
+      if (current?.delivery === "pending") {
+        current.delivery = "wait";
+        current.toldAt = api.now();
+      }
 
       if (current?.waiter === api.taskId) delete current.waiter;
     }, context);

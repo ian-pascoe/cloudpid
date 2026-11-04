@@ -37,6 +37,7 @@ import {
   endedText,
   MCP_TASK_CANCEL_GRACE_MS,
   MCP_TASK_FOLLOW_MS,
+  MCP_TASK_RESULT_KEPT_MS,
   pollDelayMs,
   type PollOutcome,
 } from "./task-policy.ts";
@@ -113,6 +114,10 @@ const whenIdle = async (runtime: Runtime, id: ConversationId, context: Context) 
     }
   }
 };
+
+/** The title of a task's entry in the owner's transcript (`data.notice`): where it stands, or that it ended. */
+const noticeTitle = (handle: string, status: string, ended: boolean): string =>
+  ended ? `MCP task ${handle} ended: ${status}` : `MCP task ${handle}: ${status}`;
 
 /** The follower task over the Session's host client, origin, options and result pool. */
 export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
@@ -191,6 +196,14 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
     return next;
   };
 
+  /** What the agent is told of the end of `record`: with the day its result is kept until. */
+  const endedBody = (record: McpTaskRecord, now: number): string =>
+    endedText(
+      record,
+      now,
+      pool.keptUntil(record.handle) ?? (record.end?.at ?? now) + MCP_TASK_RESULT_KEPT_MS,
+    );
+
   /**
    * Leave the agent a model-visible note of `record` (`cloudpid.mcp-task-notice`): cloudpid's words only, written once for
    * the task, never starting a Run. It is best effort: a conversation that was archived or deleted takes none.
@@ -208,7 +221,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           timestamp: now,
         },
       ],
-      data: { task: record.handle, status, by, notice: `MCP task ${record.handle}: ${status}` },
+      data: { task: record.handle, status, by, notice: noticeTitle(record.handle, status, false) },
     };
 
     try {
@@ -376,6 +389,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           }
 
           current.delivery = "auto";
+          current.toldAt = runtime.now();
 
           return { status: "running", checkpoint: { phase: "post" } };
         }, context);
@@ -399,12 +413,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
               doc,
               {
                 agentId: record.agent,
-                content: endedText(
-                  record,
-                  runtime.now(),
-                  pool.keptUntil(handle) ??
-                    (record.end?.at ?? runtime.now()) + 7 * 24 * 3600 * 1000,
-                ),
+                content: endedBody(record, runtime.now()),
                 whenBusy: "followUp",
                 from: handle,
               },
@@ -427,18 +436,14 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           const submission = await conversation.submit(
             {
               type: "input",
-              content: endedText(
-                record,
-                runtime.now(),
-                pool.keptUntil(handle) ?? (record.end?.at ?? runtime.now()) + 7 * 24 * 3600 * 1000,
-              ),
+              content: endedBody(record, runtime.now()),
               whenBusy: "followUp",
               requestId: `mcp-task:${handle}`,
               entry: {
                 kind: MCP_TASK_ENDED_KIND,
                 data: {
                   // Its title in the owner's transcript, where it shows as a notice (the text is the agent's).
-                  notice: `MCP task ${handle} ended: ${record.end?.status ?? record.status}`,
+                  notice: noticeTitle(handle, record.end?.status ?? record.status, true),
                   task: handle,
                   server: record.server,
                   tool: record.modelTool,

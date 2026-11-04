@@ -81,6 +81,7 @@ describe("a subagent's MCP task", () => {
     const record = await recordNow(session, "mcp-task-1");
 
     expect(record).toMatchObject({ agent: "worker", background: true, delivery: "auto" });
+    expect(record?.toldAt).toBeTypeOf("number");
     expect(record?.end?.status).toBe("completed");
 
     // The turn is the worker's own, from the task; it is answered to its parent, the root.
@@ -119,6 +120,68 @@ describe("a subagent's MCP task", () => {
       delivery: "none",
     });
     expect(written.map((note) => note.kind)).toEqual([MCP_TASK_NOTICE_KIND]);
+    expect(await toldInWorkerSoFar(session)).toBe(false);
+  });
+
+  it("is not delivered to a new agent that took the deleted agent's ID (ADR-0040), though the task ended", async () => {
+    const opened = await setup(60, TIMING, script, SUBAGENTS);
+    const { session } = opened;
+
+    await spawned(opened);
+
+    // The agent was deleted and its ID taken by another, whose conversation is not the one that started the task.
+    await session.harness.commit(async (tx) => {
+      const doc = await tx.doc(SubagentsDoc);
+      const worker = doc.agents["worker"];
+
+      // SAFETY: a conversation ID no conversation has, as another agent's would be.
+      // oxlint-disable-next-line anti-slop/require-safety-comment-for-type-assertion
+      if (worker !== undefined) worker.conversationId = 9_999 as typeof worker.conversationId;
+    }, context);
+    await session.until(ended(session), "the task to end");
+    await session.settle();
+
+    expect(await recordNow(session, "mcp-task-1")).toMatchObject({
+      status: "completed",
+      agent: "worker",
+    });
+    // Nobody was told: the post phase finds the ID is not the agent that started it and ends without a turn (the
+    // agent's record holds only the turn that spawned it).
+    expect(
+      (await session.harness.snapshot(SubagentsDoc, context))?.agents["worker"]?.turns,
+    ).toHaveLength(1);
+    expect(session.requests.some((request) => request.text.startsWith("[MCP task ended"))).toBe(
+      false,
+    );
+    expect(
+      (await session.texts("user")).some((text) => text.includes("worker noted the end")),
+    ).toBe(false);
+  });
+
+  it("is cancelled by Archive, which stops the branch and every agent below it as Stop all does", async () => {
+    const opened = await setup(10_000, TIMING, script, SUBAGENTS);
+    const { session, taskServer, written, submitted } = opened;
+
+    await spawned(opened);
+
+    // `stopEverything` (Archive and Delete) stops the active branch with its subagents, and any other branch beside it.
+    await stopConversation(
+      session.harness,
+      ROOT_CONVERSATION_ID,
+      { subagents: true },
+      context,
+      async () => undefined,
+    );
+    await session.until(ended(session), "the task to end");
+
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+    expect(await recordNow(session, "mcp-task-1")).toMatchObject({
+      agent: "worker",
+      end: { status: "cancelled", by: "stop" },
+      delivery: "none",
+    });
+    expect(written.map((note) => note.kind)).toEqual([MCP_TASK_NOTICE_KIND]);
+    expect(submitted).toEqual([]);
     expect(await toldInWorkerSoFar(session)).toBe(false);
   });
 

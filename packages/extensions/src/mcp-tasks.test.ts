@@ -146,6 +146,8 @@ describe("an MCP task that outlasts the window", () => {
     const results = await session.texts("toolResult");
 
     expect(results.filter((text) => text.includes("the report"))).toHaveLength(2);
+    // The wait that read it is the agent being told.
+    expect((await recordNow(session, "mcp-task-1"))?.toldAt).toBeTypeOf("number");
     expect(await everything()).not.toContain(SECRET);
   });
 

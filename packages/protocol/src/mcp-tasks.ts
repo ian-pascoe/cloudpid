@@ -7,6 +7,20 @@ import * as Schema from "effect/Schema";
 import { ConversationId } from "./conversation-id.ts";
 
 /**
+ * How long a Container may be kept running by holds and uses after the last owner or agent activity in its Workspace
+ * (`docs/architecture/container.md` → Idle stop): the Workspace's hold cap, which ends a stdio server's task whose
+ * Container nothing else keeps awake, and which Keep the Container resets. One constant, so what the Session tells the
+ * agent, what the card tells the owner and what the Workspace enforces cannot drift.
+ */
+export const CONTAINER_HOLD_CAP_MS = 60 * 60_000;
+
+/** The hold cap in the words of a sentence: "an hour", or "90 minutes". */
+export const holdCapText = (): string =>
+  CONTAINER_HOLD_CAP_MS === 60 * 60_000
+    ? "an hour"
+    : `${Math.round(CONTAINER_HOLD_CAP_MS / 60_000)} minutes`;
+
+/**
  * One MCP task of the Session. `status` is the server's, or cloudpid's own for one it ended (`unknown`, `stopped`), as a
  * string so a state a later build adds still reads. Times are epoch milliseconds.
  */
@@ -33,10 +47,12 @@ export const McpTask = Schema.Struct({
   startedAt: Schema.Finite,
   /** When it ended; absent while it goes on. */
   endedAt: Schema.optionalKey(Schema.Finite),
+  /** When the agent was told of the end (its wait read the result, or the end was posted to it); absent when it was not told. */
+  toldAt: Schema.optionalKey(Schema.Finite),
   /** When its server forgets it (its `ttlMs` from the start), when the server said. */
   keptUntil: Schema.optionalKey(Schema.Finite),
-  /** Every question it waits on is the owner's, and nothing happens until they answer. */
-  waitingFor: Schema.optionalKey(Schema.Literal("owner")),
+  /** Who it waits on: `owner` when every question it asks is theirs and nothing happens until they answer. A string, so a party a later build names reads as itself. */
+  waitingFor: Schema.optionalKey(Schema.String),
   /**
    * The cancel that was asked for it, by whom and when: the card reads "Cancelling…" until the task ends or the server
    * ignores it for two minutes.

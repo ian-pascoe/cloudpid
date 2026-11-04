@@ -142,6 +142,8 @@ export type McpTaskRecord = {
   /** The follower, once there is one. */
   follower?: TaskId;
   delivery: McpTaskDelivery | null;
+  /** When the agent was told of the end: its `mcp_task_wait` claimed the result, or the follower posted the end. */
+  toldAt?: number;
   cancel?: McpTaskCancel;
   end?: McpTaskEnd;
   result?: McpTaskResultNote;

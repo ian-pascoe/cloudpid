@@ -8,6 +8,7 @@ import {
   type McpHostRequestResult,
   type McpTaskSnapshot,
 } from "@cloudpid/mcp/types";
+import { holdCapText } from "@cloudpid/protocol";
 import * as Match from "effect/Match";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
@@ -160,9 +161,10 @@ const failedPoll = (
 
 /**
  * What a stdio task's poll says once it is read as the process's: a task lives in the process that started it, so a poll
- * answered by another spawn, a `-32602` (a process that restarted cannot know it), a Container that is stopped (the poll
- * never starts it) or a Workspace that is gone says the task is lost, `unknown`, with the reason. A poll that was only cut
- * is retried: the next one finds the spawn.
+ * answered by another spawn, a connection key that changed, a Container that is stopped (the poll never starts it) or a
+ * Workspace that is gone says the task is lost, `unknown`, with the reason. A `-32602` is not proof of a restart (a lag
+ * looks the same, and no spawn comes with it), so it keeps the 2-minute grace and the reason does not claim one. A poll
+ * that was only cut is retried: the next one finds the spawn.
  */
 const readStdioPoll = (
   record: Pick<McpTaskRecord, "spawn">,
@@ -177,8 +179,13 @@ const readStdioPoll = (
       : outcome;
   }
 
-  if (outcome.kind === "gone") {
-    return { kind: "unknown", reason: "the server's process no longer knows it: it was restarted" };
+  // Another connection key is another command, arguments, environment or directory, so another process whatever the
+  // identity says: never re-pinned (an HTTP server's headers do not change what runs).
+  if (outcome.kind === "changed") {
+    return {
+      kind: "unknown",
+      reason: "the server's definition changed, so its process is not the one that ran the task",
+    };
   }
 
   if (Predicate.isTagged(answer, "CallFailed") && Predicate.isTagged(answer.error, "Unreachable")) {
@@ -276,7 +283,7 @@ export const detachedText = (record: McpTaskRecord): string => {
   // A stdio server's task lives in its Workspace's Container, which stops when it has been idle for a while.
   const container =
     record.transport === "stdio"
-      ? ` ${record.server} runs in the Workspace's Container: if the Container stops (an hour with no owner or agent activity, or a restart), the task is lost and you are told it is unknown.`
+      ? ` ${record.server} runs in the Workspace's Container: if the Container stops (${holdCapText()} with no owner or agent activity, or a restart), the task is lost and you are told it is unknown.`
       : "";
 
   // A script's call has no result to wait for: it ends with this, and the conversation is told when the task does.

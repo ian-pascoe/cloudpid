@@ -53,6 +53,8 @@ export const viewOfTasks = (state: McpTasksState | undefined | null): ReadonlyAr
 
       if (record.agent !== "root") view.agent = record.agent;
 
+      if (record.toldAt !== undefined) view.toldAt = record.toldAt;
+
       if (record.end !== undefined) {
         view.endedAt = record.end.at;
         const end: Mutable<NonNullable<McpTask["end"]>> = { by: record.end.by };

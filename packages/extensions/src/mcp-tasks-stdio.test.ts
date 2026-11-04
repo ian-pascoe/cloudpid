@@ -5,7 +5,7 @@
 // model on a Harness over an in-memory host.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off
-import { McpHostCallFailed, NotFound, Unreachable } from "@cloudpid/mcp/types";
+import { McpHostCallFailed, NotFound, ServerChanged, Unreachable } from "@cloudpid/mcp/types";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import type { FakeMcpServer } from "./mcp.testing.ts";
@@ -95,8 +95,8 @@ describe("a stdio server's MCP task", () => {
     });
   });
 
-  it("is `unknown` at once, without the grace, when the server does not know the task", async () => {
-    const { session } = await setup(10_000, { ...TIMING, unknownGraceMs: 60_000 }, scripted(), {
+  it("is retried for the grace when the server does not know the task, and then `unknown` without claiming a restart", async () => {
+    const { session } = await setup(10_000, { ...TIMING, unknownGraceMs: 120 }, scripted(), {
       ...stdio,
       host: {
         spawnOf: () => "spawn-1",
@@ -105,9 +105,51 @@ describe("a stdio server's MCP task", () => {
     });
 
     await turn(session, "go");
+    await session.until(
+      async () => (await recordNow(session, "mcp-task-1"))?.failures.unknownSince !== undefined,
+      "the first -32602",
+    );
+    // Inside the grace nothing ended it: a lag looks like this too.
+    expect((await recordNow(session, "mcp-task-1"))?.end).toBeUndefined();
     await session.until(async () => await toldOfEnd(session), "the end to be posted");
 
-    expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({ status: "unknown" });
+    const end = (await recordNow(session, "mcp-task-1"))?.end;
+
+    expect(end).toMatchObject({
+      status: "unknown",
+      by: "cloudpid",
+      reason: "the server no longer knows it",
+    });
+    expect(end?.reason).not.toContain("restart");
+  });
+
+  it("is `unknown` at once, whatever the grace, when its server's definition changed", async () => {
+    const changed = async () =>
+      ServerChanged.make({ message: "changed", conn: "conn-2", identity: "identity-docs" });
+
+    const { session, taskServer } = await setup(
+      10_000,
+      { ...TIMING, unknownGraceMs: 60_000 },
+      scripted(),
+      {
+        ...stdio,
+        host: {
+          spawnOf: () => "spawn-1",
+          getAnswer: (n) => (n >= 40 ? changed() : undefined),
+        },
+      },
+    );
+
+    await turn(session, "go");
+    await session.until(async () => await toldOfEnd(session), "the end to be posted");
+
+    // The same identity would be re-pinned for an HTTP server; a stdio process may be another command, so it is lost.
+    expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({
+      status: "unknown",
+      by: "cloudpid",
+      reason: "the server's definition changed, so its process is not the one that ran the task",
+    });
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(0);
   });
 
   it("is polled in the Workspace of its record, never the Session's", () => {

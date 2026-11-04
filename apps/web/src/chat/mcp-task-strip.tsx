@@ -16,7 +16,7 @@ import {
 } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
 import { useNow } from "./mcp-elicitation-card.tsx";
-import { isLive, STDIO_WARNING, taskLine, taskOfCall } from "./mcp-task.ts";
+import { isLive, stdioWarning, taskLine, taskOfCall } from "./mcp-task.ts";
 
 /** What a strip takes: the task, the time now, whether the commands are off, and each command (the Session's refusal, or null). */
 type StripProps = {
@@ -79,7 +79,7 @@ export const McpTaskStripView = ({ task, now, disabled, onCancel, onKeep }: Stri
           </Button>
         )}
       </div>
-      {keeps && <p className="mt-1 text-muted-foreground">{STDIO_WARNING}</p>}
+      {keeps && <p className="mt-1 text-muted-foreground">{stdioWarning()}</p>}
       {refusal !== null && (
         <p role="alert" className="mt-1 text-destructive">
           {refusal}

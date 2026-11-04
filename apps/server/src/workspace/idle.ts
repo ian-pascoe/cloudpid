@@ -16,6 +16,7 @@
 // record keeps it, and an idle stop of a Container in which nothing did takes no snapshot (`launch.ts`).
 
 // @effect-diagnostics asyncFunction:off globalDate:off
+import { CONTAINER_HOLD_CAP_MS } from "@cloudpid/protocol";
 
 /**
  * How long a Container may be kept running, by a hold (a command, a Container preview's socket) or by uses (a Container
@@ -23,7 +24,7 @@
  * when that is longer. Counted from the last activity, never from the Container's start, so a long build is stopped
  * only once nothing in the Workspace has happened for an hour.
  */
-export const CONTAINER_HOLD_CAP_MS = 60 * 60_000;
+export { CONTAINER_HOLD_CAP_MS };
 
 /** The activity is written to storage at most this often: an evicted object wakes to activity at most this old. */
 const ACTIVITY_SAVE_MS = 60_000;
