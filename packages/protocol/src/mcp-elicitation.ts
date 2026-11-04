@@ -168,7 +168,7 @@ export const McpElicitationRequest = Schema.Struct({
   message: Schema.String,
   /** A page question's `form` has no fields: the card draws `page` instead. */
   form: ElicitationForm,
-  /** The page to open, when the server asks the owner to (URL mode); a client from before it shows a form with no fields. */
+  /** The page to open, when the server asks the owner to (URL mode); a client from before it ignores the key and shows a form with no fields, whose Accept the Session refuses ("This request is a page to open, not a form"). */
   page: Schema.optionalKey(McpElicitationPage),
   /** What the Session ignored or changed in the server's schema, one line each. */
   notes: Schema.Array(Schema.String),

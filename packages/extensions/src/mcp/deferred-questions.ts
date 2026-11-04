@@ -1,15 +1,18 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
-// A Modern server's questions kept for later (`docs/architecture/mcp-server-requests.md` → The waiting-question record,
-// Elicitation requests; ADR-0041): the deferred half of the Session's MCP questions (`questions.ts`). The call's round
-// ends as `input_required` and is stored whole, so it survives the instance: a rerun of the call finds it and waits
-// again, and the cards show from it, so an answer the owner gives while no call waits is still kept.
+// A server's questions kept for later (`docs/architecture/mcp-server-requests.md` → The waiting-question record,
+// Elicitation requests; ADR-0041): the deferred half of the Session's MCP questions (`questions.ts`). A Modern server's
+// round, and a Legacy server's `-32042` (its pages, #487), end the call as `input_required` or `pages_required` and are
+// stored whole, so they survive the instance: a rerun of the call finds the round and waits again, and the cards show
+// from it, so an answer the owner gives while no call waits is still kept. A round of pages is sent again by `resend`
+// (`McpDeferredRound.resend`), a Modern round by `resume`.
 //
 // - **The storage** (an implementation word): the call's record `mcp-question:d:<callId>` (its server, its questions'
 //   ids, and once stored, the round: the server's `conn`, the round's number, the server's name for the tool, what
 //   `details.elicitation` holds so far and the call's count toward its cap), listed in `mcp-question:deferred`; one
 //   value per question, `mcp-question:q:<id>` (its kind, the request as the owner is shown it, and once given, the
 //   answer), so no value grows with the round; and the `ResumeState` in chunks of `RESUME_CHUNK` characters under
-//   `mcp-question:d:<callId>:<n>`.
+//   `mcp-question:d:<callId>:<n>`; and, for a call's pages, `mcp-question:pages:<callId>` (the pages the owner was done
+//   at and how many the server asked for again, which outlive a round and go with the call).
 // - **Shown only once marked:** `commitRound` stores the round, the call writes `mcp.wait.<r>`, and only then does
 //   `showRound` show its cards and tell the owner, so no card shows for a round a rerun would not wait for.
 // - **Never a value in the clear:** an accepted form's content is sealed in its question (the `vault`, AES-GCM) until
