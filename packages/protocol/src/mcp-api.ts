@@ -3,11 +3,11 @@
 // object answers the main Worker (`status`, `waitForChange`, `transcriptPage`, `submit`, `stop`). Effect Schemas, shared
 // with `packages/pi-cloudpid`, so nothing here imports the MCP SDK, pi-durable's runtime or a Worker API.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over short strings and records.
-import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { ModelId, ThinkingLevel } from "@cloudpid/config";
+import { openLiterals } from "./open-literals.ts";
 import { WhenBusy } from "./session.ts";
 
 /** The most input text a message may carry over the endpoint, in UTF-8 bytes (`input_too_large`). */
@@ -81,18 +81,10 @@ export type McpToolName = (typeof MCP_TOOL_NAMES)[number];
 export const PI_SESSION_FORMAT = "pi-session-jsonl";
 
 /**
- * `literals` that read a value it does not list as `fallback`, never as a decoding failure: a newer deploy may add a
- * member, and an older one decoding it (over RPC, or from storage) must still read the record, as the generic member
- * (`docs/architecture/mcp.md` → Deploys).
- */
-export const open = <S extends Schema.Top>(literals: S, fallback: S["Type"]) =>
-  literals.pipe(Schema.catchDecoding(() => Effect.succeedSome(fallback)));
-
-/**
  * How the caller got in: an Access OAuth grant (the owner), the Local agent's service token, or `local` (a stage under
  * `alchemy dev`, which has no Access: the loopback rule). A member this version does not know reads as `unknown`.
  */
-export const McpAuth = open(
+export const McpAuth = openLiterals(
   Schema.Literals(["oauth", "service_token", "local", "unknown"]),
   "unknown",
 );
@@ -100,7 +92,7 @@ export const McpAuth = open(
 export type McpAuth = typeof McpAuth.Type;
 
 /** The MCP generation the caller spoke. */
-export const McpEra = open(Schema.Literals(["legacy", "modern", "unknown"]), "unknown");
+export const McpEra = openLiterals(Schema.Literals(["legacy", "modern", "unknown"]), "unknown");
 
 export type McpEra = typeof McpEra.Type;
 
@@ -169,7 +161,7 @@ export const inputViaChipLabel = (via: Pick<SessionVia, "client">): string =>
  * travels with it, so a reader that does not know `stopped` (a message the owner's Stop withdrew) still sees that
  * sending it again will not help.
  */
-export const ApiErrorCode = open(
+export const ApiErrorCode = openLiterals(
   Schema.Literals([
     "not_found",
     "ambiguous_environment",
@@ -355,14 +347,14 @@ export const decodeCursor = (cursor: string): Option.Option<CursorState> => {
 // Following a Run
 
 /** `running`: the root Run is going or input is queued; `background`: the root idles but subagents or tasks work. */
-export const McpSessionStatus = open(
+export const McpSessionStatus = openLiterals(
   Schema.Literals(["running", "waiting_for_owner", "background", "idle", "importing", "unknown"]),
   "unknown",
 );
 
 export type McpSessionStatus = typeof McpSessionStatus.Type;
 
-export const WaitingKind = open(
+export const WaitingKind = openLiterals(
   Schema.Literals([
     "approval",
     "secret",
@@ -393,7 +385,7 @@ export type WaitingRequest = typeof WaitingRequest.Type;
 
 /** How the root Run ended, from its submission: a failed Run is an outcome, never an error. */
 export const RunOutcome = Schema.Struct({
-  result: open(Schema.Literals(["answered", "stopped", "failed", "unknown"]), "unknown"),
+  result: openLiterals(Schema.Literals(["answered", "stopped", "failed", "unknown"]), "unknown"),
   reason: Schema.optionalKey(Schema.String),
   message: Schema.optionalKey(Schema.String),
 });
@@ -437,7 +429,7 @@ export type AnswerText = typeof AnswerText.Type;
 
 // A wait ended by a reason this version does not know reads as `timeout`: a deliberately generic reading, "the wait
 // ended; look again", not an alias of the real `timeout`.
-export const EndedBy = open(
+export const EndedBy = openLiterals(
   Schema.Literals(["run_ended", "owner_needed", "import_ended", "stalled", "timeout"]),
   "timeout",
 );
@@ -446,7 +438,10 @@ export type EndedBy = typeof EndedBy.Type;
 
 // The only reason there is, so an unknown one reads as it: "text withheld", the generic reading, not an alias.
 /** Why the text fields were left out: the Secrets to redact them of could not be read. */
-export const TextWithheld = open(Schema.Literals(["secrets_unavailable"]), "secrets_unavailable");
+export const TextWithheld = openLiterals(
+  Schema.Literals(["secrets_unavailable"]),
+  "secrets_unavailable",
+);
 
 /** What the Session answers a wait (`waitForChange`): `WaitResult` without the Session's id and the `next` sentence. */
 export const WaitOutcome = Schema.Struct({
@@ -508,7 +503,7 @@ export type TranscriptDetail = typeof TranscriptDetail.Type;
 export const TranscriptEntry = Schema.Struct({
   entry_id: Schema.Int,
   // A role this version does not know reads as `notice`, the generic "an entry that is not a message".
-  role: open(Schema.Literals(["user", "assistant", "tool", "notice"]), "notice"),
+  role: openLiterals(Schema.Literals(["user", "assistant", "tool", "notice"]), "notice"),
   /** ISO 8601; empty for an entry with no time. */
   at: Schema.String,
   /** The rendered block, header first. */
@@ -563,7 +558,7 @@ export const SubmitRequest = Schema.Struct({
 
 export type SubmitRequest = typeof SubmitRequest.Type;
 
-export const Delivery = open(
+export const Delivery = openLiterals(
   Schema.Literals(["started", "queued", "steered", "unknown"]),
   "unknown",
 );
@@ -629,7 +624,7 @@ export type EnvironmentsResult = typeof EnvironmentsResult.Type;
 
 /** A Session the endpoint made or imported: the audit mark of how its caller got in, never the owner's email. */
 export const MarkedOrigin = Schema.Struct({
-  kind: open(Schema.Literals(["mcp", "import", "unknown"]), "unknown"),
+  kind: openLiterals(Schema.Literals(["mcp", "import", "unknown"]), "unknown"),
   client: Schema.optionalKey(McpClient),
   auth: McpAuth,
 });
@@ -639,7 +634,7 @@ export type MarkedOrigin = typeof MarkedOrigin.Type;
 /** Where a listed Session came from: a Fork or Clone's source, or the endpoint's marks. */
 export const McpSessionOrigin = Schema.Union([
   Schema.Struct({
-    kind: open(Schema.Literals(["fork", "clone", "unknown"]), "unknown"),
+    kind: openLiterals(Schema.Literals(["fork", "clone", "unknown"]), "unknown"),
     session: Schema.String,
   }),
   MarkedOrigin,
@@ -652,7 +647,7 @@ export const McpSessionSummary = Schema.Struct({
   session_id: Schema.String,
   title: Schema.NullOr(Schema.String),
   environment: Schema.Struct({ id: Schema.String, name: Schema.String }),
-  status: open(Schema.Literals(["running", "idle", "importing", "unknown"]), "unknown"),
+  status: openLiterals(Schema.Literals(["running", "idle", "importing", "unknown"]), "unknown"),
   origin: Schema.optionalKey(McpSessionOrigin),
   updated_at: Schema.String,
   archived: Schema.Boolean,
@@ -692,7 +687,7 @@ export const SessionDetail = Schema.Struct({
       agent_id: Schema.String,
       parent: Schema.String,
       role: Schema.NullOr(Schema.String),
-      status: open(Schema.Literals(["working", "idle", "unknown"]), "unknown"),
+      status: openLiterals(Schema.Literals(["working", "idle", "unknown"]), "unknown"),
     }),
   ),
   workspace: Schema.Struct({

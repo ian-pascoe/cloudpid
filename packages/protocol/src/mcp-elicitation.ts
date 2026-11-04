@@ -2,9 +2,9 @@
 // form): cloudpid's own `ElicitationForm`, which the Session makes of the server's `requestedSchema` and the web draws,
 // so the web never reads raw JSON Schema. The normalizer that makes one and the validator that checks an answer against
 // it are in `@cloudpid/mcp/types` (`elicitation.ts`); the schemas are here because the socket's messages carry them.
-import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ConversationId } from "./conversation-id.ts";
+import { openLiterals } from "./open-literals.ts";
 
 /** The kinds of field a form has: a string by its format, a number or an integer, a boolean, one choice or several. */
 export const ELICITATION_FIELD_KINDS = [
@@ -121,9 +121,7 @@ export type McpElicitationAction = typeof McpElicitationAction.Type;
  * on their cards). A scope a later build adds reads as `call`, the narrower of the two: it declines what the owner sees on
  * that call and keeps no choice for later (`docs/architecture/mcp.md` → Deploys).
  */
-export const McpElicitationScope = Schema.Literals(["call", "session"]).pipe(
-  Schema.catchDecoding(() => Effect.succeedSome("call" as const)),
-);
+export const McpElicitationScope = openLiterals(Schema.Literals(["call", "session"]), "call");
 
 export type McpElicitationScope = typeof McpElicitationScope.Type;
 
@@ -160,9 +158,7 @@ export const McpElicitationPage = Schema.Struct({
    * refuses for a Modern page.
    */
   era: Schema.optionalKey(
-    Schema.Literals(["legacy", "modern", "unknown"]).pipe(
-      Schema.catchDecoding(() => Effect.succeedSome("unknown" as const)),
-    ),
+    openLiterals(Schema.Literals(["legacy", "modern", "unknown"]), "unknown"),
   ),
   again: Schema.optionalKey(Schema.Literal(true)),
   finished: Schema.optionalKey(Schema.Literal(true)),
