@@ -10,7 +10,7 @@
 import { type Migration, migrate, type MigrationStorage } from "@cloudpid/effect-durable/sqlite";
 import * as Context from "effect/Context";
 import { type AppStore, appStore } from "./app-store.ts";
-import { type DeprecationStore, deprecationStore } from "./deprecation-store.ts";
+import { type DeprecationNotes, deprecationNotes } from "./deprecation-notes.ts";
 import { type InventoryStore, inventoryStore } from "./inventory-store.ts";
 import { type LogStore, logStore } from "./log-store.ts";
 import { type SetStore, setStore } from "./set-store.ts";
@@ -143,7 +143,7 @@ export type McpHostStoreService = SetStore &
   InventoryStore &
   LogStore &
   AppStore &
-  DeprecationStore & {
+  DeprecationNotes & {
     /**
      * Wipe the storage: every table's rows, and the tables, which are made again empty, keeping `revision` as the
      * floor of the sets that may fill it again. Rejects when the storage cannot.
@@ -180,7 +180,7 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
     ...inventoryStore(storage),
     ...logStore(storage),
     ...appStore(storage),
-    ...deprecationStore(),
+    ...deprecationNotes(),
 
     destroy: async (revision) => {
       await storage.deleteAll();

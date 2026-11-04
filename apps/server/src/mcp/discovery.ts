@@ -13,7 +13,7 @@
 // failure on the host's side (the engine out of reach or silent) is not the server's: it leaves its state as it was,
 // held back for 30 s. No discovery holds its slot past `DISCOVERY_DEADLINE_MS`: it is then given up the same way.
 // @effect-diagnostics missingPipeableSignature:off -- the scheduler's operations, not combinators.
-import { signsInOnItsOwn } from "@cloudpid/config";
+import { allowsSampling, signsInOnItsOwn } from "@cloudpid/config";
 import { currentTraceId } from "@cloudpid/telemetry";
 import {
   isJsonObject,
@@ -243,14 +243,6 @@ const stdioTargetOf = (
   });
 
 /**
- * Whether a Legacy connection to the server `entry` defines declares `sampling` (`docs/architecture/
- * mcp-server-requests.md` → Sampling requests). Only an HTTP server whose `sampling` is `allow`, for now: the owner's yes on
- * a card (`ask`, the default) is not built yet, so such a server is declared nothing and never asks; and a Repo's `allow`
- * was read as `ask` before it got here (`@cloudpid/config`). A stdio server's requests are not answered yet.
- */
-const declaresSampling = (entry: JsonObject): boolean => entry["sampling"] === "allow";
-
-/**
  * A server's target, its `${NAME}` values resolved by the Registry, or why it cannot be reached. An HTTP server's is its
  * URL and headers; a stdio server's is what its Workspace's bridge spawns, so it needs the `workspace`, and `start` (a
  * call's, by default) says whether the call may start the Container.
@@ -280,7 +272,8 @@ export const targetOf = (
         timeoutMs: (Predicate.isNumber(timeout) ? timeout : 60) * 1000,
       };
 
-      if (declaresSampling(server.server)) reached.sampling = true;
+      // A Legacy connection to a server that `allow`s it declares `sampling` (the owner's yes on a card is not built yet).
+      if (allowsSampling(server.server)) reached.sampling = true;
 
       // A connection that signs in on its own declares the OAuth Client Credentials extension, and no other does.
       if (signsInOnItsOwn(server.server)) {

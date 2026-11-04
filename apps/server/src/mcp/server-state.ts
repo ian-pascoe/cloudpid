@@ -46,7 +46,7 @@ export type ServerView = {
   readonly status: StatusRow | undefined;
   readonly inventory: Option.Option<Inventory>;
   readonly state: McpServerState;
-  /** What the server has used that the spec deprecated, as this host saw it (`deprecation-store.ts`). */
+  /** What the server has used that the spec deprecated, as this host saw it (`deprecation-notes.ts`). */
   readonly deprecated: ReadonlyArray<string>;
 };
 

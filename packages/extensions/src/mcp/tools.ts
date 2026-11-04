@@ -48,6 +48,7 @@ import {
   type McpCallOrigin,
   type McpToolOptions,
   parentCallOf,
+  samplesOf,
   send,
 } from "./exchange.ts";
 import { withElicitation } from "./elicit.ts";
@@ -59,7 +60,7 @@ import { signInTool } from "./sign-in-tool.ts";
 import { scriptSchemaOf } from "./schema.ts";
 import { spillTo } from "./spill.ts";
 
-export { MCP_CALL_SLACK_MS, MCP_STREAM_IDLE_MS } from "./exchange.ts";
+export { MCP_CALL_SLACK_MS, MCP_SAMPLING_FEATURE, MCP_STREAM_IDLE_MS } from "./exchange.ts";
 
 export type { McpCallOrigin, McpToolOptions } from "./exchange.ts";
 
@@ -71,13 +72,6 @@ export const extensionName = "mcp";
  * server's form is answered live.
  */
 export const MCP_RESUME_FEATURE = "resume";
-
-/**
- * The host feature a call answers a Legacy server's Sampling requests with: a host that lists it declares `sampling` to a
- * server whose definition says `allow` (`docs/architecture/mcp-server-requests.md` → Sampling requests). Without it no
- * server is told it may sample, so none asks.
- */
-export const MCP_SAMPLING_FEATURE = "sampling";
 
 /**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
@@ -98,7 +92,7 @@ export const McpBuildServer = Schema.Struct({
     type: Schema.optionalKey(Schema.Json),
     timeout: Schema.optionalKey(Schema.Json),
     description: Schema.optionalKey(Schema.Json),
-    /** `allow` for a server whose Sampling requests are answered on the Session's models; `ask` and `deny` answer none yet. */
+    /** `ask`, `allow` or `off` (`ask` by default): only `allow` has its Sampling requests answered, on the Session's models, for now (`allowsSampling`). */
     sampling: Schema.optionalKey(Schema.Json),
     exposure: Schema.optionalKey(Schema.Json),
     toolExposure: Schema.optionalKey(Schema.Json),
@@ -291,7 +285,7 @@ export const mcpExtension = (
   const defers = build.features?.includes(MCP_RESUME_FEATURE) === true;
 
   // A Legacy server's Sampling requests are answered only on a host that lists `sampling` (it declares them to the server).
-  const samples = build.features?.includes(MCP_SAMPLING_FEATURE) === true;
+  const samples = samplesOf(build);
 
   const tools = Arr.flatMap(build.servers, (server) => {
     const listed = listedTools(server);

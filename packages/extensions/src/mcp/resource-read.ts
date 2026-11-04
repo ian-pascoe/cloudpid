@@ -20,6 +20,7 @@ import { bytesOf, modelBlocks, oneLine, type Piece, refOf, suffixOf, textOf } fr
 import type { McpHostClientService } from "./client.ts";
 import type { McpDetails, McpResourceRef } from "./details.ts";
 import { withElicitation } from "./elicit.ts";
+import { withSampling } from "./sample.ts";
 import {
   contextOf,
   type Exchange,
@@ -265,6 +266,8 @@ type ReadTool = {
   readonly client: McpHostClientService;
   readonly origin: McpCallOrigin;
   readonly options: McpToolOptions;
+  /** Whether the host lists `sampling` (`samplesOf`). */
+  readonly samples?: boolean | undefined;
 };
 
 /** The tool that reads a resource, at `exposure`. */
@@ -304,6 +307,7 @@ export const readTool = (
       tool: tool.name,
       details,
       subject: "resource",
+      samples: tool.samples,
     };
 
     const sent = await send(
@@ -353,6 +357,8 @@ export const readTool = (
       },
     );
 
-    return sent.ok ? withElicitation(sent.value, sent.asked) : sent.result;
+    return sent.ok
+      ? withSampling(withElicitation(sent.value, sent.asked), sent.sampled)
+      : sent.result;
   },
 });

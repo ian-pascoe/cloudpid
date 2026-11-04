@@ -4,7 +4,7 @@
 // and an in-memory host that asks through the call's hooks.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off anyUnknownInErrorContext:off preferSchemaOverJson:off
-import { McpHostCompleted, type McpInputAnswer } from "@cloudpid/mcp/types";
+import { type JsonObject, McpHostCompleted, type McpInputAnswer } from "@cloudpid/mcp/types";
 import {
   createModels,
   fauxAssistantMessage,
@@ -56,6 +56,10 @@ const DONE = McpHostCompleted.make({
   result: { kind: "inline", value: { content: [{ type: "text", text: "done" }] } },
 });
 
+const READ = McpHostCompleted.make({
+  result: { kind: "inline", value: { contents: [{ uri: "file:///a.txt", text: "read" }] } },
+});
+
 const ALLOWING = { ...DOCS, entry: { sampling: "allow" } };
 
 /**
@@ -68,6 +72,8 @@ const setup = async (
     readonly features?: ReadonlyArray<string>;
     readonly sampler?: boolean;
     readonly over?: string;
+    /** The tool the model calls: a server's tool by default. */
+    readonly tool?: readonly [string, JsonObject];
   } = {},
 ) => {
   const host = fakeMcpHost([options.server ?? ALLOWING]);
@@ -103,7 +109,7 @@ const setup = async (
 
     if (reply !== undefined) seen.push(reply);
 
-    return DONE;
+    return options.tool?.[0] === "read_mcp_resource" ? READ : DONE;
   });
 
   const toolOptions: Mutable<McpToolOptions> = { slackMs: 0 };
@@ -113,7 +119,7 @@ const setup = async (
   const tools = makeMcpTools(host.client, memoryMcpToolsStore(), toolOptions);
 
   const session = await open((request) =>
-    request.text === "go" ? call(["mcp__docs_site__search", {}]) : answer("ok"),
+    request.text === "go" ? call(options.tool ?? ["mcp__docs_site__search", {}]) : answer("ok"),
   );
 
   await session.start(tools);
@@ -173,8 +179,46 @@ describe("a Legacy server's Sampling request", () => {
     expect(JSON.stringify(await detailsOf(session))).toContain('"status":"refused"');
   });
 
+  it("is answered in a read of a resource too, and told in the read's details", async () => {
+    const files = {
+      name: "files",
+      exposure: "direct",
+      resources: true,
+      tools: [],
+      entry: { sampling: "allow" },
+    };
+
+    const { session, sent, seen, usages } = await setup({
+      server: files,
+      tool: ["read_mcp_resource", { server: "files", uri: "file:///a.txt" }],
+    });
+
+    expect(sent[0]).toMatchObject({ op: "resources/read" });
+    expect(sent[0]?.ctx.answers).toMatchObject({ sampling: true });
+    expect(seen).toEqual([expect.objectContaining({ kind: "sampled" })]);
+    expect(usages).toHaveLength(1);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        tool: "read_mcp_resource",
+        sampling: [expect.objectContaining({ status: "answered", by: "definition" })],
+      }),
+    ]);
+  });
+
+  it("is not declared on a read when the server does not allow it", async () => {
+    const files = { name: "files", exposure: "direct", resources: true, tools: [] };
+
+    const { sent } = await setup({
+      server: files,
+      tool: ["read_mcp_resource", { server: "files", uri: "file:///a.txt" }],
+    });
+
+    expect(sent[0]?.ctx.answers?.sampling).toBeUndefined();
+  });
+
   it.each([
-    ["a definition that is not allow", { server: { ...DOCS, entry: { sampling: "ask" } } }],
+    ["a definition that says ask", { server: { ...DOCS, entry: { sampling: "ask" } } }],
+    ["a definition that says off", { server: { ...DOCS, entry: { sampling: "off" } } }],
     ["a definition without sampling", { server: DOCS }],
     [
       "a host that does not list sampling",

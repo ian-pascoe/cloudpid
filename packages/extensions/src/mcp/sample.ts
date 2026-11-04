@@ -47,6 +47,8 @@ export type Sampling = {
   readonly onInputEnded: (key: string) => void;
   /** Resolves once every request the call made has ended, however it ended. */
   readonly idle: () => Promise<void>;
+  /** The call is over: its count and what its records were taken against are forgotten. */
+  readonly settle: () => Promise<void>;
   /** What became of each request, in order; read when the call ends. */
   readonly asked: Array<McpSamplingDetail>;
 };
@@ -106,6 +108,7 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
     onInput,
     onInputEnded: (key) => controllers.get(key)?.abort(),
     idle: () => Promise.allSettled(running).then(() => undefined),
+    settle: () => Effect.runPromise(call.sampling.settleCall(call.callId)),
     get asked() {
       return asked;
     },
@@ -116,13 +119,17 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
 const lineOf = (detail: McpSamplingDetail): string | undefined => {
   if (detail.status === "answered") return undefined;
 
-  const reason = detail.reason ?? "no reason given";
-
-  const why = reason.startsWith("out of budget")
-    ? "out of budget"
-    : reason.startsWith("sampling limit")
-      ? "over the limit for one call"
-      : plainLine(reason, 400).replace(/[<>]/g, "");
+  // Nothing the server wrote is in a reason, but the model's own failure may carry the provider's words: kept short and plain.
+  const why = (() => {
+    switch (detail.why) {
+      case "budget":
+        return "out of budget";
+      case "cap":
+        return "over the limit for one call";
+      default:
+        return plainLine(detail.reason ?? "no reason given", 400).replace(/[<>]/g, "");
+    }
+  })();
 
   return `${detail.server} asked for a model reply; ${detail.status === "refused" ? "refused" : "failed"}: ${why}`;
 };

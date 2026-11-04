@@ -38,7 +38,7 @@ import {
   McpStale,
   REDISCOVERING_CHANGES,
 } from "@cloudpid/mcp/types";
-import { normalizeMcpName } from "@cloudpid/config";
+import { allowsSamplingOnStdio, normalizeMcpName } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -564,6 +564,10 @@ const toServerHashes = (view: ServerView) =>
     inventory: view.inventory,
   });
 
+/** What the owner reads on a stdio server that says `sampling: "allow"`, which is not declared to it yet. */
+export const STDIO_SAMPLING_PROBLEM =
+  'sampling "allow" is not answered for a stdio server yet, so the server is not told it may sample';
+
 /** One server as `servers` answers it, with the `parts` asked for. */
 const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpServerInventory => {
   const inventory = Option.getOrUndefined(view.inventory);
@@ -578,7 +582,11 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
     ...toServerHashes(view),
     counts: { tools: inventory?.tools.length ?? 0, prompts: inventory?.prompts.length ?? 0 },
     resources: meta !== undefined && "resources" in meta.capabilities,
-    problems: meta?.problems ?? [],
+    problems: [
+      ...(meta?.problems ?? []),
+      // A stdio server's `allow` is not declared until its bridge carries Legacy questions: told, not silent (#569).
+      ...(allowsSamplingOnStdio(view.server.server) ? [{ problem: STDIO_SAMPLING_PROBLEM }] : []),
+    ],
   };
 
   if (view.status?.error !== undefined) answer.error = view.status.error;

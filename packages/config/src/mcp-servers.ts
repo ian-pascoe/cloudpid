@@ -80,6 +80,23 @@ export const MCP_DEFINITION_KEYS = [
   "sampling",
 ] as const;
 
+/**
+ * Whether a server's definition has its Sampling requests answered on the owner's models without asking, which is the
+ * one place that decides it (`docs/architecture/mcp-server-requests.md` → Sampling requests): `sampling: "allow"`, and not
+ * a stdio server, whose requests the bridge does not carry yet ([#569](https://github.com/ian-pascoe/cloudpid/issues/569)).
+ * A Repo's `allow` was read as `ask` before it got here (`resolveMcpServerSet`).
+ */
+export const allowsSampling = (server: {
+  readonly sampling?: unknown;
+  readonly type?: unknown;
+}): boolean => server.sampling === "allow" && server.type !== "stdio";
+
+/** Whether `allow` is written on a stdio server, whose Sampling requests are not answered until the bridge carries them. */
+export const allowsSamplingOnStdio = (server: {
+  readonly sampling?: unknown;
+  readonly type?: unknown;
+}): boolean => server.sampling === "allow" && server.type === "stdio";
+
 /** What a server's name looks like: `^[A-Za-z0-9_-]+$`, at most 64 characters. */
 export const MCP_NAME = /^[A-Za-z0-9_-]+$/;
 

@@ -14,6 +14,7 @@
 // round ends as `InputRequired`, is stored whole and marked (`mcp.wait.<r>`), and the call waits with no clock running;
 // once the owner has answered, `mcp.resumed.<r>` is written and the resume sent. A rerun after a restart waits again
 // for a round so marked, and settles any other call it finds sent as one that may have run.
+import { allowsSampling } from "@cloudpid/config";
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
@@ -72,6 +73,18 @@ export const MCP_CALL_SLACK_MS = 3 * MCP_CONNECT_TIMEOUT_MS + 15_000;
 
 /** The longest a result's stream may be quiet while the Session reads it before it is read as lost, in ms. */
 export const MCP_STREAM_IDLE_MS = 30_000;
+
+/**
+ * The host feature a call answers a Legacy server's Sampling requests with: a host that lists it declares `sampling` to a
+ * server whose definition says `allow` (`docs/architecture/mcp-server-requests.md` → Sampling requests). Without it no
+ * server is told it may sample, so none asks.
+ */
+export const MCP_SAMPLING_FEATURE = "sampling";
+
+/** Whether the host lists `sampling`: a call to a server that `allow`s it may then say it can answer its requests. */
+export const samplesOf = (build: {
+  readonly features?: ReadonlyArray<string> | undefined;
+}): boolean => build.features?.includes(MCP_SAMPLING_FEATURE) === true;
 
 /** How the tools wait: the slack past a call's timeout, `MCP_CALL_SLACK_MS` unless a test shortens it. */
 export type McpToolOptions = {
@@ -262,7 +275,7 @@ export type Exchange = {
    * later, when the Session's questions can (`McpQuestionsService.defers`).
    */
   readonly defers?: boolean | undefined;
-  /** Whether the host lists `sampling`: a tool's call to a server that may sample says it can answer (`options.sampling`). */
+  /** Whether the host lists `sampling`: a call or read to a server that may sample says it can answer (`options.sampling`). */
   readonly samples?: boolean | undefined;
 };
 
@@ -385,11 +398,7 @@ export const send = async <A>(
   // A Legacy HTTP server whose definition says `allow` is answered its Sampling requests on the Session's models. A
   // stdio server declares none (its Container is the owner's own), and a request that is not a tool's call has no use for it.
   const sampling =
-    options.sampling !== undefined &&
-    exchange.samples === true &&
-    remember &&
-    server.server.sampling === "allow" &&
-    server.server.type !== "stdio"
+    options.sampling !== undefined && exchange.samples === true && allowsSampling(server.server)
       ? samplingHooks({
           sampling: options.sampling,
           server: server.name,
@@ -581,7 +590,6 @@ export const send = async <A>(
     // However it ended, nothing is left waiting (a second settle is a no-op).
     if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
 
-    if (sampling !== undefined)
-      await Effect.runPromise(options.sampling?.settleCall(api.callId) ?? Effect.void);
+    await sampling?.settle();
   }
 };
