@@ -5,10 +5,15 @@
 // has Allow in this Session and Always allow) or Refuse (its menu has Refuse in this Session and Never). Always allow and
 // Never write the server's definition, so they are offered only where the owner may (`writable`). A Role picker names
 // the Role to run it on; it starts on the one the Session chose. Everything shown is plain text, made by the Session.
-import type { McpSamplingChoice, McpSamplingRequest, McpSamplingRole } from "@cloudpid/protocol";
+import {
+  McpSamplingRole,
+  type McpSamplingChoice,
+  type McpSamplingRequest,
+} from "@cloudpid/protocol";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { ChevronDown, Cpu } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../components/ui/button.tsx";
@@ -25,6 +30,7 @@ import {
 import { useShownSessionId } from "./conversation.ts";
 import { useNow } from "./mcp-elicitation-card.tsx";
 import { countdown, sourceLabel } from "./mcp-elicitation-form.ts";
+import { SamplingAsked } from "./mcp-sampling-asked.tsx";
 import { requestCardId } from "./request-anchor.ts";
 
 /**
@@ -39,15 +45,12 @@ type CardProps = {
   onAnswer: (choice: McpSamplingChoice, role?: McpSamplingRole) => Promise<string | null>;
 };
 
-/** One text block of the request: a label and what it holds, scrolling when long. */
-const Block = ({ label, children }: { label: string; children: string }) => (
-  <div className="mt-2">
-    <div className="text-xs font-medium text-muted-foreground">{label}</div>
-    <p className="max-h-40 overflow-y-auto rounded-md border bg-muted px-3 py-2 font-mono text-xs break-words whitespace-pre-wrap">
-      {children}
-    </p>
-  </div>
-);
+/** Whether `role` is one this build can pick: a Role a later build adds is shown, never chosen. */
+const isRole = Schema.is(McpSamplingRole);
+
+/** What Always allow and Never change, which the owner is told when it is every Environment's. */
+const reach = (request: McpSamplingRequest): string =>
+  request.source?.kind === "global" ? " (every Environment)" : "";
 
 /** The card for one MCP Sampling request. */
 export const McpSamplingCard = ({
@@ -59,7 +62,7 @@ export const McpSamplingCard = ({
 }: CardProps) => {
   const [sent, setSent] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
-  const [role, setRole] = useState<McpSamplingRole>(request.role);
+  const [role, setRole] = useState(request.role);
   const now = useNow(fixedNow);
   const off = disabled || sent;
   const origin = sourceLabel(request.source);
@@ -72,12 +75,14 @@ export const McpSamplingCard = ({
   const answer = (choice: McpSamplingChoice) => {
     setSent(true);
     setRefusal(null);
-    void onAnswer(choice, role === request.role ? undefined : role).then((refused) => {
-      if (refused === null) return;
+    void onAnswer(choice, role !== request.role && isRole(role) ? role : undefined).then(
+      (refused) => {
+        if (refused === null) return;
 
-      setSent(false);
-      setRefusal(refused);
-    });
+        setSent(false);
+        setRefusal(refused);
+      },
+    );
   };
 
   return (
@@ -122,54 +127,26 @@ export const McpSamplingCard = ({
             }}
             className="h-8 w-auto max-w-full text-sm"
           >
-            {Arr.map(request.roles, (option) => (
-              <option key={option.role} value={option.role}>
-                {option.role} · {option.model}
-              </option>
-            ))}
+            {Arr.map(
+              Arr.filter(request.roles, (option) => isRole(option.role)),
+              (option) => (
+                <option key={option.role} value={option.role}>
+                  {option.role} · {option.model}
+                </option>
+              ),
+            )}
           </NativeSelect>
           <span className="text-xs text-muted-foreground">
             answers on <span className="font-mono">{model}</span>
           </span>
         </div>
-        {request.systemPrompt === undefined || request.systemPrompt === "" ? null : (
-          <Block label="System prompt">{request.systemPrompt}</Block>
-        )}
-        {request.omitted === undefined || request.omitted === 0 ? null : (
-          <p className="mt-2 text-xs text-muted-foreground">
-            {request.omitted} earlier {request.omitted === 1 ? "message" : "messages"} left out
-          </p>
-        )}
-        {Arr.map(request.messages, (message, index) => (
-          <Block key={index} label={message.role === "user" ? "User message" : "Assistant message"}>
-            {message.text}
-          </Block>
-        ))}
-        {request.tools.length === 0 ? null : (
-          <div className="mt-2">
-            <div className="text-xs font-medium text-muted-foreground">
-              {request.tools.length === 1
-                ? "1 tool offered"
-                : `${request.tools.length} tools offered`}
-              , never run by cloudpid
-            </div>
-            <ul className="mt-1 text-xs">
-              {Arr.map(request.tools, (tool) => (
-                <li key={tool.name} className="break-words">
-                  <span className="font-mono">{tool.name}</span>
-                  {tool.description === undefined ? null : (
-                    <span className="text-muted-foreground"> · {tool.description}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {Arr.map(request.notes, (note) => (
-          <p key={note} className="mt-1 text-xs text-muted-foreground">
-            {note}
-          </p>
-        ))}
+        <SamplingAsked
+          systemPrompt={request.systemPrompt}
+          omitted={request.omitted}
+          messages={request.messages}
+          tools={request.tools}
+          notes={request.notes}
+        />
       </div>
       {refusal === null ? null : (
         <p role="alert" className="shrink-0 text-xs text-destructive">
@@ -180,9 +157,7 @@ export const McpSamplingCard = ({
         <span className="text-xs text-muted-foreground">
           {disabled
             ? "Reconnecting…"
-            : request.waits === "owner"
-              ? `${request.server} waits for you`
-              : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
+            : `${request.server}'s call ends in ${countdown(request.deadline, now)}`}
         </span>
         <div className="flex flex-wrap gap-2">
           <div className="flex items-center">
@@ -218,7 +193,7 @@ export const McpSamplingCard = ({
                     answer("refuse_never");
                   }}
                 >
-                  Never
+                  Never{reach(request)}
                 </MenuItem>
               ) : null}
             </Menu>
@@ -254,7 +229,7 @@ export const McpSamplingCard = ({
                     answer("allow_always");
                   }}
                 >
-                  Always allow
+                  Always allow{reach(request)}
                 </MenuItem>
               ) : null}
             </Menu>

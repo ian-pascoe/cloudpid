@@ -9,6 +9,7 @@ import * as Exit from "effect/Exit";
 import { useState } from "react";
 import { getMcpSamplingAtom } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
+import { SamplingAsked } from "./mcp-sampling-asked.tsx";
 import { type ShownSampling, samplingLine } from "./mcp-sampling-detail.ts";
 
 /** What the fetch of one record came to. */
@@ -17,49 +18,17 @@ type Fetched =
   | { readonly state: "failed"; readonly message: string }
   | { readonly state: "shown"; readonly record: McpSamplingRecordView };
 
-/** A labelled block of the record's text. */
-const Text = ({ label, children }: { label: string; children: string }) => (
-  <div className="mt-1.5">
-    <div className="text-xs font-medium text-muted-foreground">{label}</div>
-    <p className="max-h-40 overflow-y-auto rounded-md border bg-muted px-2 py-1 font-mono text-xs break-words whitespace-pre-wrap">
-      {children}
-    </p>
-  </div>
-);
-
 /** The record, as far as the Session kept it (a stub has no content). */
 export const SamplingRecord = ({ record }: { record: McpSamplingRecordView }) => (
   <div className="mt-1 mb-2 border-l pl-3">
-    {record.systemPrompt === undefined || record.systemPrompt === "" ? null : (
-      <Text label="System prompt">{record.systemPrompt}</Text>
-    )}
-    {record.omitted === undefined || record.omitted === 0 ? null : (
-      <p className="mt-1.5 text-xs text-muted-foreground">
-        {record.omitted} earlier {record.omitted === 1 ? "message" : "messages"} left out
-      </p>
-    )}
-    {Arr.map(record.messages, (message, index) => (
-      <Text key={index} label={message.role === "user" ? "User message" : "Assistant message"}>
-        {message.text}
-      </Text>
-    ))}
-    {record.tools.length === 0 ? null : (
-      <p className="mt-1.5 text-xs break-words">
-        <span className="font-medium text-muted-foreground">Tools offered </span>
-        <span className="font-mono">
-          {Arr.join(
-            Arr.map(record.tools, (tool) => tool.name),
-            ", ",
-          )}
-        </span>
-      </p>
-    )}
-    {record.reply === undefined ? null : <Text label="Reply">{record.reply}</Text>}
-    {Arr.map(record.notes, (note) => (
-      <p key={note} className="mt-1 text-xs text-muted-foreground">
-        {note}
-      </p>
-    ))}
+    <SamplingAsked
+      systemPrompt={record.systemPrompt}
+      omitted={record.omitted}
+      messages={record.messages}
+      tools={record.tools}
+      reply={record.reply}
+      notes={record.notes}
+    />
     {record.stub === true ? (
       <p className="mt-1 text-xs text-muted-foreground">
         The Session kept only a summary of this one.

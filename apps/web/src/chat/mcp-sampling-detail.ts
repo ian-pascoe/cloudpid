@@ -14,6 +14,8 @@ export const ShownSampling = Schema.Struct({
   server: Schema.String,
   status: Schema.String,
   by: Schema.String,
+  /** What let it run, or refused it, without a card: `call`, `session` or `always`; a string, as `by` is. */
+  grant: Schema.optionalKey(Schema.String),
   reason: Schema.optionalKey(Schema.String),
   why: Schema.optionalKey(Schema.String),
   role: Schema.optionalKey(Schema.String),
@@ -66,6 +68,20 @@ const usedOf = (request: ShownSampling): string => {
   return parts.length === 0 ? "" : ` (${Arr.join(parts, ", ")})`;
 };
 
+/** Where an owner's choice reached: the call, the Session or the definition. */
+const reachOf = (grant: string | undefined): string => {
+  switch (grant) {
+    case "call":
+      return " for this call";
+    case "session":
+      return " for this Session";
+    case "always":
+      return " for good";
+    default:
+      return "";
+  }
+};
+
 /** What the card says of one request: who decided, what came of it and, for cloudpid's own refusal, why. */
 export const samplingLine = (request: ShownSampling): string => {
   const asked = `${request.server}'s request to use a model`;
@@ -74,9 +90,9 @@ export const samplingLine = (request: ShownSampling): string => {
   if (request.status === "answered") {
     switch (request.by) {
       case "owner":
-        return `You let ${request.server} use a model${usedOf(request)}`;
+        return `You let ${request.server} use a model${reachOf(request.grant)}${usedOf(request)}`;
       case "grant":
-        return `${request.server} used a model, as you allowed for this Session${usedOf(request)}`;
+        return `${request.server} used a model, as you allowed${reachOf(request.grant)}${usedOf(request)}`;
       default:
         return `${request.server} used a model, as its definition allows${usedOf(request)}`;
     }
@@ -87,7 +103,7 @@ export const samplingLine = (request: ShownSampling): string => {
       case "owner":
         return `You refused ${asked}`;
       case "grant":
-        return `You refused ${asked} for this Session`;
+        return `You refused ${asked}, as you chose${reachOf(request.grant)}`;
       default:
         return `cloudpid refused ${asked}${because}`;
     }

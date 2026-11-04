@@ -137,7 +137,7 @@ describe("ToolCallCard's MCP model use", () => {
             tokens: 1200,
             id: "s-1",
           },
-          { server: "docs", status: "refused", by: "grant" },
+          { server: "docs", status: "refused", by: "grant", grant: "session" },
           { server: "docs", status: "refused", by: "cloudpid", reason: "over the Spend limit" },
         ],
       },
@@ -148,7 +148,9 @@ describe("ToolCallCard's MCP model use", () => {
 
     expect(markup).toContain(">Model use<");
     expect(text).toContain("You let docs use a model (small · m/small, 1.2k tokens)");
-    expect(text).toContain("You refused docs&#x27;s request to use a model for this Session");
+    expect(text).toContain(
+      "You refused docs&#x27;s request to use a model, as you chose for this Session",
+    );
     expect(text).toContain(
       "cloudpid refused docs&#x27;s request to use a model: over the Spend limit",
     );

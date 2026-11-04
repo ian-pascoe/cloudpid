@@ -79,11 +79,37 @@ describe("McpSamplingCard", () => {
     expect(markup).not.toContain(">Never<");
   });
 
-  it("shows no countdown for a request that waits for the owner, and Reconnecting while off", () => {
-    expect(render(request({ waits: "owner" }))).toContain("docs waits for you");
-    expect(render(request({ waits: "owner" }))).not.toContain("call ends in");
+  it("says Reconnecting while the socket is not live, with the buttons off", () => {
     expect(render(request(), true)).toContain("Reconnecting…");
     expect(render(request(), true)).toMatch(/<button[^>]*disabled=""[^>]*>Allow for this call/);
+  });
+
+  it("says when Always allow and Never change a Global server, which every Environment has", () => {
+    const global = render(request({ source: { kind: "global" } }));
+
+    expect(global).toContain("Always allow (every Environment)");
+    expect(global).toContain("Never (every Environment)");
+
+    const own = render(request({ source: { kind: "environment" } }));
+
+    expect(own).toContain("Always allow");
+    expect(own).not.toContain("every Environment");
+  });
+
+  it("offers only the Roles this build can pick, and shows the request's own whatever it is", () => {
+    const markup = render(
+      request({
+        role: "xxlarge",
+        roles: [
+          { role: "small", model: "m/small" },
+          { role: "xxlarge", model: "m/huge" },
+        ],
+      }),
+    );
+
+    expect(markup).toContain("small · m/small");
+    expect(markup).not.toContain("m/huge ");
+    expect(markup).not.toContain('value="xxlarge"');
   });
 
   it("says which agent asked, and where the definition is", () => {
@@ -100,7 +126,19 @@ describe("samplingLine", () => {
     );
     expect(
       samplingLine({ server: "docs", status: "answered", by: "grant", role: "medium", cost: 0.5 }),
-    ).toBe("docs used a model, as you allowed for this Session (medium, $0.50)");
+    ).toBe("docs used a model, as you allowed (medium, $0.50)");
+    expect(
+      samplingLine({ server: "docs", status: "answered", by: "grant", grant: "session" }),
+    ).toBe("docs used a model, as you allowed for this Session");
+    expect(samplingLine({ server: "docs", status: "answered", by: "grant", grant: "call" })).toBe(
+      "docs used a model, as you allowed for this call",
+    );
+    expect(samplingLine({ server: "docs", status: "answered", by: "owner", grant: "always" })).toBe(
+      "You let docs use a model for good",
+    );
+    expect(samplingLine({ server: "docs", status: "refused", by: "grant", grant: "call" })).toBe(
+      "You refused docs's request to use a model, as you chose for this call",
+    );
     expect(samplingLine({ server: "docs", status: "refused", by: "owner" })).toBe(
       "You refused docs's request to use a model",
     );
