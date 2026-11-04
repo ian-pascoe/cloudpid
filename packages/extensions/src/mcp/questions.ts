@@ -310,8 +310,33 @@ export type McpQuestionsService = {
    * dropped, and the round forgotten.
    */
   readonly endRound: (callId: string) => Effect.Effect<void>;
-  /** Withdraw every deferred round no call in this instance waits for: their calls ended with an earlier instance. */
+  /**
+   * Withdraw every deferred round no call in this instance waits for: their calls ended with an earlier instance. An MCP
+   * task's round is no call's, and is left (`docs/architecture/mcp-server-requests.md` → MCP tasks, Questions in a task).
+   */
   readonly dropAbandoned: Effect.Effect<void>;
+  /**
+   * The answers of the MCP task round kept under `owner` (`taskOwner`) when every question of it has one, accepted content
+   * opened, and nothing otherwise; it does not wait. The round stays stored until `endRound`.
+   */
+  readonly takeAnswers: (
+    owner: string,
+  ) => Effect.Effect<ReadonlyArray<McpDeferredAnswer> | undefined>;
+  /** The keys of the opened pages of the round kept under `owner`, answered `accept` already: sent without the rest. */
+  readonly takePages: (owner: string) => Effect.Effect<ReadonlyArray<string>>;
+  /** What `owner` has asked toward its caps (`MCP_ELICITATIONS_PER_CALL` forms and pages, `MCP_SAMPLINGS_PER_CALL` samples). */
+  readonly counts: (owner: string) => { readonly count: number; readonly sampled: number };
+  /** `owner` counts on from what an earlier instance had asked, which a restart would forget. */
+  readonly restoreCounts: (
+    owner: string,
+    counts: { readonly count: number; readonly sampled: number },
+  ) => void;
+  /**
+   * Register what the owner's answer to a question of an MCP task wakes: `handler(owner)` runs, in the background, after
+   * each answer (and each withdrawal) of a task's question, to send the round's answers once all are in. Replaces the
+   * earlier one; undefined takes it back.
+   */
+  readonly onTaskAnswered: (handler: ((owner: string) => Effect.Effect<void>) | undefined) => void;
 };
 
 /** The Session's MCP questions. */
@@ -481,12 +506,15 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
   const tell: Effect.Effect<void> = Effect.suspend(() => pending.pipe(Effect.flatMap(announce)));
 
+  let taskHandler: ((owner: string) => Effect.Effect<void>) | undefined;
+
   const deferred = createDeferredQuestions({
     storage,
     vault: options.vault,
     basics,
     tell,
     tellSampling: Effect.suspend(() => sampling.tell),
+    taskAnswered: () => taskHandler,
   });
 
   const sampling = createSamplingQuestions({
@@ -925,7 +953,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
         // A page of a prompt send or an App View's call is waited for no longer than its question was: the call's clock is
         // not held for good by a page that is never finished (`deadline` is the ask's 5 min).
-        if (askOriginOf(held.request) === "agent") return open;
+        if (askOriginOf(held.request) === "agent" || askOriginOf(held.request) === "task")
+          return open;
 
         return Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) =>
@@ -1052,6 +1081,13 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     awaitRound: deferred.awaitRound,
     endRound: deferred.endRound,
     dropAbandoned: deferred.dropAbandoned,
+    takeAnswers: deferred.takeAnswers,
+    takePages: deferred.takePages,
+    counts: deferred.counts,
+    restoreCounts: deferred.restoreCounts,
+    onTaskAnswered: (handler) => {
+      taskHandler = handler;
+    },
     expireStale: Effect.gen(function* () {
       yield* sampling.expireStale;
 

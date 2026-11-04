@@ -87,6 +87,15 @@ const render = (req: McpElicitationRequest, disabled = false, agent?: string) =>
     />,
   );
 
+describe("a question of an MCP task", () => {
+  it("names the task on its origin line, between the tool and who asked", () => {
+    const html = render(request(FORM, { task: "mcp-task-1" }));
+
+    expect(html).toContain("MCP task mcp-task-1 ·");
+    expect(render(request(FORM))).not.toContain("MCP task");
+  });
+});
+
 describe("several questions of one call", () => {
   const second = (id: string, callId = "call-1") => request(FORM, { id, callId });
 

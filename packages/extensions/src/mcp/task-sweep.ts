@@ -10,6 +10,7 @@ import type { McpHostClientService } from "./client.ts";
 import type { McpCallOrigin } from "./exchange.ts";
 import { endedRecord, endInDoc } from "./task-end.ts";
 import { cancelDue, sendCancelWithin, taskSpan } from "./task-host.ts";
+import { closeQuestions, type TaskAsking } from "./task-questions.ts";
 import { liveTasks, McpTasksDoc, type McpTaskEnd } from "./task-state.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -24,6 +25,8 @@ export type TaskSweep = {
   readonly origin: McpCallOrigin;
   /** The time now, from the runtime's clock. */
   readonly now: () => number;
+  /** What a task's questions are asked with: the questions of a task the sweep ends are withdrawn. */
+  readonly asking?: TaskAsking | undefined;
 };
 
 /**
@@ -80,6 +83,7 @@ export const sweepTasks = async (sweep: TaskSweep): Promise<number> => {
 
     ended += 1;
     await taskSpan(closed);
+    await closeQuestions(sweep.asking, record.handle);
   }
 
   return ended;

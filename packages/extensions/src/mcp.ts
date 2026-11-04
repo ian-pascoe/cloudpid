@@ -1,3 +1,4 @@
+// @effect-diagnostics asyncFunction:off -- the owner's answer to an MCP task's question reaches pi-durable's Promise-based Harness.
 // The `mcp` extension (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension, Exposure; ADR-0030): one Session
 // extension built from the Environment's MCP inventory, whose tools each call `McpHost.request({ op: "tools/call" })`, and
 // whose resource tools (`./mcp/resources.ts`) list and read resources through the same `request`.
@@ -67,7 +68,11 @@ import {
   type OwnerKeep,
   type TaskOwnerHarness,
 } from "./mcp/task-owner.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type SweepHarness, sweepTasks } from "./mcp/task-sweep.ts";
+import { sendReady, type TaskAsking, taskStoreOf } from "./mcp/task-questions.ts";
+import { handleOfOwner } from "./mcp/question-records.ts";
+import { McpTasksDoc } from "./mcp/task-state.ts";
 import { MCP_WATCHES_FEATURE, type McpWatchNews, newsOf, watchesNotice } from "./mcp/watches.ts";
 import {
   EMPTY_LISTING,
@@ -465,6 +470,12 @@ export type McpToolsService = {
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
   /**
+   * The Session's Harness, bound by the Session host once it is open: what the owner's answer to a question of an MCP task
+   * sends `tasks/update` with, since no call waits for it (`docs/architecture/mcp-server-requests.md` → MCP tasks,
+   * Questions in a task).
+   */
+  readonly bindTaskHarness: (harness: Pick<TaskOwnerHarness, "snapshot" | "commit">) => void;
+  /**
    * The sweep at every wake (`docs/architecture/mcp-server-requests.md` → MCP tasks): cancel the inline tasks whose call is
    * no longer live, and end their records. Never fails: what could not be swept is swept at the next wake.
    */
@@ -685,6 +696,55 @@ export const makeMcpTools = (
             options.tasks.write ??
             ((conversation, note) => notices?.write?.(conversation, note) ?? Promise.resolve()),
         };
+
+  let taskHarness: Pick<TaskOwnerHarness, "snapshot" | "commit"> | undefined;
+
+  /** What a task's questions are asked and answered with, from the tools as they were last built. */
+  const askingOf = (questions: McpQuestionsService): TaskAsking => ({
+    questions,
+    sampling: options.sampling,
+    samples: latest?.features.includes(MCP_SAMPLING_FEATURE) === true,
+    servers: latest?.servers ?? [],
+  });
+
+  /**
+   * The owner answered a question of MCP task `owner`'s (its key, `taskOwner`): once every question of the round has an
+   * answer, `tasks/update` goes to the server, from here since no call waits for it. A round not complete, a task that
+   * ended, a Session whose Harness is not bound, and a send that did not take (the next poll sends it again) do nothing.
+   */
+  const answerTask = (owner: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const handle = handleOfOwner(owner);
+      const harness = taskHarness;
+      const { questions } = options;
+
+      if (handle === undefined || harness === undefined || questions === undefined) return;
+
+      const at = yield* Clock.currentTimeMillis;
+
+      yield* Effect.tryPromise(async () => {
+        const record = (await harness.snapshot(McpTasksDoc, BACKGROUND_CONTEXT))?.tasks[handle];
+
+        if (record === undefined || record.end !== undefined) return;
+
+        await sendReady(
+          {
+            asking: askingOf(questions),
+            client,
+            origin: latest?.origin ?? {},
+            store: taskStoreOf(harness, BACKGROUND_CONTEXT),
+            now: () => at,
+          },
+          record,
+        );
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Sending the owner's answers to an MCP task failed", cause),
+        ),
+      );
+    });
+
+  options.questions?.onTaskAnswered(answerTask);
 
   /** Keep `next`, read as number `read`, unless a later read was kept. */
   const keep = (read: number, next: McpInventory | undefined) => {
@@ -1098,13 +1158,22 @@ export const makeMcpTools = (
     bindNotices: (next) => {
       notices = next;
     },
+    bindTaskHarness: (next) => {
+      taskHarness = next;
+    },
     sweepTasks: (harness) =>
       options.tasks === undefined
         ? Effect.void
         : Effect.flatMap(Clock.currentTimeMillis, (at) =>
             Effect.zipWith(
               Effect.tryPromise(() =>
-                sweepTasks({ harness, client, origin: latest?.origin ?? {}, now: () => at }),
+                sweepTasks({
+                  harness,
+                  client,
+                  origin: latest?.origin ?? {},
+                  now: () => at,
+                  asking: options.questions === undefined ? undefined : askingOf(options.questions),
+                }),
               ),
               // The App Views' tasks whose requests went with an earlier instance are cancelled too.
               viewTasks === undefined

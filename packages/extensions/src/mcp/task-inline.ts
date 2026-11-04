@@ -21,6 +21,12 @@ import { detachedText, pollDelayMs, type PollOutcome } from "./task-policy.ts";
 import { type McpTasksOptions, sleepUntilWoken } from "./task-port.ts";
 import { endedRecord, endInDoc } from "./task-end.ts";
 import {
+  closeQuestions,
+  observeQuestions,
+  type TaskAsking,
+  taskStoreOf,
+} from "./task-questions.ts";
+import {
   completedResult,
   endedResult,
   type McpResultPool,
@@ -52,6 +58,8 @@ export type TaskCall = {
   readonly caller: Caller;
   /** The agent that made the call: `root`, or a subagent's id. */
   readonly agent: string;
+  /** What the task's questions are asked and answered with; absent, a task that asks is only polled. */
+  readonly asking?: TaskAsking | undefined;
 };
 
 /** The marker that mirrors the record's creation, and the one that mirrors its detach. */
@@ -291,6 +299,7 @@ const finish = async (
   }, context);
 
   await taskSpan(ended);
+  await closeQuestions(call.asking, record.handle);
 
   return result;
 };
@@ -357,11 +366,37 @@ export const followInline = async (call: TaskCall, first: McpTaskRecord): Promis
 
     if (stoppedNow()) return stopped(call, record);
 
+    // The owner's answer may have cancelled the task while it was polled: `decide` reads that from the record.
+    record = (await reread(call, record.handle)) ?? record;
+
     const decision = decide(record, outcome, api.now(), timing);
 
     if (decision.end !== undefined) return finish(call, record, decision.end, outcome, decision);
 
     record = await settle(call, record, decision);
+
+    // A task that waits on questions: the ones not asked are asked, and answers the owner gave are sent.
+    if (
+      call.asking !== undefined &&
+      outcome.kind === "state" &&
+      outcome.snapshot.status === "input_required"
+    ) {
+      await observeQuestions(
+        {
+          asking: call.asking,
+          client: call.client,
+          origin: call.origin,
+          store: taskStoreOf(api, context),
+          now: () => api.now(),
+          slowMs: timing.answerSlowMs,
+          signal: stop,
+        },
+        record,
+        outcome.snapshot,
+      );
+      // Asking may have written to the record (a cancel, the questions); the next decision reads it.
+      record = (await reread(call, record.handle)) ?? record;
+    }
 
     const delay =
       decision.retryInMs ??

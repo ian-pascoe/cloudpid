@@ -159,6 +159,8 @@ export const taskAttributes = (record: McpTaskRecord) => ({
   "mcp.task.mode": record.background ? "background" : "inline",
   "mcp.task.polls": record.polls,
   "mcp.task.failures": record.failures.count,
+  // The rounds of questions it asked the owner (`McpTaskQuestions.round`).
+  "mcp.task.question_rounds": record.questions?.round ?? 0,
   // Only a cancel has a canceller: a task the server cancelled itself names the server, one that completed, none.
   "mcp.task.cancelled_by":
     record.cancel?.by ?? (record.end?.status === "cancelled" ? record.end.by : "none"),

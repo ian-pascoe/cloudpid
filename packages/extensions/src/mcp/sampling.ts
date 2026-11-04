@@ -125,6 +125,8 @@ export type McpSamplingAsk = {
   readonly prompt?: string | undefined;
   /** Whether the request came in an App View's `tools/call`: it waits live, 5 min, and tells the owner nothing. */
   readonly app?: true | undefined;
+  /** The handle of the MCP task whose question it is, when it is one's: `callId` is then the task's key (`taskOwner`). */
+  readonly task?: string | undefined;
   readonly callId: string;
   readonly conversationId: McpSamplingRequest["conversationId"];
   /** The server's own request id. */
@@ -671,6 +673,8 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
             if (ask.app === true) card.app = true;
 
+            if (ask.task !== undefined) card.task = ask.task;
+
             if (record.systemPrompt !== undefined) card.systemPrompt = record.systemPrompt;
 
             if (shown.omitted > 0) card.omitted = shown.omitted;
@@ -839,7 +843,10 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         ),
       ),
       Effect.withSpan("mcp.sampling.sample", {
-        attributes: { "mcp.server": ask.server, "mcp.origin": "agent" },
+        attributes: {
+          "mcp.server": ask.server,
+          "mcp.origin": askOriginOf(ask),
+        },
       }),
     );
 

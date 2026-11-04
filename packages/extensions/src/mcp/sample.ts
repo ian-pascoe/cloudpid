@@ -44,6 +44,8 @@ export type SamplingCall = {
   readonly prompt?: string | undefined;
   /** The call is an App View's `tools/call`: its requests wait live for 5 min and tell the owner nothing. */
   readonly app?: true | undefined;
+  /** The handle of the MCP task whose requests these are (`callId` is then its key, `taskOwner`). */
+  readonly task?: string | undefined;
   readonly callId: string;
   readonly conversationId: ConversationId;
   /** Aborts when Stop does: a sample under way is stopped, and a card waiting is withdrawn. */
@@ -123,6 +125,7 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
         prompt: call.prompt,
         app: call.app,
         withdraw: call.withdraw?.(),
+        task: call.task,
         source: call.source,
         hold: call.hold,
       }),

@@ -68,6 +68,7 @@ import type { McpQuestionsService } from "./questions.ts";
 import { withSampling } from "./sample.ts";
 import { exposureKeys, flagsOf, isReachable, reachesModel } from "./exposure.ts";
 import { taskFollower } from "./task-follow.ts";
+import type { TaskAsking } from "./task-questions.ts";
 import { resultPool } from "./task-results.ts";
 import { taskTools } from "./task-tools.ts";
 import { type McpResultContext, resultFor } from "./result.ts";
@@ -401,6 +402,17 @@ export const mcpExtension = (
   // A Legacy server's Sampling requests are answered only on a host that lists `sampling` (it declares them to the server).
   const samples = samplesOf(build);
 
+  // What a task's questions are asked and answered with, when the Session can keep questions.
+  const taskAsking: TaskAsking | undefined =
+    options.questions === undefined
+      ? undefined
+      : {
+          questions: options.questions,
+          sampling: options.sampling,
+          samples,
+          servers: build.servers,
+        };
+
   // MCP tasks are followed on a host that knows the ops, by a Session that keeps what following needs.
   const pool = options.tasks === undefined ? undefined : resultPool(options.tasks.storage);
 
@@ -409,12 +421,12 @@ export const mcpExtension = (
     pool === undefined ||
     build.features?.includes(MCP_TASKS_FEATURE) !== true
       ? undefined
-      : taskFollower({ client, origin, tasks: options.tasks, pool });
+      : taskFollower({ client, origin, tasks: options.tasks, pool, asking: taskAsking });
 
   const tasking: McpTasking | undefined =
     options.tasks === undefined || pool === undefined || follower === undefined
       ? undefined
-      : { tasks: options.tasks, follower, pool };
+      : { tasks: options.tasks, follower, pool, asking: taskAsking };
 
   const tools = Arr.flatMap(build.servers, (server) => {
     const listed = listedTools(server);

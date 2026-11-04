@@ -4,7 +4,9 @@
 // round, and a Legacy server's `-32042` (its pages, #487), end the call as `input_required` or `pages_required` and are
 // stored whole, so they survive the instance: a rerun of the call finds the round and waits again, and the cards show
 // from it, so an answer the owner gives while no call waits is still kept. A round of pages is sent again by `resend`
-// (`McpRoundState` `Resend`), a Modern round by `Resume`.
+// (`McpRoundState` `Resend`), a Modern round by `Resume`; an MCP task's round (`Task`, #497, kept under the task's own key
+// `mcp_task:<handle>`) has no call at all: the Session sends its answers in `tasks/update` itself, and no call's end or
+// idle sweep drops it (`takeAnswers`, `takePages`).
 //
 // - **The storage** (an implementation word): the call's record `mcp-question:d:<callId>` (its server, its questions'
 //   ids, and once stored, the round: the server's `conn`, the round's number, the server's name for the tool, what
@@ -54,7 +56,8 @@ import {
   type McpSamplingVerdict,
   eraDefault,
   eraOfAsk,
-  pageIdentityOf,
+  isTaskOwner,
+  pageIdentityFor,
   questionId,
   refusedBy,
   restartedSinceAsked,
@@ -67,6 +70,8 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
@@ -171,8 +176,8 @@ type DeferredRecord = {
     readonly tool: string;
     /** How many chunks the `ResumeState` is stored in. */
     readonly chunks: number;
-    /** What the state is: absent, a `ResumeState`; a `ResendState` of a call's pages; or nothing, for a read's pages. */
-    readonly state?: "resend" | "read" | undefined;
+    /** What the state is: absent, a `ResumeState`; a `ResendState` of a call's pages; or nothing, for a read's pages or an MCP task's questions. */
+    readonly state?: "resend" | "read" | "task" | undefined;
     readonly asked: ReadonlyArray<McpElicitationDetail>;
     /** The requests the call had made, toward its cap, so a rerun counts on from them. */
     readonly count: number;
@@ -186,9 +191,14 @@ type DeferredRecord = {
 };
 
 /** How a round's state is named in its record: a `ResumeState` is not, as before pages. */
-const stateOf = { Resume: undefined, Resend: "resend", Read: "read" } as const;
+const stateOf = { Resume: undefined, Resend: "resend", Read: "read", Task: "task" } as const;
 
 const kindOf = (question: StoredQuestion): DeferredKind => question.kind ?? "elicitation";
+
+/** The round states this build can answer (`stateOf`); a stored round of another is a later build's. */
+const KNOWN_STATES: ReadonlySet<string> = new Set(
+  Arr.filter(Record.values(stateOf), Predicate.isString),
+);
 
 /** The kinds this build can answer; a stored question of another is a later build's. */
 const KNOWN_KINDS: ReadonlySet<string> = new Set<DeferredKind>(["elicitation", "sampling"]);
@@ -199,7 +209,12 @@ const eraOf = (question: DeferredQuestion): McpEra =>
 
 /** What names a stored page question across its call's rounds (`pageIdentityOf`). */
 const pageOf = (question: DeferredQuestion): string =>
-  pageIdentityOf(eraOf(question), question.key, question.request.page?.url);
+  pageIdentityFor(
+    question.request.callId,
+    eraOf(question),
+    question.key,
+    question.request.page?.url,
+  );
 
 /** Seals and opens an accepted Modern form's content while it waits for its resume, bound to the question's id. */
 export type McpQuestionVault = {
@@ -249,12 +264,17 @@ export type McpSamplingDeferral = {
 /**
  * What a stored round is sent again from, by the request that asked its questions: a Modern call's (or a Legacy form's)
  * `ResumeState`, a Legacy `tools/call`'s `-32042` as its `ResendState`, or a read's `-32042`, which keeps nothing: the
- * Session sends the read again as it was.
+ * Session sends the read again as it was. An MCP task's questions keep nothing either: their answers go in `tasks/update`.
  */
 export type McpRoundState = Data.TaggedEnum<{
   Resume: { readonly state: Schema.Json };
   Resend: { readonly state: Schema.Json };
   Read: {};
+  /**
+   * The questions of an MCP task, which `tasks/update` answers: `answered` are the answers given at once (a Sampling request
+   * run on `allow`, Roots), by key, sent with the round's. Nothing is sent again.
+   */
+  Task: { readonly answered: Schema.Json };
 }>;
 
 export const McpRoundState = Data.taggedEnum<McpRoundState>();
@@ -296,6 +316,12 @@ export type McpDeferredQuestionsOptions = {
   readonly tell: Effect.Effect<void>;
   /** Tell the clients which Sampling requests wait; called when a round's cards for them show, change or go. */
   readonly tellSampling: Effect.Effect<void>;
+  /**
+   * What an answer to an MCP task's question wakes (`docs/architecture/mcp-server-requests.md` → MCP tasks, Questions in a
+   * task): no call waits for it, so the Session sends `tasks/update` itself once the round is answered. Read at each
+   * answer; undefined while nothing is registered.
+   */
+  readonly taskAnswered?: (() => ((owner: string) => Effect.Effect<void>) | undefined) | undefined;
 };
 
 const unrecorded = () => McpQuestionsError.make({ message: MCP_QUESTION_UNRECORDED_REASON });
@@ -304,7 +330,7 @@ const decodeContent = Schema.decodeEffect(Schema.fromJsonString(ElicitationConte
 
 /** The deferred questions over the Session's storage (see the file's header). */
 export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) => {
-  const { storage, vault, basics, tell, tellSampling } = options;
+  const { storage, vault, basics, tell, tellSampling, taskAnswered } = options;
   const samples = samplingRecords(storage);
 
   /** Calls of this instance waiting for their round, by call: what wakes the wait when an answer comes. */
@@ -420,8 +446,15 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
   const wake = (callId: string) =>
     Effect.suspend(() => {
       const signal = rounds.get(callId);
+      const sends = isTaskOwner(callId) ? taskAnswered?.() : undefined;
 
-      return signal === undefined ? Effect.void : Deferred.succeed(signal, undefined);
+      const woken =
+        signal === undefined ? Effect.void : Effect.asVoid(Deferred.succeed(signal, undefined));
+
+      // An MCP task's round has no call to wake: the Session sends its answers itself, in the background, once all are in.
+      return sends === undefined
+        ? woken
+        : Effect.andThen(woken, Effect.forkDetach(Effect.ignore(sends(callId))));
     });
 
   /**
@@ -562,7 +595,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         (yield* Effect.try(() =>
           basics
             .pagesOf(ask.callId)
-            .opened.includes(pageIdentityOf(eraOfAsk(ask), ask.key, ask.page?.url)),
+            .opened.includes(pageIdentityFor(ask.callId, eraOfAsk(ask), ask.key, ask.page?.url)),
         ).pipe(Effect.orElseSucceed(() => false)));
 
       let sequence: number | string | undefined;
@@ -670,6 +703,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           Resume: ({ state }) => state,
           Resend: ({ state }) => state,
           Read: () => null,
+          Task: ({ answered }) => answered,
         }),
       ).pipe(Effect.mapError(unrecorded));
 
@@ -792,6 +826,9 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       if (parts.some((part) => part === undefined)) return undefined;
 
+      // A state of a later build is not this one's to resume: an older instance must never take a task's round for a call's.
+      if (round.state !== undefined && !KNOWN_STATES.has(round.state)) return undefined;
+
       const resume = yield* Schema.decodeEffect(JsonText)(parts.join("")).pipe(Effect.option);
 
       if (Option.isNone(resume)) return undefined;
@@ -812,8 +849,10 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         tool: round.tool,
         state: Match.value(round.state).pipe(
           Match.when("read", () => McpRoundState.Read()),
+          Match.when("task", () => McpRoundState.Task({ answered: resume.value })),
           Match.when("resend", () => McpRoundState.Resend({ state: resume.value })),
-          Match.orElse(() => McpRoundState.Resume({ state: resume.value })),
+          Match.when(undefined, () => McpRoundState.Resume({ state: resume.value })),
+          Match.exhaustive,
         ),
         asked: round.asked,
       };
@@ -983,6 +1022,56 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       }
     });
 
+  /**
+   * The answers of the call's round when every question of it has one, accepted content opened; undefined while any waits,
+   * or when no round is stored. Does not wait: an MCP task's questions are answered by whoever finds the round complete.
+   */
+  const takeAnswers = (callId: string) =>
+    Effect.gen(function* () {
+      const record = yield* recordOf(callId);
+
+      if (record?.round === undefined) return undefined;
+
+      const questions = yield* Effect.try(() => answerable(record)).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+
+      if (
+        questions === undefined ||
+        questions.length === 0 ||
+        !Arr.every(questions, (question) => question.answer !== undefined)
+      ) {
+        return undefined;
+      }
+
+      return yield* Effect.forEach(questions, (question): Effect.Effect<McpDeferredAnswer> =>
+        isSampling(question) ? openedSample(question) : opened(question),
+      );
+    });
+
+  /**
+   * The keys of the pages of the MCP task round kept under `callId` that the owner opened (Open answers a task's page
+   * `accept` at once): the Session sends them without waiting for the form beside them.
+   */
+  const takePages = (callId: string) =>
+    Effect.gen(function* () {
+      const record = yield* recordOf(callId);
+
+      if (record?.round === undefined) return Arr.empty<string>();
+
+      const questions = yield* Effect.try(() => answerable(record)).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+
+      return Arr.filterMap(questions ?? [], (question) =>
+        !isSampling(question) &&
+        question.request.page !== undefined &&
+        question.answer?.action === "accept"
+          ? Result.succeed(question.key)
+          : Result.failVoid,
+      );
+    });
+
   /** The shown, unanswered deferred question `id`, of the kind `matches`. */
   const findShownBy = <Q extends StoredQuestion>(
     id: string,
@@ -1034,6 +1123,19 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         if (open === undefined || !open.some((each) => each.id === question.id)) return undefined;
 
         if (given.action === "opened") {
+          // An MCP task's page: Open answers the server `accept` at once (no "Done, try again": the task goes on by itself,
+          // and a page it asks for again comes under a new key, which reads "Not finished").
+          if (isTaskOwner(callId)) {
+            storage.put(questionKey(question.id), {
+              ...question,
+              request: { ...question.request, page: { ...page, opened: true } },
+              answer: { action: "accept", by: "owner", page: true },
+            });
+            basics.openedPages(callId, [pageOf(question)]);
+
+            return "answered" as const;
+          }
+
           storage.put(questionKey(question.id), {
             ...question,
             request: { ...question.request, page: { ...page, opened: true } },
@@ -1041,6 +1143,8 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
           return "opened" as const;
         }
+
+        if (given.action === "done" && isTaskOwner(callId)) return "task_done" as const;
 
         // A Modern page that is open is left by Cancel, not Decline (its Decline is for before it was opened); a Legacy
         // `-32042`'s Decline is offered throughout.
@@ -1092,6 +1196,12 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       if (settled === "opened_page") {
         return yield* McpQuestionsError.make({
           message: "This page is open: cancel it instead",
+        });
+      }
+
+      if (settled === "task_done") {
+        return yield* McpQuestionsError.make({
+          message: `${question.request.server} goes on by itself when you open the page`,
         });
       }
 
@@ -1446,6 +1556,17 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     showRound,
     deferredRound,
     awaitRound,
+    takeAnswers,
+    takePages,
+    /** The requests the call made toward its caps: forms (and pages) and Sampling requests. */
+    counts: (callId: string) => {
+      const { asked, sampled } = basics.callOf(callId);
+
+      return { count: asked, sampled };
+    },
+    /** A rerun's call counts on from `counts`, which an earlier instance had made. */
+    restoreCounts: (callId: string, counts: { readonly count: number; readonly sampled: number }) =>
+      basics.restoreCall(callId, { ...counts, waiting: undefined }),
     /** The round's resume is on its way (`mcp.resumed.<r>` is written): its questions are settled, the round forgotten. */
     endRound: (callId: string) => settle(callId, MCP_CALL_ENDED_REASON),
     /** The call is over: its questions are settled for `reason`, and this instance forgets it. */
@@ -1467,7 +1588,8 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     /** Withdraw every deferred round no call in this instance waits for: their calls ended with an earlier instance. */
     dropAbandoned: Effect.gen(function* () {
       for (const callId of yield* listed) {
-        if (active.has(callId)) continue;
+        // An MCP task's questions outlive any call and any instance: the task's end settles them.
+        if (active.has(callId) || isTaskOwner(callId)) continue;
 
         yield* settle(callId, MCP_CALL_ENDED_REASON);
         yield* forgetPages(callId);

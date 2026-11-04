@@ -167,6 +167,37 @@ describe("the lines /export writes", () => {
 });
 
 describe("a question that ended", () => {
+  test("says in its span that the question was an MCP task's, by its owner key", () => {
+    const spans: Array<Tracer.NativeSpan> = [];
+
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+
+        spans.push(span);
+
+        return span;
+      },
+    });
+
+    return Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const questions = open(storage);
+
+      const waiting = yield* Effect.forkChild(
+        questions.ask({ ...ASK, callId: "mcp_task:mcp-task-1" }),
+      );
+
+      yield* settle;
+      yield* questions.answer("mcp_task:mcp-task-1:1", { action: "decline" });
+      yield* Fiber.join(waiting);
+
+      const [span] = spans.filter((each) => each.name === "mcp.elicitation.request");
+
+      expect(Object.fromEntries(span?.attributes ?? [])).toMatchObject({ "mcp.origin": "task" });
+    }).pipe(Effect.provideService(Tracer.Tracer, tracer));
+  });
+
   test("makes a span of what it asked and how it ended, and none of what it said", () => {
     const spans: Array<Tracer.NativeSpan> = [];
 

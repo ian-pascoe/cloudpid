@@ -5,6 +5,7 @@
 // where a task stands, and the markers (`mcp.task`, `mcp.detached`) only mirror it. The server's `taskId` lives here and
 // in the follower's input, never in anything a model, a client, a log or a span is given: only the handle
 // (`mcp-task-<n>`, cloudpid's own) leaves this file.
+import type { JsonValue } from "@earendil-works/chord";
 import {
   type ConversationId,
   defineDoc,
@@ -68,6 +69,8 @@ export type McpTaskEnd = {
   reason?: string;
   /** The server's error code of a `failed` task. */
   code?: number;
+  /** The `details.error` the task's result carries instead of the status's own: `sampling_refused` for a refused Sampling request. */
+  error?: "sampling_refused";
 };
 
 /** A `tasks/cancel` asked for, and whether it reached the server. */
@@ -75,7 +78,43 @@ export type McpTaskCancel = {
   at: number;
   by: McpTaskBy;
   sent: "sending" | "sent" | "failed";
+  /** Why cloudpid cancelled (`by: "cloudpid"`): a refused Sampling request, a question it could not take. Becomes the end's reason. */
+  reason?: string;
+  /** The `details.error` the end carries (`McpTaskEnd.error`). */
+  error?: "sampling_refused";
 };
+
+/** Where one question of a task stands, by the server's key: its answer is on its way to the server, or was taken. */
+export type McpTaskQuestionState = "sending" | "sent";
+
+/**
+ * What a task's questions have come to (`docs/architecture/mcp-server-requests.md` → MCP tasks, Questions in a task): the
+ * rounds asked, what was asked toward the caps, and each key whose answer was sent (or is being). A key that is here is
+ * never asked again; the waiting questions themselves are in the Session's question storage, under the task's key
+ * (`taskOwner`).
+ */
+export type McpTaskQuestions = {
+  /** The rounds of questions the task has asked. */
+  round: number;
+  /** Forms and pages asked toward the cap of `MCP_ELICITATIONS_PER_CALL`, and Sampling requests toward `MCP_SAMPLINGS_PER_CALL`. */
+  count: number;
+  sampled: number;
+  /** The newest `MCP_TASK_QUESTION_KEYS` keys, with when the answer was sent. */
+  keys: { [key: string]: { state: McpTaskQuestionState; at: number } };
+  /** The server kept the task waiting on a key whose answer was sent for 10 minutes: its status says so. */
+  stuck?: boolean;
+  /** How many times the update being sent has been sent: it is sent again once (`MCP_TASK_UPDATE_SENDS`), then the task ends. */
+  tries?: number;
+  /**
+   * What cloudpid answered itself (Roots, a form declined unseen, a request past a cap, an allowed Sampling reply) and is
+   * sending with no round stored, so a send that is lost can be sent again. Never the owner's content: that stays sealed in
+   * its round until the server took it.
+   */
+  pending?: { [key: string]: { [name: string]: JsonValue } };
+};
+
+/** The most keys a task's record remembers; the oldest go first. */
+export const MCP_TASK_QUESTION_KEYS = 200;
 
 /** What the result pool holds of a task's result: the key, and what the ended entry's header says of it. */
 export type McpTaskResultNote = {
@@ -158,6 +197,8 @@ export type McpTaskRecord = {
   cancel?: McpTaskCancel;
   end?: McpTaskEnd;
   result?: McpTaskResultNote;
+  /** What its questions have come to, once it asked any. */
+  questions?: McpTaskQuestions;
 };
 
 export type McpTasksState = {
@@ -180,6 +221,26 @@ export const EMPTY_TASKS: McpTasksState = McpTasksDoc.definition.initial();
 
 /** A handle for task number `n`. */
 export const handleOf = (n: number): string => `mcp-task-${n}`;
+
+/**
+ * What a record's status line says: the server's own, or, once it kept a task waiting 10 minutes after the answers were
+ * sent, that it is slow to take them (`McpTaskQuestions.stuck`).
+ */
+export const shownStatusMessage = (record: McpTaskRecord): string | undefined =>
+  record.questions?.stuck === true && record.status === "input_required" && record.end === undefined
+    ? `waiting for ${record.server} to take your answer`
+    : record.statusMessage;
+
+/**
+ * How a task that has not ended stands, for the agent: working, waiting for the owner's answer to its questions, or, once
+ * the answer was sent and the server kept it waiting, waiting for the server to take it (`McpTaskQuestions.stuck`).
+ */
+export const standingOf = (record: McpTaskRecord): string =>
+  record.status !== "input_required"
+    ? "working"
+    : record.questions?.stuck === true
+      ? `waiting for ${record.server} to take the owner's answer`
+      : "waiting for the owner";
 
 /** The live records, oldest first. */
 export const liveTasks = (state: McpTasksState): ReadonlyArray<McpTaskRecord> =>

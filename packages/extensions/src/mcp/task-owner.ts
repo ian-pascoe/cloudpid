@@ -15,15 +15,17 @@ import { markCancelSent } from "./task-end.ts";
 import { sendCancel } from "./task-host.ts";
 import {
   type McpTaskBy,
+  type McpTaskCancel,
   McpTasksDoc,
   type McpTaskRecord,
+  shownStatusMessage,
   type McpTasksState,
 } from "./task-state.ts";
 
 const context = BACKGROUND_CONTEXT;
 
 /** What a commit of the Session's Harness is given to write. */
-type OwnerWrite = Parameters<Harness["commit"]>[0];
+export type OwnerWrite = Parameters<Harness["commit"]>[0];
 
 /** What the owner's cancel and Keep read and write of the Session's Harness. */
 export type TaskOwnerHarness = Pick<Harness, "snapshot" | "commit">;
@@ -47,7 +49,9 @@ export const viewOfTasks = (state: McpTasksState | undefined | null): ReadonlyAr
         startedAt: record.createdAt,
       };
 
-      if (record.statusMessage !== undefined) view.statusMessage = record.statusMessage;
+      const shown = shownStatusMessage(record);
+
+      if (shown !== undefined) view.statusMessage = shown;
 
       if (record.transport === "stdio") view.stdio = true;
 
@@ -92,6 +96,7 @@ export const requestCancel = async (
   },
   record: McpTaskRecord,
   by: McpTaskBy,
+  why?: { readonly reason: string; readonly error?: "sampling_refused" },
 ): Promise<OwnerCancel> => {
   if (record.end !== undefined) return "ended";
 
@@ -101,7 +106,16 @@ export const requestCancel = async (
     const current = (await tx.doc(McpTasksDoc)).tasks[record.handle];
 
     if (current !== undefined && current.end === undefined && current.cancel === undefined) {
-      current.cancel = { at: deps.now(), by, sent: "sending" };
+      const cancel: McpTaskCancel = { at: deps.now(), by, sent: "sending" };
+
+      // cloudpid's own cancel says why: the task ends with it, and the agent reads it.
+      if (why !== undefined) {
+        cancel.reason = why.reason;
+
+        if (why.error !== undefined) cancel.error = why.error;
+      }
+
+      current.cancel = cancel;
     }
   });
 

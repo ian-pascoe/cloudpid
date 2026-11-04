@@ -195,6 +195,36 @@ describe("MCP sampling", () => {
       });
     }));
 
+  test("names whose request a sample was in its span: an agent's call, a prompt send's or an MCP task's", () =>
+    Effect.gen(function* () {
+      const origins: Array<unknown> = [];
+
+      for (const over of [{}, { prompt: "Daily" }, { task: "mcp-task-1" }]) {
+        const spans: Array<Tracer.NativeSpan> = [];
+
+        const tracer = Tracer.make({
+          span: (options) => {
+            const span = new Tracer.NativeSpan(options);
+
+            spans.push(span);
+
+            return span;
+          },
+        });
+
+        const { sampler, faux, answer } = open();
+
+        faux.setResponses([answer("hello")]);
+        yield* sampler.sample(ask(HI, over)).pipe(Effect.provideService(Tracer.Tracer, tracer));
+
+        const [span] = spans.filter((each) => each.name === "mcp.sampling.sample");
+
+        origins.push(Object.fromEntries(span?.attributes ?? [])["mcp.origin"]);
+      }
+
+      expect(origins).toEqual(["agent", "prompt", "task"]);
+    }));
+
   test("gives the span of a sample that fails inside the outcome and why it ended as", () =>
     Effect.gen(function* () {
       const spans: Array<Tracer.NativeSpan> = [];
