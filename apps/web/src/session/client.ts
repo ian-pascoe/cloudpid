@@ -25,6 +25,7 @@ import {
   SessionTree,
   LiveViewLinks,
   McpAppHtmlAnswer,
+  McpAppRequestAnswer,
   McpAppMounted,
   OwnerTabLinks,
   OwnerTabListing,
@@ -439,6 +440,18 @@ export interface SessionClient {
    * is none (an answer, not a failure). Fails as `catalog` does.
    */
   readonly appPage: (callId: string) => Effect.Effect<McpAppHtmlAnswer, SessionCommandError>;
+  /**
+   * An App View's request (`docs/architecture/mcp-apps.md` → An App View's calls): `method` (`tools/call` or `resources/read`)
+   * with the View's `params`, for the View of call `callId`; `requestId` names it for the cancel. The Session's answer is
+   * the result or the View's error (an answer, not a failure); fails as `catalog` does when the socket is down ("connection
+   * lost"). Interrupting the effect cancels the request at the Session.
+   */
+  readonly appRequest: (
+    callId: string,
+    requestId: string,
+    method: string,
+    params: Schema.Json | undefined,
+  ) => Effect.Effect<McpAppRequestAnswer, SessionCommandError>;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -530,6 +543,8 @@ const decodeOwnerTabListing = Schema.decodeUnknownOption(OwnerTabListing);
 const decodeMcpAppMounted = Schema.decodeUnknownOption(McpAppMounted);
 
 const decodeMcpAppHtmlAnswer = Schema.decodeUnknownOption(McpAppHtmlAnswer);
+
+const decodeMcpAppRequestAnswer = Schema.decodeUnknownOption(McpAppRequestAnswer);
 
 const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
 
@@ -628,6 +643,15 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
   const send = (message: ClientMessage): void => {
     connection?.ws?.send(JSON.stringify(message));
+  };
+
+  /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
+  const sendVisibility = (): void => {
+    send({
+      type: "page_visible",
+      id: nextCommandId(),
+      visible: typeof document === "undefined" || document.visibilityState === "visible",
+    });
   };
 
   const lanes = (view: SessionView): QueueLanes => {
@@ -994,6 +1018,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         if (usageWanted) send({ type: "watch_usage", id: nextCommandId() });
 
         if (changesWanted) send({ type: "watch_changes", id: nextCommandId() });
+
+        // A socket that has not said its page is visible is not: the Session refuses its App Views' requests.
+        sendVisibility();
 
         for (const conversationId of changesWatches) sendChangesWatch(conversationId);
 
@@ -1614,6 +1641,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       ),
   });
 
+  // The page's visibility, as it changes (a page with no document, a test's, is always visible).
+  if (typeof document !== "undefined") {
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        document.addEventListener("visibilitychange", sendVisibility);
+      }),
+      () =>
+        Effect.sync(() => {
+          document.removeEventListener("visibilitychange", sendVisibility);
+        }),
+    );
+  }
+
   // Closing the scope: the supervisor stops first (its socket closes with it), then the client says it is closed.
   yield* Effect.addFinalizer(() =>
     step(() => {
@@ -1943,6 +1983,25 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       request((id) => ({ type: "mcp_app_mount", id, callId }), decodeMcpAppMounted),
     appPage: (callId) =>
       request((id) => ({ type: "mcp_app_html", id, callId }), decodeMcpAppHtmlAnswer),
+    appRequest: (callId, requestId, method, params) =>
+      request((id) => {
+        const message: Extract<ClientMessage, { type: "mcp_app_request" }> = {
+          type: "mcp_app_request",
+          id,
+          callId,
+          requestId,
+          method,
+        };
+
+        return params === undefined ? message : { ...message, params };
+      }, decodeMcpAppRequestAnswer).pipe(
+        // The View gave up (its teardown, or it cancelled): the Session ends the request, and the host's with it.
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            send({ type: "mcp_app_cancel", id: nextCommandId(), callId, requestId });
+          }),
+        ),
+      ),
   };
 
   return client;

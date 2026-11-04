@@ -132,7 +132,7 @@ export interface BridgeOptions {
   readonly capabilities: McpUiHostCapabilities;
   readonly hostInfo: { readonly name: string; readonly version: string };
   /** Handlers of a View's requests, by method: the seam the tickets that serve more of them plug into. */
-  readonly handlers?: Readonly<Record<string, RequestHandler>>;
+  readonly handlers?: Readonly<Record<string, RequestHandler>> | undefined;
   readonly onEvent: (event: BridgeEvent) => void;
 }
 

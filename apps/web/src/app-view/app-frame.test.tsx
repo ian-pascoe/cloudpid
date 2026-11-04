@@ -5,7 +5,8 @@
 // document, and the frame leaves only once it has answered, or after 2 s.
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-chained-type-assertions -- the traffic of a fake frame: JSON-RPC as a case posts it, cut down to the shape a case reads */
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off newPromise:off asyncFunction:off -- a DOM and its timers, driven by hand.
-import type { McpAppRecord } from "@cloudpid/protocol";
+import type { McpAppRecord, McpAppRequestAnswer } from "@cloudpid/protocol";
+import * as Effect from "effect/Effect";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ import { AppMount, type AppLoadedProps } from "./app-call.tsx";
 import { AppFrame, type AppFrameProps } from "./app-frame.tsx";
 import { TEARDOWN_TIMEOUT_MS } from "./bridge.ts";
 import type { AppPage } from "./load.ts";
+import type { AppRequestClient } from "./requests.ts";
 
 const ORIGIN = "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app";
 const OTHER = "https://bbbbbbbbbbbbbbbbbbbbbbbbbb.ianpascoe.app";
@@ -355,5 +357,128 @@ describe("a card's hold on a frame whose View is no longer live", () => {
     mount(true);
     expect(host.querySelector("iframe")).not.toBeNull();
     expect(host.querySelector("iframe")).not.toBe(first.element);
+  });
+});
+
+describe("a View's requests of its server, and signing in", () => {
+  const SIGN_IN = (stepUp: boolean) => `/oauth/mcp/start?server=docs&step_up=${stepUp ? 1 : 0}`;
+
+  const answering = (answer: McpAppRequestAnswer): AppRequestClient => ({
+    appRequest: () => Effect.succeed(answer),
+  });
+
+  const ask = (view: ReturnType<typeof frameOf>, id: number, method = "tools/call") => {
+    view.say({ jsonrpc: "2.0", id, method, params: { name: "weather" } });
+  };
+
+  const answerTo = (view: ReturnType<typeof frameOf>, id: number) =>
+    view.sent.find((each) => each.data["id"] === id)?.data;
+
+  const flush = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+  it("advertises the server calls it serves, and answers a View's tools/call with the Session's result", async () => {
+    render({ client: answering({ status: "result", result: { content: [] } }) });
+
+    const view = frameOf();
+
+    view.handshake();
+    await flush();
+
+    const initialized = view.sent.find((each) => each.data["id"] === 1)?.data;
+
+    expect(initialized).toMatchObject({
+      result: { hostCapabilities: { serverTools: {}, serverResources: {} } },
+    });
+
+    ask(view, 7);
+    await flush();
+
+    expect(answerTo(view, 7)).toEqual({ jsonrpc: "2.0", id: 7, result: { content: [] } });
+  });
+
+  it("answers a method it does not serve as not found when it has no client", async () => {
+    render();
+
+    const view = frameOf();
+
+    view.handshake();
+    ask(view, 8);
+    await flush();
+
+    expect(answerTo(view, 8)).toMatchObject({ error: { code: -32_601 } });
+  });
+
+  it("answers the Session's error as the View's, and links Sign in when the server needs it", async () => {
+    render({
+      client: answering({
+        status: "error",
+        code: -32_000,
+        message: "Sign in to docs",
+        reason: "sign_in",
+        server: "docs",
+        stepUp: true,
+        audit: {
+          at: 1_700_000_000_000,
+          kind: "tools/call",
+          summary: "tools/call weather → refused",
+        },
+      }),
+      signInHref: SIGN_IN,
+    });
+
+    const view = frameOf();
+
+    view.handshake();
+    expect(host.querySelector("a")).toBeNull();
+
+    ask(view, 9);
+    await flush();
+
+    expect(answerTo(view, 9)).toMatchObject({
+      error: { code: -32_000, message: "Sign in to docs" },
+    });
+    expect(host.textContent).toContain("Needs sign-in");
+
+    const link = host.querySelector("a");
+
+    expect(link?.getAttribute("href")).toBe(SIGN_IN(true));
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noopener");
+  });
+
+  it("links Sign in beside the badge of a server that needs it, and shows the audit log in the details", () => {
+    render({
+      badge: "sign-in",
+      signInHref: SIGN_IN,
+      record: {
+        ...record,
+        audit: [{ at: 1_700_000_000_000, kind: "tools/call", summary: "tools/call weather → ok" }],
+      },
+    });
+
+    expect(host.textContent).toContain("Needs sign-in");
+    expect(host.querySelector("a")?.getAttribute("href")).toBe(SIGN_IN(false));
+
+    expect(host.textContent).not.toContain("tools/call weather → ok");
+
+    act(() => {
+      host
+        .querySelector("button[aria-expanded]")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(host.querySelector("ul[aria-label='Audit log']")?.textContent).toContain(
+      "tools/call weather → ok",
+    );
+  });
+
+  it("shows no link while the Environment is not known", () => {
+    render({ badge: "sign-in", signInHref: () => undefined });
+
+    expect(host.textContent).toContain("Needs sign-in");
+    expect(host.querySelector("a")).toBeNull();
   });
 });

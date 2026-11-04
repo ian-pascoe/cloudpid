@@ -3,7 +3,7 @@
 //
 // Seams for the tickets that follow: `live` (the generation and live rule, collapse and Reopen, #490) is always true here;
 // the card is always where the transcript puts it (placement in a codemode strip or a subagent's thread is #490's).
-import type { McpAppTool } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, type McpAppTool } from "@cloudpid/protocol";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useState, type ComponentType } from "react";
 import * as Arr from "effect/Array";
@@ -11,9 +11,11 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { useShownSessionId } from "../chat/conversation.ts";
-import { mcpAppsAtom, mcpAppToolsAtom } from "../session/atoms.ts";
+import { mcpAppsAtom, mcpAppToolsAtom, sessionClientAtom } from "../session/atoms.ts";
+import { sessionPath } from "../router.ts";
+import { mcpSignInStartHref } from "../settings/mcp-sign-in-model.ts";
 import { AppFailed, AppFrame } from "./app-frame.tsx";
-import { appKey, appLoadAtom, sessionMcpStatusesAtom } from "./atoms.ts";
+import { appKey, appLoadAtom, sessionEnvironmentAtom, sessionMcpStatusesAtom } from "./atoms.ts";
 import { appAvailability } from "./availability.ts";
 
 /** A line of the card where there is no View: an App that is gone or whose data is. */
@@ -47,6 +49,8 @@ const AppLoaded = ({
   const key = appKey(sessionId, callId);
   const result = useAtomValue(appLoadAtom(key));
   const retry = useAtomRefresh(appLoadAtom(key));
+  const client = useAtomValue(sessionClientAtom(sessionId));
+  const environment = useAtomValue(sessionEnvironmentAtom(sessionId));
 
   if (!AsyncResult.isSuccess(result)) return null;
 
@@ -60,6 +64,18 @@ const AppLoaded = ({
           page={load.page}
           tool={tool}
           badge={badge}
+          {...(AsyncResult.isSuccess(client) ? { client: client.value } : {})}
+          signInHref={(stepUp) =>
+            environment === undefined
+              ? undefined
+              : mcpSignInStartHref({
+                  scope: environment,
+                  global: GLOBAL_SCOPE,
+                  server: load.record.server,
+                  stepUp,
+                  returnPath: sessionPath(sessionId),
+                })
+          }
           closing={closing}
           onFramed={onFramed}
           onClosed={onClosed}

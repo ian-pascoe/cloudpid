@@ -2930,6 +2930,68 @@ describe("the App calls on a Session connection", () => {
   );
 
   it.effect(
+    "sends a View's request by its call and name, answers with the Session's answer, and cancels it when interrupted",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const asked = yield* client
+          .appRequest("c1", "r1", "tools/call", { name: "weather" })
+          .pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const sent = latest()
+          .commands()
+          .find((command) => command.type === "mcp_app_request");
+
+        expect(sent).toEqual({
+          type: "mcp_app_request",
+          id: expect.any(String),
+          callId: "c1",
+          requestId: "r1",
+          method: "tools/call",
+          params: { name: "weather" },
+        });
+        yield* latest().say({
+          type: "result",
+          id: sent?.id,
+          result: { status: "result", result: { content: [] } },
+        });
+        expect(yield* Fiber.join(asked)).toEqual({ status: "result", result: { content: [] } });
+
+        const abandoned = yield* client
+          .appRequest("c1", "r2", "resources/read", undefined)
+          .pipe(Effect.forkChild);
+
+        yield* settle;
+        yield* Fiber.interrupt(abandoned);
+
+        const commands = latest().commands();
+
+        expect(commands.find((command) => command.requestId === "r2")).not.toHaveProperty("params");
+        expect(commands.find((command) => command.type === "mcp_app_cancel")).toEqual({
+          type: "mcp_app_cancel",
+          id: expect.any(String),
+          callId: "c1",
+          requestId: "r2",
+        });
+      }),
+  );
+
+  it.effect("tells the Session its page is visible when the socket opens", () =>
+    Effect.gen(function* () {
+      const { latest } = yield* setup();
+
+      yield* watching(latest());
+
+      expect(latest().visibility()).toEqual([true]);
+    }),
+  );
+
+  it.effect(
     "mounts a call by its ID and reads its page by it, each answered as the Session did",
     () =>
       Effect.gen(function* () {

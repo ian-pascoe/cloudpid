@@ -2,9 +2,11 @@
 // frame, the bridge to the View inside it, and the card's own chrome (what it is, whose, where it is served, its CSP).
 // The frame never takes focus and is given no permission of the browser's: those are what later tickets turn on.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off -- DOM effects: a native debounce timer and observers.
-import type { McpAppRecord, McpAppTool } from "@cloudpid/protocol";
+import { MAX_MCP_APP_AUDIT } from "@cloudpid/protocol";
+import type { McpAppAuditEntry, McpAppRecord, McpAppTool } from "@cloudpid/protocol";
 import type { McpUiToolResultNotification } from "@modelcontextprotocol/ext-apps";
 import { Check, Copy } from "lucide-react";
+import * as DateTime from "effect/DateTime";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { copyToClipboard } from "../lib/clipboard.ts";
@@ -19,6 +21,7 @@ import {
 } from "./host-context.ts";
 import type { AppPage } from "./load.ts";
 import { readEnvironment, scrollerOf } from "./page-environment.ts";
+import { viewRequestHandlers, type AppRequestClient } from "./requests.ts";
 
 /** How long a change of the card's size or the page's theme settles before the View is told. */
 const CONTEXT_DEBOUNCE_MS = 150;
@@ -45,8 +48,29 @@ const domainLine = (label: string, domains: ReadonlyArray<string> | undefined) =
     </div>
   );
 
-/** The card's details: where the View is served, what its CSP lets it reach, and the origin it asked for. */
-const AppDetails = ({ page }: { page: AppPage }) => {
+/** The View's audit log, newest last: what it asked of its server, and what came of it. */
+const AuditLog = ({ entries }: { entries: ReadonlyArray<McpAppAuditEntry> }) =>
+  entries.length === 0 ? null : (
+    <div>
+      <div className="text-muted-foreground">Requests to the server</div>
+      <ul className="font-mono break-all" aria-label="Audit log">
+        {entries.map((entry, index) => (
+          <li key={`${entry.at}:${index}`}>
+            <time
+              dateTime={DateTime.formatIso(DateTime.makeUnsafe(entry.at))}
+              className="text-muted-foreground"
+            >
+              {DateTime.formatIso(DateTime.makeUnsafe(entry.at)).slice(11, 19)}
+            </time>{" "}
+            {entry.summary}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+
+/** The card's details: where the View is served, what its CSP lets it reach, the origin it asked for, and its audit log. */
+const AppDetails = ({ page, audit }: { page: AppPage; audit: ReadonlyArray<McpAppAuditEntry> }) => {
   const [copied, setCopied] = useState(false);
   const csp = declaredCsp(page.meta.csp);
 
@@ -89,6 +113,7 @@ const AppDetails = ({ page }: { page: AppPage }) => {
       ) : (
         lines
       )}
+      <AuditLog entries={audit} />
     </div>
   );
 };
@@ -100,6 +125,10 @@ export interface AppFrameProps {
   readonly tool: McpAppTool | undefined;
   /** The server's state as a badge: shown beside the App's name. */
   readonly badge: "offline" | "sign-in" | null;
+  /** The Session's client, which serves the View's requests of its server (`requests.ts`); none, and the View is served none. */
+  readonly client?: AppRequestClient;
+  /** The link that signs in to the call's server (a step-up, for more access), or none while the Environment is unknown. */
+  readonly signInHref?: (stepUp: boolean) => string | undefined;
   /**
    * The card is ending this View (its call was evicted, its server is gone or shadowed, or the owner collapsed it): the frame
    * stays until its View has been told to tear down and has answered (at most 2 s), then `onClosed` says it may go.
@@ -146,6 +175,8 @@ const LiveFrame = ({
   page,
   tool,
   badge,
+  client,
+  signInHref,
   closing = false,
   cancelled,
   onClosed,
@@ -159,15 +190,18 @@ const LiveFrame = ({
   const [size, setSize] = useState<{ key: string; height: number } | null>(null);
   const [scrollerHeight, setScrollerHeight] = useState(0);
   const [details, setDetails] = useState(false);
+  // What the View's requests came to, since the card mounted: a sign-in the server asked for, and the audit entries kept.
+  const [signIn, setSignIn] = useState<{ stepUp: boolean } | null>(null);
+  const [audited, setAudited] = useState<ReadonlyArray<McpAppAuditEntry>>([]);
 
   const csp = declaredCsp(page.meta.csp);
   const src = frameUrl(page.origin, csp, window.location.origin);
   const frameKey = `${src}\0${attempt}`;
 
   // The page's latest context, which a bridge reads when it answers `ui/initialize`, read again whenever it is needed.
-  const latest = useRef({ record, tool, csp });
+  const latest = useRef({ record, tool, csp, client });
 
-  latest.current = { record, tool, csp };
+  latest.current = { record, tool, csp, client };
 
   useLayoutEffect(() => {
     const element = frame.current;
@@ -212,6 +246,17 @@ const LiveFrame = ({
       },
       capabilities: hostCapabilities(csp),
       hostInfo: HOST_INFO,
+      handlers:
+        latest.current.client === undefined
+          ? undefined
+          : viewRequestHandlers(latest.current.client, record.callId, {
+              onSignIn: (need) => {
+                setSignIn((was) => ({ stepUp: need.stepUp || was?.stepUp === true }));
+              },
+              onAudit: (entry) => {
+                setAudited((was) => [...was, entry].slice(-MAX_MCP_APP_AUDIT));
+              },
+            }),
       onEvent: (event) => {
         if (event.type === "failed") setFailed({ key: frameKey, reason: event.reason });
 
@@ -309,6 +354,8 @@ const LiveFrame = ({
 
   const reported = size?.key === frameKey ? size.height : undefined;
   const height = inlineHeight(reported, scrollerHeight);
+  const shownBadge = badge === "sign-in" || signIn !== null ? "sign-in" : badge;
+  const signInLink = shownBadge === "sign-in" ? signInHref?.(signIn?.stepUp === true) : undefined;
 
   return (
     <div className="my-2 overflow-hidden rounded-md border" data-app-view={record.callId}>
@@ -316,8 +363,19 @@ const LiveFrame = ({
         <span className="text-foreground">App</span>
         <span>·</span>
         <span className="min-w-0 truncate">{record.server}</span>
-        {badge !== null && (
-          <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5">{BADGES[badge]}</span>
+        {shownBadge !== null && (
+          <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5">{BADGES[shownBadge]}</span>
+        )}
+        {signInLink !== undefined && (
+          <a
+            href={signInLink}
+            target="_blank"
+            rel="noopener"
+            aria-label={`Sign in to ${record.server}${signIn?.stepUp === true ? " for more access" : ""} (opens in a new tab)`}
+            className="shrink-0 underline underline-offset-2 hover:text-foreground"
+          >
+            Sign in
+          </a>
         )}
         <button
           type="button"
@@ -330,7 +388,7 @@ const LiveFrame = ({
           Details
         </button>
       </div>
-      {details && <AppDetails page={page} />}
+      {details && <AppDetails page={page} audit={[...record.audit, ...audited]} />}
       <iframe
         ref={frame}
         key={frameKey}

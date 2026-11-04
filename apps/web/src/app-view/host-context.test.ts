@@ -92,10 +92,16 @@ describe("hostContextOf", () => {
 });
 
 describe("hostCapabilities", () => {
-  it("advertises the sandbox's CSP and nothing the host does not serve", () => {
-    expect(hostCapabilities(undefined)).toEqual({ sandbox: {} });
+  it("advertises the sandbox's CSP and the server calls it serves, with no listChanged", () => {
+    expect(hostCapabilities(undefined)).toEqual({
+      sandbox: {},
+      serverTools: {},
+      serverResources: {},
+    });
     expect(hostCapabilities({ connectDomains: ["https://a.example"] })).toEqual({
       sandbox: { csp: { connectDomains: ["https://a.example"] } },
+      serverTools: {},
+      serverResources: {},
     });
   });
 });

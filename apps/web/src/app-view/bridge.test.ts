@@ -174,7 +174,7 @@ describe("the handshake", () => {
       result: {
         protocolVersion: "2026-01-26",
         hostInfo: { name: "cloudpid", version: "1" },
-        hostCapabilities: { sandbox: {} },
+        hostCapabilities: { sandbox: {}, serverTools: {}, serverResources: {} },
         hostContext: context,
       },
     });
@@ -878,7 +878,7 @@ describe("an ext-apps View (the real `App` runtime)", () => {
     });
     expect(runtime.LATEST_PROTOCOL_VERSION).toBe(MCP_APPS_PROTOCOL_VERSION);
     expect(app.getHostVersion()).toEqual({ name: "cloudpid", version: "1" });
-    expect(app.getHostCapabilities()).toEqual({ sandbox: { csp } });
+    expect(app.getHostCapabilities()).toEqual(hostCapabilities(csp));
     expect(app.getHostContext()).toMatchObject({
       theme: "light",
       displayMode: "inline",
