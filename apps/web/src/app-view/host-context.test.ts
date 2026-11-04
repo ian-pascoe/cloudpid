@@ -134,6 +134,50 @@ describe("hostCapabilities", () => {
   });
 });
 
+describe("hostCapabilities of what a frame serves", () => {
+  it("advertises openLinks, message, updateModelContext (text only) and the clipboard only when the frame serves them", () => {
+    expect(hostCapabilities(undefined, false, false, { openLinks: true })).toEqual({
+      sandbox: {},
+      openLinks: {},
+    });
+
+    expect(
+      hostCapabilities(undefined, false, false, {
+        openLinks: true,
+        message: true,
+        updateModelContext: true,
+        clipboardWrite: true,
+      }),
+    ).toEqual({
+      sandbox: { permissions: { clipboardWrite: {} } },
+      openLinks: {},
+      message: { text: {} },
+      updateModelContext: { text: {} },
+    });
+  });
+
+  it("grants the clipboard and nothing else of the browser's permissions", () => {
+    const granted = hostCapabilities({ connectDomains: ["https://a.example"] }, true, false, {
+      clipboardWrite: true,
+    }).sandbox;
+
+    expect(granted).toEqual({
+      csp: { connectDomains: ["https://a.example"] },
+      permissions: { clipboardWrite: {} },
+    });
+    expect(hostCapabilities(undefined, true, false, { clipboardWrite: false }).sandbox).toEqual({});
+  });
+
+  it("keeps the server calls as they were beside them", () => {
+    expect(hostCapabilities(undefined, true, true, { message: true })).toEqual({
+      sandbox: {},
+      message: { text: {} },
+      serverResources: {},
+      logging: {},
+    });
+  });
+});
+
 describe("changedContext", () => {
   const before = hostContextOf(env, { callId: "c1", name: "page", title: undefined });
 

@@ -4,6 +4,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over native arrays, not combinators.
 
 import {
+  type AppMessageRef,
   freeAttachmentName,
   type PageRef,
   type ResourceRef,
@@ -31,6 +32,12 @@ export type SentPage = {
 /** An attached MCP resource as a message sends it: its ref, and the label its lane shows. */
 export type SentResource = {
   readonly ref: ResourceRef;
+  readonly label: string;
+};
+
+/** An App message as a message sends it: its ref, and the label its lane shows. */
+export type SentApp = {
+  readonly ref: AppMessageRef;
   readonly label: string;
 };
 
@@ -62,17 +69,23 @@ export const outgoingMessage = (
   attachments: readonly SentAttachment[],
   pages: readonly SentPage[] = [],
   resources: readonly SentResource[] = [],
+  apps: readonly SentApp[] = [],
 ): OutgoingMessage => {
   const display = laneText(typed, [
     ...attachments.map((attachment) => attachment.name),
     ...pages.map((page) => page.title),
     ...resources.map((resource) => resource.label),
+    ...apps.map((app) => app.label),
   ]);
 
   if (attachments.length === 0 && pages.length === 0) {
-    return resources.length === 0
-      ? { input: typed, display }
-      : { input: typed, display, resources: resources.map((resource) => resource.ref) };
+    const plain: Types.Mutable<OutgoingMessage> = { input: typed, display };
+
+    if (resources.length > 0) plain.resources = resources.map((resource) => resource.ref);
+
+    if (apps.length > 0) plain.app = apps.map((app) => app.ref);
+
+    return plain;
   }
 
   const input: UserInput = typed.trim() === "" ? [] : [{ type: "text", text: typed }];
@@ -97,6 +110,8 @@ export const outgoingMessage = (
   if (pages.length > 0) message.pages = pages.map((page) => page.ref);
 
   if (resources.length > 0) message.resources = resources.map((resource) => resource.ref);
+
+  if (apps.length > 0) message.app = apps.map((app) => app.ref);
 
   return message;
 };

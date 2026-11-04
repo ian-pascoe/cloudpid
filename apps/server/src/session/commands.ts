@@ -7,7 +7,9 @@ import {
   type Catalog,
   type CatalogEntry,
   flatCut,
+  fromApp,
   MCP_PROMPT_COMMAND_PREFIX,
+  type McpAppContext,
   projectEntry,
   sessionCommandsFor,
   type TranscriptMessage,
@@ -15,6 +17,7 @@ import {
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
+import * as Schema from "effect/Schema";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 
 const entryOf = (entry: { readonly name: string; readonly description: string }) => ({
@@ -113,8 +116,67 @@ const promptMarkdown = (prompt: NonNullable<TranscriptMessage["mcpPrompt"]>): st
   ];
 };
 
+/** What an export says of the App messages an owner's message sent: each text as a blockquote, from the App it came from. */
+const appMarkdown = (app: NonNullable<TranscriptMessage["app"]>): string[] =>
+  app.map(({ server, text }) => `Sent from ${fromApp(server)}:\n\n${quoted(text)}`);
+
+/** `server/tool` of an MCP tool's model-facing name (`mcp__<server>__<tool>`), or the name as it is. */
+const appToolOf = (name: string): string => {
+  const [prefix, server, ...tool] = name.split("__");
+
+  return prefix === "mcp" && server !== undefined && tool.length > 0
+    ? `${server}/${tool.join("__")}`
+    : name;
+};
+
+const AppDetails = Schema.Struct({
+  meta: Schema.Struct({ ui: Schema.Struct({ resourceUri: Schema.String }) }),
+});
+
+const isAppDetails = Schema.is(AppDetails);
+
+/** Whether a tool result's `details.meta.ui.resourceUri` names a `ui://` resource: the call mounted an App an export cannot show. */
+const isAppResult = (
+  details: Extract<TranscriptPart, { type: "tool-result" }>["details"],
+): boolean => isAppDetails(details) && details.meta.ui.resourceUri.startsWith("ui://");
+
+/** What an export says of an App call: it mounted an App it cannot show, and the last context the App gave the model. */
+const appCallMarkdown = (
+  part: Extract<TranscriptPart, { type: "tool-result" }>,
+  held: ExportedAppContext | undefined,
+): string[] => [
+  `_App: ${appToolOf(part.name)} (not rendered)_`,
+  ...(held === undefined
+    ? []
+    : [`Last App context (${contextStanding(held)}):\n\n${quoted(held.context.text)}`]),
+];
+
+/** A call's last context as seen from the conversation exported: `here` when it was held for that conversation. */
+export type ExportedAppContext = {
+  readonly context: McpAppContext;
+  readonly here: boolean;
+};
+
+/**
+ * What an export says of where a context stands: what the exported conversation's model has read, or that it was held for
+ * another Session branch, whose model's reading says nothing of this one's.
+ */
+const contextStanding = ({ context, here }: ExportedAppContext): string => {
+  if (!here) return "held for another Session branch";
+
+  return context.delivered === true ? "sent to the model" : "pending, not yet sent";
+};
+
+/** What an export reads beside the entries: the App contexts the Session holds, by call. */
+export type ExportOptions = {
+  readonly appContext?: ((callId: string) => ExportedAppContext | undefined) | undefined;
+};
+
 /** One message of the History as Markdown. */
-const messageMarkdown = (message: TranscriptMessage): string | undefined => {
+const messageMarkdown = (
+  message: TranscriptMessage,
+  options: ExportOptions,
+): string | undefined => {
   switch (message.role) {
     case "user": {
       const skills = (message.skills ?? []).map(({ name }) => `\`${name}\``).join(", ");
@@ -122,6 +184,7 @@ const messageMarkdown = (message: TranscriptMessage): string | undefined => {
       return [
         "## Owner",
         textOf(message.parts),
+        ...(message.app === undefined ? [] : appMarkdown(message.app)),
         ...(message.mcpPrompt === undefined ? [] : promptMarkdown(message.mcpPrompt)),
         ...(skills === "" ? [] : [`_Skills: ${skills}_`]),
       ].join("\n\n");
@@ -158,6 +221,9 @@ const messageMarkdown = (message: TranscriptMessage): string | undefined => {
           part.type === "tool-result"
             ? [
                 `**Tool result** \`${part.name}\`${part.error ? " (error)" : ""}\n\n${fenced(resultText(part.content))}`,
+                ...(isAppResult(part.details)
+                  ? appCallMarkdown(part, options.appContext?.(part.id))
+                  : []),
               ]
             : [],
         )
@@ -194,6 +260,7 @@ export const markdownExport = (
   conversationId: number,
   exportedAt: string,
   limit: number = MAX_EXPORT_BYTES,
+  options: ExportOptions = {},
 ): MarkdownExport => {
   const parts = [`# Conversation ${conversationId}`, `_Exported ${exportedAt}_`];
   // The parts, the blank lines between them, and the final newline.
@@ -203,7 +270,7 @@ export const markdownExport = (
     add: (entries) => {
       for (const entry of entries) {
         const message = projectEntry(entry);
-        const markdown = message === undefined ? undefined : messageMarkdown(message);
+        const markdown = message === undefined ? undefined : messageMarkdown(message, options);
 
         if (markdown === undefined || markdown === "") continue;
 
@@ -225,8 +292,9 @@ export const exportMarkdown = (
   conversationId: number,
   entries: ReadonlyArray<EntryRecord>,
   exportedAt: string,
+  options: ExportOptions = {},
 ): string => {
-  const built = markdownExport(conversationId, exportedAt, Number.POSITIVE_INFINITY);
+  const built = markdownExport(conversationId, exportedAt, Number.POSITIVE_INFINITY, options);
 
   built.add(entries);
 

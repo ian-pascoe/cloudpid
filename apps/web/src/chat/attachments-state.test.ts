@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- assertions over what the fakes recorded, in native arrays.
 
-import { MAX_ATTACHED_RESOURCES, MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
+import { MAX_APP_MESSAGES, MAX_ATTACHED_RESOURCES, MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -13,16 +13,19 @@ import { settled } from "../registry.testing.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";
 import { settle } from "../session/client.testing.ts";
 import {
+  addAppMessageAtom,
   addAttachmentsAtom,
   addPageAtom,
   addResourceAtom,
   attachmentsAtom,
   type PageToAttach,
+  removeAppMessageAtom,
   removeAttachmentAtom,
   removePageAtom,
   removeResourceAtom,
   screenNote,
   sendAttachedAtom,
+  sentApps,
   sentAttachments,
   sentPages,
   sentResources,
@@ -640,6 +643,161 @@ describe("a composer's attached MCP resources", () => {
           exitFailure(AsyncResult.toExit(yield* settled(chat.registry, sendAttachedAtom(ROOT)))),
         ).toMatch(/cannot take attached MCP resources/);
         expect(chat.registry.get(attachmentsAtom(ROOT)).resources).toHaveLength(1);
+      }),
+  );
+});
+
+describe("a composer's App messages", () => {
+  const message = (callId: string, text = `from ${callId}`) => ({ callId, server: "docs", text });
+
+  /** A composer of a Session that takes App messages (its hello says so) unless `hello` says otherwise. */
+  const apps = (hello: { readonly [key: string]: boolean } = { appMessages: true }) =>
+    Effect.gen(function* () {
+      const chat = chatRegistry(fakeUploads().layer, fakeImages().layer);
+
+      chat.registry.mount(sessionStatusAtom("s1"));
+      chat.registry.mount(attachmentsAtom(ROOT));
+      chat.registry.mount(addAppMessageAtom(ROOT));
+      chat.registry.mount(removeAppMessageAtom(ROOT));
+      chat.registry.mount(sendAttachedAtom(ROOT));
+      yield* settle;
+      yield* live(chat.latest(), hello);
+
+      const hold = (chip: ReturnType<typeof message>) =>
+        Effect.sync(() => {
+          chat.registry.set(addAppMessageAtom(ROOT), chip);
+        }).pipe(
+          Effect.andThen(settled(chat.registry, addAppMessageAtom(ROOT))),
+          Effect.map((result) => AsyncResult.getOrElse(result, () => undefined)),
+        );
+
+      return { ...chat, hold, state: () => chat.registry.get(attachmentsAtom(ROOT)) };
+    });
+
+  it.effect("holds a View's message as a chip, and answers that it did", () =>
+    Effect.gen(function* () {
+      const { hold, state } = yield* apps();
+
+      expect(yield* hold(message("c1"))).toBe("held");
+      expect(state().apps).toEqual([{ callId: "c1", server: "docs", text: "from c1" }]);
+    }),
+  );
+
+  it.effect("keeps one chip for a View: a newer message replaces it, in its place", () =>
+    Effect.gen(function* () {
+      const { hold, state } = yield* apps();
+
+      yield* hold(message("c1", "first"));
+      yield* hold(message("c2"));
+      yield* hold(message("c1", "second"));
+
+      expect(state().apps.map((chip) => [chip.callId, chip.text])).toEqual([
+        ["c1", "second"],
+        ["c2", "from c2"],
+      ]);
+    }),
+  );
+
+  it.effect(
+    "holds at most three, refusing a fourth View's, and still takes a newer one of a View it holds",
+    () =>
+      Effect.gen(function* () {
+        const { hold, state } = yield* apps();
+
+        expect(MAX_APP_MESSAGES).toBe(3);
+
+        for (const id of ["c1", "c2", "c3"]) expect(yield* hold(message(id))).toBe("held");
+
+        expect(yield* hold(message("c4"))).toBe("refused");
+        expect(state().apps.map((chip) => chip.callId)).toEqual(["c1", "c2", "c3"]);
+
+        expect(yield* hold(message("c2", "newer"))).toBe("held");
+        expect(state().apps.find((chip) => chip.callId === "c2")?.text).toBe("newer");
+      }),
+  );
+
+  it.effect("drops a chip on Discard, and makes room for another View's", () =>
+    Effect.gen(function* () {
+      const { registry, hold, state } = yield* apps();
+
+      for (const id of ["c1", "c2", "c3"]) yield* hold(message(id));
+
+      registry.set(removeAppMessageAtom(ROOT), "c2");
+      yield* settle;
+      expect(state().apps.map((chip) => chip.callId)).toEqual(["c1", "c3"]);
+
+      expect(yield* hold(message("c4"))).toBe("held");
+    }),
+  );
+
+  it.effect(
+    "go with Send as `app`, after the typed text, which may be none, and leave the composer",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest, hold, state } = yield* apps();
+
+        yield* hold(message("c1", "Pick A"));
+        yield* hold(message("c2", "Pick B"));
+
+        expect(sentApps(state())).toEqual([
+          { ref: { callId: "c1", text: "Pick A" }, label: "Message from docs" },
+          { ref: { callId: "c2", text: "Pick B" }, label: "Message from docs" },
+        ]);
+
+        registry.set(sendAttachedAtom(ROOT), callOf({ typed: "", whenBusy: "followUp" }));
+        yield* settle;
+
+        const [submit] = sent(latest(), "submit");
+
+        expect(submit).toMatchObject({
+          input: "",
+          app: [
+            { callId: "c1", text: "Pick A" },
+            { callId: "c2", text: "Pick B" },
+          ],
+        });
+        expect(state().apps).toEqual([]);
+      }),
+  );
+
+  it.effect("come back when the Session refuses the message, before any a View sent since", () =>
+    Effect.gen(function* () {
+      const { registry, latest, hold, state } = yield* apps();
+
+      yield* hold(message("c1", "Pick A"));
+      registry.set(sendAttachedAtom(ROOT), callOf({ typed: "go", whenBusy: "followUp" }));
+      yield* settle;
+
+      const [submit] = sent(latest(), "submit");
+
+      yield* hold(message("c1", "newer"));
+      yield* hold(message("c2", "other"));
+
+      yield* latest().say({ type: "error", id: submit?.id, message: "No" });
+      yield* settled(registry, sendAttachedAtom(ROOT));
+
+      expect(state().apps.map((chip) => [chip.callId, chip.text])).toEqual([
+        ["c1", "Pick A"],
+        ["c2", "other"],
+      ]);
+    }),
+  );
+
+  it.effect(
+    "are not sent to a Session that does not say it takes them, and come back with why",
+    () =>
+      Effect.gen(function* () {
+        const { registry, latest, hold, state } = yield* apps({});
+
+        yield* hold(message("c1"));
+        registry.set(sendAttachedAtom(ROOT), callOf({ typed: "go", whenBusy: "followUp" }));
+        yield* settle;
+
+        expect(sent(latest(), "submit")).toEqual([]);
+        expect(
+          exitFailure(AsyncResult.toExit(yield* settled(registry, sendAttachedAtom(ROOT)))),
+        ).toMatch(/cannot take App messages/);
+        expect(state().apps).toHaveLength(1);
       }),
   );
 });

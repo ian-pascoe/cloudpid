@@ -719,3 +719,317 @@ describe("a View's requests of its server, and signing in", () => {
     expect(host.querySelector("a")).toBeNull();
   });
 });
+
+describe("what a View says to the conversation, opens and writes to the clipboard", () => {
+  const flush = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+  const answerTo = (view: ReturnType<typeof frameOf>, id: number) =>
+    view.sent.find((each) => each.data["id"] === id)?.data;
+
+  const capabilitiesOf = (view: ReturnType<typeof frameOf>) => {
+    const initialized = answerTo(view, 1) as { result: { hostCapabilities: unknown } };
+
+    return initialized.result.hostCapabilities;
+  };
+
+  const withClipboard: AppPage = {
+    html: "<p>view</p>",
+    meta: { permissions: { clipboardWrite: {} } },
+    origin: ORIGIN,
+  };
+
+  it("gives clipboard-write only to a View that declared it, to the proxy's page and to the frame", async () => {
+    render({ page: withClipboard });
+
+    const declared = frameOf();
+
+    declared.handshake();
+    await flush();
+
+    expect(declared.element.getAttribute("allow")).toBe("clipboard-write");
+    expect(declared.sent[0]).toMatchObject({
+      data: {
+        method: "ui/notifications/sandbox-resource-ready",
+        params: { permissions: { clipboardWrite: {} } },
+      },
+    });
+    expect(capabilitiesOf(declared)).toMatchObject({
+      sandbox: { permissions: { clipboardWrite: {} } },
+    });
+  });
+
+  it("gives no permission to a View that declared none, or only others", async () => {
+    render({
+      page: {
+        html: "<p>view</p>",
+        meta: { permissions: { camera: {}, geolocation: {} } },
+        origin: ORIGIN,
+      },
+    });
+
+    const view = frameOf();
+
+    view.handshake();
+    await flush();
+
+    expect(view.element.hasAttribute("allow")).toBe(false);
+    expect(JSON.stringify(view.sent[0]?.data)).not.toContain("permissions");
+    expect(JSON.stringify(capabilitiesOf(view))).not.toContain("permissions");
+  });
+
+  it("advertises openLinks always, and message and context only when the frame has them to serve", async () => {
+    render();
+
+    const bare = frameOf();
+
+    bare.handshake();
+    await flush();
+    expect(capabilitiesOf(bare)).toMatchObject({ openLinks: {} });
+    expect(JSON.stringify(capabilitiesOf(bare))).not.toContain("updateModelContext");
+    expect(JSON.stringify(capabilitiesOf(bare))).not.toContain('"message"');
+
+    act(() => {
+      root.unmount();
+    });
+    root = createRoot(host);
+
+    render({
+      speech: {
+        message: () => Promise.resolve("held"),
+        context: () => Promise.resolve({ held: true }),
+      },
+    });
+
+    const speaking = frameOf();
+
+    speaking.handshake();
+    await flush();
+    expect(capabilitiesOf(speaking)).toMatchObject({
+      openLinks: {},
+      message: { text: {} },
+      updateModelContext: { text: {} },
+    });
+  });
+
+  it("holds a View's message and answers {} once held, { isError: true } when refused", async () => {
+    const message = vi.fn<(text: string) => Promise<"held" | "refused">>();
+
+    message.mockResolvedValueOnce("held").mockResolvedValueOnce("refused");
+    render({ speech: { message } });
+
+    const view = frameOf();
+
+    view.handshake();
+
+    const say = (id: number) => {
+      view.say({
+        jsonrpc: "2.0",
+        id,
+        method: "ui/message",
+        params: { role: "user", content: [{ type: "text", text: "Pick A" }] },
+      });
+    };
+
+    say(10);
+    say(11);
+    await flush();
+
+    expect(message).toHaveBeenCalledWith("Pick A");
+    expect(answerTo(view, 10)).toMatchObject({ result: {} });
+    expect(answerTo(view, 11)).toMatchObject({ result: { isError: true } });
+  });
+
+  it("refuses a read-only (archived) View's ui/message and ui/update-model-context, holds nothing and advertises neither", async () => {
+    const message = vi.fn<(text: string) => Promise<"held" | "refused">>();
+    const context = vi.fn<(text: string) => Promise<{ held: boolean }>>();
+
+    render({ speech: { message, context }, readOnly: true });
+
+    const view = frameOf();
+
+    view.handshake();
+    view.say({
+      jsonrpc: "2.0",
+      id: 12,
+      method: "ui/message",
+      params: { role: "user", content: [{ type: "text", text: "x" }] },
+    });
+    view.say({
+      jsonrpc: "2.0",
+      id: 13,
+      method: "ui/update-model-context",
+      params: { content: [{ type: "text", text: "x" }] },
+    });
+    await flush();
+
+    expect(message).not.toHaveBeenCalled();
+    expect(context).not.toHaveBeenCalled();
+    expect(answerTo(view, 12)).toMatchObject({ result: { isError: true } });
+    expect(answerTo(view, 13)).toMatchObject({
+      error: { code: -32_000, message: "This Session is archived" },
+    });
+    expect(JSON.stringify(capabilitiesOf(view))).not.toContain("updateModelContext");
+    expect(JSON.stringify(capabilitiesOf(view))).not.toContain('"message"');
+  });
+
+  it("shows the last context the View told the model as a chip", () => {
+    render({ context: { hash: "h", text: "The owner picked row 3", at: 1, delivered: false } });
+
+    const chip = host.querySelector("[data-app-context]");
+
+    expect(chip?.textContent).toContain("Told the model");
+    expect(chip?.textContent).toContain("The owner picked row 3");
+    expect(chip?.textContent).toContain("Pending");
+  });
+
+  describe("ui/open-link", () => {
+    const open = (view: ReturnType<typeof frameOf>, id: number, url: unknown) => {
+      view.say({ jsonrpc: "2.0", id, method: "ui/open-link", params: { url } });
+    };
+
+    const confirmation = () => host.querySelector("[aria-label='Open link?']");
+
+    const press = (label: string) => {
+      const button = Array.from(host.querySelectorAll("button")).find(
+        (each) => each.textContent === label,
+      );
+
+      act(() => {
+        button?.click();
+      });
+    };
+
+    it("asks the owner first, with the whole URL and its host emphasised, and opens nothing before they say", async () => {
+      const opened = vi.spyOn(window, "open").mockReturnValue(null);
+
+      render();
+
+      const view = frameOf();
+
+      view.handshake();
+      open(view, 20, "https://docs.example.com:8443/guide?q=1#top");
+      await flush();
+
+      expect(confirmation()?.textContent).toContain("https://docs.example.com:8443/guide?q=1#top");
+      expect(confirmation()?.querySelector("strong")?.textContent).toBe("docs.example.com:8443");
+      expect(opened).not.toHaveBeenCalled();
+      expect(answerTo(view, 20)).toBeUndefined();
+    });
+
+    it("opens the link in a new tab with no opener or referrer on Open, and answers {}", async () => {
+      const opened = vi.spyOn(window, "open").mockReturnValue(null);
+
+      render();
+
+      const view = frameOf();
+
+      view.handshake();
+      open(view, 21, "https://docs.example.com/");
+      await flush();
+      press("Open");
+      await flush();
+
+      expect(opened).toHaveBeenCalledWith(
+        "https://docs.example.com/",
+        "_blank",
+        "noopener,noreferrer",
+      );
+      expect(answerTo(view, 21)).toMatchObject({ result: {} });
+      expect(confirmation()).toBeNull();
+    });
+
+    it("hands the link to the Browser Pane on Open in Browser Pane, which is offered only when the card can", async () => {
+      const opened = vi.spyOn(window, "open").mockReturnValue(null);
+      const inPane = vi.fn();
+
+      render();
+
+      const view = frameOf();
+
+      view.handshake();
+      open(view, 22, "https://docs.example.com/");
+      await flush();
+      expect(host.textContent).not.toContain("Open in Browser Pane");
+      press("Dismiss");
+      await flush();
+
+      render({ onOpenInPane: inPane });
+      open(view, 23, "https://docs.example.com/a");
+      await flush();
+      press("Open in Browser Pane");
+      await flush();
+
+      expect(inPane).toHaveBeenCalledWith("https://docs.example.com/a");
+      expect(opened).not.toHaveBeenCalled();
+      expect(answerTo(view, 23)).toMatchObject({ result: {} });
+    });
+
+    it("answers -32000 when the owner dismisses it", async () => {
+      const opened = vi.spyOn(window, "open").mockReturnValue(null);
+
+      render();
+
+      const view = frameOf();
+
+      view.handshake();
+      open(view, 24, "https://docs.example.com/");
+      await flush();
+      press("Dismiss");
+      await flush();
+
+      expect(opened).not.toHaveBeenCalled();
+      expect(answerTo(view, 24)).toMatchObject({ error: { code: -32_000 } });
+      expect(confirmation()).toBeNull();
+    });
+
+    it("answers a newer request in place of a pending one, the old one -32000", async () => {
+      vi.spyOn(window, "open").mockReturnValue(null);
+      render();
+
+      const view = frameOf();
+
+      view.handshake();
+      open(view, 25, "https://one.example.com/");
+      open(view, 26, "https://two.example.com/");
+      await flush();
+
+      expect(answerTo(view, 25)).toMatchObject({ error: { code: -32_000 } });
+      expect(answerTo(view, 26)).toBeUndefined();
+      expect(confirmation()?.textContent).toContain("two.example.com");
+      expect(confirmation()?.textContent).not.toContain("one.example.com");
+    });
+
+    it("refuses anything but http and https with -32602, and shows no confirmation", async () => {
+      render();
+
+      const view = frameOf();
+
+      view.handshake();
+
+      const refused = [
+        "javascript:alert(1)",
+        "data:text/html,x",
+        "file:///etc/passwd",
+        "ftp://a.example/",
+        "//x.example/",
+        "not a url",
+        "https://u:p@a.example/",
+      ];
+
+      for (const [at, url] of refused.entries()) open(view, 30 + at, url);
+
+      open(view, 40, 5);
+      await flush();
+
+      for (const at of refused.keys()) {
+        expect(answerTo(view, 30 + at)).toMatchObject({ error: { code: -32_602 } });
+      }
+
+      expect(answerTo(view, 40)).toMatchObject({ error: { code: -32_602 } });
+      expect(confirmation()).toBeNull();
+    });
+  });
+});

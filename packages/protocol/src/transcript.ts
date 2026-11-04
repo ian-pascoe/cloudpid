@@ -42,6 +42,7 @@ import type { McpPromptData } from "./mcp-prompts.ts";
 import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
 import { type AttachedResource, isResourcesBlock } from "./attached-resources.ts";
 import type { SessionVia } from "./mcp-api.ts";
+import type { SentAppMessage } from "./mcp-apps.ts";
 import { reviewTitle, type ShownReviewAnnotation, shownReview } from "./review.ts";
 import { skillBlocksIn, type UserEntryData, userEntryData } from "./user-entry.ts";
 
@@ -95,6 +96,8 @@ export type TranscriptMessage = {
   readonly pages?: readonly AttachedPage[];
   /** The MCP resources attached to an owner's message, which shows a chip for each instead of the block the model got. */
   readonly resources?: readonly AttachedResource[];
+  /** The App messages an owner's message sent (`submit.app`), which the message shows as "sent from the <server> app" blocks, not as text of the owner's. */
+  readonly app?: readonly SentAppMessage[];
   /** A Review's Annotations, each with its quote and the owner's text: the message shows its summary instead. */
   readonly review?: readonly ShownReviewAnnotation[];
   /** Who sent an owner's message that came over the MCP endpoint (never the owner's email). */
@@ -225,6 +228,27 @@ const withoutResourcesBlock = (
 };
 
 /**
+ * `parts` without the text parts of the App messages the owner sent (each the last text part with its text, from the last
+ * message back, so a typed text equal to one stays): the message shows them as blocks of their own.
+ */
+const withoutAppParts = (
+  parts: readonly TranscriptPart[],
+  app: readonly SentAppMessage[],
+): TranscriptPart[] => {
+  const removed = new Set<number>();
+
+  for (const message of app.toReversed()) {
+    const at = parts.findLastIndex(
+      (part, index) => !removed.has(index) && part.type === "text" && part.text === message.text,
+    );
+
+    if (at !== -1) removed.add(at);
+  }
+
+  return parts.filter((_, index) => !removed.has(index));
+};
+
+/**
  * `parts` without the crops of a Review's page Annotations (`ReviewData.crops`: a label and an image each, the last parts
  * of the message), and the crops, in order, for the Review's chips.
  */
@@ -290,8 +314,10 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
   const { parts: carried, crops } = withoutCrops(prompted.parts, data);
   const unpaged = data.pages === undefined ? carried : withoutPageBlock(carried);
 
-  const parts =
+  const unsourced =
     data.resources === undefined ? unpaged : withoutResourcesBlock(unpaged, data.resources);
+
+  const parts = data.app === undefined ? unsourced : withoutAppParts(unsourced, data.app);
 
   const first = parts.findIndex((part) => part.type === "text");
   const expanded = parts[first];
@@ -336,7 +362,10 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
       ? paged
       : { ...paged, resources: data.resources };
 
-  const reviewed = review === undefined ? sourced : { ...sourced, review };
+  const messaged =
+    data.app === undefined || data.app.length === 0 ? sourced : { ...sourced, app: data.app };
+
+  const reviewed = review === undefined ? messaged : { ...messaged, review };
 
   const prompt =
     prompted.block === undefined || data.mcpPrompt === undefined

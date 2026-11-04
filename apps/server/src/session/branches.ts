@@ -58,6 +58,15 @@ export type NavigateRequest = TreePoint & { readonly summary?: BranchSummaryRequ
 export const NAVIGATE_WHILE_PREPARING =
   "The Session tree cannot be navigated while a message is being prepared: wait for it to be sent.";
 
+/** Whether `entry` is the model's message that made tool call `callId`. */
+const madeCall = (entry: EntryRecord, callId: string): boolean =>
+  Arr.some(
+    entry.model ?? [],
+    (message) =>
+      message.role === "assistant" &&
+      Arr.some(message.content, (part) => part.type === "toolCall" && part.id === callId),
+  );
+
 /** What the Session tree's moves take from the Session host. */
 export type BranchesOptions = {
   readonly harness: PiHarness;
@@ -376,5 +385,87 @@ export const sessionBranches = (options: BranchesOptions) => {
     );
   });
 
-  return { treeState, active, busyReason, tree, navigate, switchBranch, stopEverything };
+  /** The most entries `historyHolds` reads of one conversation looking for a call: a History past it is not searched further. */
+  const HISTORY_SEARCH_ENTRIES = 20 * BRANCH_PAGE;
+
+  /** Calls found in a conversation's History, by `<conversation>:<call>`: a History only grows, so a found call stays found. */
+  const found = new Set<string>();
+
+  /**
+   * Calls not found in the History of a conversation that exists, by the same key: a conversation that does not hold a call made
+   * before now never will, since a call is in the History of the branches made after it and of none made before. Bounded, so a
+   * page that names many calls cannot grow it for good.
+   */
+  const missing = new Set<string>();
+  const MISSING_KEPT = 1024;
+
+  /**
+   * Whether model call `callId` was made in conversation `conversationId`'s History: in its own entries, or in those of the
+   * branches it was forked from, up to the point it was made at (a conversation's entries include them). An App View kept across
+   * a move of the active branch is of a call made before the branch point, in a conversation the Session has left.
+   */
+  const historyHolds = (conversationId: ConversationId, callId: string) =>
+    Effect.gen(function* () {
+      const key = `${String(conversationId)}:${callId}`;
+
+      if (found.has(key)) return true;
+
+      if (missing.has(key)) return false;
+
+      const conversation = yield* attempt("conversation", () =>
+        harness.conversation(conversationId, context),
+      );
+
+      // Not made yet: it may hold the call once it is.
+      if (conversation === undefined) return false;
+
+      let cursor: Cursor | undefined;
+      let read = 0;
+
+      do {
+        const page = yield* attempt("entries", () =>
+          conversation.entries({ order: "descending" }, BRANCH_PAGE, cursor, context),
+        );
+
+        if (Arr.some(page.items, (entry) => madeCall(entry, callId))) {
+          found.add(key);
+
+          return true;
+        }
+
+        read += page.items.length;
+        cursor = page.next;
+      } while (cursor !== undefined && read < HISTORY_SEARCH_ENTRIES);
+
+      if (missing.size >= MISSING_KEPT) missing.clear();
+
+      missing.add(key);
+
+      return false;
+    });
+
+  /**
+   * Whether `conversationId` is a Session branch the active branch has moved off: its pending App contexts were dropped when it
+   * was left, and nothing given to it now would ever be read.
+   */
+  const isLeft = (conversationId: ConversationId) =>
+    treeState.pipe(
+      Effect.map(
+        (state) =>
+          Arr.contains(branchIds(state), conversationId) &&
+          Number(state.active) !== Number(conversationId),
+      ),
+    );
+
+  return {
+    treeState,
+    active,
+    busyReason,
+    tree,
+    navigate,
+    switchBranch,
+    stopEverything,
+    historyHolds,
+    isLeft,
+  };
 };

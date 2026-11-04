@@ -8,6 +8,7 @@ import {
   AttachedPage,
   AttachedResource,
   McpPromptData,
+  SentAppMessage,
   SessionVia,
   type SessionView,
   ShownReviewAnnotation,
@@ -251,6 +252,12 @@ const decodeResources = Schema.decodeUnknownOption(Schema.Array(AttachedResource
 export const shownResources = (custom: MessageCustom | undefined): readonly AttachedResource[] =>
   Option.getOrElse(decodeResources(custom?.["resources"]), () => []);
 
+const decodeApps = Schema.decodeUnknownOption(Schema.Array(SentAppMessage));
+
+/** The App messages a user message sent (`submit.app`), as its metadata keeps them; none when it sent none. */
+export const shownApps = (custom: MessageCustom | undefined): readonly SentAppMessage[] =>
+  Option.getOrElse(decodeApps(custom?.["app"]), () => []);
+
 const decodeVia = Schema.decodeUnknownOption(SessionVia);
 
 /** Who sent a user message over the MCP endpoint, as its metadata keeps it; none for the owner's own. */
@@ -292,6 +299,7 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
     const skills: ShownSkill[] = (message.skills ?? []).map(({ name, text }) => ({ name, text }));
     const pages = message.pages ?? [];
     const resources = message.resources ?? [];
+    const app = message.app ?? [];
     const review = message.review ?? [];
 
     const prompt = message.mcpPrompt;
@@ -300,6 +308,7 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
       skills.length > 0 ||
       pages.length > 0 ||
       resources.length > 0 ||
+      app.length > 0 ||
       review.length > 0 ||
       message.via !== undefined ||
       prompt !== undefined
@@ -317,6 +326,8 @@ const toUser = (message: TranscriptMessage): ThreadMessageLike => {
 
       if (resources.length > 0)
         custom["resources"] = resources.map((resource) => ({ ...resource }));
+
+      if (app.length > 0) custom["app"] = app.map((each) => ({ ...each }));
 
       if (review.length > 0) custom["review"] = review.map((annotation) => ({ ...annotation }));
 

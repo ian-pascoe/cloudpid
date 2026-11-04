@@ -6,8 +6,14 @@
 // Which place mounts a View is `places.ts`'s; whether a View is live is `generation.ts`'s, with what the owner chose of it
 // on this device. The frame itself is `app-frame.tsx`'s.
 // @effect-diagnostics missingPipeableSignature:off -- a hook over the Session's atoms, not a combinator.
-import { GLOBAL_SCOPE, type McpAppTool } from "@cloudpid/protocol";
-import { useAtom, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import { GLOBAL_SCOPE, type McpAppContext, type McpAppTool } from "@cloudpid/protocol";
+import {
+  RegistryContext,
+  useAtom,
+  useAtomRefresh,
+  useAtomSet,
+  useAtomValue,
+} from "@effect/atom-react";
 import {
   createContext,
   use,
@@ -19,6 +25,8 @@ import {
 } from "react";
 import type { ComponentType, ReactNode } from "react";
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
+import type * as Types from "effect/Types";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { Button } from "../components/ui/button.tsx";
@@ -36,7 +44,13 @@ import { sessionPath } from "../router.ts";
 import { appEntries, appEntryOf } from "../session/apps.ts";
 import { mcpAppsAtom, mcpAppToolsAtom, sessionClientAtom } from "../session/atoms.ts";
 import { mcpSignInStartHref } from "../settings/mcp-sign-in-model.ts";
+import type { AppMessageChipState } from "../chat/attachments-state.ts";
+import type { SessionClient } from "../session/client.ts";
+import { BROWSER_PANE } from "../panes.ts";
+import { browserPaneKey, ownerTabActionAtom } from "../live-view/browser-pane-atoms.ts";
+import { AppContextChip } from "./app-context-chip.tsx";
 import { AppFailed, AppFrame, type AppControls } from "./app-frame.tsx";
+import type { AppSpeech } from "./app-messages.ts";
 import {
   appGenerationAtom,
   appKey,
@@ -49,6 +63,7 @@ import { appAvailability, type AppAvailability } from "./availability.ts";
 import type { DisplayMode } from "./host-context.ts";
 import { callsOfScript, isAppLive, stripRows } from "./generation.ts";
 import { appPlaces, PLACE_NAMES, type AppPlace, type AppPlaces } from "./places.ts";
+import { holdWhereShown, shownInAtom } from "./shown-in.ts";
 import { afterTeardown, paneElement } from "./teardown.ts";
 
 /** The places of this page: one for the app. A test gives its own. */
@@ -76,39 +91,49 @@ const ShownIn = ({ place, onBack }: { place: AppPlace; onBack: (() => void) | un
 /** What a place says where it has no View: a collapsed row with Reopen, or the note that says why there is no App. */
 export const AppIdle = ({ facts, onReopen }: { facts: AppFacts; onReopen: () => void }) =>
   facts.mountable ? (
-    <AppCollapsed server={facts.server} archived={facts.archived} onReopen={onReopen} />
+    <AppCollapsed
+      server={facts.server}
+      archived={facts.archived}
+      context={facts.context}
+      onReopen={onReopen}
+    />
   ) : (
     <AppNote>{noteOf(facts.availability)}</AppNote>
   );
 
-/** What a card says of a View that is collapsed: whose it is, and Reopen. */
+/** What a card says of a View that is collapsed: whose it is, the last context it told the model, and Reopen. */
 const AppCollapsed = ({
   server,
   archived,
+  context,
   onReopen,
 }: {
   server: string | undefined;
   archived: boolean;
+  context: McpAppContext | undefined;
   onReopen: () => void;
 }) => (
-  <div className="my-2 flex items-center gap-2 rounded-md border border-dashed px-3 py-1.5 text-xs text-muted-foreground">
-    <span className="text-foreground">App</span>
-    {server !== undefined && (
-      <>
-        <span>·</span>
-        <span className="min-w-0 truncate">{server}</span>
-      </>
-    )}
-    <span className="shrink-0">collapsed</span>
-    <Button
-      variant="ghost"
-      size="sm"
-      className="ml-auto shrink-0"
-      title={archived ? "Reopen, reads only: this Session is archived" : "Reopen the App"}
-      onClick={onReopen}
-    >
-      Reopen
-    </Button>
+  <div className="my-2 overflow-hidden rounded-md border border-dashed">
+    <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
+      <span className="text-foreground">App</span>
+      {server !== undefined && (
+        <>
+          <span>·</span>
+          <span className="min-w-0 truncate">{server}</span>
+        </>
+      )}
+      <span className="shrink-0">collapsed</span>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="ml-auto shrink-0"
+        title={archived ? "Reopen, reads only: this Session is archived" : "Reopen the App"}
+        onClick={onReopen}
+      >
+        Reopen
+      </Button>
+    </div>
+    <AppContextChip context={context} />
   </div>
 );
 
@@ -125,6 +150,8 @@ export interface AppFacts {
   readonly mountable: boolean;
   /** The Session is archived: its Views are collapsed until reopened, and a reopened one may only read. */
   readonly archived: boolean;
+  /** The last context the View told the model, with whether it was delivered. */
+  readonly context: McpAppContext | undefined;
 }
 
 /** What a place hands the component that loads and frames a call's View. */
@@ -140,7 +167,7 @@ export interface AppLoadedProps {
 
 /** The View of call `callId`, loaded when this mounts: it shows nothing while it loads (the card has the call's state). */
 const AppLoaded = ({
-  facts: { sessionId, callId, tool, badge, archived },
+  facts: { sessionId, callId, tool, badge, archived, context },
   place,
   controls,
   onRequestMode,
@@ -154,9 +181,27 @@ const AppLoaded = ({
   const client = useAtomValue(sessionClientAtom(sessionId));
   const environment = useAtomValue(sessionEnvironmentAtom(sessionId));
 
+  // What the View may say to the conversation is read where the View is shown when it says it, not as of this render.
+  const registry = use(RegistryContext);
+
+  // "Open in Browser Pane": the Pane is opened, and the Owner tab goes to the link on the Pane's own connection.
+  const actOnPanes = useAtomSet(panesAtom);
+
+  const navigate = useAtomSet(ownerTabActionAtom(browserPaneKey(sessionId, archived)), {
+    mode: "promiseExit",
+  });
+
   if (!AsyncResult.isSuccess(result)) return null;
 
   const load = result.value;
+
+  const speech: Partial<AppSpeech> = speechOf(
+    AsyncResult.isSuccess(client) ? client.value : undefined,
+    callId,
+    load.status === "view" ? load.record.server : "",
+    (chip) => holdWhereShown(registry, key, chip),
+    () => registry.get(shownInAtom(key))?.conversation,
+  );
 
   switch (load.status) {
     case "view":
@@ -167,6 +212,12 @@ const AppLoaded = ({
           tool={tool}
           badge={badge}
           readOnly={archived}
+          speech={speech}
+          context={context}
+          onOpenInPane={(url) => {
+            actOnPanes({ type: "open", key: BROWSER_PANE });
+            void navigate({ type: "navigate", url });
+          }}
           {...(AsyncResult.isSuccess(client) ? { client: client.value } : {})}
           signInHref={(stepUp) =>
             environment === undefined
@@ -196,6 +247,41 @@ const AppLoaded = ({
     case "none":
       return null;
   }
+};
+
+/**
+ * What a card lets its View say to the conversation, as far as the Session on this connection takes it (its `hello` says): a
+ * message is held in the composer as a chip (`hold`, which answers `refused` when the conversation the View is shown in has
+ * no composer), a context goes to the Session with the conversation the View is shown in now (`shownIn`). A Session that does
+ * not take either is offered none, so the View is not told the host does it.
+ */
+export const speechOf = (
+  client: Pick<SessionClient, "appContext" | "takes"> | undefined,
+  callId: string,
+  server: string,
+  hold: (chip: AppMessageChipState) => Promise<"held" | "refused">,
+  shownIn: () => number | undefined,
+): Partial<AppSpeech> => {
+  const speech: Types.Mutable<Partial<AppSpeech>> = {};
+
+  if (client === undefined) return speech;
+
+  const takes = client.takes();
+
+  if (takes.appMessages) speech.message = (text) => hold({ callId, server, text });
+
+  if (takes.appContext) {
+    speech.context = (text) =>
+      Effect.runPromise(client.appContext(callId, text, shownIn())).then(
+        (answer) => ({
+          held: answer.status === "held",
+          message: "message" in answer ? answer.message : undefined,
+        }),
+        () => ({ held: false, message: "Connection lost: the host could not reach the Session" }),
+      );
+  }
+
+  return speech;
 };
 
 export interface AppPlaceMountProps {
@@ -342,6 +428,7 @@ export const useAppFacts = (callId: string, toolName: string | undefined): AppFa
     badge: availability.kind === "mount" ? availability.badge : null,
     mountable: availability.kind === "mount",
     archived,
+    context: entry?.context,
   };
 };
 

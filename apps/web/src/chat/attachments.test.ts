@@ -20,6 +20,48 @@ describe("requestedName", () => {
   });
 });
 
+describe("outgoingMessage with App messages", () => {
+  const app = [
+    { ref: { callId: "c1", text: "Pick A" }, label: "Message from docs" },
+    { ref: { callId: "c2", text: "Pick B" }, label: "Message from maps" },
+  ];
+
+  it("sends them as refs beside the typed text, and names them in the lane", () => {
+    expect(outgoingMessage("go", [], [], [], app)).toEqual({
+      input: "go",
+      display: "go · Attached: Message from docs, Message from maps",
+      app: [
+        { callId: "c1", text: "Pick A" },
+        { callId: "c2", text: "Pick B" },
+      ],
+    });
+  });
+
+  it("makes a message of App messages alone", () => {
+    expect(outgoingMessage("", [], [], [], app)).toMatchObject({
+      input: "",
+      display: "Attached: Message from docs, Message from maps",
+    });
+  });
+
+  it("carries them with Attachments and pages too", () => {
+    const sent = outgoingMessage("go", [{ name: "a.txt", path: `${uploads}/a.txt` }], [], [], app);
+
+    expect(sent.app).toEqual([
+      { callId: "c1", text: "Pick A" },
+      { callId: "c2", text: "Pick B" },
+    ]);
+    expect(sent.input).toEqual([
+      { type: "text", text: "go" },
+      { type: "text", text: `@${uploads}/a.txt` },
+    ]);
+  });
+
+  it("sends none when there are none", () => {
+    expect(outgoingMessage("go", [], [], [], [])).toEqual({ input: "go", display: "go" });
+  });
+});
+
 describe("outgoingMessage", () => {
   it("sends text alone as it was typed", () => {
     expect(outgoingMessage("hello", [])).toEqual({ input: "hello", display: "hello" });

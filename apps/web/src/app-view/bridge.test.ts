@@ -740,6 +740,7 @@ interface AppLike {
   sendLog: (params: { level: string; data: unknown }) => Promise<void>;
   openLink: (params: { url: string }) => Promise<unknown>;
   sendMessage: (params: unknown) => Promise<unknown>;
+  updateModelContext: (params: unknown) => Promise<unknown>;
   callServerTool: (params: { name: string }) => Promise<unknown>;
 }
 
@@ -974,7 +975,70 @@ describe("an ext-apps View (the real `App` runtime)", () => {
     ]);
   });
 
-  it("is answered -32601 for what is not served yet, and its logging is dropped", async () => {
+  it("passes the permissions a View declared with its page, and advertises the clipboard it grants", async () => {
+    const permissions = { clipboardWrite: {} };
+
+    const { page, app } = await mounted({
+      page: { html: HTML, permissions },
+      capabilities: hostCapabilities(undefined, false, false, { clipboardWrite: true }),
+    });
+
+    expect(page.posts[0]?.data["params"]).toEqual({ html: HTML, permissions });
+    expect(app.getHostCapabilities()).toMatchObject({
+      sandbox: { permissions: { clipboardWrite: {} } },
+    });
+  });
+
+  it("serves ui/open-link, ui/message and ui/update-model-context through its handlers, as the runtime's own calls", async () => {
+    const calls: Array<readonly [string, unknown]> = [];
+
+    const { app } = await mounted({
+      capabilities: hostCapabilities(undefined, false, false, {
+        openLinks: true,
+        message: true,
+        updateModelContext: true,
+      }),
+      handlers: {
+        "ui/open-link": (params) => {
+          calls.push(["open", params]);
+
+          return Promise.resolve({});
+        },
+        "ui/message": (params) => {
+          calls.push(["message", params]);
+
+          return Promise.resolve({});
+        },
+        "ui/update-model-context": (params) => {
+          calls.push(["context", params]);
+
+          return Promise.resolve({});
+        },
+      },
+    });
+
+    expect(app.getHostCapabilities()).toMatchObject({
+      openLinks: {},
+      message: { text: {} },
+      updateModelContext: { text: {} },
+    });
+
+    await expect(app.openLink({ url: "https://modelcontextprotocol.io/" })).resolves.toEqual({});
+    await expect(
+      app.sendMessage({ role: "user", content: [{ type: "text", text: "hi" }] }),
+    ).resolves.toEqual({});
+    await expect(
+      app.updateModelContext({ content: [{ type: "text", text: "row 3" }] }),
+    ).resolves.toEqual({});
+
+    expect(calls).toEqual([
+      ["open", { url: "https://modelcontextprotocol.io/" }],
+      ["message", { role: "user", content: [{ type: "text", text: "hi" }] }],
+      ["context", { content: [{ type: "text", text: "row 3" }] }],
+    ]);
+  });
+
+  it("is answered -32601 for what is not served, and its logging is dropped", async () => {
     const { app, events } = await mounted();
 
     await app.sendLog({ level: "info", data: "hello" });
@@ -982,6 +1046,7 @@ describe("an ext-apps View (the real `App` runtime)", () => {
     await expect(app.openLink({ url: "https://modelcontextprotocol.io/" })).rejects.toThrow(
       /Method not found/,
     );
+    await expect(app.updateModelContext({ content: [] })).rejects.toThrow(/Method not found/);
     await expect(app.callServerTool({ name: "get-time" })).rejects.toThrow(/Method not found/);
     await expect(
       app.sendMessage({ role: "user", content: [{ type: "text", text: "hi" }] }),

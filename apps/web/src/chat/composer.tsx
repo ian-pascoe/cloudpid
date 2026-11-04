@@ -40,6 +40,7 @@ import {
   addAttachmentsAtom,
   addPageAtom,
   addResourceAtom,
+  removeAppMessageAtom,
   attachmentsAtom,
   removeAttachmentAtom,
   removePageAtom,
@@ -49,8 +50,10 @@ import {
   waitingFor,
 } from "./attachments-state.ts";
 import { catalogAtom } from "./catalog.ts";
+import { useComposerMounted } from "./composer-mounts.ts";
 import { AttachPageButton, PageChips } from "./page-chips.tsx";
 import { resourceMenuAtom } from "./mcp-resource-menu.ts";
+import { AppMessageChips, withEditedMessage } from "./app-message-chips.tsx";
 import { ResourceChips } from "./resource-chips.tsx";
 import { type ComposerCommand, resolveCommand, sessionCommands } from "./commands.ts";
 import { CompletionMenu } from "./completion-menu.tsx";
@@ -197,6 +200,9 @@ const ComposerBox = ({
   const runSessionCommand = useCall(sessionCommandAtom(key));
   const copy = useCall(copyAtom);
   const store = useContext(RegistryContext);
+
+  useComposerMounted(key);
+
   const lastWhenBusy = useRef<WhenBusy>("followUp");
   const refreshCatalog = useAtomSet(state.refreshCatalog);
   const sessions = useAtomValue(sessionListAtom);
@@ -207,6 +213,7 @@ const ComposerBox = ({
   const removePage = useAtomSet(removePageAtom(key));
   const addResource = useAtomSet(addResourceAtom(key));
   const removeResource = useAtomSet(removeResourceAtom(key));
+  const removeAppMessage = useAtomSet(removeAppMessageAtom(key));
   const resources = useAtomValue(resourceMenuAtom(key));
   const sendAttached = useCall(sendAttachedAtom(key));
   const allDrafts = useAtomValue(annotationsAtom(key.sessionId));
@@ -224,7 +231,8 @@ const ComposerBox = ({
   const attached =
     attachments.items.length > 0 ||
     attachments.pages.length > 0 ||
-    attachments.resources.length > 0;
+    attachments.resources.length > 0 ||
+    attachments.apps.length > 0;
 
   // The drafts addressed to this conversation: while there are some, what is sent here is a Review of them.
   const drafts = draftsTo(allDrafts, conversationId);
@@ -625,6 +633,20 @@ const ComposerBox = ({
           )}
           <PageChips state={attachments} onRemove={removePage} />
           <ResourceChips state={attachments} onRemove={removeResource} />
+          <AppMessageChips
+            state={attachments}
+            onEdit={(chip) => {
+              // Its text goes into the input after what is typed, where it is the owner's own; the chip is no App message then.
+              aui.composer.setText(withEditedMessage(aui.composer.getState().text, chip.text));
+              removeAppMessage(chip.callId);
+              requestAnimationFrame(() => {
+                input.current?.focus();
+              });
+            }}
+            onDiscard={(chip) => {
+              removeAppMessage(chip.callId);
+            }}
+          />
           <AttachmentTiles
             // A page's screen shows on its chip.
             items={attachments.items.filter((item) => item.screenOf === undefined)}

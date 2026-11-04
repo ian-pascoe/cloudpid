@@ -1,4 +1,5 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import type { Annotation, PageAnnotation } from "./annotations.ts";
 import { cropLabel, renderReview, reviewMessage } from "./review.ts";
@@ -103,5 +104,51 @@ describe("a Review in the transcript", () => {
     expect(projectEntry(reviewEntry(""))?.parts).toEqual([
       { type: "text", text: "Review: 1 Annotation" },
     ]);
+  });
+});
+
+describe("App messages in the transcript", () => {
+  const entryWith = (app: ReadonlyArray<object> | string, typed: string): EntryRecord =>
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: the fields of an entry the projection reads.
+    ({
+      id: 3,
+      kind: USER_ENTRY_KIND,
+      data: { display: typed, skills: [], app },
+      model: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: typed },
+            { type: "text", text: "Pick A" },
+            { type: "text", text: "Pick B" },
+          ],
+          timestamp: 4,
+        },
+      ],
+    }) as unknown as EntryRecord;
+
+  it("takes each App message's part out of the typed message and carries it as `app`", () => {
+    const app = [
+      { callId: "c1", server: "docs", text: "Pick A" },
+      { callId: "c2", server: "docs", text: "Pick B" },
+    ];
+
+    const message = projectEntry(entryWith(app, "Do it"));
+
+    expect(message?.parts).toEqual([{ type: "text", text: "Do it" }]);
+    expect(message?.app).toEqual(app);
+  });
+
+  it("keeps a typed text that equals an App message's, and reads an entry with a mark it cannot read without it", () => {
+    const same = projectEntry(
+      entryWith([{ callId: "c1", server: "docs", text: "Pick B" }], "Pick B"),
+    );
+
+    expect(Arr.map(same?.parts ?? [], (part) => (part.type === "text" ? part.text : ""))).toEqual([
+      "Pick B",
+      "Pick A",
+    ]);
+
+    expect(projectEntry(entryWith("nonsense", "Do it"))?.app).toBeUndefined();
   });
 });

@@ -16,6 +16,9 @@ import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
 import {
+  AppMessageRef,
+  MAX_APP_MESSAGES,
+  MAX_MCP_APP_CONTEXT_INPUT,
   MAX_MCP_APP_KEY,
   MAX_MCP_APP_LOG_CHARS,
   MAX_MCP_APP_REQUEST_KEY,
@@ -110,6 +113,12 @@ const CommandId = Schema.optionalKey(Schema.String);
  * `ATTACHED_RESOURCE_GONE`; any other failure sends the message with the error in its block. Sent only to a Session that says
  * `attachedResources` in `hello`.
  *
+ * With `app`, the owner sent App messages that Apps' Views offered from the chips above the composer (`AppMessageRef`: the call and
+ * the text, at most `MAX_APP_MESSAGES`): each reaches the model as a text part of its own, after the owner's text and the
+ * blocks of pages and resources, and the owner's entry keeps the call and the server's name for the transcript's "sent from
+ * the <server> app" (`docs/architecture/mcp-apps.md` → App messages and App context). Sent only to a Session that says
+ * `appMessages` in `hello`.
+ *
  * Stop also withdraws a message still being prepared, or waiting its turn behind one that is, in its conversation's
  * line (docs/architecture/mcp-in-a-session.md → Getting a prompt at send): nothing is placed, and the command is
  * answered with `null` instead, as a client takes withdrawn queued input, gone without a failure.
@@ -132,6 +141,11 @@ export const Submit = Schema.Struct({
   resources: ResourceRef.pipe(
     Schema.Array,
     Schema.check(Schema.isMaxLength(MAX_ATTACHED_RESOURCES)),
+    Schema.optionalKey,
+  ),
+  app: AppMessageRef.pipe(
+    Schema.Array,
+    Schema.check(Schema.isMaxLength(MAX_APP_MESSAGES)),
     Schema.optionalKey,
   ),
 });
@@ -731,6 +745,25 @@ export const McpAppRequest = Schema.Struct({
   params: Schema.optionalKey(Schema.Json),
 });
 
+/**
+ * An App View's `ui/update-model-context`, as its page forwards it (`docs/architecture/mcp-apps.md` → App messages and App
+ * context): the text of what it told the model, for the App View of call `callId` (shown in `conversationId`, when it says). The Session holds it pending (the latest
+ * for the call, the same text held once), after cleaning, redacting and cutting it, and gives it to the call's conversation
+ * as an untrusted notice. Answered with an `McpAppContextAnswer`. Sent only to a Session that says `appContext` in `hello`.
+ */
+export const McpAppContextCommand = Schema.Struct({
+  type: Schema.Literal("mcp_app_context"),
+  id: CommandId,
+  callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+  text: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_CONTEXT_INPUT)),
+  /**
+   * The conversation the page shows the View in (the active branch's for the root's thread, a subagent's for its own): a call
+   * made before a move of the active branch is shown in the branch moved to. The Session gives the context to it when that
+   * conversation's History holds the call, and to the conversation the call was made in otherwise.
+   */
+  conversationId: Schema.optionalKey(ConversationId),
+});
+
 /** Cancel the App View's request `requestId` of call `callId` that this socket sent, if it is still running: its answer is then the cancelled error. Answered with null. */
 export const McpAppCancel = Schema.Struct({
   type: Schema.Literal("mcp_app_cancel"),
@@ -841,6 +874,7 @@ export const ClientMessage = Schema.Union([
   McpAppRequest,
   McpAppCancel,
   McpAppLog,
+  McpAppContextCommand,
   McpTaskCancel,
   ContainerKeep,
   McpResourceRead,
@@ -871,6 +905,8 @@ export type ClientMessage = typeof ClientMessage.Type;
  * answers an error (`docs/architecture/mcp.md` → Deploys); `mcpTasks` says the same of `mcp_task_cancel` and
  * `container_keep`, and that it sends `mcp_tasks`. `attachedResources` says it takes `submit.resources` and
  * `mcp_resource_menu`, and `resourcePreviews` that it takes `mcp_resource_read`, which a client sends on the same terms.
+ * `appMessages` says it takes `submit.app`, and `appContext` that it takes `mcp_app_context`: a client holds an App's
+ * message, and forwards its context, only for a Session that says so.
  */
 export const Hello = Schema.Struct({
   type: Schema.Literal("hello"),
@@ -880,6 +916,8 @@ export const Hello = Schema.Struct({
   mcpTasks: Schema.optionalKey(Schema.Boolean),
   attachedResources: Schema.optionalKey(Schema.Boolean),
   resourcePreviews: Schema.optionalKey(Schema.Boolean),
+  appMessages: Schema.optionalKey(Schema.Boolean),
+  appContext: Schema.optionalKey(Schema.Boolean),
 });
 
 /**

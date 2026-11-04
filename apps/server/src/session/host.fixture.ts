@@ -152,6 +152,7 @@ import { sessionSecretsLayer } from "./secrets.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import type { McpSignInAskAnswer } from "@cloudpid/mcp/types";
 import { sessionMcpWatches } from "./mcp-watches-store.ts";
+import { leaveConversation } from "./mcp-app-context.ts";
 import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { mcpResourcePreviewsLayer, type SpillRead } from "./mcp-resource-previews.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
@@ -1129,7 +1130,11 @@ export class TestSession extends DurableObject {
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               mcp: this.hostMcp(),
               apps: this.#mcpApps().service,
-              onBranchLeft: this.#mcpWatches().service.endConversation,
+              appContexts: this.#mcpApps().service.contexts,
+              onBranchLeft: leaveConversation(
+                this.#mcpWatches().service,
+                this.#mcpApps().service.contexts,
+              ),
               env: this.hostEnv(),
               lookupEnv: this.hostLookupEnv(),
               // Read at each use, so a test can shorten it for one Session (`expandTimeoutMs`) after it is built.
@@ -2146,17 +2151,19 @@ export class TestSession extends DurableObject {
     );
   }
 
-  /** The root conversation's entries, oldest first: each one's kind, data, and the text of its message. */
-  rootEntries(): Promise<
+  /** The root conversation's entries (or `conversationId`'s), oldest first: each one's kind, data, and the text of its message. */
+  rootEntries(
+    conversationId?: ConversationId,
+  ): Promise<
     ReadonlyArray<{ readonly kind: string; readonly data: unknown; readonly text: string }>
   > {
-    return this.importedEntries().then((entries) =>
+    return this.importedEntries(conversationId).then((entries) =>
       Arr.map(entries, ({ kind, data, text }) => ({ kind, data, text })),
     );
   }
 
   /** `rootEntries` with each entry's ID and head too, which a Session import's tests read to see how entries are numbered and where the context starts. */
-  importedEntries(): Promise<
+  importedEntries(conversationId?: ConversationId): Promise<
     ReadonlyArray<{
       readonly id: number;
       readonly kind: string;
@@ -2168,10 +2175,18 @@ export class TestSession extends DurableObject {
     return this.#runtime.runPromise(
       Effect.gen(function* () {
         const harness = yield* Harness;
-        const root = yield* harness.root({});
+
+        const conversation =
+          conversationId === undefined
+            ? yield* harness.root({})
+            : yield* callDurable("conversation", (context) =>
+                harness.harness.conversation(conversationId, context),
+              );
+
+        if (conversation === undefined) return [];
 
         const page = yield* callDurable("entries", (context) =>
-          root.entries({ order: "ascending" }, 500, undefined, context),
+          conversation.entries({ order: "ascending" }, 500, undefined, context),
         );
 
         return Arr.map(page.items, (entry) => {
@@ -2595,9 +2610,11 @@ export class TestSession extends DurableObject {
     await Effect.runPromise(this.#mcpWatches().service.started(watch));
   }
 
-  /** The App calls of the root conversation, as `mcp_apps` lists them. */
-  appCalls(): Promise<ReadonlyArray<McpAppEntry>> {
-    return Effect.runPromise(this.#mcpApps().service.list(ROOT_CONVERSATION_ID));
+  /** The App calls of the root conversation (or `conversationId`), as `mcp_apps` lists them. */
+  appCalls(
+    conversationId: ConversationId = ROOT_CONVERSATION_ID,
+  ): Promise<ReadonlyArray<McpAppEntry>> {
+    return Effect.runPromise(this.#mcpApps().service.list(conversationId));
   }
 
   /** Mount App call `callId`, as `mcp_app_mount` does. */

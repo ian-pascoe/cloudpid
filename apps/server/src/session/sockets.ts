@@ -29,6 +29,7 @@ import {
   type McpAppMounted,
   type McpAppRequestAnswer,
   type McpAppTool,
+  type SentAppMessage,
   type McpTask,
   type McpWatchEntry,
   type McpResourcePreviewAnswer,
@@ -39,6 +40,7 @@ import {
   type ServerMessage,
   ServerMessageJson,
   cleanPage,
+  cleanText,
 } from "@cloudpid/protocol";
 import { parseModelId } from "@cloudpid/config";
 import {
@@ -785,6 +787,7 @@ export const sessionSocketsLayer = (
               annotations: ids,
               mcpPrompt: picked,
               resources: attached,
+              app: appMessages,
               ...typed
             } = message;
 
@@ -808,6 +811,16 @@ export const sessionSocketsLayer = (
                 SessionError.make({
                   operation: "submit",
                   message: "Attached MCP resources cannot go with a Review: remove them first",
+                }),
+              );
+            }
+
+            // The App messages are the owner's own words from a chip, and a Review's summary is its own message too.
+            if (appMessages !== undefined && appMessages.length > 0 && ids !== undefined) {
+              return Effect.fail(
+                SessionError.make({
+                  operation: "submit",
+                  message: "App messages cannot go with a Review: send or discard them first",
                 }),
               );
             }
@@ -837,17 +850,39 @@ export const sessionSocketsLayer = (
                 ? withPages
                 : { ...withPages, mcpPrompt: { ref: picked, redact: redactor } };
 
-            const prompt =
+            const withResources =
               attached === undefined || attached.length === 0
                 ? withPagesAndPrompt
                 : { ...withPagesAndPrompt, resources: { refs: attached, redact: redactor } };
 
+            // What the Views offered goes as the owner's, from the chips they saw: cleaned and redacted of the Secrets held, and named
+            // by the call's record, never by the message.
+            const sentApps: Effect.Effect<ReadonlyArray<SentAppMessage>> =
+              appMessages === undefined || appMessages.length === 0
+                ? Effect.succeed([])
+                : secrets.refresh.pipe(
+                    Effect.andThen(mcpApps.serversOf(Arr.map(appMessages, (each) => each.callId))),
+                    Effect.map((servers) =>
+                      Arr.flatMap(appMessages, (each, index) => {
+                        const text = secrets.redact(cleanText(each.text)).trim();
+
+                        return text === ""
+                          ? []
+                          : [{ callId: each.callId, server: servers[index] ?? "", text }];
+                      }),
+                    ),
+                  );
+
             // With drafts, it is a Review: its summary is what was typed.
-            return (
-              ids === undefined
-                ? host.submit(prompt)
-                : reviews.submit({ ...prompt, annotations: ids })
-            ).pipe(
+            return sentApps.pipe(
+              Effect.map((apps) =>
+                apps.length === 0 ? withResources : { ...withResources, apps },
+              ),
+              Effect.flatMap((made) =>
+                ids === undefined
+                  ? host.submit(made)
+                  : reviews.submit({ ...made, annotations: ids }),
+              ),
               Effect.map((submissionId) => ({ submissionId })),
               // Stop withdrew it before it was placed: answered with `null`, which a client takes as it takes withdrawn
               // queued input, gone without a failure, for the owner to send again.
@@ -1116,6 +1151,31 @@ export const sessionSocketsLayer = (
                 message: message.message,
               })
               .pipe(Effect.as(null));
+          case "mcp_app_context":
+            // Held pending in the Session; a busy conversation is then written them at its next boundary.
+            return Effect.gen(function* () {
+              let target: string | undefined;
+
+              const answer = yield* mcpApps.contexts.hold({
+                view: socket,
+                callId: message.callId,
+                text: message.text,
+                where: (call) =>
+                  host.appContextTarget(call, message.callId, message.conversationId).pipe(
+                    Effect.tap((conversation) =>
+                      Effect.sync(() => {
+                        target = conversation;
+                      }),
+                    ),
+                  ),
+              });
+
+              if (answer.status === "held" && target !== undefined) {
+                yield* host.appContextHeld(conversationOf(target));
+              }
+
+              return answer;
+            });
           case "mcp_app_cancel":
             return mcpApps.cancel(socket, message.callId, message.requestId).pipe(Effect.as(null));
           case "mcp_task_cancel":
@@ -1305,6 +1365,8 @@ export const sessionSocketsLayer = (
                 mcpTasks: true,
                 attachedResources: true,
                 resourcePreviews: true,
+                appMessages: true,
+                appContext: true,
               }
             : {
                 type: "hello",
@@ -1313,6 +1375,8 @@ export const sessionSocketsLayer = (
                 mcpTasks: true,
                 attachedResources: true,
                 resourcePreviews: true,
+                appMessages: true,
+                appContext: true,
               },
         );
         yield* host.picks.pipe(

@@ -5,6 +5,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- bounds over plain
 // values, written as loops so a record is measured and cut without copying it more than it must.
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { ConversationId } from "./conversation-id.ts";
@@ -41,6 +42,25 @@ export const MAX_MCP_APP_PER_MINUTE = 60;
 
 /** The log lines (`notifications/message`) a View may send in a minute, counted the same way. */
 export const MAX_MCP_APP_LOGS_PER_MINUTE = 60;
+
+/**
+ * App context and App messages (`docs/architecture/mcp-apps.md` → App messages and App context). A held context is at most
+ * `MAX_MCP_APP_CONTEXT_BYTES` of UTF-8 (cut at a character); the text a client sends is at most `MAX_MCP_APP_CONTEXT_INPUT`
+ * characters, which the Session cuts. A conversation holds at most `MAX_MCP_APP_PENDING` pending contexts (one for each call
+ * of its Views), and a Session at most `MAX_MCP_APP_CONTEXTS` contexts, delivered ones included. A View may send
+ * `MAX_MCP_APP_CONTEXTS_PER_MINUTE` a minute, counted whether or not it is held.
+ */
+export const MAX_MCP_APP_CONTEXT_BYTES = 4096;
+export const MAX_MCP_APP_CONTEXT_INPUT = 64 * 1024;
+export const MAX_MCP_APP_PENDING = 16;
+export const MAX_MCP_APP_CONTEXTS = 128;
+export const MAX_MCP_APP_CONTEXTS_PER_MINUTE = 60;
+
+/** The most App messages one composer holds, and one message sends (`submit.app`): one for each App View, at most this many. */
+export const MAX_APP_MESSAGES = 3;
+
+/** The longest App message the Session takes with a send, in characters (the chip holds what the View sent, cut to it). */
+export const MAX_APP_MESSAGE_CHARS = 16 * 1024;
 
 /** What an audit entry keeps of a request: its arguments, in UTF-8 bytes (cut at a character), and the result's or error's text, in characters. */
 export const MCP_APP_AUDIT_ARGS_BYTES = 2048;
@@ -139,6 +159,11 @@ export const McpAppEntry = Schema.Struct({
   state: Schema.String,
   htmlHash: Schema.optionalKey(Schema.String),
   truncated: Schema.optionalKey(Schema.Boolean),
+  /**
+   * The last App context the call's View sent (`ui/update-model-context`) and whether it was delivered: what the card shows
+   * as a chip. Absent when it sent none, or the build is older. A context a later build changes reads as absent.
+   */
+  context: Schema.optionalKey(McpAppContext).pipe(Schema.catchDecoding(() => Effect.succeedNone)),
   /** Epoch milliseconds the call completed. */
   at: Schema.Finite,
 });
@@ -330,6 +355,45 @@ export type McpAppCopies = {
   readonly adopt: (copies: ReadonlyArray<McpAppCopy>, conversation: ConversationId) => void;
 };
 
+/**
+ * What `mcp_app_context` answers: `held`, with the context the call now has as the Session holds it (cleaned, redacted and
+ * cut to its bound; the one it had, when the text was the same as it held, or none when an empty text cleared a pending
+ * one), or `refused` and why (the call has no record kept, too many contexts wait, the View is over its limit). A status
+ * this build does not know is a refusal it can show.
+ */
+export const McpAppContextAnswer = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("held"), context: Schema.optionalKey(McpAppContext) }),
+  Schema.Struct({ status: Schema.Literal("refused"), message: Schema.String }),
+  Schema.Struct({ status: Schema.String, message: Schema.optionalKey(Schema.String) }),
+]);
+
+export type McpAppContextAnswer = typeof McpAppContextAnswer.Type;
+
+/**
+ * An App message the owner sent with a message (`submit.app`): the call whose View offered it, and the text the chip held
+ * (what the owner sent, edited or not is the owner's: an edited one is no App message). The Session names the server from the
+ * call's record, never from the message.
+ */
+export const AppMessageRef = Schema.Struct({
+  callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+  text: Schema.String.check(Schema.isMaxLength(MAX_APP_MESSAGE_CHARS)),
+});
+
+export type AppMessageRef = typeof AppMessageRef.Type;
+
+/**
+ * An App message a sent message carries, as its `cloudpid.user` entry keeps it for the transcript's line "sent from the
+ * <server> app": the call, the server's configured name, and the text, which is also a text part of the model's message.
+ */
+export const SentAppMessage = Schema.Struct({
+  callId: Schema.String,
+  /** The server's configured name; empty for a call whose record was gone when the message was sent. */
+  server: Schema.String,
+  text: Schema.String,
+});
+
+export type SentAppMessage = typeof SentAppMessage.Type;
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Bounds
 
@@ -355,8 +419,11 @@ const utf8Length = (text: string): number => {
 /** What `record` weighs: its JSON, in UTF-8 bytes. */
 export const appRecordBytes = (record: McpAppRecord): number => utf8Length(JSON.stringify(record));
 
+/** Where an App message came from, as a phrase: "the docs app", or "an app" for one whose server is gone (an empty name). */
+export const fromApp = (server: string): string => (server === "" ? "an app" : `the ${server} app`);
+
 /** `text` cut to at most `max` UTF-8 bytes, at a character's end. */
-const cutUtf8 = (text: string, max: number): string => {
+export const cutUtf8 = (text: string, max: number): string => {
   let bytes = 0;
   let at = 0;
 

@@ -1,16 +1,20 @@
 // docs/architecture/mcp-apps.md → App Views in the transcript, The bridge. One App View in its card: the sandbox's proxy
 // frame, the bridge to the View inside it, and the card's own chrome (what it is, whose, where it is served, its CSP).
-// The frame never takes focus and is given no permission of the browser's: those are what later tickets turn on.
+// The frame never takes focus, and is given the browser's clipboard-write permission only when its View declared it (nothing
+// else); it asks the owner before a link is opened, and holds what a View says to the conversation (`app-messages.ts`).
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off -- DOM effects: a native debounce timer and observers.
-import type { McpAppAuditEntry, McpAppRecord, McpAppTool } from "@cloudpid/protocol";
+import type { McpAppAuditEntry, McpAppContext, McpAppRecord, McpAppTool } from "@cloudpid/protocol";
 import type { McpUiToolResultNotification } from "@modelcontextprotocol/ext-apps";
 import { Check, Copy } from "lucide-react";
 import * as DateTime from "effect/DateTime";
+import type * as Types from "effect/Types";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { copyToClipboard } from "../lib/clipboard.ts";
 import { cn } from "../lib/utils.ts";
-import { createBridge, retire, type Bridge } from "./bridge.ts";
+import { AppContextChip } from "./app-context-chip.tsx";
+import { refusingSpeech, speechHandlers, type AppSpeech } from "./app-messages.ts";
+import { createBridge, retire, type Bridge, type BridgeOptions } from "./bridge.ts";
 import { displayModeHandler, displayOf, isFullscreen } from "./display-mode.ts";
 import { focusWatch } from "./focus.ts";
 import { declaredCsp, frameUrl } from "./frame-url.ts";
@@ -23,6 +27,7 @@ import {
   inlineHeight,
 } from "./host-context.ts";
 import type { AppPage } from "./load.ts";
+import { openLinkHandler, type PendingLink } from "./open-link.ts";
 import { readEnvironment, readSafeAreaInsets, scrollerOf } from "./page-environment.ts";
 import type { AppPlace } from "./places.ts";
 import { auditLog, viewLogSink, viewRequestHandlers, type AppRequestClient } from "./requests.ts";
@@ -142,6 +147,15 @@ export interface AppFrameProps {
   readonly readOnly?: boolean;
   /** The Session's client, which serves the View's requests of its server (`requests.ts`); none, and the View is served none. */
   readonly client?: AppRequestClient;
+  /**
+   * What the View may say to the conversation: `message` holds its `ui/message` in the composer, `context` sends its
+   * `ui/update-model-context` to the Session. A frame is advertised and answers only those it is given.
+   */
+  readonly speech?: Partial<AppSpeech>;
+  /** The last context the View told the model (the Session's `McpAppEntry.context`), shown as a chip. */
+  readonly context?: McpAppContext | undefined;
+  /** Open a link the owner confirmed in the Browser Pane; without it the confirmation offers only Open. */
+  readonly onOpenInPane?: (url: string) => void;
   /** The link that signs in to the call's server (a step-up, for more access), or none while the Environment is unknown. */
   readonly signInHref?: (stepUp: boolean) => string | undefined;
   /**
@@ -222,6 +236,9 @@ const LiveFrame = ({
   onFocused,
   client,
   signInHref,
+  speech,
+  context,
+  onOpenInPane,
   readOnly = false,
   closing = false,
   cancelled,
@@ -238,15 +255,39 @@ const LiveFrame = ({
   // What the View's requests came to, since the card mounted: a sign-in the server asked for, and the audit entries kept.
   const [signIn, setSignIn] = useState<{ stepUp: boolean } | null>(null);
   const [audited, setAudited] = useState<ReadonlyArray<McpAppAuditEntry>>([]);
+  // The link the View asked to open, waiting for the owner (`open-link.ts`).
+  const [link, setLink] = useState<PendingLink | null>(null);
 
   const csp = declaredCsp(page.meta.csp);
   const src = frameUrl(page.origin, csp, window.location.origin);
   const frameKey = `${src}\0${attempt}`;
+  // The one permission a View is given, and only when it declared it: the proxy's inner frame and the outer one both say so.
+  const clipboardWrite = page.meta.permissions?.["clipboardWrite"] !== undefined;
 
   // The page's latest context, which a bridge reads when it answers `ui/initialize`, read again whenever it is needed.
-  const latest = useRef({ record, tool, csp, place, onRequestMode, client, readOnly });
+  const latest = useRef({
+    record,
+    tool,
+    csp,
+    place,
+    onRequestMode,
+    client,
+    readOnly,
+    speech,
+    onOpenInPane,
+  });
 
-  latest.current = { record, tool, csp, place, onRequestMode, client, readOnly };
+  latest.current = {
+    record,
+    tool,
+    csp,
+    place,
+    onRequestMode,
+    client,
+    readOnly,
+    speech,
+    onOpenInPane,
+  };
   const inPane = isFullscreen(place);
 
   useLayoutEffect(() => {
@@ -298,6 +339,18 @@ const LiveFrame = ({
             { readOnly: latest.current.readOnly },
           );
 
+    // What the View may say to the conversation: only what the frame was given. An archived Session's View (read only) is not
+    // told the host takes it, and a View that says it all the same is refused: nothing is held for a Session that is archived.
+    const given = latest.current.speech ?? {};
+
+    const speaking = latest.current.readOnly ? refusingSpeech(given) : given;
+
+    const viewPage: Types.Mutable<BridgeOptions["page"]> = { html: page.html };
+
+    if (csp !== undefined) viewPage.csp = csp;
+
+    if (clipboardWrite) viewPage.permissions = { clipboardWrite: {} };
+
     const bridge: Bridge = createBridge({
       frame: target,
       origin: page.origin,
@@ -312,7 +365,7 @@ const LiveFrame = ({
           window.removeEventListener("message", onMessage);
         };
       },
-      page: csp === undefined ? { html: page.html } : { html: page.html, csp },
+      page: viewPage,
       hostContext: () => {
         sent = contextNow();
 
@@ -323,10 +376,26 @@ const LiveFrame = ({
         csp,
         latest.current.client !== undefined,
         latest.current.readOnly,
+        {
+          openLinks: true,
+          message: !latest.current.readOnly && speaking.message !== undefined,
+          updateModelContext: !latest.current.readOnly && speaking.context !== undefined,
+          clipboardWrite,
+        },
       ),
       hostInfo: HOST_INFO,
       handlers: {
         ...served,
+        ...speechHandlers(speaking),
+        "ui/open-link": openLinkHandler({
+          show: setLink,
+          open: (url) => {
+            window.open(url, "_blank", "noopener,noreferrer");
+          },
+          openInPane: (url) => {
+            latest.current.onOpenInPane?.(url);
+          },
+        }),
         "ui/request-display-mode": displayModeHandler(latest.current.place, (mode) => {
           latest.current.onRequestMode?.(mode);
         }),
@@ -384,7 +453,7 @@ const LiveFrame = ({
       bridgeRef.current = undefined;
     };
     // The bridge is the frame's: it is built again for another page, origin, call or Retry, never for a context change.
-  }, [frameKey, page.origin, page.html, record.callId]);
+  }, [frameKey, page.origin, page.html, record.callId, clipboardWrite]);
 
   // A place that ends its View keeps the frame until the View has torn down: the frame leaves only when `onClosed` is told.
   // A View that never came up (no bridge) has nothing to tear down.
@@ -521,10 +590,19 @@ const LiveFrame = ({
         </span>
       </div>
       {details && <AppDetails page={page} audit={auditLog(record.audit, audited)} />}
+      <AppContextChip context={context} />
+      {link !== null && (
+        <LinkConfirmation
+          link={link}
+          server={record.server}
+          canOpenInPane={onOpenInPane !== undefined}
+        />
+      )}
       <iframe
         ref={frame}
         key={frameKey}
         src={src}
+        allow={clipboardWrite ? "clipboard-write" : undefined}
         title={`App: ${tool?.title ?? record.tool} (${record.server})`}
         sandbox="allow-scripts allow-same-origin"
         referrerPolicy="no-referrer"
@@ -534,6 +612,67 @@ const LiveFrame = ({
     </div>
   );
 };
+
+/**
+ * What the card asks before a link its View wants opened is: the whole URL with its host emphasised, so a long one cannot
+ * pass for another host, and the owner's choice. Open goes to a new tab with no opener or referrer; dismissing, or a newer
+ * link, answers the View's request `-32000`.
+ */
+const LinkConfirmation = ({
+  link,
+  server,
+  canOpenInPane,
+}: {
+  link: PendingLink;
+  server: string;
+  canOpenInPane: boolean;
+}) => (
+  <div
+    role="group"
+    aria-label="Open link?"
+    className="space-y-1.5 border-t bg-muted/40 px-2 py-1.5 text-xs"
+    onKeyDown={(event) => {
+      if (event.key === "Escape") link.settle("dismiss");
+    }}
+  >
+    <div>The {server} app wants to open a link:</div>
+    <div className="font-mono break-all" data-link="">
+      <span className="text-muted-foreground">{link.before}</span>
+      <strong className="text-foreground">{link.host}</strong>
+      <span className="text-muted-foreground">{link.after}</span>
+    </div>
+    <div className="flex flex-wrap items-center gap-1">
+      <Button
+        size="sm"
+        onClick={() => {
+          link.settle("open");
+        }}
+      >
+        Open
+      </Button>
+      {canOpenInPane && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            link.settle("pane");
+          }}
+        >
+          Open in Browser Pane
+        </Button>
+      )}
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => {
+          link.settle("dismiss");
+        }}
+      >
+        Dismiss
+      </Button>
+    </div>
+  </div>
+);
 
 /** One of the header's text buttons. */
 const HeaderButton = ({
