@@ -51,6 +51,7 @@ import {
   type McpQuestionUnseen,
   originOf,
 } from "./questions.ts";
+import { MCP_PAGE_NOT_KEPT_REASON } from "./question-records.ts";
 
 /** What a form that asks for the credential `field` is declined with: the server is told, the agent reads why. */
 export const credentialReason = (field: string): string =>
@@ -260,6 +261,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
 
     if (call.source !== undefined) question.source = call.source;
 
+    if (request.era !== undefined) question.era = request.era;
+
     return keepOrAsk(request, question, answeredFields);
   };
 
@@ -281,10 +284,11 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
         : { page: { host: page.host, origin: originOf(page.url) }, key: question.key };
 
     // A Modern server's question, or a Legacy `-32042`'s, is kept for later: the round ends, and the call waits for the
-    // owner after it.
+    // owner after it. A call that keeps pages only (a read) keeps a Legacy server's, never a Modern one's.
     if (
       request.mode === "deferrable" &&
-      (call.defers === true || (call.keepsPages === true && page !== undefined))
+      (call.defers === true ||
+        (call.keepsPages === true && page !== undefined && request.era !== "modern"))
     ) {
       const kept = await Effect.runPromise(call.questions.defer(question));
 
@@ -297,6 +301,15 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
         kept === "capped" ? MCP_ELICITATION_CAP_REASON : MCP_QUESTION_UNRECORDED_REASON,
         seen,
       );
+
+      return CANCELLED;
+    }
+
+    // A page of a Modern server's round answered on the spot would send the call again before the owner has been there:
+    // a call that keeps no questions is never offered one (`url` is declared only to a caller that defers), so a server
+    // that asks anyway is told `cancel`.
+    if (request.mode === "deferrable" && page !== undefined) {
+      note("cancel", "cloudpid", [], MCP_PAGE_NOT_KEPT_REASON, seen);
 
       return CANCELLED;
     }
@@ -395,10 +408,13 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       notes: cutNotes(message),
     };
 
-    // A Legacy `-32042` is kept for later and the call is sent again once the owner is done: "Done, try again".
+    // A Legacy `-32042`, or a Modern server's page, is kept for later and the call is sent again once the owner is done:
+    // "Done, try again".
     if (request.mode === "deferrable") question.retry = true;
 
     if (call.source !== undefined) question.source = call.source;
+
+    if (request.era !== undefined) question.era = request.era;
 
     return keepOrAsk(request, question, answeredFields);
   };

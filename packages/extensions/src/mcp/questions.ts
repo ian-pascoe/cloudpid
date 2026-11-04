@@ -229,6 +229,8 @@ type Waiting = {
   readonly closed: Deferred.Deferred<void>;
   /** A page question the owner opened: the server goes on, and the card stays until the page is finished. */
   readonly opened: boolean;
+  /** The Protocol era of the server that asked, for its settled record. */
+  readonly era?: "legacy" | "modern" | undefined;
 };
 
 /** The Session's MCP questions over its storage. Synchronous: the tools that ask are built before the runtime. */
@@ -290,6 +292,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
             // The names of the fields answered: never a value.
             fields:
               ended.action === "accept" ? basics.answeredFields(request.form, ended.content) : [],
+            era: held.era,
           },
           entry.askedAt,
           now,
@@ -330,7 +333,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         yield* keep(
           basics.settledOf(
             request,
-            { action: "cancel", by: "cloudpid", reason, fields: [] },
+            { action: "cancel", by: "cloudpid", reason, fields: [], era: question.era },
             now,
             now,
           ),
@@ -342,7 +345,15 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       const outcome = yield* Deferred.make<McpQuestionOutcome>();
       const closed = yield* Deferred.make<void>();
 
-      waiting.set(id, { key: question.key, request, entry, outcome, closed, opened: false });
+      waiting.set(id, {
+        key: question.key,
+        request,
+        entry,
+        outcome,
+        closed,
+        opened: false,
+        era: question.era,
+      });
       yield* tell;
       yield* basics.startWaiting(
         question.callId,

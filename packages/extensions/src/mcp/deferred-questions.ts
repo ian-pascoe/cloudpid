@@ -41,7 +41,7 @@ import {
   type McpQuestionOutcome,
   McpQuestionsError,
   type McpQuestionStorage,
-  pageKeyOf,
+  pageIdentityOf,
   questionId,
 } from "./question-records.ts";
 import * as Arr from "effect/Array";
@@ -99,8 +99,11 @@ type DeferredQuestion = {
   readonly request: McpElicitationRequest;
   readonly askedAt: number;
   readonly answer?: KeptAnswer;
-  /** The Protocol era of the server that asked; absent reads as Modern (a Legacy `-32042` round is `legacy`). */
-  readonly era?: "legacy";
+  /**
+   * The Protocol era of the server that asked. Absent in a question stored before the field (#487 kept only a Legacy
+   * server's pages, and a deferred form is Modern): `eraOf` reads it as `legacy` for a page and `modern` for a form.
+   */
+  readonly era?: "legacy" | "modern";
   /** What it asks: a form, or a page to open; absent reads as a form. */
   readonly mode?: "form" | "url";
 };
@@ -129,7 +132,19 @@ type DeferredRecord = {
 /** How a round's state is named in its record: a `ResumeState` is not, as before pages. */
 const stateOf = { Resume: undefined, Resend: "resend", Read: "read" } as const;
 
+/** The era an ask names, a page of a core that named none being a Legacy `-32042`'s. */
+const eraOfAsk = (ask: McpQuestionAsk): "legacy" | "modern" =>
+  ask.era ?? (ask.page === undefined ? "modern" : "legacy");
+
 const kindOf = (question: DeferredQuestion): DeferredKind => question.kind ?? "elicitation";
+
+/** The era of the server that asked a question, for a record from before the field too. */
+const eraOf = (question: DeferredQuestion): "legacy" | "modern" =>
+  question.era ?? (question.mode === "url" ? "legacy" : "modern");
+
+/** What names a stored page question across its call's rounds (`pageIdentityOf`). */
+const pageOf = (question: DeferredQuestion): string =>
+  pageIdentityOf(eraOf(question), question.key, question.request.page?.url);
 
 /** Seals and opens an accepted Modern form's content while it waits for its resume, bound to the question's id. */
 export type McpQuestionVault = {
@@ -312,7 +327,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
                 given === undefined ? reason : given.action === "accept" ? undefined : given.reason,
               // The names of the fields answered: never a value.
               fields: given?.action === "accept" && "fields" in given ? given.fields : [],
-              era: question.era,
+              era: eraOf(question),
             },
             question.askedAt,
             now,
@@ -341,7 +356,9 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       const again =
         ask.page !== undefined &&
         (yield* Effect.try(() =>
-          basics.pagesOf(ask.callId).opened.includes(pageKeyOf(ask.key)),
+          basics
+            .pagesOf(ask.callId)
+            .opened.includes(pageIdentityOf(eraOfAsk(ask), ask.key, ask.page?.url)),
         ).pipe(Effect.orElseSucceed(() => false)));
 
       let sequence: number | string | undefined;
@@ -381,9 +398,10 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           askedAt: now,
         };
 
-        // A page is a Legacy `-32042`'s until Modern asks for one too (#493).
         const keptAs: DeferredQuestion =
-          ask.page === undefined ? question : { ...question, mode: "url", era: "legacy" };
+          ask.page === undefined
+            ? { ...question, era: eraOfAsk(ask) }
+            : { ...question, mode: "url", era: eraOfAsk(ask) };
 
         // Listed first: a question whose write fails is dropped with the record, never left behind unlisted.
         writeRecord({ callId: ask.callId, server: ask.server, questions: [...earlier, id] });
@@ -670,9 +688,10 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
   };
 
   /**
-   * The owner's answer to a deferred page question (a Legacy `-32042`'s): `opened` records Open's click, which answers
-   * nothing; `done` ("Done, try again") answers every page of the round `accept` once each is opened, so the call is sent
-   * again; a decline or cancel of one answers the whole round the same, since sending the call again can change nothing.
+   * The owner's answer to a deferred page question (a Legacy `-32042`'s, or a Modern server's): `opened` records Open's
+   * click, which answers nothing; `done` ("Done, try again") answers every page of the round `accept` once each is
+   * opened, so the call is sent again; a decline or cancel of one answers the whole round the same for a Legacy `-32042`,
+   * since sending the call again can change nothing, and only that page for a Modern server.
    */
   const answerPage = (question: DeferredQuestion, given: McpQuestionAnswer) =>
     Effect.gen(function* () {
@@ -706,17 +725,17 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           return "opened" as const;
         }
 
+        // A Modern round may hold forms beside its pages: Done is about its pages only.
+        const pages = open.filter((each) => each.request.page !== undefined);
+
         if (given.action === "done") {
-          const unopened = open.filter((each) => each.request.page?.opened !== true);
+          const unopened = pages.filter((each) => each.request.page?.opened !== true);
 
           if (unopened.length > 0) return "unopened" as const;
 
-          basics.openedPages(
-            callId,
-            Arr.map(open, (each) => each.key),
-          );
+          basics.openedPages(callId, Arr.map(pages, pageOf));
 
-          for (const each of open) {
+          for (const each of pages) {
             storage.put(questionKey(each.id), {
               ...each,
               answer: { action: "accept", by: "owner", page: true },
@@ -726,7 +745,11 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           return "answered" as const;
         }
 
-        for (const each of open) {
+        // A Legacy `-32042`'s round answers as one, since sending the call again can change nothing; a Modern server's
+        // questions are each its own: a declined page never sinks a form beside it.
+        for (const each of eraOf(question) === "modern"
+          ? open.filter((other) => other.id === question.id)
+          : open) {
           storage.put(questionKey(each.id), {
             ...each,
             answer: { action: given.action, by: "owner" },

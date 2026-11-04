@@ -148,6 +148,36 @@ describe("a Modern server's questions through the engine", () => {
     }
   });
 
+  it("declares the URL mode only on a call that keeps a page for later and resumes it, and never on a read", async () => {
+    const paging: McpCallContext = { ...DEFERRING, answers: { ...DEFERRING.answers, pages: true } };
+
+    const keeps = modernServer({ moreTools: [ASK_TOOL] });
+    const defersOnly = modernServer({ moreTools: [ASK_TOOL] });
+
+    const reads = modernServer({
+      resources: [
+        { uri: "file:///a.txt", name: "a", contents: [{ uri: "file:///a.txt", text: "a" }] },
+      ],
+    });
+
+    await send(keeps, callAsk(paging), deferring);
+    await send(defersOnly, callAsk(DEFERRING), deferring);
+    await send(reads, { op: "resources/read", uri: "file:///a.txt", ctx: paging }, deferring);
+
+    expect(declared(keeps)).toMatchObject({
+      "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {}, url: {} } },
+    });
+    expect(declared(defersOnly)).toMatchObject({
+      "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {} } },
+    });
+    // Form only, and none on a read, which has no resume to wait for a page with.
+    expect(JSON.stringify(declared(defersOnly))).toContain('"elicitation":{"form":{}}');
+
+    const read = reads.received.find((received) => received.rpc?.method === "resources/read");
+
+    expect(JSON.stringify(read?.rpc?.params?.["_meta"])).toContain('"elicitation":{"form":{}}');
+  });
+
   it("refuses to resume a state of a format it does not know, sending nothing", async () => {
     const server = modernServer({ moreTools: [ASK_TOOL] });
 

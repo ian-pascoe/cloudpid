@@ -100,6 +100,7 @@ describe("a Legacy server's URL-mode elicitation", () => {
         key: expect.any(String),
         kind: "elicitation",
         mode: "live",
+        era: "legacy",
         params: { mode: "url", elicitationId: "e-7", ...PAGE },
       },
     ]);
