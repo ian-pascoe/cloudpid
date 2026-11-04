@@ -14,7 +14,16 @@ import { copyToClipboard } from "../lib/clipboard.ts";
 import { cn } from "../lib/utils.ts";
 import { AppContextChip } from "./app-context-chip.tsx";
 import { refusingSpeech, speechHandlers, type AppSpeech } from "./app-messages.ts";
-import { createBridge, retire, type Bridge, type BridgeOptions } from "./bridge.ts";
+import {
+  createBridge,
+  HOST_REFUSED,
+  retire,
+  RpcError,
+  type Bridge,
+  type BridgeOptions,
+  type RequestHandler,
+} from "./bridge.ts";
+import { createPartialFeed, type PartialFeed, type ToolArguments } from "./partial-input.ts";
 import { displayModeHandler, displayOf, isFullscreen } from "./display-mode.ts";
 import { focusWatch } from "./focus.ts";
 import { declaredCsp, frameUrl } from "./frame-url.ts";
@@ -128,8 +137,26 @@ const AppDetails = ({ page, audit }: { page: AppPage; audit: ReadonlyArray<McpAp
   );
 };
 
+/**
+ * A call whose View is up before its record is: it is streaming its arguments, or has them all and is running
+ * (`docs/architecture/mcp-apps.md` → Lifecycle). Its record, when it finishes, comes as `AppFrameProps.record` to the
+ * frame that is already there.
+ */
+export interface RunningCall {
+  readonly callId: string;
+  readonly server: string;
+  /** The tool as its server names it. */
+  readonly tool: string;
+  /** The arguments so far while the call streams; all of them once `final` (its message was committed); none for a call that stopped. */
+  readonly arguments: ToolArguments | undefined;
+  readonly final: boolean;
+}
+
 export interface AppFrameProps {
-  readonly record: McpAppRecord;
+  /** The finished call's record: its arguments and whole result, sent to the View as soon as it is ready. */
+  readonly record?: McpAppRecord | undefined;
+  /** The call while it has no record: its partial input is sent, then its final input. One of this and `record` is given. */
+  readonly running?: RunningCall | undefined;
   readonly page: AppPage;
   /** The tool as the inventory lists it, for `toolInfo` (its title and input schema) and the frame's title. */
   readonly tool: McpAppTool | undefined;
@@ -163,8 +190,8 @@ export interface AppFrameProps {
    * the frame stays until its View has been told to tear down and has answered (at most 2 s), then `onClosed` says it may go.
    */
   readonly closing?: boolean;
-  /** For a call that did not finish: the `tool-cancelled` reason sent before the teardown (the streaming mount's, #496). */
-  readonly cancelled?: string;
+  /** For a call that did not finish: the `tool-cancelled` reason, sent when it is known and before any teardown. */
+  readonly cancelled?: string | undefined;
   readonly onClosed?: () => void;
 }
 
@@ -190,23 +217,23 @@ export const AppFrame = (props: AppFrameProps) => {
   // with every call served, so that its badge and its handlers agree.
   const readOnly = props.readOnly === true;
 
+  const callId = props.record?.callId ?? props.running?.callId ?? "";
+
   const [shown, setShown] = useState({
-    record: props.record,
+    callId,
     page: props.page,
     readOnly,
     epoch: 0,
   });
 
+  // The record that comes to a View mounted as its call streamed is the same call: it is not a new frame.
   const differs =
-    shown.page !== props.page ||
-    shown.record.callId !== props.record.callId ||
-    shown.readOnly !== readOnly;
+    shown.page !== props.page || shown.callId !== callId || shown.readOnly !== readOnly;
 
   return (
     <LiveFrame
       {...props}
       key={shown.epoch}
-      record={shown.record}
       page={shown.page}
       readOnly={shown.readOnly}
       closing={props.closing === true || differs}
@@ -214,7 +241,7 @@ export const AppFrame = (props: AppFrameProps) => {
         if (props.closing === true) props.onClosed?.();
         else {
           setShown((was) => ({
-            record: props.record,
+            callId,
             page: props.page,
             readOnly,
             epoch: was.epoch + 1,
@@ -225,8 +252,32 @@ export const AppFrame = (props: AppFrameProps) => {
   );
 };
 
+/** What a View is answered when it asks for a server's or the conversation's before its call has a record. */
+const NOT_RECORDED = "The host serves this once the call has finished";
+
+/** `handlers`, each refusing (`-32000`) until `recorded` says the frame has its call's record. */
+const untilRecorded = (
+  handlers: Readonly<Record<string, RequestHandler>>,
+  recorded: () => boolean,
+): Readonly<Record<string, RequestHandler>> =>
+  Object.fromEntries(
+    Object.entries(handlers).map(([method, handler]): [string, RequestHandler] => [
+      method,
+      (params, context) =>
+        recorded()
+          ? handler(params, context)
+          : Promise.reject(new RpcError(HOST_REFUSED, NOT_RECORDED)),
+    ]),
+  );
+
+/** Why a View is told its call is over when it is torn down before the call has a result and nothing else says why. */
+const UNSHOWN_REASON = "The call is no longer shown";
+
+const NO_AUDIT: ReadonlyArray<McpAppAuditEntry> = [];
+
 const LiveFrame = ({
   record,
+  running,
   page,
   tool,
   badge,
@@ -258,6 +309,15 @@ const LiveFrame = ({
   // The link the View asked to open, waiting for the owner (`open-link.ts`).
   const [link, setLink] = useState<PendingLink | null>(null);
 
+  // Who the call is, from its record or, while it runs, from what the card knows of it.
+  const call = record ?? running;
+  const callId = call?.callId ?? "";
+  const server = call?.server ?? "";
+  const toolName = call?.tool ?? "";
+
+  // The call is still going as far as the card knows: no record, and it was not said to have ended.
+  const unfinished = record === undefined && running !== undefined && cancelled === undefined;
+
   const csp = declaredCsp(page.meta.csp);
   const src = frameUrl(page.origin, csp, window.location.origin);
   const frameKey = `${src}\0${attempt}`;
@@ -266,7 +326,8 @@ const LiveFrame = ({
 
   // The page's latest context, which a bridge reads when it answers `ui/initialize`, read again whenever it is needed.
   const latest = useRef({
-    record,
+    callId,
+    toolName,
     tool,
     csp,
     place,
@@ -275,10 +336,13 @@ const LiveFrame = ({
     readOnly,
     speech,
     onOpenInPane,
+    unfinished,
+    recorded: record !== undefined,
   });
 
   latest.current = {
-    record,
+    callId,
+    toolName,
     tool,
     csp,
     place,
@@ -287,6 +351,8 @@ const LiveFrame = ({
     readOnly,
     speech,
     onOpenInPane,
+    unfinished,
+    recorded: record !== undefined,
   };
   const inPane = isFullscreen(place);
 
@@ -306,8 +372,8 @@ const LiveFrame = ({
       return hostContextOf(
         env,
         {
-          callId: now.record.callId,
-          name: now.record.tool,
+          callId: now.callId,
+          name: now.toolName,
           title: now.tool?.title,
           inputSchema: now.tool?.inputSchema,
         },
@@ -327,7 +393,7 @@ const LiveFrame = ({
         ? undefined
         : viewRequestHandlers(
             latest.current.client,
-            record.callId,
+            callId,
             {
               onSignIn: (need) => {
                 setSignIn((was) => ({ stepUp: need.stepUp || was?.stepUp === true }));
@@ -385,8 +451,10 @@ const LiveFrame = ({
       ),
       hostInfo: HOST_INFO,
       handlers: {
-        ...served,
-        ...speechHandlers(speaking),
+        // What a View says to its server or the conversation goes by its call's record, which names the server: until the
+        // frame has it (a View made as its call streamed) there is none to name, and what could reach another server than
+        // the page's (a shadowed one, whose record never comes) is refused.
+        ...untilRecorded({ ...served, ...speechHandlers(speaking) }, () => latest.current.recorded),
         "ui/open-link": openLinkHandler({
           show: setLink,
           open: (url) => {
@@ -403,7 +471,7 @@ const LiveFrame = ({
       logs:
         latest.current.client === undefined
           ? undefined
-          : viewLogSink(latest.current.client, record.callId),
+          : viewLogSink(latest.current.client, callId),
       onEvent: (event) => {
         if (event.type === "failed") setFailed({ key: frameKey, reason: event.reason });
 
@@ -416,9 +484,6 @@ const LiveFrame = ({
 
     bridgeRef.current = bridge;
     bridge.start();
-    bridge.toolInput(record.arguments);
-    // SAFETY: the record keeps the whole CallToolResult as JSON (`content`, `structuredContent`, `isError`, `_meta`), which is what `tool-result` carries.
-    bridge.toolResult(record.result as McpUiToolResultNotification["params"]);
 
     // The theme, and the card's width, as they change: the View is told what differs, once they settle.
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -449,11 +514,69 @@ const LiveFrame = ({
 
       // The View is asked to tear down, and the frame goes with the card at once: React cannot wait the 2 s the
       // spec allows it, so a View that saves on teardown is not sure to finish (docs/architecture/mcp-apps.md → As built).
+      // A card that goes while its call was going (the message that made it is gone, a retry dropped it) tells the View the
+      // call is over first, then asks it to tear down; a call that ended said so already, and the bridge says it once.
+      if (latest.current.unfinished) bridge.toolCancelled(UNSHOWN_REASON);
+
       void bridge.teardown();
       bridgeRef.current = undefined;
     };
     // The bridge is the frame's: it is built again for another page, origin, call or Retry, never for a context change.
-  }, [frameKey, page.origin, page.html, record.callId, clipboardWrite]);
+  }, [frameKey, page.origin, page.html, callId, clipboardWrite]);
+
+  // What the View is told of its call, as the call goes on: the partial input, at most every 250 ms, while it streams; the
+  // final input once it is committed; the result when the record comes; and the end of it when it did not finish. The bridge
+  // holds all of it until the View is ready and sends each of the last three once. The throttle is the bridge's own: a new
+  // bridge (Retry) starts a new one.
+  const feeding = useRef<{ bridge: Bridge; partial: PartialFeed } | undefined>(undefined);
+  const streamedArguments = running?.arguments;
+  const streamFinal = running?.final === true;
+
+  useEffect(() => {
+    const bridge = bridgeRef.current;
+
+    if (bridge === undefined) return;
+
+    if (feeding.current?.bridge !== bridge) {
+      feeding.current?.partial.stop();
+      feeding.current = {
+        bridge,
+        partial: createPartialFeed((args) => {
+          bridge.toolInputPartial(args);
+        }),
+      };
+    }
+
+    const { partial } = feeding.current;
+
+    if (record !== undefined) {
+      partial.stop();
+      bridge.toolInput(record.arguments);
+      // SAFETY: the record keeps the whole CallToolResult as JSON (`content`, `structuredContent`, `isError`, `_meta`), which is what `tool-result` carries.
+      bridge.toolResult(record.result as McpUiToolResultNotification["params"]);
+
+      return;
+    }
+
+    if (streamedArguments !== undefined) {
+      if (streamFinal) {
+        partial.stop();
+        bridge.toolInput(streamedArguments);
+      } else partial.push(streamedArguments);
+    }
+
+    if (cancelled !== undefined) {
+      partial.stop();
+      bridge.toolCancelled(cancelled);
+    }
+  }, [frameKey, page.origin, page.html, callId, record, streamedArguments, streamFinal, cancelled]);
+
+  useEffect(
+    () => () => {
+      feeding.current?.partial.stop();
+    },
+    [],
+  );
 
   // A place that ends its View keeps the frame until the View has torn down: the frame leaves only when `onClosed` is told.
   // A View that never came up (no bridge) has nothing to tear down.
@@ -474,7 +597,11 @@ const LiveFrame = ({
     retiring.current ??=
       bridgeRef.current === undefined
         ? Promise.resolve()
-        : retire(bridgeRef.current, cancelReason.current);
+        : // A View torn down before its call has a result is told the call is over first, whoever ends it.
+          retire(
+            bridgeRef.current,
+            cancelReason.current ?? (latest.current.unfinished ? UNSHOWN_REASON : undefined),
+          );
 
     return retiring.current;
   };
@@ -503,7 +630,7 @@ const LiveFrame = ({
   useEffect(
     () =>
       appViews.register({
-        callId: record.callId,
+        callId,
         element: () => frame.current,
         place,
         retire: () => ending.current.closeOnce(),
@@ -512,7 +639,7 @@ const LiveFrame = ({
           void ending.current.closeOnce().then(ending.current.tell);
         },
       }),
-    [record.callId, place],
+    [callId, place],
   );
 
   // Whether the View has the keyboard focus: its frame is the document's active element (`focus.ts`, which also sees focus
@@ -556,12 +683,12 @@ const LiveFrame = ({
         // An App Pane is the View's whole container: both axes are fixed, and it fills the Pane.
         inPane ? "flex min-h-0 flex-1 flex-col" : "my-2",
       )}
-      data-app-view={record.callId}
+      data-app-view={callId}
     >
       <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
         <span className="text-foreground">App</span>
         <span>·</span>
-        <span className="min-w-0 truncate">{record.server}</span>
+        <span className="min-w-0 truncate">{server}</span>
         {shownBadge !== null && (
           <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5">{BADGES[shownBadge]}</span>
         )}
@@ -571,7 +698,7 @@ const LiveFrame = ({
             href={signInLink}
             target="_blank"
             rel="noopener"
-            aria-label={`Sign in to ${record.server}${signIn?.stepUp === true ? " for more access" : ""} (opens in a new tab)`}
+            aria-label={`Sign in to ${server}${signIn?.stepUp === true ? " for more access" : ""} (opens in a new tab)`}
             className="shrink-0 underline underline-offset-2 hover:text-foreground"
           >
             Sign in
@@ -589,21 +716,17 @@ const LiveFrame = ({
           </HeaderButton>
         </span>
       </div>
-      {details && <AppDetails page={page} audit={auditLog(record.audit, audited)} />}
+      {details && <AppDetails page={page} audit={auditLog(record?.audit ?? NO_AUDIT, audited)} />}
       <AppContextChip context={context} />
       {link !== null && (
-        <LinkConfirmation
-          link={link}
-          server={record.server}
-          canOpenInPane={onOpenInPane !== undefined}
-        />
+        <LinkConfirmation link={link} server={server} canOpenInPane={onOpenInPane !== undefined} />
       )}
       <iframe
         ref={frame}
         key={frameKey}
         src={src}
         allow={clipboardWrite ? "clipboard-write" : undefined}
-        title={`App: ${tool?.title ?? record.tool} (${record.server})`}
+        title={`App: ${tool?.title ?? toolName} (${server})`}
         sandbox="allow-scripts allow-same-origin"
         referrerPolicy="no-referrer"
         className={cn(frameClass, inPane && "min-h-0 flex-1")}

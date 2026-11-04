@@ -5,6 +5,7 @@ import {
   type TranscriptPart,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
+import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import {
   answerOf,
@@ -852,6 +853,68 @@ describe("the thread messages of a view", () => {
         metadata: { custom: { title: "Context reset" } },
       },
     ]);
+  });
+});
+
+describe("an App tool's call as the message streams and commits", () => {
+  const partsOf = (message: ReturnType<typeof toThreadMessages>[number] | undefined) => {
+    const content = message?.content;
+
+    return Predicate.isString(content) || content === undefined ? [] : content;
+  };
+
+  const call = (args: Record<string, string>): TranscriptMessage["parts"] => [
+    { type: "tool-call", id: "c1", name: "mcp__docs__page", arguments: args },
+  ];
+
+  it("keeps the turn's ID and the call's place, so the commit changes nothing a renderer keys by", () => {
+    const first = user("1", "show me");
+    const streaming = view({ messages: [first], live: assistant("live", call({ title: "He" })) });
+
+    const committed = view({
+      messages: [first, assistant("2", call({ title: "Hello" }))],
+    });
+
+    const done = view({
+      messages: [first, assistant("2", call({ title: "Hello" })), result("c1", "ok")],
+    });
+
+    const [, before] = toThreadMessages(streaming);
+    const [, after] = toThreadMessages(committed);
+    const [, last] = toThreadMessages(done);
+
+    expect(before?.id).toBe(after?.id);
+    expect(after?.id).toBe(last?.id);
+
+    const at = (message: typeof before) =>
+      Arr.findFirstIndex(
+        partsOf(message),
+        (part) => part.type === "tool-call" && part.toolCallId === "c1",
+      );
+
+    expect(at(before)).toEqual(at(after));
+    expect(at(after)).toEqual(at(last));
+  });
+
+  it("marks the calls of the message being streamed, and no committed one", () => {
+    const first = user("1", "show me");
+
+    const [, streaming] = toThreadMessages(
+      view({ messages: [first], live: assistant("live", call({ title: "He" })) }),
+    );
+
+    const [, committed] = toThreadMessages(
+      view({ messages: [first, assistant("2", call({ title: "Hello" }))] }),
+    );
+
+    const part = (message: typeof streaming) => partsOf(message)[0];
+
+    expect(part(streaming)).toMatchObject({
+      type: "tool-call",
+      args: { title: "He" },
+      artifact: { streaming: true },
+    });
+    expect(part(committed)).not.toHaveProperty("artifact");
   });
 });
 

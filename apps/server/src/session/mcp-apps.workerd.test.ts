@@ -449,6 +449,24 @@ describe("an MCP App call over the Session's socket", () => {
 
     client.send({ type: "mcp_app_html", id: "html-neither" });
     expect(await client.answer("html-neither")).toMatchObject({ result: { status: "missing" } });
+
+    // A running call has no record: its page is its tool's, read by the URI the tool declares, with the origin.
+    client.send({
+      type: "mcp_app_html",
+      id: "html-tool",
+      tool: "mcp__docs__app",
+      callId: "running",
+    });
+
+    const byTool = await client.answer("html-tool");
+
+    expect(byTool).toMatchObject({
+      result: { status: "html", html: PAGE, view: expect.any(String) },
+    });
+    expect(JSON.stringify(byTool)).toContain('"origin":');
+
+    client.send({ type: "mcp_app_html", id: "html-tool-none", tool: "mcp__docs__other" });
+    expect(await client.answer("html-tool-none")).toMatchObject({ result: { status: "missing" } });
   });
 
   it("sends a client with no App tools an empty list, and a watch no App calls", async () => {

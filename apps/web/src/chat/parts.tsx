@@ -28,7 +28,7 @@ import { decodeCardDiff, diffTotals } from "../call-diff.ts";
 import { DiffTally } from "../diff-pane/parts.tsx";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
-import { AppCall, AppStrip } from "../app-view/app-call.tsx";
+import { AppCall, AppStrip, type CallProgress } from "../app-view/app-call.tsx";
 import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
 import { ResourceChips } from "./mcp-resource-view.tsx";
 import { LiveResource } from "./mcp-resource-live.tsx";
@@ -202,6 +202,10 @@ const StreamedOutput = Schema.Struct({ output: Schema.NonEmptyString });
 const decodeStreamedOutput = Schema.decodeUnknownOption(StreamedOutput);
 
 const decodePath = Schema.decodeUnknownOption(Schema.Struct({ path: Schema.String }));
+
+const decodeStreaming = Schema.decodeUnknownOption(
+  Schema.Struct({ streaming: Schema.Literal(true) }),
+);
 
 const decodeImages = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -515,15 +519,29 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
     </Disclosure>
   );
 
-  // An MCP tool's call that finished may be an App's: its View shows under the card (`docs/architecture/mcp-apps.md` → App
-  // Views in the transcript), and the card says nothing when it is not one.
+  // An MCP tool's call may be an App's: its View shows under the card (`docs/architecture/mcp-apps.md` → App Views in the
+  // transcript) from the moment the call starts streaming, and the card says nothing when it is not one. A call with no
+  // result is still being emitted, runs, or stopped without one.
   // A `codemode` script's App calls show in a strip under its card, outside its disclosure (the script has no View of its own).
-  const app =
-    result !== undefined && toolName.startsWith("mcp__") ? (
-      <AppCall callId={toolCallId} toolName={toolName} />
-    ) : toolName === "codemode" ? (
-      <AppStrip parentId={toolCallId} />
-    ) : null;
+  const progress: CallProgress | undefined =
+    result !== undefined
+      ? undefined
+      : stopped
+        ? { phase: "stopped" }
+        : {
+            phase: Option.isSome(decodeStreaming(artifact)) ? "streaming" : "running",
+            arguments: args,
+          };
+
+  const app = toolName.startsWith("mcp__") ? (
+    <AppCall
+      callId={toolCallId}
+      toolName={toolName}
+      {...(progress === undefined ? {} : { progress })}
+    />
+  ) : toolName === "codemode" ? (
+    <AppStrip parentId={toolCallId} />
+  ) : null;
 
   // The MCP task it started, while the call waits for it and after (`docs/architecture/mcp-server-requests.md` → MCP tasks).
   const task = toolName.startsWith("mcp__") ? <McpTaskCall callId={toolCallId} /> : null;

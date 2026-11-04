@@ -9,7 +9,7 @@ import type { SessionClient } from "../session/client.ts";
 import { isSandboxOrigin } from "./frame-url.ts";
 
 /** What loading needs of the Session's client: its two App commands. */
-export type AppClient = Pick<SessionClient, "mountApp" | "appPage">;
+export type AppClient = Pick<SessionClient, "mountApp" | "appPage" | "appToolPage">;
 
 /** A page the View is mounted with, and the origin it is served on. */
 export interface AppPage {
@@ -17,12 +17,16 @@ export interface AppPage {
   /** The page's `_meta.ui`: `csp`, `permissions`, `domain` and `prefersBorder`, as the host keeps it. */
   readonly meta: Extract<McpAppHtmlAnswer, { readonly status: "html" }>["meta"];
   readonly origin: string;
+  /** What names the origin of the server this page is of (`viewHash`), when the Session said: a record of another is not its. */
+  readonly view?: string;
 }
 
 /** What loading a card's View comes to. */
 export type AppLoad =
   /** A record and its page: the View mounts. */
   | { readonly status: "view"; readonly record: McpAppRecord; readonly page: AppPage }
+  /** A call that is still running has no record yet: the page of its tool's View, which mounts as the call streams. */
+  | { readonly status: "running"; readonly page: AppPage }
   /** The call's server is no longer the one that made it (shadowed): "App unavailable", no mount. */
   | { readonly status: "unavailable" }
   /** The record was evicted: the call's summary only. */
@@ -69,10 +73,56 @@ export const forgetPages = (): void => {
 const keyOf = (record: McpAppRecord, hash: string | undefined): string | undefined =>
   record.viewHash === undefined || hash === undefined ? undefined : `${record.viewHash}\0${hash}`;
 
+/** A page the Session answered, checked and ready to frame, with its hash; or why it is not (an `AppLoad` of no View). */
+type Framed =
+  | { readonly status: "page"; readonly page: AppPage; readonly hash: string }
+  | Exclude<AppLoad, { readonly status: "view" | "running" }>;
+
+/**
+ * What the Session's answer for a page comes to: a page to frame, or no View. `expectedView` is the `viewHash` its call
+ * pinned: a page of another server than the call's is never framed, whoever says it is not (the Session checks this too). A
+ * page with no origin to frame it at, or at an origin that is not a sandbox's, is a failure, never a frame.
+ */
+const framed = (
+  answer: McpAppHtmlAnswer,
+  pageOrigin: string,
+  expectedView: string | undefined,
+): Framed => {
+  if (answer.status === "unavailable") return { status: "unavailable" };
+
+  if (answer.status !== "html" || !("html" in answer)) {
+    const why =
+      "message" in answer && answer.message !== undefined ? answer.message : answer.status;
+
+    return { status: "failed", reason: why };
+  }
+
+  const view = "view" in answer ? answer.view : undefined;
+
+  if (expectedView !== undefined && view !== undefined && view !== expectedView) {
+    return { status: "unavailable" };
+  }
+
+  if (!("origin" in answer) || answer.origin === undefined) {
+    return { status: "failed", reason: "The host named no sandbox origin for this App" };
+  }
+
+  if (!isSandboxOrigin(answer.origin, pageOrigin)) {
+    return { status: "failed", reason: "The sandbox origin is not one the page frames" };
+  }
+
+  const page: AppPage = { html: answer.html, meta: answer.meta, origin: answer.origin };
+
+  return {
+    status: "page",
+    page: view === undefined ? page : { ...page, view },
+    hash: answer.hash,
+  };
+};
+
 /**
  * The page of `record`: from memory when its server's copy under its hash is held, else the Session's (`mcp_app_html` by
- * the call, which reads and pins a page the record lacks). A page with no origin to frame it at, or at an origin that
- * is not a sandbox's, is a failure, never a frame.
+ * the call, which reads and pins a page the record lacks).
  */
 const pageOf = (
   client: AppClient,
@@ -85,43 +135,46 @@ const pageOf = (
 
     if (held !== undefined) return { status: "view", record, page: held } as const;
 
-    const answer = yield* client.appPage(record.callId);
+    const made = framed(yield* client.appPage(record.callId), pageOrigin, record.viewHash);
 
-    if (answer.status === "unavailable") return { status: "unavailable" } as const;
+    if (made.status !== "page") return made;
 
-    if (answer.status !== "html" || !("html" in answer)) {
-      const why =
-        "message" in answer && answer.message !== undefined ? answer.message : answer.status;
+    const kept = keyOf(record, made.hash);
 
-      return { status: "failed", reason: why } as const;
-    }
+    if (kept !== undefined) remember(kept, made.page);
 
-    // The Session checks this too; a page of another server than the call's is never framed, whoever says it is not.
-    if (
-      record.viewHash !== undefined &&
-      "view" in answer &&
-      answer.view !== undefined &&
-      answer.view !== record.viewHash
-    ) {
-      return { status: "unavailable" } as const;
-    }
-
-    if (!("origin" in answer) || answer.origin === undefined) {
-      return { status: "failed", reason: "The host named no sandbox origin for this App" } as const;
-    }
-
-    if (!isSandboxOrigin(answer.origin, pageOrigin)) {
-      return { status: "failed", reason: "The sandbox origin is not one the page frames" } as const;
-    }
-
-    const page: AppPage = { html: answer.html, meta: answer.meta, origin: answer.origin };
-
-    const kept = keyOf(record, answer.hash);
-
-    if (kept !== undefined) remember(kept, page);
-
-    return { status: "view", record, page } as const;
+    return { status: "view", record, page: made.page } as const;
   }).pipe(
+    Effect.catchTag("SessionCommandError", (error) =>
+      Effect.succeed<AppLoad>({ status: "failed", reason: error.message }),
+    ),
+  );
+
+/**
+ * The page of the View of App tool `toolName` (as the model names it), for call `callId` of it that is running
+ * (`mcp_app_html` by the tool): there is no record to say which server's, so the Session reads the page of the one the
+ * inventory names, and the page keeps the `view` that names it (`AppPage.view`), for the record's check when it comes. `none`
+ * when the Session says `missing` or `unsupported` (it predates this, or the host serves no pages): the View mounts when the
+ * call has finished, as it did. A page is kept in memory as a finished call's of the same server is, so the two share it.
+ */
+export const loadRunningView = (
+  client: AppClient,
+  toolName: string,
+  callId: string,
+  pageOrigin: string,
+): Effect.Effect<AppLoad> =>
+  client.appToolPage(toolName, callId).pipe(
+    Effect.map((answer): AppLoad => {
+      if (answer.status === "missing" || answer.status === "unsupported") return { status: "none" };
+
+      const made = framed(answer, pageOrigin, undefined);
+
+      if (made.status !== "page") return made;
+
+      if (made.page.view !== undefined) remember(`${made.page.view}\0${made.hash}`, made.page);
+
+      return { status: "running", page: made.page };
+    }),
     Effect.catchTag("SessionCommandError", (error) =>
       Effect.succeed<AppLoad>({ status: "failed", reason: error.message }),
     ),

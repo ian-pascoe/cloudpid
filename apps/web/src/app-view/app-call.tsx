@@ -5,18 +5,13 @@
 //
 // Which place mounts a View is `places.ts`'s; whether a View is live is `generation.ts`'s, with what the owner chose of it
 // on this device. The frame itself is `app-frame.tsx`'s.
-// @effect-diagnostics missingPipeableSignature:off -- a hook over the Session's atoms, not a combinator.
-import { GLOBAL_SCOPE, type McpAppContext, type McpAppTool } from "@cloudpid/protocol";
-import {
-  RegistryContext,
-  useAtom,
-  useAtomRefresh,
-  useAtomSet,
-  useAtomValue,
-} from "@effect/atom-react";
+// @effect-diagnostics missingPipeableSignature:off globalTimers:off -- a hook over the Session's atoms, not a combinator; the grace for a record is a native timer.
+import { GLOBAL_SCOPE, isKeptApp, type McpAppContext, type McpAppTool } from "@cloudpid/protocol";
+import { RegistryContext, useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   createContext,
   use,
+  useEffect,
   useId,
   useLayoutEffect,
   useRef,
@@ -49,17 +44,22 @@ import type { SessionClient } from "../session/client.ts";
 import { BROWSER_PANE } from "../panes.ts";
 import { browserPaneKey, ownerTabActionAtom } from "../live-view/browser-pane-atoms.ts";
 import { AppContextChip } from "./app-context-chip.tsx";
-import { AppFailed, AppFrame, type AppControls } from "./app-frame.tsx";
+import { AppFailed, AppFrame, type AppControls, type RunningCall } from "./app-frame.tsx";
+import type { ToolArguments } from "./partial-input.ts";
 import type { AppSpeech } from "./app-messages.ts";
 import {
   appGenerationAtom,
   appKey,
   appLoadAtom,
+  appRunningAtom,
+  NO_RUNNING_PAGE,
+  runningKey,
   sessionArchivedAtom,
   sessionEnvironmentAtom,
   sessionMcpStatusesAtom,
 } from "./atoms.ts";
 import { appAvailability, type AppAvailability } from "./availability.ts";
+import type { AppPage } from "./load.ts";
 import type { DisplayMode } from "./host-context.ts";
 import { callsOfScript, isAppLive, stripRows } from "./generation.ts";
 import { appPlaces, PLACE_NAMES, type AppPlace, type AppPlaces } from "./places.ts";
@@ -152,7 +152,38 @@ export interface AppFacts {
   readonly archived: boolean;
   /** The last context the View told the model, with whether it was delivered. */
   readonly context: McpAppContext | undefined;
+  /** The Session keeps the call's record: it finished, and its View has a result to be told. */
+  readonly kept: boolean;
 }
+
+/**
+ * Where a call is when its card is drawn, for a call that has not finished (`undefined` is a finished call, whose record
+ * the View is given whole): the model is still emitting it (`streaming`, with the arguments so far), its message was
+ * committed and it runs (`running`, with all its arguments), or it ended without a result (`stopped`: Stop, a timeout, a cut).
+ */
+export type CallProgress =
+  | {
+      readonly phase: "streaming" | "running";
+      readonly arguments: ToolArguments;
+    }
+  | { readonly phase: "stopped" };
+
+const STOPPED_REASON = "The call did not finish";
+
+/** Why a View is told its call is over when the record that came is another server's than its page. */
+const SHADOWED_REASON = "The server that made the call is no longer the one this App is of";
+
+/** Why a View is told its call is over when the call has its result and no record came for it. */
+const NO_RECORD_REASON = "The call ended without a result for the App";
+
+/** How long a call that has its result is given for its record to arrive (the Session's list of records comes on its own). */
+const NO_RECORD_GRACE_MS = 2000;
+
+/** Whether the model is still emitting the call or it runs: its View is told of it as it goes. */
+const isRunning = (
+  progress: CallProgress | undefined,
+): progress is Extract<CallProgress, { readonly phase: "streaming" | "running" }> =>
+  progress?.phase === "streaming" || progress?.phase === "running";
 
 /** What a place hands the component that loads and frames a call's View. */
 export interface AppLoadedProps {
@@ -163,26 +194,59 @@ export interface AppLoadedProps {
   readonly onFocused: (focused: boolean) => void;
   readonly closing: boolean;
   readonly onClosed: () => void;
+  /** Where the call is while it has not finished: its View mounts before its record, and is told as it goes. */
+  readonly progress?: CallProgress | undefined;
 }
 
-/** The View of call `callId`, loaded when this mounts: it shows nothing while it loads (the card has the call's state). */
+/**
+ * The View of call `callId`, loaded when this mounts: it shows nothing while it loads (the card has the call's state). A call
+ * that is running has no record, so its View is made from its tool's page and the arguments it has; the record, when the call
+ * finishes, is read into the frame that is there, which is never made again for it (the page it was made with is kept, and the
+ * record's is not swapped in).
+ */
 const AppLoaded = ({
-  facts: { sessionId, callId, tool, badge, archived, context },
+  facts: { sessionId, callId, tool, badge, archived, context, kept },
   place,
   controls,
   onRequestMode,
   onFocused,
   closing,
   onClosed,
+  progress,
 }: AppLoadedProps) => {
   const key = appKey(sessionId, callId);
-  const result = useAtomValue(appLoadAtom(key));
-  const retry = useAtomRefresh(appLoadAtom(key));
+  const inProgress = isRunning(progress);
+
+  // The page the View was made from, for as long as this card has it, and whose it is: a View made before its call had a record
+  // (`early`) is of the server the inventory named then, which the record must be of too.
+  const [held, setHeld] = useState<
+    { readonly page: AppPage; readonly server: string; readonly early: boolean } | undefined
+  >(undefined);
+
+  const wantsRunning = tool !== undefined && !kept && (inProgress || held !== undefined);
+
+  // A call without a record is not asked for one: the answer would be `none`, which the atom keeps.
+  const recordResult = useAtomValue(wantsRunning ? NO_RUNNING_PAGE : appLoadAtom(key));
+
+  const runningResult = useAtomValue(
+    wantsRunning ? appRunningAtom(runningKey(sessionId, callId, tool.name)) : NO_RUNNING_PAGE,
+  );
+
   const client = useAtomValue(sessionClientAtom(sessionId));
   const environment = useAtomValue(sessionEnvironmentAtom(sessionId));
 
   // What the View may say to the conversation is read where the View is shown when it says it, not as of this render.
   const registry = use(RegistryContext);
+
+  // Retry loads again the one that failed. It is not a hook of either atom: reading one here would load it for a card that
+  // wants the other (a call that runs has no record to mount yet, and the answer, `none`, would be kept for when it has).
+  const retry = () => {
+    registry.refresh(
+      wantsRunning && tool !== undefined
+        ? appRunningAtom(runningKey(sessionId, callId, tool.name))
+        : appLoadAtom(key),
+    );
+  };
 
   // "Open in Browser Pane": the Pane is opened, and the Owner tab goes to the link on the Pane's own connection.
   const actOnPanes = useAtomSet(panesAtom);
@@ -191,60 +255,149 @@ const AppLoaded = ({
     mode: "promiseExit",
   });
 
-  if (!AsyncResult.isSuccess(result)) return null;
+  const recordLoad = AsyncResult.isSuccess(recordResult) ? recordResult.value : undefined;
+  const runningLoad = AsyncResult.isSuccess(runningResult) ? runningResult.value : undefined;
+  const recordView = recordLoad?.status === "view" ? recordLoad : undefined;
 
-  const load = result.value;
+  const page =
+    held?.page ??
+    (runningLoad?.status === "running" ? runningLoad.page : undefined) ??
+    recordView?.page;
+
+  const server = recordView?.record.server ?? tool?.server ?? "";
+
+  if (page !== undefined && held === undefined) {
+    setHeld({ page, server, early: recordView === undefined });
+  }
+
+  // The record of a call whose View was made early is checked against the page it was made from before it is told anything: the
+  // inventory may have changed while the call ran (an owner's server shadowing a Repo's, or back), and one server's result must
+  // never reach another server's View at its origin. The record's `viewHash` names the origin of the server that made the call,
+  // and the page's `view` that of the server it was read from; a record that pins none is compared by the server's name.
+  const shadowed =
+    held?.early === true &&
+    ((recordView !== undefined &&
+      (recordView.record.server !== held.server ||
+        (recordView.record.viewHash !== undefined &&
+          held.page.view !== undefined &&
+          recordView.record.viewHash !== held.page.view))) ||
+      recordLoad?.status === "unavailable");
+
+  // A View made early whose record cannot be read (the Session failed to answer for its page) is of a call that has ended, and
+  // is told so: it is torn down, and the card says why with Retry, which reads the record again into a frame made new.
+  const failed =
+    held?.early === true && recordLoad?.status === "failed" ? recordLoad.reason : undefined;
+
+  // A View ended for that is replaced by the note once it has torn down.
+  const [retired, setRetired] = useState(false);
+
+  useLayoutEffect(() => {
+    if (retired && closing) onClosed();
+  }, [retired, closing, onClosed]);
+
+  // A call that has its result and no record, after the record's grace: its View is told the call is over.
+  const ended = held !== undefined && progress === undefined && !kept;
+  const [gaveUp, setGaveUp] = useState(false);
+
+  useEffect(() => {
+    if (!ended) return;
+
+    const timer = setTimeout(() => {
+      setGaveUp(true);
+    }, NO_RECORD_GRACE_MS);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [ended]);
 
   const speech: Partial<AppSpeech> = speechOf(
     AsyncResult.isSuccess(client) ? client.value : undefined,
     callId,
-    load.status === "view" ? load.record.server : "",
+    server,
     (chip) => holdWhereShown(registry, key, chip),
     () => registry.get(shownInAtom(key))?.conversation,
   );
 
-  switch (load.status) {
-    case "view":
-      return (
-        <AppFrame
-          record={load.record}
-          page={load.page}
-          tool={tool}
-          badge={badge}
-          readOnly={archived}
-          speech={speech}
-          context={context}
-          onOpenInPane={(url) => {
-            actOnPanes({ type: "open", key: BROWSER_PANE });
-            void navigate({ type: "navigate", url });
-          }}
-          {...(AsyncResult.isSuccess(client) ? { client: client.value } : {})}
-          signInHref={(stepUp) =>
-            environment === undefined
-              ? undefined
-              : mcpSignInStartHref({
-                  scope: environment,
-                  global: GLOBAL_SCOPE,
-                  server: load.record.server,
-                  stepUp,
-                  returnPath: sessionPath(sessionId),
-                })
-          }
-          place={place}
-          controls={controls}
-          onRequestMode={onRequestMode}
-          onFocused={onFocused}
-          closing={closing}
-          onClosed={onClosed}
-        />
-      );
+  if (retired) return <AppNote>App unavailable</AppNote>;
+
+  if (page !== undefined) {
+    // Until the record comes the View is told of the call from what the card knows of it.
+    const running: RunningCall | undefined =
+      (recordView !== undefined && !shadowed) || tool === undefined
+        ? undefined
+        : {
+            callId,
+            server: tool.server,
+            tool: tool.tool,
+            arguments: inProgress ? progress.arguments : undefined,
+            final: progress?.phase === "running",
+          };
+
+    return (
+      <AppFrame
+        record={shadowed ? undefined : recordView?.record}
+        running={running}
+        cancelled={
+          shadowed
+            ? SHADOWED_REASON
+            : failed !== undefined
+              ? failed
+              : recordView === undefined && progress?.phase === "stopped"
+                ? STOPPED_REASON
+                : recordView === undefined && ended && gaveUp
+                  ? NO_RECORD_REASON
+                  : undefined
+        }
+        page={page}
+        tool={tool}
+        badge={badge}
+        readOnly={archived}
+        speech={speech}
+        context={context}
+        onOpenInPane={(url) => {
+          actOnPanes({ type: "open", key: BROWSER_PANE });
+          void navigate({ type: "navigate", url });
+        }}
+        {...(AsyncResult.isSuccess(client) ? { client: client.value } : {})}
+        signInHref={(stepUp) =>
+          environment === undefined
+            ? undefined
+            : mcpSignInStartHref({
+                scope: environment,
+                global: GLOBAL_SCOPE,
+                server,
+                stepUp,
+                returnPath: sessionPath(sessionId),
+              })
+        }
+        place={place}
+        controls={controls}
+        onRequestMode={onRequestMode}
+        onFocused={onFocused}
+        closing={closing || shadowed || failed !== undefined}
+        onClosed={() => {
+          if (shadowed) setRetired(true);
+
+          // Its frame gone, the card shows the failure (below) with Retry, and a record read later is framed anew.
+          if (failed !== undefined) setHeld(undefined);
+
+          if (closing) onClosed();
+        }}
+      />
+    );
+  }
+
+  const load = wantsRunning ? runningLoad : recordLoad;
+
+  switch (load?.status) {
     case "unavailable":
       return <AppNote>App unavailable</AppNote>;
     case "stub":
       return <AppNote>App data no longer kept</AppNote>;
     case "failed":
       return <AppFailed reason={load.reason} onRetry={retry} />;
-    case "none":
+    default:
       return null;
   }
 };
@@ -299,6 +452,8 @@ export interface AppPlaceMountProps {
   readonly onBack?: (() => void) | undefined;
   /** What loads and frames the View: the atoms' `AppLoaded`, or a stand-in in a test, which has no Session to load from. */
   readonly Loaded?: ComponentType<AppLoadedProps>;
+  /** Where the call is while it has not finished (`CallProgress`); none for a call that has. */
+  readonly progress?: CallProgress | undefined;
 }
 
 /**
@@ -318,6 +473,7 @@ export const AppPlaceMount = ({
   onFocused = noFocus,
   onBack,
   Loaded = AppLoaded,
+  progress,
 }: AppPlaceMountProps) => {
   const places = use(AppPlacesContext);
   const id = useId();
@@ -367,6 +523,7 @@ export const AppPlaceMount = ({
           onRequestMode={onRequestMode}
           onFocused={onFocused}
           closing={view.closing}
+          progress={progress}
           onClosed={() => {
             places.closed(id);
           }}
@@ -429,6 +586,7 @@ export const useAppFacts = (callId: string, toolName: string | undefined): AppFa
     mountable: availability.kind === "mount",
     archived,
     context: entry?.context,
+    kept: entry !== undefined && isKeptApp(entry),
   };
 };
 
@@ -437,14 +595,24 @@ export const noteOf = (availability: AppAvailability): string =>
   availability.kind === "evicted" ? "App data no longer kept" : "App unavailable";
 
 /**
- * The App View of a finished tool call, under its card, when the call is an App's. `toolName` is the model-facing
- * name (`mcp__<server>__<tool>`); a call that is still running has no result to show, and none is mounted for it (a View
- * that mounts as the call streams is #496's).
+ * The App View of a tool call, under its card, when the call is an App's. `toolName` is the model-facing name
+ * (`mcp__<server>__<tool>`). Without `progress` the call finished and its record is mounted; with it the View mounts as the
+ * call streams (`CallProgress`): it is sent the arguments as they stream, then the final ones, then its result when the
+ * record comes, and told when the call ended without one.
  *
- * It is live while its call is in the newest generation of its server's App calls in the thread, or the owner reopened
- * it, or they are using it, unless they collapsed it; in an archived Session it is collapsed until reopened.
+ * It is live while its call is in the newest generation of its server's App calls in the thread (a call still running is),
+ * or the owner reopened it, or they are using it, unless they collapsed it; in an archived Session it is collapsed until
+ * reopened. A call that stopped with no record, which this card never saw run, has no View: later loads show the card.
  */
-export const AppCall = ({ callId, toolName }: { callId: string; toolName?: string }) => {
+export const AppCall = ({
+  callId,
+  toolName,
+  progress,
+}: {
+  callId: string;
+  toolName?: string;
+  progress?: CallProgress;
+}) => {
   const facts = useAppFacts(callId, toolName);
   const conversationId = useThreadConversation();
   const place = useThreadPlace();
@@ -458,20 +626,47 @@ export const AppCall = ({ callId, toolName }: { callId: string; toolName?: strin
   const [choice, choose] = useAtom(appChoiceAtom(layoutKey, callId));
   const actOnPanes = useAtomSet(panesAtom);
   const [focused, setFocused] = useState(false);
+  // Whether this card saw its call run: only then is a call that stopped a View that is told so.
+  const [sawRun, setSawRun] = useState(false);
+
+  if (isRunning(progress) && !sawRun) setSawRun(true);
 
   if (facts.availability.kind === "none") return null;
 
-  const live = facts.mountable && isAppLive({ newest, choice, archived: facts.archived, focused });
+  if (progress?.phase === "stopped" && !sawRun && !facts.kept) return null;
 
-  const popOut = () => {
-    actOnPanes({ type: "open", key: appPaneKey(callId) });
+  // A card that saw its call run keeps its View until the call's record is there to be told, however the generation reads in
+  // between (it counts the calls that run or have a record, and the transcript, the Session's list of records and the call's
+  // end each arrive on their own): while the call runs, after it has ended with no record yet, and when it stopped. Only the
+  // owner's Collapse ends it; a record that is there is the generation's again.
+  const running = isRunning(progress);
+  const awaiting = sawRun && !facts.kept && choice === undefined;
+
+  const live =
+    facts.mountable &&
+    (isAppLive({ newest, choice, archived: facts.archived, focused }) || running || awaiting);
+
+  // A View is popped out into a Pane of its own once its call has a record: the Pane mounts from the record alone.
+  const popOut = facts.kept
+    ? () => {
+        actOnPanes({ type: "open", key: appPaneKey(callId) });
+      }
+    : undefined;
+
+  const controls: Types.Mutable<AppControls> = {
+    onCollapse: () => {
+      choose("collapsed");
+    },
   };
+
+  if (popOut !== undefined) controls.onPopOut = popOut;
 
   return (
     <AppPlaceMount
       facts={facts}
       place={place}
       live={live}
+      progress={progress}
       idle={
         <AppIdle
           facts={facts}
@@ -480,14 +675,9 @@ export const AppCall = ({ callId, toolName }: { callId: string; toolName?: strin
           }}
         />
       }
-      controls={{
-        onCollapse: () => {
-          choose("collapsed");
-        },
-        onPopOut: popOut,
-      }}
+      controls={controls}
       onRequestMode={(mode) => {
-        if (mode === "fullscreen") popOut();
+        if (mode === "fullscreen") popOut?.();
       }}
       onFocused={setFocused}
       onBack={() => {

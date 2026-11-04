@@ -2,7 +2,7 @@
 // are in the newest generation of their server's, and whether a View is live given that, what the owner chose of it on this
 // device, and whether the Session is archived. Pure: the transcript's messages and the conversation's App calls go in.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain decisions over small native lists.
-import type { McpAppEntry, TranscriptMessage } from "@cloudpid/protocol";
+import type { McpAppEntry, McpAppTool, TranscriptMessage } from "@cloudpid/protocol";
 import type { AppChoice } from "../session-layout.ts";
 
 /** No call is live by the generation rule: what a conversation with no App call gives. */
@@ -71,6 +71,52 @@ export const liveGeneration = (
   for (const { callId } of lastInScript.values()) live.add(callId);
 
   return live;
+};
+
+/**
+ * The calls of the turn in progress that are an App's and have no record yet: the model is still emitting them, or they run
+ * (`docs/architecture/mcp-apps.md` → Lifecycle). As entries (`kept`, the newest by time), so that `liveGeneration` counts
+ * them as the newest generation of their server's, which mounts their Views as they stream and collapses the earlier ones'.
+ * Only the calls after the last user message or notice and while the run goes on: a call that ended with no record (cut off,
+ * stopped) is no generation. `apps` are the entries there are, which a call is not made one twice from.
+ */
+export const runningAppCalls = (
+  messages: ReadonlyArray<Pick<TranscriptMessage, "role" | "parts">>,
+  tools: ReadonlyArray<Pick<McpAppTool, "name" | "server" | "tool">>,
+  apps: ReadonlyArray<Pick<McpAppEntry, "callId">>,
+  running: boolean,
+): ReadonlyArray<McpAppEntry> => {
+  if (!running || tools.length === 0) return [];
+
+  const done = new Set<string>(apps.map((app) => app.callId));
+  const calls: Array<{ id: string; name: string }> = [];
+
+  for (let at = messages.length - 1; at >= 0; at--) {
+    const message = messages[at];
+
+    if (message === undefined || message.role === "user" || message.role === "notice") break;
+
+    for (const part of message.parts) {
+      if (part.type === "tool-result") done.add(part.id);
+      else if (part.type === "tool-call") calls.push({ id: part.id, name: part.name });
+    }
+  }
+
+  return calls.reverse().flatMap((call) => {
+    const tool = tools.find((each) => each.name === call.name);
+
+    return tool === undefined || done.has(call.id)
+      ? []
+      : [
+          {
+            callId: call.id,
+            server: tool.server,
+            tool: tool.tool,
+            state: "kept",
+            at: Number.MAX_SAFE_INTEGER,
+          },
+        ];
+  });
 };
 
 /** The App calls a `codemode` script made (`parentCall` is its call), oldest first: every one, each a row of its strip. */

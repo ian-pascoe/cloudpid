@@ -199,6 +199,9 @@ const resolveCall = (
   }
 };
 
+/** The artifact of a call in the message being streamed: its arguments are still arriving. */
+const STREAMING_CALL: CardArtifact = { streaming: true };
+
 /** What a tool call's card shows beside its arguments and result. */
 type CardArtifact = {
   nested?: NestedCall[];
@@ -211,6 +214,8 @@ type CardArtifact = {
   resources?: ReadonlyArray<ShownResource>;
   mcp?: ShownMcpStatus;
   diff?: CallDiff;
+  /** The call is in the message being streamed: the model is still emitting its arguments. */
+  streaming?: boolean;
 };
 
 const userMessage = new WeakMap<TranscriptMessage, ThreadMessageLike>();
@@ -372,7 +377,7 @@ const buildTurn = (
 ): Turn | undefined => {
   let turn: Turn | undefined;
 
-  const addAssistant = (message: TranscriptMessage, status: Status) => {
+  const addAssistant = (message: TranscriptMessage, status: Status, streaming = false) => {
     turn ??= {
       id: `${userId}:reply`,
       createdAt: dateOf(message.timestamp),
@@ -381,7 +386,17 @@ const buildTurn = (
       entries: [],
     };
 
-    turn.content.push(...assistantParts(message));
+    const parts = assistantParts(message);
+
+    // The calls of the message being streamed are marked: their cards see the model still emitting them, which a committed
+    // call whose tool has not started is not (`docs/architecture/mcp-apps.md` → Lifecycle).
+    turn.content.push(
+      ...(streaming
+        ? parts.map((part) =>
+            part.type === "tool-call" ? { ...part, artifact: STREAMING_CALL } : part,
+          )
+        : parts),
+    );
     turn.status = status;
 
     if (status.type !== "running") {
@@ -399,7 +414,7 @@ const buildTurn = (
     }
   }
 
-  if (live !== null) addAssistant(live, { type: "running" });
+  if (live !== null) addAssistant(live, { type: "running" }, true);
 
   return turn;
 };

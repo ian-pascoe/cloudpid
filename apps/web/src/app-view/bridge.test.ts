@@ -929,6 +929,66 @@ describe("an ext-apps View (the real `App` runtime)", () => {
     expect(handlers.changed).toHaveBeenCalledWith({ theme: "dark" });
   });
 
+  it("holds only the latest partial input until the View is ready, sends none after the final one, and cancels once", async () => {
+    const page = fakePage();
+    const { bridge } = make(page);
+
+    bridge.start();
+    bridge.toolInputPartial({ city: "O" });
+    bridge.toolInputPartial({ city: "Os" });
+    bridge.toolInputPartial({ city: "Osl" });
+
+    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
+    page.deliver(
+      rpc(
+        "ui/initialize",
+        {
+          appInfo: { name: "v", version: "1" },
+          appCapabilities: {},
+          protocolVersion: "2026-01-26",
+        },
+        1,
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    page.deliver(rpc("ui/notifications/initialized"));
+
+    // Ready: one partial, the latest; then more as the call goes on, until the final input.
+    bridge.toolInputPartial({ city: "Oslo, N" });
+    bridge.toolInput({ city: "Oslo, Norway" });
+    bridge.toolInputPartial({ city: "late" });
+    bridge.toolInput({ city: "again" });
+    bridge.toolCancelled("Stopped");
+    bridge.toolCancelled("Stopped");
+
+    expect(
+      page.posts.flatMap((post) =>
+        post.data["method"] === undefined ? [] : [[post.data["method"], post.data["params"]]],
+      ),
+    ).toEqual([
+      ["ui/notifications/sandbox-resource-ready", { html: HTML }],
+      ["ui/notifications/tool-input-partial", { arguments: { city: "Osl" } }],
+      ["ui/notifications/tool-input-partial", { arguments: { city: "Oslo, N" } }],
+      ["ui/notifications/tool-input", { arguments: { city: "Oslo, Norway" } }],
+      ["ui/notifications/tool-cancelled", { reason: "Stopped" }],
+    ]);
+  });
+
+  it("sends nothing of the call after tool-cancelled: it is the end of it", async () => {
+    const { bridge, handlers } = await mounted();
+
+    bridge.toolInputPartial({ city: "O" });
+    bridge.toolCancelled("Stopped");
+    bridge.toolInput({ city: "Oslo" });
+    bridge.toolResult({ content: [{ type: "text", text: "12 C" }] });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(handlers.partial).toHaveBeenCalledTimes(1);
+    expect(handlers.cancelled).toHaveBeenCalledWith({ reason: "Stopped" });
+    expect(handlers.input).not.toHaveBeenCalled();
+    expect(handlers.result).not.toHaveBeenCalled();
+  });
+
   it("delivers an error result too, as the View's own", async () => {
     const { bridge, handlers } = await mounted();
 

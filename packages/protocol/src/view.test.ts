@@ -167,6 +167,63 @@ describe("the session view", () => {
     ]);
   });
 
+  it("applies the streamed arguments of an App tool's call, and drops those of any other tool's", () => {
+    const start = (name: string) =>
+      asEvent({
+        type: "message_update",
+        usage,
+        changes: [
+          {
+            type: "toolcall_start",
+            contentIndex: 0,
+            block: { type: "toolCall", id: "c1", name, arguments: { title: "", rows: ["a"] } },
+          },
+        ],
+      });
+
+    const delta = (path: (string | number)[], text: string) =>
+      asEvent({
+        type: "message_update",
+        usage,
+        changes: [{ type: "toolcall_delta", contentIndex: 0, path, delta: text }],
+      });
+
+    const run = (name: string, appTools?: ReadonlySet<string>) =>
+      reduceEvents(
+        EMPTY_VIEW,
+        [
+          asEvent({ type: "message_start", message: assistantMessage([]) }),
+          start(name),
+          delta(["title"], "Hel"),
+          delta(["title"], "lo"),
+          delta(["rows", 0], "bc"),
+          // A path the arguments do not have yet is left for the whole block that follows.
+          delta(["missing", "deeper"], "x"),
+        ],
+        appTools,
+      );
+
+    const apps = new Set(["mcp__docs__page"]);
+
+    expect(run("mcp__docs__page", apps).live?.parts).toEqual([
+      {
+        type: "tool-call",
+        id: "c1",
+        name: "mcp__docs__page",
+        arguments: { title: "Hello", rows: ["abc"] },
+      },
+    ]);
+
+    // Another tool's, and every tool's before the page knows the App tools, are dropped as they always were.
+    expect(run("mcp__docs__other", apps).live?.parts[0]).toMatchObject({
+      arguments: { title: "", rows: ["a"] },
+    });
+
+    expect(run("mcp__docs__page").live?.parts[0]).toMatchObject({
+      arguments: { title: "", rows: ["a"] },
+    });
+  });
+
   it("ignores updates when no message is live, and does not commit a user message as live", () => {
     expect(
       fold(

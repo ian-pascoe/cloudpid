@@ -115,6 +115,118 @@ describe("a View's frame in its card", () => {
     expect(view.sent.every((each) => each.target === ORIGIN)).toBe(true);
   });
 
+  describe("mounted as its call streams", () => {
+    const running = (args: Record<string, string> | undefined, final = false) => ({
+      record: undefined,
+      running: { callId: "c1", server: "docs", tool: "page", arguments: args, final },
+    });
+
+    const partials = (view: ReturnType<typeof frameOf>) =>
+      view.sent.flatMap((each) =>
+        each.data["method"] === "ui/notifications/tool-input-partial"
+          ? [(each.data["params"] as { arguments: unknown }).arguments]
+          : [],
+      );
+
+    it("sends the partial input at most every 250 ms, then the final input, then the result, in the one frame", async () => {
+      render(running({ text: "He" }));
+
+      const view = frameOf();
+
+      view.handshake();
+      expect(partials(view)).toEqual([{ text: "He" }]);
+
+      // Faster than the interval: only the latest goes, when it is up.
+      render(running({ text: "Hel" }));
+      render(running({ text: "Hell" }));
+      expect(partials(view)).toHaveLength(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      expect(partials(view)).toEqual([{ text: "He" }, { text: "Hell" }]);
+
+      // The commit: the final arguments once, and no partial after them.
+      render(running({ text: "Hello" }, true));
+      render(running({ text: "Hello" }, true));
+      expect(view.methods().filter((method) => method === "ui/notifications/tool-input")).toEqual([
+        "ui/notifications/tool-input",
+      ]);
+
+      // The record: its result, into the frame that is there, which was never torn down.
+      render({ record: { ...record, arguments: { text: "Hello" } }, running: undefined });
+      expect(view.methods().at(-1)).toBe("ui/notifications/tool-result");
+      expect(view.methods()).not.toContain("ui/resource-teardown");
+      expect(host.querySelector("iframe")).toBe(view.element);
+      expect(partials(view)).toEqual([{ text: "He" }, { text: "Hell" }]);
+    });
+
+    it("sends no partial input once the arguments are past 1 MiB, and still sends the final input", () => {
+      render(running({ text: "a".repeat(1024 * 1024 + 1) }));
+
+      const view = frameOf();
+
+      view.handshake();
+      expect(partials(view)).toEqual([]);
+
+      render(running({ text: "a".repeat(1024 * 1024 + 2) }, true));
+      expect(view.methods()).toContain("ui/notifications/tool-input");
+    });
+
+    it("tells a View its call did not finish when it ends, once, and before any teardown", async () => {
+      const closed = vi.fn();
+
+      render({ ...running({ text: "He" }), onClosed: closed });
+
+      const view = frameOf();
+
+      view.handshake();
+
+      render({ ...running(undefined), cancelled: "The call did not finish", onClosed: closed });
+      expect(view.methods().at(-1)).toBe("ui/notifications/tool-cancelled");
+
+      // Closing it later says it again to no one, and tears down after.
+      render({
+        ...running(undefined),
+        cancelled: "The call did not finish",
+        onClosed: closed,
+        closing: true,
+      });
+
+      const methods = view.methods();
+
+      expect(methods.filter((method) => method === "ui/notifications/tool-cancelled")).toHaveLength(
+        1,
+      );
+      expect(methods.at(-1)).toBe("ui/resource-teardown");
+    });
+
+    it("tells a View torn down before its call has a result that the call is over, first, and a finished one nothing", () => {
+      render({ ...running({ text: "He" }) });
+
+      const view = frameOf();
+
+      view.handshake();
+      render({ ...running({ text: "He" }), closing: true });
+      expect(view.methods().slice(-2)).toEqual([
+        "ui/notifications/tool-cancelled",
+        "ui/resource-teardown",
+      ]);
+    });
+
+    it("tells a View whose record has come nothing of a cancel when it is torn down", () => {
+      render({ ...running({ text: "He" }) });
+
+      const view = frameOf();
+
+      view.handshake();
+      render({ record, running: undefined });
+      render({ record, running: undefined, closing: true });
+      expect(view.methods()).not.toContain("ui/notifications/tool-cancelled");
+      expect(view.methods().at(-1)).toBe("ui/resource-teardown");
+    });
+  });
+
   it("keeps its frame in the document until its View has answered the teardown, then says it may go", async () => {
     const closed = vi.fn();
 
@@ -529,6 +641,70 @@ describe("a View's requests of its server, and signing in", () => {
     await flush();
 
     expect(answerTo(view, 7)).toEqual({ jsonrpc: "2.0", id: 7, result: { content: [] } });
+  });
+
+  it("refuses a View's server calls and messages until its call has a record, and serves them once it has", async () => {
+    const appRequest = vi.fn(() =>
+      Effect.succeed<McpAppRequestAnswer>({ status: "result", result: { content: [] } }),
+    );
+
+    const client: AppRequestClient = { appRequest, appLog: () => undefined };
+
+    const speech = {
+      message: vi.fn(() => Promise.resolve("held" as const)),
+      context: vi.fn(() => Promise.resolve({ held: true, message: undefined })),
+    };
+
+    render({
+      client,
+      speech,
+      record: undefined,
+      running: { callId: "c1", server: "docs", tool: "page", arguments: { a: "b" }, final: true },
+    });
+
+    const view = frameOf();
+
+    view.handshake();
+    await flush();
+
+    ask(view, 7);
+    ask(view, 8, "resources/read");
+    view.say({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "ui/message",
+      params: { role: "user", content: [{ type: "text", text: "hi" }] },
+    });
+    view.say({
+      jsonrpc: "2.0",
+      id: 11,
+      method: "ui/update-model-context",
+      params: { content: [{ type: "text", text: "state" }] },
+    });
+    await flush();
+
+    for (const id of [7, 8, 9, 11])
+      expect(answerTo(view, id)).toMatchObject({ error: { code: -32_000 } });
+    expect(appRequest).not.toHaveBeenCalled();
+    expect(speech.message).not.toHaveBeenCalled();
+    expect(speech.context).not.toHaveBeenCalled();
+
+    // The record is there: the same frame's handlers serve.
+    render({ client, speech, record, running: undefined });
+    ask(view, 10);
+    await flush();
+    expect(answerTo(view, 10)).toEqual({ jsonrpc: "2.0", id: 10, result: { content: [] } });
+    expect(appRequest).toHaveBeenCalledTimes(1);
+
+    view.say({
+      jsonrpc: "2.0",
+      id: 12,
+      method: "ui/update-model-context",
+      params: { content: [{ type: "text", text: "state" }] },
+    });
+    await flush();
+    expect(speech.context).toHaveBeenCalledTimes(1);
+    expect(answerTo(view, 12)).toMatchObject({ id: 12, result: {} });
   });
 
   it('forwards only resources/read, and badges it "Read only", when its place says it may only read', async () => {

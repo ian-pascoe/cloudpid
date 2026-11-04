@@ -41,6 +41,12 @@ export type McpAppsService = McpAppRecorder &
      * longer keeps the page, by the `ui://` resource its tool declares, pinned to the record once the host has given it.
      */
     readonly pageOf: (callId: string) => Effect.Effect<McpAppHtmlAnswer>;
+    /**
+     * The page of the App tool `tool` (its model-facing name), read by the `ui://` resource the inventory says it declares,
+     * for a call of it that has no record yet: it is still running, and its View mounts as it streams. `callId` names that
+     * call to the host. Nothing is pinned: the call's record, when it comes, pins its own page.
+     */
+    readonly pageOfTool: (tool: string, callId: string) => Effect.Effect<McpAppHtmlAnswer>;
   };
 
 export class McpApps extends Context.Service<McpApps, McpAppsService>()(

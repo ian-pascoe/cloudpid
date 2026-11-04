@@ -5,7 +5,7 @@ import type { McpAppHtmlAnswer, McpAppMounted, McpAppRecord } from "@cloudpid/pr
 import { beforeEach, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { SessionCommandError } from "../session/client.ts";
-import { forgetPages, loadAppView, type AppClient } from "./load.ts";
+import { forgetPages, loadAppView, loadRunningView, type AppClient } from "./load.ts";
 
 const ORIGIN = "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app";
 
@@ -44,7 +44,8 @@ const fake = (
   mounted: McpAppMounted | ReturnType<typeof refused>,
   page: McpAppHtmlAnswer | ReturnType<typeof refused>,
 ) => {
-  const calls = { mount: 0, page: 0 };
+  const tool: string[] = [];
+  const calls = { mount: 0, page: 0, tool };
 
   const client: AppClient = {
     mountApp: () => {
@@ -54,6 +55,11 @@ const fake = (
     },
     appPage: () => {
       calls.page += 1;
+
+      return Effect.isEffect(page) ? page : Effect.succeed(page);
+    },
+    appToolPage: (tool) => {
+      calls.tool.push(tool);
 
       return Effect.isEffect(page) ? page : Effect.succeed(page);
     },
@@ -88,7 +94,7 @@ describe("loadAppView", () => {
 
         yield* loadAppView(client, "c1", PAGE);
         yield* loadAppView(client, "c1", PAGE);
-        expect(calls).toEqual({ mount: 2, page: 1 });
+        expect(calls).toEqual({ mount: 2, page: 1, tool: [] });
       }),
   );
 
@@ -215,6 +221,66 @@ describe("loadAppView", () => {
           PAGE,
         ),
       ).toEqual({ status: "failed", reason: "No such call" });
+    }),
+  );
+});
+
+describe("loadRunningView", () => {
+  it.effect(
+    "is the page of the call's tool, at the origin the Session named, shared with the record's",
+    () =>
+      Effect.gen(function* () {
+        const { client, calls } = fake(
+          { status: "record", record: record({ viewHash: "v-one" }) },
+          html({ view: "v-one" }),
+        );
+
+        expect(yield* loadRunningView(client, "mcp__docs__page", "c1", PAGE)).toEqual({
+          status: "running",
+          page: { html: "<p>app</p>", meta: {}, origin: ORIGIN, view: "v-one" },
+        });
+        expect(calls.tool).toEqual(["mcp__docs__page"]);
+
+        // The record's own load finds the page in memory under the same server and hash.
+        yield* loadAppView(client, "c1", PAGE);
+        expect(calls.page).toBe(0);
+      }),
+  );
+
+  it.effect("is none when the Session has no page for it, as one that predates it says", () =>
+    Effect.gen(function* () {
+      const { client } = fake(
+        { status: "none" },
+        { status: "missing", message: "The message names neither a call nor a page" },
+      );
+
+      expect(yield* loadRunningView(client, "mcp__docs__page", "c1", PAGE)).toEqual({
+        status: "none",
+      });
+    }),
+  );
+
+  it.effect("fails with the reason, and never frames an origin that is no sandbox's", () =>
+    Effect.gen(function* () {
+      const failed = fake({ status: "none" }, { status: "failed", message: "boom" });
+
+      expect(yield* loadRunningView(failed.client, "mcp__docs__page", "c1", PAGE)).toEqual({
+        status: "failed",
+        reason: "boom",
+      });
+
+      const odd = fake({ status: "none" }, html({ origin: "https://evil.example" }));
+
+      expect((yield* loadRunningView(odd.client, "mcp__docs__page", "c1", PAGE)).status).toBe(
+        "failed",
+      );
+
+      const refusedPage = fake({ status: "none" }, refused("down"));
+
+      expect(yield* loadRunningView(refusedPage.client, "mcp__docs__page", "c1", PAGE)).toEqual({
+        status: "failed",
+        reason: "down",
+      });
     }),
   );
 });

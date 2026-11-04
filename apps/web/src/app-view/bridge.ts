@@ -157,13 +157,16 @@ export interface BridgeOptions {
 export interface Bridge {
   /** Begin listening and wait for the proxy: the 10 s for `ui/initialize` run from here. */
   readonly start: () => void;
-  /** `tool-input-partial`, the latest arguments so far (`docs/architecture/mcp-apps.md` → Lifecycle). Held until the View is ready. */
+  /**
+   * `tool-input-partial`, the latest arguments so far (`docs/architecture/mcp-apps.md` → Lifecycle). Held until the View is
+   * ready, and then only the latest of the held ones is sent; none after `tool-input`, `tool-result` or `tool-cancelled`.
+   */
   readonly toolInputPartial: (args: Readonly<Record<string, unknown>>) => void;
   /** `tool-input`, once, with the final arguments. */
   readonly toolInput: (args: Readonly<Record<string, unknown>>) => void;
-  /** `tool-result` with the call's whole result, an `isError` one too. */
+  /** `tool-result` with the call's whole result, an `isError` one too. Once. */
   readonly toolResult: (result: McpUiToolResultNotification["params"]) => void;
-  /** `tool-cancelled`: Stop, a timeout, an eviction or a cut ended the call. */
+  /** `tool-cancelled`: Stop, a timeout, an eviction or a cut ended the call. Once. */
   readonly toolCancelled: (reason?: string) => void;
   /** `host-context-changed` with only what changed. */
   readonly hostContextChanged: (change: McpUiHostContext) => void;
@@ -216,6 +219,10 @@ export const createBridge = (options: BridgeOptions): Bridge => {
   let nextId = 1;
   let queue: Notification[] = [];
   let tearing: Promise<void> | undefined;
+  // What the View was told of the call: each of its final input, its result and its cancellation at most once.
+  let inputSent = false;
+  let resultSent = false;
+  let cancelSent = false;
 
   const aborts = new AbortController();
   const pending = new Map<string | number, (answer: { readonly ok: boolean }) => void>();
@@ -463,15 +470,30 @@ export const createBridge = (options: BridgeOptions): Bridge => {
       }, INITIALIZE_TIMEOUT_MS);
     },
     toolInputPartial: (args) => {
+      // Only before the final input, and of those the View has not been told yet only the latest.
+      if (inputSent || resultSent || cancelSent) return;
+
+      queue = queue.filter((held) => held.method !== TOOL_INPUT_PARTIAL);
       send(TOOL_INPUT_PARTIAL, { arguments: args });
     },
     toolInput: (args) => {
+      // `tool-cancelled` is the end of the call: nothing follows it.
+      if (inputSent || cancelSent) return;
+
+      inputSent = true;
       send(TOOL_INPUT, { arguments: args });
     },
     toolResult: (result) => {
+      if (resultSent || cancelSent) return;
+
+      resultSent = true;
       send(TOOL_RESULT, result);
     },
     toolCancelled: (reason) => {
+      // Once: the card says it when the call ends, and its teardown asks again.
+      if (cancelSent) return;
+
+      cancelSent = true;
       send(TOOL_CANCELLED, reason === undefined ? {} : { reason });
     },
     hostContextChanged: (change) => {

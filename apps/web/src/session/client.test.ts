@@ -3032,6 +3032,91 @@ describe("the App calls on a Session connection", () => {
     ],
   } as const;
 
+  it.effect("keeps the streamed arguments of an App tool's call, and of no other tool's", () =>
+    Effect.gen(function* () {
+      const { latest, state } = yield* setup();
+
+      yield* watching(latest());
+      yield* latest().say(appTools);
+
+      const callOf = (name: string) => ({ type: "toolCall", id: name, name, arguments: { t: "" } });
+
+      yield* latest().say({
+        type: "events",
+        conversationId: 1,
+        events: [
+          {
+            type: "message_start",
+            message: {
+              role: "assistant",
+              content: [],
+              api: "",
+              provider: "p",
+              model: "m",
+              usage: {},
+              stopReason: "stop",
+              timestamp: 1,
+            },
+          },
+          {
+            type: "message_update",
+            usage: {},
+            changes: [
+              { type: "toolcall_start", contentIndex: 0, block: callOf("mcp__docs__page") },
+              { type: "toolcall_start", contentIndex: 1, block: callOf("mcp__docs__other") },
+              { type: "toolcall_delta", contentIndex: 0, path: ["t"], delta: "abc" },
+              { type: "toolcall_delta", contentIndex: 1, path: ["t"], delta: "abc" },
+            ],
+          },
+        ],
+      });
+
+      expect(state().view.live?.parts).toEqual([
+        {
+          type: "tool-call",
+          id: "mcp__docs__page",
+          name: "mcp__docs__page",
+          arguments: { t: "abc" },
+        },
+        {
+          type: "tool-call",
+          id: "mcp__docs__other",
+          name: "mcp__docs__other",
+          arguments: { t: "" },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("asks for the page of a running call by its tool, and says so in the message", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* watching(latest());
+
+      const page = yield* client.appToolPage("mcp__docs__page", "c1").pipe(Effect.forkChild);
+
+      yield* settle;
+
+      const html = latest()
+        .commands()
+        .find((command) => command.type === "mcp_app_html");
+
+      expect(html).toEqual({
+        type: "mcp_app_html",
+        id: expect.any(String),
+        tool: "mcp__docs__page",
+        callId: "c1",
+      });
+      yield* latest().say({
+        type: "result",
+        id: html?.id,
+        result: { status: "missing", message: "none" },
+      });
+      expect(yield* Fiber.join(page)).toEqual({ status: "missing", message: "none" });
+    }),
+  );
+
   it.effect(
     "keeps the App tools and each conversation's App calls, the last of each replacing",
     () =>
