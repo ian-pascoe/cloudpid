@@ -18,12 +18,14 @@ import {
   promptArgumentsProblem,
   Refusal,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Atom from "effect/reactivity/Atom";
 import type * as Types from "effect/Types";
-import type { OutgoingMessage } from "../session/state.ts";
+import type { OutgoingMessage, SendingEntry } from "../session/state.ts";
 import type { ConversationKey } from "./conversation.ts";
 
 /** A prompt picked for the message being written, with the argument values the owner filled in. */
@@ -137,35 +139,32 @@ export const gettingText = (chip: PromptChip): string =>
 export const awaitedLine = (title: string, server: string): string =>
   `Getting ${title} from ${server} · waiting for your answer`;
 
-/** A lane row of a message being sent, and whether its prompt's server asks the owner something in the get. */
-export type SendingRow = {
-  readonly id: string;
-  readonly text: string;
-  readonly awaited: boolean;
-};
-
 /**
- * The "Sending…" rows, each with its flag: a row whose prompt's server asks the owner something in the get reads "Getting
- * <title> from <server> · waiting for your answer" (`docs/architecture/mcp-server-requests.md` → Questions). A row is tied
- * to its cards by the identity of the send, never by its text: the card's `callId` is `mcpPromptCallId` of the row's `id`
- * (the message's `requestId`), so a long or cleaned title, and two sends of one prompt, each read as they are.
+ * The "Sending…" rows, those whose prompt's server asks the owner something in the get reading "Getting <title> from
+ * <server> · waiting for your answer" (`docs/architecture/mcp-server-requests.md` → Questions). A row is tied to its cards
+ * by the identity of the send, never by its text: the card's `callId` is `mcpPromptCallId` of the row's `requestId` (the
+ * one the submit went out with, not the row's command `id`), so a long or cleaned title, and two sends of one prompt,
+ * each read as they are.
  */
 export const sendingRows = (
-  rows: ReadonlyArray<{ readonly id: string; readonly text: string }>,
+  rows: readonly SendingEntry[],
   asked: ReadonlyArray<{
     readonly callId: string;
     readonly server: string;
     readonly prompt?: string | undefined;
   }>,
-): readonly SendingRow[] =>
-  rows.map((row) => {
-    const waiting = asked.find(
-      (one) => one.prompt !== undefined && one.callId === mcpPromptCallId(row.id),
+): readonly SendingEntry[] =>
+  Arr.map(rows, (row) => {
+    const waiting = Arr.findFirst(
+      asked,
+      (one) => one.prompt !== undefined && one.callId === mcpPromptCallId(row.requestId),
     );
 
-    return waiting?.prompt === undefined
-      ? { ...row, awaited: false }
-      : { id: row.id, text: awaitedLine(waiting.prompt, waiting.server), awaited: true };
+    return Option.match(waiting, {
+      onNone: () => row,
+      onSome: (one) =>
+        one.prompt === undefined ? row : { ...row, text: awaitedLine(one.prompt, one.server) },
+    });
   });
 
 /** What a lane shows of the message once it has its prompt: the chip's label, then what the owner typed and attached. */

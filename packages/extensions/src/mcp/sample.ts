@@ -18,6 +18,7 @@ import {
 } from "@cloudpid/mcp/types";
 import type { McpSampledMode } from "@cloudpid/config";
 import type { McpDeferredSample } from "./deferred-questions.ts";
+import type { ClockHold } from "./elicit.ts";
 import type { McpElicitationSource } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
@@ -52,9 +53,7 @@ export type SamplingCall = {
   /** Where the server's definition is, for the card's badge. */
   readonly source?: McpElicitationSource | undefined;
   /** Stop the call's own clock while the owner decides, and start it again. */
-  readonly hold?:
-    | { readonly pause: Effect.Effect<void>; readonly resume: Effect.Effect<void> }
-    | undefined;
+  readonly hold?: ClockHold | undefined;
 };
 
 /** The hook of a call whose server may sample, and the requests it made. */

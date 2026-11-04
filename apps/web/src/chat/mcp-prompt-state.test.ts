@@ -1,9 +1,9 @@
 // @effect-diagnostics preferEffectRecord:off -- assertions over the arguments of one prompt.
 
 import { type McpPromptData, type McpPromptEntry, mcpPromptCallId } from "@cloudpid/protocol";
-import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import { describe, expect, it } from "vitest";
+import type { SendingEntry } from "../session/state.ts";
 import {
   awaitedLine,
   chipProblem,
@@ -95,10 +95,19 @@ describe("the MCP prompt chip", () => {
 });
 
 describe("the lane row of a prompt being got", () => {
+  /** A row as the client makes it: keyed by its command id (`c<n>`), its `requestId` a UUID of its own. */
+  const row = (n: number, requestId: string, text: string): SendingEntry => ({
+    id: `c${n}`,
+    requestId,
+    text,
+  });
+
+  const [R1, R2, R3] = ["0a1b-1", "0a1b-2", "0a1b-3"] as const;
+
   const rows = [
-    { id: "r1", text: "Getting Review PR from docs…" },
-    { id: "r2", text: "Getting Summarize from wiki…" },
-    { id: "r3", text: "a plain message" },
+    row(4, R1, "Getting Review PR from docs…"),
+    row(5, R2, "Getting Summarize from wiki…"),
+    row(6, R3, "a plain message"),
   ];
 
   const asked = (requestId: string, prompt: string | undefined = "Review PR", server = "docs") => ({
@@ -108,20 +117,23 @@ describe("the lane row of a prompt being got", () => {
   });
 
   it("says it waits for the owner's answer while the send's get asks one", () => {
-    expect(sendingRows(rows, [asked("r1")])).toEqual([
-      { id: "r1", text: "Getting Review PR from docs · waiting for your answer", awaited: true },
-      { ...rows[1], awaited: false },
-      { ...rows[2], awaited: false },
+    expect(sendingRows(rows, [asked(R1)])).toEqual([
+      row(4, R1, "Getting Review PR from docs · waiting for your answer"),
+      rows[1],
+      rows[2],
     ]);
   });
 
-  it("is left as it is when nothing is asked, or another send's get is", () => {
-    const plain = Arr.map(rows, (row) => ({ ...row, awaited: false }));
+  it("does not take the row's command id for the send's identity", () => {
+    // The card of send R1 is not the row whose command id happens to spell it.
+    expect(sendingRows(rows, [asked("c5")])).toEqual(rows);
+  });
 
-    expect(sendingRows(rows, [])).toEqual(plain);
-    expect(sendingRows(rows, [asked("other")])).toEqual(plain);
+  it("is left as it is when nothing is asked, or another send's get is", () => {
+    expect(sendingRows(rows, [])).toEqual(rows);
+    expect(sendingRows(rows, [asked("other")])).toEqual(rows);
     // A question of a tool's call carries no prompt.
-    expect(sendingRows(rows, [{ callId: mcpPromptCallId("r1"), server: "docs" }])).toEqual(plain);
+    expect(sendingRows(rows, [{ callId: mcpPromptCallId(R1), server: "docs" }])).toEqual(rows);
   });
 
   it("finds a row whose title the card cleaned or cut", () => {
@@ -130,25 +142,25 @@ describe("the lane row of a prompt being got", () => {
     const cut = long.slice(0, 119).trimEnd() + "…";
 
     const titled = [
-      { id: "long", text: `Getting ${long} from docs…` },
-      { id: "spaced", text: `Getting ${spaced} from docs…` },
+      row(1, "long", `Getting ${long} from docs…`),
+      row(2, "spaced", `Getting ${spaced} from docs…`),
     ];
 
     expect(sendingRows(titled, [asked("long", cut), asked("spaced", "Review the PR")])).toEqual([
-      { id: "long", text: awaitedLine(cut, "docs"), awaited: true },
-      { id: "spaced", text: awaitedLine("Review the PR", "docs"), awaited: true },
+      row(1, "long", awaitedLine(cut, "docs")),
+      row(2, "spaced", awaitedLine("Review the PR", "docs")),
     ]);
   });
 
   it("marks only the send that waits when two sends are of the same prompt", () => {
     const twice = [
-      { id: "first", text: "Getting Review PR from docs…" },
-      { id: "second", text: "Getting Review PR from docs…" },
+      row(1, "first", "Getting Review PR from docs…"),
+      row(2, "second", "Getting Review PR from docs…"),
     ];
 
     expect(sendingRows(twice, [asked("second")])).toEqual([
-      { id: "first", text: "Getting Review PR from docs…", awaited: false },
-      { id: "second", text: awaitedLine("Review PR", "docs"), awaited: true },
+      twice[0],
+      row(2, "second", awaitedLine("Review PR", "docs")),
     ]);
   });
 });

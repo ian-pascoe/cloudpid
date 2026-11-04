@@ -164,6 +164,9 @@ export type McpElicitationPage = typeof McpElicitationPage.Type;
  */
 export const mcpPromptCallId = (requestId: string): string => `prompt-${requestId}`;
 
+/** The longest `requestId` a prompt send's `callId` is made from: it ends up in storage keys, so a longer one is not used. */
+export const MCP_PROMPT_REQUEST_ID_MAX = 200;
+
 /**
  * One waiting question (`mcp_elicitation_requests`), as the card shows it. Every string is plain text. `deadline` is
  * the moment, in epoch milliseconds, the Session answers `cancel` for the owner, so the countdown follows the Session's

@@ -43,6 +43,7 @@ import {
   type McpAppHtmlAnswer,
   type McpAppRequestAnswer,
   type McpResourcePreviewAnswer,
+  MCP_PROMPT_REQUEST_ID_MAX,
   mcpPromptCallId,
   resourceUnavailable,
 } from "@cloudpid/protocol";
@@ -203,12 +204,16 @@ const PROMPT_GET_WAIT_MS = 40_000;
 
 /**
  * A prompt get's ID, what its questions are kept and withdrawn under: from the send's `requestId`, a client's UUID, so the
- * web ties the lane row to the cards; a UUID of its own for a send with none. Unique across restarts too: a settled
- * question's record outlives its get, and a repeated ID would key another get's records.
+ * web ties the lane row to the cards. It is unique per conversation (a conversation admits a `requestId` once, and a
+ * resend of a get that was never admitted reuses it, taking the place of the first). A send with none, or whose `requestId`
+ * is over `MCP_PROMPT_REQUEST_ID_MAX` (the ID is part of storage keys: `mcp-question:s:<callId>:<n>`), gets a UUID of its
+ * own, which no lane row is tied to.
  */
 const promptCallId = (requestId: string | undefined): string =>
-  // @effect-diagnostics-next-line cryptoRandomUUID:off
-  mcpPromptCallId(requestId ?? crypto.randomUUID());
+  requestId !== undefined && requestId.length <= MCP_PROMPT_REQUEST_ID_MAX
+    ? mcpPromptCallId(requestId)
+    : // @effect-diagnostics-next-line cryptoRandomUUID:off
+      mcpPromptCallId(crypto.randomUUID());
 
 /** The longest an arguments refusal's message is, in characters. */
 const PROMPT_ARGUMENTS_MESSAGE = 300;

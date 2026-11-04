@@ -64,7 +64,10 @@ export interface QueueLanes {
 
 /** A submit the Session has not answered yet, which shows as "sending" until it does. */
 export interface SendingEntry {
+  /** The client's command id of the submit: what the row is keyed by. */
   readonly id: string;
+  /** The `requestId` the submit goes out with, the Session's identity of the message (`mcpPromptCallId`). */
+  readonly requestId: string;
   readonly text: string;
 }
 

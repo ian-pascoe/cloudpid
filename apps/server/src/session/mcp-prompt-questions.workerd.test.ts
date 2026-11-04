@@ -20,6 +20,7 @@ import {
   type ClientMessage,
   type McpElicitationRequest,
   type McpSamplingRequest,
+  MCP_PROMPT_REQUEST_ID_MAX,
   mcpPromptCallId,
   type ServerMessage,
   ServerMessageJson,
@@ -166,11 +167,15 @@ const open = async (
 };
 
 /** Send the prompt `review` and return at once, as the composer does: the get waits for the owner. */
-const send = (stub: DurableObjectStub<TestSession>, script: ReadonlyArray<string> = ["reviewed"]) =>
+const send = (
+  stub: DurableObjectStub<TestSession>,
+  script: ReadonlyArray<string> = ["reviewed"],
+  requestId = "pick-1",
+) =>
   runInDurableObject(stub, async (instance: TestSession) => {
     instance.script(script);
 
-    return instance.submitMcpPrompt({ requestId: "pick-1", text: "go", ref: REVIEW });
+    return instance.submitMcpPrompt({ requestId, text: "go", ref: REVIEW });
   });
 
 const idle = (stub: DurableObjectStub<TestSession>) =>
@@ -244,6 +249,31 @@ describe.each(eras)("a %s server's form during a prompt send", (_era, make) => {
 
     expect(picked?.text).toContain("accept");
     expect(await inputPushes(stub)).toEqual([]);
+    owner.close();
+  });
+
+  it("is keyed by a UUID of its own when the message's requestId is too long to be part of a storage key", async () => {
+    const { stub } = await open(make, FORM_PROMPT);
+    const owner = await connect(stub);
+    const long = "r".repeat(MCP_PROMPT_REQUEST_ID_MAX + 1);
+    const sending = send(stub, ["reviewed"], long);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+
+    const [card] = owner.forms();
+
+    expect(card?.callId).toMatch(/^prompt-[0-9a-f-]{36}$/);
+    expect(card?.callId).not.toBe(mcpPromptCallId(long));
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "yes",
+      request: card?.id ?? "",
+      action: "accept",
+      content: {},
+    });
+
+    expect(await sending).toHaveProperty("submission");
     owner.close();
   });
 
@@ -401,6 +431,33 @@ describe.each(eras)("the Session's own clock on a %s server's prompt send", (_er
     });
 
     expect(await sending).toHaveProperty("submission");
+    owner.close();
+  });
+
+  it("stands still while a Sampling card waits, and the get completes once the owner allows it", async () => {
+    const { stub } = await open(make, SAMPLE_PROMPT, "mcp-short-clock");
+    const owner = await connect(stub);
+    const sending = send(stub, ["a sampled reply", "reviewed"]);
+
+    await settles(async () => expect(owner.samples()).toHaveLength(1));
+
+    // Three times the clock: it would have run out.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    expect(owner.samples()).toHaveLength(1);
+
+    owner.send({
+      type: "mcp_sampling_answer",
+      id: "yes",
+      request: owner.samples()[0]?.id ?? "",
+      choice: "allow_call",
+    });
+
+    expect(await sending).toHaveProperty("submission");
+    await idle(stub);
+
+    const [, picked] = await ownerMessages(stub);
+
+    expect(picked?.text).toContain("a sampled reply");
     owner.close();
   });
 

@@ -16,7 +16,7 @@ import {
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import type { Mutable } from "effect/Types";
-import { elicitingHooks } from "./elicit.ts";
+import { type ClockHold, elicitingHooks } from "./elicit.ts";
 import { samplingHooks, wordsOf } from "./sample.ts";
 import { type McpSamplingService, SAMPLING_SAMPLE_MS } from "./sampling.ts";
 import type { McpQuestionsService } from "./questions.ts";
@@ -39,13 +39,7 @@ export type PromptAsk = {
   /** Aborts when Stop does: a question waiting then is withdrawn. */
   readonly signal: AbortSignal | undefined;
   /** The get's own clock: stopped while a question waits, and started again. */
-  readonly hold: PromptHold;
-};
-
-/** What stops and starts a get's own clock. */
-export type PromptHold = {
-  readonly pause: Effect.Effect<void>;
-  readonly resume: Effect.Effect<void>;
+  readonly hold: ClockHold;
 };
 
 /** What the Session gives to the get, and what it takes back. */
@@ -107,7 +101,7 @@ export const promptAsking = (
     conversationId: ask.conversationId,
     signal: ask.signal,
     source: server.source,
-    ...hold,
+    hold,
   });
 
   // A server whose definition says `off` (or a stdio one) is declared no sampling, so none is asked.
