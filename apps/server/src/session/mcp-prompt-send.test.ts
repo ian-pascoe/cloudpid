@@ -5,6 +5,7 @@ import { UPLOADS_ROOT } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   imageCharacters,
+  NO_SUMMARIES,
   promptContent,
   promptData,
   promptPartCount,
@@ -67,8 +68,8 @@ describe("what the entry keeps of an MCP prompt (`promptData`)", () => {
   };
 
   it("adds what the server's questions came to, in order, and nothing for a get that asked none", () => {
-    expect(promptData(entry, {}, made)).not.toHaveProperty("elicitation");
-    expect(promptData(entry, {}, made)).not.toHaveProperty("sampling");
+    expect(promptData(entry, {}, made, NO_SUMMARIES)).not.toHaveProperty("elicitation");
+    expect(promptData(entry, {}, made, NO_SUMMARIES)).not.toHaveProperty("sampling");
     expect(promptData(entry, {}, made, { elicitation: [], sampling: [] })).not.toHaveProperty(
       "sampling",
     );

@@ -333,6 +333,8 @@ export interface FakePrompt {
         readonly holdMs?: number;
         /** A Modern server asks the same page again this many times (the owner was not done there). */
         readonly again?: number;
+        /** A Modern server asks this many pages in one round (`q1`, `q2`, ...; default 1). */
+        readonly pages?: number;
       };
   /** The get never answers until the call is cancelled (a server that does not answer in time). */
   readonly hangs?: true;
@@ -369,8 +371,13 @@ export interface FakeOptions {
     readonly pages?: number;
     readonly url?: string;
   };
-  /** Like `gate`, for `prompts/get`: it answers `-32042` for its first `times` gets, and counts them in `calls`. */
-  readonly gatePrompts?: { readonly times: number; calls: number; readonly url?: string };
+  /** Like `gate`, for `prompts/get`: it answers `-32042` for its first `times` gets (each listing `pages` pages), and counts them in `calls`. */
+  readonly gatePrompts?: {
+    readonly times: number;
+    calls: number;
+    readonly pages?: number;
+    readonly url?: string;
+  };
   /** Like `gate`, for `resources/read`: it answers `-32042` for its first `times` reads, and counts them in `calls`. */
   readonly gateReads?: { readonly times: number; calls: number; readonly url?: string };
   /** What the client answered the `ask` tool's questions with (`{ action, content? }`), or the error it refused with. */
@@ -625,14 +632,12 @@ const fakeMcp = (
 
         if (gatePrompts.calls <= gatePrompts.times) {
           throw new UrlElicitationRequiredError(
-            [
-              {
-                mode: "url" as const,
-                elicitationId: "page-1",
-                url: gatePrompts.url ?? "https://example.com/authorize",
-                message: "Authorize first",
-              },
-            ],
+            Array.from({ length: gatePrompts.pages ?? 1 }, (_unused, index) => ({
+              mode: "url" as const,
+              elicitationId: `page-${index + 1}`,
+              url: gatePrompts.url ?? "https://example.com/authorize",
+              message: "Authorize first",
+            })),
             "Authorization needed",
           );
         }
@@ -656,6 +661,21 @@ const fakeMcp = (
           const responses = ctx.mcpReq.inputResponses;
           const round = Number(ctx.mcpReq.requestState<string>()?.slice("prompt-".length) ?? "0");
 
+          const morePages = (): Record<string, ReturnType<typeof inputRequired.elicitUrl>> => {
+            const more: Record<string, ReturnType<typeof inputRequired.elicitUrl>> = {};
+
+            if ("url" in asks) {
+              for (let page = 2; page <= (asks.pages ?? 1); page += 1) {
+                more[`q${page}`] = inputRequired.elicitUrl({
+                  url: asks.url,
+                  message: "Open the page",
+                });
+              }
+            }
+
+            return more;
+          };
+
           const ask = (next: number) =>
             inputRequired({
               inputRequests: {
@@ -673,6 +693,7 @@ const fakeMcp = (
                           ],
                           maxTokens: 100,
                         }),
+                ...morePages(),
               },
               requestState: `prompt-${next}`,
             });

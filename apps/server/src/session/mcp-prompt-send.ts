@@ -79,7 +79,7 @@ export const promptData = (
   entry: Pick<McpPromptEntry, "server" | "command" | "name" | "title">,
   sent: Readonly<Record<string, string>>,
   made: Pick<PromptMessage, "description" | "parts" | "resources">,
-  asked: PromptSummaries = NO_SUMMARIES,
+  asked: PromptSummaries,
 ): McpPromptData => {
   const data: Mutable<McpPromptData> = {
     server: entry.server,

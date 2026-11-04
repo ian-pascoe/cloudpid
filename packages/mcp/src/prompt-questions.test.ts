@@ -287,6 +287,34 @@ describe("a Modern server's page during a prompt get", () => {
     expect(answeredOf(outcome)).toEqual({ action: "accept" });
   });
 
+  it("asks a round of several pages one after the other, each answered by its own owner's word", async () => {
+    const asked: Array<Schema.Json> = [];
+    const prompt: FakePrompt = { ...PAGE_PROMPT(), asks: { url: PAGE, pages: 2 } };
+    const server = modernServer({ prompts: [prompt], asked });
+    const seen: Array<McpInputRequest> = [];
+
+    // The first page is declined, and the second is not left waiting: the server is answered both, in one go.
+    const outcome = await get(
+      prompt,
+      server,
+      deps(
+        server,
+        (request) =>
+          Effect.succeed(
+            request.key === "q1" ? { kind: "answered", result: { action: "decline" } } : DONE,
+          ),
+        seen,
+      ),
+      PAGES,
+    );
+
+    expect(seen.map((request) => request.key)).toEqual(["q1", "q2"]);
+    expect(asked).toMatchObject([
+      { round: 1, responses: { q1: { action: "decline" }, q2: { action: "accept" } } },
+    ]);
+    expect(outcome).toHaveProperty("value");
+  });
+
   it("is a decline or cancel of that page only: the get goes on", async () => {
     const server = modernServer({ prompts: [PAGE_PROMPT()] });
 
@@ -307,18 +335,26 @@ describe("a Legacy server's -32042 during a prompt get", () => {
     get: () => ({ messages: [{ role: "assistant", content: { type: "text", text: '"opened"' } }] }),
   };
 
-  const gated = (times: number, answer: McpInputAnswer = DONE, ctx: McpCallContext = PAGES) => {
-    const gatePrompts = { times, calls: 0, url: PAGE };
+  const gated = (
+    times: number,
+    answer: (request: McpInputRequest) => Effect.Effect<McpInputAnswer> = () =>
+      Effect.succeed(DONE),
+    ctx: McpCallContext = PAGES,
+    pages = 1,
+  ) => {
+    const gatePrompts = { times, calls: 0, pages, url: PAGE };
     const server = legacyStatefulServer({ prompts: [VISIT], gatePrompts });
     const seen: Array<McpInputRequest> = [];
+    const ended: Array<string> = [];
 
     return {
       gatePrompts,
       seen,
+      ended,
       outcome: get(
         VISIT,
         server,
-        deps(server, () => Effect.succeed(answer), seen),
+        { ...deps(server, answer, seen), onInputEnded: (key) => ended.push(key) },
         ctx,
       ),
     };
@@ -344,7 +380,9 @@ describe("a Legacy server's -32042 during a prompt get", () => {
 
   it("ends with the server's error when the owner declines or cancels, with nothing sent again", async () => {
     for (const action of ["decline", "cancel"] as const) {
-      const { gatePrompts, outcome } = gated(1, { kind: "answered", result: { action } });
+      const { gatePrompts, outcome } = gated(1, () =>
+        Effect.succeed({ kind: "answered", result: { action } }),
+      );
 
       expect(await outcome).toMatchObject({
         failed: ServerError.make({ message: "Authorization needed", code: -32042 }),
@@ -353,8 +391,38 @@ describe("a Legacy server's -32042 during a prompt get", () => {
     }
   });
 
+  it("settles a round of two pages at once when either is declined or cancelled, withdrawing the other's card", async () => {
+    for (const action of ["decline", "cancel"] as const) {
+      // Page 1 answers a moment after both cards are up; page 2's owner never does (its card is the one to withdraw).
+      const { gatePrompts, ended, outcome } = gated(
+        1,
+        (request) =>
+          request.key === "page-1"
+            ? Effect.sleep(20).pipe(Effect.as({ kind: "answered", result: { action } }))
+            : Effect.never,
+        PAGES,
+        2,
+      );
+
+      expect(await outcome).toMatchObject({
+        failed: ServerError.make({ message: "Authorization needed", code: -32042 }),
+      });
+      expect(ended).toEqual(["page-2"]);
+      expect(gatePrompts.calls).toBe(1);
+    }
+  });
+
+  it("sends the get again once when every page of a round is done", async () => {
+    const { gatePrompts, seen, ended, outcome } = gated(1, () => Effect.succeed(DONE), PAGES, 2);
+
+    expect(answeredOf(await outcome)).toEqual("opened");
+    expect(seen.map((request) => request.key).toSorted()).toEqual(["page-1", "page-2"]);
+    expect(ended).toEqual([]);
+    expect(gatePrompts.calls).toBe(2);
+  });
+
   it("is the server's error to a send that does not wait at pages", async () => {
-    const { gatePrompts, seen, outcome } = gated(1, DONE, FORM);
+    const { gatePrompts, seen, outcome } = gated(1, () => Effect.succeed(DONE), FORM);
 
     expect(await outcome).toMatchObject({
       failed: ServerError.make({ message: "Authorization needed", code: -32042 }),

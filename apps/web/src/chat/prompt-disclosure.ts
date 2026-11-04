@@ -5,6 +5,8 @@
 import { flatCut, type McpPromptData, mcpPromptLabel } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
+import { elicitationLine } from "./mcp-elicitation-detail.ts";
+import { samplingLine } from "./mcp-sampling-detail.ts";
 
 /** One message of the prompt's result, read back from its block: the text, and whose message it was in. */
 export interface PromptSegment {
@@ -28,6 +30,31 @@ export const promptArgumentLines = (
 
     return flat === "" ? [] : [`${name}: ${flat}`];
   });
+
+/**
+ * What the chip says of each question its server asked that cloudpid ended without the owner's word (a credential form, a
+ * page it never sends the owner to, the cap, a Sampling request its definition or cloudpid refused), in the wording of a
+ * call's card (`docs/architecture/mcp-server-requests.md` → Elicitation requests: the owner learns of every unseen
+ * decline). What the owner answered is not repeated: they were there.
+ */
+export const promptUnseenDeclines = (
+  prompt: Pick<McpPromptData, "elicitation" | "sampling">,
+): ReadonlyArray<string> => [
+  ...Arr.map(
+    Arr.filter(
+      prompt.elicitation ?? [],
+      (question) => question.by !== "owner" && question.action !== "accept",
+    ),
+    elicitationLine,
+  ),
+  ...Arr.map(
+    Arr.filter(
+      prompt.sampling ?? [],
+      (request) => request.status === "refused" && request.by !== "owner" && request.by !== "grant",
+    ),
+    samplingLine,
+  ),
+];
 
 const OPEN = /^<mcp_prompt\b[^\n]*>\n?/u;
 const CLOSE = /\n?<\/mcp_prompt>\s*$/u;

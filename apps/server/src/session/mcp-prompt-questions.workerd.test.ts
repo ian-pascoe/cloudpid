@@ -722,8 +722,8 @@ describe("a Legacy server's -32042 during a prompt send", () => {
     }),
   };
 
-  const gated = (times: number, name = "mcp") => {
-    const gatePrompts = { times, calls: 0, url: PAGE_URL };
+  const gated = (times: number, name = "mcp", pages = 1) => {
+    const gatePrompts = { times, calls: 0, pages, url: PAGE_URL };
 
     return { gatePrompts, opened: open(legacyStatefulServer, VISIT, name, {}, { gatePrompts }) };
   };
@@ -806,6 +806,50 @@ describe("a Legacy server's -32042 during a prompt send", () => {
     expect(gatePrompts.calls).toBe(1);
     // Nothing was placed beyond the first turn's message, and no card is left.
     expect(await ownerMessages(stub)).toHaveLength(1);
+    await settles(async () => expect(owner.forms()).toEqual([]));
+    owner.close();
+  });
+
+  it("shows every page of a round together, and Done at each sends the get again once", async () => {
+    const { gatePrompts, opened } = gated(1, "mcp", 2);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(2));
+    await finishPage(owner);
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    await finishPage(owner);
+
+    expect(await sending).toHaveProperty("submission");
+    expect(gatePrompts.calls).toBe(2);
+    owner.close();
+  });
+
+  it("settles a round of two pages when one is declined: the other's card is withdrawn, and the get is not sent again", async () => {
+    const { gatePrompts, opened } = gated(1, "mcp", 2);
+    const { stub } = await opened;
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(2));
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "no",
+      request: owner.forms()[1]?.id ?? "",
+      action: "decline",
+    });
+
+    // Without waiting out the first page's own 5 min.
+    expect(await sending).toMatchObject({
+      failure: {
+        code: "MCP_PROMPT_FAILED",
+        message: expect.stringMatching(
+          /Authorization needed.*You declined docs's request for input\.$/,
+        ),
+      },
+    });
+    expect(gatePrompts.calls).toBe(1);
     await settles(async () => expect(owner.forms()).toEqual([]));
     owner.close();
   });

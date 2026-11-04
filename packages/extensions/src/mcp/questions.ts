@@ -316,15 +316,18 @@ type Waiting = {
   readonly outcome: Deferred.Deferred<McpQuestionOutcome>;
   /** Succeeds once the question has ended, however: a page the owner opened is waited for until then. */
   readonly closed: Deferred.Deferred<void>;
-  /** A page question the owner opened: the server goes on, and the card stays until the page is finished. */
-  readonly opened: boolean;
+  /**
+   * A live page the owner opened: the server was answered `accept` at that Open, goes on, and the card stays until the
+   * page is finished. (Never set on a `retry` page, whose Open answers nothing: see `openClicked`.)
+   */
+  readonly acceptedAtOpen: boolean;
   /**
    * A page the call waits at to be sent again (`McpQuestionAsk.retry`: a Legacy `-32042`'s, or a Modern server's, in a
    * prompt send's get): Open records the click and answers nothing, "Done, try again" answers `accept`.
    */
   readonly retry?: boolean | undefined;
-  /** For a `retry` page: the owner clicked Open (`request.page.opened` says so to the card). */
-  readonly clicked?: boolean | undefined;
+  /** For a `retry` page: the owner clicked Open, which answered nothing (`request.page.opened` says so to the card). */
+  readonly openClicked?: boolean | undefined;
   /** The Protocol era of the server that asked, for its settled record. */
   readonly era?: McpEra | undefined;
 };
@@ -393,7 +396,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       );
 
       // A page the owner opened was answered `accept` when it was opened, whatever ended it.
-      const ended: McpQuestionOutcome = held.opened ? ACCEPTED : outcome;
+      const ended: McpQuestionOutcome = held.acceptedAtOpen ? ACCEPTED : outcome;
 
       yield* keep(
         basics.settledOf(
@@ -481,7 +484,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         entry,
         outcome,
         closed,
-        opened: false,
+        acceptedAtOpen: false,
         retry: retrying,
         era: question.era,
       });
@@ -523,10 +526,10 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   ) =>
     Effect.gen(function* () {
       if (given.action === "opened") {
-        if (held.clicked !== true) {
+        if (held.openClicked !== true) {
           waiting.set(id, {
             ...held,
-            clicked: true,
+            openClicked: true,
             request: { ...held.request, page: { ...page, opened: true } },
           });
           yield* tell;
@@ -536,7 +539,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       }
 
       if (given.action === "done") {
-        if (held.clicked !== true) {
+        if (held.openClicked !== true) {
           return yield* McpQuestionsError.make({ message: "Open the page first" });
         }
 
@@ -553,7 +556,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         return;
       }
 
-      if (given.action === "decline" && held.clicked === true && held.era === "modern") {
+      if (given.action === "decline" && held.openClicked === true && held.era === "modern") {
         return yield* McpQuestionsError.make({ message: "This page is open: cancel it instead" });
       }
 
@@ -585,7 +588,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       if (given.action !== "opened") {
         // Open answered the server `accept`: a Decline can no longer be told to it.
-        if (given.action === "decline" && held.opened) {
+        if (given.action === "decline" && held.acceptedAtOpen) {
           return yield* McpQuestionsError.make({ message: "This page is open: cancel it instead" });
         }
 
@@ -594,10 +597,10 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         return;
       }
 
-      if (!held.opened) {
+      if (!held.acceptedAtOpen) {
         waiting.set(id, {
           ...held,
-          opened: true,
+          acceptedAtOpen: true,
           request: { ...held.request, page: { ...page, opened: true } },
         });
       }
@@ -671,7 +674,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         const { page } = held.request;
 
         // A page the owner opened is finished: its card says so for a moment, and the call's clock goes on now.
-        if (held.opened && page !== undefined && page.finished !== true) {
+        if (held.acceptedAtOpen && page !== undefined && page.finished !== true) {
           waiting.set(id, {
             ...held,
             request: { ...held.request, page: { ...page, finished: true } },
@@ -690,7 +693,9 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
         return finish(
           id,
-          held.opened ? ACCEPTED : cancelled(`${held.request.server} says the page is finished`),
+          held.acceptedAtOpen
+            ? ACCEPTED
+            : cancelled(`${held.request.server} says the page is finished`),
         ).pipe(Effect.asVoid);
       },
     });

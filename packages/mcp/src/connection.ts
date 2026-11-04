@@ -2393,13 +2393,15 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   /**
    * Gets the prompt once, or with `retry` the answers to a round of questions: its result, or (Modern) a round of
    * questions, which the get's own rounds answer (`getPrompt`). A Legacy server's question during it is tied to the
-   * call by the header (`withAsking`), and the get's clock stands still while it waits.
+   * call by the header (`withAsking`), and the get's clock stands still while it waits. `atPages` (`urlRequiredOf`, for a
+   * get that waits at pages) turns a Legacy server's `-32042` into the pages to wait at, which the failure the request
+   * ends with no longer lists; it is generic so that only the call that passes it gets them in its type.
    */
   const promptOnce = <Recovered = never>(
     params: PromptParams,
     ctx: McpCallContext,
     retry?: Retry,
-    recover?: (error: Error) => Recovered | undefined,
+    atPages?: (error: Error) => Recovered | undefined,
   ) => {
     const timeoutMs = readTimeoutMs();
 
@@ -2418,9 +2420,9 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         ).then(
           (value) => value,
           (error: Error) => {
-            const recovered = recover?.(error);
+            const pages = atPages?.(error);
 
-            return recovered === undefined ? Promise.reject(error) : recovered;
+            return pages === undefined ? Promise.reject(error) : pages;
           },
         );
       }, false),
@@ -2438,46 +2440,51 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     ctx.answers.livePages === true;
 
   /**
-   * A Legacy server's `-32042`, round `round` of a get: it ran nothing, so the get waits for the owner at each page it lists
-   * (shown together, each answered by its own `onInput`) and is sent again once every one is `accept`, which says the owner
-   * is done there. A page that is declined, cancelled, refused or kept for later, and the eleventh `-32042`, end the get with
-   * the server's own error, the latter saying the server kept asking (`deferPages`' words).
+   * A Legacy server's `-32042`, number `resends` of a get: it ran nothing, so the get waits for the owner at each page it
+   * lists (shown together, each answered by its own `onInput`) and is sent again once every one is `accept`, which says the
+   * owner is done there. A page that is declined, cancelled or refused, and the eleventh `-32042`, end the get with the
+   * server's own error, the latter saying the server kept asking (`deferPages`' words); the first answer of the other kind
+   * settles the round at once, and the cards of the pages still waiting are withdrawn (`onInputEnded`).
    */
-  const waitAtPages = (answer: UrlRequired, round: number): Effect.Effect<void, McpError> =>
+  const waitAtPages = (answer: UrlRequired, resends: number): Effect.Effect<void, McpError> =>
     Effect.gen(function* () {
       const { onInput } = deps;
 
-      if (round > MCP_INPUT_ROUNDS) {
+      if (resends > MCP_INPUT_ROUNDS) {
         return yield* ServerError.make({
           message: `${answer.message}. ${target.name ?? "The server"} kept asking for the same page; stopped after ${MCP_INPUT_ROUNDS} tries`,
           code: URL_REQUIRED_CODE,
         });
       }
 
-      const refused: McpInputAnswer = { kind: "refused", message: "The get cannot ask the owner" };
+      const error = ServerError.make({ message: answer.message, code: URL_REQUIRED_CODE });
 
-      const answers = yield* Effect.forEach(
+      // Each page waits for its owner; one that is not `accept` fails the round, which interrupts the others.
+      yield* Effect.forEach(
         answer.elicitations,
-        ({ elicitationId, page }): Effect.Effect<McpInputAnswer> =>
-          onInput === undefined
-            ? Effect.succeed(refused)
+        ({ elicitationId, page }) =>
+          (onInput === undefined
+            ? Effect.succeed<McpInputAnswer>({
+                kind: "refused",
+                message: "The get cannot ask the owner",
+              })
             : onInput({
                 key: elicitationId,
                 kind: "elicitation",
                 params: page,
                 mode: "deferrable",
                 era: "legacy",
-              }),
-        { concurrency: "unbounded" },
+              })
+          ).pipe(
+            Effect.flatMap((each) =>
+              each.kind === "answered" && each.result.action === "accept"
+                ? Effect.void
+                : Effect.fail(error),
+            ),
+            Effect.onInterrupt(() => Effect.sync(() => deps.onInputEnded?.(elicitationId))),
+          ),
+        { concurrency: "unbounded", discard: true },
       );
-
-      const done = Arr.every(
-        answers,
-        (each) => each.kind === "answered" && each.result.action === "accept",
-      );
-
-      if (!done)
-        return yield* ServerError.make({ message: answer.message, code: URL_REQUIRED_CODE });
     });
 
   /**
@@ -2497,15 +2504,15 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
       // A Legacy server's `-32042` is a page to wait at for a get that waits at pages live; to any other it is the server's
       // error. The get is sent again once the owner is done, as the server asked.
-      const recover = mayWaitAtPages(asking) ? urlRequiredOf : undefined;
+      const atPages = mayWaitAtPages(asking) ? urlRequiredOf : undefined;
 
-      let first = yield* promptOnce(params, asking, undefined, recover);
-      let pages = 1;
+      let first = yield* promptOnce(params, asking, undefined, atPages);
+      let resends = 1;
 
       while (isUrlRequired(first)) {
-        yield* waitAtPages(first, pages);
-        first = yield* promptOnce(params, asking, undefined, recover);
-        pages += 1;
+        yield* waitAtPages(first, resends);
+        first = yield* promptOnce(params, asking, undefined, atPages);
+        resends += 1;
       }
 
       let value: GetPromptResult | Result = first;

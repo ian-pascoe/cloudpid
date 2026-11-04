@@ -8,12 +8,21 @@
 import * as Arr from "effect/Array";
 import { ChevronRight, Sparkles } from "lucide-react";
 import { KeptDetails } from "./parts.tsx";
-import { promptArgumentLines, promptHead, promptSegments } from "./prompt-disclosure.ts";
+import {
+  promptArgumentLines,
+  promptHead,
+  promptSegments,
+  promptUnseenDeclines,
+} from "./prompt-disclosure.ts";
 import type { ShownMcpPrompt } from "../session/thread-messages.ts";
 
-/** The chip line of the MCP prompt a message got, with its arguments: above the typed text, where the owner's chip was. */
+/**
+ * The chip line of the MCP prompt a message got, with its arguments and a line for each question its server asked that
+ * cloudpid ended unseen: above the typed text, where the owner's chip was.
+ */
 export const McpPromptChipLine = ({ prompt }: { prompt: ShownMcpPrompt }) => {
   const argumentLines = promptArgumentLines(prompt);
+  const declines = promptUnseenDeclines(prompt);
 
   return (
     <div className="mb-1.5 flex flex-col gap-1 text-sm">
@@ -27,6 +36,15 @@ export const McpPromptChipLine = ({ prompt }: { prompt: ShownMcpPrompt }) => {
         <ul aria-label="Prompt arguments" className="text-xs text-muted-foreground">
           {Arr.map(argumentLines, (line) => (
             <li key={line} className="truncate" title={line}>
+              {line}
+            </li>
+          ))}
+        </ul>
+      )}
+      {declines.length > 0 && (
+        <ul aria-label="Questions cloudpid ended" className="text-xs text-muted-foreground">
+          {Arr.map(declines, (line, index) => (
+            <li key={index} className="break-words">
               {line}
             </li>
           ))}

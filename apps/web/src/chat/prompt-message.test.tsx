@@ -85,6 +85,51 @@ describe("an MCP prompt in the owner's message", () => {
     expect(markup).toContain("link · file:///repo/notes.md");
   });
 
+  it("tells of each question cloudpid ended unseen, in the call card's words, and not of what the owner answered", () => {
+    const markup = render({
+      ...PROMPT,
+      elicitation: [
+        {
+          server: "docs",
+          mode: "form",
+          action: "decline",
+          by: "cloudpid",
+          reason: "it asked for a credential ('API token')",
+          fields: [],
+        },
+        { server: "docs", mode: "form", action: "accept", by: "owner", fields: ["team"] },
+        { server: "docs", mode: "url", action: "decline", by: "owner", fields: [] },
+      ],
+      sampling: [
+        { server: "docs", status: "refused", by: "cloudpid", reason: "over the budget" },
+        { server: "docs", status: "refused", by: "owner" },
+        { server: "docs", status: "answered", by: "owner" },
+      ],
+    });
+
+    expect(markup).toContain(
+      "cloudpid declined docs&#x27;s form: it asked for a credential (&#x27;API token&#x27;)",
+    );
+    expect(markup).toContain(
+      "cloudpid refused docs&#x27;s request to use a model: over the budget",
+    );
+    expect(markup).not.toContain("You answered");
+    expect(markup).not.toContain("You refused");
+    expect(markup).not.toContain("You declined");
+  });
+
+  it("shows no line for the questions of a prompt that asked none, or only the owner answered", () => {
+    expect(render(PROMPT)).not.toContain("Questions cloudpid ended");
+    expect(
+      render({
+        ...PROMPT,
+        elicitation: [
+          { server: "docs", mode: "form", action: "accept", by: "owner", fields: ["team"] },
+        ],
+      }),
+    ).not.toContain("Questions cloudpid ended");
+  });
+
   it("shows no arguments list for a prompt that took none", () => {
     expect(render({ ...PROMPT, arguments: {} })).not.toContain("Prompt arguments");
   });

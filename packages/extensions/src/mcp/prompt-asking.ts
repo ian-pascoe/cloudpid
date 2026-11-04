@@ -14,10 +14,12 @@ import {
   plainLine,
 } from "@cloudpid/mcp/types";
 import type { ConversationId } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type { Mutable } from "effect/Types";
 import type { McpElicitationDetail, McpSamplingDetail } from "./details.ts";
-import { type ClockHold, elicitingHooks } from "./elicit.ts";
+import { type ClockHold, elicitingHooks, notAcceptedWords, stoppedWaiting } from "./elicit.ts";
 import { samplingHooks, wordsOf } from "./sample.ts";
 import { type McpSamplingService, SAMPLING_SAMPLE_MS } from "./sampling.ts";
 import type { McpQuestionsService } from "./questions.ts";
@@ -78,6 +80,12 @@ export type PromptSummaries = {
 };
 
 /**
+ * Whether a prompt send's get waits at a page live: what its `answers` say (`McpAnswers.livePages`) and what its question
+ * hooks do with a page (`ElicitingCall.livePages`), declared once so the two cannot part.
+ */
+const LIVE_PAGES = true;
+
+/**
  * What a get says it can answer: a form, for as long as the owner has to answer it and a little more, so the Session's own
  * end of the wait comes first; a Sampling request, which may run (`SAMPLING_SAMPLE_MS`) after the owner has said yes; and a
  * page, waited at live (`livePages`). None is kept for later (no `defer`, no `pages`): a prompt send has no resume.
@@ -87,26 +95,14 @@ const answersOf = (samples: boolean): McpAnswers =>
     ? {
         elicitation: true,
         sampling: true,
-        livePages: true,
+        livePages: LIVE_PAGES,
         inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + SAMPLING_SAMPLE_MS + 15_000,
       }
-    : { elicitation: true, livePages: true, inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + 15_000 };
-
-/**
- * What a send's refusal says of the question the owner or cloudpid did not accept, in the owner's words (the agent's call
- * reads another line for the same case).
- */
-const answerLineOf = (detail: McpElicitationDetail): string | undefined => {
-  if (detail.action === "accept") return undefined;
-
-  const ended = detail.action === "decline" ? "declined" : "cancelled";
-
-  if (detail.by === "owner") return `You ${ended} ${detail.server}'s request for input.`;
-
-  const why = plainLine(detail.reason ?? "no reason given", 400).replace(/[<>]/g, "");
-
-  return `cloudpid ${ended} ${detail.server}'s request for input: ${why}.`;
-};
+    : {
+        elicitation: true,
+        livePages: LIVE_PAGES,
+        inputWaitMs: MCP_PROMPT_QUESTION_WAIT_MS + 15_000,
+      };
 
 /** The hooks of a prompt send whose Session can show questions, or none without them. */
 export const promptAsking = (
@@ -138,7 +134,7 @@ export const promptAsking = (
     signal: ask.signal,
     source: server.source,
     hold,
-    livePages: true,
+    livePages: LIVE_PAGES,
   });
 
   // A server whose definition says `off` (or a stdio one) is declared no sampling, so none is asked.
@@ -198,9 +194,15 @@ export const promptAsking = (
       sampling: [...(sampler?.asked ?? [])],
     }),
     answerLine: () => {
-      const last = asking.asked.at(-1);
+      // A card withdrawn because its round was settled by another's answer is not the answer that ended the get.
+      const last = Arr.findLast(
+        asking.asked,
+        (detail) => detail.reason !== stoppedWaiting(server.name),
+      );
 
-      return last === undefined ? undefined : answerLineOf(last);
+      const words = Option.flatMapNullishOr(last, (detail) => notAcceptedWords(detail, "You"));
+
+      return Option.getOrUndefined(Option.map(words, (line) => `${line}.`));
     },
     sunk: () => {
       const detail = sampler?.sunk();

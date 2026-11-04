@@ -455,9 +455,7 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     onInput,
     idle: () => Promise.allSettled(answering).then(() => undefined),
     onInputEnded: (key) =>
-      Effect.runPromise(
-        call.questions.withdraw(call.callId, key, `${call.server} stopped waiting`),
-      ),
+      Effect.runPromise(call.questions.withdraw(call.callId, key, stoppedWaiting(call.server))),
     onInputComplete: (key) => {
       // The record of the page says the owner finished there, whether the call's note of it came first or not.
       finished.add(key);
@@ -474,15 +472,36 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
   };
 };
 
-/** What the model is told of one question that was not answered by the owner's submit. */
-const lineOf = (detail: McpElicitationDetail): string | undefined => {
+/** Why a question's card was withdrawn when its server stopped waiting for the answer (`onInputEnded`). */
+export const stoppedWaiting = (server: string) => `${server} stopped waiting`;
+
+/**
+ * What became of a question that was not accepted, in `voice`'s words ("The user" to the model, "You" to the owner), with
+ * no closing mark; absent for one that was accepted. Whatever the server wrote in the reason is cut to a line and kept
+ * from reading as markup.
+ */
+export const notAcceptedWords = (
+  detail: McpElicitationDetail,
+  voice: "You" | "The user",
+): string | undefined => {
   if (detail.action === "accept") return undefined;
 
-  if (detail.by === "owner") {
-    return `The user ${detail.action === "decline" ? "declined" : "cancelled"} ${detail.server}'s request for input. Don't repeat the call unless the user asks.`;
-  }
+  const ended = detail.action === "decline" ? "declined" : "cancelled";
 
-  return `cloudpid ${detail.action === "decline" ? "declined" : "cancelled"} ${detail.server}'s request for input: ${plainLine(detail.reason ?? "no reason given", 400).replace(/[<>]/g, "")}`;
+  if (detail.by === "owner") return `${voice} ${ended} ${detail.server}'s request for input`;
+
+  const why = plainLine(detail.reason ?? "no reason given", 400).replace(/[<>]/g, "");
+
+  return `cloudpid ${ended} ${detail.server}'s request for input: ${why}`;
+};
+
+/** What the model is told of one question that was not answered by the owner's submit. */
+const lineOf = (detail: McpElicitationDetail): string | undefined => {
+  const words = notAcceptedWords(detail, "The user");
+
+  if (words === undefined) return undefined;
+
+  return detail.by === "owner" ? `${words}. Don't repeat the call unless the user asks.` : words;
 };
 
 /**
