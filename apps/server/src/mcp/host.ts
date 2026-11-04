@@ -16,6 +16,7 @@ import {
   McpApplied,
   type McpApply,
   McpApplyDestroy,
+  McpApplyEndWatches,
   McpApplyReload,
   type McpApplyResult,
   McpApplySet,
@@ -27,6 +28,7 @@ import {
   type McpHostRequestHooks,
   type McpHostRequestResult,
   type McpRequestStart,
+  type McpRequestStartAnswer,
   type McpRequestStartResult,
   McpServerLog,
   type McpServerLogRequest,
@@ -36,12 +38,14 @@ import {
   type McpServersResult,
   McpSignInsTaken,
   McpStale,
+  McpWatchesEnded,
   REDISCOVERING_CHANGES,
 } from "@cloudpid/mcp/types";
 import { normalizeMcpName, samplingOf } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as ManagedRuntime from "effect/ManagedRuntime";
@@ -74,6 +78,17 @@ import { type ServerView, type Trigger, viewServers } from "./server-state.ts";
 import { McpProcessEnded, type McpProcessEndedHandler } from "./stdio.ts";
 import { McpHostStore, type McpHostStoreService } from "./store.ts";
 import { McpTokens } from "./tokens.ts";
+import {
+  closeListens,
+  endProcessWatches,
+  endSessionWatches,
+  endSignedOut,
+  McpListens,
+  reconcileWatches,
+  sweepExpired,
+  sweepListens,
+  takeWatches,
+} from "./watches.ts";
 
 export {
   McpRegistryPort,
@@ -92,11 +107,11 @@ export const mcpHostLayer = (deps: {
   readonly store: McpHostStoreService;
   readonly registry: McpRegistryPortService;
   readonly engine: McpEngineClientService;
-  /** What is done when a stdio server's child ended; nothing, until #478. */
+  /** What is done besides ending the Resource watches on it when a stdio server's child ended. */
   readonly processEnded?: McpProcessEndedHandler;
   readonly references?: Layer.Layer<never>;
-}): Layer.Layer<McpHostServices> =>
-  Layer.mergeAll(
+}): Layer.Layer<McpHostServices> => {
+  const base = Layer.mergeAll(
     Layer.succeed(McpHostStore, deps.store),
     Layer.succeed(McpRegistryPort, deps.registry),
     Layer.succeed(McpEngineClient, deps.engine),
@@ -105,11 +120,32 @@ export const mcpHostLayer = (deps: {
     McpLoadCaps.layer,
     McpListCache.layer,
     McpAppReads.layer,
-    deps.processEnded === undefined
-      ? McpProcessEnded.none
-      : Layer.succeed(McpProcessEnded, deps.processEnded),
+    McpListens.layer,
     deps.references ?? Layer.empty,
   );
+
+  // A stdio server's child that ended ends the Resource watches on it ("server process ended"), then tells the dep's handler.
+  const ended = Layer.effect(
+    McpProcessEnded,
+    Effect.gen(function* () {
+      const context = Context.pick(
+        McpHostStore,
+        McpDiscovery,
+        McpListens,
+      )(yield* Effect.context<McpHostStore | McpDiscovery | McpListens>());
+
+      const handler: McpProcessEndedHandler = (conn, workspace, spawn) =>
+        endProcessWatches(conn, workspace, spawn).pipe(
+          Effect.provideContext(context),
+          Effect.andThen(deps.processEnded?.(conn, workspace, spawn) ?? Effect.void),
+        );
+
+      return handler;
+    }),
+  ).pipe(Layer.provide(base));
+
+  return Layer.mergeAll(base, ended);
+};
 
 const KindOnly = Schema.Struct({ kind: Schema.String });
 
@@ -122,6 +158,11 @@ const decodeDestroy = Schema.decodeUnknownOption(McpApplyDestroy);
 const decodeReload = Schema.decodeUnknownOption(McpApplyReload);
 
 const decodeSignIns = Schema.decodeUnknownOption(McpApplySignIns);
+
+const decodeEndWatches = Schema.decodeUnknownOption(McpApplyEndWatches);
+
+/** The longest reason an end of Resource watches is noted with. */
+const MAX_END_REASON = 200;
 
 const applied = (set: McpApplySet, changed: boolean): McpApplied =>
   McpApplied.make({ hash: set.hash, changed });
@@ -175,6 +216,9 @@ const settleSet = (environment: string | undefined, before: ReadonlyArray<string
     yield* interrupt(Arr.difference(before, conns));
     store.pruneOutsideSet(conns, now);
 
+    // A server that changed, left or was switched off no longer holds its Resource watches.
+    yield* reconcileWatches(views);
+
     if (environment !== undefined) yield* startDue(environment, views, "set");
 
     yield* refreshVersions;
@@ -198,9 +242,9 @@ const takeSet = (environment: string | undefined, set: McpApplySet) =>
 
 /**
  * Wipe the storage, keeping the revision of the deletion (or the held set's when it is later) as the floor of what may
- * fill it again, after interrupting every discovery in flight (their answers are dropped unread). The best-effort
- * Legacy `DELETE` and the closing of streams come with `control` and listens, which the engine does not offer yet. A
- * wipe the storage refuses is `HostFailed`: the Registry still has it to send.
+ * fill it again, after interrupting every discovery in flight (their answers are dropped unread). The listens close with it
+ * (and the Resource watches go with the tables); the best-effort Legacy `DELETE` comes with `control`, which the engine
+ * does not offer yet. A wipe the storage refuses is `HostFailed`: the Registry still has it to send.
  */
 const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostServices> =>
   Effect.gen(function* () {
@@ -218,6 +262,7 @@ const destroy = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostS
     );
 
     yield* interrupt();
+    yield* closeListens;
     yield* Effect.tryPromise(() => store.destroy(revision));
 
     return McpDestroyed.make({});
@@ -344,6 +389,7 @@ const takeSignIns = (
 
     if (change === "signed_out") {
       yield* writeOrHalt(() => store.dropSessions(conns));
+      yield* endSignedOut(Arr.map(views, (view) => view.server.conn));
     } else if (environment !== undefined && rediscovering) {
       yield* startDue(environment, views, "sign_in");
     }
@@ -352,6 +398,31 @@ const takeSignIns = (
   }).pipe(
     Effect.catchCause(orHalt(HostFailed.make({ message: "The sign-in change was not taken" }))),
   );
+
+/**
+ * `end_watches` (`docs/architecture/mcp-in-a-session.md` → Resource watches → Ends): end the Resource watches of a Session,
+ * or of one of its conversations, servers or resources. Unless silent, each is noted as ended for its conversation's next
+ * `requestStart`. Watches no request has touched for 7 days are swept with it.
+ */
+const endWatches = (input: McpApply): Effect.Effect<McpApplyResult, never, McpHostServices> =>
+  Effect.gen(function* () {
+    const wanted = decodeEndWatches(input);
+
+    if (Option.isNone(wanted)) return HostFailed.make({ message: "The end_watches is malformed" });
+
+    const { session, conversation, server, uri, reason, silent } = wanted.value;
+
+    yield* sweepExpired;
+    yield* sweepListens;
+
+    const ended = yield* endSessionWatches(
+      { session, conversation, server, uri },
+      reason?.slice(0, MAX_END_REASON) ?? "ended",
+      silent === true,
+    );
+
+    return McpWatchesEnded.make({ ended });
+  }).pipe(Effect.catchCause(orHalt(HostFailed.make({ message: "The watches were not ended" }))));
 
 /**
  * `apply`: the pushes and teardown. `set` keeps the Environment's set, `reload` rediscovers its servers, `sign_ins`
@@ -382,6 +453,10 @@ export const apply = (
 
     if (kind.value.kind === "sign_ins") {
       return yield* takeSignIns(environment, input);
+    }
+
+    if (kind.value.kind === "end_watches") {
+      return yield* endWatches(input);
     }
 
     if (kind.value.kind !== "set") {
@@ -536,6 +611,19 @@ export const requestStart = (
       "mcp.known": request.known !== undefined,
     });
 
+    const { changes, ends, changed, ended } = yield* takeWatches(
+      environment,
+      request.caller,
+      views,
+    );
+
+    // The detail arrays only gain: a start with nothing to tell answers what it always did.
+    const watches: Mutable<McpRequestStartAnswer["watches"]> = { changed, ended };
+
+    if (changes.length > 0) watches.changes = changes;
+
+    if (ends.length > 0) watches.ends = ends;
+
     return {
       ...versions,
       features: MCP_HOST_FEATURES,
@@ -545,7 +633,7 @@ export const requestStart = (
           { ...toServerHashes(view), state: view.state },
         ]),
       ),
-      watches: { changed: [], ended: [] },
+      watches,
     };
   }).pipe(Effect.catchCause(orHalt(unreadable)), Effect.withSpan("mcp.request_start"));
 

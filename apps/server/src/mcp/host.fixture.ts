@@ -14,7 +14,10 @@ import {
   type McpApply,
   type McpApplyResult,
   type McpEngineDiscoverResult,
+  type McpEngineListenResult,
   type McpEngineMethods,
+  type McpErrorWire,
+  type McpListenFilter,
   type McpHostRequestInput,
   type McpHostRequestHooks,
   type McpHostRequestResult,
@@ -37,6 +40,7 @@ import {
 import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import { DurableObject } from "cloudflare:workers";
 import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Cause from "effect/Cause";
 import * as Layer from "effect/Layer";
@@ -47,10 +51,12 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
+import type { Mutable } from "effect/Types";
 import { mcpEngineClient } from "./engine.ts";
 import { mcpHostLayer, mcpHostMethods, McpRegistryUnavailable } from "./host.ts";
 import { environmentOfMcpHost } from "./name.ts";
 import { type McpHostStoreService, openMcpHostStore, type StoredSet } from "./store.ts";
+import type { WatchRow } from "./watch-store.ts";
 
 /** What the test Registry asked of the pull: the Environment, and the hash the host held. */
 export type PullAsked = {
@@ -95,6 +101,26 @@ export type RequestScript = {
 };
 
 /**
+ * One scripted listen: what the engine answers (`failed`, or `listening` with `honored`, by default every URI asked for,
+ * and the `era` it speaks, `modern` by default), and whether the RPC itself fails instead (`reject`).
+ */
+export type ListenScript = {
+  readonly failed?: typeof McpErrorWire.Encoded;
+  readonly honored?: ReadonlyArray<string>;
+  readonly era?: "modern" | "legacy";
+  readonly spawn?: string;
+  readonly reject?: string;
+};
+
+/** A listen the engine was given, as a test reads it: where, with which filter, and whether the host has closed it. */
+export type ListenOpened = {
+  readonly url: string;
+  readonly filter: typeof McpListenFilter.Encoded;
+  /** The host closed it (its `stop` stream ended). */
+  readonly stopped: boolean;
+};
+
+/**
  * A request the engine was given: the target, the rows passed as `prior`, the request, the hooks' names, and the
  * tokens its `auth` asks were answered with.
  */
@@ -115,8 +141,15 @@ export type EngineCall = {
 const keyOf = (target: McpEngineTargetEncoded) =>
   target.kind === "http" ? target.url : `stdio:${target.name}`;
 
-/** A clock `offset` ms ahead of `base`, sleeping as `base` does. */
-const shiftedClock = (base: Clock.Clock, offset: () => number): Clock.Clock => ({
+/** A sleep of at least this long (the hold timer's) can be woken by `advanceAndWake`. */
+const LONG_SLEEP_MS = 60_000;
+
+/** A clock `offset` ms ahead of `base`, sleeping as `base` does; a long sleep also ends when `advanceAndWake` passes it. */
+const shiftedClock = (
+  base: Clock.Clock,
+  offset: () => number,
+  sleepers: Set<{ readonly wakeAt: number; readonly wake: () => void }>,
+): Clock.Clock => ({
   currentTimeMillisUnsafe: () => base.currentTimeMillisUnsafe() + offset(),
   currentTimeMillis: Effect.sync(() => base.currentTimeMillisUnsafe() + offset()),
   currentTimeNanosUnsafe: () => base.currentTimeNanosUnsafe() + BigInt(offset()) * 1_000_000n,
@@ -125,7 +158,26 @@ const shiftedClock = (base: Clock.Clock, offset: () => number): Clock.Clock => (
   ),
   monotonicTimeNanosUnsafe: () => base.monotonicTimeNanosUnsafe(),
   monotonicTimeNanos: base.monotonicTimeNanos,
-  sleep: (duration) => base.sleep(duration),
+  sleep: (duration) => {
+    const ms = Duration.toMillis(duration);
+
+    if (ms < LONG_SLEEP_MS) return base.sleep(duration);
+
+    const wakeAt = offset() + ms;
+
+    return Effect.raceFirst(
+      base.sleep(duration),
+      Effect.callback<void>((resume) => {
+        const sleeper = { wakeAt, wake: () => resume(Effect.void) };
+
+        sleepers.add(sleeper);
+
+        return Effect.sync(() => {
+          sleepers.delete(sleeper);
+        });
+      }),
+    );
+  },
 });
 
 /** A span the host made, as a test reads it: its name, its trace, its parent and what it recorded. */
@@ -224,6 +276,10 @@ const STORE_WRITES: ReadonlySet<string> = new Set([
   "putLogs",
   "putApp",
   "touchApp",
+  "putWatch",
+  "dropWatches",
+  "putWatchEnds",
+  "takeWatchEnds",
   "destroy",
   "pruneOutsideSet",
 ]);
@@ -280,10 +336,22 @@ export class TestMcpHost extends DurableObject {
 
   readonly #requests: Array<EngineRequest> = [];
 
+  readonly #listenScripts = new Map<string, Array<ListenScript>>();
+
+  /** The listens the engine was given, and the controllers of their event streams. */
+  readonly #listens: Array<{
+    readonly url: string;
+    readonly filter: typeof McpListenFilter.Encoded;
+    readonly events: ReadableStreamDefaultController<Uint8Array>;
+    stopped: boolean;
+    ended: boolean;
+  }> = [];
+
   /** How many times a scripted stream was pulled. */
   #pulls = 0;
 
   #offset = 0;
+  readonly #sleepers = new Set<{ readonly wakeAt: number; readonly wake: () => void }>();
 
   readonly #answers: Array<string> = [];
 
@@ -291,6 +359,9 @@ export class TestMcpHost extends DurableObject {
 
   /** The real engine, once a test asks for it: the test Worker's `McpEngine` entrypoint, over RPC. */
   #real: McpEngineMethods | undefined;
+
+  /** The real engine for requests only (`useRealRequests`): discoveries and listens stay scripted. */
+  #realRequests: McpEngineMethods | undefined;
 
   /** The pulls of streams that wait (`holdStream`) for `releaseStreams()`. */
   readonly #gated: Array<() => void> = [];
@@ -341,10 +412,64 @@ export class TestMcpHost extends DurableObject {
     listen: async (target, prior, filter, hooks, stop) => {
       if (this.#real !== undefined) return this.#real.listen(target, prior, filter, hooks, stop);
 
-      throw new Error("No listen is scripted");
+      const script = this.#listenScripts.get(keyOf(target))?.shift() ?? {};
+
+      if (script.reject !== undefined) throw new Error(script.reject);
+
+      if (script.failed !== undefined) return { kind: "failed", error: script.failed, state: {} };
+
+      const started: Array<ReadableStreamDefaultController<Uint8Array>> = [];
+
+      const events = new ReadableStream<Uint8Array>({
+        start: (controller) => void started.push(controller),
+      });
+
+      const [controller] = started;
+
+      if (controller === undefined) throw new Error("The listen's stream did not start");
+
+      const entry = {
+        url: keyOf(target),
+        filter,
+        events: controller,
+        stopped: false,
+        ended: false,
+      };
+
+      this.#listens.push(entry);
+
+      // The host closing `stop` ends the listen at once, as the real engine's does.
+      void stop
+        ?.getReader()
+        .read()
+        .then(() => {
+          entry.stopped = true;
+          this.#endEvents(entry);
+        });
+
+      const listening: Mutable<
+        Extract<typeof McpEngineListenResult.Encoded, { readonly kind: "listening" }>
+      > = {
+        kind: "listening",
+        honored: {
+          ...filter,
+          resourceSubscriptions: script.honored ?? filter.resourceSubscriptions ?? [],
+        },
+        events,
+        era: script.era ?? "modern",
+        state: {},
+      };
+
+      if (script.spawn !== undefined) listening.spawn = script.spawn;
+
+      return listening;
     },
     request: async (target, prior, request, hooks) => {
       if (this.#real !== undefined) return this.#real.request(target, prior, request, hooks);
+
+      if (this.#realRequests !== undefined) {
+        return this.#realRequests.request(target, prior, request, hooks);
+      }
 
       const tokens: Array<string | undefined> = [];
 
@@ -458,7 +583,7 @@ export class TestMcpHost extends DurableObject {
       references: Layer.mergeAll(
         Layer.succeed(
           Clock.Clock,
-          shiftedClock(Clock.Clock.defaultValue(), () => this.#offset),
+          shiftedClock(Clock.Clock.defaultValue(), () => this.#offset, this.#sleepers),
         ),
         Layer.succeed(
           Tracer.Tracer,
@@ -496,6 +621,15 @@ export class TestMcpHost extends DurableObject {
   useRealEngine(): void {
     // SAFETY: the test Worker exports `McpEngine` (`workerd.fixture.ts`), whose loopback stub answers its methods.
     this.#real = (this.ctx.exports as { readonly McpEngine: McpEngineMethods }).McpEngine;
+  }
+
+  /**
+   * Hand every request to the real `McpEngine`, while discoveries and listens stay scripted: what a test needs to see an
+   * engine's own bounds (the 16 MiB of a read) act on a watch's gap check, whose server the test routes `fetch` to.
+   */
+  useRealRequests(): void {
+    // SAFETY: the test Worker exports `McpEngine` (`workerd.fixture.ts`), whose loopback stub answers its methods.
+    this.#realRequests = (this.ctx.exports as { readonly McpEngine: McpEngineMethods }).McpEngine;
   }
 
   /** Script the Registry's answer to the pull. */
@@ -542,6 +676,77 @@ export class TestMcpHost extends DurableObject {
     this.#scripts.set(url, [...(this.#scripts.get(url) ?? []), ...scripts]);
   }
 
+  /** Queue the engine's answers to the next listens on `url`, in order; none scripted: it honors every URI asked for. */
+  scriptListen(url: string, scripts: ReadonlyArray<ListenScript>): void {
+    this.#listenScripts.set(url, [...(this.#listenScripts.get(url) ?? []), ...scripts]);
+  }
+
+  /** The listens the engine was given, in order. */
+  listens(): ReadonlyArray<ListenOpened> {
+    return this.#listens.map(({ url, filter, stopped }) => ({ url, filter, stopped }));
+  }
+
+  /** The `index`th listen's server says `event` (an `McpListenEvent`). */
+  sendListenEvent(index: number, event: Readonly<Record<string, string>>): void {
+    const entry = this.#listens[index];
+
+    if (entry === undefined || entry.ended) return;
+
+    entry.events.enqueue(new TextEncoder().encode(`${JSON.stringify(event)}\n`));
+  }
+
+  /** The `index`th listen's server ends it (`remote`: cut), as a stream that broke does. */
+  endListen(index: number): void {
+    const entry = this.#listens[index];
+
+    if (entry !== undefined) {
+      this.sendListenEvent(index, { kind: "closed", cause: "remote" });
+      this.#endEvents(entry);
+    }
+  }
+
+  /** End the event stream of `entry` once. */
+  #endEvents(entry: {
+    readonly events: ReadableStreamDefaultController<Uint8Array>;
+    ended: boolean;
+  }): void {
+    if (entry.ended) return;
+
+    entry.ended = true;
+    entry.events.close();
+  }
+
+  /** The Resource watches the host holds, as a new instance's store reads them. */
+  watchRows(): ReadonlyArray<WatchRow> {
+    return this.#afterwards().watches();
+  }
+
+  /** The ends not yet told to their conversations. */
+  watchEnds(): ReadonlyArray<{
+    readonly session: string;
+    readonly conversation: string;
+    readonly server: string;
+    readonly uri: string;
+    readonly reason: string;
+  }> {
+    return this.ctx.storage.sql
+      .exec<{
+        session: string;
+        conversation: string;
+        server: string;
+        uri: string;
+        reason: string;
+      }>(
+        "SELECT session, conversation, server, uri, reason FROM mcp_watch_ends ORDER BY session, conversation, uri",
+      )
+      .toArray();
+  }
+
+  /** Move a watch's last request back to `at`, as if its conversation had not asked since (for the 7-day sweep). */
+  setWatchRequestAt(uri: string, at: number): void {
+    this.ctx.storage.sql.exec("UPDATE mcp_watches SET last_request_at = ? WHERE uri = ?", at, uri);
+  }
+
   /** Queue the engine's answers to the next requests to `url`, in order. */
   scriptRequest(url: string, scripts: ReadonlyArray<RequestScript>): void {
     this.#requestScripts.set(url, [...(this.#requestScripts.get(url) ?? []), ...scripts]);
@@ -559,6 +764,11 @@ export class TestMcpHost extends DurableObject {
     });
   }
 
+  /** How many discoveries and requests of `url` wait for `release(url)`. */
+  heldCount(url: string): number {
+    return this.#held.get(url)?.length ?? 0;
+  }
+
   /** Let the held discoveries and requests of `url` answer. */
   release(url: string): void {
     for (const resolve of this.#held.get(url) ?? []) resolve();
@@ -574,6 +784,18 @@ export class TestMcpHost extends DurableObject {
   /** The discoveries the engine was asked for, in order. */
   engineCalls(): ReadonlyArray<EngineCall> {
     return this.#calls;
+  }
+
+  /**
+   * Move the host's clock `ms` forward and wake the long sleeps (a timer of a minute or more: a listen's hold) it passes,
+   * as their time having come would: `advance` leaves them asleep, as the host's real clock does.
+   */
+  advanceAndWake(ms: number): void {
+    this.#offset += ms;
+
+    for (const sleeper of this.#sleepers) {
+      if (sleeper.wakeAt <= this.#offset) sleeper.wake();
+    }
   }
 
   /** Move the host's clock `ms` forward. */
@@ -824,6 +1046,8 @@ export class TestMcpHost extends DurableObject {
         "mcp_logs",
         "mcp_app_ui",
         "mcp_app_html_meta",
+        "mcp_watches",
+        "mcp_watch_ends",
       ].map((table) => this.ctx.storage.sql.exec(`SELECT * FROM ${table}`).toArray()),
     );
   }

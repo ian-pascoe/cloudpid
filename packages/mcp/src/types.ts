@@ -1341,11 +1341,16 @@ export const McpHostPromptGet = Schema.Struct({
 
 export type McpHostPromptGet = typeof McpHostPromptGet.Type;
 
-/** `request({ op: "resources/read" })`: read the resource `params.uri` of server `server`, whether or not any list names it. */
+/**
+ * `request({ op: "resources/read" })`: read the resource `params.uri` of server `server`, whether or not any list names it.
+ * With `params.watch: true` the host starts a Resource watch on it (subscribing first, then reading) and answers
+ * `Completed.watch` with whether it started; with `false` it ends the conversation's watch and still reads
+ * (`docs/architecture/mcp-in-a-session.md` → Resource watches).
+ */
 export const McpHostResourceRead = Schema.Struct({
   op: Schema.Literal("resources/read"),
   server: Schema.String,
-  params: Schema.Struct({ uri: Schema.String }),
+  params: Schema.Struct({ uri: Schema.String, watch: Schema.optionalKey(Schema.Boolean) }),
   ctx: McpHostRequestContext,
 });
 
@@ -1469,6 +1474,14 @@ export const McpHostCompleted = Schema.TaggedStruct("Completed", {
   ),
   /** A `resources/read`: the SHA-256 (lowercase hex) of its contents, the baseline of a Resource watch (`resources`). */
   sha256: Schema.optionalKey(Schema.String),
+  /**
+   * A `resources/read` with `watch: true`: whether the Resource watch started, and why not when it did not (over a cap,
+   * a server that cannot send updates, a read that did not complete, a watch the host could not store). The read's
+   * contents are given either way. Gain-only: absent for a read that did not ask to watch.
+   */
+  watch: Schema.optionalKey(
+    Schema.Struct({ started: Schema.Boolean, reason: Schema.optionalKey(Schema.String) }),
+  ),
 });
 
 export type McpHostCompleted = typeof McpHostCompleted.Type;

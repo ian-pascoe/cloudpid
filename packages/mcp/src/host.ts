@@ -142,12 +142,32 @@ export const McpApplySignIns = Schema.Struct({
 
 export type McpApplySignIns = typeof McpApplySignIns.Type;
 
-/** What `apply` takes. The other kind (`end_watches`) is added by its slice. */
+/**
+ * `apply({ kind: "end_watches" })` (`docs/architecture/mcp-in-a-session.md` → Resource watches → Ends): end the Resource
+ * watches of Session `session`: one conversation's (`conversation`), one server's (`server`) or one resource's (`uri`),
+ * each narrowing the one before, else all of the Session's. Unless `silent`, each is noted for the conversation's next
+ * `requestStart` as ended with `reason` ("ended" when none is given): the owner's ✕ is, a deleted subagent, a deleted or
+ * archived Session and a moved branch are not.
+ */
+export const McpApplyEndWatches = Schema.Struct({
+  kind: Schema.Literal("end_watches"),
+  session: Schema.String,
+  conversation: Schema.optionalKey(Schema.String),
+  server: Schema.optionalKey(Schema.String),
+  uri: Schema.optionalKey(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
+  silent: Schema.optionalKey(Schema.Boolean),
+});
+
+export type McpApplyEndWatches = typeof McpApplyEndWatches.Type;
+
+/** What `apply` takes. */
 export const McpApply = Schema.Union([
   McpApplySet,
   McpApplyDestroy,
   McpApplyReload,
   McpApplySignIns,
+  McpApplyEndWatches,
 ]);
 
 export type McpApply = typeof McpApply.Type;
@@ -187,6 +207,11 @@ export const McpSignInsTaken = Schema.TaggedStruct("SignInsTaken", {
 
 export type McpSignInsTaken = typeof McpSignInsTaken.Type;
 
+/** Resource watches were ended (`apply({ kind: "end_watches" })`): how many. */
+export const McpWatchesEnded = Schema.TaggedStruct("WatchesEnded", { ended: Schema.Int });
+
+export type McpWatchesEnded = typeof McpWatchesEnded.Type;
+
 /** An operation this build of the host does not know (`op`: the `kind` or method asked for). */
 export const HostUnsupported = Schema.TaggedStruct("HostUnsupported", {
   message: Schema.String,
@@ -220,6 +245,7 @@ export const McpApplyResult = Schema.Union([
   McpDestroyed,
   McpReloaded,
   McpSignInsTaken,
+  McpWatchesEnded,
   ...McpHostFailure.members,
 ]);
 
@@ -319,6 +345,7 @@ export const MCP_HOST_FEATURES: ReadonlyArray<string> = [
   "resume",
   "resend",
   "sampling",
+  "watches",
 ];
 
 /** The Session that asks, as `requestStart` marks its conversation active. */
@@ -402,6 +429,25 @@ export const McpServerReport = Schema.Struct({
 
 export type McpServerReport = typeof McpServerReport.Type;
 
+/** A Resource watch that changed: its server and URI, the sub-resources heard of, and whether `unchecked` (could not be checked; may have changed). */
+export const McpWatchChange = Schema.Struct({
+  server: Schema.String,
+  uri: Schema.String,
+  subUris: Schema.Array(Schema.String),
+  unchecked: Schema.Boolean,
+});
+
+export type McpWatchChange = typeof McpWatchChange.Type;
+
+/** A Resource watch that ended, and why. */
+export const McpWatchEnd = Schema.Struct({
+  server: Schema.String,
+  uri: Schema.String,
+  reason: Schema.String,
+});
+
+export type McpWatchEnd = typeof McpWatchEnd.Type;
+
 /** `requestStart`'s answer (`docs/architecture/mcp-in-a-session.md` → The `mcp` extension). */
 export const McpRequestStartAnswer = Schema.Struct({
   version: Schema.String,
@@ -409,8 +455,14 @@ export const McpRequestStartAnswer = Schema.Struct({
   features: Schema.Array(Schema.String),
   servers: Schema.Record(Schema.String, McpServerReport),
   watches: Schema.Struct({
+    /** The URIs of the caller's Resource watches that changed since its last request start, each once. */
     changed: Schema.Array(Schema.String),
+    /** The URIs of those that ended. */
     ended: Schema.Array(Schema.String),
+    /** Gain-only: `changed` with the server, the sub-resource URIs heard of (at most 3) and whether the change is only a guess. */
+    changes: Schema.Array(McpWatchChange).pipe(Schema.optionalKey),
+    /** Gain-only: `ended` with the server and why. */
+    ends: Schema.Array(McpWatchEnd).pipe(Schema.optionalKey),
   }),
 });
 

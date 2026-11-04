@@ -13,8 +13,9 @@
 //   command, its arguments, `env` and `cwd`), the method and the cursor. A Legacy server's page is not kept, whatever it
 //   sent; nor is one the engine marked uncacheable, one with no `ttlMs`, or one that came as a stream (over 1 MiB, passed
 //   on unread). A read is never kept.
-// - **A read answers its SHA-256** (`sha256` of `Completed`): the baseline of a Resource watch (#478), which this host
-//   does not keep yet.
+// - **A read answers its SHA-256** (`sha256` of `Completed`): the baseline of a Resource watch (`watches.ts`). With
+//   `watch: true` the read subscribes first (the server's listen names its URI) and answers `watch` with whether the
+//   watch started; with `watch: false` it ends the conversation's watch first.
 // @effect-diagnostics missingPipeableSignature:off missedPipeableOpportunity:off -- steps of the host's methods, not combinators.
 import {
   EraRowV1,
@@ -36,6 +37,7 @@ import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
@@ -54,6 +56,8 @@ import {
 import { McpListCache } from "./list-cache.ts";
 import { McpHostStore } from "./store.ts";
 import { SECOND_MS } from "./time.ts";
+import type { WatchKey } from "./watch-store.ts";
+import { beginWatch, endSessionWatches, settleRead, type WatchBegun } from "./watches.ts";
 
 /** What a resource read or page waits for at most: the core's page timeout, or the entry's `timeout` when it is lower. */
 export const RESOURCE_TIMEOUT_MS = 30 * SECOND_MS;
@@ -260,14 +264,44 @@ export const resourceRequest = (
       );
     }
 
+    const { uri, watch } = call.params;
+    const { view, workspace } = resolved.success;
+    const { session, conversation } = ctx;
+
+    // The Resource watch this read is for: the conversation's own, on this server and URI.
+    const key: WatchKey | undefined =
+      session === undefined || conversation === undefined
+        ? undefined
+        : { session, conversation, server: view.server.name, uri };
+
+    // `watch: false` ends the conversation's watch, with no notice (the agent asked), and still reads.
+    if (watch === false && key !== undefined) yield* endSessionWatches(key, "ended", true);
+
+    const begun: WatchBegun | undefined =
+      watch !== true
+        ? undefined
+        : key === undefined
+          ? { kind: "refused", reason: "not watched: the read has no conversation to watch for" }
+          : yield* beginWatch(resolved.success.environment, key, {
+              conn: view.server.conn,
+              workspace,
+            });
+
     const sent = yield* send(
       resolved.success,
       reached.success,
-      { op: "resources/read", uri: call.params.uri, ctx: engineContextOf(ctx, true) },
+      { op: "resources/read", uri, ctx: engineContextOf(ctx, true) },
       hooks,
     );
 
-    if (Result.isFailure(sent)) return sent.failure;
+    // A read that did not complete (a failure, or pages the caller must have first) drops the pending watch it began.
+    if (Result.isFailure(sent) || sent.success.result.kind === "pages_required") {
+      if (key !== undefined && begun?.kind === "held") {
+        yield* settleRead(key, { sha256: undefined, spawn: undefined });
+      }
+
+      if (Result.isFailure(sent)) return sent.failure;
+    }
 
     const { result } = sent.success;
 
@@ -288,5 +322,25 @@ export const resourceRequest = (
           );
     }
 
-    return completedOf(op, result);
+    const answer = completedOf(op, result);
+
+    if (key === undefined || watch === false || result.kind !== "complete") return answer;
+
+    // The contents are the watch's baseline when there is one (a new watch becomes active, an older one's mark clears,
+    // since the agent has read what changed).
+    const held = yield* settleRead(key, { sha256: result.sha256, spawn: result.spawn });
+
+    if (begun === undefined || !Predicate.isTagged(answer, "Completed")) return answer;
+
+    const reason =
+      begun.kind === "refused"
+        ? begun.reason
+        : result.sha256 === undefined
+          ? "not watched: the read did not complete"
+          : "not watched: the host could not store the watch";
+
+    return McpHostCompleted.make({
+      ...answer,
+      watch: begun.kind === "held" && held ? { started: true } : { started: false, reason },
+    });
   });

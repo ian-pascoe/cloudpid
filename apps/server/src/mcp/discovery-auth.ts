@@ -78,7 +78,7 @@ export type DiscoveryAccess =
   | { readonly kind: "answered"; readonly result: McpEngineDiscoverResult };
 
 /** `target` with `token` as its `Authorization: Bearer`. */
-const withBearer = (target: McpEngineHttpTarget, token: string): McpEngineHttpTarget => ({
+export const withBearer = (target: McpEngineHttpTarget, token: string): McpEngineHttpTarget => ({
   ...target,
   headers: { ...target.headers, Authorization: `Bearer ${token}` },
 });
@@ -86,7 +86,7 @@ const withBearer = (target: McpEngineHttpTarget, token: string): McpEngineHttpTa
 /**
  * Whether the entry sends an `Authorization` header of its own, which OAuth never replaces (a 401 is then `failed`).
  */
-const hasOwnAuthorization = (target: McpEngineHttpTarget): boolean =>
+export const hasOwnAuthorization = (target: McpEngineHttpTarget): boolean =>
   Arr.some(Record.keys(target.headers ?? {}), (name) => name.toLowerCase() === "authorization");
 
 const isSignInRequired = (result: EngineAnswer): boolean =>

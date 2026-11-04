@@ -1,9 +1,8 @@
 // `McpHost`'s storage (`docs/architecture/mcp-connections.md` → Storage): the migrations, and the store over them,
-// made of five parts that change for different reasons: the set and `mcp_meta` (`set-store.ts`), the statuses
+// made of six parts that change for different reasons: the set and `mcp_meta` (`set-store.ts`), the statuses
 // (`status-store.ts`), per connection key `conn` the MCP inventory and the rows the engine keeps (`inventory-
-// store.ts`), the log ring (`log-store.ts`) and the App HTML (`app-store.ts`). Here are what spans them: the wipe, and the pruning after a set apply. What the host holds is what the
-// Registry pushed, `${NAME}` unresolved, so no resolved value is ever here; the rest of the tables (watches)
-// come with the slices that use them. Migrations only add, and each shipped one has its digest in
+// store.ts`), the log ring (`log-store.ts`), the App HTML (`app-store.ts`) and the Resource watches (`watch-store.ts`). Here are what spans them: the wipe, and the pruning after a set apply. What the host holds is what the
+// Registry pushed, `${NAME}` unresolved, so no resolved value is ever here. Migrations only add, and each shipped one has its digest in
 // `migrations.manifest.ts`. `mcp_sessions.spawn` is unused until the stdio bridge (#460) gives spawn ids.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
 // @effect-diagnostics asyncFunction:off -- the object's `deleteAll` is a Promise, and the wipe is its Promise's.
@@ -15,6 +14,7 @@ import { type InventoryStore, inventoryStore } from "./inventory-store.ts";
 import { type LogStore, logStore } from "./log-store.ts";
 import { type SetStore, setStore } from "./set-store.ts";
 import { type StatusStore, statusStore } from "./status-store.ts";
+import { type WatchStore, watchStore } from "./watch-store.ts";
 import { DAY_MS } from "./time.ts";
 
 export {
@@ -131,6 +131,35 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       PRIMARY KEY (hash, seq)
     ) STRICT`);
   },
+  // 6: Resource watches (`docs/architecture/mcp-in-a-session.md` → Resource watches): per (Session, conversation, server,
+  // URI) the watch with the `conn` and Workspace it is held on, its baseline hash and mark; and the ends not yet told.
+  (sql) => {
+    sql.exec(`CREATE TABLE mcp_watches (
+      session TEXT NOT NULL,
+      conversation TEXT NOT NULL,
+      server TEXT NOT NULL,
+      uri TEXT NOT NULL,
+      conn TEXT NOT NULL,
+      workspace TEXT NOT NULL,
+      spawn TEXT,
+      state TEXT NOT NULL,
+      hash TEXT,
+      mark INTEGER NOT NULL,
+      sub_uris TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      last_request_at INTEGER NOT NULL,
+      PRIMARY KEY (session, conversation, server, uri)
+    ) STRICT`);
+    sql.exec(`CREATE TABLE mcp_watch_ends (
+      session TEXT NOT NULL,
+      conversation TEXT NOT NULL,
+      server TEXT NOT NULL,
+      uri TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      PRIMARY KEY (session, conversation, server, uri)
+    ) STRICT`);
+  },
 ];
 
 /** How long the inventory of a `conn` that left the set is kept, and how many such `conn`s at most. */
@@ -143,6 +172,7 @@ export type McpHostStoreService = SetStore &
   InventoryStore &
   LogStore &
   AppStore &
+  WatchStore &
   DeprecationNotes & {
     /**
      * Wipe the storage: every table's rows, and the tables, which are made again empty, keeping `revision` as the
@@ -180,6 +210,7 @@ export const openMcpHostStore = (storage: McpHostStorage): McpHostStoreService =
     ...inventoryStore(storage),
     ...logStore(storage),
     ...appStore(storage),
+    ...watchStore(storage),
     ...deprecationNotes(),
 
     destroy: async (revision) => {
