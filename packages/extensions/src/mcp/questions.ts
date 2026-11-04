@@ -26,6 +26,7 @@ import {
 } from "./deferred-questions.ts";
 import {
   cancelled,
+  modeOf,
   questionBasics,
   MCP_CALL_ENDED_REASON,
   MCP_ELICITATION_CAP_REASON,
@@ -103,6 +104,18 @@ export type McpQuestionsService = {
   ) => Effect.Effect<void, McpQuestionsError>;
   /** The server stopped waiting for question `key` of call `callId`: withdraw its card. */
   readonly withdraw: (callId: string, key: string, reason: string) => Effect.Effect<void>;
+  /**
+   * The server says the owner finished at the page question `key` of call `callId` asked them to open (its
+   * `notifications/elicitation/complete` on the call's own stream): the card closes ("Finished at <host>").
+   */
+  readonly complete: (callId: string, key: string) => Effect.Effect<void>;
+  /**
+   * Waits until page question `key` of call `callId`, which the owner opened, has ended: finished, withdrawn, or its call
+   * over. At once for a question that has.
+   */
+  readonly whileOpen: (callId: string, key: string) => Effect.Effect<void>;
+  /** Whether `host` is one of cloudpid's own (`McpQuestionsOptions.ownHost`). */
+  readonly isOwnHost: (host: string) => boolean;
   /** Server `server` was switched off, hidden or removed: cancel every question it waits on, and withdraw the cards. */
   readonly withdrawServer: (server: string, reason: string) => Effect.Effect<void>;
   /** The call is done, however it ended: withdraw every question it still waits on, and forget its count. */
@@ -170,7 +183,14 @@ export type McpQuestionsOptions = {
    * Tell the owner a call waits for them (a push), in the background; it must not fail. Called for the first question
    * of a call and for a later one after `MCP_QUESTION_RENOTIFY_MS` with none waiting; never with the message.
    */
-  readonly notify?: ((who: { readonly server: string }) => Effect.Effect<void>) | undefined;
+  readonly notify?:
+    | ((who: { readonly server: string; readonly page?: true }) => Effect.Effect<void>)
+    | undefined;
+  /**
+   * Whether `host` (lowercase, ASCII) is one of cloudpid's own, which a page the server asks the owner to open must not
+   * be on (`docs/architecture/mcp-server-requests.md` → URL mode). Without it none is.
+   */
+  readonly ownHost?: ((host: string) => boolean) | undefined;
   /** `value` with every Secret the Session holds replaced by its reference: all the owner is shown, and all a record keeps. */
   readonly redact: <A>(value: A) => Effect.Effect<A>;
   /**
@@ -192,6 +212,10 @@ type Waiting = {
   readonly request: McpElicitationRequest;
   readonly entry: WaitingEntry;
   readonly outcome: Deferred.Deferred<McpQuestionOutcome>;
+  /** Succeeds once the question has ended, however: a page the owner opened is waited for until then. */
+  readonly closed: Deferred.Deferred<void>;
+  /** A page question the owner opened: the server goes on, and the card stays until the page is finished. */
+  readonly opened: boolean;
 };
 
 /** The Session's MCP questions over its storage. Synchronous: the tools that ask are built before the runtime. */
@@ -238,24 +262,29 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
           Effect.logWarning("Could not update the waiting MCP questions", cause),
         ),
       );
+
+      // A page the owner opened was answered `accept` when it was opened, whatever ended it.
+      const ended: McpQuestionOutcome = held.opened
+        ? { action: "accept", by: "owner", content: {} }
+        : outcome;
+
       yield* keep(
         basics.settledOf(
           request,
           {
-            action: outcome.action,
-            by: outcome.by,
-            reason: outcome.action === "accept" ? undefined : outcome.reason,
+            action: ended.action,
+            by: ended.by,
+            reason: ended.action === "accept" ? undefined : ended.reason,
             // The names of the fields answered: never a value.
             fields:
-              outcome.action === "accept"
-                ? basics.answeredFields(request.form, outcome.content)
-                : [],
+              ended.action === "accept" ? basics.answeredFields(request.form, ended.content) : [],
           },
           entry.askedAt,
           now,
         ),
       );
       yield* Deferred.succeed(held.outcome, outcome);
+      yield* Deferred.succeed(held.closed, undefined);
       yield* tell;
 
       return true;
@@ -299,10 +328,17 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       }
 
       const outcome = yield* Deferred.make<McpQuestionOutcome>();
+      const closed = yield* Deferred.make<void>();
 
-      waiting.set(id, { key: question.key, request, entry, outcome });
+      waiting.set(id, { key: question.key, request, entry, outcome, closed, opened: false });
       yield* tell;
-      yield* basics.startWaiting(question.callId, question.server, 1, now);
+      yield* basics.startWaiting(
+        question.callId,
+        question.server,
+        1,
+        now,
+        question.page !== undefined,
+      );
 
       yield* Deferred.await(outcome).pipe(
         Effect.timeoutOption(waitMs),
@@ -318,6 +354,46 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       return yield* Deferred.await(outcome);
     });
 
+  /**
+   * The owner's answer to a page question that waits live (a Legacy server's, during its call). Open's click answers the
+   * server `accept` at once and the card stays, reading "Opened", until the page is finished (`complete`), the server
+   * stops waiting, or the call ends; there is no "Done" to press, since the server goes on by itself.
+   */
+  const answerPage = (id: string, held: Waiting, given: McpQuestionAnswer) =>
+    Effect.gen(function* () {
+      const { page } = held.request;
+
+      if (page === undefined || given.action === "accept") {
+        return yield* McpQuestionsError.make({
+          message: "This request is a page to open, not a form",
+        });
+      }
+
+      if (given.action === "done") {
+        return yield* McpQuestionsError.make({
+          message: `${held.request.server} goes on by itself when you finish at the page`,
+        });
+      }
+
+      if (given.action !== "opened") {
+        yield* finish(id, { action: given.action, by: "owner" });
+
+        return;
+      }
+
+      if (!held.opened) {
+        waiting.set(id, {
+          ...held,
+          opened: true,
+          request: { ...held.request, page: { ...page, opened: true } },
+        });
+      }
+
+      // The first Open answers the server; another client's, or a second click, only finds the card as it is.
+      yield* Deferred.succeed(held.outcome, { action: "accept", by: "owner", content: {} });
+      yield* tell;
+    });
+
   const answer: McpQuestionsService["answer"] = (id, given) =>
     Effect.gen(function* () {
       const held = waiting.get(id);
@@ -326,6 +402,12 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         if (yield* deferred.answer(id, given)) return;
 
         return yield* McpQuestionsError.make({ message: "This request ended" });
+      }
+
+      if (held.request.page !== undefined) return yield* answerPage(id, held, given);
+
+      if (given.action === "opened" || given.action === "done") {
+        return yield* McpQuestionsError.make({ message: "This request is a form, not a page" });
       }
 
       if (given.action !== "accept") {
@@ -356,6 +438,31 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       basics.calls.delete(callId);
     });
 
+  /** The page question `key` of call `callId` that waits live, if there is one. */
+  const waitingFor = (callId: string, key: string) =>
+    Arr.findFirst(
+      Arr.fromIterable(waiting.entries()),
+      ([, held]) => held.request.callId === callId && held.key === key,
+    );
+
+  const complete = (callId: string, key: string) =>
+    Option.match(waitingFor(callId, key), {
+      onNone: () => Effect.void,
+      onSome: ([id, held]) =>
+        finish(
+          id,
+          held.opened
+            ? { action: "accept", by: "owner", content: {} }
+            : cancelled(`${held.request.server} says the page is finished`),
+        ).pipe(Effect.asVoid),
+    });
+
+  const whileOpen = (callId: string, key: string) =>
+    Option.match(waitingFor(callId, key), {
+      onNone: () => Effect.void,
+      onSome: ([, held]) => Deferred.await(held.closed),
+    });
+
   const unseen: McpQuestionsService["unseen"] = (form) =>
     Effect.gen(function* () {
       const sequence = yield* basics.count(form);
@@ -371,7 +478,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         conversationId: form.conversationId,
         server: form.server,
         tool: form.tool,
-        mode: "form",
+        ...modeOf(form),
         message: shown.message,
         notes: shown.notes,
         action: form.action,
@@ -401,6 +508,9 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         deferred.withdrawServer(server, reason),
       ),
     settleCall,
+    complete,
+    whileOpen,
+    isOwnHost: (host) => options.ownHost?.(host) ?? false,
     unseen,
     defers: options.vault !== undefined,
     defer: deferred.defer,

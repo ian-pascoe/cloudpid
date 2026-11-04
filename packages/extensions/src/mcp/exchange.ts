@@ -447,6 +447,7 @@ export const send = async <A>(
     if (asking !== undefined && sampling === undefined) {
       hooks.onInput = asking.onInput;
       hooks.onInputEnded = asking.onInputEnded;
+      hooks.onInputComplete = asking.onInputComplete;
     } else if (sampling !== undefined) {
       // A request goes to the hook of its kind.
       hooks.onInput = (input) =>
@@ -458,6 +459,9 @@ export const send = async <A>(
         sampling.onInputEnded(key);
         await asking?.onInputEnded(key);
       };
+
+      // A page's completion is a form's business only: the sampling hook has none.
+      if (asking !== undefined) hooks.onInputComplete = asking.onInputComplete;
     }
 
     const result = await Promise.race([

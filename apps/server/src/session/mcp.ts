@@ -219,7 +219,11 @@ const sessionMcp = (options: SessionMcpOptions) =>
               request_id: question.id,
               agent_id: agentIdOf(state, question.conversationId),
               summary: readable
-                ? redact(`${question.server} needs your input`)
+                ? redact(
+                    question.page === undefined
+                      ? `${question.server} needs your input`
+                      : `${question.server} asks you to open a page`,
+                  )
                 : "An MCP server needs your input",
               url: "",
             },

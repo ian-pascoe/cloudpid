@@ -104,14 +104,16 @@ export const resumeOf = async (
 
   const answers: Mutable<McpTaskInputResponses> = {};
 
-  for (const { key, outcome, fields } of answered) {
+  for (const { key, outcome, fields, page } of answered) {
     const detail: Mutable<McpElicitationDetail> = {
       server: call.server,
-      mode: "form",
+      mode: page === undefined ? "form" : "url",
       action: outcome.action,
       by: outcome.by,
       fields: [...fields],
     };
+
+    if (page !== undefined) detail.host = page.host;
 
     if (outcome.action !== "accept" && outcome.reason !== undefined) {
       detail.reason = outcome.reason;

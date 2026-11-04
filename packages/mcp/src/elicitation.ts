@@ -121,6 +121,9 @@ export const McpElicitParams = Schema.Struct({
   message: Schema.String,
   mode: Schema.optionalKey(Schema.String),
   requestedSchema: Schema.optionalKey(Schema.Json),
+  /** URL mode: the page to open, and the id its completion notice names (a Legacy server's; `-32042`'s have one too). */
+  url: Schema.optionalKey(Schema.String),
+  elicitationId: Schema.optionalKey(Schema.String),
 });
 
 export type McpElicitParams = typeof McpElicitParams.Type;

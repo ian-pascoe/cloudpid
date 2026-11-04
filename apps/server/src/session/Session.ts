@@ -40,6 +40,7 @@ import { githubAppKeyForms } from "../github/app.ts";
 import { GitHubAppConfig } from "../github/config.ts";
 import { McpHost } from "../mcp/McpHost.ts";
 import { mcpHostName } from "../mcp/name.ts";
+import { isOwnHost } from "../mcp/own-hosts.ts";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { workersTracing } from "../tracing.ts";
 import { buildUpkeep } from "../registry/builds.ts";
@@ -573,6 +574,8 @@ export const SessionLive = Session.make(
           sockets: state.raw,
           notify: notifyOwner,
           credentials: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
+          // A page a server asks the owner to open is never on one of cloudpid's own hosts.
+          ownHost: isOwnHost,
           // A Modern server's answers are sealed until the call's resume, bound to this object's ID.
           encryptionKey: secrets.encryptionKey,
           session: state.raw.id.toString(),

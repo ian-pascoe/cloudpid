@@ -103,6 +103,17 @@ export const ElicitationAction = Schema.Literals(["accept", "decline", "cancel"]
 
 export type ElicitationAction = typeof ElicitationAction.Type;
 
+/**
+ * What the owner sends for a question (`mcp_elicitation_answer`): how a form closes, or, for a question with a `page`,
+ * `opened` (Open's click) and `done` ("Done, try again").
+ */
+export const McpElicitationAction = Schema.Union([
+  ElicitationAction,
+  Schema.Literals(["opened", "done"]),
+]);
+
+export type McpElicitationAction = typeof McpElicitationAction.Type;
+
 /** Where the server's definition is: Global, the Environment, or a Repo's `.pi/mcp.json` (then its `owner/repo`). */
 export const McpElicitationSource = Schema.Struct({
   kind: Schema.String,
@@ -110,6 +121,27 @@ export const McpElicitationSource = Schema.Struct({
 });
 
 export type McpElicitationSource = typeof McpElicitationSource.Type;
+
+/**
+ * The page a URL-mode question asks the owner to open (`docs/architecture/mcp-server-requests.md` → Elicitation
+ * requests, URL mode). `url` is the address as the browser will open it, `host` its host in ASCII (punycode) and
+ * `domain` the registrable domain the card emphasizes; `warning` says the host is an internationalized one (`idn`) or
+ * mixes scripts (`mixed_script`). `opened` is
+ * whether the owner opened it (from any client). `retry` says the call ends and is sent again ("Done, try again", a
+ * Legacy `-32042`); without it the server goes on by itself when the owner finishes there. `again` says the server
+ * asked for this page before and it was opened ("Not finished at <host> yet").
+ */
+export const McpElicitationPage = Schema.Struct({
+  url: Schema.String,
+  host: Schema.String,
+  domain: Schema.String,
+  warning: Schema.optionalKey(Schema.Literals(["idn", "mixed_script"])),
+  opened: Schema.Boolean,
+  retry: Schema.optionalKey(Schema.Literal(true)),
+  again: Schema.optionalKey(Schema.Literal(true)),
+});
+
+export type McpElicitationPage = typeof McpElicitationPage.Type;
 
 /**
  * One waiting question (`mcp_elicitation_requests`), as the card shows it. Every string is plain text. `deadline` is
@@ -132,7 +164,10 @@ export const McpElicitationRequest = Schema.Struct({
   tool: Schema.String,
   /** The server's message, cut and cleaned. */
   message: Schema.String,
+  /** A page question's `form` has no fields: the card draws `page` instead. */
   form: ElicitationForm,
+  /** The page to open, when the server asks the owner to (URL mode); a client from before it shows a form with no fields. */
+  page: Schema.optionalKey(McpElicitationPage),
   /** What the Session ignored or changed in the server's schema, one line each. */
   notes: Schema.Array(Schema.String),
   deadline: Schema.Finite,

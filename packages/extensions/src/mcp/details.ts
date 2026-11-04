@@ -32,13 +32,15 @@ export type McpHints = { readonly [Hint in (typeof HINTS)[number]]?: boolean };
  */
 export type McpElicitationDetail = {
   readonly server: string;
-  readonly mode: "form";
+  readonly mode: "form" | "url";
   readonly action: "accept" | "decline" | "cancel";
   readonly by: "owner" | "cloudpid";
   /** Why cloudpid answered, when it did. */
   readonly reason?: string;
   /** The names of the fields the owner answered. */
   readonly fields: Array<string>;
+  /** The host of the page a URL-mode question asked the owner to open; never the address. */
+  readonly host?: string;
 };
 
 /**
