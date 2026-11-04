@@ -5,6 +5,7 @@
 // Session keeps 16 MiB of them: past it the least recently written are reduced to stubs (their status, Role, model,
 // tokens and cost stay; the messages, tools and reply go).
 import type * as Schema from "effect/Schema";
+import type { McpSamplingWhy } from "./details.ts";
 import type { McpQuestionStorage } from "./question-records.ts";
 
 /** The most bytes one record holds. */
@@ -44,6 +45,8 @@ export type McpSamplingRecord = {
   readonly status: McpSamplingStatus;
   /** Why it was refused or failed, in cloudpid's words. */
   readonly reason?: string;
+  /** Why, as a tag; see `McpSamplingWhy`. */
+  readonly why?: McpSamplingWhy;
   readonly role?: string;
   readonly model?: string;
   readonly hints?: ReadonlyArray<string>;

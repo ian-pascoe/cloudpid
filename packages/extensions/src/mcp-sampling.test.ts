@@ -1,6 +1,6 @@
 // The Session's sampler (`docs/architecture/mcp-server-requests.md` → Sampling requests): a Legacy server's request run
 // through the Session's `Models`, with its cap, its pace, its refusals, its Usage and its redacted record.
-// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off asyncFunction:off anyUnknownInErrorContext:off runEffectInsideEffect:off missedPipeableOpportunity:off
+// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off asyncFunction:off anyUnknownInErrorContext:off runEffectInsideEffect:off missedPipeableOpportunity:off preferSchemaOverJson:off
 import type { JsonObject } from "@cloudpid/mcp/types";
 import {
   type AssistantMessage,
@@ -17,6 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Predicate from "effect/Predicate";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 import { describe, expect, it, vi } from "vitest";
 import {
   createMcpSampling,
@@ -149,6 +150,67 @@ const refusedWith = (outcome: McpSamplingOutcome) =>
   outcome.kind === "refused" ? { code: outcome.code, message: outcome.message } : undefined;
 
 describe("MCP sampling", () => {
+  test("makes a span of each sample with who decided, the Role, the model, the tokens, the cost and the outcome", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+
+          spans.push(span);
+
+          return span;
+        },
+      });
+
+      const { sampler, faux, answer } = open();
+
+      faux.setResponses([answer("hello")]);
+      yield* sampler.sample(ask(HI)).pipe(Effect.provideService(Tracer.Tracer, tracer));
+
+      const [span] = spans.filter((each) => each.name === "mcp.sampling.sample");
+
+      expect(Object.fromEntries(span?.attributes ?? [])).toMatchObject({
+        "mcp.server": "demo",
+        "mcp.origin": "agent",
+        "mcp.sampling.outcome": "answered",
+        "mcp.sampling.by": "definition",
+        "mcp.sampling.role": "small",
+        "mcp.sampling.model": "claude-haiku-5-5",
+        "mcp.sampling.tokens": expect.any(Number),
+        "mcp.sampling.cost": expect.any(Number),
+      });
+    }));
+
+  test("tags why it refused, in a field of its own, never in the words alone", () =>
+    Effect.gen(function* () {
+      const { sampler } = open({ over: () => "it has spent 2 of 1" });
+      const outcome = yield* sampler.sample(ask(HI));
+
+      expect(outcome.detail).toMatchObject({ status: "refused", by: "cloudpid", why: "budget" });
+    }));
+
+  test("never puts an id or text the server wrote into the reason of a mispaired request", () =>
+    Effect.gen(function* () {
+      const { sampler } = open();
+
+      const outcome = yield* sampler.sample(
+        ask({
+          maxTokens: 5,
+          messages: [
+            {
+              role: "assistant",
+              content: { type: "tool_use", id: "toolu_SERVER_ID_77", name: "x", input: {} },
+            },
+          ],
+        }),
+      );
+
+      expect(JSON.stringify(outcome)).not.toContain("SERVER_ID_77");
+      expect((yield* sampler.records)[0]?.reason).not.toContain("SERVER_ID_77");
+    }));
+
   test("answers a request from the smallest Role's model, counts its Usage, and records it", () =>
     Effect.gen(function* () {
       const { sampler, faux, usages, seen, answer } = open();

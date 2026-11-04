@@ -81,16 +81,33 @@ describe("pairingProblem", () => {
   });
 
   it("refuses a tool_use not answered exactly once in the next message", () => {
-    expect(pairingProblem([use("a")])).toContain('tool_use "a"');
-    expect(pairingProblem([use("a"), user("hi")])).toContain('tool_use "a"');
+    expect(pairingProblem([use("a")])).toContain("every tool_use must be answered exactly once");
+    expect(pairingProblem([use("a"), user("hi")])).toContain(
+      "every tool_use must be answered exactly once",
+    );
     expect(
       pairingProblem([use("a"), { role: "user", content: [result("a"), result("a")] }]),
-    ).toContain('tool_use "a"');
+    ).toContain("every tool_use must be answered exactly once");
+  });
+
+  it("says only the rule, never an id or text the server wrote, which the agent reads", () => {
+    const id = "toolu_SERVER_WROTE_THIS_91";
+
+    const problems = [
+      pairingProblem([use(id)]),
+      pairingProblem([{ role: "user", content: result(id) }]),
+      pairingProblem([use(id), { role: "user", content: result("other_SERVER_ID") }]),
+    ];
+
+    for (const problem of problems) {
+      expect(problem).toBeDefined();
+      expect(problem).not.toMatch(/SERVER/);
+    }
   });
 
   it("refuses a tool_result with no tool_use before it, or leaving one out", () => {
     expect(pairingProblem([{ role: "user", content: result("ghost") }])).toContain(
-      'tool_result "ghost"',
+      "every tool_result must answer a tool_use",
     );
     expect(
       pairingProblem([
@@ -103,7 +120,7 @@ describe("pairingProblem", () => {
         },
         { role: "user", content: result("a") },
       ]),
-    ).toContain('tool_use "b"');
+    ).toContain("every tool_use must be answered exactly once");
   });
 });
 

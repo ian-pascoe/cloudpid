@@ -35,7 +35,8 @@ const isToolResult = (block: SamplingBlock): block is ToolResultBlock =>
   block.type === "tool_result";
 
 /**
- * The first pairing rule the messages break, in words, or undefined when none: a user message with a `tool_result` holds
+ * The first pairing rule the messages break, in words of its own (never the server's ids or text: the reason reaches the
+ * agent), or undefined when none: a user message with a `tool_result` holds
  * only tool results; `tool_use` is the assistant's and `tool_result` the user's; every assistant `tool_use` is answered
  * exactly once, in the next message; and no `tool_result` is left without its `tool_use`.
  */
@@ -66,7 +67,7 @@ export const pairingProblem = (messages: ReadonlyArray<SamplingMessage>): string
         const count = Arr.filter(ids, (id) => id === use.id).length;
 
         if (count !== 1) {
-          return `tool_use "${use.id}" must be answered exactly once in the next message`;
+          return "every tool_use must be answered exactly once in the next message";
         }
       }
     }
@@ -81,7 +82,7 @@ export const pairingProblem = (messages: ReadonlyArray<SamplingMessage>): string
 
       for (const result of results) {
         if (!called.includes(result.toolUseId)) {
-          return `tool_result "${result.toolUseId}" has no tool_use before it`;
+          return "every tool_result must answer a tool_use in the message before it";
         }
       }
 

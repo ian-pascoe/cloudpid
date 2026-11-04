@@ -11,7 +11,13 @@
 // `-32603` when the model fails. Only a server whose definition says `sampling: "allow"` is answered here: the owner's
 // yes on a card is not built yet.
 import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
-import type { JsonObject, McpSamplingResult } from "@cloudpid/mcp/types";
+import {
+  type JsonObject,
+  MCP_INTERNAL_ERROR,
+  MCP_INVALID_PARAMS,
+  MCP_SAMPLING_REFUSED,
+  type McpSamplingResult,
+} from "@cloudpid/mcp/types";
 import type {
   Api,
   Context as ModelContext,
@@ -33,7 +39,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
-import type { McpSamplingDetail } from "./details.ts";
+import type { McpSamplingDetail, McpSamplingWhy } from "./details.ts";
 import type { McpQuestionStorage } from "./question-records.ts";
 import {
   cutText,
@@ -231,12 +237,12 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         status: "refused" | "failed",
         code: number,
         message: string,
-        by: "definition" | "cloudpid" = "cloudpid",
+        why: McpSamplingWhy,
       ): Effect.Effect<McpSamplingOutcome> =>
         Effect.gen(function* () {
           const settledAt = yield* Clock.currentTimeMillis;
 
-          record = { ...record, status, reason: message, by, settledAt };
+          record = { ...record, status, reason: message, why, by: "cloudpid", settledAt };
           yield* keep(record);
 
           return {
@@ -268,6 +274,8 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
         if (settled.reason !== undefined) detail.reason = settled.reason;
 
+        if (settled.why !== undefined) detail.why = settled.why;
+
         if (settled.role !== undefined) detail.role = settled.role;
 
         if (settled.model !== undefined) detail.model = settled.model;
@@ -280,13 +288,23 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       };
 
       if (sequence > MCP_SAMPLINGS_PER_CALL) {
-        return yield* end("refused", -1, "sampling limit for this call reached");
+        return yield* end(
+          "refused",
+          MCP_SAMPLING_REFUSED,
+          "sampling limit for this call reached",
+          "cap",
+        );
       }
 
       const bound = binding;
 
       if (bound === undefined) {
-        return yield* end("refused", -32603, "the Session's models are not ready yet");
+        return yield* end(
+          "refused",
+          MCP_INTERNAL_ERROR,
+          "the Session's models are not ready yet",
+          "internal",
+        );
       }
 
       const decoded = decodeSamplingParams(ask.params);
@@ -294,8 +312,9 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       if (Option.isNone(decoded)) {
         return yield* end(
           "refused",
-          -32602,
+          MCP_INVALID_PARAMS,
           "invalid sampling request: its parameters are malformed",
+          "invalid",
         );
       }
 
@@ -309,12 +328,22 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       const problem = pairingProblem(params.messages);
 
       if (problem !== undefined)
-        return yield* end("refused", -32602, `invalid sampling messages: ${problem}`);
+        return yield* end(
+          "refused",
+          MCP_INVALID_PARAMS,
+          `invalid sampling messages: ${problem}`,
+          "invalid",
+        );
 
       const tooLarge = boundsProblem(params);
 
       if (tooLarge !== undefined)
-        return yield* end("refused", -32602, `invalid sampling request: ${tooLarge}`);
+        return yield* end(
+          "refused",
+          MCP_INVALID_PARAMS,
+          `invalid sampling request: ${tooLarge}`,
+          "invalid",
+        );
 
       taken.set(
         ask.callId,
@@ -325,7 +354,9 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         Effect.orElseSucceed(() => undefined),
       );
 
-      if (over !== undefined) return yield* end("refused", -1, `out of budget: ${over}`);
+      if (over !== undefined) {
+        return yield* end("refused", MCP_SAMPLING_REFUSED, `out of budget: ${over}`, "budget");
+      }
 
       // The model: the Role the server's preferences ask for, lowered to the first Role whose model the Session has.
       const roles = bound.roles();
@@ -354,7 +385,12 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       const model = role === undefined ? undefined : modelOf(bound.models, roles, role);
 
       if (role === undefined || model === undefined) {
-        return yield* end("refused", -32602, "no model is available for this request");
+        return yield* end(
+          "refused",
+          MCP_INVALID_PARAMS,
+          "no model is available for this request",
+          "unservable",
+        );
       }
 
       record = { ...record, role, model: model.id };
@@ -370,7 +406,12 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       const converted = toPiMessages(params.messages, model, askedAt);
 
       if (converted.kind === "refused") {
-        return yield* end("refused", -32602, `unservable sampling request: ${converted.reason}`);
+        return yield* end(
+          "refused",
+          MCP_INVALID_PARAMS,
+          `unservable sampling request: ${converted.reason}`,
+          "unservable",
+        );
       }
 
       const offered = params.tools ?? [];
@@ -404,7 +445,12 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       const transcript = normalizeContext(context);
 
       if (estimateContextTokens(transcript).tokens >= model.contextWindow) {
-        return yield* end("refused", -32602, "the request does not fit the model's context window");
+        return yield* end(
+          "refused",
+          MCP_INVALID_PARAMS,
+          "the request does not fit the model's context window",
+          "unservable",
+        );
       }
 
       const maxTokens = clampMaxTokensToContext(
@@ -416,7 +462,14 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       const kept = yield* keep(record);
 
       // A replaced Session, whose storage cannot take the record, cannot count the sample either: refused.
-      if (!kept) return yield* end("refused", -1, "cloudpid could not record the request");
+      if (!kept) {
+        return yield* end(
+          "refused",
+          MCP_SAMPLING_REFUSED,
+          "cloudpid could not record the request",
+          "internal",
+        );
+      }
 
       const sampled = yield* pace(ask.server).pipe(
         Effect.andThen(
@@ -430,7 +483,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       );
 
       if (Result.isFailure(sampled)) {
-        return yield* end("refused", -32603, "the model could not be reached");
+        return yield* end("refused", MCP_INTERNAL_ERROR, "the model could not be reached", "model");
       }
 
       const { message, timedOut } = sampled.success;
@@ -448,7 +501,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       if (replied.kind === "failed") {
         const reason = timedOut ? "the sample took longer than 2 minutes" : replied.reason;
 
-        return yield* end("failed", -32603, reason);
+        return yield* end("failed", MCP_INTERNAL_ERROR, reason, "model");
       }
 
       const settledAt = yield* Clock.currentTimeMillis;
@@ -469,15 +522,19 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         detail: detailOf(record),
       } satisfies McpSamplingOutcome;
     }).pipe(
-      Effect.withSpan("mcp.sampling.sample", { attributes: { "mcp.server": ask.server } }),
+      // The span says what it ended as and who decided, never what was asked or answered.
+      Effect.tap((outcome) => Effect.annotateCurrentSpan(spanAttributes(outcome.detail))),
+      Effect.withSpan("mcp.sampling.sample", {
+        attributes: { "mcp.server": ask.server, "mcp.origin": "agent" },
+      }),
       // Whatever goes wrong inside is a failure of the model seam, told to the server as one.
       Effect.catchCause((cause) =>
         Effect.logWarning("A Sampling request could not be answered", cause).pipe(
           Effect.as({
             kind: "refused",
-            code: -32603,
+            code: MCP_INTERNAL_ERROR,
             message: "cloudpid could not answer the sampling request",
-            detail: { server: ask.server, status: "failed", by: "cloudpid" },
+            detail: { server: ask.server, status: "failed", by: "cloudpid", why: "internal" },
           } satisfies McpSamplingOutcome),
         ),
       ),
@@ -495,6 +552,29 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
     },
     records: Effect.sync(() => store.list()),
   };
+};
+
+/** A span's attributes. */
+type SpanAttributes = { readonly [key: string]: string | number };
+
+/** What the span of a sample carries of how it ended: the Role and model, tokens and cost, the outcome and who decided. */
+const spanAttributes = (detail: McpSamplingDetail) => {
+  const attributes: Mutable<SpanAttributes> = {
+    "mcp.sampling.outcome": detail.status,
+    "mcp.sampling.by": detail.by,
+  };
+
+  if (detail.why !== undefined) attributes["mcp.sampling.why"] = detail.why;
+
+  if (detail.role !== undefined) attributes["mcp.sampling.role"] = detail.role;
+
+  if (detail.model !== undefined) attributes["mcp.sampling.model"] = detail.model;
+
+  if (detail.tokens !== undefined) attributes["mcp.sampling.tokens"] = detail.tokens;
+
+  if (detail.cost !== undefined) attributes["mcp.sampling.cost"] = detail.cost;
+
+  return attributes;
 };
 
 /** Whether a tool's schema has what a non-strict flattening may lose. */
