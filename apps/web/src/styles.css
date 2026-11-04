@@ -3,6 +3,15 @@
 /* Tailwind v4 does not scan node_modules: Streamdown's code-block controls and streaming caret are utility classes. */
 @source "../node_modules/streamdown/dist/*.js";
 
+/* Tests, their helpers and fixtures, Markdown and the typecheck's build info are not the app: a class named only there
+   must not reach the build, whose hash decides whether a deploy updates the Server (apps/server/src/web-build.ts). */
+@source not "../**/*.test.ts";
+@source not "../**/*.test.tsx";
+@source not "../**/*.testing.ts";
+@source not "../src/**/fixtures/**";
+@source not "../**/*.md";
+@source not "../tsconfig.tsbuildinfo";
+
 @custom-variant dark (@media (prefers-color-scheme: dark));
 /* A short viewport (a phone in landscape): the waiting cards give up room they can spare. */
 @custom-variant short (@media (max-height: 32rem));
