@@ -61,7 +61,10 @@ export interface StubOptions {
   readonly carryRef?: string;
   /** The HTTP status to answer every request with, as Access does for a token it does not know. */
   readonly httpStatus?: number;
-  /** `tools/list` declares `changes_carried` on `session_import_finish`, as an endpoint that has #474 does. */
+  /**
+   * Whether `tools/list` declares `changes_carried` on `session_import_finish`: `true`, as an endpoint that has #474 does;
+   * `false`, as an older one does, whatever cloudpid's own `serveMcp` now says. Left out, the tool is listed as it is served.
+   */
   readonly declaresChangesCarried?: boolean;
 }
 
@@ -90,9 +93,9 @@ const rpcOf = (text: string): JsonObject | undefined => {
   }
 };
 
-/** `value` with `changes_carried` among `session_import_finish`'s input properties, wherever the tool is listed. */
-const addChangesCarried = (value: Json): Json => {
-  if (Array.isArray(value)) return value.map(addChangesCarried);
+/** `value` with `changes_carried` among `session_import_finish`'s input properties (`declared`) or without it, wherever the tool is listed. */
+const withFinishField = (value: Json, declared: boolean): Json => {
+  if (Array.isArray(value)) return value.map((item) => withFinishField(item, declared));
 
   if (!Predicate.isObject(value)) return value;
 
@@ -102,32 +105,34 @@ const addChangesCarried = (value: Json): Json => {
   if (fields["name"] === "session_import_finish" && schema !== undefined) {
     const properties = objectField(schema, "properties") ?? {};
 
+    const { changes_carried: _listed, ...others } = properties;
+
     return {
       ...fields,
       inputSchema: {
         ...schema,
-        properties: { ...properties, changes_carried: { type: "boolean" } },
+        properties: declared ? { ...others, changes_carried: { type: "boolean" } } : others,
       },
     };
   }
 
   return Object.fromEntries(
-    Object.entries(fields).map(([key, field]) => [key, addChangesCarried(field)]),
+    Object.entries(fields).map(([key, field]) => [key, withFinishField(field, declared)]),
   );
 };
 
-/** The body of a `tools/list` answer, plain JSON or server-sent events, with `changes_carried` declared. */
-const withChangesCarried = (body: string): string => {
+/** The body of a `tools/list` answer, plain JSON or server-sent events, with `changes_carried` declared or not (`declared`). */
+const withChangesCarried = (body: string, declared: boolean): string => {
   const whole = rpcOf(body);
 
-  if (whole !== undefined) return JSON.stringify(addChangesCarried(whole));
+  if (whole !== undefined) return JSON.stringify(withFinishField(whole, declared));
 
   return body
     .split("\n")
     .map((line) => {
       const data = line.startsWith("data:") ? rpcOf(line.slice("data:".length)) : undefined;
 
-      return data === undefined ? line : `data: ${JSON.stringify(addChangesCarried(data))}`;
+      return data === undefined ? line : `data: ${JSON.stringify(withFinishField(data, declared))}`;
     })
     .join("\n");
 };
@@ -313,11 +318,11 @@ export const stubEndpoint = (options: StubOptions = {}): Stub => {
 
     const response = await serveMcp(request, { api, version: "stub", gate, observe: unobserved });
 
-    if (options.declaresChangesCarried !== true || sent?.["method"] !== "tools/list") {
+    if (options.declaresChangesCarried === undefined || sent?.["method"] !== "tools/list") {
       return response;
     }
 
-    return new Response(withChangesCarried(await response.text()), {
+    return new Response(withChangesCarried(await response.text(), options.declaresChangesCarried), {
       status: response.status,
       headers: response.headers,
     });

@@ -827,6 +827,12 @@ export const ImportFinishRequest = Schema.Struct({
   import_id: Schema.String,
   /** The lowercase hex SHA-256 of the whole file. */
   sha256: Schema.String,
+  /**
+   * Whether the Local agent carried its uncommitted Changes (pushed them as one commit to `carry_ref`). Sent with finish,
+   * not begin, since the carry push comes after begin; absent from a client that does not say, and then the import notice
+   * does not say either.
+   */
+  changes_carried: Schema.optionalKey(Schema.Boolean),
 });
 
 export type ImportFinishRequest = typeof ImportFinishRequest.Type;
@@ -889,7 +895,11 @@ export const StageImportAppend = Schema.Struct({ offset: Schema.Int, data: Schem
 
 export type StageImportAppend = typeof StageImportAppend.Type;
 
-export const StageImportFinish = Schema.Struct({ sha256: Schema.String });
+export const StageImportFinish = Schema.Struct({
+  sha256: Schema.String,
+  /** As `ImportFinishRequest.changes_carried`: kept with the import for its notice, from the finish that is accepted. */
+  changes_carried: Schema.optionalKey(Schema.Boolean),
+});
 
 export type StageImportFinish = typeof StageImportFinish.Type;
 

@@ -301,6 +301,12 @@ export const SessionImportFinishInput = Schema.Struct({
   sha256: Schema.String.annotate({
     description: "The lowercase hex SHA-256 of the whole file, as the slices put it together.",
   }),
+  changes_carried: Schema.optionalKey(
+    Schema.Boolean.annotate({
+      description:
+        "Whether uncommitted Changes were pushed to carry_ref (true) or there were none to carry (false). The import notice tells the Session's agent so. Leave it out when unknown.",
+    }),
+  ),
 });
 
 export type SessionImportFinishInput = typeof SessionImportFinishInput.Type;

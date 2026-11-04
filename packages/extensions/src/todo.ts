@@ -21,6 +21,13 @@ export const extensionName = "todo";
 
 export { TodoDoc, type TodoState, type TodoStatus, type TodoTask } from "./todo/doc.ts";
 
+export {
+  fits as todoListFits,
+  MAX_DESCRIPTION_CHARACTERS,
+  MAX_TASKS,
+  MAX_TITLE_CHARACTERS,
+} from "./todo/list.ts";
+
 /**
  * Clear conversation `conversationId`'s Todo List in `tx`, as the tool's `clear` does: the IDs start again from 1. The
  * revision moves when the list changes, so watches of it are told and the model's next request shows the empty list.

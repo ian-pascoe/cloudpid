@@ -10,6 +10,14 @@ import type { ApiResult, SessionVia, StageImportBegin } from "@cloudpid/protocol
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { destroyedWorkspaces, type TestSession } from "./host.fixture.ts";
+import {
+  contextHandoff,
+  contextNote,
+  line,
+  message as piMessage,
+  todoState,
+  userMessage,
+} from "./import-pi-session.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -71,12 +79,12 @@ const assistantLine = (text: string, tokens = 10) =>
     },
   });
 
-/** A small pi file: a header, a question and its answer, and a line of a kind the baseline drops. */
+/** A small pi file: a header, a question and its answer, and a line of a kind the translation cannot map. */
 const file = [
   header,
   userLine("What does the build do?"),
   assistantLine("It compiles."),
-  JSON.stringify({ type: "model_change", id: "m" }),
+  JSON.stringify({ type: "future_kind", id: "m", parentId: "2" }),
 ].join("\n");
 
 type Stub = DurableObjectStub<TestSession>;
@@ -95,7 +103,7 @@ const send = async (stub: Stub, text: string, offset = 0) =>
   okValue(await stub.stageAppend({ offset, data: text }));
 
 const entriesOf = (stub: Stub) =>
-  runInDurableObject(stub, (instance: TestSession) => instance.rootEntries());
+  runInDurableObject(stub, (instance: TestSession) => instance.importedEntries());
 
 describe("a Session import in the Session object", () => {
   it("shows importing, refuses messages and moves, and keeps the slices where they end", async () => {
@@ -183,7 +191,7 @@ describe("a Session import in the Session object", () => {
 
     const finished = okValue(await stub.stageFinish({ sha256: await sha256(file) }));
 
-    expect(finished.summary).toMatchObject({ dropped: { model_change: 1 } });
+    expect(finished.summary).toMatchObject({ dropped: { future_kind: 1 } });
     // The model is not the owner's: the default is used, and the Local agent is told.
     expect(finished.warnings.join(" ")).toMatch(/anthropic\/gone/u);
     expect(finished.cursor).toBeDefined();
@@ -209,6 +217,326 @@ describe("a Session import in the Session object", () => {
     expect(state.record?.phase).toBe("ended");
     expect(state.record?.text).toBeUndefined();
     expect(state.received).toBe(0);
+  });
+
+  it("carries the owner's Todo List, Notes and Handoff into the Session's documents, and the notice says so", async () => {
+    const stub = fresh();
+
+    const carried = [
+      header,
+      piMessage("a", null, userMessage("Plan it")),
+      todoState("t", "a"),
+      contextNote("n1", "t", "plan", "step one"),
+      contextHandoff("h", "n1", "Continue the cache fix"),
+    ].join("\n");
+
+    await begin(stub, carried);
+    await send(stub, carried);
+
+    const finished = okValue(await stub.stageFinish({ sha256: await sha256(carried) }));
+
+    expect(finished.summary).toEqual({ cut: 0, dropped: {}, closed: 0 });
+
+    const docs = await runInDurableObject(stub, (instance: TestSession) => instance.importedDocs());
+
+    expect(docs.todo).toMatchObject({
+      nextId: 4,
+      rev: 1,
+      shown: null,
+      changedBy: [],
+      tasks: [
+        { title: "Reproduce the failing build" },
+        { title: "Fix the cache key" },
+        { title: "Open the pull request" },
+      ],
+    });
+    expect(docs.context?.notes).toMatchObject([{ name: "plan", content: "step one" }]);
+    expect(docs.context?.handoff).toBe("Continue the cache fix");
+
+    const texts = (await entriesOf(stub)).map((entry) => entry.text);
+
+    expect(texts.at(-1)).toContain("a Todo List of 3 Tasks");
+    expect(texts.at(-1)).toContain("1 Note and the saved Handoff");
+  });
+
+  it.each([
+    [true, "uncommitted Changes were carried"],
+    [false, "had no uncommitted Changes to carry"],
+    [undefined, "which this import is not told"],
+  ])("tells in the notice what finish said of the Changes carried (%s)", async (said, sentence) => {
+    const stub = fresh();
+    const file = [header, piMessage("a", null, userMessage("Hello"))].join("\n");
+
+    await begin(stub, file);
+    await send(stub, file);
+
+    const finish = { sha256: await sha256(file) };
+
+    okValue(
+      await stub.stageFinish(said === undefined ? finish : { ...finish, changes_carried: said }),
+    );
+
+    expect((await entriesOf(stub)).at(-1)?.text).toContain(sentence);
+  });
+
+  it("keeps what the finish that was accepted said of the Changes carried when finish is repeated", async () => {
+    const stub = fresh();
+    const file = [header, piMessage("a", null, userMessage("Hello"))].join("\n");
+
+    await begin(stub, file);
+    await send(stub, file);
+    await runInDurableObject(stub, (instance: TestSession) => instance.importFinishWait(0));
+
+    const finish = { sha256: await sha256(file) };
+
+    okValue(await stub.stageFinish({ ...finish, changes_carried: true }));
+    okValue(await stub.stageFinish({ ...finish, changes_carried: false }));
+
+    await vi.waitFor(
+      async () =>
+        expect(
+          (await runInDurableObject(stub, (instance: TestSession) => instance.importState())).record
+            ?.phase,
+        ).toBe("ended"),
+      { timeout: 10_000 },
+    );
+
+    expect((await entriesOf(stub)).at(-1)?.text).toContain("uncommitted Changes were carried");
+  });
+
+  it("lists the laptop tools this Session lacks in the notice, by the tools the Session's requests declare", async () => {
+    const stub = fresh();
+
+    const called = [
+      header,
+      piMessage("a", null, userMessage("Go")),
+      piMessage("b", "a", {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "c1", name: "laptop_only_tool", arguments: {} },
+          { type: "toolCall", id: "c2", name: "todo", arguments: { action: "list" } },
+        ],
+        stopReason: "toolUse",
+        timestamp: 2,
+      }),
+    ].join("\n");
+
+    await begin(stub, called);
+    await send(stub, called);
+
+    const finished = okValue(await stub.stageFinish({ sha256: await sha256(called) }));
+
+    // Both calls are closed with an error result, and the notice names the tool the Session cannot call.
+    expect(finished.summary?.closed).toBe(2);
+
+    const notice = (await entriesOf(stub)).at(-1)?.text ?? "";
+
+    expect(notice).toMatch(/Tools this Session lacks[^.]*laptop_only_tool/u);
+    expect(notice).not.toMatch(/Tools this Session lacks[^.]*\btodo\b/u);
+  });
+
+  describe("a file of many entries, written in pages", () => {
+    /** 450 messages, and a compaction after the 300th that keeps from the 11th on. */
+    const long = [
+      header,
+      ...Array.from({ length: 450 }, (_value, at) => {
+        // The compaction (`c`) sits between the 300th message and the next.
+        const previous = at === 300 ? "c" : `m${String(at - 1)}`;
+        const parent = at === 0 ? null : previous;
+
+        return piMessage(`m${String(at)}`, parent, userMessage(`message ${String(at)}`));
+      }),
+    ];
+
+    long.splice(
+      301,
+      0,
+      line("compaction", "c", "m299", {
+        summary: "earlier",
+        firstKeptEntryId: "m10",
+        tokensBefore: 1,
+      }),
+    );
+
+    const text = long.join("\n");
+
+    /** What the root holds when every entry is in, once, in order. */
+    const expectWhole = async (stub: Stub) => {
+      const entries = await entriesOf(stub);
+
+      expect(entries).toHaveLength(452);
+      expect(new Set(entries.map((entry) => entry.id)).size).toBe(452);
+      expect(entries[300]).toMatchObject({ kind: "pi.compaction", head: entries[10]?.id });
+      expect(entries[301]?.text).toBe("message 300");
+      expect(entries.at(-1)?.text).toContain("[cloudpid import]");
+      expect(entries.filter((entry) => entry.text.includes("[cloudpid import]"))).toHaveLength(1);
+    };
+
+    it("lands every entry, renumbered, with the notice last", async () => {
+      const stub = fresh();
+
+      await begin(stub, text);
+      await send(stub, text);
+      okValue(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      await expectWhole(stub);
+    });
+
+    it("is never held half written, and a cut between two pages resumes after the pages the root has", async () => {
+      const stub = fresh();
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importPagesFailAfter(1));
+      await begin(stub, text);
+      await send(stub, text);
+
+      expect(okValue(await stub.stageFinish({ sha256: await sha256(text) })).status).toBe(
+        "importing",
+      );
+
+      // One page of 200 is in the root, and the import is still finishing, with its entries not yet held.
+      const state = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.importState(),
+      );
+
+      expect(state.record).toMatchObject({ phase: "finishing", attempts: 1 });
+      expect(state.record?.held).toBeUndefined();
+      expect(await entriesOf(stub)).toHaveLength(200);
+
+      // The Session still takes no message.
+      expect(errorOf(await stub.mcpSubmit({ input: "hello", via }))).toMatchObject({
+        code: "session_importing",
+      });
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await runInDurableObject(stub, (instance: TestSession) => instance.importState()))
+              .record?.phase,
+          ).toBe("ended"),
+        { timeout: 10_000 },
+      );
+
+      await expectWhole(stub);
+    });
+  });
+
+  describe("a write that is cut off and resumed under another translation", () => {
+    const text = [
+      header,
+      ...Array.from({ length: 450 }, (_value, at) =>
+        piMessage(
+          `m${String(at)}`,
+          at === 0 ? null : `m${String(at - 1)}`,
+          userMessage(`message ${String(at)}`),
+        ),
+      ),
+    ].join("\n");
+
+    /** The phase the import is in once the alarm has run it again. */
+    const phaseAfterAlarm = async (stub: Stub, phase: string) => {
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await runInDurableObject(stub, (instance: TestSession) => instance.importState()))
+              .record?.phase,
+          ).toBe(phase),
+        { timeout: 10_000 },
+      );
+    };
+
+    it("resumes under another version when the run that noted the first was cut off before it wrote anything", async () => {
+      const stub = fresh();
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importPagesFailAfter(0));
+      await begin(stub, text);
+      await send(stub, text);
+      okValue(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(await entriesOf(stub)).toHaveLength(0);
+
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.importTranslatorVersion(99),
+      );
+      await phaseAfterAlarm(stub, "ended");
+
+      // 450 messages and the notice, each once, in order.
+      const entries = await entriesOf(stub);
+
+      expect(entries).toHaveLength(451);
+      expect(new Set(entries.map((entry) => entry.id)).size).toBe(451);
+      expect(entries.at(-1)?.text).toContain("[cloudpid import]");
+    });
+
+    it("takes a root that has entries and no noted translation as written, and appends nothing to it", async () => {
+      const stub = fresh();
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importPagesFailAfter(1));
+      await begin(stub, text);
+      await send(stub, text);
+      okValue(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(await entriesOf(stub)).toHaveLength(200);
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importForgetNote());
+      await phaseAfterAlarm(stub, "ended");
+
+      const entries = await entriesOf(stub);
+
+      expect(entries).toHaveLength(200);
+      expect(new Set(entries.map((entry) => entry.id)).size).toBe(200);
+    });
+
+    /** Cut a write off after its first page, then change the translation as `change` does, and run the import again. */
+    const resumedAfter = async (change: (instance: TestSession) => void, count?: number) => {
+      const stub = fresh();
+
+      if (count !== undefined) {
+        await runInDurableObject(stub, (instance: TestSession) =>
+          instance.importTranslationCount(count),
+        );
+      }
+
+      await runInDurableObject(stub, (instance: TestSession) => instance.importPagesFailAfter(1));
+      await begin(stub, text);
+      await send(stub, text);
+      okValue(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(await entriesOf(stub)).toHaveLength(200);
+
+      await runInDurableObject(stub, (instance: TestSession) => change(instance));
+      await runInDurableObject(stub, (instance: TestSession) => instance.alarm());
+      await vi.waitFor(
+        async () =>
+          expect(
+            (await runInDurableObject(stub, (instance: TestSession) => instance.importState()))
+              .record?.phase,
+          ).toBe("failed"),
+        { timeout: 10_000 },
+      );
+
+      return stub;
+    };
+
+    it("gives the import up when the translator's version is not the one that wrote the first page", async () => {
+      const stub = await resumedAfter((instance) => instance.importTranslatorVersion(99));
+      const failed = errorOf(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(failed.code).toBe("invalid_argument");
+      expect(failed.message).toMatch(/cannot be resumed/u);
+      // Nothing was built on the entries written: no more went in, and the Session is not held.
+      expect(await entriesOf(stub)).toHaveLength(200);
+      expect(okValue(await stub.mcpStatus()).status).toBe("importing");
+    });
+
+    it("gives the import up when the root holds more entries than the translation makes", async () => {
+      const stub = await resumedAfter(() => {}, 100);
+      const failed = errorOf(await stub.stageFinish({ sha256: await sha256(text) }));
+
+      expect(failed.message).toMatch(/more entries than the 100/u);
+      expect(await entriesOf(stub)).toHaveLength(200);
+    });
   });
 
   it("keeps a model the owner has, without a warning", async () => {

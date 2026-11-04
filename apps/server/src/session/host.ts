@@ -173,7 +173,7 @@ import { type NavigateRequest, sessionBranches } from "./branches.ts";
 import { branchIds } from "./tree.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
 import { admissionLines } from "./admission.ts";
-import { fillingRefusal, sessionForks } from "./fork-host.ts";
+import { fillingRefusal, sessionForks, type WrittenTranslation } from "./fork-host.ts";
 import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -632,10 +632,22 @@ export type SessionHostService = {
    * no message and no move until `importFinish`.
    */
   readonly importBegin: Effect.Effect<void, SessionError>;
-  /** Append a Session import's translated entries to the root conversation, in one transaction (`importTranslated`). */
+  /**
+   * Write a Session import's translated entries to the root conversation a page at a time, resuming after those a cut-off
+   * run wrote (`importTranslated`). Answers why it could not resume, when `translation` is not the one the first run wrote
+   * (another version, or the root holds more entries than it makes): the import is then given up.
+   */
   readonly importTranslated: (
-    entries: ReadonlyArray<EntryRecord>,
-  ) => Effect.Effect<void, SessionError>;
+    pages: Iterable<ReadonlyArray<EntryRecord>>,
+    translation: WrittenTranslation,
+  ) => Effect.Effect<string | undefined, SessionError>;
+  /** Whether a Session import's translated entries are all in the root conversation. */
+  readonly importWritten: Effect.Effect<boolean, SessionError>;
+  /**
+   * The names of the tools the root conversation's requests declare, for the import notice's list of laptop tools this
+   * Session lacks; none when they cannot be read.
+   */
+  readonly importTools: Effect.Effect<ReadonlyArray<string> | undefined>;
   /**
    * Run the Session's title task once, as after its first answer: the Session is named if it is not, from its first
    * message and answer. For an import that came with no title. Never fails.
@@ -3287,6 +3299,18 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     importFinish: forks.importFinish,
     importBegin: forks.importBegin,
     importTranslated: forks.importTranslated,
+    importWritten: forks.importWritten,
+    importTools: root.pipe(
+      Effect.flatMap((conversation) => attempt("agent", () => conversation.agent(context))),
+      Effect.map((agent): ReadonlyArray<string> | undefined =>
+        Arr.map(agent.tools, (tool) => tool.name),
+      ),
+      Effect.catch((error) =>
+        Effect.logWarning("Reading the tools of an import's Session failed", error).pipe(
+          Effect.as(undefined),
+        ),
+      ),
+    ),
     nameSession: titles.run,
     contextUsage: readContextUsage,
     // The settings are read again first, as `configure` does: the default is the one in force now. A read that fails

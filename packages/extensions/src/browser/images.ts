@@ -3,16 +3,9 @@
 // many are sent grows with a Session: to the model with each request (a provider caps the images and bytes of one), and
 // to a client in the transcript snapshot (one socket message has a size cap). Only the latest few are sent; an older one
 // is replaced by a short text, in the request and in the snapshot, and stays in the transcript's storage.
-import type {
-  Api,
-  Context,
-  Message,
-  Model,
-  Models,
-  ToolResultMessage,
-} from "@earendil-works/pi-ai";
+import type { Message, Models, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { AgentEvent } from "@earendil-works/pi-durable";
-import * as Predicate from "effect/Predicate";
+import { contextMappedModels } from "../models.ts";
 
 /** How many of the latest screenshots a model request carries. */
 export const MODEL_IMAGES = 3;
@@ -112,36 +105,9 @@ export const limitEventImages = (
   );
 
 /** `models` with every request's earlier screenshots replaced (`limitImages` with `keep`). */
-export const imageLimitedModels = (models: Models, keep = MODEL_IMAGES): Models => {
-  const limited = (context: Context): Context => {
+export const imageLimitedModels = (models: Models, keep = MODEL_IMAGES): Models =>
+  contextMappedModels(models, (_model, context) => {
     const messages = limitImages(context.messages, keep);
 
     return messages === context.messages ? context : { ...context, messages: [...messages] };
-  };
-
-  const requests: Pick<Models, "stream" | "complete" | "streamSimple" | "completeSimple"> = {
-    stream: (model: Model<Api>, context, options) =>
-      models.stream(model, limited(context), options),
-    complete: (model: Model<Api>, context, options) =>
-      models.complete(model, limited(context), options),
-    streamSimple: (model: Model<Api>, context, options) =>
-      models.streamSimple(model, limited(context), options),
-    completeSimple: (model: Model<Api>, context, options) =>
-      models.completeSimple(model, limited(context), options),
-  };
-
-  return new Proxy(models, {
-    get: (target, key) => {
-      if (Object.hasOwn(requests, key)) {
-        // SAFETY: `key` is one of the request methods, checked just above.
-        return requests[key as keyof typeof requests];
-      }
-
-      // SAFETY: every other property is read from the models object itself, as its own type describes it.
-      const value: unknown = target[key as keyof Models];
-
-      // Methods run on the models object itself, whose private state a proxy would not have.
-      return Predicate.isFunction(value) ? value.bind(target) : value;
-    },
   });
-};

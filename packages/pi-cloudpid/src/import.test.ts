@@ -345,7 +345,11 @@ describe("an import from a checkout on its own branch", () => {
     expect(declared.stub.finishArguments).toHaveLength(1);
     expect(declared.stub.finishArguments[0]).toMatchObject({ changes_carried: true });
 
-    const older = await run({ ui: { confirm: [true, false] } });
+    // An older endpoint, whatever cloudpid's own `serveMcp` now declares: its `tools/list` leaves `changes_carried` out.
+    const older = await run({
+      stub: { declaresChangesCarried: false },
+      ui: { confirm: [true, false] },
+    });
 
     expect(older.outcome?.kind).toBe("imported");
     expect(older.stub.finishArguments).toHaveLength(1);
