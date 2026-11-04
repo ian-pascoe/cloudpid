@@ -135,14 +135,13 @@ import {
 } from "./settings.ts";
 import {
   type Ledger,
-  isOverLimit,
   ledgerGate,
   limitingModels,
+  overLimitReason,
   recordSamplingUsage,
   recordUnledgeredUsage,
   samplingTotals,
   sessionTotals,
-  spendReason,
   usageMessage,
 } from "./spend.ts";
 import { catalogOf, MAX_EXPORT_BYTES, markdownExport } from "./commands.ts";
@@ -996,17 +995,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       models: limitingModels(models, gate),
       roles: () => Record.map(settings.current().subagents.roles, (role) => role.model),
       // Checked before the sample is made, so a refusal costs nothing and says why.
-      overLimit: async () => {
-        const limit = gate.limit();
-
-        if (limit === null) return undefined;
-
-        const spent = await gate.spent();
-
-        return spent !== undefined && isOverLimit(spent, limit)
-          ? spendReason(spent, limit)
-          : undefined;
-      },
+      overLimit: () => overLimitReason(gate),
       usage: (who, usage) => {
         recordSamplingUsage(storage.kv, who, usage);
 

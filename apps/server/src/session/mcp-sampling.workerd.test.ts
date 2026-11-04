@@ -164,7 +164,7 @@ describe("a Legacy MCP server's Sampling request in a Session", () => {
   it.each([
     ["has no sampling key", {}],
     ["says ask, which is not answered yet", { sampling: "ask" }],
-    ["says deny", { sampling: "deny" }],
+    ["says off", { sampling: "off" }],
   ])("is not declared by a server whose definition %s", async (_name, server) => {
     const sampled: Array<Schema.Json> = [];
     const { stub } = await open(server, sampled);

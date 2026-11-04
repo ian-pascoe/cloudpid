@@ -270,6 +270,20 @@ export const limitingModels = (models: Models, gate: SpendGate): Models =>
   });
 
 /**
+ * Why the spend limit stops a request now, in a clause (`spendReason`), or undefined when it does not: the limit in force
+ * against what `gate` reports spent, a spend that cannot be read letting the request through as it does the Harness's.
+ */
+export const overLimitReason = async (gate: SpendGate): Promise<string | undefined> => {
+  const limit = gate.limit();
+
+  if (limit === null) return undefined;
+
+  const spent = await gate.spent();
+
+  return spent !== undefined && isOverLimit(spent, limit) ? spendReason(spent, limit) : undefined;
+};
+
+/**
  * The gate over the Session's spend: its `limit`, and what is spent read from `ledger` (the open Harness, absent until it
  * is: a request made before that is not held) and the Session's own storage. One gate holds the Harness's requests and a
  * Sampling request alike.
