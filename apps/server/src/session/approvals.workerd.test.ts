@@ -443,7 +443,12 @@ describe("the Notification of a request", () => {
           }),
         );
 
-        yield* Effect.sleep("20 millis");
+        yield* Effect.promise(() =>
+          poll(
+            () => pushed.length > 0,
+            () => "The request was never pushed",
+          ),
+        );
         yield* approvals.dropAbandoned;
       }).pipe(
         // @effect-diagnostics-next-line strictEffectProvide:off -- the test is the entry point.

@@ -7,21 +7,31 @@ import { TestRunner } from "vitest";
 /** How long before the test's timeout its waits give up, so the one that was never met fails with its own message. */
 const MARGIN_MS = 2_000;
 
-/** How long a wait outside a test (in a hook) lasts. */
-const OUTSIDE_A_TEST_MS = 20_000;
+/**
+ * How long a wait outside a test (in a `beforeAll`) lasts: under Vitest's default hook timeout of 10 s, which the node
+ * and workerd-assets projects keep, so the wait fails with its own message rather than "Hook timed out".
+ */
+const OUTSIDE_A_TEST_MS = 8_000;
+
+/** How long a wait lasts at least, though its test's deadline has passed (in an `afterEach`, or after a slow wait). */
+const AT_LEAST_MS = 1_000;
 
 /** How often a wait checks. */
 const INTERVAL_MS = 10;
 
-/** When the running test's waits give up: `MARGIN_MS` before its timeout, counted from its start (Vitest's `Date.now()`). */
+/**
+ * When the running test's waits give up: `MARGIN_MS` before its timeout, counted from its start (Vitest's `Date.now()`),
+ * though never sooner than `AT_LEAST_MS` from now.
+ */
 const deadline = (): number => {
+  const now = Date.now();
   const test = TestRunner.getCurrentTest();
   const start = test?.result?.startTime;
   const timeout = test?.timeout ?? 0;
 
   return start === undefined || timeout <= 0
-    ? Date.now() + OUTSIDE_A_TEST_MS
-    : start + timeout - MARGIN_MS;
+    ? now + OUTSIDE_A_TEST_MS
+    : Math.max(start + timeout - MARGIN_MS, now + AT_LEAST_MS);
 };
 
 /**
