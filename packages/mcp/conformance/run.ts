@@ -5,18 +5,20 @@
  * endpoint, `serveMcp` over `node:http`) (`docs/architecture/mcp.md` → Testing and tracing → Conformance;
  * `docs/architecture/mcp-endpoint.md` → Telemetry and testing; The MCP core #394 D25).
  *
- *   bun --cwd packages/mcp run conformance <2026-07-28 | 2025-11-25 | 2025-06-18 | 2025-03-26>
+ *   bun run --cwd packages/mcp conformance <2026-07-28 | 2025-11-25 | 2025-06-18 | 2025-03-26>
  *
  * The runner's own baseline is a file of scenario names, which fails the run on a failure outside it (a regression)
  * and on a scenario in it that now passes (stale: remove the entry), so the baseline only shrinks. Its entries are
  * keyed by scenario name alone, and one scenario can pass at one version and fail at another, so `baseline.json` has
  * a section per mode, each with its `client` and `server` entries grouped by the reason they fail, and this writes the
- * runner's file for the mode. The run fails when either side does.
+ * runner's file for the mode. The run fails when either side does, and when either side ran no scenario, so a run
+ * that tests nothing cannot pass. It ends with a summary line of what ran, which CI's step asserts, so a command that
+ * never reaches this script fails the job too (#619).
  */
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off schemaSync:off newPromise:off asyncFunction:off -- a Node script that spawns the runner: plain functions over values.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Schema from "effect/Schema";
 
@@ -55,6 +57,34 @@ export const runnerBaseline = (baseline: Baseline, mode: Mode) =>
     client: baseline[mode].client.flatMap((group) => group.entries),
     server: baseline[mode].server.flatMap((group) => group.entries),
   });
+
+/** How many scenarios the runner ran into `dir`: it leaves a `checks.json` in each scenario's directory. */
+export const scenariosRan = (dir: string): number =>
+  existsSync(dir)
+    ? readdirSync(dir, { recursive: true, encoding: "utf8" }).filter(
+        (path) => basename(path) === "checks.json",
+      ).length
+    : 0;
+
+/** One side of a run: the runner's exit status (`null` when it did not exit), and how many scenarios it ran. */
+export interface Side {
+  readonly status: number | null;
+  readonly scenarios: number;
+}
+
+/**
+ * A run's exit code and the line it ends with: it passes only when both sides passed against the baseline and each ran
+ * a scenario.
+ */
+export const outcome = (mode: Mode, sides: { readonly client: Side; readonly server: Side }) => {
+  const empty = (["client", "server"] as const).filter((side) => sides[side].scenarios === 0);
+  const ran = `Conformance (${mode}): ${sides.client.scenarios} client and ${sides.server.scenarios} server scenarios ran`;
+
+  return {
+    exitCode: sides.client.status === 0 && sides.server.status === 0 && empty.length === 0 ? 0 : 1,
+    summary: empty.length === 0 ? ran : `${ran}: the ${empty.join(" and the ")} ran none`,
+  };
+};
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -141,7 +171,14 @@ const main = async () => {
       { stdio: "inherit" },
     );
 
-    return (client.status ?? 1) === 0 && (run.status ?? 1) === 0 ? 0 : 1;
+    const { exitCode, summary } = outcome(mode, {
+      client: { status: client.status, scenarios: scenariosRan(join(out, "client")) },
+      server: { status: run.status, scenarios: scenariosRan(join(out, "server")) },
+    });
+
+    console.log(`\n${summary}`);
+
+    return exitCode;
   } finally {
     server.stop();
   }
