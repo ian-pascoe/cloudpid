@@ -1421,6 +1421,12 @@ export const sessionSocketsLayer = (
           ),
         );
 
+        // The cards of a round kept for later may be of a server that was removed or changed while nobody looked (a round
+        // holds no request on the host, which cannot tell the Session). Looked at in the background, as the client
+        // connects, and never on a timer, which would keep this instance awake; a withdrawal reaches the client as any
+        // answer does. A resume that follows a change the look misses is refused by the host, by the connection key.
+        yield* mcpQuestions.lookAtRounds.pipe(Effect.forkIn(scope));
+
         // Sign-in requests have no deadline and survive an eviction; sent when none waits too, so a client clears the
         // cards it held.
         yield* send(server, mcpSignInRequests(yield* mcpSignIns.pending));

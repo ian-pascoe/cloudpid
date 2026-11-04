@@ -22,6 +22,7 @@ import {
   createDeferredQuestions,
   type McpDeferredAnswer,
   type McpDeferredRound,
+  type McpWaitingRound,
   type McpQuestionVault,
 } from "./deferred-questions.ts";
 import type { JsonObject } from "@cloudpid/mcp/types";
@@ -64,7 +65,7 @@ import {
   type McpSamplingRemember,
   type McpSamplingStanding,
 } from "./sampling-questions.ts";
-import { samplingRecords } from "./sampling-records.ts";
+import { type McpSamplingRecord, samplingRecords, stubOf } from "./sampling-records.ts";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -78,6 +79,7 @@ export {
   MCP_DEFERRED_DEADLINE_MS,
   type McpDeferredAnswer,
   type McpDeferredRound,
+  type McpWaitingRound,
   type McpDeferredSample,
   McpRoundState,
   type McpQuestionVault,
@@ -183,6 +185,17 @@ export type McpQuestionsService = {
    * wait on, `reason` being the one the owner and the agent read, and withdraw the cards.
    */
   readonly withdrawScript: (scriptCallId: string, reason: string) => Effect.Effect<void>;
+  /** The rounds kept for later that wait for the owner (`McpWaitingRound`): what a look at their servers is made from. */
+  readonly waitingRounds: Effect.Effect<ReadonlyArray<McpWaitingRound>>;
+  /** Call `callId`'s round kept for later is over because its server moved: its questions are answered `cancel` by cloudpid for `reason`, and the call woken. */
+  readonly withdrawRound: (callId: string, reason: string) => Effect.Effect<void>;
+  /**
+   * Look at the servers of the rounds that wait, and end those whose server moved (`./round-look.ts`). Nothing until
+   * `bindLook` gave it what to look with; never fails. A client connecting and a request start run it.
+   */
+  readonly lookAtRounds: Effect.Effect<void>;
+  /** Give `lookAtRounds` the look to make: the tools, which hold the host's client, bind it once. */
+  readonly bindLook: (look: Effect.Effect<void>) => void;
   /**
    * The call is done, however it ended: withdraw every question it still waits on, and forget its count. `reason` is
    * what they read when it was known why (`MCP_CALL_ENDED_REASON` otherwise).
@@ -383,19 +396,48 @@ const copiesOf = (basics: McpQuestionBasics, storage: McpQuestionStorage): McpQu
   const sampling = samplingRecords(storage);
 
   return {
-    copiesFor: (callIds) => {
-      const wanted = new Set(callIds);
+    copier: () => {
+      // Read once for the page, at the first entry that holds a call: a page of entries with no calls never reads it.
+      let listed: ReadonlyArray<McpSamplingRecord> | undefined;
 
-      const samples = Arr.filter(
-        sampling.list(),
-        (record) =>
-          wanted.size > 0 && Arr.some(callKeysOf(record.callId), (key) => wanted.has(key)),
-      );
+      return (callIds, budget) => {
+        if (callIds.length === 0) return [];
 
-      return [
-        ...Arr.map(basics.recordsFor(callIds), (record) => ({ kind: "question", record }) as const),
-        ...Arr.map(samples, (record) => ({ kind: "sampling", record }) as const),
-      ];
+        listed ??= sampling.list();
+
+        const wanted = new Set(callIds);
+
+        const asked = Arr.map(
+          basics.recordsFor(callIds),
+          (record) => ({ kind: "question", record }) as const,
+        );
+
+        let left = budget - Arr.reduce(asked, 0, (sum, copy) => sum + JSON.stringify(copy).length);
+
+        const samples = Arr.map(
+          Arr.filter(listed, (record) =>
+            Arr.some(callKeysOf(record.callId), (key) => wanted.has(key)),
+          ),
+          (record) => {
+            const whole = { kind: "sampling", record } as const;
+            const length = JSON.stringify(whole).length;
+
+            if (record.stub === true || length <= left) {
+              left -= length;
+
+              return whole;
+            }
+
+            const stub = { kind: "sampling", record: stubOf(record) } as const;
+
+            left -= JSON.stringify(stub).length;
+
+            return stub;
+          },
+        );
+
+        return [...asked, ...samples];
+      };
     },
     adopt: (copies, conversationId) => {
       basics.adoptRecords(
@@ -428,6 +470,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   const waitFor = waitsOf({ waitMs, promptWaitMs: options.promptWaitMs });
   const finishedShownMs = options.finishedShownMs ?? MCP_PAGE_FINISHED_SHOWN_MS;
   const waiting = new Map<string, Waiting>();
+  /** What `lookAtRounds` runs: bound by the tools, which hold the host's client. */
+  let looking: Effect.Effect<void> = Effect.void;
   /** The id of each question of a running call that ended in an answer, by call and key: `overturn` finds its record. */
   const answeredIds = new Map<string, string>();
   const basics = questionBasics(options);
@@ -965,6 +1009,12 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         ),
         deferred.withdrawServer(server, reason),
       ),
+    waitingRounds: deferred.waitingRounds,
+    withdrawRound: deferred.withdrawRound,
+    lookAtRounds: Effect.suspend(() => looking),
+    bindLook: (look) => {
+      looking = look;
+    },
     withdrawScript: (scriptCallId, reason) =>
       Effect.andThen(
         Effect.andThen(

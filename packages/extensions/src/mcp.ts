@@ -57,6 +57,7 @@ import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
+import { lookAtRounds } from "./mcp/round-look.ts";
 import type { McpQuestionsService } from "./mcp/questions.ts";
 import { type McpNotices } from "./mcp/notices.ts";
 import {
@@ -482,6 +483,10 @@ export const makeMcpTools = (
   store: McpToolsStore = memoryMcpToolsStore(),
   options: McpToolOptions = {},
 ): McpToolsService => {
+  // The rounds of questions kept for later are looked at by what has the host's client: a client connecting and a request
+  // start run it (`./mcp/round-look.ts`).
+  options.questions?.bindLook(lookAtRounds(client, options.questions));
+
   let saved = store.load();
 
   /** What the tools are built from, the newest read; undefined for none. */
@@ -897,6 +902,9 @@ export const makeMcpTools = (
 
         if (signIns !== undefined) yield* signIns.withdrawServer(name, why);
       }
+
+      // A round kept for later whose server moved, by a change the inventory's version does not show (a new connection key).
+      if (questions !== undefined) yield* questions.lookAtRounds;
 
       // A Sampling request a server waits on is run, or refused, as the definition now reads.
       if (questions !== undefined) {

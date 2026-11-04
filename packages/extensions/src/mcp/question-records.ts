@@ -417,13 +417,24 @@ export type McpQuestionCopy =
   | { readonly kind: "question"; readonly record: McpQuestionRecord }
   | { readonly kind: "sampling"; readonly record: McpSamplingRecord };
 
+/** The records one entry of a page carries (`McpQuestionCopies.copier`). */
+export type McpQuestionCopier = (
+  callIds: ReadonlyArray<string>,
+  budget: number,
+) => ReadonlyArray<McpQuestionCopy>;
+
 /**
  * What a Session does with the records of a Fork or Clone (`ExportPage.questions`): which are its calls', and keeping
  * them.
  */
 export type McpQuestionCopies = {
-  /** The settled records, of questions and of Sampling requests, of the calls whose result entry is among `callIds`, and of the calls nested in them. */
-  readonly copiesFor: (callIds: ReadonlyArray<string>) => ReadonlyArray<McpQuestionCopy>;
+  /**
+   * A copier for one page of a Fork or Clone: the settled records, of questions and of Sampling requests, of the calls
+   * whose result entry is among `callIds`, and of the calls nested in them, which fit in `budget` characters of JSON (the
+   * questions' always do, being bounded at 64 KiB and 100; a Sampling record past it is carried as its stub). The Session's
+   * Sampling records are read once, at the first entry that holds a call, and not at all for a page that holds none.
+   */
+  readonly copier: () => McpQuestionCopier;
   /**
    * Keep the records a Fork or Clone's source sent, as the calls of conversation `conversationId`; the bound of the
    * newest 100 questions applies, and the Session's own bound of Sampling records.

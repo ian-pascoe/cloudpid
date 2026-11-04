@@ -197,7 +197,7 @@ const setup = async (
     }
 
     return replies.some(([, reply]) => reply.kind === "defer")
-      ? McpHostInputRequired.make({ requests: [...asks], resume: STATE, conn: "conn-docs" })
+      ? McpHostInputRequired.make({ requests: [...asks], resume: STATE, conn: "conn-Docs-Site" })
       : DONE;
   });
 
@@ -997,7 +997,7 @@ const restartable = async () => {
     return McpHostInputRequired.make({
       requests: [FORM, SAMPLE],
       resume: STATE,
-      conn: "conn-docs",
+      conn: "conn-Docs-Site",
     });
   });
 

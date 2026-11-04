@@ -322,7 +322,7 @@ describe("a question that ended", () => {
         );
       }
 
-      const copied = source.copies.copiesFor(["call-1", "call-2"]);
+      const copied = source.copies.copier()(["call-1", "call-2"], 1_000_000);
 
       expect(copied.map((each) => [each.kind, each.record.callId])).toEqual([
         ["question", "call-1"],
@@ -353,6 +353,87 @@ describe("a question that ended", () => {
         ["call-2/c1", 7],
       ]);
       expect(target.dump()).not.toContain("call-3");
+    }));
+});
+
+describe("what a page of a Fork carries of the Sampling requests", () => {
+  /** A source whose Sampling index reads are counted, with a Sampling record of `callId` ("a" reply of 5 000 characters). */
+  const sourceWith = (callIds: ReadonlyArray<string>) => {
+    const { storage } = memoryStorage();
+    let reads = 0;
+
+    const counting: McpQuestionStorage = {
+      ...storage,
+      get: (key) => {
+        if (key === "mcp-sampling:index") reads += 1;
+
+        return storage.get(key);
+      },
+    };
+
+    for (const callId of callIds) {
+      samplingRecords(storage).put(
+        {
+          id: `${callId}:s1`,
+          server: "demo",
+          tool: "mcp__demo__ask",
+          origin: "agent",
+          conversationId: 1,
+          callId,
+          sequence: 1,
+          status: "answered",
+          by: "owner",
+          notes: [],
+          askedAt: 1,
+          settledAt: 2,
+          reply: { role: "assistant", content: { type: "text", text: "a".repeat(5000) } },
+        },
+        2,
+      );
+    }
+
+    reads = 0;
+
+    return { source: open(counting), reads: () => reads };
+  };
+
+  test("are not read for a page whose entries hold no call, and once for one whose entries do", () =>
+    Effect.sync(() => {
+      const { source, reads } = sourceWith(["call-1", "call-2"]);
+
+      const none = source.copies.copier();
+
+      expect(none([], 1_000_000)).toEqual([]);
+      expect(none([], 1_000_000)).toEqual([]);
+      expect(reads()).toBe(0);
+
+      const page = source.copies.copier();
+
+      expect(page(["call-1"], 1_000_000)).toHaveLength(1);
+      expect(page(["call-2"], 1_000_000)).toHaveLength(1);
+      expect(reads()).toBe(1);
+    }));
+
+  test("past the page's budget are carried as stubs, which keep who asked and when", () =>
+    Effect.sync(() => {
+      const { source } = sourceWith(["call-1", "call-2"]);
+
+      const [whole] = source.copies.copier()(["call-1"], 1_000_000);
+
+      // Room for the first only: the second is a stub.
+      const room = JSON.stringify(whole).length + 100;
+      const copied = source.copies.copier()(["call-1", "call-2"], room);
+
+      expect(
+        copied.map((each) => [
+          each.record.callId,
+          "stub" in each.record && each.record.stub === true,
+        ]),
+      ).toEqual([
+        ["call-1", false],
+        ["call-2", true],
+      ]);
+      expect(JSON.stringify(copied[1])).not.toContain("aaaa");
     }));
 });
 

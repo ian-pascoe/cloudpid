@@ -2,8 +2,8 @@
 // change gives a reason, and an answer that arrives after that is not sent on.
 // @effect-diagnostics asyncFunction:off newPromise:off
 import type { McpHostRequestHooks, McpInputAnswer } from "@cloudpid/mcp/types";
-import { describe, expect, it } from "vitest";
-import { waitingQuestions } from "./waiting-questions.ts";
+import { describe, expect, it, vi } from "vitest";
+import { END_TOLD_WITHIN_MS, waitingQuestions } from "./waiting-questions.ts";
 
 type Answer = typeof McpInputAnswer.Encoded;
 
@@ -63,6 +63,44 @@ describe("waitingQuestions", () => {
       ["q1", "docs was changed"],
       ["q1", "docs was changed"],
     ]);
+  });
+
+  it("does not hold an answer back for a caller that never hears the second word", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const questions = waitingQuestions();
+      let heard = 0;
+      let answer: (given: Answer) => void = () => undefined;
+
+      const hooks: McpHostRequestHooks = {
+        onInput: () => new Promise<Answer>((resolve) => (answer = resolve)),
+        // The first word is heard; the second never returns, as a Session that was evicted does not.
+        onInputEnded: () => {
+          heard += 1;
+
+          return heard === 1 ? undefined : new Promise<void>(() => undefined);
+        },
+      };
+
+      const result = questions.watchInput({ name: "docs", conn: "c1" }, hooks).onInput?.(FORM);
+
+      questions.endWhere(() => "docs was changed");
+      answer(ACCEPT);
+
+      let settled = false;
+
+      void result?.then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(END_TOLD_WITHIN_MS - 1);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(settled).toBe(true);
+      expect(await result).toMatchObject({ kind: "answered", result: { action: "cancel" } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("passes an answer on when nothing ended the question, and forgets the question once answered", async () => {

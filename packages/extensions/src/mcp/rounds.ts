@@ -14,14 +14,11 @@ import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import type { Mutable } from "effect/Types";
-import type { McpHostClientService } from "./client.ts";
 import type { McpElicitationDetail, McpSamplingDetail } from "./details.ts";
 import { mutableContent } from "./elicit.ts";
-import { isReachable } from "./exposure.ts";
 import {
   MCP_CALL_ENDED_REASON,
   type McpDeferredRound,
@@ -38,58 +35,12 @@ const waitMarker = (round: number) => `mcp.wait.${round}`;
 /** The marker written before round `round`'s resume leaves: a rerun that finds it never sends the resume again. */
 const resumedMarker = (round: number) => `mcp.resumed.${round}`;
 
-/** How often a round that waits for the owner looks at its server, in ms (`McpToolOptions.roundWatchMs`). */
-export const MCP_ROUND_WATCH_MS = 30_000;
-
 /** Where a call's rounds are kept and marked: its questions, and its task's memos. */
 export type Rounds = {
   readonly questions: McpQuestionsService;
   readonly api: ToolExecutionApi;
   readonly context: Context;
-  /** The host, which a waiting round asks whether its server is still the one that asked. */
-  readonly client: McpHostClientService;
-  /** How often it asks, in ms. */
-  readonly watchMs: number;
 };
-
-/**
- * Why `server`, which asked a round of questions on connection `conn`, is not the one that asked now: switched off,
- * hidden or removed, or changed (another connection key). `undefined` when it is, and when the host cannot say.
- */
-const serverMoved = (
-  client: McpHostClientService,
-  server: string,
-  conn: string,
-): Effect.Effect<string | undefined> =>
-  client.servers({ names: [server], parts: [] }).pipe(
-    Effect.map((answer) => {
-      if (Predicate.isTagged(answer, "HostFailed")) return undefined;
-
-      const found = Arr.findFirst(answer.servers, (each) => each.name === server);
-
-      if (Option.isNone(found) || !isReachable(found.value)) {
-        return `${server} was switched off, hidden or removed`;
-      }
-
-      return found.value.conn === conn ? undefined : `${server} was changed`;
-    }),
-  );
-
-/**
- * Looks at `server` every `watchMs` while a round waits, for as long as it is run: a round kept for later holds no
- * request on the host, which could tell the Session of a set change as it does a live question (`waiting-questions.ts`),
- * so the Session asks. A server that moved has its deferred questions answered `cancel` by cloudpid (`withdrawServer`),
- * which wakes the wait.
- */
-const watchServer = (rounds: Rounds, server: string, conn: string): Effect.Effect<never> =>
-  Effect.forever(
-    Effect.sleep(rounds.watchMs).pipe(
-      Effect.andThen(serverMoved(rounds.client, server, conn)),
-      Effect.flatMap((why) =>
-        why === undefined ? Effect.void : rounds.questions.withdrawServer(server, why),
-      ),
-    ),
-  );
 
 /**
  * The round a rerun of the call finds waiting: stored, its questions marked stored (`mcp.wait.<r>`) and its resume not
@@ -227,10 +178,7 @@ export const resumeOf = async (
   const { questions, api, context } = rounds;
 
   const answered = await Effect.runPromise(
-    Effect.raceFirst(
-      questions.awaitRound(api.callId),
-      watchServer(rounds, call.server, round.conn),
-    ),
+    questions.awaitRound(api.callId),
     context.abortSignal === undefined ? undefined : { signal: context.abortSignal },
   ).catch(() => "stopped" as const);
 

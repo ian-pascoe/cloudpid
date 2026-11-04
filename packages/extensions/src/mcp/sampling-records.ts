@@ -105,7 +105,7 @@ export const cutText = (text: string, max: number): string =>
 const bytesOf = (text: string): number => new TextEncoder().encode(text).byteLength;
 
 /** `record` without what makes it large. */
-const stubOf = (record: McpSamplingRecord): McpSamplingRecord => {
+export const stubOf = (record: McpSamplingRecord): McpSamplingRecord => {
   const { systemPrompt: _s, messages: _m, tools: _t, reply: _r, ...rest } = record;
 
   return { ...rest, stub: true };

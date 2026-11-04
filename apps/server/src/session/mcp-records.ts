@@ -1,7 +1,7 @@
 // What the Session does with the records of the questions its MCP calls asked, outside History (`docs/architecture/
 // mcp-server-requests.md` → Elicitation requests, Records; Sampling requests, Records): `/export` puts a line for each
-// under the call's result, and a Fork or Clone carries the settled elicitation records of the calls it copies. Never a
-// value: the records keep none.
+// under the call's result, and a Fork or Clone carries the settled question and Sampling records of the calls it copies.
+// Never a value: the records keep none.
 import {
   exportLinesOf,
   type McpQuestionCopies,
@@ -15,7 +15,7 @@ import type { McpExportLines } from "./commands.ts";
 export type SessionMcpRecords = {
   /** The lines `/export` writes, by the ID of the call whose result they follow. */
   readonly exportLines: Effect.Effect<McpExportLines>;
-  /** What a Fork or Clone carries of the settled elicitation records, and keeps of the ones it was sent. */
+  /** What a Fork or Clone carries of the settled question and Sampling records, and keeps of the ones it was sent. */
   readonly copies: McpQuestionCopies;
 };
 

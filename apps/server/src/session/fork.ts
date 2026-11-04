@@ -97,8 +97,11 @@ export const toolResultIds = (entry: EntryRecord): ReadonlyArray<string> =>
 /** What a copy of the entries carries of each: the App records of the calls whose results it holds (`McpAppsService.copiesFor`). */
 export type AppCopier = (entry: EntryRecord) => ReadonlyArray<McpAppCopy>;
 
-/** What a copy of the entries carries of each besides: the settled question records of the calls whose results it holds. */
-export type QuestionCopier = (entry: EntryRecord) => ReadonlyArray<McpQuestionCopy>;
+/**
+ * What a copy of the entries carries of each besides: the settled question and Sampling records of the calls whose results
+ * it holds, as many whole as fit in `budget` characters (`McpQuestionCopier`).
+ */
+export type QuestionCopier = (entry: EntryRecord, budget: number) => ReadonlyArray<McpQuestionCopy>;
 
 /** What a record is left as when it does not fit a page: its stub (who the call was, and its time). */
 const stubOfCopy = (copy: McpAppCopy): McpAppCopy => {
@@ -162,13 +165,17 @@ export const exportPage = (
     const copies =
       appsOf === undefined ? [] : fitCopies(appsOf(entry), Math.max(0, MAX_COPY_PAGE_SIZE - own));
 
-    // A settled record is at most 64 KiB and the Session keeps 100, so the records of a page fit beside its entries.
-    const asked = questionsOf === undefined ? [] : questionsOf(entry);
+    const withApps = own + Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length);
+
+    // The question records fit beside the entries (64 KiB each, the Session keeps 100); a Sampling record past the page's
+    // budget is carried as its stub, as an App record is.
+    const asked =
+      questionsOf === undefined
+        ? []
+        : questionsOf(entry, Math.max(0, MAX_COPY_PAGE_SIZE - withApps));
 
     const length =
-      own +
-      Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length) +
-      Arr.reduce(asked, 0, (sum, record) => sum + JSON.stringify(record).length);
+      withApps + Arr.reduce(asked, 0, (sum, record) => sum + JSON.stringify(record).length);
 
     if (kept.length > 0 && size + length > MAX_COPY_PAGE_SIZE) break;
 

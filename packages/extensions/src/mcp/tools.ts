@@ -37,6 +37,7 @@ import {
   GenerationTask,
   hook,
   type ToolExecutionResult,
+  type ToolHookCall,
   ToolTask,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
@@ -307,13 +308,35 @@ const watchHook = (touch: (conversation: string) => Promise<void>) =>
     },
   });
 
-/** Whether `result` is a `codemode` script's that ended because its `timeout_ms` passed (the library's own words for it). */
+/**
+ * Whether `result` is a `codemode` script's that ended because its `timeout_ms` passed: a failed result whose error is the
+ * library's own words for it (`Script error:` then `Script timed out: …`, on lines of their own).
+ */
 const scriptTimedOut = (result: ToolExecutionResult): boolean =>
   result.isError === true &&
   Arr.some(
     result.output ?? [],
-    (item) => item.type === "text" && /^Script timed out: /m.test(item.text),
+    (item) => item.type === "text" && /^Script error:\nScript timed out: /m.test(item.text),
   );
+
+/**
+ * Whether the script of `call` set a timeout: its first line is `// @options: {…"timeout_ms"…}` (`docs/architecture/
+ * mcp-server-requests.md` → `codemode`). The library keeps the deadline itself (`CodemodeRunDoc.start.deadline`), which
+ * pi-durable does not export, so a hook cannot compare it with the clock; a script that wrote the library's words into its
+ * own output, with no timeout of its own, is not taken for one that timed out.
+ */
+const declaresTimeout = (call: ToolHookCall): boolean => {
+  const { code } = call.arguments;
+
+  return Predicate.isString(code) && /^\s*\/\/\s*@options:.*"timeout_ms"/.test(code);
+};
+
+/** Whether `call`, with `result`, is a model-issued `codemode` script that ended because the `timeout_ms` it set passed. */
+export const endedByTimeout = (call: ToolHookCall, result: ToolExecutionResult): boolean =>
+  call.parent === undefined &&
+  call.name === "codemode" &&
+  declaresTimeout(call) &&
+  scriptTimedOut(result);
 
 /**
  * The hook that withdraws a `codemode` script's questions as "the script timed out" when its `timeout_ms` passed: the
@@ -324,9 +347,7 @@ const scriptTimedOut = (result: ToolExecutionResult): boolean =>
 const scriptTimeoutHook = (questions: McpQuestionsService) =>
   hook(ToolTask, {
     afterTool: async (call, result) => {
-      if (call.parent !== undefined || call.name !== "codemode" || !scriptTimedOut(result)) {
-        return undefined;
-      }
+      if (!endedByTimeout(call, result)) return undefined;
 
       await Effect.runPromise(questions.withdrawScript(call.id, MCP_SCRIPT_TIMED_OUT_REASON)).catch(
         () => undefined,

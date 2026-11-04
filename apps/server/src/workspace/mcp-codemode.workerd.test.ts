@@ -72,6 +72,7 @@ describe("a script's MCP call whose server asks a question", () => {
     await idle(stub);
 
     expect(await pending(stub)).toEqual([]);
+    // The script's end settled the round and woke its call to find none: no resume was sent.
     expect(await sent(stub)).toMatchObject({ calls: 1, resumes: 0 });
 
     const results = await runInDurableObject(stub, (instance: TestMcpCodemodeSession) =>
@@ -81,7 +82,13 @@ describe("a script's MCP call whose server asks a question", () => {
     expect(results[0]).toContain("Script timed out");
     expect(
       await runInDurableObject(stub, (instance: TestMcpCodemodeSession) => instance.mcpRecords()),
-    ).toEqual([expect.objectContaining({ action: "cancel", by: "cloudpid" })]);
+    ).toEqual([
+      expect.objectContaining({
+        action: "cancel",
+        by: "cloudpid",
+        reason: "the script timed out",
+      }),
+    ]);
   }, 30_000);
 });
 

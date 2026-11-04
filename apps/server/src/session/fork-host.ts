@@ -285,15 +285,17 @@ export const sessionForks = (options: ForksOptions) => {
       }),
       Effect.map((page) => {
         const { apps, questions } = options;
+        // One copier per page: it reads the Session's Sampling records once, for every entry of the page.
+        const copier = questions?.copier();
 
         // The records of the calls whose results the page holds go with it, so no page is larger than the RPC allows.
         return exportPage(
           page.items,
           page.next !== undefined,
           apps === undefined ? undefined : (entry) => apps.copiesFor(toolResultIds(entry)),
-          questions === undefined
+          copier === undefined
             ? undefined
-            : (entry) => questions.copiesFor(toolResultIds(entry)),
+            : (entry, budget) => copier(toolResultIds(entry), budget),
         );
       }),
     );

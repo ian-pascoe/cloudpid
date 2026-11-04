@@ -17,7 +17,7 @@ import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
-import { DOCS, detailsOf } from "./mcp.fixture.ts";
+import { DOCS, detailsOf, startOf } from "./mcp.fixture.ts";
 import { open } from "./mcp.fixture.ts";
 import { type FakeMcpAnswer, fakeMcpHost } from "./mcp.testing.ts";
 import {
@@ -455,18 +455,12 @@ describe("a Modern server's form", () => {
     ]);
   });
 
-  it("is withdrawn while the round waits, with no request start, when its server is removed", async () => {
-    const { host, questions, session } = await setup();
+  it("is withdrawn at a look, with no request start, when its server was removed", async () => {
+    const { host, questions, session, tools } = await setup();
     const resumes: Array<Sent> = [];
 
-    // The Session looks at the server every 20 ms of the wait; a host holds no request for a round kept for later, so it
-    // cannot tell the Session of a set change as it does a live question.
-    const tools = makeMcpTools(host.client, memoryMcpToolsStore(), {
-      slackMs: 0,
-      questions,
-      roundWatchMs: 20,
-    });
-
+    // A host holds no request for a round kept for later, so it cannot tell the Session of a set change as it does a live
+    // question; the Session looks when a client connects and at a request start, never on a timer.
     host.answer(deferring([], resumes));
     await session.start(tools);
 
@@ -474,9 +468,11 @@ describe("a Modern server's form", () => {
 
     await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
     host.set([]);
+    await Effect.runPromise(questions.lookAtRounds);
     await until(async () => (await Effect.runPromise(questions.pending)).length === 0);
     await submitted.wait(context);
 
+    expect(resumes).toEqual([]);
     expect(await Effect.runPromise(questions.records)).toEqual([
       expect.objectContaining({
         action: "cancel",
@@ -486,21 +482,17 @@ describe("a Modern server's form", () => {
     ]);
   });
 
-  it("is withdrawn while the round waits when its server's connection is no longer the one that asked", async () => {
-    const { host, questions, session } = await setup();
+  it("is withdrawn at a look when its server's connection is no longer the one that asked", async () => {
+    const { host, questions, session, tools } = await setup();
 
-    const tools = makeMcpTools(host.client, memoryMcpToolsStore(), {
-      slackMs: 0,
-      questions,
-      roundWatchMs: 20,
-    });
-
-    // The round says it asked on `conn-docs`; the host's inventory now has the server on another connection.
+    // The round says it asked on `conn-docs`; the host's inventory has the server on `conn-Docs-Site`.
     host.answer(deferring([], []));
     await session.start(tools);
 
     const submitted = await session.root.submit({ type: "input", content: "go" }, context);
 
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+    await Effect.runPromise(questions.lookAtRounds);
     await until(async () => (await Effect.runPromise(questions.records)).length > 0);
     await submitted.wait(context);
 
@@ -510,6 +502,64 @@ describe("a Modern server's form", () => {
         by: "cloudpid",
         reason: "Docs-Site was changed",
       }),
+    ]);
+  });
+
+  it("keeps waiting when a look cannot be made, because a host that fails says nothing of its servers", async () => {
+    const { host, questions, session, tools } = await setup();
+
+    host.answer(deferring([], []));
+    await session.start(tools);
+
+    await session.root.submit({ type: "input", content: "go" }, context);
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+    host.set([]);
+    host.fail(true);
+    await Effect.runPromise(questions.lookAtRounds);
+
+    expect(await Effect.runPromise(questions.pending)).toHaveLength(1);
+    expect(await Effect.runPromise(questions.records)).toEqual([]);
+  });
+
+  it("is withdrawn at the next request start when its server's connection is no longer the one that asked", async () => {
+    const { host, questions, session, tools } = await setup();
+
+    host.answer(deferring([], []));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+    // The look runs when a request starts, as the model's next one does.
+    await Effect.runPromise(tools.requestStart(startOf(1)));
+    await until(async () => (await Effect.runPromise(questions.pending)).length === 0);
+    await submitted.wait(context);
+
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ by: "cloudpid", reason: "Docs-Site was changed" }),
+    ]);
+  });
+
+  it('is withdrawn as "the script timed out", with no resume, when the codemode script that made the call passes its timeout_ms', async () => {
+    const { host, questions, session, tools } = await setup(memoryStorage(), DOCS, [
+      "codemode",
+      {
+        code: `// @options: {"timeout_ms": 300}\nawait tools.mcp__docs_site__search({}); text("done");`,
+      },
+    ]);
+
+    const resumes: Array<Sent> = [];
+
+    host.answer(deferring([], resumes));
+    await session.start(tools, startOf(1, { offered: ["codemode"] }));
+    await session.prompt("go");
+
+    // The script's end settled the round, and the call was woken to find none: nothing was resumed.
+    expect(resumes).toEqual([]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ action: "cancel", by: "cloudpid", reason: "the script timed out" }),
     ]);
   });
 

@@ -150,6 +150,18 @@ describe("the question records a page of a Fork carries", () => {
       next: null,
     });
   });
+
+  it("is given what is left of the page beside the entry and its App records, to fit the Sampling records in", () => {
+    const budgets: number[] = [];
+
+    exportPage([result(1, "call-1")], false, undefined, (each, budget) => {
+      budgets.push(budget);
+
+      return questionsOf(each);
+    });
+
+    expect(budgets).toEqual([MAX_COPY_PAGE_SIZE - JSON.stringify(result(1, "call-1")).length]);
+  });
 });
 
 describe("the App records of one entry too large for a page", () => {

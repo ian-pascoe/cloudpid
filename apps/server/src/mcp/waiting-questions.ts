@@ -6,10 +6,27 @@
 // The caller is not otherwise told a set change while its call waits (a Session learns the inventory at a request start,
 // and none comes while its only Run is blocked on the call), so the host tells it: `endWhere` runs after a set change and
 // ends each waiting question whose server is changed, switched off or removed.
-// @effect-diagnostics asyncFunction:off -- the hooks are Promise-based RPC stubs
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off -- the hooks are Promise-based RPC stubs
 import type { McpEngineHooks, McpHostRequestHooks, McpInputAnswer } from "@cloudpid/mcp/types";
 
 type McpInputAnswerEncoded = typeof McpInputAnswer.Encoded;
+
+/**
+ * How long the host waits for the caller to hear that an answer was not sent on: a Session that is evicted, or stuck, must
+ * not hold the call's answer (and with it the server's call) back.
+ */
+export const END_TOLD_WITHIN_MS = 5_000;
+
+/** `told`, or what is left of it after `ms`: the caller that does not answer in time is left to its own end. */
+const within = (told: Promise<void>, ms: number): Promise<void> =>
+  new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+
+    void told.then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 
 /** The server a waiting question was asked by: its name, and the connection key it asked on. */
 export type WaitingServer = { readonly name: string; readonly conn: string };
@@ -82,8 +99,9 @@ export const waitingQuestions = (): WaitingQuestions => {
 
           // The owner's answer that beat the host's word to the caller is not sent on to a server that has changed: what
           // the owner entered was for the one that asked. The caller hears again, before the server does, that it was
-          // not sent, so the record of the answer it kept says so (its first word may have come before the answer).
-          await entry.end(entry.endedFor);
+          // not sent, so the record of the answer it kept says so (its first word may have come before the answer). Waited for
+          // at most `END_TOLD_WITHIN_MS`: a caller that cannot answer holds nothing back.
+          await within(entry.end(entry.endedFor), END_TOLD_WITHIN_MS);
 
           return answerForChangedServer(request.kind);
         } finally {

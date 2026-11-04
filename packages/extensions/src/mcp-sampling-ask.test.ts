@@ -1000,6 +1000,39 @@ describe("MCP sampling on a definition that says ask", () => {
       expect(yield* questions.pendingSampling).toEqual([]);
     }));
 
+  test("withdraws a waiting request for the reason its call ends with", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced } = open();
+      const sampling = yield* Effect.forkChild(sampler.sample(ask()));
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(1));
+      yield* questions.settleCall("call-1", "the server's call ended (Container stopped)");
+
+      const outcome = yield* Fiber.join(sampling);
+
+      expect(refusedWith(outcome)?.message).toBe("the server's call ended (Container stopped)");
+      expect(outcome).toMatchObject({ detail: { by: "cloudpid" } });
+    }));
+
+  test("withdraws what the calls of a codemode script wait on when the script times out, and no other call's", () =>
+    Effect.gen(function* () {
+      const { sampler, questions, announced } = open();
+      const nested = yield* Effect.forkChild(sampler.sample(ask({ callId: "script-1/c1" })));
+
+      const other = yield* Effect.forkChild(
+        sampler.sample(ask({ key: "2", callId: "script-10/c1" })),
+      );
+
+      yield* eventually(() => expect(announced.at(-1)?.requests).toHaveLength(2));
+      yield* questions.withdrawScript("script-1", "the script timed out");
+
+      expect(refusedWith(yield* Fiber.join(nested))?.message).toBe("the script timed out");
+      expect(yield* questions.pendingSampling).toHaveLength(1);
+
+      yield* questions.settleCall("script-10/c1");
+      yield* Fiber.join(other);
+    }));
+
   test("withdraws a waiting request when the server is switched off, and when the server cancels it", () =>
     Effect.gen(function* () {
       const { sampler, questions, announced } = open();
