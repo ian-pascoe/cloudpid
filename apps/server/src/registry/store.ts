@@ -498,7 +498,7 @@ const isStatus = Schema.is(SessionStatus);
 
 /**
  * The status is plain text in the table, not a `CHECK` constraint, which SQLite cannot alter: the set of statuses
- * will grow, and the table would have to be rebuilt in every stage. It is checked here instead.
+ * will grow, and the table would have to be rebuilt in every stage. A write is checked here instead.
  */
 const checkedStatus = (status: string): SessionStatus => {
   if (!isStatus(status)) throw new Error(`Unknown Session status in the Registry: ${status}`);
@@ -506,14 +506,23 @@ const checkedStatus = (status: string): SessionStatus => {
   return status;
 };
 
+/**
+ * A stored status. One this build does not know (a row a later build wrote, read after a revert or before this
+ * object's code update) reads as `idle`, not known to run, never as a failure that would drop the whole list
+ * (`docs/development/workers.md` → Bindings: a stored state has a fallback member).
+ */
+const readStatus = (status: string): SessionStatus => (isStatus(status) ? status : "idle");
+
 const isTitleSource = Schema.is(TitleSource);
 
-const checkedTitleSource = (source: string | null): TitleSource | null => {
+/**
+ * A stored title source. One this build does not know reads as the owner's: a title is there, and a generated one never
+ * replaces it.
+ */
+const readTitleSource = (source: string | null): TitleSource | null => {
   if (source === null) return null;
 
-  if (!isTitleSource(source)) throw new Error(`Unknown title source in the Registry: ${source}`);
-
-  return source;
+  return isTitleSource(source) ? source : "owner";
 };
 
 // @effect-diagnostics-next-line schemaSync:off -- the store is synchronous, as SQLite in a Durable Object is, and only reads what it wrote.
@@ -616,10 +625,10 @@ const toSession = (row: SessionRow): SessionRecord => {
   const record: SessionRecord = {
     id: row.id,
     title: row.title,
-    titleSource: checkedTitleSource(row.title_source),
+    titleSource: readTitleSource(row.title_source),
     environment: row.environment,
     workspace: row.workspace,
-    status: checkedStatus(row.status),
+    status: readStatus(row.status),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     archivedAt: row.archived_at,

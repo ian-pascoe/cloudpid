@@ -221,7 +221,7 @@ describe("the Registry store", () => {
     expect(await registry.listSessions()).toHaveLength(1);
   });
 
-  it("refuses to list or write a status it does not know", async () => {
+  it("refuses to write a status it does not know", async () => {
     const registry = fresh();
 
     await registry.createSession(
@@ -229,11 +229,38 @@ describe("the Registry store", () => {
       1_000,
     );
     // Inside the object, so the throw is caught here instead of surfacing as an uncaught exception.
-    await runInDurableObject(registry, (instance: TestRegistry, state) => {
+    await runInDurableObject(registry, (instance: TestRegistry) => {
       // @ts-expect-error -- a status outside the union, as a caller that skipped the type might send
       expect(() => instance.setSessionStatus("s-1", "exploded", 2_000)).toThrow(/Unknown/);
-      state.storage.sql.exec("UPDATE sessions SET status = 'exploded'");
-      expect(() => instance.listSessions()).toThrow(/Unknown/);
+    });
+    expect(await registry.getSession("s-1")).toMatchObject({ status: "idle", updatedAt: 1_000 });
+  });
+
+  it("reads a status or a title source a later build wrote as idle and the owner's, and still lists the Session", async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      { id: "s-1", title: "Fix the build", workspace: newWorkspace("1a2b3c4d") },
+      1_000,
+    );
+    await registry.createSession(
+      { id: "s-2", title: null, workspace: newWorkspace("5e6f7a8b") },
+      2_000,
+    );
+    // A row a later build wrote, read after a revert or by an instance its code update has not reached yet
+    // (`docs/development/workers.md` → Bindings: a stored state has a fallback member).
+    await runInDurableObject(registry, (_, state) => {
+      state.storage.sql.exec(
+        "UPDATE sessions SET status = 'waiting', title_source = 'agent' WHERE id = 's-1'",
+      );
+    });
+
+    expect(await sessionIds(registry)).toEqual(["s-2", "s-1"]);
+    // Idle: not known to run. The owner's: a title is there, and a generated one never replaces it.
+    expect(await registry.getSession("s-1")).toMatchObject({
+      status: "idle",
+      title: "Fix the build",
+      titleSource: "owner",
     });
   });
 
