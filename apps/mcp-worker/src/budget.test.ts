@@ -42,7 +42,7 @@ describe("the byte budget", () => {
     expect(await settled(more[2])).toBe(true);
   });
 
-  it("lets nobody in over budget while a pool holder is still running", async () => {
+  it("lets nobody in over budget while the holders still running hold enough for the oldest waiter", async () => {
     const budget = makeBudget();
     const [running, a, b, fresh] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
 
@@ -60,6 +60,94 @@ describe("the byte budget", () => {
     running.release();
 
     for (const charge of more) {
+      expect(await settled(charge)).toBe(true);
+    }
+  });
+
+  it("lets the oldest waiter in over budget when the holders still running could not give back enough for it", async () => {
+    const budget = makeBudget();
+    const [idle, a, b, c] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
+
+    // `idle` holds a few bytes and waits on its server, not on the pool (a slow tool's open response); the others
+    // hold the rest of the pool and each waits for a mebibyte more.
+    await idle.charge(512);
+    await a.charge(3 * MiB);
+    await b.charge(3 * MiB);
+    await c.charge(2 * MiB - 512);
+
+    const more = [a.charge(MiB), b.charge(MiB), c.charge(MiB)] as const;
+
+    // Were `idle` to end, its bytes would let none of them in, so waiting on it is a deadlock: the oldest goes on.
+    expect(await settled(more[0])).toBe(true);
+    expect(await settled(more[1])).toBe(false);
+    expect(await settled(more[2])).toBe(false);
+  });
+
+  it("lets a second waiter in over budget only once the first has left the pool", async () => {
+    const budget = makeBudget();
+    const [a, b, c, d] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
+
+    // The pool is full, and each waits for a mebibyte more; `a`, the oldest, goes on over budget.
+    await a.charge(512);
+    await b.charge(3 * MiB);
+    await c.charge(3 * MiB);
+    await d.charge(2 * MiB - 512);
+
+    const more = [a.charge(MiB), b.charge(MiB), c.charge(MiB), d.charge(MiB)] as const;
+
+    expect(await settled(more[0])).toBe(true);
+
+    // Were `a` to end, its bytes would not let `b` in either; still, `b` waits while `a` is over budget, even when
+    // another call comes to wait after it.
+    void budget.lease().charge(1);
+    expect(await settled(more[1])).toBe(false);
+
+    a.release();
+    expect(await settled(more[1])).toBe(true);
+    expect(await settled(more[2])).toBe(false);
+  });
+
+  it("counts the free pool with what the running holders hold, so waiters wait when the two together fit", async () => {
+    const budget = makeBudget();
+    const [running, a, b, c] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
+
+    // Half a mebibyte is free and `running` holds half a mebibyte: neither alone fits a waiter, both together do.
+    await running.charge(MiB / 2);
+    await a.charge(3 * MiB);
+    await b.charge(3 * MiB);
+    await c.charge(MiB);
+
+    const more = [a.charge(MiB), b.charge(MiB), c.charge(MiB)] as const;
+
+    for (const charge of more) {
+      expect(await settled(charge)).toBe(false);
+    }
+
+    running.release();
+    expect(await settled(more[0])).toBe(true);
+    expect(await settled(more[1])).toBe(false);
+  });
+
+  it("counts a call waiting for the large slot as one that will give its pool bytes back", async () => {
+    const budget = makeBudget();
+    const [large, growing, a, b] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
+
+    await large.charge(10 * MiB);
+    await growing.charge(3 * MiB);
+    await a.charge(3 * MiB);
+    await b.charge(2 * MiB);
+
+    // `growing` waits for the large slot, holding 3 MiB it gives back once it gets the slot; `a` and `b` wait for it.
+    const moving = growing.charge(2 * MiB);
+    const more = [a.charge(MiB), b.charge(MiB)] as const;
+
+    for (const charge of [moving, ...more]) {
+      expect(await settled(charge)).toBe(false);
+    }
+
+    large.release();
+
+    for (const charge of [moving, ...more]) {
       expect(await settled(charge)).toBe(true);
     }
   });

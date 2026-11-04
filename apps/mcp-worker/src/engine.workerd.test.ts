@@ -16,7 +16,7 @@ import {
 } from "@cloudpid/mcp/types";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { MiB } from "./units.ts";
 import type { Caller } from "./workerd.fixture.ts";
 
@@ -91,22 +91,110 @@ const BIG = { name: "big", inputSchema: { type: "object" } };
 const bigCall = (bytes: number) =>
   ({ op: "tools/call", tool: BIG, arguments: { bytes }, ctx: AGENT }) as const;
 
-/** The text of a streamed `tools/call` result. */
-const streamedText = async (result: ReturnType<typeof decodeRequest>) => {
+/** The byte stream of a streamed result, which a test expects. */
+const streamBody = (result: ReturnType<typeof decodeRequest>) => {
   if (result.kind !== "complete" || result.result.kind !== "stream") {
     throw new Error(`not a streamed result: ${JSON.stringify(result)}`);
   }
 
-  // SAFETY: the stream carries a `tools/call` result's JSON.
-  const value = (await new Response(result.result.body).json()) as {
-    content: Array<{ text: string }>;
-  };
-
-  return value.content[0]?.text ?? "";
+  return result.result.body;
 };
+
+/** A promise and what resolves it. */
+const deferred = () => Promise.withResolvers<void>();
 
 /** Hooks of a caller that never aborts. */
 const patient = () => ({ untilAborted: () => new Promise<void>(() => undefined) });
+
+/** How long a poll waits for what the fakes saw: well past the default second, which a loaded CI runner can pass. */
+const POLL = { timeout: 10_000 };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Engine requests that give back what they hold of the byte budget however their test ends (#613): once it finishes,
+ * each request still under way is aborted and each streamed result not read to its end is cancelled, one being read
+ * included and a late request's as it comes, so a failed test cannot hold the budget for the next.
+ */
+const heldRequests = () => {
+  const ended = deferred();
+  let testEnded = false;
+  const pending = new Set<Promise<unknown>>();
+
+  /** Each stream not yet read to its end, with its reader once a read began. */
+  const open = new Map<
+    ReadableStream<Uint8Array>,
+    ReadableStreamDefaultReader<Uint8Array> | undefined
+  >();
+
+  const cancel = async (body: ReadableStream<Uint8Array>) => {
+    const reader = open.get(body);
+
+    open.delete(body);
+    await (reader ?? body).cancel().catch(() => undefined);
+  };
+
+  onTestFinished(async () => {
+    testEnded = true;
+    ended.resolve();
+    await Promise.allSettled([...[...open.keys()].map(cancel), ...pending]);
+  });
+
+  /** `req` of `server`, as a caller that aborts when `aborted` resolves or the test finishes. */
+  const request = (
+    server: Parameters<McpEngineMethods["request"]>[0],
+    req: Parameters<McpEngineMethods["request"]>[2],
+    aborted?: Promise<void>,
+  ) => {
+    const untilAborted =
+      aborted === undefined ? ended.promise : Promise.race([aborted, ended.promise]);
+
+    const call = env.MCP_ENGINE.request(server, {}, req, { untilAborted: () => untilAborted }).then(
+      async (encoded) => {
+        const result = decodeRequest(encoded);
+
+        if (result.kind === "complete" && result.result.kind === "stream") {
+          open.set(result.result.body, undefined);
+
+          if (testEnded) await cancel(result.result.body);
+        }
+
+        return result;
+      },
+    );
+
+    pending.add(call);
+    void call.finally(() => pending.delete(call)).catch(() => undefined);
+
+    return call;
+  };
+
+  /** The text of a streamed `tools/call` result, read to its end; cancelled if the test ends first. */
+  const read = async (result: ReturnType<typeof decodeRequest>) => {
+    const body = streamBody(result);
+    const reader = body.getReader();
+    const chunks: Array<Uint8Array> = [];
+
+    open.set(body, reader);
+
+    try {
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        chunks.push(chunk.value);
+      }
+    } finally {
+      open.delete(body);
+    }
+
+    // SAFETY: the stream carries a `tools/call` result's JSON.
+    const value = (await new Response(new Blob(chunks)).json()) as {
+      content: Array<{ text: string }>;
+    };
+
+    return value.content[0]?.text ?? "";
+  };
+
+  return { request, read };
+};
 
 describe("McpWorker", () => {
   it("answers an HTTP request with 404", async () => {
@@ -776,27 +864,22 @@ describe("aborts", () => {
 
   it("aborts the server request when the caller aborts, and fails as a cut that may have run", async () => {
     const server = target("stateful", "abort");
-    let abort: () => void = () => undefined;
+    const aborted = deferred();
 
-    const aborted = new Promise<void>((resolve) => {
-      abort = resolve;
-    });
-
-    const pending = env.MCP_ENGINE.request(
+    const pending = heldRequests().request(
       server,
-      {},
       { op: "tools/call", tool: { name: "hang", inputSchema: { type: "object" } }, ctx: AGENT },
-      { untilAborted: () => aborted },
+      aborted.promise,
     );
 
-    await expect.poll(async () => (await seen(server)).methods).toContain("tools/call");
-    abort();
+    await expect.poll(async () => (await seen(server)).methods, POLL).toContain("tools/call");
+    aborted.resolve();
 
-    expect(decodeRequest(await pending)).toMatchObject({
+    expect(await pending).toMatchObject({
       kind: "failed",
       error: expect.objectContaining({ constructor: Cut, mayHaveRun: true }),
     });
-    await expect.poll(async () => (await seen(server)).cancelled).toEqual(["hang"]);
+    await expect.poll(async () => (await seen(server)).cancelled, POLL).toEqual(["hang"]);
   });
 
   it("aborts the server request when the caller dies mid-call", async () => {
@@ -811,11 +894,15 @@ describe("aborts", () => {
       )
       .catch((error) => error);
 
-    await expect.poll(async () => (await seen(server)).methods).toContain("tools/call");
+    // However the test ends, the caller dies: a call left hanging would hold its lease on the byte budget into the
+    // tests after it (#613).
+    onTestFinished(() => caller.die().catch(() => undefined));
+
+    await expect.poll(async () => (await seen(server)).methods, POLL).toContain("tools/call");
     await caller.die().catch(() => undefined);
 
     expect(await pending).toBeInstanceOf(Error);
-    await expect.poll(async () => (await seen(server)).cancelled).toEqual(["hang"]);
+    await expect.poll(async () => (await seen(server)).cancelled, POLL).toEqual(["hang"]);
     expect((await seen(server)).notifications).toContain("notifications/cancelled");
   });
 });
@@ -824,82 +911,87 @@ describe("large results", () => {
   it.each(["modern", "legacy"] as const)(
     "streams a 16 MiB result from a %s server as a native byte stream",
     async (kind) => {
+      const held = heldRequests();
       const bytes = 16 * MiB - 64 * 1024;
-
-      const called = decodeRequest(
-        await env.MCP_ENGINE.request(target(kind, `big-${kind}`), {}, bigCall(bytes), patient()),
-      );
+      const called = await held.request(target(kind, `big-${kind}`), bigCall(bytes));
 
       expect(called).toMatchObject({ kind: "complete", result: { kind: "stream" } });
-      expect(
-        called.kind === "complete" && called.result.kind === "stream" && called.result.body,
-      ).toBeInstanceOf(ReadableStream);
-      expect((await streamedText(called)).length).toBe(bytes);
+      expect(streamBody(called)).toBeInstanceOf(ReadableStream);
+      expect((await held.read(called)).length).toBe(bytes);
     },
   );
 
   it("returns a result of up to 1 MiB inline", async () => {
-    const called = decodeRequest(
-      await env.MCP_ENGINE.request(target("legacy", "small"), {}, bigCall(MiB - 1024), patient()),
-    );
+    const called = await heldRequests().request(target("legacy", "small"), bigCall(MiB - 1024));
 
     expect(called).toMatchObject({ kind: "complete", result: { kind: "inline" } });
   });
 });
 
+// Each test's requests are `heldRequests`, so a test that fails gives back all it holds of the isolate's one budget.
 describe("the byte budget", () => {
   it("holds a second large result back until the first is read, while small calls go on", async () => {
-    const first = decodeRequest(
-      await env.MCP_ENGINE.request(target("legacy", "budget-1"), {}, bigCall(10 * MiB), patient()),
-    );
+    const held = heldRequests();
+    const first = await held.request(target("legacy", "budget-1"), bigCall(10 * MiB));
+    const second = held.request(target("legacy", "budget-2"), bigCall(10 * MiB));
 
-    let secondDone = false;
-
-    const second = env.MCP_ENGINE.request(
-      target("legacy", "budget-2"),
-      {},
-      bigCall(10 * MiB),
-      patient(),
-    ).then((result) => {
-      secondDone = true;
-
-      return decodeRequest(result);
+    const small = await held.request(target("legacy", "budget-3"), {
+      op: "tools/call",
+      tool: ECHO,
+      arguments: { text: "small" },
+      ctx: AGENT,
     });
 
-    const small = decodeRequest(
-      await env.MCP_ENGINE.request(
-        target("legacy", "budget-3"),
-        {},
-        { op: "tools/call", tool: ECHO, arguments: { text: "small" }, ctx: AGENT },
-        patient(),
-      ),
-    );
-
     expect(small).toMatchObject({ kind: "complete" });
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(secondDone).toBe(false);
+    // What the second request came back with, if it did, is in the failure.
+    expect(await Promise.race([second, sleep(500).then(() => "held back")])).toBe("held back");
 
-    expect((await streamedText(first)).length).toBe(10 * MiB);
-    expect((await streamedText(await second)).length).toBe(10 * MiB);
+    expect((await held.read(first)).length).toBe(10 * MiB);
+    expect((await held.read(await second)).length).toBe(10 * MiB);
   });
 
   it("lets concurrent calls that oversubscribe the pool all complete", async () => {
+    const held = heldRequests();
+
     const texts = await Promise.all(
       ["a", "b", "c", "d"].map(async (key) =>
-        streamedText(
-          decodeRequest(
-            await env.MCP_ENGINE.request(
-              target("legacy", `oversubscribe-${key}`),
-              {},
-              bigCall(3 * MiB),
-              patient(),
-            ),
-          ),
-        ),
+        held.read(await held.request(target("legacy", `oversubscribe-${key}`), bigCall(3 * MiB))),
       ),
     );
 
     expect(texts.map((text) => text.length)).toEqual([3 * MiB, 3 * MiB, 3 * MiB, 3 * MiB]);
+  });
+
+  it("goes on while a call that holds a few bytes hangs, letting the oldest waiter in over budget", async () => {
+    const held = heldRequests();
+    const hanging = target("stateful", "budget-hang");
+
+    // A call whose server answers its headers and then nothing: it holds a few bytes of the pool, running.
+    void held.request(hanging, {
+      op: "tools/call",
+      tool: { name: "hang", inputSchema: { type: "object" } },
+      ctx: AGENT,
+    });
+    await expect.poll(async () => (await seen(hanging)).methods, POLL).toContain("tools/call");
+
+    const lengths = Promise.all(
+      ["a", "b", "c", "d"].map(async (key) => {
+        const called = await held.request(
+          target("legacy", `hang-oversubscribe-${key}`),
+          bigCall(3 * MiB),
+        );
+
+        return (await held.read(called)).length;
+      }),
+    );
+
+    // They take well under a second; held up by the hanging call, they would wait for its next bytes or its end.
+    expect(await Promise.race([lengths, sleep(10_000).then(() => "held up")])).toEqual([
+      3 * MiB,
+      3 * MiB,
+      3 * MiB,
+      3 * MiB,
+    ]);
   });
 
   it.each([
@@ -908,50 +1000,31 @@ describe("the byte budget", () => {
   ] as const)(
     "frees a call %s while it waits for the budget at once, and the next call goes on",
     async (how, key) => {
-      const holder = decodeRequest(
-        await env.MCP_ENGINE.request(
-          target("legacy", `${key}-1`),
-          {},
-          bigCall(10 * MiB),
-          patient(),
-        ),
-      );
+      const held = heldRequests();
+      const holder = await held.request(target("legacy", `${key}-1`), bigCall(10 * MiB));
+      const aborted = deferred();
 
-      let abort: () => void = () => undefined;
-
-      const aborted = new Promise<void>((resolve) => {
-        abort = resolve;
-      });
-
-      const waiting = env.MCP_ENGINE.request(
+      const waiting = held.request(
         { ...target("legacy", `${key}-2`), timeoutMs: how === "timed out" ? 300 : 60_000 },
-        {},
         bigCall(10 * MiB),
-        { untilAborted: () => aborted },
+        aborted.promise,
       );
 
       if (how === "aborted") {
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        abort();
+        await sleep(300);
+        aborted.resolve();
       }
 
-      expect(decodeRequest(await waiting)).toMatchObject({
+      expect(await waiting).toMatchObject({
         kind: "failed",
         error: expect.any(how === "aborted" ? Cut : TimedOut),
       });
 
-      expect((await streamedText(holder)).length).toBe(10 * MiB);
+      expect((await held.read(holder)).length).toBe(10 * MiB);
 
-      const next = decodeRequest(
-        await env.MCP_ENGINE.request(
-          target("legacy", `${key}-3`),
-          {},
-          bigCall(10 * MiB),
-          patient(),
-        ),
-      );
+      const next = await held.request(target("legacy", `${key}-3`), bigCall(10 * MiB));
 
-      expect((await streamedText(next)).length).toBe(10 * MiB);
+      expect((await held.read(next)).length).toBe(10 * MiB);
     },
   );
 });

@@ -10,11 +10,12 @@
  * gets the slot, and a call in the large slot is charged nothing more. A GET stream is not charged: it lives only as
  * long as its call, and its events are capped by the core.
  *
- * - **Deadlock:** calls that hold pool bytes and wait for more can wait on each other. When every call holding pool
- *   bytes is waiting for the pool, the oldest waiter is let in over budget, and every later charge of its own is too,
- *   until it ends or moves to the large slot; one call at a time, so the pool overshoots by at most 4 MiB. While any
- *   holder is still running, nobody overshoots. The large slot needs no such rule: its holder is charged nothing more,
- *   so it never waits.
+ * - **Deadlock:** calls that hold pool bytes and wait for more can wait on each other. When the oldest waiter would not
+ *   fit even were every holder not waiting for the pool to give back all it holds, only a waiter could make room, and
+ *   none will: so it is let in over budget, and every later charge of its own is too, until it ends or moves to the
+ *   large slot; one call at a time, so the pool overshoots by at most 4 MiB. While the holders still running hold
+ *   enough for it, nobody overshoots; a running call holding a few bytes (a slow tool's open response) holds nobody
+ *   up (#613). The large slot needs no such rule: its holder is charged nothing more, so it never waits.
  * - **Release is immediate:** it gives back what the call holds and drops its waiter, whatever the call's charges are
  *   doing, so an abort or a timeout frees the budget at once.
  * - **A returned stream** holds its call's lease until it is read or cancelled, but expires once it has gone unread
@@ -129,15 +130,20 @@ export const makeBudget = (options: BudgetOptions = {}): ByteBudgetApi => {
     leavePool(holding);
   };
 
-  /** Every call holding pool bytes waits for more of them, so none can give any back. */
-  const deadlocked = () => {
+  /**
+   * Waiting for the pool cannot let `oldest` in: even were every holder not itself waiting for the pool to give back
+   * all it holds, `oldest` would not fit, and the calls that wait keep what they hold.
+   */
+  const deadlocked = (oldest: Wait) => {
+    let freeable = poolFree;
+
     for (const holding of live) {
-      if (holding.pooled > 0 && holding.waiting?.on !== "pool") {
-        return false;
+      if (holding.waiting?.on !== "pool") {
+        freeable += holding.pooled;
       }
     }
 
-    return true;
+    return freeable < oldest.need;
   };
 
   /** Lets waiters in, first in first out, while they fit; then breaks a deadlock. */
@@ -162,7 +168,7 @@ export const makeBudget = (options: BudgetOptions = {}): ByteBudgetApi => {
 
     const oldest = poolWaiters[0];
 
-    if (overBudget === undefined && oldest?.waiting !== undefined && deadlocked()) {
+    if (overBudget === undefined && oldest?.waiting !== undefined && deadlocked(oldest.waiting)) {
       poolWaiters.shift();
       overBudget = oldest;
       takePool(oldest, oldest.waiting.need);
