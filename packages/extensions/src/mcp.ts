@@ -52,6 +52,13 @@ import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
 import { type McpNotices } from "./mcp/notices.ts";
+import {
+  cancelAsOwner,
+  keepContainer,
+  type OwnerCancel,
+  type OwnerKeep,
+  type TaskOwnerHarness,
+} from "./mcp/task-owner.ts";
 import { type SweepHarness, sweepTasks } from "./mcp/task-sweep.ts";
 import {
   EMPTY_LISTING,
@@ -154,6 +161,13 @@ export { type McpTasksOptions, type McpTasksTiming } from "./mcp/task-port.ts";
 export { type McpTaskStorage, MCP_TASK_POOL_BYTES } from "./mcp/task-results.ts";
 
 export { type SweepHarness, sweepTasks, type TaskSweep } from "./mcp/task-sweep.ts";
+
+export {
+  type OwnerCancel,
+  type OwnerKeep,
+  type TaskOwnerHarness,
+  viewOfTasks,
+} from "./mcp/task-owner.ts";
 
 export {
   addTask,
@@ -335,6 +349,19 @@ export type McpToolsService = {
    * no longer live, and end their records. Never fails: what could not be swept is swept at the next wake.
    */
   readonly sweepTasks: (harness: SweepHarness) => Effect.Effect<void>;
+  /**
+   * The owner's cancel of MCP task `handle` from a client (`mcp_task_cancel`): the agent's cancel with the owner as the
+   * canceller. Never fails: what could not be done says so.
+   */
+  readonly cancelTask: (harness: TaskOwnerHarness, handle: string) => Effect.Effect<OwnerCancel>;
+  /**
+   * Keep the Container of the stdio server's task `handle` (`container_keep`): owner activity noted in its Workspace.
+   * Never fails.
+   */
+  readonly keepContainer: (
+    harness: Pick<TaskOwnerHarness, "snapshot">,
+    handle: string,
+  ) => Effect.Effect<OwnerKeep>;
   /**
    * Tell `conversation` of the listing as it is if its section was shown another, and finish a broadcast that failed
    * (a request start's check, outside any lock: it never fails, and a failure is logged and tried again by the next).
@@ -782,6 +809,39 @@ export const makeMcpTools = (
               Effect.logWarning("The sweep of the MCP tasks failed", cause),
             ),
           ),
+    cancelTask: (harness, handle) =>
+      Effect.flatMap(Clock.currentTimeMillis, (at) =>
+        Effect.tryPromise(() =>
+          cancelAsOwner({ harness, client, origin: latest?.origin ?? {}, now: () => at }, handle),
+        ),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.as(
+            Effect.logWarning("The owner's cancel of an MCP task failed", cause),
+            "failed" as const,
+          ),
+        ),
+      ),
+    keepContainer: (harness, handle) =>
+      Effect.tryPromise(() =>
+        keepContainer(
+          {
+            harness,
+            touch: (workspace) =>
+              (options.ready?.(workspace) ?? Promise.resolve(true)).then((ready) =>
+                ready ? undefined : Promise.reject(new Error("The Workspace is not ready")),
+              ),
+          },
+          handle,
+        ),
+      ).pipe(
+        Effect.catchCause((cause) =>
+          Effect.as(
+            Effect.logWarning("Keeping a Container for an MCP task failed", cause),
+            "failed" as const,
+          ),
+        ),
+      ),
     notify: (conversation) => Effect.andThen(check(conversation), broadcast),
   };
 };

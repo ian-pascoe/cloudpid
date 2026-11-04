@@ -452,6 +452,14 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   const sweep = (harness: SweepHarness) =>
     held === undefined ? Effect.void : held.tools.sweepTasks(harness);
 
+  const cancelTask: SessionMcp["cancelTask"] = (harness, task) =>
+    held === undefined ? Effect.succeed("unknown" as const) : held.tools.cancelTask(harness, task);
+
+  const keepContainer: SessionMcp["keepContainer"] = (harness, task) =>
+    held === undefined
+      ? Effect.succeed("unknown" as const)
+      : held.tools.keepContainer(harness, task);
+
   const notify = (conversationId: ConversationId, values: SessionSettingsValues) => {
     const { environment } = values.mcp;
 
@@ -576,6 +584,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     bindSampling,
     settleOnFollowers,
     sweep,
+    cancelTask,
+    keepContainer,
     notify,
     prompts,
     appHtml,

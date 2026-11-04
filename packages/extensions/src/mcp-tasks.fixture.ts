@@ -226,6 +226,7 @@ export const setup = async (
     toolCalls,
     everything,
     client: host.client,
+    tools,
   };
 };
 

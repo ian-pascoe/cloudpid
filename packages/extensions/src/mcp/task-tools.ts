@@ -24,8 +24,7 @@ import type { McpDetails } from "./details.ts";
 import type { McpCallOrigin } from "./exchange.ts";
 import { failedWith } from "./result.ts";
 import { scriptSchemaOf } from "./schema.ts";
-import { sendCancel } from "./task-host.ts";
-import { markCancelSent } from "./task-end.ts";
+import { requestCancel } from "./task-owner.ts";
 import { durationText, MCP_TASK_RESULT_KEPT_MS } from "./task-policy.ts";
 import { sleepUntilWoken } from "./task-port.ts";
 import { type McpResultPool, type StoredResult } from "./task-results.ts";
@@ -434,21 +433,19 @@ export const taskTools = (
       }
 
       // Marked before it is sent, so a restart that cut the send sends it once more (the follower's first look).
-      await api.commit(async (tx) => {
-        const current = (await tx.doc(McpTasksDoc)).tasks[handle];
-
-        if (current !== undefined && current.end === undefined && current.cancel === undefined) {
-          current.cancel = { at: api.now(), by: "agent", sent: "sending" };
-        }
-      }, context);
-
-      const took = await sendCancel(client, record, origin);
-
-      await api.commit(async (tx) => {
-        const current = (await tx.doc(McpTasksDoc)).tasks[handle];
-
-        markCancelSent(current, took);
-      }, context);
+      const took =
+        (await requestCancel(
+          {
+            commit: async (write) => {
+              await api.commit(write, context);
+            },
+            client,
+            origin,
+            now: () => api.now(),
+          },
+          record,
+          "agent",
+        )) !== "failed";
 
       return took
         ? done(
