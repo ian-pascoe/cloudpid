@@ -1361,8 +1361,14 @@ export interface McpHostRequestHooks {
 export const McpHostCompleted = Schema.TaggedStruct("Completed", {
   result: McpEngineValue,
   structuredOutput: Schema.optionalKey(McpStructuredOutput),
-  /** An App tool's call: the hash its App's HTML is kept under (`ui/html`), once the host has it (`app_html`). */
-  app: Schema.optionalKey(Schema.Struct({ htmlHash: Schema.String })),
+  /**
+   * An App tool's call: the hash its App's HTML is kept under (`ui/html`), once the host has it (`app_html`), and the
+   * `viewHash` of the origin the server's Views are served on, when the host knows the Environment and source; the
+   * call's record pins it, so a record of a server that has since been shadowed is not mounted at its successor's origin.
+   */
+  app: Schema.optionalKey(
+    Schema.Struct({ htmlHash: Schema.String, viewHash: Schema.optionalKey(Schema.String) }),
+  ),
   /** A `resources/read`: the SHA-256 (lowercase hex) of its contents, the baseline of a Resource watch (`resources`). */
   sha256: Schema.optionalKey(Schema.String),
 });
@@ -1463,11 +1469,16 @@ export const McpHostCallFailed = Schema.TaggedStruct("CallFailed", {
 
 export type McpHostCallFailed = typeof McpHostCallFailed.Type;
 
-/** `request({ op: "ui/html" })` completed: the HTML under `hash` and what its View is mounted with. */
+/**
+ * `request({ op: "ui/html" })` completed: the HTML under `hash` and what its View is mounted with. `viewHash` names the
+ * server's App sandbox origin (`docs/architecture/mcp-apps.md` → The App sandbox, Origins): set by a host that knows its
+ * Environment and the server's source, left out by an older one and for a source it does not know.
+ */
 export const McpHostAppHtml = Schema.TaggedStruct("AppHtml", {
   hash: Schema.String,
   html: Schema.String,
   meta: McpAppUiMeta,
+  viewHash: Schema.optionalKey(Schema.String),
 });
 
 export type McpHostAppHtml = typeof McpHostAppHtml.Type;

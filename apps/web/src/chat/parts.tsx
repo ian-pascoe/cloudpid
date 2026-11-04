@@ -28,6 +28,7 @@ import { decodeCardDiff, diffTotals } from "../call-diff.ts";
 import { DiffTally } from "../diff-pane/parts.tsx";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
+import { AppCall } from "../app-view/app-call.tsx";
 import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
 import { mcpStatusLabel, shownMcpStatus } from "./mcp-status.ts";
 import { NestedCall, OmittedCalls } from "./nested-calls.ts";
@@ -505,11 +506,26 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
     </Disclosure>
   );
 
-  if (images.length === 0) return card;
+  // An MCP tool's call that finished may be an App's: its View shows under the card (`docs/architecture/mcp-apps.md` → App
+  // Views in the transcript), and the card says nothing when it is not one.
+  const app =
+    result !== undefined && toolName.startsWith("mcp__") ? (
+      <AppCall callId={toolCallId} toolName={toolName} />
+    ) : null;
+
+  if (images.length === 0) {
+    return (
+      <>
+        {card}
+        {app}
+      </>
+    );
+  }
 
   return (
     <>
       {card}
+      {app}
       {Arr.map(images, (image, index) => (
         <img
           key={index}

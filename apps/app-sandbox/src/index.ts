@@ -1,1 +1,1 @@
-export { AppSandbox } from "./resource.ts";
+export { AppSandbox, LocalAppSandbox } from "./resource.ts";

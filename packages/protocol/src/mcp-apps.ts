@@ -35,6 +35,10 @@ export const MAX_MCP_APP_AUDIT = 50;
 /** The most App tools `mcp_app_tools` lists. */
 export const MAX_MCP_APP_TOOLS = 1000;
 
+/** The most UTF-16 code units of one App tool's `inputSchema` that `mcp_app_tools` carries, and of all of them together. */
+export const MAX_MCP_APP_SCHEMA_CHARS = 2048;
+export const MAX_MCP_APP_SCHEMAS_CHARS = 65_536;
+
 /** One entry of an App View's audit log: what it asked for, and what came of it. `kind` is a string so one a later build adds still reads. */
 export const McpAppAuditEntry = Schema.Struct({
   /** Epoch milliseconds. */
@@ -77,6 +81,11 @@ export const McpAppRecord = Schema.Struct({
   arguments: Schema.Record(Schema.String, Schema.Json),
   /** The hash the App's page is kept under at the host (`mcp_app_html`), when the host had it. */
   htmlHash: Schema.optionalKey(Schema.String),
+  /**
+   * What named the origin of the server's Views when the call ran (`viewHash`: its Environment, source and name). A mount
+   * whose server now has another is not the same server (a Repo's `docs` shadowed by an owner's): it is "App unavailable".
+   */
+  viewHash: Schema.optionalKey(Schema.String),
   result: Schema.Record(Schema.String, Schema.Json),
   truncated: Schema.optionalKey(Schema.Boolean),
   /** The App View's calls and reads, newest last, at most `MAX_MCP_APP_AUDIT`. */
@@ -146,6 +155,11 @@ export const McpAppTool = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   /** The `ui://` resource the tool declares. */
   uri: Schema.String,
+  /**
+   * The tool's `inputSchema`, for the View's `toolInfo`: left out when it is over `MAX_MCP_APP_SCHEMA_CHARS`, or once the
+   * list's schemas have used `MAX_MCP_APP_SCHEMAS_CHARS`, since the list is sent whole on every connect and change.
+   */
+  inputSchema: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
   /** Its `_meta.ui.visibility`: `model`, `app`, or both, the default. */
   visibility: Schema.Array(Schema.String),
 });
@@ -190,7 +204,12 @@ export type McpAppPageMeta = typeof McpAppPageMeta.Type;
 /**
  * What `mcp_app_html` answers: the page (`html`, with its `meta`), or why there is none: `missing` (no record pins the hash,
  * or the host no longer keeps it: the mount reads it by its URI, later), `unsupported` (the host does not serve it) or
- * `failed`. A status this build does not know reads as `failed`.
+ * `failed`, or `unavailable` (the call's server is no longer the one that made it: shadowed, so no page is shown). A status
+ * this build does not know reads as `failed`.
+ *
+ * A page comes with the `origin` its View is served on (`docs/architecture/mcp-apps.md` → The App sandbox): the Session
+ * builds it from the host's `view` (the 26 characters that name the server's origin) and its own deploy-time label, and
+ * leaves it out when the host gave no `view`, so the page cannot show the View: it fails to load, with Retry.
  */
 export const McpAppHtmlAnswer = Schema.Union([
   Schema.Struct({
@@ -198,10 +217,13 @@ export const McpAppHtmlAnswer = Schema.Union([
     hash: Schema.String,
     html: Schema.String,
     meta: McpAppPageMeta,
+    view: Schema.optionalKey(Schema.String),
+    origin: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({ status: Schema.Literal("missing"), message: Schema.String }),
   Schema.Struct({ status: Schema.Literal("unsupported"), message: Schema.String }),
   Schema.Struct({ status: Schema.Literal("failed"), message: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), message: Schema.String }),
   Schema.Struct({ status: Schema.String, message: Schema.optionalKey(Schema.String) }),
 ]);
 

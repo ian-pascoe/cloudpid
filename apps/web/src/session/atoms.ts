@@ -439,3 +439,9 @@ export const answerSecretsAtom = Atom.family((sessionId: string) =>
     { concurrent: true },
   ),
 );
+
+/** The inventory's App tools (`mcp_app_tools`), null until the Session says. */
+export const mcpAppToolsAtom = slice((state) => state.mcpAppTools);
+
+/** Every conversation's App calls the Session has sent (`mcp_apps`), by conversation. */
+export const mcpAppsAtom = slice((state) => state.mcpApps);

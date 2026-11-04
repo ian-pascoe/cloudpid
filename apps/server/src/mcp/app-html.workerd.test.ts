@@ -221,6 +221,9 @@ const foundLegacy = (): EngineScript => {
   };
 };
 
+/** What an App's origin is named by: 26 lowercase base32 characters (`view-hash.ts`). */
+const VIEW_HASH = /^[a-z2-7]{26}$/;
+
 /** `vi.waitFor` with a wait that a loaded machine does not run out of. */
 const waitFor = <A>(check: () => A | Promise<A>) => vi.waitFor(check, { timeout: 8000 });
 
@@ -244,7 +247,8 @@ describe("an App tool's call", () => {
     const [kept] = await host.appPages();
     const next = await completedWith(host, "app");
 
-    expect(next.app).toEqual({ htmlHash: kept?.hash });
+    // With the hash that names the server's origin, which its record pins.
+    expect(next.app).toEqual({ htmlHash: kept?.hash, viewHash: expect.stringMatching(VIEW_HASH) });
     expect(kept?.bytes).toBe("<p>hi</p>".length);
     expect(await requestsOf(host, "tools/call")).toHaveLength(2);
     expect(await requestsOf(host, "resources/read")).toEqual([
@@ -259,6 +263,38 @@ describe("an App tool's call", () => {
       hash: kept?.hash,
       html: "<p>hi</p>",
       meta: { prefersBorder: true, csp: { connectDomains: ["https://a.test"] } },
+      viewHash: expect.stringMatching(VIEW_HASH),
+    });
+  });
+
+  it("names the origin of the server that asks, though a page is kept by content and shared", async () => {
+    const host = await discovered(entry("docs"), entry("other"));
+
+    await host.scriptRequest(urlOf("docs"), [read(page("<p>same</p>"))]);
+    await host.scriptRequest(urlOf("other"), [read(page("<p>same</p>"))]);
+
+    const [docs, other] = await Promise.all([
+      host.request(htmlOf("docs", { uri: URI }), {}),
+      host.request(htmlOf("other", { uri: URI }), {}),
+    ]);
+
+    if (!Predicate.isTagged(docs, "AppHtml") || !Predicate.isTagged(other, "AppHtml")) {
+      throw new Error(JSON.stringify([docs, other]));
+    }
+
+    // One page, kept once; each server's own origin.
+    expect(other.hash).toBe(docs.hash);
+    expect(docs.viewHash).toMatch(VIEW_HASH);
+    expect(other.viewHash).toMatch(VIEW_HASH);
+    expect(other.viewHash).not.toBe(docs.viewHash);
+
+    // The same by hash, as a mount of a record does it.
+    expect(await host.request(htmlOf("docs", { hash: docs.hash }), {})).toMatchObject({
+      viewHash: docs.viewHash,
+    });
+
+    expect(await host.request(htmlOf("other", { hash: docs.hash }), {})).toMatchObject({
+      viewHash: other.viewHash,
     });
   });
 
@@ -384,7 +420,10 @@ describe("an App tool's call", () => {
 
     const second = await completedWith(host, "app");
 
-    expect(second.app).toEqual({ htmlHash: (await host.appPages())[0]?.hash });
+    expect(second.app).toEqual({
+      htmlHash: (await host.appPages())[0]?.hash,
+      viewHash: expect.stringMatching(VIEW_HASH),
+    });
     expect(await requestsOf(host, "resources/read")).toHaveLength(1);
     expect(await host.appUiRows()).toEqual([
       { conn: "conn-docs", uri: URI, hash: second.app?.htmlHash, version: expect.any(String) },
@@ -988,11 +1027,15 @@ describe("against a fixture App server", () => {
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(await host.request(htmlOf("docs", { hash }), {})).toEqual({
       _tag: "AppHtml",
+      viewHash: expect.stringMatching(VIEW_HASH),
       hash,
       html: "<main>fixture</main>",
       meta: { prefersBorder: true },
     });
-    expect((await callApp(host, "app")).app).toEqual({ htmlHash: hash });
+    expect((await callApp(host, "app")).app).toEqual({
+      htmlHash: hash,
+      viewHash: expect.stringMatching(VIEW_HASH),
+    });
     expect(server.received.filter((each) => each.rpc?.method === "resources/read")).toHaveLength(1);
   });
 

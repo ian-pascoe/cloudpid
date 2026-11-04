@@ -2717,3 +2717,112 @@ describe("a Session's tree", () => {
     }),
   );
 });
+
+describe("the App calls on a Session connection", () => {
+  const appTools = {
+    type: "mcp_app_tools",
+    tools: [
+      {
+        name: "mcp__docs__page",
+        server: "docs",
+        tool: "page",
+        uri: "ui://docs/page",
+        visibility: ["model", "app"],
+      },
+    ],
+  } as const;
+
+  it.effect(
+    "keeps the App tools and each conversation's App calls, the last of each replacing",
+    () =>
+      Effect.gen(function* () {
+        const { latest, state } = yield* setup();
+
+        yield* watching(latest());
+        expect(state().mcpAppTools).toBeNull();
+        expect(state().mcpApps).toEqual({});
+
+        yield* latest().say(appTools);
+        expect(state().mcpAppTools?.map((tool) => tool.name)).toEqual(["mcp__docs__page"]);
+
+        yield* latest().say({
+          type: "mcp_apps",
+          conversationId: 1,
+          apps: [{ callId: "c1", server: "docs", tool: "page", state: "kept", at: 1 }],
+        });
+        yield* latest().say({
+          type: "mcp_apps",
+          conversationId: 2,
+          apps: [{ callId: "c2", server: "docs", tool: "page", state: "evicted", at: 2 }],
+        });
+        expect(state().mcpApps).toHaveProperty("1");
+        expect(state().mcpApps).toHaveProperty("2");
+
+        yield* latest().say({ type: "mcp_apps", conversationId: 1, apps: [] });
+        expect(state().mcpApps["1"]).toEqual([]);
+        expect(state().mcpApps["2"]?.[0]?.callId).toBe("c2");
+      }),
+  );
+
+  it.effect(
+    "mounts a call by its ID and reads its page by it, each answered as the Session did",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const mounted = yield* client.mountApp("c1").pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const mount = latest()
+          .commands()
+          .find((command) => command.type === "mcp_app_mount");
+
+        expect(mount).toEqual({ type: "mcp_app_mount", id: expect.any(String), callId: "c1" });
+        yield* latest().say({ type: "result", id: mount?.id, result: { status: "none" } });
+        expect(yield* Fiber.join(mounted)).toEqual({ status: "none" });
+
+        const page = yield* client.appPage("c1").pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const html = latest()
+          .commands()
+          .find((command) => command.type === "mcp_app_html");
+
+        expect(html).toEqual({ type: "mcp_app_html", id: expect.any(String), callId: "c1" });
+        yield* latest().say({
+          type: "result",
+          id: html?.id,
+          result: {
+            status: "html",
+            hash: "h",
+            html: "<p>hi</p>",
+            meta: {},
+            origin: "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app",
+          },
+        });
+        expect(yield* Fiber.join(page)).toMatchObject({ status: "html", html: "<p>hi</p>" });
+      }),
+  );
+
+  it.effect("fails a mount the Session refused, with its message", () =>
+    Effect.gen(function* () {
+      const { client, latest } = yield* setup();
+
+      yield* watching(latest());
+
+      const mounted = yield* client.mountApp("c1").pipe(Effect.flip, Effect.forkChild);
+
+      yield* settle;
+      yield* latest().say({
+        type: "error",
+        id: latest().commands().at(-1)?.id,
+        message: "No such call",
+      });
+      expect((yield* Fiber.join(mounted)).message).toBe("No such call");
+    }),
+  );
+});

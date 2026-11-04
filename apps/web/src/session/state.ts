@@ -7,6 +7,8 @@ import {
   type ApprovalRequest,
   type BrowserHandoffRequest,
   type LastRun,
+  type McpAppEntry,
+  type McpAppTool,
   type McpElicitationRequest,
   type McpSignInRequest,
   type OwnerTabDriver,
@@ -180,6 +182,16 @@ export interface SessionState {
   /** The active branch's Todo List, as of the last one the Session sent; empty until it sends one. */
   readonly todos: readonly TodoTask[];
   /**
+   * The App tools of the Session's MCP inventory (`docs/architecture/mcp-apps.md` → Socket messages), as the last
+   * `mcp_app_tools` told them; null until the socket has. A call of one is an App call as it starts.
+   */
+  readonly mcpAppTools: readonly McpAppTool[] | null;
+  /**
+   * The App calls of each conversation this socket watches, by conversation ID, as the last `mcp_apps` of it listed them
+   * (whole, replacing the one before): which calls have a record to mount, and which were evicted.
+   */
+  readonly mcpApps: Readonly<Record<string, readonly McpAppEntry[]>>;
+  /**
    * The active Session branch's conversation (GLOSSARY.md → Session branch), the one the root view shows; null until the
    * Session says.
    */
@@ -215,6 +227,8 @@ export const INITIAL_SESSION_STATE: SessionState = {
   conversationChanges: {},
   lastRun: null,
   todos: [],
+  mcpAppTools: null,
+  mcpApps: {},
   activeBranch: null,
   treeVersion: 0,
   copying: false,

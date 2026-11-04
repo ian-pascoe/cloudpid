@@ -34,7 +34,9 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Mutable } from "effect/Types";
@@ -68,6 +70,8 @@ type IndexEntry = {
   readonly parentCall?: string;
   readonly state: "kept" | "evicted";
   readonly htmlHash?: string;
+  /** What named the origin of the server's Views when the call ran (`McpAppRecord.viewHash`). */
+  readonly viewHash?: string;
   readonly truncated?: boolean;
   readonly bytes: number;
   readonly parts: number;
@@ -86,6 +90,11 @@ export type SessionMcpAppsOptions = {
    * when the host lists `app_html` (`McpTools.appHtml`).
    */
   readonly html: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
+  /**
+   * The origin an App View of the host's `view` is served on (`viewOrigin`, from the deploy-time label), put on a page's
+   * answer. It may throw for a `view` that is not a host's label of a View; the answer then has no origin.
+   */
+  readonly viewOrigin?: (view: string) => string;
   /** The time in epoch milliseconds, `Date.now` unless a test sets it. */
   readonly now?: () => number;
 };
@@ -167,6 +176,8 @@ const keptOf = (record: McpAppRecord, count: number, mountedAt: number): IndexEn
   if (record.parentCall !== undefined) entry.parentCall = record.parentCall;
 
   if (record.htmlHash !== undefined) entry.htmlHash = record.htmlHash;
+
+  if (record.viewHash !== undefined) entry.viewHash = record.viewHash;
 
   if (record.truncated === true) entry.truncated = true;
 
@@ -350,6 +361,34 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       return { status: "record", record: record.value };
     });
 
+  /** A page's answer with the origin its View is served on, when the host named the server's and the stage can build it. */
+  const withOrigin = (answer: McpAppHtmlAnswer): McpAppHtmlAnswer => {
+    if (answer.status !== "html" || !("view" in answer) || answer.view === undefined) return answer;
+
+    const { view } = answer;
+    const origin = Result.getOrUndefined(Result.try(() => options.viewOrigin?.(view)));
+
+    return origin === undefined ? answer : { ...answer, origin };
+  };
+
+  /**
+   * `answer` unless it is a page of another server than the one that made the call: a record names its server by name, so
+   * an owner's `docs` that shadows a Repo's would serve the old call a page at the new server's origin. The record pins
+   * what named its server's origin (`viewHash`); a page whose host named another is "unavailable". A record that pins none
+   * (it predates this, or the host did not know) is not checked: there is nothing to compare.
+   */
+  const ofTheCallsServer = (entry: IndexEntry, answer: McpAppHtmlAnswer): McpAppHtmlAnswer =>
+    entry.viewHash !== undefined &&
+    answer.status === "html" &&
+    "view" in answer &&
+    answer.view !== undefined &&
+    answer.view !== entry.viewHash
+      ? {
+          status: "unavailable",
+          message: `The server ${entry.server} is no longer the one that made this call`,
+        }
+      : answer;
+
   const html: McpAppsService["html"] = (hash) =>
     Effect.suspend(() => {
       // The newest record that pins the hash names the server to ask: a hash is not tied to a server at the host.
@@ -363,12 +402,85 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
             status: "missing",
             message: "No App record of this Session pins that page",
           })
-        : options.html({
-            server: pin.value.server,
-            hash,
-            callId: pin.value.callId,
-            conversation: pin.value.conversation,
+        : options
+            .html({
+              server: pin.value.server,
+              hash,
+              callId: pin.value.callId,
+              conversation: pin.value.conversation,
+            })
+            .pipe(
+              Effect.map((answer) => ofTheCallsServer(pin.value, answer)),
+              Effect.map(withOrigin),
+            );
+    });
+
+  /**
+   * Pin `hash` as the page of call `callId`'s record, as the first mount that read it by its URI found it (the host did
+   * not wait for the read when the call ended). The record is rewritten as it was kept, its mount time unchanged.
+   */
+  const pin = (callId: string, hash: string) =>
+    Effect.sync(() => {
+      const found = Arr.findFirst(index(), (entry) => entry.callId === callId);
+
+      if (Option.isNone(found) || found.value.state !== "kept") return;
+
+      const record = readRecord(found.value);
+
+      if (Option.isNone(record) || record.value.htmlHash === hash) return;
+
+      changed(keepRecord({ ...record.value, htmlHash: hash }, found.value.mountedAt));
+    });
+
+  const pageOf: McpAppsService["pageOf"] = (callId) =>
+    Effect.suspend(() => {
+      const found = Arr.findFirst(index(), (entry) => entry.callId === callId);
+
+      if (Option.isNone(found) || found.value.state !== "kept") {
+        return Effect.succeed<McpAppHtmlAnswer>({
+          status: "missing",
+          message: "No App record of this Session keeps that call",
+        });
+      }
+
+      const { server, tool, conversation, htmlHash } = found.value;
+
+      // Read by the resource the server's tool declares: the call's own server, whatever the page's hash was at.
+      const byUri = Effect.suspend(() => {
+        const declared = Arr.findFirst(
+          tools,
+          (each) => each.server === server && each.tool === tool,
+        );
+
+        if (Option.isNone(declared)) {
+          return Effect.succeed<McpAppHtmlAnswer>({
+            status: "missing",
+            message: `The server ${server} no longer declares an App for ${tool}`,
           });
+        }
+
+        return options.html({ server, uri: declared.value.uri, callId, conversation }).pipe(
+          Effect.map((answer) => ofTheCallsServer(found.value, answer)),
+          Effect.tap((answer) => {
+            const hash = answer.status === "html" && "hash" in answer ? answer.hash : undefined;
+
+            return Predicate.isString(hash) ? pin(callId, hash) : Effect.void;
+          }),
+        );
+      });
+
+      return (
+        htmlHash === undefined
+          ? byUri
+          : options.html({ server, hash: htmlHash, callId, conversation }).pipe(
+              // Evicted from the host, or never kept there: the mount reads it again.
+              Effect.filterOrElse(
+                (answer) => answer.status !== "missing",
+                () => byUri,
+              ),
+              Effect.map((answer) => ofTheCallsServer(found.value, answer)),
+            )
+      ).pipe(Effect.map(withOrigin));
     });
 
   const copiesFor: McpAppsService["copiesFor"] = (callIds) => {
@@ -470,6 +582,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     tools: Effect.sync(() => tools),
     mount,
     html,
+    pageOf,
     copiesFor,
     adopt,
   };

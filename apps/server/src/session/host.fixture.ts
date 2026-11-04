@@ -121,6 +121,7 @@ import * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
 import { mcpHostName } from "../mcp/name.ts";
+import { viewOrigin } from "../view-host.ts";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { type McpHostAnswers, type McpHostStub, mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
@@ -771,6 +772,8 @@ export class TestSession extends DurableObject {
         this.#mcpTools === undefined
           ? Effect.succeed({ status: "unsupported", message: "No MCP tools" })
           : this.#mcpTools.appHtml(input),
+      // As the Session's: a deployed `prod` stage's, with no label.
+      viewOrigin: (view) => viewOrigin({ hash: view, label: undefined, local: false }),
     });
 
     return this.#apps;

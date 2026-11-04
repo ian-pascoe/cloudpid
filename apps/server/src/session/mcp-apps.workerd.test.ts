@@ -385,6 +385,8 @@ describe("an MCP App call over the Session's socket", () => {
             server: "docs",
             tool: "app",
             uri: URI,
+            // The tool's own schema, for the View's `toolInfo`.
+            inputSchema: { type: "object" },
             visibility: ["model", "app"],
           },
           {
@@ -392,6 +394,7 @@ describe("an MCP App call over the Session's socket", () => {
             server: "docs",
             tool: "hidden",
             uri: URI,
+            inputSchema: { type: "object" },
             visibility: ["app"],
           },
         ],
@@ -428,6 +431,24 @@ describe("an MCP App call over the Session's socket", () => {
 
     client.send({ type: "mcp_app_html", id: "html-none", hash: "sha256-not-pinned" });
     expect(await client.answer("html-none")).toMatchObject({ result: { status: "missing" } });
+
+    // By the call, the page is the record's own server's, with the origin its View is served on.
+    client.send({ type: "mcp_app_html", id: "html-call", callId: entry.callId });
+
+    const byCall = await client.answer("html-call");
+
+    expect(byCall).toMatchObject({
+      result: { status: "html", hash: entry.htmlHash, html: PAGE, view: expect.any(String) },
+    });
+    expect(JSON.stringify(byCall)).toMatch(
+      /"origin":"https:\/\/[a-z2-7]{26}(--[a-z0-9-]+)?\.ianpascoe\.app"|"origin":"http:\/\/127.0.0.1:1338"/,
+    );
+
+    client.send({ type: "mcp_app_html", id: "html-call-none", callId: "nope" });
+    expect(await client.answer("html-call-none")).toMatchObject({ result: { status: "missing" } });
+
+    client.send({ type: "mcp_app_html", id: "html-neither" });
+    expect(await client.answer("html-neither")).toMatchObject({ result: { status: "missing" } });
   });
 
   it("sends a client with no App tools an empty list, and a watch no App calls", async () => {

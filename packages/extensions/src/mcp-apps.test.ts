@@ -12,7 +12,7 @@ import {
   NoAppHtml,
   TimedOut,
 } from "@cloudpid/mcp/types";
-import type { McpAppDraft, McpAppTool } from "@cloudpid/protocol";
+import { MAX_MCP_APP_SCHEMA_CHARS, type McpAppDraft, type McpAppTool } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { describe, expect, it } from "vitest";
@@ -65,10 +65,13 @@ const recorder = (options: { readonly fails?: boolean } = {}) => {
   return { apps, drafts, told };
 };
 
-const completed = (value: JsonObject, htmlHash?: string) =>
+const completed = (value: JsonObject, htmlHash?: string, viewHash?: string) =>
   htmlHash === undefined
     ? McpHostCompleted.make({ result: { kind: "inline", value } })
-    : McpHostCompleted.make({ result: { kind: "inline", value }, app: { htmlHash } });
+    : McpHostCompleted.make({
+        result: { kind: "inline", value },
+        app: viewHash === undefined ? { htmlHash } : { htmlHash, viewHash },
+      });
 
 describe("an app-only tool", () => {
   it("is never declared to the model, in any Exposure, and tools.offered cannot lift it", async () => {
@@ -105,6 +108,30 @@ describe("an app-only tool", () => {
     expect(first?.tools).not.toContain("mcp__docs_site__refresh");
   });
 
+  it("tells the page each App tool's input schema for the View's toolInfo, within its bounds", async () => {
+    const schema = { type: "object", properties: { slug: { type: "string" } } };
+    const huge = { type: "object", description: "x".repeat(MAX_MCP_APP_SCHEMA_CHARS) };
+
+    const host = fakeMcpHost([
+      appServer({
+        tools: [
+          { name: "page", _meta: { ui: { resourceUri: PAGE } }, inputSchema: schema },
+          { name: "big", _meta: { ui: { resourceUri: PAGE } }, inputSchema: huge },
+          { name: "none", _meta: { ui: { resourceUri: PAGE } } },
+        ],
+      }),
+    ]);
+
+    const { apps, told } = recorder();
+
+    await build(makeMcpTools(host.client, undefined, { apps }));
+
+    const schemas = told.at(-1)?.map((tool) => tool.inputSchema);
+
+    // The one that fits, not the one over the cap, and the host's own default for the one that declares none.
+    expect(schemas).toEqual([schema, undefined, { type: "object" }]);
+  });
+
   it("is still an App tool the page is told of, with its visibility", async () => {
     const host = fakeMcpHost([appServer(), { ...appServer(), name: "off", state: "disabled" }]);
     const { apps, told } = recorder();
@@ -118,6 +145,7 @@ describe("an app-only tool", () => {
         server: "Docs-Site",
         tool: "page",
         uri: PAGE,
+        inputSchema: { type: "object" },
         visibility: ["model", "app"],
       },
       {
@@ -125,6 +153,7 @@ describe("an app-only tool", () => {
         server: "Docs-Site",
         tool: "refresh",
         uri: PAGE,
+        inputSchema: { type: "object" },
         visibility: ["app"],
       },
       {
@@ -132,6 +161,7 @@ describe("an app-only tool", () => {
         server: "Docs-Site",
         tool: "both",
         uri: PAGE,
+        inputSchema: { type: "object" },
         visibility: ["model", "app"],
       },
     ]);
@@ -193,6 +223,12 @@ describe("the record of an App call", () => {
     });
     // The model's own result is as it was.
     expect(await session.texts("toolResult")).toEqual(["A page"]);
+  });
+
+  it("pins what named its server's origin, when the host said, so a shadowed server is not mistaken for it", async () => {
+    const { drafts } = await callPage(async () => completed({ content: [] }, "hash-1", "view-1"));
+
+    expect(drafts[0]).toMatchObject({ htmlHash: "hash-1", viewHash: "view-1" });
   });
 
   it("records an isError result too, and no call that did not complete", async () => {
@@ -366,6 +402,22 @@ describe("the page of an App record", () => {
         ctx: expect.objectContaining({ origin: "app", callId: "c1", conversation: "1" }),
       },
     ]);
+  });
+
+  it("carries the host's view hash on, for the Session to build the page's origin", async () => {
+    const { host, tools } = await started();
+
+    host.answer(async () =>
+      McpHostAppHtml.make({ ...html, viewHash: "abcdefghijklmnopqrstuvwxyz" }),
+    );
+
+    expect(await Effect.runPromise(tools.appHtml(input))).toEqual({
+      status: "html",
+      hash: "h1",
+      html: "<p>hi</p>",
+      meta: { prefersBorder: true },
+      view: "abcdefghijklmnopqrstuvwxyz",
+    });
   });
 
   it("says missing for a page the host no longer keeps, and unsupported for a host that cannot serve it", async () => {

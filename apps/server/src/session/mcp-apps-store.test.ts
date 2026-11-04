@@ -8,7 +8,10 @@ import {
   MAX_MCP_APP_STUBS,
   type McpAppDraft,
   type McpAppEntry,
+  type McpAppHtmlAnswer,
+  type McpAppTool,
 } from "@cloudpid/protocol";
+import type { McpAppHtmlInput } from "@cloudpid/extensions/mcp";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -275,6 +278,242 @@ describe("the Session's App records", () => {
     expect(asked).toEqual([
       { server: "docs", hash: "hash-call-1", callId: "call-1", conversation: "1" },
     ]);
+  });
+
+  it("puts the origin of the page's View on its answer, built from the host's view and never from anything the page sends", async () => {
+    const bare = { status: "html" as const, hash: "hash-call-1", html: "<p>hi</p>", meta: {} };
+
+    const page = (view?: string): McpAppHtmlAnswer =>
+      view === undefined ? bare : { ...bare, view };
+
+    const answered = async (
+      answer: McpAppHtmlAnswer,
+      viewOrigin: (view: string) => string,
+    ): Promise<McpAppHtmlAnswer> => {
+      const store = sessionMcpApps({
+        storage: memory(),
+        sockets: { getWebSockets: () => [] },
+        html: () => Effect.succeed(answer),
+        viewOrigin,
+      });
+
+      const service = Effect.runSync(
+        Effect.service(McpApps).pipe(
+          Effect.provide(Layer.provide(store.layer, fakeSecrets("s3cret"))),
+        ),
+      );
+
+      await run(service.put(draft("call-1", 1)));
+
+      return run(service.html("hash-call-1"));
+    };
+
+    const origin = (view: string) => `https://${view}.ianpascoe.app`;
+
+    expect(await answered(page("abcd"), origin)).toEqual({
+      ...page("abcd"),
+      origin: "https://abcd.ianpascoe.app",
+    });
+
+    // A host that gave no view (an older one, or a source it does not know) gives the page no origin to be shown at.
+    expect(await answered(page(), origin)).toEqual(page());
+
+    // An origin that cannot be built (a bad label) leaves none, rather than failing the page.
+    expect(
+      await answered(page("abcd"), () => {
+        throw new Error("no host");
+      }),
+    ).toEqual(page("abcd"));
+
+    expect(await answered({ status: "failed", message: "no" }, origin)).toEqual({
+      status: "failed",
+      message: "no",
+    });
+  });
+
+  describe("the page of a call's record", () => {
+    const page = (hash: string): McpAppHtmlAnswer => ({
+      status: "html",
+      hash,
+      html: "<p>hi</p>",
+      meta: {},
+      view: "abcd",
+    });
+
+    /** A call's draft whose page the host had not kept when it ended. */
+    const noHash = (callId: string): McpAppDraft => {
+      const { htmlHash: _pinned, ...rest } = draft(callId, 1);
+
+      return rest;
+    };
+
+    const docsPage: McpAppTool = {
+      name: "mcp__docs__page",
+      server: "docs",
+      tool: "page",
+      uri: "ui://docs/page",
+      visibility: ["model", "app"],
+    };
+
+    /** A store whose host answers `answer` and notes what it was asked. */
+    const hosted = (answer: (input: McpAppHtmlInput) => McpAppHtmlAnswer) => {
+      const asked: McpAppHtmlInput[] = [];
+
+      const store = sessionMcpApps({
+        storage: memory(),
+        sockets: { getWebSockets: () => [] },
+        html: (input) =>
+          Effect.sync(() => {
+            asked.push(input);
+
+            return answer(input);
+          }),
+        viewOrigin: (view) => `https://${view}.ianpascoe.app`,
+      });
+
+      const service = Effect.runSync(
+        Effect.service(McpApps).pipe(
+          Effect.provide(Layer.provide(store.layer, fakeSecrets("s3cret"))),
+        ),
+      );
+
+      return { asked, service, store };
+    };
+
+    it("is read through the pinned hash, for the call's own server, with its origin", async () => {
+      const { asked, service } = hosted((input) => page("hash" in input ? input.hash : "x"));
+
+      await run(service.put(draft("call-1", 1)));
+
+      expect(await run(service.pageOf("call-1"))).toEqual({
+        ...page("hash-call-1"),
+        origin: "https://abcd.ianpascoe.app",
+      });
+      expect(asked).toEqual([
+        { server: "docs", hash: "hash-call-1", callId: "call-1", conversation: "1" },
+      ]);
+    });
+
+    it("is read by the URI the tool declares when the record pins no hash, and then pinned to the record", async () => {
+      const { asked, service, store } = hosted((input) => page("uri" in input ? "found" : "x"));
+
+      store.service.setTools([docsPage]);
+      await run(service.put(noHash("call-1")));
+
+      expect((await run(service.mount("call-1"))).status).toBe("record");
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "html", hash: "found" });
+      expect(asked).toEqual([
+        { server: "docs", uri: "ui://docs/page", callId: "call-1", conversation: "1" },
+      ]);
+
+      // The mount after it is by the hash, and the record keeps everything else it had.
+      expect(await run(service.mount("call-1"))).toMatchObject({
+        status: "record",
+        record: {
+          htmlHash: "found",
+          arguments: { text: "hi" },
+          result: { content: [expect.anything()] },
+        },
+      });
+      expect(await run(service.list(conversation(1)))).toEqual([
+        expect.objectContaining({ callId: "call-1", htmlHash: "found" }),
+      ]);
+
+      await run(service.pageOf("call-1"));
+      expect(asked.at(-1)).toEqual({
+        server: "docs",
+        hash: "found",
+        callId: "call-1",
+        conversation: "1",
+      });
+    });
+
+    it("reads again by the URI when the host no longer keeps the pinned page", async () => {
+      const { asked, service, store } = hosted((input) =>
+        "hash" in input ? { status: "missing", message: "evicted" } : page("again"),
+      );
+
+      store.service.setTools([docsPage]);
+      await run(service.put(draft("call-1", 1)));
+
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "html", hash: "again" });
+      expect(Arr.map(asked, (input) => ("hash" in input ? "hash" : "uri"))).toEqual([
+        "hash",
+        "uri",
+      ]);
+    });
+
+    it("is missing for a call it has no record of", async () => {
+      const { asked, service } = hosted(() => page("x"));
+
+      await run(service.put(draft("call-1", 1)));
+      expect(await run(service.pageOf("nope"))).toMatchObject({ status: "missing" });
+      expect(asked).toEqual([]);
+    });
+
+    it("is missing, never read, when no tool of the server declares the App any more", async () => {
+      const { asked, service, store } = hosted(() => page("x"));
+
+      store.service.setTools([{ ...docsPage, server: "other" }]);
+      await run(service.put(noHash("call-1")));
+
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "missing" });
+      expect(asked).toEqual([]);
+    });
+
+    it("is unavailable, and pins nothing, when the call's server has been shadowed by another of the same name", async () => {
+      // The call ran on the Repo's `docs` (origin abcd); an owner's `docs` has since taken its name (origin zzzz).
+      const { asked, service, store } = hosted((input) =>
+        "hash" in input
+          ? { status: "missing", message: "not kept here" }
+          : { ...page("newer"), view: "zzzz" },
+      );
+
+      store.service.setTools([docsPage]);
+      await run(service.put({ ...noHash("call-1"), viewHash: "abcd" }));
+
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "unavailable" });
+      expect(JSON.stringify(await run(service.mount("call-1")))).not.toContain("newer");
+      expect(Arr.map(asked, (input) => ("uri" in input ? "uri" : "hash"))).toEqual(["uri"]);
+    });
+
+    it("is unavailable for a pinned page the host answers for another server's origin, and by hash too", async () => {
+      const { service } = hosted((input) => ({
+        ...page("hash" in input ? input.hash : "x"),
+        view: "zzzz",
+      }));
+
+      await run(service.put({ ...draft("call-1", 1), viewHash: "abcd" }));
+
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "unavailable" });
+      expect(await run(service.html("hash-call-1"))).toMatchObject({ status: "unavailable" });
+    });
+
+    it("serves a page for a record whose viewHash is still its server's, and for one that pins none", async () => {
+      const { service } = hosted((input) => page("hash" in input ? input.hash : "x"));
+
+      await run(service.put({ ...draft("call-1", 1), viewHash: "abcd" }));
+      await run(service.put(draft("call-2", 1)));
+
+      expect(await run(service.pageOf("call-1"))).toMatchObject({ status: "html" });
+      expect(await run(service.pageOf("call-2"))).toMatchObject({ status: "html" });
+    });
+
+    it("pins nothing when the host fails, and passes its reason on", async () => {
+      const { service, store } = hosted(() => ({ status: "failed", message: "server said no" }));
+
+      store.service.setTools([docsPage]);
+      await run(service.put(noHash("call-1")));
+
+      expect(await run(service.pageOf("call-1"))).toEqual({
+        status: "failed",
+        message: "server said no",
+      });
+      const mounted = await run(service.mount("call-1"));
+
+      expect(mounted).toMatchObject({ status: "record" });
+      expect(JSON.stringify(mounted)).not.toContain("htmlHash");
+    });
   });
 
   it("copies the records of the calls a Fork holds, and those nested in them, and a stub as a stub", async () => {

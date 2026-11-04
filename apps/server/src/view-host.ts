@@ -54,3 +54,59 @@ export const appOriginOf = (host: string): string | undefined => {
 
   return label === undefined ? appOrigin("prod") : labelOrigin(label);
 };
+
+/** The port the App sandbox is served on under `alchemy dev`: a second local port, beside the main Worker's 1337. */
+export const LOCAL_SANDBOX_PORT = 1338;
+
+/**
+ * The one origin every App View has under `alchemy dev`: no hash, no label, a shared origin. Its host is `127.0.0.1`, not
+ * `localhost`: cookies are not scoped by port, so a View at `localhost:1338` would share the owner's cookie jar with the
+ * app at `localhost:1337` and Vite's `localhost:5173`; another host name makes it cross-site to both.
+ */
+export const LOCAL_SANDBOX_ORIGIN = `http://127.0.0.1:${LOCAL_SANDBOX_PORT}`;
+
+/**
+ * The app origins under `alchemy dev`: the main Worker's (workerd) and Vite's, the two a page is served from there. The
+ * local sandbox frames only these, as the deployed one frames only the origin its hostname names.
+ */
+export const LOCAL_APP_ORIGINS: ReadonlyArray<string> = [
+  "http://localhost:1337",
+  "http://localhost:5173",
+];
+
+/** The sandbox Worker's var that puts it in local mode: set by the stack under `alchemy dev` only, never on a deployed stage. */
+export const SANDBOX_LOCAL_VAR = "CLOUDPID_APP_SANDBOX_LOCAL";
+
+/**
+ * The app origin the local sandbox frames for `requested`, the origin of the page that asks (`?host=`): that one when it
+ * is one of {@link LOCAL_APP_ORIGINS}, else none. A local sandbox is not asked to trust any other origin.
+ */
+export const localAppOriginOf = (requested: string | null): string | undefined =>
+  requested !== null && LOCAL_APP_ORIGINS.includes(requested) ? requested : undefined;
+
+/**
+ * The origin an App View of `hash` is served on (docs/architecture/mcp-apps.md → The App sandbox): `https://<viewHost>`,
+ * from the deploy-time `label` of a non-prod stage (undefined on `prod`), never from a request's `Host`. Under
+ * `alchemy dev` (`local`) every View shares {@link LOCAL_SANDBOX_ORIGIN}. Throws for a hash or a label that does not make a
+ * host the sandbox parses (`stageLabel`'s output is one). A label of `prod` is a non-prod stage's, as `appOriginOf` reads it.
+ */
+export const viewOrigin = (input: {
+  readonly hash: string;
+  readonly label: string | undefined;
+  readonly local: boolean;
+}): string => {
+  if (input.local) return LOCAL_SANDBOX_ORIGIN;
+
+  const host =
+    input.label === undefined
+      ? `${input.hash}.${APP_DOMAIN}`
+      : `${input.hash}--${input.label}.${APP_DOMAIN}`;
+
+  if (!HASH_PATTERN.test(input.hash) || appOriginOf(host) === undefined) {
+    throw new Error(
+      `No App View host for hash ${JSON.stringify(input.hash)} and label ${JSON.stringify(input.label)}.`,
+    );
+  }
+
+  return `https://${host}`;
+};

@@ -926,7 +926,14 @@ export const sessionSocketsLayer = (
           case "mcp_app_mount":
             return mcpApps.mount(message.callId);
           case "mcp_app_html":
-            return mcpApps.html(message.hash);
+            if (message.callId !== undefined) return mcpApps.pageOf(message.callId);
+
+            return message.hash === undefined
+              ? Effect.succeed<McpAppHtmlAnswer>({
+                  status: "missing",
+                  message: "The message names neither a call nor a page",
+                })
+              : mcpApps.html(message.hash);
           case "viewed_set":
             return viewed
               .set({ repo: message.repo, pull: message.pull, path: message.path }, message.blob)

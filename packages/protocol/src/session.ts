@@ -614,13 +614,17 @@ export const McpAppMount = Schema.Struct({
 });
 
 /**
- * Ask for the page of an App record's `htmlHash`: answered with an `McpAppHtmlAnswer`. The Session serves it through the
- * host's `ui/html`, only for a hash some record pins, and only when the host lists `app_html`.
+ * Ask for the page of an App record (`docs/architecture/mcp-apps.md` → Socket messages): answered with an `McpAppHtmlAnswer`.
+ * With `callId`, the page of that call's record, for the record's own server: through its pinned `htmlHash`, or, when the
+ * record pins none or the host no longer keeps it, read by the `ui://` resource the server's tool declares, which the
+ * Session then pins to the record (the first mount's read, D4). With `hash` alone, the page of the newest record that pins
+ * it, for that record's server. Only when the host lists `app_html`. A message with neither is answered `missing`.
  */
 export const McpAppHtml = Schema.Struct({
   type: Schema.Literal("mcp_app_html"),
   id: CommandId,
-  hash: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+  hash: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY))),
+  callId: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY))),
 });
 
 /** Client → server. */
