@@ -19,6 +19,9 @@ import {
 } from "@earendil-works/pi-durable";
 import type { McpHostClientService } from "./client.ts";
 import type { McpCallOrigin } from "./exchange.ts";
+import { reporterToCreate, startTurn } from "../subagents/tasks.ts";
+import { ROOT_AGENT } from "../subagents/ids.ts";
+import { runs, SubagentsDoc } from "../subagents/state.ts";
 import { spillTo } from "./spill.ts";
 import {
   cancelDue,
@@ -114,6 +117,7 @@ const whenIdle = async (runtime: Runtime, id: ConversationId, context: Context) 
 /** The follower task over the Session's host client, origin, options and result pool. */
 export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
   const { client, origin, tasks, pool } = deps;
+  const reporter = reporterToCreate();
   const timing = tasks.timing ?? {};
   const cancelGrace = timing.cancelGraceMs ?? MCP_TASK_CANCEL_GRACE_MS;
 
@@ -376,10 +380,42 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         }, context);
       }),
 
-      // The root conversation has no reporter of its own: the entry is submitted to it, once, by its request ID.
+      // The root conversation has no reporter of its own: the entry is submitted to it, once, by its request ID. A
+      // subagent's is a turn of its own, started in the commit that ends this phase, so a restart starts it once.
       post: noting(async (task, runtime, context) => {
         const { handle } = task.input;
         const record = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle];
+
+        if (record !== undefined && record.agent !== ROOT_AGENT) {
+          await runtime.commit(async (tx): Promise<Next> => {
+            const doc = await tx.doc(SubagentsDoc);
+
+            // Deleted since, or its ID taken by another agent (ADR-0040): the turn would not be the agent that started it.
+            if (!runs(doc, record.agent, record.conversation)) return done;
+
+            await startTurn(
+              tx,
+              doc,
+              {
+                agentId: record.agent,
+                content: endedText(
+                  record,
+                  runtime.now(),
+                  pool.keptUntil(handle) ??
+                    (record.end?.at ?? runtime.now()) + 7 * 24 * 3600 * 1000,
+                ),
+                whenBusy: "followUp",
+                from: handle,
+              },
+              runtime.now(),
+              reporter,
+            );
+
+            return done;
+          }, context);
+
+          return;
+        }
 
         const conversation =
           record === undefined

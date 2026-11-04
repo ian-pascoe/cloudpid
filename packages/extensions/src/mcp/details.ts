@@ -130,7 +130,8 @@ export type McpDetails = {
     | "mcp_task_failed"
     | "mcp_task_cancelled"
     | "mcp_task_unknown"
-    | "mcp_task_stopped";
+    | "mcp_task_stopped"
+    | "mcp_task_background";
   readonly cut?: "host_lost" | "engine_lost";
   /** The questions the server asked during the call, answered; absent when it asked none. */
   readonly elicitation?: Array<McpElicitationDetail>;

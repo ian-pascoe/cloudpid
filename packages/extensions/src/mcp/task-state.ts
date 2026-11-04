@@ -98,8 +98,9 @@ export type McpTaskRecord = {
   conn: string;
   identity?: string;
   source?: { kind: string; slug?: string };
-  /** Only `http` yet: stdio tasks come with #494. */
   transport: "http";
+  /** Made by a `codemode` script's nested call: its end is delivered to the script's conversation like any other. */
+  nested?: boolean;
   /** The MCP sign-in id of the token the task was started with. */
   signIn?: string;
   conversation: ConversationId;

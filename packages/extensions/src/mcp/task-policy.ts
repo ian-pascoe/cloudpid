@@ -209,11 +209,18 @@ export const sizeText = (bytes: number): string =>
       : `${Math.round(bytes / (1024 * 1024))} MB`;
 
 /** What the model reads when a call detaches, after its window of `windowMs`. */
-export const detachedText = (record: McpTaskRecord): string =>
-  `${record.server}'s ${record.modelTool} runs as MCP task ${record.handle} and is still ${
+export const detachedText = (record: McpTaskRecord): string => {
+  const standing = `${record.server}'s ${record.modelTool} runs as MCP task ${record.handle} and is still ${
     record.status === "input_required" ? "waiting for input" : "working"
-  } after ${durationText(record.windowMs)}. It goes on in the background and you are told when it ends. ` +
-  `mcp_task_wait waits for it now (task "${record.handle}"), mcp_task_cancel stops it, mcp_tasks lists your MCP tasks.`;
+  } after ${durationText(record.windowMs)}.`;
+
+  // A script's call has no result to wait for: it ends with this, and the conversation is told when the task does.
+  return record.nested === true
+    ? `${standing} This call returns without its result, and the task goes on in the background: the conversation is told when it ends. ` +
+        `mcp_task_wait waits for it (task "${record.handle}"), mcp_task_cancel stops it, mcp_tasks lists the conversation's MCP tasks; tool_search loads them.`
+    : `${standing} It goes on in the background and you are told when it ends. ` +
+        `mcp_task_wait waits for it now (task "${record.handle}"), mcp_task_cancel stops it, mcp_tasks lists your MCP tasks.`;
+};
 
 /** The header of the entry that tells the agent a task ended: cloudpid's words only, never the server's text. */
 export const endedHeader = (record: McpTaskRecord, now: number): string => {

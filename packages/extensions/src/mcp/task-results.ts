@@ -271,7 +271,12 @@ const valueOf = async (
 export const completedResult = async (
   record: McpTaskRecord,
   state: Pick<McpHostTaskState, "result" | "structuredOutput">,
-  call: { readonly spill: Spill; readonly signal?: AbortSignal | undefined },
+  call: {
+    readonly spill: Spill;
+    readonly signal?: AbortSignal | undefined;
+    /** A `codemode` script's nested call: its value whole, and no spill. */
+    readonly script?: boolean | undefined;
+  },
   background: boolean,
   details?: McpDetails,
 ): Promise<StoredResult> => {
@@ -288,7 +293,11 @@ export const completedResult = async (
     });
   }
 
-  const context: McpResultContext = { kind: "model", details: base, spill: call.spill };
+  const context: McpResultContext =
+    call.script === true
+      ? { kind: "script", details: base }
+      : { kind: "model", details: base, spill: call.spill };
+
   const structured: McpStructuredOutput | undefined = state.structuredOutput;
 
   return valueOf(state.result, base, call.signal, (value) => resultFor(value, structured, context));

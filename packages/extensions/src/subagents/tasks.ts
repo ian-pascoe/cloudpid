@@ -95,6 +95,13 @@ export const withHandBack = (text: string, handBack: string | undefined): string
 /** The reporter task as the extension installs it (`reporterWith`). */
 export type ReporterTask = Task<ReporterInput, ReporterState, null, object>;
 
+/**
+ * A reporter task to create turns with, for a task of another extension that starts one (`startTurn`; an MCP task's
+ * follower delivers its end to a subagent so). Creating a task needs only its definition's name, version and initial
+ * state, so this one, with no hand-back line, makes the turn the installed reporter (`reporterWith`) then carries.
+ */
+export const reporterToCreate = (): ReporterTask => reporterWith(() => Promise.resolve(undefined));
+
 type ReporterState =
   | { phase: "deliver" }
   /** Hold `report` until the parent is idle; `round` counts the times it was found busy again. */
