@@ -334,6 +334,13 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         }
 
         const outcome = await pollOnce(client, origin, record, runtime.signal, tasks.redact);
+
+        // A cancel is committed before it is sent, so one that made the server answer `cancelled` is on the record by now,
+        // though not on the copy this poll began with: without it the end would read as the server's own and start a Run.
+        const cancel = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle]?.cancel;
+
+        if (cancel !== undefined) record = { ...record, cancel };
+
         const decision = decide(record, outcome, runtime.now(), timing);
 
         if (decision.end !== undefined) {

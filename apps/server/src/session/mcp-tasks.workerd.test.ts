@@ -72,6 +72,10 @@ type Wire = {
   ignored: number;
   /** Never answer `tasks/cancel`: the request hangs, as one to a server that has stopped responding does. */
   hangCancel: boolean;
+  /** Hold each `tasks/get` until this settles, as a slow server or network does; it is then answered as the server stands. */
+  holdGet?: Promise<void> | undefined;
+  /** The `tasks/get` held so far. */
+  held: number;
 };
 
 const rpcMethodOf = async (request: Request): Promise<string | undefined> => {
@@ -90,13 +94,25 @@ const open = async (timing: Record<string, number> = TIMING, name = "mcp", appUr
   const environment = `env-${counter++}`;
   const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
   const server = modernTaskServer(appUri === undefined ? {} : { appUri });
-  const wire: Wire = { unreachable: false, ignoreCancel: false, ignored: 0, hangCancel: false };
+
+  const wire: Wire = {
+    unreachable: false,
+    ignoreCancel: false,
+    ignored: 0,
+    hangCancel: false,
+    held: 0,
+  };
 
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     const method = await rpcMethodOf(request);
 
     if (wire.unreachable && method === "tasks/get") throw new TypeError("Network connection lost");
+
+    if (wire.holdGet !== undefined && method === "tasks/get") {
+      wire.held += 1;
+      await wire.holdGet;
+    }
 
     if (wire.hangCancel && method === "tasks/cancel") return new Promise<Response>(() => {});
 
@@ -528,6 +544,46 @@ describe("an MCP task the agent's call started", () => {
 
     expect(server.tasks.get("task-1")?.status).toBe("cancelled");
     expect(callsOf(server, "tools/call")).toBe(1);
+    expect((await requests(stub)).at(-1) ?? "").toContain(
+      "[MCP task notice | task=mcp-task-1 | server=docs | status=cancelled | by=you]",
+    );
+  });
+
+  it("is told in a notice, with no follow-up Run, when a poll that was in flight answers `cancelled` after the agent's cancel", async () => {
+    const opened = await open();
+    const { stub, server, wire } = opened;
+
+    await script(stub, [
+      REPORT({ polls: 1000 }),
+      "It runs in the background.",
+      "call:mcp_task_cancel:" + JSON.stringify({ task: "mcp-task-1" }),
+      "Cancelling it.",
+      "It is cancelled.",
+    ]);
+    await submit(stub, "report");
+    await finishedRuns(stub, 1);
+
+    // The follower's next poll is on the wire, from a record that has no cancel yet; the server answers it only once the
+    // agent's cancel has reached it.
+    let release = () => {};
+
+    wire.holdGet = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await settles(async () => expect(wire.held).toBeGreaterThanOrEqual(1));
+    await submit(stub, "cancel it", "turn-2");
+    await finishedRuns(stub, 2);
+    await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
+    release();
+    await followingNone(stub);
+    await idle(stub);
+
+    // The agent's cancel is the end's cause, so the agent is told in a notice and no Run starts for it.
+    expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(2);
+    expect((await requests(stub)).join("\n")).not.toContain("[MCP task ended");
+
+    await submit(stub, "and?", "turn-3");
+    await finishedRuns(stub, 3);
     expect((await requests(stub)).at(-1) ?? "").toContain(
       "[MCP task notice | task=mcp-task-1 | server=docs | status=cancelled | by=you]",
     );
