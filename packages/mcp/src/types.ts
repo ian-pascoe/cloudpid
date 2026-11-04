@@ -1064,6 +1064,12 @@ export const McpHostRequestContext = Schema.Struct({
    * (`docs/architecture/mcp-server-requests.md` → MCP tasks, Declaration).
    */
   allowTask: Schema.optionalKey(Schema.Boolean),
+  /**
+   * For a `tasks/get`: the status the caller last saw. The host spans the request only when the answer is another status
+   * or an error, and counts the rest (`docs/architecture/mcp-connections.md` → Observability); without it every one is
+   * spanned. Additive and optional: an older host ignores it.
+   */
+  lastStatus: Schema.optionalKey(Schema.String),
   /** What the caller can answer; with the request's `onInput` hook, it says the call may be asked questions. */
   answers: Schema.optionalKey(McpAnswers),
 });

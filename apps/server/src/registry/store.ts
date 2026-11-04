@@ -63,6 +63,8 @@ export type SessionRecord = {
   readonly marks?: MarkedOrigin;
   /** Its subagents as it last reported them, parents first; absent until it first reports (ADR-0024). */
   readonly agents?: ReadonlyArray<SessionAgent>;
+  /** How many MCP tasks it follows in the background, as it last reported them; absent when none. */
+  readonly mcpTasks?: number;
 };
 
 /** An Environment as the Registry lists it (ADR-0016). */
@@ -270,6 +272,8 @@ export type RegistryStore = {
    * the report after its stop lands. It leaves `updatedAt` alone. A Session that is not registered is ignored.
    */
   readonly setSessionAgents: (id: string, agents: ReadonlyArray<SessionAgent>) => void;
+  /** Keep how many MCP tasks a Session follows in the background, as it reported it, replacing the last. */
+  readonly setSessionMcpTasks: (id: string, count: number) => void;
   /** Give a Session the owner's title, replacing any other; null when the Session is not registered. */
   readonly renameSession: (id: string, title: string) => SessionRecord | null;
   /**
@@ -432,6 +436,8 @@ type SessionRow = {
   origin_kind: string | null;
   /** JSON: `SessionAgent[]`, as the Session last reported them; null until it first does. */
   agents: string | null;
+  /** How many MCP tasks the Session last reported following in the background; null until it first does. */
+  mcp_tasks: number | null;
 };
 
 type EnvironmentRow = {
@@ -627,6 +633,8 @@ const toSession = (row: SessionRow): SessionRecord => {
   if (marks !== undefined) full.marks = marks;
 
   if (agents !== undefined) full.agents = agents;
+
+  if (row.mcp_tasks !== null && row.mcp_tasks > 0) full.mcpTasks = row.mcp_tasks;
 
   if (row.importing === 1) full.importing = true;
 
@@ -1131,6 +1139,12 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       PRIMARY KEY (environment, repo)
     ) STRICT`);
   },
+  // 33: how many MCP tasks a Session follows in the background, as it last reported them (`docs/architecture/
+  // mcp-server-requests.md` → MCP tasks, Following, not running): the Session list's "Following n MCP tasks". Null for
+  // every Session stored before, until it next settles and reports.
+  (sql) => {
+    sql.exec("ALTER TABLE sessions ADD COLUMN mcp_tasks INTEGER");
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */
@@ -1471,6 +1485,10 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
 
     setSessionAgents: (id, agents) => {
       sql.exec("UPDATE sessions SET agents = ? WHERE id = ?", JSON.stringify(agents), id);
+    },
+
+    setSessionMcpTasks: (id, count) => {
+      sql.exec("UPDATE sessions SET mcp_tasks = ? WHERE id = ?", count, id);
     },
 
     renameSession: (id, title) => {

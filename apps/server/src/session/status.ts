@@ -30,6 +30,11 @@ export class SessionRegistry extends Context.Service<
     readonly reportAgents: (
       agents: ReadonlyArray<SessionAgent>,
     ) => Effect.Effect<void, ReportError>;
+    /**
+     * Tell the Registry how many MCP tasks the Session follows in the background (`mcpTasks`). A report that fails or
+     * hangs is told again by the host's heartbeat or its next settle.
+     */
+    readonly reportMcpTasks: (count: number) => Effect.Effect<void, ReportError>;
     /** Tell the owner, by Web Push through the Registry, that this Session has something to hear. */
     readonly notify: (event: PushEvent) => Effect.Effect<void, ReportError>;
     /** Whether the Session still lacks a title: it has none, and the owner has not named it. */

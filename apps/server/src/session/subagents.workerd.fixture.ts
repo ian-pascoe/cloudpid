@@ -145,6 +145,7 @@ export class TestSubagentSession extends DurableObject {
                           agents,
                         ]);
                       }),
+                reportMcpTasks: () => Effect.void,
                 notify: () => Effect.void,
                 titleWanted: Effect.succeed(false),
                 setTitle: () => Effect.void,

@@ -13,7 +13,7 @@ import {
   SignInRequired,
   UnknownServer,
 } from "@cloudpid/mcp/types";
-import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { ROOT_CONVERSATION_ID, type TaskId } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { HostLost } from "./mcp/client.ts";
 import {
@@ -66,6 +66,8 @@ const recordIn = (doc: McpTasksState, more: Partial<McpTaskRecord> = {}): McpTas
       conversation: ROOT_CONVERSATION_ID,
       agent: "root",
       callId: `call-${doc.next}`,
+      // SAFETY: a task ID the sweep never reads here.
+      callTask: doc.next as TaskId,
       windowMs: 60_000,
       createdAt: 1_000,
       ttlMs: null,

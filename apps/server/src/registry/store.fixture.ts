@@ -137,6 +137,10 @@ export class TestRegistry extends DurableObject {
     this.#store.setSessionAgents(id, agents);
   }
 
+  setSessionMcpTasks(id: string, count: number): void {
+    this.#store.setSessionMcpTasks(id, count);
+  }
+
   renameSession(id: string, title: string): SessionRecord | null {
     return this.#store.renameSession(id, title);
   }

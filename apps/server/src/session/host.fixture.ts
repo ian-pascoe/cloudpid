@@ -1117,6 +1117,11 @@ export class TestSession extends DurableObject {
                         try: () => this.#reportAgents(agents),
                         catch: (cause) => ReportError.make({ message: String(cause) }),
                       }),
+                    reportMcpTasks: (count) =>
+                      Effect.tryPromise({
+                        try: () => this.#reportMcpTasks(count),
+                        catch: (cause) => ReportError.make({ message: String(cause) }),
+                      }),
                     notify: (event) =>
                       Effect.tryPromise({
                         try: () => this.#notify(event),
@@ -2411,6 +2416,11 @@ export class TestSession extends DurableObject {
     await Effect.runPromise(this.#mcpApps().service.put(draft));
   }
 
+  /** Stop everything, as Stop all and Archive do: every branch and every subagent, background work included. */
+  stopEverything(): Promise<void> {
+    return Effect.runPromise(this.#host.stopEverything);
+  }
+
   /** Stop the root conversation's run, as a client's `abort` does. */
   abortRoot(): Promise<void> {
     return Effect.runPromise(this.#host.abort());
@@ -2847,6 +2857,32 @@ export class TestSession extends DurableObject {
   }
 
   /** The subagents this Session reported to the Registry, oldest first. */
+  /** As `#report`, for the number of MCP tasks the Session follows: recorded for a test to read. */
+  async #reportMcpTasks(count: number): Promise<void> {
+    const { kv } = this.ctx.storage;
+    const mode = kv.get<string>("reportMode");
+
+    if (mode === "failing") throw new Error("Registry is down");
+
+    if (mode === "hanging") await new Promise(() => undefined);
+
+    const registry = kv.get<string>("registry");
+
+    if (registry !== undefined) {
+      await this.env.REGISTRIES.getByName(registry).setSessionMcpTasks(
+        this.ctx.id.name ?? "",
+        count,
+      );
+    }
+
+    kv.put("reportedMcpTasks", [...(kv.get<number[]>("reportedMcpTasks") ?? []), count]);
+  }
+
+  /** The numbers of MCP tasks this Session reported to the Registry, oldest first. */
+  reportedMcpTasks(): ReadonlyArray<number> {
+    return this.ctx.storage.kv.get<number[]>("reportedMcpTasks") ?? [];
+  }
+
   reportedAgents(): ReadonlyArray<ReadonlyArray<SessionAgent>> {
     return this.ctx.storage.kv.get<ReadonlyArray<SessionAgent>[]>("reportedAgents") ?? [];
   }

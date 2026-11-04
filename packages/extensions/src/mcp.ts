@@ -50,6 +50,7 @@ import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
 import { type McpNotices } from "./mcp/notices.ts";
+import { sweepTasks, type TaskSweep } from "./mcp/task-sweep.ts";
 import {
   EMPTY_LISTING,
   introFeaturesOf,
@@ -146,6 +147,8 @@ export { type McpCheckResult, type McpNotices, mcpNotices } from "./mcp/notices.
 export { type McpTasksOptions, type McpTasksTiming } from "./mcp/task-port.ts";
 
 export { type McpTaskStorage, MCP_TASK_POOL_BYTES } from "./mcp/task-results.ts";
+
+export { sweepTasks, type TaskSweep } from "./mcp/task-sweep.ts";
 
 export {
   MCP_TASK_ENDED_KIND,
@@ -315,6 +318,11 @@ export type McpToolsService = {
   readonly appHtml: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
+  /**
+   * The sweep at every wake (`docs/architecture/mcp-server-requests.md` → MCP tasks): cancel the inline tasks whose call is
+   * no longer live, and end their records. Never fails: what could not be swept is swept at the next wake.
+   */
+  readonly sweepTasks: (harness: TaskSweep["harness"]) => Effect.Effect<void>;
   /**
    * Tell `conversation` of the listing as it is if its section was shown another, and finish a broadcast that failed
    * (a request start's check, outside any lock: it never fails, and a failure is logged and tried again by the next).
@@ -713,6 +721,21 @@ export const makeMcpTools = (
     bindNotices: (next) => {
       notices = next;
     },
+    sweepTasks: (harness) =>
+      options.tasks === undefined
+        ? Effect.void
+        : Effect.tryPromise(() =>
+            sweepTasks({ harness, client, origin: latest?.origin ?? {} }),
+          ).pipe(
+            Effect.flatMap((ended) =>
+              ended === 0
+                ? Effect.void
+                : Effect.logInfo(`Ended ${ended} MCP task(s) whose call was gone`),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("The sweep of the MCP tasks failed", cause),
+            ),
+          ),
     notify: (conversation) => Effect.andThen(check(conversation), broadcast),
   };
 };

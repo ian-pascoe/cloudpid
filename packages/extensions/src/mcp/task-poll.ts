@@ -25,7 +25,8 @@ export const taskGet = (record: McpTaskRecord, ctx: McpHostRequestContext): McpH
   op: "tasks/get",
   server: record.server,
   params: { taskId: record.taskId, tool: record.tool, conn: record.conn },
-  ctx,
+  // What this Session last saw, so the host spans only a poll that changed it or failed.
+  ctx: { ...ctx, lastStatus: record.status },
 });
 
 /** The `tasks/cancel` of `record`; the host allows it for a server switched off since. */

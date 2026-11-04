@@ -134,6 +134,8 @@ export type RecordedSpan = {
   readonly traceId: string;
   readonly spanId: string;
   readonly parentId: string | undefined;
+  /** Whether a tracer exports it: a span the host started unsampled is recorded here and goes nowhere. */
+  readonly sampled: boolean;
   readonly attributes: Readonly<Record<string, string | number | boolean>>;
   readonly events: ReadonlyArray<{
     readonly name: string;
@@ -605,6 +607,7 @@ export class TestMcpHost extends DurableObject {
       traceId: span.traceId,
       spanId: span.spanId,
       parentId: Option.getOrUndefined(Option.map(span.parent, (parent) => parent.spanId)),
+      sampled: span.sampled,
       attributes: scalars(Record.fromEntries(span.attributes)),
       events: span.events.map(([name, , attributes]) => ({
         name,

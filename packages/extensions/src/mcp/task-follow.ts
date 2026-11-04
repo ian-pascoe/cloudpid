@@ -211,12 +211,26 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
     }
   };
 
+  /**
+   * Run a phase, then tell the Session its followers changed (`McpTasksOptions.changed`): it may have ended, or gone to
+   * sleep until another time, which the alarm and the Registry's count follow.
+   */
+  const noting =
+    <A extends ReadonlyArray<unknown>>(phase: (...args: A) => Promise<void>) =>
+    async (...args: A): Promise<void> => {
+      try {
+        await phase(...args);
+      } finally {
+        tasks.changed?.();
+      }
+    };
+
   const definition: McpTaskFollower = defineTask<FollowerInput, FollowerState, null>({
     name: MCP_TASK_FOLLOWER,
     version: 1,
     initial: () => ({ phase: "poll" }),
     phases: {
-      poll: async (task, runtime, context) => {
+      poll: noting(async (task, runtime, context) => {
         const { handle } = task.input;
         const doc = await runtime.snapshot(McpTasksDoc, context);
         let record = doc?.tasks[handle];
@@ -327,9 +341,9 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         const until = runtime.now() + Math.min(delay, sooner);
 
         await runtime.sleepUntil(until, { phase: "poll" }, context);
-      },
+      }),
 
-      deliver: async (task, runtime, context) => {
+      deliver: noting(async (task, runtime, context) => {
         const { handle } = task.input;
         const state = await runtime.snapshot(McpTasksDoc, context);
         const record = state?.tasks[handle];
@@ -357,10 +371,10 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
           return { status: "running", checkpoint: { phase: "post" } };
         }, context);
-      },
+      }),
 
       // The root conversation has no reporter of its own: the entry is submitted to it, once, by its request ID.
-      post: async (task, runtime, context) => {
+      post: noting(async (task, runtime, context) => {
         const { handle } = task.input;
         const record = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle];
 
@@ -399,10 +413,10 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         }
 
         await runtime.commit(() => done, context);
-      },
+      }),
 
       // An end the owner or the agent caused: the agent is told, and nothing runs.
-      notice: async (task, runtime, context) => {
+      notice: noting(async (task, runtime, context) => {
         const { handle } = task.input;
         const record = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle];
 
@@ -418,12 +432,12 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         }
 
         await runtime.commit(() => done, context);
-      },
+      }),
     },
 
     // Aborted with its conversation's background work (Stop all, Archive, a deleted conversation): the task is
     // cancelled on the server, the held result is dropped, and the agent is told in a notice that starts no Run.
-    abort: async (task, runtime, context) => {
+    abort: noting(async (task, runtime, context) => {
       const { handle } = task.input;
       const record = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle];
 
@@ -478,7 +492,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           `ended (${record.end.status}), and its result was dropped when the owner stopped everything.`,
         );
       }
-    },
+    }),
   });
 
   return definition;

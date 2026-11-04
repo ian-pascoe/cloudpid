@@ -714,6 +714,7 @@ const fakeRegistries = () => {
       }),
     setSessionStatus: () => Effect.void,
     setSessionAgents: () => Effect.void,
+    setSessionMcpTasks: () => Effect.void,
     setGeneratedTitle: () => Effect.succeed(false),
     createEnvironment: ({ name }) =>
       Effect.sync((): EnvironmentNaming => {

@@ -19,7 +19,13 @@ import {
 } from "@cloudpid/extensions/subagents";
 import { clearTodoList, TodoDoc, type TodoState } from "@cloudpid/extensions/todo";
 import { MAX_ROLLOVER_FOCUS, ownerRollover } from "@cloudpid/extensions/context";
-import { type McpNotices, mcpNotices, type McpSamplingBinding } from "@cloudpid/extensions/mcp";
+import {
+  MCP_TASK_FOLLOWER,
+  type McpNotices,
+  mcpNotices,
+  type McpSamplingBinding,
+  type TaskSweep,
+} from "@cloudpid/extensions/mcp";
 import {
   discoverPrompts,
   isPromptSource,
@@ -170,6 +176,7 @@ import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file
 import { cropParts, fitCrops } from "./crops.ts";
 import { type InputProblem, inputProblemOf, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
+import { earliest } from "./wake.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { AgentsReport, sessionAgentsOf } from "./agents-report.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
@@ -296,6 +303,10 @@ const outcomeOf = (settled: ReadonlyArray<SubmissionRecord>): PushEvent | undefi
   return Arr.some(settled, (record) => record.status === "done") ? { kind: "finished" } : undefined;
 };
 
+/** Whether a live task is the follower of an MCP task, which follows rather than works. */
+const isFollower = (task: { readonly record: { readonly kind: string } }): boolean =>
+  task.record.kind === MCP_TASK_FOLLOWER;
+
 /**
  * What the alarm is armed for: `active` while work is live, sleeping tasks included. The host derives it from the live
  * tasks rather than taking pi-durable's `Harness.wake()`, whose `active` leaves a sleeping task out (it gives its time as
@@ -303,7 +314,21 @@ const outcomeOf = (settled: ReadonlyArray<SubmissionRecord>): PushEvent | undefi
  * whose calls `onIdle` must not clear. Without `HarnessOptions.onWake` the Harness keeps a timer for the earliest sleep
  * itself, and the heartbeat's `resume()` wakes a sleep that came due while the object was evicted.
  */
-type Wake = { readonly active: boolean };
+type Wake = {
+  readonly active: boolean;
+  /**
+   * What the live followers of MCP tasks ask (`docs/architecture/mcp-server-requests.md` → MCP tasks, Following, not
+   * running): they are not work, so they leave `active` alone. One that is pending or running keeps the heartbeat
+   * (`beating`); a sleeping one asks to be woken at its `until`; `count` is what the Registry is told.
+   */
+  readonly followers?: Followers;
+};
+
+type Followers = {
+  readonly count: number;
+  readonly beating: boolean;
+  readonly until: number | undefined;
+};
 
 /**
  * The parts of a Durable Object's `ctx.storage` the host uses: its SQLite database, its key-value store and its alarm.
@@ -398,6 +423,11 @@ export type SessionHostMcp<R> = {
    * Called once, before anything resumes.
    */
   readonly watchRuns?: (started: () => void) => void;
+  /**
+   * What the host does at every wake, after the work that is due has resumed (`docs/architecture/mcp-server-requests.md`
+   * → MCP tasks, The record): end the inline MCP tasks whose call is gone. Never fails.
+   */
+  readonly sweep?: (harness: TaskSweep["harness"]) => Effect.Effect<void>;
   /**
    * Tell conversation `conversationId` that the `mcp_servers` listing changed, if its section was shown another one: run
    * after a request start's install, before its message is placed. Never fails.
@@ -1282,12 +1312,28 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * counts through the live tasks it waits on.
    */
   const wake: Effect.Effect<Wake, SessionError> = inspect.pipe(
-    Effect.map(({ tasks }) => ({
-      active: Arr.some(
-        tasks,
-        (task) => task.state.kind !== "blocked" && task.state.kind !== "waiting",
-      ),
-    })),
+    Effect.map(({ tasks }) => {
+      const runnable = (task: (typeof tasks)[number]) =>
+        task.state.kind !== "blocked" && task.state.kind !== "waiting";
+
+      const following = Arr.filter(tasks, isFollower);
+      const working = Arr.filter(tasks, (task) => !isFollower(task));
+      const live = Arr.filter(following, runnable);
+      const sleeping = Arr.filter(live, (task) => task.state.kind === "sleeping");
+
+      return {
+        active: Arr.some(working, runnable),
+        followers: {
+          count: following.length,
+          beating: live.length > sleeping.length,
+          until: earliest(
+            ...Arr.map(sleeping, (task) =>
+              task.state.kind === "sleeping" ? task.state.until : undefined,
+            ),
+          ),
+        },
+      };
+    }),
   );
 
   const armHeartbeat = heartbeat.pipe(
@@ -1319,6 +1365,38 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
               Effect.andThen(
                 Effect.sync(() => {
                   reported = undefined;
+
+                  return false;
+                }),
+              ),
+            ),
+          ),
+        );
+
+  /** How many MCP tasks the Registry was last told this Session follows, by this instance. Unknown at first. */
+  let reportedTasks: number | undefined;
+
+  /**
+   * Tell the Registry how many MCP tasks the Session follows (`mcpTasks`) unless it was just told, and say whether it
+   * has it. Like a status report, a failure leaves it unknown, for the heartbeat or the next settle to tell again.
+   */
+  const reportTasks = (count: number): Effect.Effect<boolean> =>
+    reportedTasks === count
+      ? Effect.succeed(true)
+      : registry.reportMcpTasks(count).pipe(
+          Effect.timeout(options.reportTimeout ?? REPORT_TIMEOUT),
+          Effect.andThen(
+            Effect.sync(() => {
+              reportedTasks = count;
+
+              return true;
+            }),
+          ),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Registry report of MCP tasks failed", cause).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  reportedTasks = undefined;
 
                   return false;
                 }),
@@ -1360,14 +1438,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   /** Read the subagents now, write them if the Registry has them otherwise, and say whether it has them. */
   const settleAgents = Effect.promise(() => agentsReport.settle());
 
-  /** The alarm once no work is live: deleted, unless the object must wake later anyway. */
-  const rest = wakeAt.pipe(
-    Effect.flatMap((at) =>
-      at === undefined
-        ? attempt("deleteAlarm", () => storage.deleteAlarm())
-        : attempt("setAlarm", () => storage.setAlarm(at)),
-    ),
-  );
+  /**
+   * The alarm once no work is live: deleted, unless the object must wake later anyway: for a follower asks the heartbeat
+   * while it is pending or running and its `until` while it sleeps (`Wake.followers`), with what `options.wakeAt` gives.
+   */
+  const rest = (followers: Followers | undefined) =>
+    Effect.all([wakeAt, heartbeat]).pipe(
+      Effect.map(([other, beat]) =>
+        earliest(other, followers?.beating === true ? beat : undefined, followers?.until),
+      ),
+      Effect.flatMap((at) =>
+        at === undefined
+          ? attempt("deleteAlarm", () => storage.deleteAlarm())
+          : attempt("setAlarm", () => storage.setAlarm(at)),
+      ),
+    );
 
   /** The objects of the Session's Subagent Workspaces, as the Subagents document has them. */
   const subagentWorkspaceObjects = async (): Promise<ReadonlyArray<string>> => {
@@ -1402,6 +1487,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         // the subagents a failed write left due, and tells the Workspaces the Session is at work.
         armHeartbeat.pipe(
           Effect.andThen(report("running")),
+          Effect.andThen(
+            next.followers === undefined ? Effect.void : reportTasks(next.followers.count),
+          ),
           Effect.andThen(Effect.sync(() => agentsReport.retry())),
           Effect.andThen(noteWorkspaceActivity),
           Effect.asVoid,
@@ -1409,8 +1497,15 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       : // Report before deleting the heartbeat: an unreported end, or subagents unwritten, keep it, to report again.
         onIdle.pipe(
           Effect.andThen(report("idle")),
-          Effect.flatMap((told) => Effect.map(settleAgents, (written) => told && written)),
-          Effect.flatMap((told) => (told ? rest : armHeartbeat)),
+          Effect.flatMap((told) =>
+            Effect.all([
+              next.followers === undefined
+                ? Effect.succeed(true)
+                : reportTasks(next.followers.count),
+              settleAgents,
+            ]).pipe(Effect.map(([counted, written]) => told && counted && written)),
+          ),
+          Effect.flatMap((told) => (told ? rest(next.followers) : armHeartbeat)),
         );
 
   /** Reconcile the alarm and the Registry with what is live now. */
@@ -1517,6 +1612,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const wakeAndResume = wake.pipe(
     Effect.flatMap(arm),
     Effect.andThen(harness.resume.pipe(Effect.withSpan("session.resume"))),
+    Effect.andThen(options.mcp?.sweep?.(harness.harness) ?? Effect.void),
     Effect.andThen(settleWhenIdle),
     serially,
   );
@@ -3341,8 +3437,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
     alarm: wakeAndResume,
+    // A follower of an MCP task is not work: a conversation that only follows tasks is idle.
     idle: inspect.pipe(
-      Effect.map(({ tasks, submissions }) => tasks.length === 0 && submissions.length === 0),
+      Effect.map(
+        ({ tasks, submissions }) => Arr.every(tasks, isFollower) && submissions.length === 0,
+      ),
     ),
     settle,
     root: Effect.map(root, (conversation) => conversation.id),
@@ -3353,8 +3452,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     navigate: (request) => branches.navigate(request).pipe(Effect.tap(usageChanged)),
     switchBranch: (conversationId) =>
       branches.switchBranch(conversationId).pipe(Effect.tap(usageChanged)),
-    // What stopped reaches the Registry's summary of the subagents at once: an archived Session keeps it.
-    stopEverything: branches.stopEverything.pipe(Effect.andThen(settleAgents), Effect.asVoid),
+    // What stopped reaches the Registry's summary of the subagents at once: an archived Session keeps it, and the MCP
+    // tasks it cancelled are no longer followed.
+    stopEverything: branches.stopEverything.pipe(
+      Effect.andThen(settleAgents),
+      Effect.andThen(settle),
+      Effect.asVoid,
+    ),
     forkSource: forks.forkSource,
     exportEntries: forks.exportEntries,
     importStart: forks.importStart,

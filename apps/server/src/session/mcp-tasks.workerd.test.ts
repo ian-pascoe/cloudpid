@@ -137,6 +137,14 @@ const idle = (stub: DurableObjectStub<TestSession>) =>
     expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
   );
 
+/** The numbers of MCP tasks the Session told the Registry it follows, oldest first. */
+const reportedTasks = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(stub, (instance: TestSession) => instance.reportedMcpTasks());
+
+/** Wait until the Session told the Registry it follows no MCP task: every follower has ended. */
+const followingNone = (stub: DurableObjectStub<TestSession>) =>
+  settles(async () => expect((await reportedTasks(stub)).at(-1)).toBe(0));
+
 const results = (stub: DurableObjectStub<TestSession>) =>
   runInDurableObject(stub, (instance: TestSession) => instance.toolResults());
 
@@ -347,7 +355,8 @@ describe("an MCP task the agent's call started", () => {
     const polls = callsOf(server, "tasks/get");
 
     await new Promise((resolve) => setTimeout(resolve, 800));
-    expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(false);
+    // Following is not work: the Session reads idle, and the follower goes on retrying.
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true);
     expect((await requests(stub)).join("\n")).not.toContain("MCP task ended");
 
     wire.unreachable = false;
@@ -398,7 +407,7 @@ describe("an MCP task the agent's call started", () => {
     await finishedRuns(stub, 1);
     await submit(stub, "cancel it", "turn-2");
     await finishedRuns(stub, 2);
-    await idle(stub);
+    await followingNone(stub);
 
     // The server was asked to cancel; it never did, and cloudpid says so, to the agent, in a notice: no Run.
     expect(wire.ignored).toBe(1);
@@ -429,7 +438,7 @@ describe("an MCP task the agent's call started", () => {
     await finishedRuns(stub, 1);
     await submit(stub, "cancel it", "turn-2");
     await finishedRuns(stub, 2);
-    await idle(stub);
+    await followingNone(stub);
     await submit(stub, "and?", "turn-3");
     await finishedRuns(stub, 3);
 
@@ -450,5 +459,94 @@ describe("an MCP task the agent's call started", () => {
     await runInDurableObject(stub, (instance: TestSession) => instance.abortRoot());
     await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
     await idle(stub);
+  });
+});
+
+/** How many times the Session noted its activity to its Workspaces. */
+const activity = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(
+    stub,
+    (_instance: TestSession, state) => state.storage.kv.get<number>("workspace-activity") ?? 0,
+  );
+
+/** A Session whose first turn detached an MCP task that never ends and whose Run has ended. */
+const following = async () => {
+  const opened = await open();
+
+  await script(opened.stub, [REPORT({ polls: 100_000 }), "It runs in the background.", "Noted."]);
+  await submit(opened.stub, "report");
+  await finishedRuns(opened.stub, 1);
+  await idle(opened.stub);
+
+  return opened;
+};
+
+describe("a Session that only follows an MCP task", () => {
+  it("is idle, tells the Registry how many tasks it follows, and notes no activity", async () => {
+    const { stub, server } = await following();
+
+    await settles(async () => expect(await reportedTasks(stub)).toContain(1));
+    // An alarm keeps it woken, though nothing is working, and it goes on polling without noting activity.
+    expect(
+      await runInDurableObject(stub, (_instance: TestSession, state) => state.storage.getAlarm()),
+    ).not.toBeNull();
+
+    const polls = callsOf(server, "tasks/get");
+    const noted = await activity(stub);
+
+    await settles(async () => expect(callsOf(server, "tasks/get")).toBeGreaterThan(polls + 2));
+    expect(await activity(stub)).toBe(noted);
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true);
+
+    // Once nothing follows, it tells the Registry so.
+    await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
+    await followingNone(stub);
+  });
+});
+
+describe("the lifecycle of a background MCP task", () => {
+  it("is cancelled at the server by Stop all, which tells the agent in a notice and starts no Run", async () => {
+    const { stub, server } = await following();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
+    await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
+    await settles(async () => expect((await reportedTasks(stub)).at(-1)).toBe(0));
+
+    // No Run of its own: the owner heard of the turn's end only.
+    expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(1);
+
+    await submit(stub, "and?", "turn-2");
+    await finishedRuns(stub, 2);
+
+    expect((await requests(stub)).at(-1) ?? "").toContain(
+      "[MCP task notice | task=mcp-task-1 | server=docs | status=cancelled | by=the owner]",
+    );
+    expect(callsOf(server, "tools/call")).toBe(1);
+    await expectNoServerId(stub);
+  });
+
+  it("is cancelled when the Session is deleted", async () => {
+    const { stub, server } = await following();
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.destroy());
+    await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
+  });
+
+  it("is cancelled by Stop all on every branch, the one that is not active included", async () => {
+    const { stub, server } = await following();
+
+    // The Session tree moves to a branch before the turn, leaving the task's branch with its follower.
+    const went = await runInDurableObject(stub, async (instance: TestSession) => {
+      const tree = await instance.tree();
+      const asked = tree.nodes.find((each) => each.role === "user" && each.text === "report");
+
+      return instance.navigate({ entryId: asked?.id ?? 0, position: "before" });
+    });
+
+    expect(went).toHaveProperty("navigated");
+    expect(server.tasks.get("task-1")?.status).toBe("working");
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.stopEverything());
+    await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
   });
 });

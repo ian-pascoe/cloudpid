@@ -650,6 +650,50 @@ describe("an MCP task", () => {
     });
   });
 
+  it("spans a tasks/get that says its last status only when the status changed or it failed, and counts the rest", async () => {
+    const host = await signedIn([granted(TOKEN)]);
+
+    const working = (): typeof McpEngineRequestResult.Encoded => ({
+      kind: "task_state",
+      task: { ...CREATED, status: "working" },
+      fetchedAt: Date.now(),
+      state: {},
+    });
+
+    await host.scriptRequest(urlOf("sentry"), [
+      { result: working(), auth: [false] },
+      { result: working(), auth: [false] },
+      {
+        result: {
+          kind: "task_state",
+          task: { ...CREATED, status: "completed" },
+          result: { kind: "inline", value: { content: [{ type: "text", text: "report" }] } },
+          fetchedAt: Date.now(),
+          state: {},
+        },
+        auth: [false],
+      },
+    ]);
+
+    const polled = (server: string) =>
+      withCtx(taskOp("tasks/get", server), { lastStatus: "working" });
+
+    for (let poll = 0; poll < 3; poll += 1) await host.request(polled("sentry"), {});
+
+    const spans = (await host.spans()).filter(
+      (span) =>
+        span.name === "mcp.request" && span.attributes["op"] === "tasks/get" && span.sampled,
+    );
+
+    // The two polls that saw `working` again are not exported; the one that saw `completed` is, and counts them.
+    expect(spans).toHaveLength(1);
+    expect(spans[0]?.attributes).toMatchObject({
+      "mcp.task.status": "completed",
+      "mcp.task.quiet_polls": 2,
+    });
+    expect(JSON.stringify(spans)).not.toContain("task-1");
+  });
+
   it("answers ServerChanged, sending nothing, when the server's conn is not the one the task started on", async () => {
     const host = await discovered(["search"], entry("docs"));
 

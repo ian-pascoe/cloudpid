@@ -28,6 +28,7 @@ import {
 } from "./task-results.ts";
 import {
   addTask,
+  EMPTY_TASKS,
   MCP_TASK_TOOL_NAMES,
   McpTasksDoc,
   type McpTaskDraft,
@@ -99,6 +100,7 @@ export const startTask = async (
     conversation: api.conversationId,
     agent: "root",
     callId: api.callId,
+    callTask: api.taskId,
     windowMs: start.windowMs,
     createdAt: api.now(),
     ttlMs: task.ttlMs,
@@ -115,11 +117,22 @@ export const startTask = async (
 
   if (task.statusMessage !== undefined) draft.statusMessage = task.statusMessage;
 
-  const handle = await api.commit(async (tx) => {
-    const doc = await tx.doc(McpTasksDoc);
+  let handle: string;
 
-    return taskOfCall(doc, api.callId)?.handle ?? addTask(doc, draft).handle;
-  }, context);
+  try {
+    handle = await api.commit(async (tx) => {
+      const doc = await tx.doc(McpTasksDoc);
+
+      return taskOfCall(doc, api.callId)?.handle ?? addTask(doc, draft).handle;
+    }, context);
+  } catch (error) {
+    // A Session a code update replaced cannot store the record (`docs/architecture/mcp-server-requests.md` → MCP tasks, A
+    // replaced Session): nothing will follow the task, so it is cancelled with the id this call holds in memory, once and
+    // best effort. If that fails too, the server's TTL ends it.
+    await cancelUnrecorded(call, draft);
+
+    throw error;
+  }
 
   await api.memo(TASK, handle, context);
 
@@ -128,6 +141,17 @@ export const startTask = async (
   if (record === undefined) throw new Error("The MCP task's record was not stored");
 
   return record;
+};
+
+/** `tasks/cancel` of a task whose record could not be stored, as a record made of its draft; never fails. */
+const cancelUnrecorded = async (call: TaskCall, draft: McpTaskDraft): Promise<void> => {
+  try {
+    const held = addTask(structuredClone(EMPTY_TASKS), draft);
+
+    await sendCancel(call.client, held, call.origin);
+  } catch {
+    // Best effort: the task is orphaned until the server's TTL.
+  }
 };
 
 /** What the model reads when the call goes on without waiting: the handle and the three tools, loaded with it. */

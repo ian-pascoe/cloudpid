@@ -17,11 +17,11 @@ import {
   NotFound,
   ServerError,
 } from "@cloudpid/mcp/types";
-import type { ToolExecutionApi } from "@earendil-works/pi-durable";
+import type { TaskId, ToolExecutionApi } from "@earendil-works/pi-durable";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Record from "effect/Record";
 import type { Mutable } from "effect/Types";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { open, startOf } from "./mcp.fixture.ts";
 import {
   makeMcpTools,
@@ -32,9 +32,10 @@ import {
 import { type FakeMcpAnswer, type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { recordOfCall, startTask } from "./mcp/task-inline.ts";
 import type { McpToolOptions } from "./mcp/tools.ts";
-import { McpTasksDoc, type McpTasksState } from "./mcp/task-state.ts";
-import { HostLost } from "./mcp/client.ts";
+import { addTask, McpTasksDoc, type McpTasksState } from "./mcp/task-state.ts";
+import { HostLost, type McpHostClientService } from "./mcp/client.ts";
 import { resultPool } from "./mcp/task-results.ts";
+import { sweepTasks } from "./mcp/task-sweep.ts";
 import { answer, call, context, gate } from "./subagents/harness.fixture.ts";
 
 const SECRET = "srv-secret-7";
@@ -217,7 +218,16 @@ const setup = async (
   const toolCalls = () => taskServer.sent.filter((input) => input.op === "tools/call");
   const everything = async () => JSON.stringify(await session.entries());
 
-  return { session, taskServer, storage, submitted, written, toolCalls, everything };
+  return {
+    session,
+    taskServer,
+    storage,
+    submitted,
+    written,
+    toolCalls,
+    everything,
+    client: host.client,
+  };
 };
 
 describe("an MCP task inside the window", () => {
@@ -907,5 +917,182 @@ describe("which calls are offered a task", () => {
     await session.settle();
 
     expect(offers(taskServer)).toEqual([false]);
+  });
+});
+
+describe("a Session a code update replaced", () => {
+  const started = McpHostTaskStarted.make({
+    task: { ...CREATED, status: "working" },
+    conn: "conn-docs",
+  });
+
+  const draft = {
+    server: "docs",
+    tool: "report",
+    modelTool: "mcp__docs__report",
+    windowMs: 60_000,
+  };
+
+  /** A tool API whose storage refuses every write, as a replaced instance's does. */
+  const refusing = () => {
+    const api = {
+      callId: "call-1",
+      // SAFETY: the call's task, which the sweep never reads here.
+      taskId: 7 as TaskId,
+      conversationId: ROOT_CONVERSATION_ID,
+      now: () => 5000,
+      commit: async () => {
+        throw new Error("This Durable Object was replaced");
+      },
+      memo: async () => "",
+      snapshot: async () => undefined,
+    };
+
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: a partial fake of the tool API: `startTask` reads only these members.
+    return api as unknown as ToolExecutionApi;
+  };
+
+  /** What `startTask` reads of a call: its API, context, client and origin. */
+  const replaced = (client: McpHostClientService): Parameters<typeof startTask>[0] =>
+    // SAFETY: `startTask` reads only the call's `api`, `context`, `client` and `origin`.
+    ({ api: refusing(), context, client, origin: {} }) as Parameters<typeof startTask>[0];
+
+  it("sends one best-effort `tasks/cancel` for a task it cannot record, and fails the call as before", async () => {
+    const host = fakeMcpHost([SERVER]);
+    const server = taskHost(10);
+
+    host.answer(server.answerOf);
+
+    const call = replaced(host.client);
+
+    await expect(startTask(call, started, draft)).rejects.toThrow("replaced");
+
+    const cancels = server.sent.filter((input) => input.op === "tasks/cancel");
+
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0]).toMatchObject({
+      params: { taskId: SECRET, tool: "report", conn: "conn-docs" },
+    });
+  });
+
+  it("fails the call with the storage's error when the cancel fails too", async () => {
+    const host = fakeMcpHost([SERVER]);
+
+    const server = taskHost(10, {
+      cancelAnswer: async () =>
+        McpHostCallFailed.make({ error: ServerError.make({ message: "down", code: -32000 }) }),
+    });
+
+    host.answer(server.answerOf);
+
+    const call = replaced(host.client);
+
+    await expect(startTask(call, started, draft)).rejects.toThrow("replaced");
+    expect(server.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+  });
+});
+
+describe("the sweep at a wake", () => {
+  /** Add the records of a call to the Session's document, as a call that was cut off left them. */
+  const leave = async (
+    session: Awaited<ReturnType<typeof setup>>["session"],
+    more: ReadonlyArray<{ readonly background?: boolean; readonly ended?: boolean }>,
+  ) => {
+    await session.harness.commit(async (tx) => {
+      const doc = await tx.doc(McpTasksDoc);
+
+      for (const [index, each] of more.entries()) {
+        const record = addTask(doc, {
+          taskId: `${SECRET}-${index}`,
+          server: "docs",
+          tool: "report",
+          modelTool: "mcp__docs__report",
+          conn: "conn-docs",
+          transport: "http",
+          conversation: ROOT_CONVERSATION_ID,
+          agent: "root",
+          callId: `call-${index}`,
+          // SAFETY: a task that is not live: the call that held it is gone.
+          callTask: (900 + index) as TaskId,
+          windowMs: 60_000,
+          createdAt: 1000,
+          ttlMs: null,
+          status: "working",
+        });
+
+        const stored = doc.tasks[record.handle];
+
+        if (stored === undefined) continue;
+
+        stored.background = each.background === true;
+
+        if (each.ended === true) {
+          stored.end = { status: "completed", by: "server", at: 2000 };
+          stored.status = "completed";
+        }
+      }
+    }, context);
+  };
+
+  it("cancels an inline task whose call is gone and ends its record, once, leaving the others", async () => {
+    const { session, taskServer, client } = await setup(1000);
+
+    await leave(session, [{}, { background: true }, { ended: true }]);
+
+    expect(await sweepTasks({ harness: session.harness, client, origin: {} })).toBe(1);
+
+    const doc = await session.harness.snapshot(McpTasksDoc, context);
+
+    expect(doc?.tasks["mcp-task-1"]).toMatchObject({
+      status: "cancelled",
+      end: { status: "cancelled", by: "stop" },
+      delivery: "none",
+    });
+    expect(doc?.tasks["mcp-task-2"]?.end).toBeUndefined();
+    expect(doc?.tasks["mcp-task-3"]?.end?.status).toBe("completed");
+
+    const cancels = taskServer.sent.filter((input) => input.op === "tasks/cancel");
+
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0]).toMatchObject({ params: { taskId: `${SECRET}-0` } });
+
+    // A second sweep finds nothing to do.
+    expect(await sweepTasks({ harness: session.harness, client, origin: {} })).toBe(0);
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(1);
+  });
+
+  it("leaves an inline task whose call is still live", async () => {
+    const { session, taskServer, client } = await setup(1000, { ...TIMING, windowMs: 5000 });
+
+    const running = session.root
+      .submit({ type: "input", content: "go" }, context)
+      .then((submission) => submission.wait(context));
+
+    await vi.waitFor(async () => expect(await recordNow(session, "mcp-task-1")).toBeDefined());
+
+    expect(await sweepTasks({ harness: session.harness, client, origin: {} })).toBe(0);
+    expect(taskServer.sent.filter((input) => input.op === "tasks/cancel")).toHaveLength(0);
+    expect((await recordNow(session, "mcp-task-1"))?.end).toBeUndefined();
+
+    await session.root.abort(context);
+    await running;
+  });
+
+  it("ends the record even when the server cannot be asked", async () => {
+    const { session, client } = await setup(1000, TIMING, scripted(), {
+      host: {
+        cancelAnswer: async () =>
+          McpHostCallFailed.make({ error: ServerError.make({ message: "down", code: -32000 }) }),
+      },
+    });
+
+    await leave(session, [{}]);
+    expect(await sweepTasks({ harness: session.harness, client, origin: {} })).toBe(1);
+    expect(
+      (await session.harness.snapshot(McpTasksDoc, context))?.tasks["mcp-task-1"]?.end,
+    ).toMatchObject({
+      status: "cancelled",
+      by: "stop",
+    });
   });
 });

@@ -338,6 +338,10 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
           submitted?.(id);
           runStarted?.();
         },
+        changed: () => {
+          options.tasks?.changed?.();
+          runStarted?.();
+        },
       };
     }
 
@@ -439,6 +443,9 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   const watchRuns = (next: () => void) => {
     runStarted = next;
   };
+
+  const sweep = (harness: Parameters<McpToolsService["sweepTasks"]>[0]) =>
+    held === undefined ? Effect.void : held.tools.sweepTasks(harness);
 
   const notify = (conversationId: ConversationId, values: SessionSettingsValues) => {
     const { environment } = values.mcp;
@@ -550,7 +557,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     options.sampling?.bind(binding);
   };
 
-  return { start, reinstall, bind, bindSampling, watchRuns, notify, prompts, appHtml };
+  return { start, reinstall, bind, bindSampling, watchRuns, sweep, notify, prompts, appHtml };
 };
 
 /** What a prompt get came to: the result `use` made, or why it is refused. */

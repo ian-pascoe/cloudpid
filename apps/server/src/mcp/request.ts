@@ -130,6 +130,56 @@ const taskHash = (taskId: string) =>
     ),
   );
 
+/** How many polls of a task (by `taskHash`) went unspanned since its last spanned one; bounded, lost with the object. */
+const quietPolls = new Map<string, number>();
+
+const MAX_COUNTED_TASKS = 1_000;
+
+/**
+ * `tasks/get` as a caller that tells the status it last saw (`ctx.lastStatus`) has it spanned: the span is not sampled,
+ * and one is emitted afterwards only for an answer of another status or an error, with the polls it counts before it
+ * (`docs/architecture/mcp-connections.md` → Observability). The emitted span has no children and states its duration.
+ */
+const spannedByChange =
+  (taskId: string, lastStatus: string) =>
+  <E, R>(effect: Effect.Effect<McpHostRequestResult, E, R>) =>
+    Effect.gen(function* () {
+      const started = yield* Clock.currentTimeMillis;
+
+      const result = yield* effect.pipe(
+        Effect.withSpan("mcp.request", { attributes: { op: "tasks/get" }, sampled: false }),
+      );
+
+      const status = Predicate.isTagged(result, "TaskState") ? result.task.status : undefined;
+      const hash = yield* taskHash(taskId);
+
+      if (status === lastStatus) {
+        if (quietPolls.size >= MAX_COUNTED_TASKS && !quietPolls.has(hash)) quietPolls.clear();
+
+        quietPolls.set(hash, (quietPolls.get(hash) ?? 0) + 1);
+
+        return result;
+      }
+
+      const polls = quietPolls.get(hash) ?? 0;
+
+      quietPolls.delete(hash);
+
+      yield* Effect.void.pipe(
+        Effect.withSpan("mcp.request", {
+          attributes: {
+            op: "tasks/get",
+            "mcp.task": hash,
+            "mcp.task.status": status ?? "error",
+            "mcp.task.quiet_polls": polls,
+            "mcp.task.duration_ms": (yield* Clock.currentTimeMillis) - started,
+          },
+        }),
+      );
+
+      return result;
+    });
+
 /**
  * The page kept under `hash`, marked mounted: the read is the answer, and the mark is upkeep, so a write the storage
  * refuses (a replaced instance) halts background work and never costs the page (`mcp-connections.md` → Deploys).
@@ -545,7 +595,15 @@ export const request = (
 ): Effect.Effect<McpHostRequestResult, never, AppReadServices> => {
   const op = Option.getOrUndefined(decodeOp(input))?.op ?? "";
 
-  return Effect.gen(function* () {
+  // A `tasks/get` that says what the caller last saw is spanned only when that changed or failed.
+  const polled = op === "tasks/get" ? Option.getOrUndefined(decodeRequest(input)) : undefined;
+
+  const lastStatus =
+    polled?.op === "tasks/get" && polled.ctx.lastStatus !== undefined
+      ? { taskId: polled.params.taskId, status: polled.ctx.lastStatus }
+      : undefined;
+
+  const run = Effect.gen(function* () {
     if (!isMcpHostRequestOp(op)) {
       return HostUnsupported.make({ message: `This host does not know the request ${op}`, op });
     }
@@ -562,8 +620,11 @@ export const request = (
     Effect.catchCause(
       orHalt(HostFailed.make({ message: "The MCP host could not read its storage" })),
     ),
-    Effect.withSpan("mcp.request", { attributes: { op } }),
   );
+
+  return lastStatus === undefined
+    ? run.pipe(Effect.withSpan("mcp.request", { attributes: { op } }))
+    : run.pipe(spannedByChange(lastStatus.taskId, lastStatus.status));
 };
 
 /**

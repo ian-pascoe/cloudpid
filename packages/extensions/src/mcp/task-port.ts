@@ -33,6 +33,12 @@ export type McpTasksOptions = {
    * for its notification (`notify-submissions`). Absent: nobody is told.
    */
   readonly submitted?: ((id: SubmissionId) => void) | undefined;
+  /**
+   * Called after each phase of a follower, which may have ended it or moved the time it sleeps to: the host settles, so
+   * the alarm and the Registry's count follow (`docs/architecture/mcp-server-requests.md` → MCP tasks, Following, not
+   * running). Absent: the next settle does.
+   */
+  readonly changed?: (() => void) | undefined;
   /** Where a note for an end the owner caused is written (`McpNotices.write`); absent: no note. */
   readonly write?: McpNotices["write"] | undefined;
   /**

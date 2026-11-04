@@ -337,7 +337,7 @@ export const sessionBranches = (options: BranchesOptions) => {
       );
     }).pipe(inArrivalOrder);
 
-  /** Stop every Session branch, and every subagent below the active one's (all of them). */
+  /** Stop every Session branch, background work included, and every subagent below the active one's (all of them). */
   const stopEverything = Effect.gen(function* () {
     const current = yield* active;
 
@@ -350,7 +350,9 @@ export const sessionBranches = (options: BranchesOptions) => {
 
       yield* attempt("abort", async () => {
         await beforeAbort(id);
-        await (await harness.conversation(id, context))?.abort(context);
+        // Background work too: an MCP task its agent left following is cancelled on every branch (`docs/architecture/
+        // mcp-server-requests.md` → MCP tasks, Lifecycle).
+        await (await harness.conversation(id, context))?.abort(context, { background: true });
       });
     }
   });

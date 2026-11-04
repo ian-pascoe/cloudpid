@@ -189,6 +189,38 @@ describe("the Registry store", () => {
     expect(await registry.listSessions()).toHaveLength(1);
   });
 
+  it("keeps how many MCP tasks a Session follows, absent when none, and ignores a Session it does not know", async () => {
+    const registry = fresh();
+
+    const created = await registry.createSession(
+      { id: "s-1", title: null, workspace: newWorkspace("1a2b3c4d") },
+      1_000,
+    );
+
+    // A Session that never reported follows none, as one that reported none does.
+    expect(created).not.toHaveProperty("mcpTasks");
+
+    await registry.setSessionMcpTasks("s-1", 2);
+    expect(await registry.getSession("s-1")).toEqual({ ...created, mcpTasks: 2 });
+    expect(await registry.listSessions()).toEqual([{ ...created, mcpTasks: 2 }]);
+
+    await registry.setSessionMcpTasks("s-1", 0);
+    expect(await registry.getSession("s-1")).toEqual(created);
+
+    // The last report after its stop is kept for an archived Session too.
+    await registry.archiveSession("s-1", 5_000);
+    await registry.setSessionMcpTasks("s-1", 1);
+    expect(await registry.getSession("s-1")).toEqual({
+      ...created,
+      archivedAt: 5_000,
+      mcpTasks: 1,
+    });
+
+    await registry.setSessionMcpTasks("ghost", 3);
+    expect(await registry.getSession("ghost")).toBeNull();
+    expect(await registry.listSessions()).toHaveLength(1);
+  });
+
   it("refuses to list or write a status it does not know", async () => {
     const registry = fresh();
 
