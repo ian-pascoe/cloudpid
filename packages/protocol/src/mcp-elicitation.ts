@@ -175,8 +175,13 @@ export const McpElicitationRequest = Schema.Struct({
   server: Schema.String,
   /** Where the definition is, for the card's badge; absent when the Session does not know. */
   source: Schema.optionalKey(McpElicitationSource),
-  /** The model-facing name of the tool the call is to (`mcp__<server>__<tool>`). */
+  /** The model-facing name of the tool the call is to (`mcp__<server>__<tool>`); for a prompt send, the prompt's command. */
   tool: Schema.String,
+  /**
+   * The title of the MCP prompt whose send waits for the answer ("getting prompt <title>"): the question was asked during
+   * its `prompts/get`, not a tool's call. A client from before it reads `tool`, the prompt's command.
+   */
+  prompt: Schema.optionalKey(Schema.String),
   /** The server's message, cut and cleaned. */
   message: Schema.String,
   /** A page question's `form` has no fields: the card draws `page` instead. */

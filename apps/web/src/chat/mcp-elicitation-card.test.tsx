@@ -107,6 +107,24 @@ describe("McpElicitationCard", () => {
     expect(markup).not.toContain("call ends in");
   });
 
+  it("says a prompt send's question is from getting the prompt, with a countdown to the get going on", () => {
+    const markup = render(
+      request(FORM, {
+        prompt: "Review PR",
+        tool: "/mcp__github__review",
+        deadline: 5 * 60 * 1000 + 1000,
+      }),
+      false,
+      "reviewer (checks)",
+    );
+
+    expect(markup).toContain("getting prompt Review PR");
+    expect(markup).not.toContain("during");
+    expect(markup).not.toContain("subagent");
+    expect(markup).toContain("github&#x27;s prompt goes on without an answer in 5:00");
+    expect(markup).not.toContain("call ends in");
+  });
+
   it("draws a widget per kind, prefills defaults and marks required fields", () => {
     const markup = render(request(FORM));
 

@@ -32,7 +32,7 @@ import {
 } from "../session/atoms.ts";
 import { useShownSessionId } from "./conversation.ts";
 import { useNow } from "./mcp-elicitation-card.tsx";
-import { countdown, sourceLabel } from "./mcp-elicitation-form.ts";
+import { endsLine, McpOriginLine } from "./mcp-origin-line.tsx";
 import { SamplingAsked } from "./mcp-sampling-asked.tsx";
 import { requestCardId } from "./request-anchor.ts";
 
@@ -106,7 +106,6 @@ export const McpSamplingCard = ({
   const [role, setRole] = useState(request.role);
   const now = useNow(fixedNow);
   const off = disabled || sent;
-  const origin = sourceLabel(request.source);
 
   const alsoText = also === undefined ? undefined : alsoLine(request.server, also);
 
@@ -149,13 +148,7 @@ export const McpSamplingCard = ({
             <span className="font-normal text-muted-foreground"> · {requests.length} requests</span>
           )}
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          during <span className="font-mono">{request.tool}</span> ·{" "}
-          {agent === undefined ? "the agent" : `subagent ${agent}`}
-          {origin === undefined ? null : (
-            <span className="ml-2 rounded border px-1 py-0.5 text-[0.7rem]">{origin}</span>
-          )}
-        </p>
+        <McpOriginLine request={request} agent={agent} />
         {alsoText === undefined ? null : (
           <p className="mt-1 text-xs text-muted-foreground">{alsoText}</p>
         )}
@@ -239,7 +232,7 @@ export const McpSamplingCard = ({
             ? "Reconnecting…"
             : waits
               ? `${request.server} waits for your answer`
-              : `${request.server}'s call ends in ${countdown(deadline, now)}`}
+              : endsLine(request, deadline, now)}
         </span>
         <div className="flex flex-wrap gap-2">
           <div className="flex items-center">

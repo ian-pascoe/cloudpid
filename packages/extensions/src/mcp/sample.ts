@@ -37,8 +37,10 @@ import type { McpSamplingOutcome, McpSamplingService } from "./sampling.ts";
 export type SamplingCall = {
   readonly sampling: McpSamplingService;
   readonly server: string;
-  /** The model-facing name of the tool. */
+  /** The model-facing name of the tool; for a prompt send, the prompt's command. */
   readonly tool: string;
+  /** The title of the MCP prompt whose `prompts/get` asks: its requests wait live for 5 min and tell the owner nothing. */
+  readonly prompt?: string | undefined;
   readonly callId: string;
   readonly conversationId: ConversationId;
   /** Aborts when Stop does: a sample under way is stopped, and a card waiting is withdrawn. */
@@ -115,6 +117,7 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
         decision: call.decision,
         defers: call.defers === true && modern,
         resumed: kept,
+        prompt: call.prompt,
         source: call.source,
         hold: call.hold,
       }),
@@ -175,7 +178,7 @@ export const samplingHooks = (call: SamplingCall): Sampling => {
 };
 
 /** How one request that was not answered ended, in words that carry nothing the server wrote. */
-const wordsOf = (detail: McpSamplingDetail): string => {
+export const wordsOf = (detail: McpSamplingDetail): string => {
   if (detail.by === "owner" || detail.by === "grant") return "refused by you";
 
   // Nothing the server wrote is in a reason, but the model's own failure may carry the provider's words: kept short and plain.

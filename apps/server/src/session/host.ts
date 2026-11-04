@@ -410,6 +410,9 @@ export type SessionHostMcpPromptGet = {
   readonly server: string;
   /** The prompt's own name. */
   readonly name: string;
+  /** The prompt's Slash command and the title its questions' cards say ("getting prompt <title>"), as the catalog lists them. */
+  readonly command: string;
+  readonly title: string;
   /** The arguments to send: only those the prompt declares, cleaned. */
   readonly arguments: Readonly<Record<string, string>>;
   readonly conversationId: ConversationId;
@@ -2556,6 +2559,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           {
             server: ref.server,
             name: ref.name,
+            command: entry.command,
+            title: entry.title ?? entry.name,
             arguments: sent,
             conversationId: conversation.id,
             workspace: workspace?.object,

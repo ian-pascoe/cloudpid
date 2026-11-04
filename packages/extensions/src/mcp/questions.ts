@@ -17,7 +17,11 @@
 //   reader.
 // - **The notification** is told of the first question a call waits on, and of a later one only after 2 min with none
 //   waiting for that call.
-import { MCP_ELICITATION_WAIT_MS, type McpEra } from "@cloudpid/mcp/types";
+import {
+  MCP_ELICITATION_WAIT_MS,
+  MCP_PROMPT_QUESTION_WAIT_MS,
+  type McpEra,
+} from "@cloudpid/mcp/types";
 import {
   createDeferredQuestions,
   type McpDeferredAnswer,
@@ -41,6 +45,7 @@ import {
   type McpQuestionStorage,
   type McpQuestionUnseen,
   type McpSamplingDecision,
+  type McpWaitingKind,
   questionId,
 } from "./question-records.ts";
 import type {
@@ -293,6 +298,8 @@ export type McpQuestionsOptions = {
   readonly holdsSecret: (text: string) => Effect.Effect<boolean>;
   /** How long a question waits, `MCP_ELICITATION_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
+  /** How long a question of a prompt send waits, `MCP_PROMPT_QUESTION_WAIT_MS` unless a test shortens it. */
+  readonly promptWaitMs?: number | undefined;
   /** How long a page the server says is finished reads "Finished at <host>" before its card goes, `MCP_PAGE_FINISHED_SHOWN_MS` unless a test shortens it. */
   readonly finishedShownMs?: number | undefined;
   /**
@@ -319,6 +326,7 @@ type Waiting = {
 export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsService => {
   const { storage, announce } = options;
   const waitMs = options.waitMs ?? MCP_ELICITATION_WAIT_MS;
+  const promptWaitMs = options.promptWaitMs ?? MCP_PROMPT_QUESTION_WAIT_MS;
   const finishedShownMs = options.finishedShownMs ?? MCP_PAGE_FINISHED_SHOWN_MS;
   const waiting = new Map<string, Waiting>();
   const basics = questionBasics(options);
@@ -339,6 +347,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     basics,
     announce: options.announceSampling ?? (() => Effect.void),
     waitMs: options.samplingWaitMs,
+    promptWaitMs: options.promptWaitMs,
     remember: options.remember,
     deferred,
   });
@@ -410,7 +419,10 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
 
       const id = questionId(question.callId, sequence);
       const now = yield* Clock.currentTimeMillis;
-      const request = yield* basics.requestOf(question, id, now + waitMs);
+      // A prompt send's question waits less than a call's, and tells the owner nothing: they are at the composer.
+      const prompting = question.prompt !== undefined;
+      const wait = prompting ? promptWaitMs : waitMs;
+      const request = yield* basics.requestOf(question, id, now + wait);
 
       const entry: WaitingEntry = {
         id,
@@ -452,16 +464,16 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         era: question.era,
       });
       yield* tell;
-      yield* basics.startWaiting(
-        question.callId,
-        question.server,
-        1,
-        now,
-        question.page === undefined ? {} : { page: true },
-      );
+      const kind: Mutable<McpWaitingKind> = {};
+
+      if (question.page !== undefined) kind.page = true;
+
+      if (prompting) kind.quiet = true;
+
+      yield* basics.startWaiting(question.callId, question.server, 1, now, kind);
 
       yield* Deferred.await(outcome).pipe(
-        Effect.timeoutOption(waitMs),
+        Effect.timeoutOption(wait),
         Effect.flatMap(
           Option.match({
             onNone: () => finish(id, cancelled("the owner did not answer in time")),

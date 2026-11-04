@@ -77,6 +77,11 @@ export const McpSamplingRequest = Schema.Struct({
   conversationId: ConversationId,
   /** Where the definition is, for the card's badge; absent when the Session does not know. */
   source: Schema.optionalKey(McpElicitationSource),
+  /**
+   * The title of the MCP prompt whose send waits for the answer ("getting prompt <title>"): the request was made during
+   * its `prompts/get`, not a tool's call. A client from before it reads `tool`, the prompt's command.
+   */
+  prompt: Schema.optionalKey(Schema.String),
   /** The Role the request would run on unless the owner picks another, and its model. */
   role: McpSamplingRoleName,
   model: Schema.String,

@@ -191,6 +191,14 @@ describe("McpSamplingCard", () => {
     expect(markup).not.toContain('value="xxlarge"');
   });
 
+  it("says a prompt send's request is from getting the prompt", () => {
+    const markup = render(request({ prompt: "Review PR", tool: "/mcp__github__review" }));
+
+    expect(markup).toContain("getting prompt Review PR");
+    expect(markup).not.toContain("during");
+    expect(markup).toContain("prompt goes on without an answer in");
+  });
+
   it("says which agent asked, and where the definition is", () => {
     expect(render(request())).toContain("· the agent");
     expect(render(request(), false, "reviewer (checks)")).toContain("· subagent reviewer (checks)");

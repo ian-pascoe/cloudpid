@@ -61,8 +61,10 @@ export const credentialReason = (field: string): string =>
 export type ElicitingCall = {
   readonly questions: McpQuestionsService;
   readonly server: string;
-  /** The model-facing name of the tool. */
+  /** The model-facing name of the tool; for a prompt send, the prompt's command. */
   readonly tool: string;
+  /** The title of the MCP prompt whose `prompts/get` asks: its questions wait live for 5 min and tell the owner nothing. */
+  readonly prompt?: string | undefined;
   readonly callId: string;
   readonly conversationId: ConversationId;
   /** Where the server's definition is. */
@@ -223,6 +225,8 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     };
 
     if (call.source !== undefined) question.source = call.source;
+
+    if (call.prompt !== undefined) question.prompt = call.prompt;
 
     if (request.era !== undefined) question.era = request.era;
 

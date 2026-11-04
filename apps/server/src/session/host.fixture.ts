@@ -726,6 +726,7 @@ export class TestSession extends DurableObject {
       // The 10-minute bound, shortened for the Sessions whose tests wait it out (`mcp-short-wait-*`).
       waitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
       samplingWaitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
+      promptWaitMs: this.ctx.id.name?.startsWith("mcp-short-wait-") === true ? 300 : undefined,
       // *Always allow* and *Never* on a Sampling card, written to the test Registry the test names (`samplingRegistry`) as a
       // Session writes them. The Session is the Registry's own only when the test registers it there, as a Session of an
       // Environment: until then (or never) it has nowhere to write, and its card offers no Always or Never.

@@ -852,7 +852,10 @@ const runResourcePage = Effect.fnUntraced(function* (
   } satisfies Completed;
 });
 
-/** Runs a `prompts/get`: the server's result as it is, its strings scrubbed of the call's tokens on the way out. */
+/**
+ * Runs a `prompts/get`: the server's result as it is, its strings scrubbed of the call's tokens on the way out. The
+ * core answers the server's questions during it through `req.ctx` (#492), as a read's.
+ */
 const runPrompt = Effect.fnUntraced(function* (
   connection: McpConnection,
   call: CallContext,

@@ -124,9 +124,33 @@ export const withPrompt = (message: OutgoingMessage, chip: PromptChip): Outgoing
   getting: gettingText(chip),
 });
 
-/** What a lane says while the Session gets the prompt. */
+/** What a lane says while the Session gets the prompt `title` of `server`. */
+export const gettingLine = (title: string, server: string): string =>
+  `Getting ${title} from ${server}…`;
+
+/** What a lane says while the Session gets the chip's prompt. */
 export const gettingText = (chip: PromptChip): string =>
-  `Getting ${promptTitle(chip.prompt)} from ${chip.prompt.server}…`;
+  gettingLine(promptTitle(chip.prompt), chip.prompt.server);
+
+/**
+ * The lane rows of messages whose prompt is being got (`gettingText`), with the ones whose server asks the owner something
+ * in the get (`asked`: the waiting questions of a prompt send, by their server and the prompt's title) reading "Getting
+ * <title> from <server> · waiting for your answer" (`docs/architecture/mcp-server-requests.md` → Questions).
+ */
+export const withAwaited = <A extends { readonly text: string }>(
+  rows: readonly A[],
+  asked: ReadonlyArray<{ readonly server: string; readonly prompt: string }>,
+): readonly A[] => {
+  if (asked.length === 0) return rows;
+
+  const awaited = new Set(asked.map((one) => gettingLine(one.prompt, one.server)));
+
+  return rows.map((row) =>
+    awaited.has(row.text)
+      ? { ...row, text: `${row.text.slice(0, -1)} · waiting for your answer` }
+      : row,
+  );
+};
 
 /** What a lane shows of the message once it has its prompt: the chip's label, then what the owner typed and attached. */
 export const promptLane = (chip: PromptChip, display: string): string => {

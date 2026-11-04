@@ -27,7 +27,7 @@
 //   before it asked. `mcp-sampling:waiting` lists what waits, so a new instance, which finds nothing to answer them, can
 //   settle those records as refused.
 import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
-import type { JsonObject } from "@cloudpid/mcp/types";
+import { type JsonObject, MCP_PROMPT_QUESTION_WAIT_MS } from "@cloudpid/mcp/types";
 import type {
   McpElicitationSource,
   McpSamplingChoice,
@@ -114,6 +114,8 @@ export type McpSamplingQuestionsOptions = {
   readonly basics: McpQuestionBasics;
   /** How long a request waits, `MCP_SAMPLING_ASK_WAIT_MS` unless a test shortens it. */
   readonly waitMs?: number | undefined;
+  /** How long a request of a prompt send waits, `MCP_PROMPT_QUESTION_WAIT_MS` unless a test shortens it. */
+  readonly promptWaitMs?: number | undefined;
   /** Where *Always allow* and *Never* write; without it the card cannot offer them. */
   readonly remember?: McpSamplingRemember | undefined;
   /** A Modern server's requests, kept for later: their cards show beside the live ones, and the same choices answer them. */
@@ -194,6 +196,7 @@ type Claim = {
 export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) => {
   const { storage, basics } = options;
   const waitMs = options.waitMs ?? MCP_SAMPLING_ASK_WAIT_MS;
+  const promptWaitMs = options.promptWaitMs ?? MCP_PROMPT_QUESTION_WAIT_MS;
   const waiting = new Map<string, Waiting>();
   const callGrants = new Set<string>();
   const callRefusals = new Set<string>();
@@ -343,11 +346,14 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const { card } = question;
+      // A prompt send's request waits less than a call's, and tells the owner nothing: they are at the composer.
+      const prompting = card.prompt !== undefined;
+      const wait = prompting ? promptWaitMs : waitMs;
 
       const request: Mutable<McpSamplingRequest> = {
         ...card,
         id: question.id,
-        deadline: now + waitMs,
+        deadline: now + wait,
         writable: yield* canWrite(card.source),
       };
 
@@ -372,10 +378,16 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
         overdue: false,
       });
       yield* tell;
-      yield* basics.startWaiting(card.callId, card.server, 1, now, { sampling: true });
+      yield* basics.startWaiting(
+        card.callId,
+        card.server,
+        1,
+        now,
+        prompting ? { sampling: true, quiet: true } : { sampling: true },
+      );
 
       yield* Deferred.await(outcome).pipe(
-        Effect.timeoutOption(waitMs),
+        Effect.timeoutOption(wait),
         Effect.flatMap(
           Option.match({
             // A call an answer is taking is left to it; if that answer lets go without deciding, `claimed` ends this one.

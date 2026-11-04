@@ -77,6 +77,7 @@ import {
 } from "./mcp/servers.ts";
 import { signsIn } from "./mcp/sign-in-tool.ts";
 import { MCP_RESOURCE_FEATURE } from "./mcp/resources.ts";
+import { type PromptAsk, type PromptAsking, promptAsking } from "./mcp/prompt-asking.ts";
 import { appToolsOf } from "./mcp/app-tools.ts";
 import { appRequestOf, type McpAppRequestInput } from "./mcp/app-request.ts";
 import { appHtmlOf, MCP_APP_FEATURE, type McpAppHtmlInput } from "./mcp/apps.ts";
@@ -102,6 +103,8 @@ import {
 } from "./mcp/tools.ts";
 
 export { HostLost, McpHostClient, type McpHostClientService } from "./mcp/client.ts";
+
+export type { PromptAsk, PromptAsking } from "./mcp/prompt-asking.ts";
 
 export { mayBeDirect } from "./mcp/exposure.ts";
 
@@ -416,6 +419,12 @@ export type McpToolsService = {
   readonly resourcePreview: (
     input: McpResourcePreviewInput,
   ) => Effect.Effect<McpResourcePreviewAnswer>;
+  /**
+   * The hooks and `ctx.answers` of a prompt send's `prompts/get` (`docs/architecture/mcp-in-a-session.md` → Getting a prompt
+   * at send), so a question its server asks is shown to the owner and answered live. None when the Session has no questions
+   * or the tools were not built from a server of that name.
+   */
+  readonly promptAsking: (ask: PromptAsk) => PromptAsking | undefined;
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
   /**
@@ -952,6 +961,23 @@ export const makeMcpTools = (
           slackMs: options.slackMs,
         },
         input,
+      ),
+    promptAsking: (ask) =>
+      Option.match(
+        Arr.findFirst(latest?.servers ?? [], (each) => each.name === ask.server),
+        {
+          onNone: () => undefined,
+          onSome: (server) =>
+            promptAsking(
+              {
+                questions: options.questions,
+                sampling: options.sampling,
+                hostSamples: latest?.features.includes(MCP_SAMPLING_FEATURE) === true,
+              },
+              server,
+              ask,
+            ),
+        },
       ),
     attachedResources: {
       menu: (input) => listResourceMenu(attachedDeps(), input),

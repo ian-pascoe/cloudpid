@@ -115,8 +115,10 @@ export type McpSamplingBinding = {
 /** One request, as the call that carries it knows it. */
 export type McpSamplingAsk = {
   readonly server: string;
-  /** The model-facing name of the tool whose call the request came in. */
+  /** The model-facing name of the tool whose call the request came in; for a prompt send, the prompt's command. */
   readonly tool: string;
+  /** The title of the MCP prompt whose `prompts/get` the request came in, when it is a prompt send's. */
+  readonly prompt?: string | undefined;
   readonly callId: string;
   readonly conversationId: McpSamplingRequest["conversationId"];
   /** The server's own request id. */
@@ -297,7 +299,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
               id,
               server: ask.server,
               tool: ask.tool,
-              origin: "agent",
+              origin: ask.prompt === undefined ? "agent" : "prompt",
               conversationId: ask.conversationId,
               callId: ask.callId,
               sequence,
@@ -653,6 +655,8 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
             };
 
             if (ask.source !== undefined) card.source = ask.source;
+
+            if (ask.prompt !== undefined) card.prompt = ask.prompt;
 
             if (record.systemPrompt !== undefined) card.systemPrompt = record.systemPrompt;
 

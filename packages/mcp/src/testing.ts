@@ -11,6 +11,7 @@ export {
   ECHO_TOOL,
   type FakeContent,
   type FakeOptions,
+  type FakePrompt,
   type FakeResource,
   type FakeResourceTemplate,
   type FakeServer,

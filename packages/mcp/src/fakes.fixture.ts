@@ -319,6 +319,12 @@ export interface FakePrompt {
     readonly description?: string;
     readonly messages: GetPromptResult["messages"];
   };
+  /**
+   * A question the server asks before it answers (a Legacy server on the get's own stream, a Modern one as `input_required`
+   * with the `requestState` `prompt-1`): a form (`message`) or a model reply (`sample`). The prompt's one assistant message
+   * is then the answer as JSON, in place of `get`'s.
+   */
+  readonly asks?: { readonly message: string } | { readonly sample: string };
 }
 
 /** What a fake MCP server offers besides the echo tools, and where it records what happened to its calls. */
@@ -584,7 +590,7 @@ const fakeMcp = (
     const { prompts } = options;
 
     server.setRequestHandler("prompts/list", async () => ({
-      prompts: prompts.map(({ get: _get, arguments: args, ...listed }) => {
+      prompts: prompts.map(({ get: _get, asks: _asks, arguments: args, ...listed }) => {
         const entry: Prompt = { ...listed };
 
         if (args !== undefined) entry.arguments = [...args];
@@ -592,10 +598,74 @@ const fakeMcp = (
         return entry;
       }),
     }));
-    server.setRequestHandler("prompts/get", async (request) => {
+    server.setRequestHandler("prompts/get", async (request, ctx) => {
       const found = prompts.find((each) => each.name === request.params.name);
 
       if (found === undefined) throw new Error(`No prompt ${request.params.name}`);
+
+      const { asks } = found;
+
+      if (asks !== undefined) {
+        const answered = (answer: Json | undefined): GetPromptResult => ({
+          messages: [
+            { role: "assistant", content: { type: "text", text: JSON.stringify(answer) } },
+          ],
+        });
+
+        // A Modern server asks in its answer: `input_required` first, then the get answered with the round's responses.
+        if (modern) {
+          const responses = ctx.mcpReq.inputResponses;
+
+          if (responses === undefined) {
+            return inputRequired({
+              inputRequests: {
+                q1:
+                  "message" in asks
+                    ? inputRequired.elicit({
+                        message: asks.message,
+                        requestedSchema: { type: "object", properties: {} },
+                      })
+                    : inputRequired.createMessage({
+                        messages: [{ role: "user", content: { type: "text", text: asks.sample } }],
+                        maxTokens: 100,
+                      }),
+              },
+              requestState: "prompt-1",
+            });
+          }
+
+          // SAFETY: the client's answers are JSON.
+          options.asked?.push({
+            round: 1,
+            state: ctx.mcpReq.requestState<string>() ?? "",
+            responses: { ...responses } as Json,
+          });
+
+          // SAFETY: the client's answers are JSON.
+          return answered(responses["q1"] as Json);
+        }
+
+        const answer = await ctx.mcpReq.send(
+          "message" in asks
+            ? {
+                method: "elicitation/create",
+                params: {
+                  message: asks.message,
+                  requestedSchema: { type: "object", properties: {} },
+                },
+              }
+            : {
+                method: "sampling/createMessage",
+                params: {
+                  messages: [{ role: "user", content: { type: "text", text: asks.sample } }],
+                  maxTokens: 100,
+                },
+              },
+        );
+
+        // SAFETY: the client's answer is JSON.
+        return answered({ ...answer } as Json);
+      }
 
       const got = found.get(request.params.arguments ?? {});
 
