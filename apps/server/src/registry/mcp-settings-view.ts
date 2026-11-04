@@ -50,7 +50,7 @@ import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { environmentSettingsOf, readGlobal } from "./global.ts";
 import type { McpSetStore } from "./mcp-registry.ts";
-import { mcpDefinedIn } from "./mcp-change-check.ts";
+import { mcpDefinedIn, mcpTwinsIn } from "./mcp-change-check.ts";
 import { mcpRepoFileViews, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { hostOf } from "./mcp-sign-in-flow.ts";
 import { signInTargetOf, signInUseOf } from "./mcp-sign-in-registry.ts";
@@ -123,6 +123,21 @@ const kindOf = (names: Names, name: string, secrets: boolean): SettingsMcpRead["
   if (secrets && names.secrets.has(name)) return "secret";
 
   return names.variables.has(name) ? "variable" : "missing";
+};
+
+/**
+ * What each of `names` is where an agent's MCP entry at `environment` (`undefined`: Global, which has no Secrets or Variables
+ * of its own to resolve against but each Environment's) reads it: a Secret, a Variable or missing, by name only. An MCP
+ * server of the Settings reads Secrets, and a Secret wins over a Variable of the same name.
+ */
+export const mcpNameKinds = (
+  store: McpSettingsStore,
+  environment: string,
+  names: ReadonlyArray<string>,
+): ReadonlyArray<{ readonly name: string; readonly kind: SettingsMcpRead["kind"] }> => {
+  const held = environmentNames(store, environment);
+
+  return Arr.map(names, (name) => ({ name, kind: kindOf(held, name, true) }));
 };
 
 /** Each `${NAME}` the server's entry reads, by name, marked by what `names` has; at Global, with where it is missing. */
@@ -452,6 +467,13 @@ export const mcpSettingsView = (
   // A name Global has no entry of may be defined in an Environment (its own entry, or a Repo's): which ones.
   if (global && asked !== undefined && shown.length === 0) {
     view.definedIn = mcpDefinedIn(store, asked);
+  }
+
+  // A new Global entry of a name clashes with an Environment's own entry of a twin name.
+  if (global && asked !== undefined) {
+    const twins = mcpTwinsIn(store, asked);
+
+    if (twins.length > 0) view.twinsIn = twins;
   }
 
   return view;

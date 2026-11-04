@@ -41,6 +41,8 @@ export type SettingsMcpAccessService = {
     readonly scope: string;
     readonly name: string;
     readonly changes: ReadonlyArray<McpFieldChange>;
+    /** The `${NAME}`s the entry written reads: each Environment reached says what they are there. */
+    readonly reads?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SettingsMcpChangeCheck, SettingsAccessError>;
   /** The sets the Registry has yet to hand `environment`'s host (`mcpPending`'s pushes for it), each with its revision. */
   readonly pushes: (
@@ -52,6 +54,11 @@ export type SettingsMcpAccessService = {
   ) => Effect.Effect<void, SettingsAccessError>;
   /** The `McpHost` of Environment `environment`, own or another's: a host that is not asked is not woken. */
   readonly host: (environment: string) => McpHostClientService;
+  /**
+   * The object of the Session's Workspace (`ws:<id>`), which the status wait names so the host answers for a stdio server where
+   * it ran; null with none, and absent from a fake that never asks.
+   */
+  readonly workspace?: Effect.Effect<string | null> | undefined;
 };
 
 export class SettingsMcpAccess extends Context.Service<

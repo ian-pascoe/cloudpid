@@ -114,6 +114,14 @@ export type SettingsChangeRevert =
 const sameJson = Schema.toEquivalence(Schema.NullOr(Schema.Json));
 
 /**
+ * What the Registry checks of an agent's MCP change inside the transaction that writes it, once it knows which fields would
+ * change: why it is refused, or null (`mcpGuardRefusal`).
+ */
+export type SettingsGuard = (
+  differing: ReadonlyArray<SettingsFieldChange>,
+) => string | null | undefined;
+
+/**
  * Apply the agent's `changes` to the Settings as the owner's save does, and record each field that changed as an Agent
  * change by `author`. Fields that already have their value record nothing; one that is not a setting, or a value the
  * settings do not take, refuses the whole call.
@@ -127,6 +135,7 @@ export const changeSettings = (
     author,
   }: { readonly changes: ReadonlyArray<SettingsFieldChange>; readonly author: AgentChangeAuthor },
   now: number,
+  guard?: SettingsGuard,
 ): SettingsChange =>
   storage.transactionSync((): SettingsChange => {
     const known = readSettings(documents);
@@ -162,6 +171,10 @@ export const changeSettings = (
     if (Option.isSome(moved)) {
       return { status: "changed-since", field: moved.value.field, current: moved.value.before };
     }
+
+    const refused = guard?.(differing);
+
+    if (refused !== undefined && refused !== null) return { status: "rejected", message: refused };
 
     const saved = writeSettings(
       documents,
@@ -312,6 +325,7 @@ export const changeSettingsOverrides = (
     readonly author: AgentChangeAuthor;
   },
   now: number,
+  guard?: SettingsGuard,
 ): SettingsChange =>
   storage.transactionSync((): SettingsChange => {
     const known = readSettingsOverrides(store, environment);
@@ -366,6 +380,10 @@ export const changeSettingsOverrides = (
         inherited: moved.value.beforeInherited,
       };
     }
+
+    const refused = guard?.(differing);
+
+    if (refused !== undefined && refused !== null) return { status: "rejected", message: refused };
 
     const saved = putSettingsOverrides(store, environment, next.success);
 

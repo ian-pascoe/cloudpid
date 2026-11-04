@@ -51,6 +51,29 @@ const split = (markup: string) => {
 };
 
 describe("ApprovalCard", () => {
+  it("shows a request's notes above the values, outside the scrolling region, and none for a request without", () => {
+    const notes = [
+      "Runs: node server.js in /workspace/app.",
+      "Sends: ${TOKEN} (a Secret) in headers.Authorization.",
+    ];
+
+    const markup = renderToStaticMarkup(
+      <ApprovalCard
+        request={{ ...request("after"), notes }}
+        disabled={false}
+        onAnswer={() => {}}
+      />,
+    );
+
+    const { before, inside } = split(markup);
+
+    expect(before).toContain("What it runs, sends and reaches");
+    expect(before).toContain("Runs: node server.js in /workspace/app.");
+    expect(before).toContain("headers.Authorization");
+    expect(inside).not.toContain("Runs: node");
+    expect(render("after")).not.toContain("What it runs, sends and reaches");
+  });
+
   it("scrolls only Now and After, in a region of their own", () => {
     const { opening, inside } = split(render(LISTING));
 

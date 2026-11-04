@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+import type { Approvals } from "./approvals.ts";
 import type { McpHostClientService } from "./mcp/client.ts";
 import {
   pushMcpSet,
@@ -57,6 +58,7 @@ import {
   SettingsMcpReloadOutput,
 } from "./settings-mcp-outputs.ts";
 import { McpChangeTools } from "./settings-mcp-changes.ts";
+import { McpDefinitionTools } from "./settings-mcp-definitions.ts";
 import { describeGet, describeList, describeReload, scopeWords } from "./settings-mcp-words.ts";
 
 export { pushMcpSet, SettingsMcpAccess, type SettingsMcpAccessService };
@@ -101,16 +103,24 @@ const NEVER_RESOLVED =
 
 /**
  * The `settings_mcp` extension: its read-only tools over the Session's `SettingsMcpAccess` (the Registry's MCP read) and
- * the Environments' hosts it reaches (`SettingsMcpAccess.host`), and the changing tools that narrow what is reachable
- * (`McpChangeTools`, over the Settings' change machinery).
+ * the Environments' hosts it reaches (`SettingsMcpAccess.host`), and the changing tools: those that change what is reachable
+ * (`McpChangeTools`) and those that define servers (`McpDefinitionTools`), over the Settings' change machinery and the
+ * Approvals.
  */
 export const SettingsMcpTools: Effect.Effect<
   Extension,
   never,
-  SettingsMcpAccess | SettingsAccess | SettingsReload | AgentChangeLog | DeployCredentials | Secrets
+  | Approvals
+  | SettingsMcpAccess
+  | SettingsAccess
+  | SettingsReload
+  | AgentChangeLog
+  | DeployCredentials
+  | Secrets
 > = Effect.gen(function* () {
   const access = yield* SettingsMcpAccess;
   const changing = yield* McpChangeTools;
+  const defining = yield* McpDefinitionTools;
 
   const list = yield* defineEffectTool({
     name: "settings_mcp_list",
@@ -212,5 +222,8 @@ export const SettingsMcpTools: Effect.Effect<
       }),
   });
 
-  return defineExtension({ name: extensionName, tools: [list, get, reload, ...changing] });
+  return defineExtension({
+    name: extensionName,
+    tools: [list, get, reload, ...changing, ...defining],
+  });
 });

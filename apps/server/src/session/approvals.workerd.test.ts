@@ -17,6 +17,9 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
+import { sessionApprovalsLayer } from "./approvals.ts";
+import { Approvals } from "@cloudpid/extensions/approvals";
+import type { PushEvent } from "../push/notification.ts";
 
 declare global {
   namespace Cloudflare {
@@ -399,5 +402,66 @@ describe("Approval over the Session socket", () => {
       timeout: 10_000,
       interval: 20,
     });
+  });
+});
+
+describe("the Notification of a request", () => {
+  /** Ask `request` of Approvals that push to `pushed` and wait for nobody: the push is made in the background as it is asked. */
+  const pushedFor = async (request: { readonly change: string; readonly notice?: string }) => {
+    const pushed: Array<PushEvent> = [];
+    const store = new Map<string, unknown>();
+
+    const layer = sessionApprovalsLayer({
+      storage: {
+        // SAFETY: the test stores what the requests put, under the keys they read it back from.
+        get: <T>(key: string) => store.get(key) as T | undefined,
+        put: (key, value) => void store.set(key, value),
+        delete: (key) => store.delete(key),
+      },
+      sockets: { getWebSockets: () => [] },
+      notify: (event) => Effect.sync(() => void pushed.push(event)),
+    });
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const approvals = yield* Approvals;
+
+        yield* Effect.forkChild(
+          approvals.ask({
+            id: "1",
+            conversationId: 1,
+            tool: "settings_mcp_add",
+            target: 'Environment "Default"\'s Settings',
+            before: "None",
+            after: "{}",
+            reason: "Needed",
+            expected: null,
+            ...request,
+          }),
+        );
+
+        yield* Effect.sleep("20 millis");
+        yield* approvals.dropAbandoned;
+      }).pipe(
+        // @effect-diagnostics-next-line strictEffectProvide:off -- the test is the entry point.
+        Effect.provide(layer),
+        Effect.scoped,
+      ),
+    );
+
+    return pushed;
+  };
+
+  it("says what changes and where, as the request words it, or from its change and target", async () => {
+    expect(
+      await pushedFor({
+        change: 'MCP server "linear": add',
+        notice: 'MCP server linear, Environment "Default"',
+      }),
+    ).toMatchObject([{ kind: "input", approval: 'MCP server linear, Environment "Default"' }]);
+
+    expect(await pushedFor({ change: "Spend limit" })).toMatchObject([
+      { approval: 'Spend limit, Environment "Default"\'s Settings' },
+    ]);
   });
 });

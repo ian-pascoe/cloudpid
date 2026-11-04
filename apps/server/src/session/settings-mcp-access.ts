@@ -10,6 +10,7 @@ import type { McpHostClientService } from "@cloudpid/extensions/mcp";
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/extensions/settings";
 import type { SettingsMcpAccessService } from "@cloudpid/extensions/settings-mcp";
 import * as Arr from "effect/Array";
+import type * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import { noEnvironment } from "./settings-access.ts";
@@ -31,12 +32,15 @@ export type SessionSettingsMcpAccessOptions = {
   readonly session: string | undefined;
   /** The `McpHostClient` of Environment `environment`'s host: any Environment's, since a Session names the host it reaches. */
   readonly host: (environment: string) => McpHostClientService;
+  /** The object of the Session's Workspace (`ws:<id>`), which the status wait names; null with none. */
+  readonly workspace?: Effect.Effect<string | null, Cause.UnknownError> | undefined;
 };
 
 export const sessionSettingsMcpAccess = ({
   registry,
   session,
   host,
+  workspace,
 }: SessionSettingsMcpAccessOptions): SettingsMcpAccessService => ({
   view: ({ scope, name }) =>
     Effect.suspend(() =>
@@ -56,12 +60,13 @@ export const sessionSettingsMcpAccess = ({
       : Effect.suspend(() => registry.sessionSettings({ session })).pipe(
           Effect.map(({ environment }) => environment),
         ),
-  check: ({ scope, name, changes }) =>
+  check: ({ scope, name, changes, reads }) =>
     Effect.suspend(() =>
       registry.mcpChangeCheck({
         environment: scope === GLOBAL_SETTINGS_SCOPE ? undefined : scope,
         name,
         changes,
+        reads,
       }),
     ).pipe(
       Effect.filterOrFail(
@@ -88,4 +93,8 @@ export const sessionSettingsMcpAccess = ({
     ),
   pushed: (input) => Effect.suspend(() => registry.mcpPushed(input)),
   host,
+  workspace:
+    workspace === undefined
+      ? Effect.succeed(null)
+      : workspace.pipe(Effect.orElseSucceed(() => null)),
 });

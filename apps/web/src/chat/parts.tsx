@@ -29,6 +29,7 @@ import { DiffTally } from "../diff-pane/parts.tsx";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
+import { mcpStatusLabel, shownMcpStatus } from "./mcp-status.ts";
 import { NestedCall, OmittedCalls } from "./nested-calls.ts";
 import { keepClosedInView } from "./scroller.ts";
 import { toolSummary } from "./tool-summary.ts";
@@ -411,6 +412,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   const shownArgs = argsText !== "" ? argsText : JSON.stringify(args, null, 2);
   const changes = changesOf(artifact);
   const questions = questionsOf(artifact);
+  const mcpStatus = shownMcpStatus(artifact);
 
   // The Call diff of an `edit` or `write` that finished: only a call with a result has one.
   const diff = Option.getOrUndefined(Option.map(decodeCardDiff(artifact), (found) => found.diff));
@@ -476,6 +478,11 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
           <span className="font-mono text-[0.8125rem] text-foreground">{toolName}</span>
           {summary !== undefined && (
             <span className="min-w-0 truncate font-mono text-xs">{summary}</span>
+          )}
+          {mcpStatus !== undefined && (
+            <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs">
+              {mcpStatusLabel(mcpStatus)}
+            </span>
           )}
           {diff !== undefined && <CallDiffStats diff={diff} />}
           {totals !== undefined && <DiffTally counts={totals} />}

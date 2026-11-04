@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import { type CallDiff, callDiffOf } from "../call-diff.ts";
 import { madeChanges, type ShownChange } from "../chat/agent-change.ts";
 import { askedQuestions, type ShownElicitation } from "../chat/mcp-elicitation-detail.ts";
+import { mcpStatusOf, type ShownMcpStatus } from "../chat/mcp-status.ts";
 import {
   liveCalls,
   type NestedCall,
@@ -143,6 +144,7 @@ const resolveCall = (
     const images = shownImages(result.content);
     const changes = madeChanges(result.details);
     const elicitations = askedQuestions(result.details);
+    const mcp = mcpStatusOf(result.details);
     const diff = callDiffOf(result.name, result.details, result.error);
 
     const resolved = { ...call, result: textOf(result.content), isError: result.error };
@@ -164,6 +166,8 @@ const resolveCall = (
 
     if (elicitations.length > 0) artifact.elicitations = elicitations;
 
+    if (mcp !== undefined) artifact.mcp = mcp;
+
     if (diff !== undefined) artifact.diff = diff;
 
     turn?.content.splice(
@@ -175,6 +179,7 @@ const resolveCall = (
         images.length === 0 &&
         changes.length === 0 &&
         elicitations.length === 0 &&
+        mcp === undefined &&
         diff === undefined
         ? resolved
         : { ...resolved, artifact },
@@ -190,6 +195,7 @@ type CardArtifact = {
   images?: { readonly mimeType: string; readonly data: string }[];
   changes?: ReadonlyArray<ShownChange>;
   elicitations?: ReadonlyArray<ShownElicitation>;
+  mcp?: ShownMcpStatus;
   diff?: CallDiff;
 };
 

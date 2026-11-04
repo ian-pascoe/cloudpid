@@ -31,7 +31,7 @@ import {
   matchesToolPattern,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import type { AgentChange } from "@cloudpid/protocol";
+import type { AgentChange, McpChangeGuard } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -49,7 +49,7 @@ import {
   MAX_CHANGE_REASON,
 } from "./environment.ts";
 import { formatScope } from "./instructions.ts";
-import { ChangeOutput, outputSchema } from "./outputs.ts";
+import { APPROVED, ChangeOutput, outputSchema } from "./outputs.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import {
@@ -176,6 +176,8 @@ export type SettingsAccessService = {
     readonly scope: string;
     readonly changes: ReadonlyArray<SettingsFieldChange>;
     readonly author: ChangeAuthor;
+    /** An agent's MCP change: what the Registry checks again in the transaction that writes it (`McpChangeGuard`). */
+    readonly guard?: McpChangeGuard | undefined;
   }) => Effect.Effect<AppliedSettingsChange, SettingsAccessError>;
 };
 
@@ -305,6 +307,12 @@ export const changedLines = (changes: ReadonlyArray<AgentChange>): string =>
 /** The Scope as a result names it: Global, or the Environment by name and id. */
 export const scopeName = (view: SettingsView): string =>
   isGlobalView(view) ? "Global" : `Environment ${JSON.stringify(view.name)} (${view.scope})`;
+
+/** The Settings a card names as the target: Global's, or an Environment's by name. */
+export const settingsTarget = (view: SettingsView): string =>
+  isGlobalView(view)
+    ? "the Global Settings"
+    : `Environment ${JSON.stringify(view.name)}'s Settings`;
 
 /** Where a change was made, as a result says it: "at Global", or "for" the Environment. */
 export const scopeWhere = (view: SettingsView): string =>
@@ -577,10 +585,10 @@ const jsonText = (value: Schema.Json | null): string =>
 
 /** Why a text that holds a Secret Reference is refused: the tools resolve none, so the Settings would hold its text. */
 const REFUSED_PLACEHOLDER =
-  "Nothing was saved: the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference.";
+  "the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference.";
 
 const REFUSED_SECRET =
-  "Nothing was saved: the text holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Settings are plain and the user reads them. Say it without the value.";
+  "the text holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Settings are plain and the user reads them. Say it without the value.";
 
 /** Whether a change reaches this Session, field by field, and what a result says of it. */
 export type SettingsReach = {
@@ -598,7 +606,12 @@ export type SettingsChangeRequest = {
   readonly texts?: ReadonlyArray<string>;
   readonly reason: string;
   readonly conversation: number;
-  readonly unchanged: string;
+  /** The result's words when nothing changed; an Effect where they wait for something (the MCP tools' status after an approved change). */
+  readonly unchanged: string | Effect.Effect<string>;
+  /** The owner approved this change: it is recorded as approved, and refusals and answers say "The user approved, but …". */
+  readonly approved?: true | undefined;
+  /** An agent's MCP change: what the Registry checks again as it writes. */
+  readonly guard?: McpChangeGuard | undefined;
   /** The result's words; an Effect where the words wait for something that happens after the change (the MCP tools' pushes). */
   readonly changed: (made: {
     readonly changes: ReadonlyArray<AgentChange>;
@@ -685,6 +698,28 @@ export const SettingsChanges = Effect.gen(function* () {
     );
 
   /**
+   * Refuse, asking nobody, a `reason` or any of `texts` that holds a Secret the Session holds, a deploy-time credential or a
+   * Secret Reference's placeholder (the Settings are plain, and the user reads them).
+   */
+  const plain = (
+    reason: string,
+    texts: ReadonlyArray<string>,
+    /** How the refusal begins: what the tool did not do. */
+    outcome = "Nothing was saved",
+  ) =>
+    Effect.gen(function* () {
+      const kept = Arr.join([reason, ...texts], "\n");
+
+      if (holdsPlaceholder(kept)) {
+        return yield* SettingsAccessError.make({ message: `${outcome}: ${REFUSED_PLACEHOLDER}` });
+      }
+
+      if (yield* holdsSecret(kept)) {
+        return yield* SettingsAccessError.make({ message: `${outcome}: ${REFUSED_SECRET}` });
+      }
+    });
+
+  /**
    * Apply `fields` at the Scope as `tool`, and say how it went: refused when the reason or any of `texts` holds a
    * Secret, then made by the Registry and, when something changed, read again by the Session. `changed` words the
    * result for the changes recorded, what the Session said of itself and whether the change reaches it; `unchanged`
@@ -698,48 +733,62 @@ export const SettingsChanges = Effect.gen(function* () {
     reason,
     conversation,
     unchanged,
+    approved,
+    guard,
     changed,
   }: SettingsChangeRequest) =>
     Effect.gen(function* () {
-      const kept = Arr.join([reason, ...texts], "\n");
+      yield* plain(reason, texts);
 
-      if (holdsPlaceholder(kept)) {
-        return yield* SettingsAccessError.make({ message: REFUSED_PLACEHOLDER });
-      }
+      const approval = approved === true ? APPROVED : null;
+      const approvedDetails = approved === true ? { approval: { approved: true } } : {};
 
-      if (yield* holdsSecret(kept)) {
-        return yield* SettingsAccessError.make({ message: REFUSED_SECRET });
-      }
+      const author =
+        approved === true
+          ? { conversation, tool, reason, approved }
+          : { conversation, tool, reason };
+
+      const guarded = guard === undefined ? {} : { guard };
 
       const answer = yield* access.change({
         scope: view.scope,
         changes: fields,
-        author: { conversation, tool, reason },
+        author,
+        ...guarded,
       });
 
       switch (answer.status) {
         case "rejected":
           return yield* SettingsAccessError.make({
-            message: `Nothing was saved: ${answer.message}`,
+            message: `${approved === true ? "The user approved, but nothing was saved" : "Nothing was saved"}: ${answer.message}`,
           });
-        // Only a change made against an expected value, which these tools never give.
+        // Only a change made against an expected value: the one the owner saw.
         case "changed-since":
           return yield* SettingsAccessError.make({
-            message: `Nothing was saved: ${answer.field} changed meanwhile, to ${shown(answer.current)}${inheritedWords(answer.inherited)}`,
+            message:
+              approved === true
+                ? `The user approved, but ${answer.field} changed since they were asked: it is ${shown(answer.current)}${inheritedWords(answer.inherited)} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`
+                : `Nothing was saved: ${answer.field} changed meanwhile, to ${shown(answer.current)}${inheritedWords(answer.inherited)}`,
           });
         case "unchanged":
           return {
-            output: [{ type: "text" as const, text: unchanged }],
+            output: [
+              {
+                type: "text" as const,
+                text: Predicate.isString(unchanged) ? unchanged : yield* unchanged,
+              },
+            ],
             structuredOutput: settingsChangeOutput({
               view,
               changes: [],
               unchanged: Arr.map(fields, (field) => field.field),
-              approval: null,
+              approval,
             }),
             details: {
               scope: view.scope,
               unchanged: Arr.map(fields, (field) => field.field),
               agentChanges: [],
+              ...approvedDetails,
             },
           };
         case "changed": {
@@ -777,19 +826,20 @@ export const SettingsChanges = Effect.gen(function* () {
                 Arr.map(fields, (field) => field.field),
                 (name) => !Arr.some(answer.changes, (change) => change.field === name),
               ),
-              approval: null,
+              approval,
             }),
             details: {
               scope: view.scope,
               unchanged: [],
               agentChanges: agentChangeDetails(view, answer.changes),
+              ...approvedDetails,
             },
           };
         }
       }
     });
 
-  return { apply, reach };
+  return { apply, reach, plain };
 });
 
 export const RECORDED =

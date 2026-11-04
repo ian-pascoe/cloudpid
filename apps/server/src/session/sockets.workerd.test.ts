@@ -24,6 +24,7 @@ import {
   REQUEST_COST,
   type TestSession,
 } from "./host.fixture.ts";
+import { approvalRequests } from "./sockets.ts";
 
 declare global {
   namespace Cloudflare {
@@ -1455,5 +1456,36 @@ describe("deleting a Session", () => {
 
     expect(left).toEqual({ tables: [], keys: [], alarm: null });
     expect((await client.closed).code).toBe(SESSION_DELETED_CLOSE_CODE);
+  });
+});
+
+describe("the approval_requests message", () => {
+  const ask = {
+    id: "7",
+    conversationId: 1,
+    tool: "settings_mcp_add",
+    target: "Environment Default",
+    change: "MCP server files: add",
+    before: "None",
+    after: "{}",
+    reason: "Needed",
+    expected: { value: null, after: {} },
+  };
+
+  it("carries a request's notes to every client, and leaves out the value the call checks once approved", () => {
+    const message = approvalRequests([{ ...ask, notes: ["Runs: node server.js."] }]);
+
+    expect(message).toMatchObject({
+      type: "approval_requests",
+      requests: [{ id: "7", notes: ["Runs: node server.js."] }],
+    });
+
+    expect(JSON.stringify(message)).not.toContain("expected");
+  });
+
+  it("has no notes key for a request that has none", () => {
+    const message = approvalRequests([ask]);
+
+    expect(JSON.stringify(message)).not.toContain("notes");
   });
 });

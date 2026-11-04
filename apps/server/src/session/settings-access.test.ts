@@ -2,6 +2,7 @@
 // of MCP servers a failed read leaves out without failing the read, and the one answer for an id no Environment has.
 // @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off
 import { SettingsAccessError } from "@cloudpid/extensions/settings";
+import type { McpChangeGuard } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vitest";
@@ -102,5 +103,50 @@ describe("a Session's MCP read", () => {
     access.host("env-b");
 
     expect(asked).toEqual(["env-a", "env-b"]);
+  });
+});
+
+describe("what a Session hands the Registry for an agent's MCP change", () => {
+  it("passes the guard of a change to the Registry's transaction, and the ${NAME}s an entry reads to its check", async () => {
+    const sent: Array<unknown> = [];
+
+    // SAFETY: the access calls these two methods only, and the test reads what they were given.
+    const registry = {
+      changeSettings: (input: { readonly guard?: McpChangeGuard | undefined }) =>
+        Effect.sync(() => {
+          sent.push({ guard: input.guard });
+
+          return { status: "unchanged" as const };
+        }),
+      mcpChangeCheck: (input: {
+        readonly environment: string | undefined;
+        readonly name: string;
+        readonly reads?: ReadonlyArray<string> | undefined;
+      }) =>
+        Effect.sync(() => {
+          sent.push({ environment: input.environment, name: input.name, reads: input.reads });
+
+          return { environments: [] };
+        }),
+    } as never;
+
+    const settings = sessionSettingsAccess({ registry, session: "s-1" });
+    const mcp = sessionSettingsMcpAccess({ registry, session: "s-1", host: () => NO_HOST });
+
+    await Effect.runPromise(
+      settings.change({
+        scope: "*",
+        changes: [],
+        author: { conversation: 1, tool: "settings_mcp_add", reason: "r" },
+        guard: { name: "files", widening: true },
+      }),
+    );
+
+    await Effect.runPromise(
+      mcp.check({ scope: "env-a", name: "files", changes: [], reads: ["TOKEN"] }),
+    );
+
+    expect(sent[0]).toMatchObject({ guard: { name: "files", widening: true } });
+    expect(sent[1]).toMatchObject({ environment: "env-a", name: "files", reads: ["TOKEN"] });
   });
 });

@@ -70,7 +70,7 @@ import { type InstalledSkillRef, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import { buildMovedRepos, MCP_FIRST_LOOK_WAIT, mcpRepoFileViews } from "./mcp-repo-files.ts";
 import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
-import { mcpChangeCheck } from "./mcp-change-check.ts";
+import { mcpChangeCheck, mcpGuard } from "./mcp-change-check.ts";
 import { mcpReloadReport, mcpReloadSnapshot, mcpSettingsView } from "./mcp-settings-view.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
@@ -81,6 +81,7 @@ import {
 } from "./skill-updates.ts";
 import {
   SETTINGS_SCOPE,
+  type McpChangeGuard,
   type McpFieldChange,
   type McpSignInsListing,
   type McpSignOutView,
@@ -926,6 +927,8 @@ export type RegistryMethods = {
     readonly environment?: string | undefined;
     readonly name: string;
     readonly changes: ReadonlyArray<McpFieldChange>;
+    /** The `${NAME}`s the entry written reads: each Environment reached says what they are there (`reads` of its reach). */
+    readonly reads?: ReadonlyArray<string> | undefined;
   }) => Effect.Effect<SettingsMcpChangeCheck | null>;
   /**
    * The agent's `settings_mcp_reload`: look at each of `environment`'s Repos' `.pi/mcp.json` again, under the throttle the
@@ -966,6 +969,12 @@ export type RegistryMethods = {
     readonly environment?: string | undefined;
     readonly changes: ReadonlyArray<SettingsFieldChange>;
     readonly author: AgentChangeAuthor;
+    /**
+     * An agent's MCP change: what to check again in the transaction that writes it (`McpChangeGuard`: that it widens nothing,
+     * and that the `${NAME}`s its entry reads resolve at the Environment), refusing it as `rejected` otherwise. A Registry from
+     * before it ignores it.
+     */
+    readonly guard?: McpChangeGuard | undefined;
   }) => Effect.Effect<SettingsChange>;
   /** The Settings' Agent changes, newest first. */
   readonly listSettingsChanges: () => Effect.Effect<ReadonlyArray<AgentChange>>;
@@ -1958,8 +1967,8 @@ export const RegistryLive = Registry.make(
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => mcpSettingsView(store, mcpSignIns, { environment, name }, now)),
             ),
-          mcpChangeCheck: ({ environment, name, changes: wanted }) =>
-            Effect.sync(() => mcpChangeCheck(store, { environment, name, changes: wanted })),
+          mcpChangeCheck: ({ environment, name, changes: wanted, reads }) =>
+            Effect.sync(() => mcpChangeCheck(store, { environment, name, changes: wanted, reads })),
           mcpSettingsReload: ({ environment }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
@@ -1984,16 +1993,20 @@ export const RegistryLive = Registry.make(
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => recordMcpDestroyed(store, environment, now)),
             ),
-          changeSettings: ({ environment, changes: wanted, author }) =>
+          changeSettings: ({ environment, changes: wanted, author, guard }) =>
             Clock.currentTimeMillis.pipe(
-              Effect.map((now) =>
-                environment === undefined
+              Effect.map((now) => {
+                const refuse =
+                  guard === undefined ? undefined : mcpGuard(store, environment, guard);
+
+                return environment === undefined
                   ? changeSettings(
                       state.raw.storage,
                       store,
                       changes,
                       { changes: wanted, author },
                       now,
+                      refuse,
                     )
                   : changeSettingsOverrides(
                       state.raw.storage,
@@ -2001,8 +2014,9 @@ export const RegistryLive = Registry.make(
                       changes,
                       { environment, changes: wanted, author },
                       now,
-                    ),
-              ),
+                      refuse,
+                    );
+              }),
             ),
           listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),
           revertSettingsChange: ({ change }) =>

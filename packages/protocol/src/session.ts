@@ -799,6 +799,11 @@ export const ApprovalRequest = Schema.Struct({
   after: Schema.String,
   /** Why the agent makes it. */
   reason: Schema.String,
+  /**
+   * What the change does that the values do not say (an MCP server change's: what it runs, sends and reaches), at most 12
+   * lines of 200 characters; shown above the values and never scrolled away. A client from before it shows none.
+   */
+  notes: Schema.String.pipe(Schema.Array, Schema.optionalKey),
 });
 
 export type ApprovalRequest = typeof ApprovalRequest.Type;

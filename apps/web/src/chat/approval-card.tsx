@@ -57,6 +57,17 @@ const ApprovalCardBody = ({ request, disabled, onAnswer }: CardProps) => {
           {request.target} · <span className="font-mono">{request.tool}</span>
         </p>
       </div>
+      {request.notes !== undefined && request.notes.length > 0 && (
+        // What the change does, never scrolled away: at most 12 lines, so the card keeps its buttons in view.
+        <ul
+          aria-label="What it runs, sends and reaches"
+          className="shrink-0 space-y-0.5 rounded-md bg-muted/50 px-3 py-2 text-xs break-words"
+        >
+          {Arr.map(request.notes, (note, index) => (
+            <li key={index}>{note}</li>
+          ))}
+        </ul>
+      )}
       {/* Only Now and After scroll, in the room the card leaves: the rest of the card is never pushed out of view. */}
       <div
         role="region"
