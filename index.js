@@ -23617,7 +23617,7 @@ ${SETUP_STEPS}`);
   }
   return { url: endpointUrl(url), clientId, clientSecret };
 };
-var BUILD_SHA = "61e8fce19f02500eb56e6f50e8a5c98a16241cdc";
+var BUILD_SHA = "c41f3c9819832c6a47bd27ec4e2698eb0482d025";
 var clientName = (sha = BUILD_SHA) => `pi-cloudpid/${sha.slice(0, 12)}`;
 
 // src/constants.ts
