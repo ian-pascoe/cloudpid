@@ -368,6 +368,22 @@ describe("the page of an App record", () => {
     ]);
   });
 
+  it("carries the host's view hash on, for the Session to build the page's origin", async () => {
+    const { host, tools } = await started();
+
+    host.answer(async () =>
+      McpHostAppHtml.make({ ...html, viewHash: "abcdefghijklmnopqrstuvwxyz" }),
+    );
+
+    expect(await Effect.runPromise(tools.appHtml(input))).toEqual({
+      status: "html",
+      hash: "h1",
+      html: "<p>hi</p>",
+      meta: { prefersBorder: true },
+      view: "abcdefghijklmnopqrstuvwxyz",
+    });
+  });
+
   it("says missing for a page the host no longer keeps, and unsupported for a host that cannot serve it", async () => {
     const { host, tools } = await started();
 

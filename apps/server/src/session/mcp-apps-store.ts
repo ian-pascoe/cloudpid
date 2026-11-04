@@ -35,6 +35,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Mutable } from "effect/Types";
@@ -86,6 +87,11 @@ export type SessionMcpAppsOptions = {
    * when the host lists `app_html` (`McpTools.appHtml`).
    */
   readonly html: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
+  /**
+   * The origin an App View of the host's `view` is served on (`viewOrigin`, from the deploy-time label), put on a page's
+   * answer. It may throw for a `view` that is not a host's label of a View; the answer then has no origin.
+   */
+  readonly viewOrigin?: (view: string) => string;
   /** The time in epoch milliseconds, `Date.now` unless a test sets it. */
   readonly now?: () => number;
 };
@@ -350,6 +356,16 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       return { status: "record", record: record.value };
     });
 
+  /** A page's answer with the origin its View is served on, when the host named the server's and the stage can build it. */
+  const withOrigin = (answer: McpAppHtmlAnswer): McpAppHtmlAnswer => {
+    if (answer.status !== "html" || !("view" in answer) || answer.view === undefined) return answer;
+
+    const { view } = answer;
+    const origin = Result.getOrUndefined(Result.try(() => options.viewOrigin?.(view)));
+
+    return origin === undefined ? answer : { ...answer, origin };
+  };
+
   const html: McpAppsService["html"] = (hash) =>
     Effect.suspend(() => {
       // The newest record that pins the hash names the server to ask: a hash is not tied to a server at the host.
@@ -363,12 +379,14 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
             status: "missing",
             message: "No App record of this Session pins that page",
           })
-        : options.html({
-            server: pin.value.server,
-            hash,
-            callId: pin.value.callId,
-            conversation: pin.value.conversation,
-          });
+        : options
+            .html({
+              server: pin.value.server,
+              hash,
+              callId: pin.value.callId,
+              conversation: pin.value.conversation,
+            })
+            .pipe(Effect.map(withOrigin));
     });
 
   const copiesFor: McpAppsService["copiesFor"] = (callIds) => {

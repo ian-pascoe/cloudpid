@@ -1,7 +1,15 @@
 // @effect-diagnostics preferEffectArray:off -- assertions over native arrays.
 import { describe, expect, it } from "vitest";
 import { appOrigin, stageLabel } from "./deployment.ts";
-import { APP_DOMAIN, appOriginOf, viewHost } from "./view-host.ts";
+import {
+  APP_DOMAIN,
+  LOCAL_APP_ORIGINS,
+  LOCAL_SANDBOX_ORIGIN,
+  appOriginOf,
+  localAppOriginOf,
+  viewHost,
+  viewOrigin,
+} from "./view-host.ts";
 
 const HASH = "5zdfpsreiskluv5bvtlks2urnj";
 const OTHER_HASH = "cdlvzzb44rouynrktjiriz5ahs";
@@ -150,5 +158,60 @@ describe("appOriginOf", () => {
     ["localhost", "localhost"],
   ])("returns undefined for %s", (_, host) => {
     expect(appOriginOf(host)).toBeUndefined();
+  });
+});
+
+describe("viewOrigin", () => {
+  it("is the https origin of viewHost, from the stage's label", () => {
+    expect(viewOrigin({ hash: HASH, label: undefined, local: false })).toBe(
+      `https://${viewHost(HASH, "prod")}`,
+    );
+
+    expect(viewOrigin({ hash: HASH, label: stageLabel("dev_ian"), local: false })).toBe(
+      `https://${viewHost(HASH, "dev_ian")}`,
+    );
+  });
+
+  it("reads a label of prod as a stage's, which only a stage named PROD has", () => {
+    expect(viewOrigin({ hash: HASH, label: "prod", local: false })).toBe(
+      `https://${HASH}--prod.${APP_DOMAIN}`,
+    );
+
+    expect(appOriginOf(`${HASH}--prod.${APP_DOMAIN}`)).toBe(appOrigin("PROD"));
+  });
+
+  it("is the one shared origin under alchemy dev, whatever the hash", () => {
+    expect(viewOrigin({ hash: HASH, label: undefined, local: true })).toBe(LOCAL_SANDBOX_ORIGIN);
+    expect(viewOrigin({ hash: OTHER_HASH, label: "x", local: true })).toBe(LOCAL_SANDBOX_ORIGIN);
+    expect(LOCAL_SANDBOX_ORIGIN).toBe("http://localhost:1338");
+  });
+
+  it.each([
+    ["a short hash", "abc", undefined],
+    ["an upper-case hash", HASH.toUpperCase(), undefined],
+    ["an empty label", HASH, ""],
+    ["a label with a dot", HASH, "a.b"],
+    ["a label over 35 characters", HASH, "a".repeat(36)],
+  ])("throws for %s", (_name, hash, label) => {
+    expect(() => viewOrigin({ hash, label, local: false })).toThrow(/No App View host/);
+  });
+});
+
+describe("localAppOriginOf", () => {
+  it("accepts only the two local app origins, exactly", () => {
+    for (const origin of LOCAL_APP_ORIGINS) expect(localAppOriginOf(origin)).toBe(origin);
+
+    for (const other of [
+      null,
+      "",
+      "*",
+      "http://localhost:1338",
+      "http://localhost:1337/",
+      "https://localhost:1337",
+      "http://localhost:1337 http://evil.example",
+      "HTTP://LOCALHOST:1337",
+    ]) {
+      expect(localAppOriginOf(other)).toBeUndefined();
+    }
   });
 });

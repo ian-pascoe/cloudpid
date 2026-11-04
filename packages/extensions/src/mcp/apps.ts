@@ -99,12 +99,16 @@ export const appHtmlOf = (
     .pipe(
       Effect.map((answer) =>
         Match.value(answer).pipe(
-          Match.tag("AppHtml", (page): McpAppHtmlAnswer => ({
-            status: "html",
-            hash: page.hash,
-            html: page.html,
-            meta: page.meta,
-          })),
+          Match.tag("AppHtml", (page): McpAppHtmlAnswer => {
+            const answer = {
+              status: "html" as const,
+              hash: page.hash,
+              html: page.html,
+              meta: page.meta,
+            };
+
+            return page.viewHash === undefined ? answer : { ...answer, view: page.viewHash };
+          }),
           Match.tag("NoAppHtml", (none): McpAppHtmlAnswer => ({
             status: "missing",
             message: none.message,

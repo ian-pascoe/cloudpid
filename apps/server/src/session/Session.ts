@@ -34,10 +34,13 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import { githubAppKeyForms } from "../github/app.ts";
 import { GitHubAppConfig } from "../github/config.ts";
+import { LOCAL_MODE_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
+import { viewOrigin } from "../view-host.ts";
 import { McpHost } from "../mcp/McpHost.ts";
 import { mcpHostName } from "../mcp/name.ts";
 import { isOwnHost } from "../mcp/own-hosts.ts";
@@ -611,6 +614,15 @@ export const SessionLive = Session.make(
           storage: kv,
           sockets: state.raw,
           html: (input) => mcpTools.appHtml(input),
+          // The origin a View is served on: from this stage's deploy-time label, never from a request's `Host`.
+          viewOrigin: (view) =>
+            viewOrigin({
+              hash: view,
+              label: Predicate.isString(worker[STAGE_LABEL_VAR])
+                ? worker[STAGE_LABEL_VAR]
+                : undefined,
+              local: worker[LOCAL_MODE_VAR] === "true",
+            }),
         });
 
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).

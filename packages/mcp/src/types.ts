@@ -1463,11 +1463,16 @@ export const McpHostCallFailed = Schema.TaggedStruct("CallFailed", {
 
 export type McpHostCallFailed = typeof McpHostCallFailed.Type;
 
-/** `request({ op: "ui/html" })` completed: the HTML under `hash` and what its View is mounted with. */
+/**
+ * `request({ op: "ui/html" })` completed: the HTML under `hash` and what its View is mounted with. `viewHash` names the
+ * server's App sandbox origin (`docs/architecture/mcp-apps.md` → The App sandbox, Origins): set by a host that knows its
+ * Environment and the server's source, left out by an older one and for a source it does not know.
+ */
 export const McpHostAppHtml = Schema.TaggedStruct("AppHtml", {
   hash: Schema.String,
   html: Schema.String,
   meta: McpAppUiMeta,
+  viewHash: Schema.optionalKey(Schema.String),
 });
 
 export type McpHostAppHtml = typeof McpHostAppHtml.Type;

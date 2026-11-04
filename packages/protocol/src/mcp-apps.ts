@@ -191,6 +191,10 @@ export type McpAppPageMeta = typeof McpAppPageMeta.Type;
  * What `mcp_app_html` answers: the page (`html`, with its `meta`), or why there is none: `missing` (no record pins the hash,
  * or the host no longer keeps it: the mount reads it by its URI, later), `unsupported` (the host does not serve it) or
  * `failed`. A status this build does not know reads as `failed`.
+ *
+ * A page comes with the `origin` its View is served on (`docs/architecture/mcp-apps.md` → The App sandbox): the Session
+ * builds it from the host's `view` (the 26 characters that name the server's origin) and its own deploy-time label, and
+ * leaves it out when the host gave no `view`, so the page cannot show the View: it fails to load, with Retry.
  */
 export const McpAppHtmlAnswer = Schema.Union([
   Schema.Struct({
@@ -198,6 +202,8 @@ export const McpAppHtmlAnswer = Schema.Union([
     hash: Schema.String,
     html: Schema.String,
     meta: McpAppPageMeta,
+    view: Schema.optionalKey(Schema.String),
+    origin: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({ status: Schema.Literal("missing"), message: Schema.String }),
   Schema.Struct({ status: Schema.Literal("unsupported"), message: Schema.String }),

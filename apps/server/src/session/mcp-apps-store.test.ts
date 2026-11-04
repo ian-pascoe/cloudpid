@@ -8,6 +8,7 @@ import {
   MAX_MCP_APP_STUBS,
   type McpAppDraft,
   type McpAppEntry,
+  type McpAppHtmlAnswer,
 } from "@cloudpid/protocol";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -275,6 +276,57 @@ describe("the Session's App records", () => {
     expect(asked).toEqual([
       { server: "docs", hash: "hash-call-1", callId: "call-1", conversation: "1" },
     ]);
+  });
+
+  it("puts the origin of the page's View on its answer, built from the host's view and never from anything the page sends", async () => {
+    const bare = { status: "html" as const, hash: "hash-call-1", html: "<p>hi</p>", meta: {} };
+
+    const page = (view?: string): McpAppHtmlAnswer =>
+      view === undefined ? bare : { ...bare, view };
+
+    const answered = async (
+      answer: McpAppHtmlAnswer,
+      viewOrigin: (view: string) => string,
+    ): Promise<McpAppHtmlAnswer> => {
+      const store = sessionMcpApps({
+        storage: memory(),
+        sockets: { getWebSockets: () => [] },
+        html: () => Effect.succeed(answer),
+        viewOrigin,
+      });
+
+      const service = Effect.runSync(
+        Effect.service(McpApps).pipe(
+          Effect.provide(Layer.provide(store.layer, fakeSecrets("s3cret"))),
+        ),
+      );
+
+      await run(service.put(draft("call-1", 1)));
+
+      return run(service.html("hash-call-1"));
+    };
+
+    const origin = (view: string) => `https://${view}.ianpascoe.app`;
+
+    expect(await answered(page("abcd"), origin)).toEqual({
+      ...page("abcd"),
+      origin: "https://abcd.ianpascoe.app",
+    });
+
+    // A host that gave no view (an older one, or a source it does not know) gives the page no origin to be shown at.
+    expect(await answered(page(), origin)).toEqual(page());
+
+    // An origin that cannot be built (a bad label) leaves none, rather than failing the page.
+    expect(
+      await answered(page("abcd"), () => {
+        throw new Error("no host");
+      }),
+    ).toEqual(page("abcd"));
+
+    expect(await answered({ status: "failed", message: "no" }, origin)).toEqual({
+      status: "failed",
+      message: "no",
+    });
   });
 
   it("copies the records of the calls a Fork holds, and those nested in them, and a stub as a stub", async () => {

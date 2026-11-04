@@ -1,7 +1,12 @@
 // docs/architecture/mcp-apps.md → The App sandbox (Domain and Worker; Who deploys it). The stack's declaration of the
 // App sandbox: its Worker, route and wildcard record, which only `prod` yields (`infra/alchemy.run.ts`).
 import { WORKER_OBSERVABILITY } from "@cloudpid/telemetry/observability";
-import { APP_DOMAIN, APP_ZONE_ID } from "@cloudpid/server/view-host";
+import {
+  APP_DOMAIN,
+  APP_ZONE_ID,
+  LOCAL_SANDBOX_PORT,
+  SANDBOX_LOCAL_VAR,
+} from "@cloudpid/server/view-host";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Effect from "effect/Effect";
 
@@ -34,4 +39,20 @@ export const AppSandbox = Effect.gen(function* () {
   });
 
   return worker;
+});
+
+/**
+ * The App sandbox under `alchemy dev` (docs/architecture/mcp-apps.md → The App sandbox, Who deploys it): the same Worker
+ * in workerd on a second local port, {@link LOCAL_SANDBOX_PORT} beside the main Worker's 1337, one shared origin for every
+ * View. It has no route and no record, and the var that puts it in local mode (`SANDBOX_LOCAL_VAR`); `strictPort` keeps it
+ * on the port the main Worker's View URLs name (`LOCAL_SANDBOX_ORIGIN`) rather than the next free one. The stack declares it
+ * under `alchemy dev` and never on a deployed stage (`infra/alchemy.run.ts`).
+ */
+export const LocalAppSandbox = Cloudflare.Worker("LocalAppSandbox", {
+  main: new URL("./worker.ts", import.meta.url).href,
+  compatibility: { date: "2026-08-31" },
+  workersDev: false,
+  observability: WORKER_OBSERVABILITY,
+  env: { [SANDBOX_LOCAL_VAR]: "true" },
+  dev: { port: LOCAL_SANDBOX_PORT, strictPort: true },
 });

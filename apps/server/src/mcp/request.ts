@@ -71,7 +71,10 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
+import { normalizeMcpName } from "@cloudpid/config";
+import { viewHash, viewSourceOf } from "../view-hash.ts";
 import { appUriOf } from "./app-html.ts";
+import type { AppPage } from "./app-store.ts";
 import {
   type AppRead,
   type AppReadServices,
@@ -93,7 +96,7 @@ import {
 import { resourceRequest } from "./resources.ts";
 import { type McpDiscoveryServices, orHalt, writeOrHalt } from "./discovery.ts";
 import { versionsOf } from "./server-state.ts";
-import { McpHostStore, type McpHostStoreService } from "./store.ts";
+import { McpHostStore, type McpHostStoreService, type StoredServer } from "./store.ts";
 
 const OpOnly = Schema.Struct({ op: Schema.String });
 
@@ -143,6 +146,21 @@ const mountedPage = (store: McpHostStoreService, hash: string) =>
 
     return page;
   });
+
+/**
+ * `page` with the hash of its server's App sandbox origin (`viewHash`), when the host knows its Environment and the
+ * server's source: the page itself is kept by content, never by server, so the origin is the asking server's.
+ */
+const withViewHash = (page: AppPage, environment: string | undefined, server: StoredServer) => {
+  const source = viewSourceOf(server.source);
+
+  return environment === undefined || source === undefined
+    ? page
+    : {
+        ...page,
+        viewHash: viewHash({ environment, source, normalizedName: normalizeMcpName(server.name) }),
+      };
+};
 
 /** The hash an App tool's call answers: the page kept for this inventory, or the one a read already in flight has kept. */
 const keptHash = (started: Option.Option<StartedRead>) =>
@@ -336,7 +354,7 @@ const appHtml = (
 
       return page === undefined
         ? NoAppHtml.make({ message: "The host holds no App HTML under that hash" })
-        : McpHostAppHtml.make(page);
+        : McpHostAppHtml.make(withViewHash(page, environment, named.value.view.server));
     }
 
     const { uri } = params;
@@ -396,13 +414,15 @@ const appHtml = (
 
     if (outcome.kind === "failed") return outcome.answer;
 
-    if (outcome.kind === "unkept") return McpHostAppHtml.make(outcome.page);
+    if (outcome.kind === "unkept") {
+      return McpHostAppHtml.make(withViewHash(outcome.page, environment, view.server));
+    }
 
     const page = yield* mountedPage(store, outcome.hash);
 
     return page === undefined
       ? NoAppHtml.make({ message: "The App's HTML was evicted as it was read" })
-      : McpHostAppHtml.make(page);
+      : McpHostAppHtml.make(withViewHash(page, environment, view.server));
   });
 
 /**

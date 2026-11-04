@@ -222,6 +222,9 @@ const foundLegacy = (): EngineScript => {
 };
 
 /** `vi.waitFor` with a wait that a loaded machine does not run out of. */
+/** What an App's origin is named by: 26 lowercase base32 characters (`view-hash.ts`). */
+const VIEW_HASH = /^[a-z2-7]{26}$/;
+
 const waitFor = <A>(check: () => A | Promise<A>) => vi.waitFor(check, { timeout: 8000 });
 
 describe("an App tool's call", () => {
@@ -259,6 +262,38 @@ describe("an App tool's call", () => {
       hash: kept?.hash,
       html: "<p>hi</p>",
       meta: { prefersBorder: true, csp: { connectDomains: ["https://a.test"] } },
+      viewHash: expect.stringMatching(VIEW_HASH),
+    });
+  });
+
+  it("names the origin of the server that asks, though a page is kept by content and shared", async () => {
+    const host = await discovered(entry("docs"), entry("other"));
+
+    await host.scriptRequest(urlOf("docs"), [read(page("<p>same</p>"))]);
+    await host.scriptRequest(urlOf("other"), [read(page("<p>same</p>"))]);
+
+    const [docs, other] = await Promise.all([
+      host.request(htmlOf("docs", { uri: URI }), {}),
+      host.request(htmlOf("other", { uri: URI }), {}),
+    ]);
+
+    if (!Predicate.isTagged(docs, "AppHtml") || !Predicate.isTagged(other, "AppHtml")) {
+      throw new Error(JSON.stringify([docs, other]));
+    }
+
+    // One page, kept once; each server's own origin.
+    expect(other.hash).toBe(docs.hash);
+    expect(docs.viewHash).toMatch(VIEW_HASH);
+    expect(other.viewHash).toMatch(VIEW_HASH);
+    expect(other.viewHash).not.toBe(docs.viewHash);
+
+    // The same by hash, as a mount of a record does it.
+    expect(await host.request(htmlOf("docs", { hash: docs.hash }), {})).toMatchObject({
+      viewHash: docs.viewHash,
+    });
+
+    expect(await host.request(htmlOf("other", { hash: docs.hash }), {})).toMatchObject({
+      viewHash: other.viewHash,
     });
   });
 
@@ -988,6 +1023,7 @@ describe("against a fixture App server", () => {
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     expect(await host.request(htmlOf("docs", { hash }), {})).toEqual({
       _tag: "AppHtml",
+      viewHash: expect.stringMatching(VIEW_HASH),
       hash,
       html: "<main>fixture</main>",
       meta: { prefersBorder: true },
