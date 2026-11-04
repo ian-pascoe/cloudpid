@@ -20,7 +20,14 @@ import {
 import type { McpHostClientService } from "./client.ts";
 import type { McpCallOrigin } from "./exchange.ts";
 import { spillTo } from "./spill.ts";
-import { pollOnce, sendCancel, taskSpan } from "./task-host.ts";
+import {
+  cancelDue,
+  cancelAttempted,
+  pollOnce,
+  sendCancel,
+  sendCancelWithin,
+  taskSpan,
+} from "./task-host.ts";
 import { applyDecision, decide, type Decision } from "./task-poll.ts";
 import { endedRecord, endInDoc, markCancelSent } from "./task-end.ts";
 import {
@@ -260,7 +267,8 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         // asked for it is left to finish), and an ignored one is given up on.
         if (
           record.cancel?.sent === "sending" &&
-          now - record.cancel.at >= MCP_TASK_CANCEL_SENDING_MS
+          now - record.cancel.at >= MCP_TASK_CANCEL_SENDING_MS &&
+          !cancelAttempted(client, record)
         ) {
           const took = await sendCancel(client, record, origin);
 
@@ -450,7 +458,9 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
       const now = runtime.now();
 
       if (record.end === undefined) {
-        await sendCancel(client, record, origin);
+        // Once, and not for longer than the bound: one already sent (the agent's, say) is not sent again, and a server that
+        // does not answer does not hold Stop all, Archive or Delete back: the record ends all the same.
+        if (cancelDue(client, record, now)) await sendCancelWithin(client, record, origin);
 
         const closed: McpTaskEnd = { status: "cancelled", by: "stop", at: now };
         const ended = endedRecord(record, closed, {});

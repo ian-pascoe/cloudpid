@@ -24,7 +24,7 @@ import {
   type McpNotices,
   mcpNotices,
   type McpSamplingBinding,
-  type TaskSweep,
+  type SweepHarness,
 } from "@cloudpid/extensions/mcp";
 import {
   discoverPrompts,
@@ -195,6 +195,10 @@ export const MCP_NOTICE_KIND = "cloudpid.mcp-notice";
 /** How often the alarm wakes the object while work is live, so a run an eviction cut off resumes. */
 export const HEARTBEAT_MS = 60_000;
 
+/** Where the host keeps how many MCP tasks it last told the Registry the Session follows, and what stands for "unknown". */
+const REPORTED_TASKS_KEY = "mcp-tasks-reported";
+const REPORT_PENDING = -1;
+
 /** How long a report to the Registry may take before it counts as failed. */
 export const REPORT_TIMEOUT: Duration.Input = "5 seconds";
 
@@ -308,6 +312,15 @@ const isFollower = (task: { readonly record: { readonly kind: string } }): boole
   task.record.kind === MCP_TASK_FOLLOWER;
 
 /**
+ * The live tasks that are work: every one but a follower of an MCP task. The one rule `wake` (the status the Registry
+ * is told), `idle()` and `follow()` (the MCP endpoint's status) share, so a conversation that only follows MCP tasks
+ * reads idle everywhere (`docs/architecture/mcp-server-requests.md` → MCP tasks, Following, not running).
+ */
+const working = <T extends { readonly record: { readonly kind: string } }>(
+  tasks: ReadonlyArray<T>,
+): ReadonlyArray<T> => Arr.filter(tasks, (task) => !isFollower(task));
+
+/**
  * What the alarm is armed for: `active` while work is live, sleeping tasks included. The host derives it from the live
  * tasks rather than taking pi-durable's `Harness.wake()`, whose `active` leaves a sleeping task out (it gives its time as
  * `at`): a Run whose generation sleeps out a retry backoff is still a Run, which the Registry must hear is running and
@@ -319,14 +332,14 @@ type Wake = {
   /**
    * What the live followers of MCP tasks ask (`docs/architecture/mcp-server-requests.md` → MCP tasks, Following, not
    * running): they are not work, so they leave `active` alone. One that is pending or running keeps the heartbeat
-   * (`beating`); a sleeping one asks to be woken at its `until`; `count` is what the Registry is told.
+   * (`needsHeartbeat`); a sleeping one asks to be woken at its `until`; `count` is what the Registry is told.
    */
   readonly followers?: Followers;
 };
 
 type Followers = {
   readonly count: number;
-  readonly beating: boolean;
+  readonly needsHeartbeat: boolean;
   readonly until: number | undefined;
 };
 
@@ -419,15 +432,17 @@ export type SessionHostMcp<R> = {
   readonly bindSampling?: (binding: McpSamplingBinding) => void;
   /**
    * What the host does when a follower of an MCP task starts a Run of its own (`docs/architecture/mcp-server-requests.md`
-   * → MCP tasks, Delivery): wait for the Session to be idle and tell the owner the Run's end, as it does for the owner's.
-   * Called once, before anything resumes.
+   * → MCP tasks, Delivery) or moves (ends, or sleeps until another time): wait for the Session to be idle, tell the owner
+   * the Run's end as it does for the owner's, and settle, so the alarm and the Registry's count follow. Called once, before
+   * anything resumes; `settle` is what it calls.
    */
-  readonly watchRuns?: (started: () => void) => void;
+  readonly settleOnFollowers?: (settle: () => void) => void;
   /**
-   * What the host does at every wake, after the work that is due has resumed (`docs/architecture/mcp-server-requests.md`
-   * → MCP tasks, The record): end the inline MCP tasks whose call is gone. Never fails.
+   * What the host does whenever the Session settles with no work live, and so at every wake once what is due has resumed
+   * (`docs/architecture/mcp-server-requests.md` → MCP tasks, The record): end the inline MCP tasks whose call is gone.
+   * Never fails.
    */
-  readonly sweep?: (harness: TaskSweep["harness"]) => Effect.Effect<void>;
+  readonly sweep?: (harness: SweepHarness) => Effect.Effect<void>;
   /**
    * Tell conversation `conversationId` that the `mcp_servers` listing changed, if its section was shown another one: run
    * after a request start's install, before its message is placed. Never fails.
@@ -1317,15 +1332,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         task.state.kind !== "blocked" && task.state.kind !== "waiting";
 
       const following = Arr.filter(tasks, isFollower);
-      const working = Arr.filter(tasks, (task) => !isFollower(task));
-      const live = Arr.filter(following, runnable);
-      const sleeping = Arr.filter(live, (task) => task.state.kind === "sleeping");
+      const awake = Arr.filter(following, runnable);
+      const sleeping = Arr.filter(awake, (task) => task.state.kind === "sleeping");
 
       return {
-        active: Arr.some(working, runnable),
+        active: Arr.some(working(tasks), runnable),
         followers: {
           count: following.length,
-          beating: live.length > sleeping.length,
+          needsHeartbeat: awake.length > sleeping.length,
           until: earliest(
             ...Arr.map(sleeping, (task) =>
               task.state.kind === "sleeping" ? task.state.until : undefined,
@@ -1373,8 +1387,12 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
         );
 
-  /** How many MCP tasks the Registry was last told this Session follows, by this instance. Unknown at first. */
-  let reportedTasks: number | undefined;
+  /**
+   * How many MCP tasks the Registry was last told this Session follows, kept in storage so a new instance does not tell
+   * it again, and a Session that never followed one tells it nothing (the Registry reads none as nothing). `PENDING`
+   * after a report that failed, which no count equals: the next settle tells it.
+   */
+  let reportedTasks: number | undefined = kv.get<number>(REPORTED_TASKS_KEY) ?? 0;
 
   /**
    * Tell the Registry how many MCP tasks the Session follows (`mcpTasks`) unless it was just told, and say whether it
@@ -1388,6 +1406,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           Effect.andThen(
             Effect.sync(() => {
               reportedTasks = count;
+              kv.put(REPORTED_TASKS_KEY, count);
 
               return true;
             }),
@@ -1397,6 +1416,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
               Effect.andThen(
                 Effect.sync(() => {
                   reportedTasks = undefined;
+                  kv.put(REPORTED_TASKS_KEY, REPORT_PENDING);
 
                   return false;
                 }),
@@ -1445,7 +1465,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const rest = (followers: Followers | undefined) =>
     Effect.all([wakeAt, heartbeat]).pipe(
       Effect.map(([other, beat]) =>
-        earliest(other, followers?.beating === true ? beat : undefined, followers?.until),
+        earliest(other, followers?.needsHeartbeat === true ? beat : undefined, followers?.until),
       ),
       Effect.flatMap((at) =>
         at === undefined
@@ -1494,8 +1514,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           Effect.andThen(noteWorkspaceActivity),
           Effect.asVoid,
         )
-      : // Report before deleting the heartbeat: an unreported end, or subagents unwritten, keep it, to report again.
+      : // Report before deleting the heartbeat: an unreported end, or subagents unwritten, keep it, to report again. Nothing
+        // that works is live, so an inline MCP task that has a record has lost its call: the sweep ends it, at every wake
+        // (which settles) and whenever the Session settles idle.
         onIdle.pipe(
+          Effect.andThen(options.mcp?.sweep?.(harness.harness) ?? Effect.void),
           Effect.andThen(report("idle")),
           Effect.flatMap((told) =>
             Effect.all([
@@ -1612,7 +1635,6 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const wakeAndResume = wake.pipe(
     Effect.flatMap(arm),
     Effect.andThen(harness.resume.pipe(Effect.withSpan("session.resume"))),
-    Effect.andThen(options.mcp?.sweep?.(harness.harness) ?? Effect.void),
     Effect.andThen(settleWhenIdle),
     serially,
   );
@@ -3236,8 +3258,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     ),
   );
 
-  // A Run an MCP task's follower started is notified as one the owner's submission started.
-  options.mcp?.watchRuns?.(() => {
+  // A Run an MCP task's follower started is notified as one the owner's submission started, and a follower that moved
+  // settles the Session.
+  options.mcp?.settleOnFollowers?.(() => {
     runAgents(settleWhenIdle);
   });
 
@@ -3358,7 +3381,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         conversationId: conversation.id,
         activeBranch: current.id,
         copying,
-        idle: tasks.length === 0 && submissions.length === 0 && !admission.anyPreparing(),
+        idle: working(tasks).length === 0 && submissions.length === 0 && !admission.anyPreparing(),
+        following: Arr.some(tasks, isFollower),
         unsettled,
         stalled,
         newestEntry: read.newestEntry,
@@ -3440,7 +3464,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     // A follower of an MCP task is not work: a conversation that only follows tasks is idle.
     idle: inspect.pipe(
       Effect.map(
-        ({ tasks, submissions }) => Arr.every(tasks, isFollower) && submissions.length === 0,
+        ({ tasks, submissions }) => working(tasks).length === 0 && submissions.length === 0,
       ),
     ),
     settle,

@@ -786,7 +786,11 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
           // Stopping what is not running is a no-op that leaves no notice, so the call is idempotent: with only
           // subagents working, a plain stop has no Run to stop (it leaves them), and `subagents` is what stops them.
-          if (before.idle || (request.subagents !== true && !before.unsettled)) {
+          // Stop all (`subagents`) is the owner's path to the MCP tasks a Session follows, which are not work: a follow-only
+          // Session is idle, and only it reaches them.
+          const reaches = request.subagents === true && before.following;
+
+          if (!reaches && (before.idle || (request.subagents !== true && !before.unsettled))) {
             return apiOk<StopResult>({ status: statusOf(yield* snapshot(seam)) });
           }
 

@@ -337,24 +337,29 @@ export const sessionBranches = (options: BranchesOptions) => {
       );
     }).pipe(inArrivalOrder);
 
-  /** Stop every Session branch, background work included, and every subagent below the active one's (all of them). */
+  /**
+   * Stop every Session branch, background work included, and every subagent below the active one's (all of them). The
+   * branches stop side by side, so a server that is slow to take an MCP task's `tasks/cancel` holds up one branch's stop
+   * and no other's (a follower's own wait is bounded: `docs/architecture/mcp-server-requests.md` → MCP tasks, Lifecycle).
+   */
   const stopEverything = Effect.gen(function* () {
     const current = yield* active;
+    const others = Arr.filter(branchIds(yield* treeState), (id) => id !== current.id);
 
-    yield* attempt("abort", () =>
-      stopConversation(harness, current.id, { subagents: true }, context, beforeAbort),
+    yield* Effect.all(
+      [
+        attempt("abort", () =>
+          stopConversation(harness, current.id, { subagents: true }, context, beforeAbort),
+        ),
+        ...Arr.map(others, (id) =>
+          attempt("abort", async () => {
+            await beforeAbort(id);
+            await (await harness.conversation(id, context))?.abort(context, { background: true });
+          }),
+        ),
+      ],
+      { concurrency: "unbounded", discard: true },
     );
-
-    for (const id of branchIds(yield* treeState)) {
-      if (id === current.id) continue;
-
-      yield* attempt("abort", async () => {
-        await beforeAbort(id);
-        // Background work too: an MCP task its agent left following is cancelled on every branch (`docs/architecture/
-        // mcp-server-requests.md` → MCP tasks, Lifecycle).
-        await (await harness.conversation(id, context))?.abort(context, { background: true });
-      });
-    }
   });
 
   return { treeState, active, busyReason, tree, navigate, switchBranch, stopEverything };

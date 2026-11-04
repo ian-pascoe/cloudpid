@@ -31,7 +31,7 @@ export const taskGet = (record: McpTaskRecord, ctx: McpHostRequestContext): McpH
 
 /** The `tasks/cancel` of `record`; the host allows it for a server switched off since. */
 export const taskCancel = (
-  record: McpTaskRecord,
+  record: Pick<McpTaskRecord, "server" | "taskId" | "tool" | "conn">,
   ctx: McpHostRequestContext,
 ): McpHostTaskCancel => ({
   op: "tasks/cancel",

@@ -31,6 +31,7 @@ import {
   type McpToolOptions,
   type McpToolsService,
   type McpToolsStore,
+  type SweepHarness,
 } from "@cloudpid/extensions/mcp";
 import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
 import type { McpAppHtmlAnswer } from "@cloudpid/protocol";
@@ -289,8 +290,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   /** Where the notices are written, once the host's Harness is open. */
   let notices: McpNotices | undefined;
 
-  /** What the host does when a follower of an MCP task starts a Run (`watchRuns`). */
-  let runStarted: (() => void) | undefined;
+  /** What the host does when a follower of an MCP task starts a Run or moves (`settleOnFollowers`): it settles. */
+  let settleHost: (() => void) | undefined;
 
   /**
    * The Workspace marked used before any host call, tried twice: false when it never answered, and the request start
@@ -328,7 +329,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
 
     if (options.apps !== undefined) toolOptions.apps = options.apps;
 
-    // A Run a follower starts is one the host tells the owner the end of (`watchRuns`).
+    // A Run a follower starts is one the host tells the owner the end of, and a follower that moved (ended, or slept
+    // until another time) is a reason to settle: the alarm and the Registry's count follow it (`settleOnFollowers`).
     if (options.tasks !== undefined) {
       const { submitted } = options.tasks;
 
@@ -336,11 +338,11 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
         ...options.tasks,
         submitted: (id) => {
           submitted?.(id);
-          runStarted?.();
+          settleHost?.();
         },
         changed: () => {
           options.tasks?.changed?.();
-          runStarted?.();
+          settleHost?.();
         },
       };
     }
@@ -440,11 +442,11 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     held?.tools.bindNotices(next);
   };
 
-  const watchRuns = (next: () => void) => {
-    runStarted = next;
+  const settleOnFollowers = (next: () => void) => {
+    settleHost = next;
   };
 
-  const sweep = (harness: Parameters<McpToolsService["sweepTasks"]>[0]) =>
+  const sweep = (harness: SweepHarness) =>
     held === undefined ? Effect.void : held.tools.sweepTasks(harness);
 
   const notify = (conversationId: ConversationId, values: SessionSettingsValues) => {
@@ -557,7 +559,17 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     options.sampling?.bind(binding);
   };
 
-  return { start, reinstall, bind, bindSampling, watchRuns, sweep, notify, prompts, appHtml };
+  return {
+    start,
+    reinstall,
+    bind,
+    bindSampling,
+    settleOnFollowers,
+    sweep,
+    notify,
+    prompts,
+    appHtml,
+  };
 };
 
 /** What a prompt get came to: the result `use` made, or why it is refused. */

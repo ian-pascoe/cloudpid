@@ -82,8 +82,19 @@ export const MCP_TASK_FOLLOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** How long an ignored `tasks/cancel` is waited for before cloudpid stops following: 2 minutes. */
 export const MCP_TASK_CANCEL_GRACE_MS = 2 * 60 * 1000;
 
-/** How long a cancel marked `sending` is left to its sender before the follower sends it again: 10 seconds. */
-export const MCP_TASK_CANCEL_SENDING_MS = 10_000;
+/**
+ * How long a cancel marked `sending` is left to its sender before the follower sends it again: 75 seconds, past the
+ * host's 30 s request bound and the wire's one resend of a cut, so the send of a call that is still alive has ended. (A
+ * send in this instance's memory is never sent again at all: `cancelInFlight`.)
+ */
+export const MCP_TASK_CANCEL_SENDING_MS = 75_000;
+
+/**
+ * How long Stop all, Archive and Delete wait for a server to take the `tasks/cancel` they send before the task's record
+ * ends anyway: 2 seconds (`docs/architecture/mcp-server-requests.md` → MCP tasks, Lifecycle). The cancel is best effort
+ * past it.
+ */
+export const MCP_TASK_STOP_CANCEL_MS = 2_000;
 
 /** How long a result is kept after the task ended: 7 days. */
 export const MCP_TASK_RESULT_KEPT_MS = 7 * 24 * 60 * 60 * 1000;

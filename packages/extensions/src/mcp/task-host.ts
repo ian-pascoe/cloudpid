@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- pi-durable's task seam is Promise-based.
+// @effect-diagnostics missingPipeableSignature:off asyncFunction:off newPromise:off globalTimers:off -- pi-durable's task seam is Promise-based.
 // What the inline window and the follower ask the host of an MCP task (`docs/architecture/mcp-server-requests.md` → MCP
 // tasks): one `tasks/get`, one `tasks/cancel` (sent once: the wire resends a cut), and the Session-side `mcp.task` span
 // of a task that ended: its server, tool, origin, where it ended, polls counted at each written change, failures, who
@@ -8,7 +8,12 @@ import type { McpTaskSnapshot } from "@cloudpid/mcp/types";
 import type { McpHostClientService } from "./client.ts";
 import type { McpCallOrigin } from "./exchange.ts";
 import { cancelTook, taskCancel, taskGet } from "./task-poll.ts";
-import { readPoll, type PollOutcome } from "./task-policy.ts";
+import {
+  MCP_TASK_CANCEL_SENDING_MS,
+  MCP_TASK_STOP_CANCEL_MS,
+  readPoll,
+  type PollOutcome,
+} from "./task-policy.ts";
 import { abortedBy, type McpTasksOptions, taskContext } from "./task-port.ts";
 import type { McpTaskRecord } from "./task-state.ts";
 
@@ -51,6 +56,12 @@ const redactedSnapshot = async (
     : shown;
 };
 
+/** What a `tasks/cancel` is made of: a record, or what a call holds of a task it could not record. */
+export type CancelTarget = Pick<
+  McpTaskRecord,
+  "handle" | "taskId" | "server" | "tool" | "conn" | "callId" | "conversation"
+>;
+
 /**
  * `tasks/cancel` of `record`, sent once: whether the server took it. The wire sends it once more itself when it was cut
  * (`docs/architecture/mcp-connections.md` → Requests and Legacy sessions), and any other answer (an error, a refusal) is
@@ -58,12 +69,78 @@ const redactedSnapshot = async (
  */
 export const sendCancel = async (
   client: McpHostClientService,
-  record: McpTaskRecord,
+  record: CancelTarget,
   origin: McpCallOrigin,
-): Promise<boolean> =>
-  cancelTook(
+): Promise<boolean> => {
+  attemptsOf(client).add(record.handle);
+
+  return cancelTook(
     await Effect.runPromise(client.request(taskCancel(record, taskContext(origin, record)), {})),
   );
+};
+
+/**
+ * The handles whose `tasks/cancel` a Session's client has sent, or is sending: it is never sent twice by one instance,
+ * whether the first is still out or its call has gone. Kept by the client, so another Session's handles, which repeat
+ * (`mcp-task-1`), are never mistaken for these. A cancel another instance marked `sending` is left alone for
+ * `MCP_TASK_CANCEL_SENDING_MS` (`cancelDue`).
+ */
+const attempts = new WeakMap<McpHostClientService, Set<string>>();
+
+const attemptsOf = (client: McpHostClientService): Set<string> => {
+  const held = attempts.get(client);
+
+  if (held !== undefined) return held;
+
+  const made = new Set<string>();
+
+  attempts.set(client, made);
+
+  return made;
+};
+
+/** Whether `client`'s Session has sent, or is sending, `record`'s `tasks/cancel`. */
+export const cancelAttempted = (
+  client: McpHostClientService,
+  record: Pick<McpTaskRecord, "handle">,
+): boolean => attemptsOf(client).has(record.handle);
+
+/**
+ * Whether Stop all, Archive, Delete or the sweep still has to send `record`'s `tasks/cancel`: it is sent once, so not when
+ * one went (`sent`, or `failed`, which is not asked again), nor when this Session's instance has sent one, nor while
+ * another instance's `sending` is younger than `MCP_TASK_CANCEL_SENDING_MS`.
+ */
+export const cancelDue = (
+  client: McpHostClientService,
+  record: McpTaskRecord,
+  now: number,
+): boolean =>
+  !cancelAttempted(client, record) &&
+  (record.cancel === undefined ||
+    (record.cancel.sent === "sending" && now - record.cancel.at >= MCP_TASK_CANCEL_SENDING_MS));
+
+/**
+ * `sendCancel`, waiting no longer than `ms` for the answer (`MCP_TASK_STOP_CANCEL_MS`): whether the server took it in time.
+ * The request is not cut at the bound, only no longer waited for; it never fails.
+ */
+export const sendCancelWithin = async (
+  client: McpHostClientService,
+  record: CancelTarget,
+  origin: McpCallOrigin,
+  ms: number = MCP_TASK_STOP_CANCEL_MS,
+): Promise<boolean> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const bound = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+
+  try {
+    return await Promise.race([sendCancel(client, record, origin).catch(() => false), bound]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
 
 /** What the `mcp.task` span says of a task that ended: never its `taskId`, `statusMessage` or a result. */
 export const taskAttributes = (record: McpTaskRecord) => ({

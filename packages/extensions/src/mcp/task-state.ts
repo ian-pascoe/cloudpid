@@ -106,8 +106,11 @@ export type McpTaskRecord = {
   agent: string;
   /** The tool call's id, which the record is looked up by. */
   callId: string;
-  /** The pi-durable task of that call, which the sweep asks whether it is live (`./task-sweep.ts`). */
-  callTask: TaskId;
+  /**
+   * The pi-durable task of that call, which the sweep asks whether it is live (`./task-sweep.ts`). Absent in a record
+   * written before it was kept, which the sweep never touches.
+   */
+  callTask?: TaskId;
   /** The server's `timeout` in effect at the call, in ms: the inline window is the smaller of it and 10 minutes. */
   windowMs: number;
   createdAt: number;

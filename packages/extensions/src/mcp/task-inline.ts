@@ -14,7 +14,7 @@ import type { McpCallOrigin } from "./exchange.ts";
 import { failedWith } from "./result.ts";
 import { spillTo } from "./spill.ts";
 import type { McpTaskFollower } from "./task-follow.ts";
-import { pollOnce, sendCancel, taskSpan } from "./task-host.ts";
+import { cancelDue, pollOnce, sendCancel, sendCancelWithin, taskSpan } from "./task-host.ts";
 import { applyDecision, decide, type Decision } from "./task-poll.ts";
 import { detachedText, pollDelayMs, type PollOutcome } from "./task-policy.ts";
 import { type McpTasksOptions, sleepUntilWoken } from "./task-port.ts";
@@ -28,7 +28,6 @@ import {
 } from "./task-results.ts";
 import {
   addTask,
-  EMPTY_TASKS,
   MCP_TASK_TOOL_NAMES,
   McpTasksDoc,
   type McpTaskDraft,
@@ -143,12 +142,10 @@ export const startTask = async (
   return record;
 };
 
-/** `tasks/cancel` of a task whose record could not be stored, as a record made of its draft; never fails. */
+/** `tasks/cancel` of a task whose record could not be stored, with what the call holds of it; never fails. */
 const cancelUnrecorded = async (call: TaskCall, draft: McpTaskDraft): Promise<void> => {
   try {
-    const held = addTask(structuredClone(EMPTY_TASKS), draft);
-
-    await sendCancel(call.client, held, call.origin);
+    await sendCancelWithin(call.client, { ...draft, handle: draft.callId }, call.origin);
   } catch {
     // Best effort: the task is orphaned until the server's TTL.
   }
@@ -259,13 +256,26 @@ const finish = async (
   return result;
 };
 
-/** Stop ended the call: the task is cancelled, and the record says Stop did it. */
+/**
+ * Stop ended the call: the record says Stop did it, and the task is cancelled. The cancel is sent once and not waited for
+ * longer than the bound (`sendCancelWithin`), so a server that never answers holds nothing back; the end is written beside
+ * it, and a Stop that ended the call's invocation first leaves the record to the sweep (`./task-sweep.ts`), which does not
+ * send the cancel again.
+ */
 const stopped = async (call: TaskCall, record: McpTaskRecord): Promise<StoredResult> => {
-  await sendCancel(call.client, record, call.origin);
-
   const decision: Decision = { patch: {}, failures: record.failures, changed: true };
 
-  await finish(call, record, { status: "cancelled", by: "stop" }, undefined, decision);
+  const sending = cancelDue(call.client, record, call.api.now())
+    ? sendCancelWithin(call.client, record, call.origin)
+    : Promise.resolve(false);
+
+  try {
+    await finish(call, record, { status: "cancelled", by: "stop" }, undefined, decision);
+  } catch {
+    // The invocation ended with the Stop: nothing can be written by it, and the sweep ends the record.
+  }
+
+  await sending;
 
   return failedWith(
     `The call was stopped, and its MCP task ${record.handle} was cancelled.`,
