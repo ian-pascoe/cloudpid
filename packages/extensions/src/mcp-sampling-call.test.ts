@@ -1,5 +1,5 @@
 // A call of an MCP tool whose Legacy server asks for a model reply (`docs/architecture/mcp-server-requests.md` → Sampling
-// requests): declared only for a server whose definition says `allow`, on a host that lists `sampling`; answered on the
+// requests): declared for a server whose definition does not say `off`, on a host that lists `sampling`; answered on the
 // Session's models; and told to the model and `details` without what was asked or answered. A scripted model on a Harness,
 // and an in-memory host that asks through the call's hooks.
 // pi-durable's Harness is Promise-based, so this file is too.
@@ -205,8 +205,14 @@ describe("a Legacy server's Sampling request", () => {
     ]);
   });
 
-  it("is not declared on a read when the server does not allow it", async () => {
-    const files = { name: "files", exposure: "direct", resources: true, tools: [] };
+  it("is not declared on a read when the server says off", async () => {
+    const files = {
+      name: "files",
+      exposure: "direct",
+      resources: true,
+      tools: [],
+      entry: { sampling: "off" },
+    };
 
     const { sent } = await setup({
       server: files,
@@ -218,8 +224,15 @@ describe("a Legacy server's Sampling request", () => {
 
   it.each([
     ["a definition that says ask", { server: { ...DOCS, entry: { sampling: "ask" } } }],
+    ["a definition without sampling, which asks", { server: DOCS }],
+  ])("is declared by %s", async (_name, options) => {
+    const { sent } = await setup(options);
+
+    expect(sent[0]?.ctx.answers?.sampling).toBe(true);
+  });
+
+  it.each([
     ["a definition that says off", { server: { ...DOCS, entry: { sampling: "off" } } }],
-    ["a definition without sampling", { server: DOCS }],
     [
       "a host that does not list sampling",
       { features: MCP_HOST_FEATURES.filter((each) => each !== MCP_SAMPLING_FEATURE) },

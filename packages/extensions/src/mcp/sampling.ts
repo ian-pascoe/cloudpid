@@ -11,6 +11,11 @@
 // `-32603` when the model fails. Only a server whose definition says `sampling: "allow"` is answered here: the owner's
 // yes on a card is not built yet.
 import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
+import type {
+  McpElicitationSource,
+  McpSamplingRecordView,
+  McpSamplingRequest,
+} from "@cloudpid/protocol";
 import {
   type JsonObject,
   MCP_INTERNAL_ERROR,
@@ -41,6 +46,9 @@ import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import type { McpSamplingDetail, McpSamplingWhy } from "./details.ts";
 import type { McpQuestionStorage } from "./question-records.ts";
+import type { McpQuestionsService } from "./questions.ts";
+import { cardMessages, recordView } from "./sampling-card.ts";
+import type { McpSamplingCard } from "./sampling-questions.ts";
 import {
   cutText,
   type McpSamplingRecord,
@@ -107,12 +115,20 @@ export type McpSamplingAsk = {
   /** The model-facing name of the tool whose call the request came in. */
   readonly tool: string;
   readonly callId: string;
-  readonly conversationId: number;
+  readonly conversationId: McpSamplingRequest["conversationId"];
   /** The server's own request id. */
   readonly key: string;
   readonly params: JsonObject;
   /** Aborts when Stop does. */
   readonly signal?: AbortSignal | undefined;
+  /** What the server's definition says: `allow` answers without asking, `ask` asks the owner on a card first. */
+  readonly decision: "allow" | "ask";
+  /** Where the server's definition is, for the card's badge. */
+  readonly source?: McpElicitationSource | undefined;
+  /** Stop the call's own clock while the owner decides, and start it again. */
+  readonly hold?:
+    | { readonly pause: Effect.Effect<void>; readonly resume: Effect.Effect<void> }
+    | undefined;
 };
 
 /** What a request came to: the reply for the server, or the refusal it is answered with. */
@@ -140,6 +156,8 @@ export type McpSamplingService = {
   readonly bind: (binding: McpSamplingBinding) => void;
   /** The records kept, oldest first. */
   readonly records: Effect.Effect<ReadonlyArray<McpSamplingRecord>>;
+  /** The record `id`, as a card reads it (`mcp_sampling_get`); undefined when none is kept. */
+  readonly view: (id: string) => Effect.Effect<McpSamplingRecordView | undefined>;
 };
 
 export class McpSampling extends Context.Service<McpSampling, McpSamplingService>()(
@@ -150,6 +168,21 @@ export type McpSamplingOptions = {
   readonly storage: McpQuestionStorage;
   /** `value` with every Secret the Session holds replaced by its reference: what a record keeps, and the tools a model sees. */
   readonly redact: <A>(value: A) => Effect.Effect<A>;
+  /** The Session's questions, which ask the owner of a server whose definition says `ask`; without them none is answered. */
+  readonly questions?: Pick<McpQuestionsService, "askSampling" | "samplingStanding"> | undefined;
+};
+
+/** A request prepared to run on a Role: what the sample needs of it. */
+type Ready = {
+  readonly kind: "ready";
+  readonly role: RoleName;
+  readonly model: Model<Api>;
+  readonly context: ModelContext;
+  readonly choice: "any" | "required" | "none" | undefined;
+  readonly maxTokens: number;
+  /** Whether the request offers the model tools. */
+  readonly offered: boolean;
+  readonly notes: ReadonlyArray<string>;
 };
 
 type Pace = {
@@ -174,6 +207,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
   const counts = new Map<string, number>();
   const taken = new Map<string, ReadonlyArray<string>>();
   const paces = new Map<string, Pace>();
+  const asking = options.questions;
   let binding: McpSamplingBinding | undefined;
 
   const paceOf = (server: string): Pace => {
@@ -237,12 +271,24 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         status: "refused" | "failed",
         code: number,
         message: string,
-        why: McpSamplingWhy,
+        why: McpSamplingWhy | undefined,
+        by: McpSamplingRecord["by"] = "cloudpid",
       ): Effect.Effect<McpSamplingOutcome> =>
         Effect.gen(function* () {
           const settledAt = yield* Clock.currentTimeMillis;
+          const { why: _earlier, ...rest } = record;
 
-          record = { ...record, status, reason: message, why, by: "cloudpid", settledAt };
+          const settled: Mutable<McpSamplingRecord> = {
+            ...rest,
+            status,
+            reason: message,
+            by,
+            settledAt,
+          };
+
+          if (why !== undefined) settled.why = why;
+
+          record = settled;
           yield* keep(record);
 
           return {
@@ -267,8 +313,12 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
 
       const detailOf = (settled: McpSamplingRecord): McpSamplingDetail => {
         const detail: Mutable<McpSamplingDetail> = {
+          id: settled.id,
           server: ask.server,
-          status: settled.status === "running" ? "failed" : settled.status,
+          status:
+            settled.status === "running" || settled.status === "waiting"
+              ? "failed"
+              : settled.status,
           by: settled.by,
         };
 
@@ -377,24 +427,6 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         );
       }
 
-      const role = lowestAvailable(
-        chosen.role,
-        (each) => modelOf(bound.models, roles, each) !== undefined,
-      );
-
-      const model = role === undefined ? undefined : modelOf(bound.models, roles, role);
-
-      if (role === undefined || model === undefined) {
-        return yield* end(
-          "refused",
-          MCP_INVALID_PARAMS,
-          "no model is available for this request",
-          "unservable",
-        );
-      }
-
-      record = { ...record, role, model: model.id };
-
       if (params.includeContext !== undefined && params.includeContext !== "none") {
         notes.push("asked to include context; none given");
       }
@@ -403,61 +435,233 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         notes.push("stopSequences were not passed");
       }
 
-      const converted = toPiMessages(params.messages, model, askedAt);
+      const available = (each: RoleName) => modelOf(bound.models, roles, each) !== undefined;
+      const first = lowestAvailable(chosen.role, available);
+      const firstModel = first === undefined ? undefined : modelOf(bound.models, roles, first);
 
-      if (converted.kind === "refused") {
+      if (first === undefined || firstModel === undefined) {
         return yield* end(
           "refused",
           MCP_INVALID_PARAMS,
-          `unservable sampling request: ${converted.reason}`,
+          "no model is available for this request",
           "unservable",
         );
       }
 
-      const offered = params.tools ?? [];
-      const choice = toolChoiceFor(model.api, params.toolChoice?.mode);
+      // What running the request on a Role makes of it: the messages as that model takes them, the tool choice its API
+      // spells, the context and the most tokens, or the refusal when it cannot be served there.
+      const prepare = (role: RoleName, model: Model<Api>) =>
+        Effect.gen(function* () {
+          const asNotes: Array<string> = [];
+          const converted = toPiMessages(params.messages, model, askedAt);
 
-      if (choice.note !== undefined) notes.push(choice.note);
+          if (converted.kind === "refused") {
+            return yield* end(
+              "refused",
+              MCP_INVALID_PARAMS,
+              `unservable sampling request: ${converted.reason}`,
+              "unservable",
+            );
+          }
 
-      if (model.api === "anthropic-messages" && Arr.some(offered, flattens)) {
-        notes.push("a tool's schema was flattened for the model: $defs or oneOf may be lost");
-      }
+          const offered = params.tools ?? [];
+          const choice = toolChoiceFor(model.api, params.toolChoice?.mode);
 
-      // Scrubbing covers messages and the system prompt; the server's tool definitions are redacted here.
-      const tools: Array<Tool> = yield* options.redact(
-        Arr.map(offered, (tool) => ({
-          name: tool.name,
-          description: tool.description ?? tool.title ?? tool.name,
-          // SAFETY: the server's JSON Schema, which pi-ai's `TSchema` describes.
-          parameters: tool.inputSchema as Tool["parameters"],
-        })),
-      );
+          if (choice.note !== undefined) asNotes.push(choice.note);
 
-      const systemPrompt =
-        params.systemPrompt === undefined ? undefined : yield* options.redact(params.systemPrompt);
+          if (model.api === "anthropic-messages" && Arr.some(offered, flattens)) {
+            asNotes.push("a tool's schema was flattened for the model: $defs or oneOf may be lost");
+          }
 
-      const context: Mutable<ModelContext> = { messages: converted.messages };
+          // Scrubbing covers messages and the system prompt; the server's tool definitions are redacted here.
+          const tools: Array<Tool> = yield* options.redact(
+            Arr.map(offered, (tool) => ({
+              name: tool.name,
+              description: tool.description ?? tool.title ?? tool.name,
+              // SAFETY: the server's JSON Schema, which pi-ai's `TSchema` describes.
+              parameters: tool.inputSchema as Tool["parameters"],
+            })),
+          );
 
-      if (systemPrompt !== undefined) context.systemPrompt = systemPrompt;
+          const systemPrompt =
+            params.systemPrompt === undefined
+              ? undefined
+              : yield* options.redact(params.systemPrompt);
 
-      if (tools.length > 0 && choice.value !== "none") context.tools = tools;
+          const context: Mutable<ModelContext> = { messages: converted.messages };
 
-      const transcript = normalizeContext(context);
+          if (systemPrompt !== undefined) context.systemPrompt = systemPrompt;
 
-      if (estimateContextTokens(transcript).tokens >= model.contextWindow) {
-        return yield* end(
-          "refused",
-          MCP_INVALID_PARAMS,
-          "the request does not fit the model's context window",
-          "unservable",
+          if (tools.length > 0 && choice.value !== "none") context.tools = tools;
+
+          const transcript = normalizeContext(context);
+
+          if (estimateContextTokens(transcript).tokens >= model.contextWindow) {
+            return yield* end(
+              "refused",
+              MCP_INVALID_PARAMS,
+              "the request does not fit the model's context window",
+              "unservable",
+            );
+          }
+
+          const maxTokens = clampMaxTokensToContext(
+            model,
+            transcript,
+            Math.min(params.maxTokens, SAMPLING_MAX_TOKENS, model.maxTokens),
+          );
+
+          return {
+            kind: "ready",
+            role,
+            model,
+            context,
+            choice: choice.value,
+            maxTokens,
+            offered: offered.length > 0,
+            notes: asNotes,
+          } as const;
+        });
+
+      /** The record, and its notes, for the request run on `ready`'s Role. */
+      const onRole = (ready: Ready) => {
+        record = {
+          ...record,
+          role: ready.role,
+          model: ready.model.id,
+          notes: [...notes, ...ready.notes],
+        };
+      };
+
+      let prepared = yield* prepare(first, firstModel);
+
+      if (prepared.kind !== "ready") return prepared;
+
+      onRole(prepared);
+
+      // `ask`: the owner decides, unless they already did for this call or the Session (or the definition says `allow`).
+      if (ask.decision === "ask") {
+        const standing = asking?.samplingStanding(ask.callId, ask.server);
+
+        if (asking === undefined) {
+          return yield* end(
+            "refused",
+            MCP_SAMPLING_REFUSED,
+            "cloudpid cannot ask the owner here",
+            "internal",
+          );
+        }
+
+        if (standing?.action === "refuse") {
+          return yield* end(
+            "refused",
+            MCP_SAMPLING_REFUSED,
+            "refused by the owner for this Session",
+            undefined,
+            "grant",
+          );
+        }
+
+        if (standing?.action === "allow") {
+          record = { ...record, by: "grant", grant: standing.grant };
+        } else {
+          const options = Arr.filterMap(ROLE_NAMES, (each) => {
+            const held = modelOf(bound.models, roles, each);
+
+            return held === undefined
+              ? Result.failVoid
+              : Result.succeed({ role: each, model: held.id });
+          });
+
+          // Kept as waiting before the owner is asked, so a card nobody can answer is a record a new instance can settle.
+          record = { ...record, status: "waiting" };
+
+          if (!(yield* keep(record))) {
+            return yield* end(
+              "refused",
+              MCP_SAMPLING_REFUSED,
+              "cloudpid could not record the request",
+              "internal",
+            );
+          }
+
+          const shown = cardMessages(record.messages);
+
+          const card: Mutable<McpSamplingCard> = {
+            callId: ask.callId,
+            conversationId: ask.conversationId,
+            server: ask.server,
+            tool: ask.tool,
+            role: prepared.role,
+            model: prepared.model.id,
+            roles: options,
+            messages: shown.messages,
+            tools: Arr.map(record.tools ?? [], (name) => ({ name })),
+            notes: record.notes,
+          };
+
+          if (ask.source !== undefined) card.source = ask.source;
+
+          if (record.systemPrompt !== undefined) card.systemPrompt = record.systemPrompt;
+
+          if (shown.omitted > 0) card.omitted = shown.omitted;
+
+          yield* ask.hold?.pause ?? Effect.void;
+
+          const decided = yield* asking
+            .askSampling({ id, key: ask.key, card })
+            .pipe(Effect.ensuring(ask.hold?.resume ?? Effect.void));
+
+          record = { ...record, status: "running" };
+
+          if (decided.action === "refuse") {
+            return yield* end(
+              "refused",
+              MCP_SAMPLING_REFUSED,
+              decided.reason,
+              decided.why,
+              decided.by,
+            );
+          }
+
+          record = { ...record, by: "owner", grant: decided.grant };
+
+          if (decided.role !== prepared.role) {
+            const model = modelOf(bound.models, roles, decided.role);
+
+            if (model === undefined) {
+              return yield* end(
+                "refused",
+                MCP_INVALID_PARAMS,
+                "no model is available for the Role chosen",
+                "unservable",
+              );
+            }
+
+            prepared = yield* prepare(decided.role, model);
+
+            if (prepared.kind !== "ready") return prepared;
+
+            onRole(prepared);
+          }
+        }
+
+        // Over the limit while the owner decided: the gate checks again at the model, and the check here before the sample.
+        const stillOver = yield* Effect.tryPromise(() => bound.overLimit()).pipe(
+          Effect.orElseSucceed(() => undefined),
         );
+
+        if (stillOver !== undefined) {
+          return yield* end(
+            "refused",
+            MCP_SAMPLING_REFUSED,
+            `out of budget: ${stillOver}`,
+            "budget",
+          );
+        }
       }
 
-      const maxTokens = clampMaxTokensToContext(
-        model,
-        transcript,
-        Math.min(params.maxTokens, SAMPLING_MAX_TOKENS, model.maxTokens),
-      );
+      const { model, context, maxTokens, choice, offered } = prepared;
 
       const kept = yield* keep(record);
 
@@ -475,7 +679,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         Effect.andThen(
           paceOf(ask.server).active.withPermit(
             Effect.tryPromise(() =>
-              run(bound, model, context, maxTokens, params, choice.value, ask.signal),
+              run(bound, model, context, maxTokens, params, choice, ask.signal),
             ),
           ),
         ),
@@ -496,7 +700,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         cost: message.usage.cost.total,
       };
 
-      const replied = replyOf(message, offered.length > 0 && choice.value !== "none");
+      const replied = replyOf(message, offered && choice !== "none");
 
       if (replied.kind === "failed") {
         const reason = timedOut ? "the sample took longer than 2 minutes" : replied.reason;
@@ -552,6 +756,12 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       binding = next;
     },
     records: Effect.sync(() => store.list()),
+    view: (id) =>
+      Effect.sync(() => {
+        const held = store.get(id);
+
+        return held === undefined ? undefined : recordView(held);
+      }),
   };
 };
 

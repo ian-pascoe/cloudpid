@@ -14,7 +14,7 @@
 // round ends as `InputRequired`, is stored whole and marked (`mcp.wait.<r>`), and the call waits with no clock running;
 // once the owner has answered, `mcp.resumed.<r>` is written and the resume sent. A rerun after a restart waits again
 // for a round so marked, and settles any other call it finds sent as one that may have run.
-import { samplingOf } from "@cloudpid/config";
+import { declaresSampling, samplingOf } from "@cloudpid/config";
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
@@ -422,12 +422,11 @@ export const send = async <A>(
           resume: Effect.suspend(() => clock?.resume ?? Effect.void),
         });
 
-  // A Legacy HTTP server whose definition says `allow` is answered its Sampling requests on the Session's models, on a
-  // tool's call and a resource read (`exchange.samples`); a stdio server declares none until #569.
+  // A Legacy HTTP server whose definition does not say `off` has its Sampling requests answered on the Session's models,
+  // on a tool's call and a resource read (`exchange.samples`): at once for `allow`, after the owner's yes on a card for
+  // `ask`. A stdio server declares none until #569.
   const sampling =
-    options.sampling !== undefined &&
-    exchange.samples === true &&
-    samplingOf(server.server) === "answer"
+    options.sampling !== undefined && exchange.samples === true && declaresSampling(server.server)
       ? samplingHooks({
           sampling: options.sampling,
           server: server.name,
@@ -435,6 +434,12 @@ export const send = async <A>(
           callId: api.callId,
           conversationId: api.conversationId,
           signal: context.abortSignal,
+          decision: samplingOf(server.server) === "allow" ? "allow" : "ask",
+          source: server.source,
+          hold: {
+            pause: Effect.suspend(() => clock?.pause ?? Effect.void),
+            resume: Effect.suspend(() => clock?.resume ?? Effect.void),
+          },
         })
       : undefined;
 

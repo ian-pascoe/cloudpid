@@ -11,6 +11,7 @@ import {
   fauxToolCall,
   type Usage,
 } from "@earendil-works/pi-ai";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -131,9 +132,10 @@ const ask = (params: JsonObject, over: Partial<McpSamplingAsk> = {}): McpSamplin
   server: "demo",
   tool: "mcp__demo__loop",
   callId: "call-1",
-  conversationId: 1,
+  conversationId: ROOT_CONVERSATION_ID,
   key: "1",
   params,
+  decision: "allow",
   ...over,
 });
 

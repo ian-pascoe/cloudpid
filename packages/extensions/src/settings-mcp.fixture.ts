@@ -462,7 +462,19 @@ export const setup = async (
       () => new Error(`no tool ${name}`),
     );
 
-  return { world, recorded, logged, events, host, tool, changes, asked, changeCalls };
+  return {
+    world,
+    recorded,
+    logged,
+    events,
+    host,
+    tool,
+    changes,
+    asked,
+    changeCalls,
+    settings,
+    access,
+  };
 };
 
 /** The invocation's API of the call with task id `taskId`: the tools read only the conversation and the task. */

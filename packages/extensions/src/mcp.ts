@@ -104,6 +104,7 @@ export {
   createMcpQuestions,
   MCP_QUESTION_RECORDS,
   MCP_QUESTION_RENOTIFY_MS,
+  MCP_SAMPLING_ASK_WAIT_MS,
   McpQuestions,
   McpQuestionsError,
   type McpQuestionAsk,
@@ -112,7 +113,10 @@ export {
   type McpQuestionsOptions,
   type McpQuestionsService,
   type McpQuestionStorage,
+  type McpSamplingRemember,
 } from "./mcp/questions.ts";
+
+export { rememberSampling, SAMPLING_WRITE_TOOL } from "./mcp/sampling-write.ts";
 
 export {
   createMcpSampling,

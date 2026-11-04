@@ -23,6 +23,7 @@ import {
   type McpSamplingRecord,
   samplingRecords,
 } from "./mcp/sampling-records.ts";
+import { CARD_MESSAGES, CARD_TEXT, cardMessages, recordView } from "./mcp/sampling-card.ts";
 import { replyOf } from "./mcp/sampling-reply.ts";
 import { SAMPLING_TEXT_MAX, pairingProblem, toPiMessages } from "./mcp/sampling-messages.ts";
 
@@ -525,5 +526,91 @@ describe("cutText", () => {
   it("keeps the start and marks the cut", () => {
     expect(cutText("abcdef", 4)).toBe("abc…");
     expect(cutText("abc", 4)).toBe("abc");
+  });
+});
+
+describe("the card's messages", () => {
+  it("flatten each kept block to a plain line, naming what is not text", () => {
+    const shown = cardMessages([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look" },
+          { type: "image", mimeType: "image/png" },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "t1", name: "grep", input: { q: "x" } }],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", toolUseId: "t1", isError: true, text: "nope" }],
+      },
+    ]);
+
+    expect(shown.omitted).toBe(0);
+    expect(shown.messages).toEqual([
+      { role: "user", text: "look\n[image: image/png]" },
+      { role: "assistant", text: '[tool use: grep {"q":"x"}]' },
+      { role: "user", text: "[tool result (error): nope]" },
+    ]);
+  });
+
+  it("keep the last twenty and count the rest, each cut", () => {
+    const many = Array.from({ length: 25 }, (_, index) => ({
+      role: "user",
+      content: [{ type: "text", text: `${index}${"x".repeat(5000)}` }],
+    }));
+
+    const shown = cardMessages(many);
+
+    expect(shown.messages).toHaveLength(CARD_MESSAGES);
+    expect(shown.omitted).toBe(5);
+    expect(shown.messages[0]?.text.startsWith("5x")).toBe(true);
+    expect(shown.messages[0]?.text.length).toBe(CARD_TEXT);
+  });
+
+  it("read a settled record as its view, with the reply as text and no content in a stub", () => {
+    const record: McpSamplingRecord = {
+      id: "c:1",
+      server: "demo",
+      tool: "mcp__demo__loop",
+      origin: "agent",
+      conversationId: 1,
+      callId: "c",
+      sequence: 1,
+      status: "answered",
+      by: "owner",
+      role: "small",
+      model: "claude-haiku-5-5",
+      messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+      tools: ["grep"],
+      reply: { type: "text", text: "hello" },
+      tokens: 12,
+      cost: 0.001,
+      notes: ["a note"],
+      askedAt: 1,
+      settledAt: 2,
+    };
+
+    expect(recordView(record)).toMatchObject({
+      id: "c:1",
+      status: "answered",
+      by: "owner",
+      role: "small",
+      messages: [{ role: "user", text: "hi" }],
+      tools: [{ name: "grep" }],
+      reply: "hello",
+      tokens: 12,
+      notes: ["a note"],
+    });
+    const { messages: _messages, tools: _tools, ...bare } = record;
+
+    expect(recordView({ ...bare, stub: true })).toMatchObject({
+      stub: true,
+      messages: [],
+      tools: [],
+    });
   });
 });

@@ -41,7 +41,19 @@ import {
   type McpQuestionUnseen,
   questionId,
 } from "./question-records.ts";
-import type { McpElicitationRequest } from "@cloudpid/protocol";
+import type {
+  McpElicitationRequest,
+  McpSamplingRequest,
+  McpSamplingSessionGrant,
+} from "@cloudpid/protocol";
+import {
+  createSamplingQuestions,
+  type McpSamplingDecision,
+  type McpSamplingGiven,
+  type McpSamplingQuestion,
+  type McpSamplingRemember,
+  type McpSamplingStanding,
+} from "./sampling-questions.ts";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -57,6 +69,17 @@ export {
   McpRoundState,
   type McpQuestionVault,
 } from "./deferred-questions.ts";
+
+export {
+  MCP_SAMPLING_ASK_WAIT_MS,
+  MCP_SAMPLING_UNANSWERED_REASON,
+  type McpSamplingCard,
+  type McpSamplingDecision,
+  type McpSamplingGiven,
+  type McpSamplingQuestion,
+  type McpSamplingRemember,
+  type McpSamplingStanding,
+} from "./sampling-questions.ts";
 
 export {
   MCP_CALL_ENDED_REASON,
@@ -143,6 +166,28 @@ export type McpQuestionsService = {
   readonly expireStale: Effect.Effect<void>;
   /** The settled records, newest last. */
   readonly records: Effect.Effect<ReadonlyArray<McpQuestionRecord>>;
+  /**
+   * Show the owner a Sampling request the sampler checked and wait for their decision, from any client (the first answer
+   * wins). It ends with the owner's allow or refusal, or a refusal of cloudpid's own: the 10 min bound, the call's end
+   * (`settleCall`), a withdrawal. An interrupted wait (Stop) withdraws the card. Never fails.
+   */
+  readonly askSampling: (question: McpSamplingQuestion) => Effect.Effect<McpSamplingDecision>;
+  /** What the owner has already decided for this call and server (a grant), so their request needs no card; undefined: none. */
+  readonly samplingStanding: (callId: string, server: string) => McpSamplingStanding | undefined;
+  /** The Sampling requests waiting for the owner, oldest first. */
+  readonly pendingSampling: Effect.Effect<ReadonlyArray<McpSamplingRequest>>;
+  /** The Session's grants: what the owner chose for a server until the Session ends. */
+  readonly samplingGrants: Effect.Effect<ReadonlyArray<McpSamplingSessionGrant>>;
+  /**
+   * The owner's answer to Sampling request `id`. Fails when no such request waits (answered, or its call ended), when the
+   * Role is not one the card offers, and when a choice that writes the definition cannot (the request still waits).
+   */
+  readonly answerSampling: (
+    id: string,
+    given: McpSamplingGiven,
+  ) => Effect.Effect<void, McpQuestionsError>;
+  /** Take back the Session's grant for `server`. */
+  readonly revokeSampling: (server: string) => Effect.Effect<void>;
   /** Whether a Modern server's form can be kept for later: the service has a vault for the answers. */
   readonly defers: boolean;
   /**
@@ -195,13 +240,28 @@ export type McpQuestionsOptions = {
    * of a call and for a later one after `MCP_QUESTION_RENOTIFY_MS` with none waiting; never with the message.
    */
   readonly notify?:
-    | ((who: { readonly server: string; readonly page?: true }) => Effect.Effect<void>)
+    | ((who: {
+        readonly server: string;
+        readonly page?: true;
+        readonly sampling?: true;
+      }) => Effect.Effect<void>)
     | undefined;
   /**
    * Whether `host` (lowercase, ASCII) is one of cloudpid's own, which a page the server asks the owner to open must not
    * be on (`docs/architecture/mcp-server-requests.md` → URL mode). Without it none is.
    */
   readonly ownHost?: ((host: string) => boolean) | undefined;
+  /** Tell the clients which Sampling requests wait and what the Session's grants are; called whenever either changes. */
+  readonly announceSampling?:
+    | ((message: {
+        readonly requests: ReadonlyArray<McpSamplingRequest>;
+        readonly grants: ReadonlyArray<McpSamplingSessionGrant>;
+      }) => Effect.Effect<void>)
+    | undefined;
+  /** How long a Sampling request waits, `MCP_SAMPLING_ASK_WAIT_MS` unless a test shortens it. */
+  readonly samplingWaitMs?: number | undefined;
+  /** Where the card's *Always allow* and *Never* write the server's definition; without it the card does not offer them. */
+  readonly remember?: McpSamplingRemember | undefined;
   /** `value` with every Secret the Session holds replaced by its reference: all the owner is shown, and all a record keeps. */
   readonly redact: <A>(value: A) => Effect.Effect<A>;
   /**
@@ -245,6 +305,14 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
   const tell: Effect.Effect<void> = Effect.suspend(() => pending.pipe(Effect.flatMap(announce)));
 
   const deferred = createDeferredQuestions({ storage, vault: options.vault, basics, tell });
+
+  const sampling = createSamplingQuestions({
+    storage,
+    basics,
+    announce: options.announceSampling ?? (() => Effect.void),
+    waitMs: options.samplingWaitMs,
+    remember: options.remember,
+  });
 
   const pending = Effect.sync(() => [
     ...Arr.map([...waiting.values()], (held) => held.request),
@@ -467,6 +535,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
         (held) => held.request.callId === callId && held.request.page?.finished !== true,
         MCP_CALL_ENDED_REASON,
       );
+      yield* sampling.settleCall(callId);
       yield* deferred.settleCall(callId, MCP_CALL_ENDED_REASON);
       basics.calls.delete(callId);
     });
@@ -553,12 +622,24 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     pending,
     answer,
     withdraw: (callId, key, reason) =>
-      endWhere((held) => held.request.callId === callId && held.key === key, reason),
+      Effect.andThen(
+        endWhere((held) => held.request.callId === callId && held.key === key, reason),
+        sampling.withdraw(callId, key, reason),
+      ),
     withdrawServer: (server, reason) =>
       Effect.andThen(
-        endWhere((held) => held.request.server === server, reason),
+        Effect.andThen(
+          endWhere((held) => held.request.server === server, reason),
+          sampling.withdrawServer(server, reason),
+        ),
         deferred.withdrawServer(server, reason),
       ),
+    askSampling: sampling.ask,
+    samplingStanding: sampling.standing,
+    pendingSampling: sampling.pending,
+    samplingGrants: sampling.grants,
+    answerSampling: sampling.answer,
+    revokeSampling: sampling.revoke,
     settleCall,
     complete,
     whileOpen,
@@ -573,6 +654,8 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     endRound: deferred.endRound,
     dropAbandoned: deferred.dropAbandoned,
     expireStale: Effect.gen(function* () {
+      yield* sampling.expireStale;
+
       const stale = entries().filter((entry) => !waiting.has(entry.id));
 
       if (stale.length === 0) return;

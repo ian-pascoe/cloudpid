@@ -48,9 +48,16 @@ export type McpElicitationDetail = {
 /**
  * Why cloudpid turned a Sampling request down or failed it, as a tag the card and the model's line read instead of the
  * words: the Spend limit (`budget`), the call's cap (`cap`), a request that is invalid (`invalid`) or cannot be served
- * (`unservable`), the model (`model`), or cloudpid's own seam (`internal`: the models not ready, a record not kept).
+ * (`unservable`), the model (`model`), the owner not answering in time (`unanswered`), or cloudpid's own seam (`internal`: the models not ready, a record not kept).
  */
-export type McpSamplingWhy = "budget" | "cap" | "invalid" | "unservable" | "model" | "internal";
+export type McpSamplingWhy =
+  | "budget"
+  | "cap"
+  | "invalid"
+  | "unservable"
+  | "model"
+  | "unanswered"
+  | "internal";
 
 /**
  * One Sampling request the server made during a call (`docs/architecture/mcp-server-requests.md` → Sampling requests,
@@ -59,7 +66,7 @@ export type McpSamplingWhy = "budget" | "cap" | "invalid" | "unservable" | "mode
 export type McpSamplingDetail = {
   readonly server: string;
   readonly status: "answered" | "refused" | "failed";
-  readonly by: "definition" | "cloudpid";
+  readonly by: "definition" | "owner" | "grant" | "cloudpid";
   /** Why it was refused or failed, in words. */
   readonly reason?: string;
   readonly why?: McpSamplingWhy;
@@ -67,6 +74,8 @@ export type McpSamplingDetail = {
   readonly model?: string;
   readonly tokens?: number;
   readonly cost?: number;
+  /** The record's id, which `mcp_sampling_get` reads: what the call's card expands. */
+  readonly id?: string;
 };
 
 /** The most resources a call's `details` names. */
