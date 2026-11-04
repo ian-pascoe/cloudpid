@@ -14,11 +14,8 @@ import { ConversationId } from "./conversation-id.ts";
  */
 export const CONTAINER_HOLD_CAP_MS = 60 * 60_000;
 
-/** The hold cap in the words of a sentence: "an hour", or "90 minutes". */
-export const holdCapText = (): string =>
-  CONTAINER_HOLD_CAP_MS === 60 * 60_000
-    ? "an hour"
-    : `${Math.round(CONTAINER_HOLD_CAP_MS / 60_000)} minutes`;
+/** The hold cap in the words of a sentence. */
+export const holdCapText = (): string => "an hour";
 
 /**
  * One MCP task of the Session. `status` is the server's, or cloudpid's own for one it ended (`unknown`, `stopped`), as a

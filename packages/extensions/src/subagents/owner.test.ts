@@ -67,4 +67,50 @@ describe("Stop all across subagents", () => {
     );
     expect(finished.toSorted(ascending)).toEqual([2, 3, 4]);
   });
+
+  it("stops every agent, and every pass, though one abort fails, and fails with the first failure", async () => {
+    const aborted: number[] = [];
+    let reads = 0;
+
+    // An agent a running parent started while the first pass was stopping the rest: only a second pass finds it.
+    const later: SubagentsState = {
+      ...STATE,
+      agents: { ...STATE.agents, d: child("d", 5) },
+      conversations: { ...STATE.conversations, "5": "d" },
+    };
+
+    // SAFETY: the two methods stopConversation reads of a Harness; the rest of one is never touched.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions, anti-slop/require-safety-comment-for-type-assertion
+    const harness = {
+      snapshot: async () => {
+        reads += 1;
+
+        return reads === 1 ? STATE : later;
+      },
+      conversation: async (id: ConversationId) => ({
+        abort: async () => {
+          aborted.push(id);
+
+          if (id === 3) throw new Error("abort of 3 failed");
+        },
+      }),
+    } as unknown as OwnerHarness;
+
+    await expect(
+      stopConversation(
+        harness,
+        ROOT_CONVERSATION_ID,
+        { subagents: true },
+        context,
+        async () => undefined,
+      ),
+    ).rejects.toThrow("abort of 3 failed");
+    expect(aborted.toSorted((left, right) => left - right)).toEqual([
+      ROOT_CONVERSATION_ID,
+      2,
+      3,
+      4,
+      5,
+    ]);
+  });
 });

@@ -268,7 +268,7 @@ export const mcpTasksMessage = (tasks: ReadonlyArray<McpTask>): ServerMessage =>
   tasks,
 });
 
-/** Why an owner's cancel of an MCP task was not sent, by what it came to; the others (`sent`, `already_sent`) took. */
+/** Why an owner's cancel of an MCP task was not sent, by what it came to; `sent` and `already_sent` took. */
 const MCP_TASK_CANCEL_REFUSALS = {
   failed: "The server could not be asked to cancel the task; try again",
   ended: "The task has ended",
@@ -283,17 +283,25 @@ const CONTAINER_KEEP_REFUSALS = {
   failed: "The Container could not be kept; try again",
 } as const;
 
-/** The answer to an owner's MCP task command that came to `outcome`: `null` when it took, else the refusal's words. */
-const ownerCommandAnswer = (
+/**
+ * The answer to an owner's MCP task command that came to `outcome`: `null` when it is one of `took`, else the refusal's
+ * words. The refusals are keyed by every outcome that did not take, so a new outcome nobody mapped is a type error and
+ * never an answer of success.
+ */
+const ownerCommandAnswer = <Outcome extends string, Took extends Outcome>(
   operation: string,
-  outcome: string,
-  refusals: { readonly [outcome: string]: string },
+  outcome: Outcome,
+  took: ReadonlyArray<Took>,
+  refusals: { readonly [Refused in Exclude<Outcome, Took>]: string },
 ): Effect.Effect<null, SessionError> => {
-  const message = refusals[outcome];
+  const widened: ReadonlyArray<Outcome> = took;
 
-  return message === undefined
-    ? Effect.succeed(null)
-    : Effect.fail(SessionError.make({ operation, message }));
+  if (widened.includes(outcome)) return Effect.succeed(null);
+
+  // SAFETY: `outcome` is none of `took`, which is what `refusals` is keyed by.
+  const refused = outcome as Exclude<Outcome, Took>;
+
+  return Effect.fail(SessionError.make({ operation, message: refusals[refused] }));
 };
 
 /** The `mcp_apps` message for `conversationId`'s App calls, which each client watching it is sent. */
@@ -1042,7 +1050,12 @@ export const sessionSocketsLayer = (
               .mcpTaskCancel(message.task)
               .pipe(
                 Effect.flatMap((took) =>
-                  ownerCommandAnswer("mcp_task_cancel", took, MCP_TASK_CANCEL_REFUSALS),
+                  ownerCommandAnswer(
+                    "mcp_task_cancel",
+                    took,
+                    ["sent", "already_sent"],
+                    MCP_TASK_CANCEL_REFUSALS,
+                  ),
                 ),
               );
           case "container_keep":
@@ -1050,7 +1063,7 @@ export const sessionSocketsLayer = (
               .mcpTaskKeep(message.task)
               .pipe(
                 Effect.flatMap((kept) =>
-                  ownerCommandAnswer("container_keep", kept, CONTAINER_KEEP_REFUSALS),
+                  ownerCommandAnswer("container_keep", kept, ["kept"], CONTAINER_KEEP_REFUSALS),
                 ),
               );
           case "viewed_set":

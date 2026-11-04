@@ -55,6 +55,7 @@ import {
   McpTasksDoc,
   type McpTaskEnd,
   type McpTaskRecord,
+  type McpTasksState,
 } from "./task-state.ts";
 
 /** What a follower is created with: the handle of its task, whose record has the rest. */
@@ -115,9 +116,19 @@ const whenIdle = async (runtime: Runtime, id: ConversationId, context: Context) 
   }
 };
 
+/** Note, in the commit that tells the agent, when it was told: the first time, a restart that posts again keeps it. */
+const markTold = (doc: McpTasksState, handle: string, now: number): void => {
+  const current = doc.tasks[handle];
+
+  if (current !== undefined) current.toldAt ??= now;
+};
+
 /** The title of a task's entry in the owner's transcript (`data.notice`): where it stands, or that it ended. */
-const noticeTitle = (handle: string, status: string, ended: boolean): string =>
-  ended ? `MCP task ${handle} ended: ${status}` : `MCP task ${handle}: ${status}`;
+const noticeTitle = (handle: string, status: string): string => `MCP task ${handle}: ${status}`;
+
+/** The title of the entry that tells the agent a task ended. */
+const endedTitle = (handle: string, status: string): string =>
+  `MCP task ${handle} ended: ${status}`;
 
 /** The follower task over the Session's host client, origin, options and result pool. */
 export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
@@ -221,7 +232,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           timestamp: now,
         },
       ],
-      data: { task: record.handle, status, by, notice: noticeTitle(record.handle, status, false) },
+      data: { task: record.handle, status, by, notice: noticeTitle(record.handle, status) },
     };
 
     try {
@@ -389,7 +400,6 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
           }
 
           current.delivery = "auto";
-          current.toldAt = runtime.now();
 
           return { status: "running", checkpoint: { phase: "post" } };
         }, context);
@@ -420,6 +430,8 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
               runtime.now(),
               reporter,
             );
+            // The agent is told by this very commit.
+            markTold(await tx.doc(McpTasksDoc), handle, runtime.now());
 
             return done;
           }, context);
@@ -443,7 +455,7 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
                 kind: MCP_TASK_ENDED_KIND,
                 data: {
                   // Its title in the owner's transcript, where it shows as a notice (the text is the agent's).
-                  notice: noticeTitle(handle, record.end?.status ?? record.status, true),
+                  notice: endedTitle(handle, record.end?.status ?? record.status),
                   task: handle,
                   server: record.server,
                   tool: record.modelTool,
@@ -457,8 +469,17 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
           // The Run it starts pushes `finished` or `failed` to the owner.
           tasks.submitted?.(submission.id);
+
+          await runtime.commit(async (tx): Promise<Next> => {
+            markTold(await tx.doc(McpTasksDoc), handle, runtime.now());
+
+            return done;
+          }, context);
+
+          return;
         }
 
+        // No conversation to tell (archived or deleted): nobody was.
         await runtime.commit(() => done, context);
       }),
 

@@ -514,6 +514,39 @@ describe("a task the owner stopped everything for", () => {
     expect((await recordNow(session, "mcp-task-1"))?.end).toMatchObject({ by: "stop" });
   });
 
+  it("is told to the agent by the wait that claims a result held for its busy conversation, and posted no more", async () => {
+    const busy = gate();
+
+    const { session, submitted } = await setup(30, TIMING, (request) =>
+      request.text === "slow"
+        ? busy.promise.then(() => call(["mcp_task_wait", { task: "mcp-task-1" }]))
+        : request.text.includes("the report")
+          ? answer("read it")
+          : scripted()(request),
+    );
+
+    await turn(session, "go");
+
+    const slow = await session.root.submit({ type: "input", content: "slow" }, context);
+
+    await session.until(ended(session), "the task to end");
+    // Held for the busy conversation: nobody has been told.
+    expect(await recordNow(session, "mcp-task-1")).toMatchObject({ delivery: "pending" });
+    expect((await recordNow(session, "mcp-task-1"))?.toldAt).toBeUndefined();
+
+    busy.resolve();
+    await slow.wait(context);
+    await session.settle();
+
+    // The wait read the result in the run: claimed, and the follower posted nothing.
+    const record = await recordNow(session, "mcp-task-1");
+
+    expect(record?.delivery).toBe("wait");
+    expect(record?.toldAt).toBeTypeOf("number");
+    expect(await toldOfEnd(session)).toBe(false);
+    expect(submitted).toEqual([]);
+  });
+
   it("drops a result held for a busy conversation, and says so in a notice", async () => {
     const busy = gate();
 

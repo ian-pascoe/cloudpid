@@ -73,6 +73,8 @@ describe("a stdio server's MCP task", () => {
     expect(record?.end).toMatchObject({ status: "unknown", by: "cloudpid" });
     expect(record?.end?.reason).toContain("Container stopped");
     expect(record?.delivery).toBe("auto");
+    // The follow-up Run was posted: the agent was told.
+    expect(record?.toldAt).toBeTypeOf("number");
     expect(submitted).toHaveLength(1);
     expect(
       (await session.texts("user")).find((text) => text.startsWith("[MCP task ended")),

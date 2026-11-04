@@ -145,6 +145,8 @@ describe("a subagent's MCP task", () => {
       status: "completed",
       agent: "worker",
     });
+    // Nobody was told, so the record does not say they were.
+    expect((await recordNow(session, "mcp-task-1"))?.toldAt).toBeUndefined();
     // Nobody was told: the post phase finds the ID is not the agent that started it and ends without a turn (the
     // agent's record holds only the turn that spawned it).
     expect(
@@ -158,13 +160,14 @@ describe("a subagent's MCP task", () => {
     ).toBe(false);
   });
 
-  it("is cancelled by Archive, which stops the branch and every agent below it as Stop all does", async () => {
+  it("is cancelled by the stop of the active branch and its subagents that Archive and Delete run", async () => {
     const opened = await setup(10_000, TIMING, script, SUBAGENTS);
     const { session, taskServer, written, submitted } = opened;
 
     await spawned(opened);
 
-    // `stopEverything` (Archive and Delete) stops the active branch with its subagents, and any other branch beside it.
+    // What `stopEverything` (Archive and Delete) runs for the active branch: `stopConversation` with its subagents. The
+    // other branches it stops beside it are plain background aborts, which the root test above covers.
     await stopConversation(
       session.harness,
       ROOT_CONVERSATION_ID,

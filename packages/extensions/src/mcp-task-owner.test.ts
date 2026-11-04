@@ -49,6 +49,24 @@ describe("the owner's MCP tasks", () => {
     await session.root.abort(context, { background: true });
   });
 
+  it("lists when the agent was told, and nothing for one that was not", async () => {
+    const { session } = await setup(10_000);
+
+    await turn(session, "go");
+
+    const state = await session.harness.snapshot(McpTasksDoc, context);
+    const record = state?.tasks["mcp-task-1"];
+
+    if (state === undefined || record === undefined) throw new Error("no task");
+
+    expect(viewOfTasks(state)[0]).not.toHaveProperty("toldAt");
+
+    const told = { ...state, tasks: { "mcp-task-1": { ...record, toldAt: 1234 } } };
+
+    expect(viewOfTasks(told)[0]).toMatchObject({ toldAt: 1234 });
+    await session.root.abort(context, { background: true });
+  });
+
   it("is cancelled once, and says so for one that is gone, ended or unknown", async () => {
     const { session, taskServer, tools } = await setup(10_000);
 

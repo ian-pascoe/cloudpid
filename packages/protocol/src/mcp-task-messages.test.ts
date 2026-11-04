@@ -3,6 +3,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { CONTAINER_HOLD_CAP_MS, holdCapText } from "./mcp-tasks.ts";
 import { ClientMessage, ServerMessage } from "./session.ts";
 
 const decodeClient = Schema.decodeUnknownOption(ClientMessage);
@@ -79,5 +80,11 @@ describe("MCP task messages", () => {
   it("says in hello whether the Session takes them, and a hello without it still reads", () => {
     expect(Option.isSome(decodeServer({ type: "hello", root: 1, mcpTasks: true }))).toBe(true);
     expect(Option.isSome(decodeServer({ type: "hello", root: 1 }))).toBe(true);
+  });
+
+  it("words the hold cap as the constant has it, so the texts that say it cannot drift", () => {
+    // A change of the cap is a change of its words: this fails until `holdCapText` says the new one.
+    expect(CONTAINER_HOLD_CAP_MS).toBe(60 * 60_000);
+    expect(holdCapText()).toBe("an hour");
   });
 });
