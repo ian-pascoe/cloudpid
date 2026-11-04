@@ -73,6 +73,9 @@ export const restartedSinceAsked = (server: string): string =>
 /** Why a question is cancelled when its call is over: it ended, or it went with an earlier instance. */
 export const MCP_CALL_ENDED_REASON = "the server's call ended";
 
+/** Why a question of a `codemode` script's nested call is withdrawn when the script's `timeout_ms` has passed. */
+export const MCP_SCRIPT_TIMED_OUT_REASON = "the script timed out";
+
 /** Why a question is cancelled when the Run is stopped. */
 export const MCP_RUN_STOPPED_REASON = "Run stopped";
 

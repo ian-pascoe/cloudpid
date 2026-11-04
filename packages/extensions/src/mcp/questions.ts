@@ -174,6 +174,11 @@ export type McpQuestionsService = {
   readonly isOwnHost: (host: string) => boolean;
   /** Server `server` was switched off, hidden or removed: cancel every question it waits on, and withdraw the cards. */
   readonly withdrawServer: (server: string, reason: string) => Effect.Effect<void>;
+  /**
+   * The `codemode` call `scriptCallId` ended because its `timeout_ms` passed: cancel every question the calls it made
+   * wait on, `reason` being the one the owner and the agent read, and withdraw the cards.
+   */
+  readonly withdrawScript: (scriptCallId: string, reason: string) => Effect.Effect<void>;
   /** The call is done, however it ended: withdraw every question it still waits on, and forget its count. */
   readonly settleCall: (callId: string) => Effect.Effect<void>;
   /**
@@ -912,6 +917,14 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
           sampling.withdrawServer(server, reason),
         ),
         deferred.withdrawServer(server, reason),
+      ),
+    withdrawScript: (scriptCallId, reason) =>
+      Effect.andThen(
+        Effect.andThen(
+          endWhere((held) => held.request.callId.startsWith(`${scriptCallId}/`), reason),
+          sampling.withdrawScript(scriptCallId, reason),
+        ),
+        deferred.withdrawScript(scriptCallId, reason),
       ),
     askSampling: sampling.ask,
     samplingStanding: sampling.standing,

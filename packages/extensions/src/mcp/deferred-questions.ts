@@ -1175,13 +1175,16 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       return true;
     });
 
-  /** Server `server`'s deferred questions, answered `cancel` by cloudpid for `reason`, and their calls woken. */
-  const withdrawServer = (server: string, reason: string) =>
+  /** The deferred questions of the calls `wanted` picks, answered `cancel` by cloudpid for `reason`, and their calls woken. */
+  const withdrawCalls = (
+    wanted: (callId: string, record: DeferredRecord) => boolean,
+    reason: string,
+  ) =>
     Effect.gen(function* () {
       for (const callId of yield* listed) {
         const record = yield* recordOf(callId);
 
-        if (record?.server !== server) continue;
+        if (record === undefined || !wanted(callId, record)) continue;
 
         yield* Effect.try(() => {
           for (const question of questionsOf(record)) {
@@ -1203,7 +1206,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           }
         }).pipe(
           Effect.catch((cause) =>
-            Effect.logWarning("Could not withdraw an MCP server's deferred questions", cause),
+            Effect.logWarning("Could not withdraw an MCP call's deferred questions", cause),
           ),
         );
         yield* wake(callId);
@@ -1212,6 +1215,14 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       yield* tell;
       yield* tellSampling;
     });
+
+  /** Server `server`'s deferred questions, withdrawn for `reason` (`withdrawCalls`). */
+  const withdrawServer = (server: string, reason: string) =>
+    withdrawCalls((_callId, record) => record.server === server, reason);
+
+  /** The deferred questions of the calls the `codemode` call `scriptCallId` made (`<scriptCallId>/<key>`), withdrawn for `reason`. */
+  const withdrawScript = (scriptCallId: string, reason: string) =>
+    withdrawCalls((callId) => callId.startsWith(`${scriptCallId}/`), reason);
 
   /** The shown, unanswered Sampling request `id` (its record id), as its card answers it. */
   const samplingHeld = (id: string) => {
@@ -1413,6 +1424,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
         ),
       ),
     withdrawServer,
+    withdrawScript,
     /** Withdraw every deferred round no call in this instance waits for: their calls ended with an earlier instance. */
     dropAbandoned: Effect.gen(function* () {
       for (const callId of yield* listed) {

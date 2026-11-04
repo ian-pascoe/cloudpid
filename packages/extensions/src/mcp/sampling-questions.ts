@@ -749,6 +749,12 @@ export const createSamplingQuestions = (options: McpSamplingQuestionsOptions) =>
         (held) => held.request.server === server,
         () => refusedBy("cloudpid", reason, "unanswered"),
       ),
+    /** The `codemode` call `scriptCallId` is over: what its nested calls wait on is refused for `reason`. */
+    withdrawScript: (scriptCallId: string, reason: string) =>
+      endWhere(
+        (held) => held.request.callId.startsWith(`${scriptCallId}/`),
+        () => refusedBy("cloudpid", reason, "unanswered"),
+      ),
     /** The call is over: what it still waits on is withdrawn and its grant forgotten. */
     settleCall: (callId: string) =>
       Effect.gen(function* () {

@@ -36,6 +36,8 @@ import {
   type Extension,
   GenerationTask,
   hook,
+  type ToolExecutionResult,
+  ToolTask,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -60,6 +62,8 @@ import {
   send,
 } from "./exchange.ts";
 import { withElicitation } from "./elicit.ts";
+import { MCP_SCRIPT_TIMED_OUT_REASON } from "./question-records.ts";
+import type { McpQuestionsService } from "./questions.ts";
 import { withSampling } from "./sample.ts";
 import { exposureKeys, flagsOf, isReachable, reachesModel } from "./exposure.ts";
 import { taskFollower } from "./task-follow.ts";
@@ -303,6 +307,35 @@ const watchHook = (touch: (conversation: string) => Promise<void>) =>
     },
   });
 
+/** Whether `result` is a `codemode` script's that ended because its `timeout_ms` passed (the library's own words for it). */
+const scriptTimedOut = (result: ToolExecutionResult): boolean =>
+  result.isError === true &&
+  Arr.some(
+    result.output ?? [],
+    (item) => item.type === "text" && /^Script timed out: /m.test(item.text),
+  );
+
+/**
+ * The hook that withdraws a `codemode` script's questions as "the script timed out" when its `timeout_ms` passed: the
+ * call's own result is seen before it is stored, and before the script's nested calls are aborted, so what the owner and
+ * the agent read of a question says the script ended, not that a Run stopped (`docs/architecture/
+ * mcp-server-requests.md` → `codemode`). A failure to withdraw leaves the questions to the abort that follows.
+ */
+const scriptTimeoutHook = (questions: McpQuestionsService) =>
+  hook(ToolTask, {
+    afterTool: async (call, result) => {
+      if (call.parent !== undefined || call.name !== "codemode" || !scriptTimedOut(result)) {
+        return undefined;
+      }
+
+      await Effect.runPromise(questions.withdrawScript(call.id, MCP_SCRIPT_TIMED_OUT_REASON)).catch(
+        () => undefined,
+      );
+
+      return undefined;
+    },
+  });
+
 /**
  * The `mcp` extension over `build`: each server's tools (those its inventory lists) by their model-facing names
  * (`mcp__<server>__<tool>`), registered by their Exposure (`./exposure.ts`), then the resource tools when the host lists
@@ -404,7 +437,10 @@ export const mcpExtension = (
     ],
     sections: options.sections ?? [],
     tasks: follower === undefined ? [] : [follower],
-    hooks: beforeRequest === undefined ? [] : [watchHook(beforeRequest)],
+    hooks: [
+      ...(beforeRequest === undefined ? [] : [watchHook(beforeRequest)]),
+      ...(options.questions === undefined ? [] : [scriptTimeoutHook(options.questions)]),
+    ],
   });
 };
 

@@ -626,6 +626,39 @@ describe("a Legacy server's elicitation", () => {
     ]);
   });
 
+  it('is withdrawn as "the script timed out" when the codemode script that made the call passes its timeout_ms', async () => {
+    const { host, tools, questions, session: opening } = setup();
+
+    host.answer(async (_input, hooks) => {
+      void hooks.onInput?.(ask(NAME_FORM)).catch(() => undefined);
+      await hooks.untilAborted?.();
+
+      return DONE;
+    });
+
+    const harness = await open((request) =>
+      request.text === "go"
+        ? call([
+            "codemode",
+            {
+              code: `// @options: {"timeout_ms": 300}\nawait tools.mcp__docs_site__search({}); text("done");`,
+            },
+          ])
+        : answer("ok"),
+    );
+
+    await harness.start(tools, startOf(1, { offered: ["codemode"] }));
+    await harness.prompt("go");
+    await opening;
+
+    const reason = "the script timed out";
+
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ action: "cancel", by: "cloudpid", reason }),
+    ]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+  });
+
   it("is withdrawn when Stop aborts the call", async () => {
     const { host, tools, questions, session: opening } = setup();
     let ended = false;
