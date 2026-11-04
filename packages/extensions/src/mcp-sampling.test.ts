@@ -1,7 +1,6 @@
 // The Session's sampler (`docs/architecture/mcp-server-requests.md` → Sampling requests): a Legacy server's request run
 // through the Session's `Models`, with its cap, its pace, its refusals, its Usage and its redacted record.
 // @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off asyncFunction:off anyUnknownInErrorContext:off runEffectInsideEffect:off missedPipeableOpportunity:off
-import type { ModelId, RoleName } from "@cloudpid/config";
 import type { JsonObject } from "@cloudpid/mcp/types";
 import {
   type AssistantMessage,
@@ -25,6 +24,7 @@ import {
   SAMPLING_CONCURRENT,
   SAMPLING_PER_MINUTE,
   type McpSamplingAsk,
+  type McpSamplingRoles,
   type McpSamplingOutcome,
 } from "./mcp/sampling.ts";
 
@@ -42,10 +42,12 @@ const memory = () => {
   };
 };
 
-const ROLES: Partial<Record<RoleName, ModelId>> = {
-  small: "anthropic/claude-haiku-5-5",
-  medium: "anthropic/claude-sonnet-5-5",
-  large: "anthropic/claude-opus-5-5",
+const ref = (modelId: string) => ({ provider: "anthropic", modelId });
+
+const ROLES: McpSamplingRoles = {
+  small: ref("claude-haiku-5-5"),
+  medium: ref("claude-sonnet-5-5"),
+  large: ref("claude-opus-5-5"),
 };
 
 type Seen = { messages: number; system: string | undefined; tools: string[]; model: string };
@@ -54,7 +56,7 @@ const open = (
   options: {
     readonly over?: () => string | undefined;
     readonly redact?: (text: string) => string;
-    readonly roles?: Partial<Record<RoleName, ModelId>>;
+    readonly roles?: McpSamplingRoles;
     readonly input?: Array<"text" | "image">;
   } = {},
 ) => {
@@ -205,7 +207,7 @@ describe("MCP sampling", () => {
 
   test("falls to a lower Role when the Session has no model for the one chosen, and refuses with none", () =>
     Effect.gen(function* () {
-      const lacking = open({ roles: { small: "anthropic/claude-haiku-5-5" } });
+      const lacking = open({ roles: { small: ref("claude-haiku-5-5") } });
 
       lacking.faux.setResponses([lacking.answer("a")]);
       yield* lacking.sampler.sample(

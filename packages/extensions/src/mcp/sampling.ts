@@ -10,7 +10,7 @@
 // record. A request is answered `-1` when it is turned down, `-32602` when it is invalid or cannot be served, and
 // `-32603` when the model fails. Only a server whose definition says `sampling: "allow"` is answered here: the owner's
 // yes on a card is not built yet.
-import { type ModelId, parseModelId, ROLE_NAMES, type RoleName } from "@cloudpid/config";
+import { ROLE_NAMES, type RoleName } from "@cloudpid/config";
 import type { JsonObject, McpSamplingResult } from "@cloudpid/mcp/types";
 import type {
   Api,
@@ -75,12 +75,17 @@ export const SAMPLING_PER_MINUTE = 30;
 
 const MINUTE_MS = 60_000;
 
+/** The model of each Role the Settings in force name, as pi-durable's `ModelRef` holds it. */
+export type McpSamplingRoles = Readonly<
+  Partial<Record<RoleName, { readonly provider: string; readonly modelId: string }>>
+>;
+
 /** What the Session gives the sampler once its Harness is open: the models, its Roles, the limit and where Usage goes. */
 export type McpSamplingBinding = {
   /** The Session's `Models`: scrubbed of its Secrets, held to its Spend limit, each request a span. */
   readonly models: Models;
   /** The model of each Role the Settings in force name, as `provider/modelId`. */
-  readonly roles: () => Readonly<Partial<Record<RoleName, ModelId>>>;
+  readonly roles: () => McpSamplingRoles;
   /** Why the Spend limit stops a sample now, or undefined when it does not (checked before the sample is made). */
   readonly overLimit: () => Promise<string | undefined>;
   /** A sample ended: what it cost is the Session's, by the conversation and the server. */
@@ -149,19 +154,13 @@ type Pace = {
 /** The model of `role` the Session's models list, or undefined. */
 const modelOf = (
   models: Models,
-  roles: Readonly<Partial<Record<RoleName, ModelId>>>,
+  roles: McpSamplingRoles,
   role: RoleName,
 ): Model<Api> | undefined => {
-  const id = roles[role];
+  const ref = roles[role];
 
-  if (id === undefined || !id.includes("/")) return undefined;
-
-  const { provider, modelId } = parseModelId(id);
-
-  return models.getModel(provider, modelId);
+  return ref === undefined ? undefined : models.getModel(ref.provider, ref.modelId);
 };
-
-const withoutProvider = (id: ModelId): string => parseModelId(id).modelId;
 
 /** The sampler over `options.storage`. Synchronous: the tools that ask are built before the runtime. */
 export const createMcpSampling = (options: McpSamplingOptions): McpSamplingService => {
@@ -336,7 +335,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
       for (const each of ROLE_NAMES) {
         const held = roles[each];
 
-        if (held !== undefined) named.push({ role: each, id: withoutProvider(held) });
+        if (held !== undefined) named.push({ role: each, id: held.modelId });
       }
 
       const chosen = chooseRole(params.modelPreferences, named);
@@ -472,13 +471,15 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
     }).pipe(
       Effect.withSpan("mcp.sampling.sample", { attributes: { "mcp.server": ask.server } }),
       // Whatever goes wrong inside is a failure of the model seam, told to the server as one.
-      Effect.catchCause(() =>
-        Effect.succeed({
-          kind: "refused",
-          code: -32603,
-          message: "cloudpid could not answer the sampling request",
-          detail: { server: ask.server, status: "failed", by: "cloudpid" },
-        } satisfies McpSamplingOutcome),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("A Sampling request could not be answered", cause).pipe(
+          Effect.as({
+            kind: "refused",
+            code: -32603,
+            message: "cloudpid could not answer the sampling request",
+            detail: { server: ask.server, status: "failed", by: "cloudpid" },
+          } satisfies McpSamplingOutcome),
+        ),
       ),
     );
 

@@ -121,6 +121,7 @@ export {
   type McpSamplingBinding,
   type McpSamplingOptions,
   type McpSamplingOutcome,
+  type McpSamplingRoles,
   type McpSamplingRecord,
   type McpSamplingService,
 } from "./mcp/sampling.ts";

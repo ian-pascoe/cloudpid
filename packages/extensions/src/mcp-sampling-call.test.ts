@@ -4,7 +4,6 @@
 // and an in-memory host that asks through the call's hooks.
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off anyUnknownInErrorContext:off preferSchemaOverJson:off
-import type { ModelId } from "@cloudpid/config";
 import { McpHostCompleted, type McpInputAnswer } from "@cloudpid/mcp/types";
 import {
   createModels,
@@ -88,7 +87,7 @@ const setup = async (
 
   sampling.bind({
     models,
-    roles: () => ({ small: "anthropic/claude-haiku-5-5" satisfies ModelId }),
+    roles: () => ({ small: { provider: "anthropic", modelId: "claude-haiku-5-5" } }),
     overLimit: () => Promise.resolve(options.over),
     usage: (_who, usage) => {
       usages.push(usage);
