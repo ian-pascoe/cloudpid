@@ -284,7 +284,19 @@ const settleUnlisted = async (
   listed: ReadonlySet<string>,
 ): Promise<McpTaskRecord> => {
   const asked = record.questions?.keys ?? {};
-  const moved = Arr.some([...listed], (key) => asked[key] === undefined);
+
+  // A key the Session asked (in the round that waits) and has not sent an answer to is not news: the server may list it
+  // while it omits a key it still waits on, which is no evidence that one was taken.
+  const round = await run(deps.asking.questions.deferredRound(taskOwner(record.handle)));
+
+  const own = new Set([
+    ...(await run(deps.asking.questions.roundKeys(taskOwner(record.handle)))),
+    ...(round !== undefined && Predicate.isTagged(round.state, "Task")
+      ? Record.keys(answeredOf(round.state.answered))
+      : []),
+  ]);
+
+  const moved = Arr.some([...listed], (key) => asked[key] === undefined && !own.has(key));
 
   if (!moved) return record;
 

@@ -324,6 +324,8 @@ export type McpQuestionsService = {
   ) => Effect.Effect<ReadonlyArray<McpDeferredAnswer> | undefined>;
   /** The keys of the opened pages of the round kept under `owner`, answered `accept` already: sent without the rest. */
   readonly takePages: (owner: string) => Effect.Effect<ReadonlyArray<string>>;
+  /** The keys of every question of the round kept under `owner`, answered or not. */
+  readonly roundKeys: (owner: string) => Effect.Effect<ReadonlyArray<string>>;
   /** What `owner` has asked toward its caps (`MCP_ELICITATIONS_PER_CALL` forms and pages, `MCP_SAMPLINGS_PER_CALL` samples). */
   readonly counts: (owner: string) => { readonly count: number; readonly sampled: number };
   /** `owner` counts on from what an earlier instance had asked, which a restart would forget. */
@@ -1083,6 +1085,7 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
     dropAbandoned: deferred.dropAbandoned,
     takeAnswers: deferred.takeAnswers,
     takePages: deferred.takePages,
+    roundKeys: deferred.roundKeys,
     counts: deferred.counts,
     restoreCounts: deferred.restoreCounts,
     onTaskAnswered: (handler) => {

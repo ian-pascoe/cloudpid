@@ -1272,6 +1272,62 @@ describe("a round whose update the server partly took", () => {
     await finish();
   });
 
+  it("does not take a page for sent because the server lists the form beside it, which was asked and not answered", async () => {
+    const { observe, questions, lose, sent, keys, finish } = await rig();
+
+    await observe({ p1: PAGE, f1: FORM });
+
+    const page = (await Effect.runPromise(questions.pending)).find(
+      (each) => each.page !== undefined,
+    );
+
+    await Effect.runPromise(questions.answer(page?.id ?? "", { action: "opened" }));
+
+    // The page's own update is lost.
+    lose(1);
+    await observe({ p1: PAGE, f1: FORM });
+    expect(sent.map((each) => Object.keys(each))).toEqual([["p1"]]);
+
+    // The server lists the form and omits the page: the form is not news, so the page stays to be sent.
+    await observe({ f1: FORM });
+    expect(sent).toHaveLength(1);
+    expect(keys()).toMatchObject({ p1: { state: "sending" } });
+    expect(await Effect.runPromise(questions.deferredRound(OWNER))).toBeDefined();
+
+    await observe({ p1: PAGE, f1: FORM });
+
+    expect(sent.map((each) => Object.keys(each))).toEqual([["p1"], ["p1"]]);
+    expect(keys()).toMatchObject({ p1: { state: "sent" } });
+    await finish();
+  });
+
+  it("does not take a page for sent because the server lists what cloudpid answered itself and has not sent", async () => {
+    const { observe, questions, lose, sent, keys, finish } = await rig();
+
+    await observe({ p1: PAGE, x1: ROOTS });
+
+    const page = (await Effect.runPromise(questions.pending)).find(
+      (each) => each.page !== undefined,
+    );
+
+    await Effect.runPromise(questions.answer(page?.id ?? "", { action: "opened" }));
+
+    lose(1);
+    await observe({ p1: PAGE, x1: ROOTS });
+    expect(sent.map((each) => Object.keys(each))).toEqual([["p1"]]);
+
+    // `x1` was answered by cloudpid, and is kept with the round to be sent: listing it is not news.
+    await observe({ x1: ROOTS });
+    expect(sent).toHaveLength(1);
+    expect(keys()).toMatchObject({ p1: { state: "sending" } });
+
+    await observe({ p1: PAGE, x1: ROOTS });
+
+    expect(sent.map((each) => Object.keys(each))[1]).toEqual(["p1"]);
+    expect(keys()).toMatchObject({ p1: { state: "sent" } });
+    await finish();
+  });
+
   it("sends an update again once, though another key of the round was sent in between", async () => {
     const { observe, questions, loseAt, sent, doc, finish } = await rig();
 

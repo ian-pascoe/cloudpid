@@ -1072,6 +1072,23 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       );
     });
 
+  /**
+   * The keys of every question of the round kept under `callId`, answered or not: what a task's snapshot may list that the
+   * Session has asked already, though no answer of it was sent.
+   */
+  const roundKeys = (callId: string) =>
+    Effect.gen(function* () {
+      const record = yield* recordOf(callId);
+
+      if (record?.round === undefined) return Arr.empty<string>();
+
+      const questions = yield* Effect.try(() => answerable(record)).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+
+      return Arr.map(questions ?? [], (question) => question.key);
+    });
+
   /** The shown, unanswered deferred question `id`, of the kind `matches`. */
   const findShownBy = <Q extends StoredQuestion>(
     id: string,
@@ -1558,6 +1575,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
     awaitRound,
     takeAnswers,
     takePages,
+    roundKeys,
     /** The requests the call made toward its caps: forms (and pages) and Sampling requests. */
     counts: (callId: string) => {
       const { asked, sampled } = basics.callOf(callId);
