@@ -20,7 +20,6 @@ import {
   MCP_STREAM_SLOT_WAIT_MS,
   readStreamed,
   type McpAppHtmlInput,
-  MCP_APP_REFUSED,
   type McpAppRecorder,
   type McpAppRequestInput,
   type McpHostClientService,
@@ -36,7 +35,7 @@ import {
   type SweepHarness,
 } from "@cloudpid/extensions/mcp";
 import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
-import type { McpAppHtmlAnswer, McpAppRequestAnswer } from "@cloudpid/protocol";
+import { mcpAppError, type McpAppHtmlAnswer, type McpAppRequestAnswer } from "@cloudpid/protocol";
 import {
   HostFailed,
   type McpApplyResult,
@@ -560,12 +559,9 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
 
   const appRequest: SessionMcp["appRequest"] = (input) =>
     held === undefined
-      ? Effect.succeed<McpAppRequestAnswer>({
-          status: "error",
-          code: MCP_APP_REFUSED,
-          reason: "unavailable",
-          message: "This Session has no MCP servers",
-        })
+      ? Effect.succeed<McpAppRequestAnswer>(
+          mcpAppError("unavailable", "This Session has no MCP servers"),
+        )
       : held.tools.appRequest(input);
 
   /** The models, Roles, limit and Usage the sampler works with, once the host's Harness is open. */

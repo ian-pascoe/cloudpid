@@ -92,9 +92,6 @@ export const flagsOf = (exposure: Exclude<McpExposure, "hidden">) => {
   }
 };
 
-/** A tool's `_meta.ui.visibility` (MCP Apps): `model` and `app` when it has none, or one that cannot be read. */
-export const visibilityOf = visibilityOfMeta;
-
 /** Whether a tool's `_meta.ui.visibility` (MCP Apps) lets the model see it: absent, or unreadable, means it does. */
 export const reachesModel = (meta: Schema.Json | undefined): boolean =>
-  visibilityOf(meta).includes("model");
+  visibilityOfMeta(meta).includes("model");

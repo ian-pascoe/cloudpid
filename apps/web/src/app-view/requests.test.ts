@@ -7,7 +7,8 @@ import type { McpAppAuditEntry, McpAppRequestAnswer } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { RpcError } from "./bridge.ts";
-import { viewRequestHandlers, type AppRequestClient } from "./requests.ts";
+import { SessionCommandError } from "../session/client.ts";
+import { auditLog, viewLogSink, viewRequestHandlers, type AppRequestClient } from "./requests.ts";
 
 type Asked = {
   readonly callId: string;
@@ -22,8 +23,12 @@ const audit: McpAppAuditEntry = { at: 1, kind: "tools/call", summary: "tools/cal
 const fakeClient = (answer: McpAppRequestAnswer | undefined) => {
   const asked: Asked[] = [];
   const cancelled: string[] = [];
+  const logged: Array<readonly [string, string, string | undefined, string]> = [];
 
   const client: AppRequestClient = {
+    appLog: (callId, level, logger, message) => {
+      logged.push([callId, level, logger, message]);
+    },
     appRequest: (callId, requestId, method, params) => {
       asked.push({ callId, requestId, method, params });
 
@@ -39,7 +44,7 @@ const fakeClient = (answer: McpAppRequestAnswer | undefined) => {
     },
   };
 
-  return { client, asked, cancelled };
+  return { client, asked, cancelled, logged };
 };
 
 const reports = () => {
@@ -183,5 +188,88 @@ describe("a View's requests", () => {
 
     expect(await pending).toBeInstanceOf(RpcError);
     expect(cancelled).toEqual([asked[0]?.requestId]);
+  });
+});
+
+describe("a request the connection ends", () => {
+  it("is answered as lost, in the View's own error", async () => {
+    const client: AppRequestClient = {
+      appLog: () => undefined,
+      appRequest: () =>
+        Effect.fail(
+          SessionCommandError.make({
+            message: "The connection was lost; try again once it is back.",
+          }),
+        ),
+    };
+
+    const failure = await viewRequestHandlers(client, "c", reports().on)
+      ["tools/call"]?.({ name: "x" }, { signal: signal() })
+      .catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(RpcError);
+    expect(failure).toMatchObject({
+      code: -32_603,
+      message: expect.stringContaining("Connection lost"),
+    });
+  });
+});
+
+describe("the audit log of the details", () => {
+  const entry = (at: number): McpAppAuditEntry => ({
+    at,
+    kind: "tools/call",
+    summary: `call ${at}`,
+  });
+
+  it("is the last 50 of what the record kept and what has come since", () => {
+    const kept = Array.from({ length: 50 }, (_, at) => entry(at));
+    const merged = auditLog(kept, [entry(50), entry(51)]);
+
+    expect(merged).toHaveLength(50);
+    expect(merged[0]).toEqual(entry(2));
+    expect(merged.at(-1)).toEqual(entry(51));
+    expect(auditLog([entry(1)], [entry(2)])).toEqual([entry(1), entry(2)]);
+  });
+});
+
+describe("a View's log lines", () => {
+  const sinkOf = () => {
+    const { client, logged } = fakeClient(undefined);
+
+    return { sink: viewLogSink(client, "call-1"), logged };
+  };
+
+  it("go to the Session with their level, logger and text, a JSON value as its text", () => {
+    const { sink, logged } = sinkOf();
+
+    sink({ level: "warning", logger: "view", data: "careful" });
+    sink({ level: "error", data: { code: 7 } });
+
+    expect(logged).toEqual([
+      ["call-1", "warning", "view", "careful"],
+      ["call-1", "error", undefined, '{"code":7}'],
+    ]);
+  });
+
+  it("are cut to what the Session takes", () => {
+    const { sink, logged } = sinkOf();
+
+    sink({ level: "w".repeat(500), logger: "l".repeat(500), data: "x".repeat(10_000) });
+
+    expect(logged[0]?.[1]).toHaveLength(128);
+    expect(logged[0]?.[2]).toHaveLength(128);
+    expect(logged[0]?.[3]).toHaveLength(2048);
+  });
+
+  it("are dropped when they are not log lines", () => {
+    const { sink, logged } = sinkOf();
+
+    sink(undefined);
+    sink("text");
+    sink({ data: "no level" });
+    sink({ level: "info", data: () => 1 });
+
+    expect(logged).toEqual([]);
   });
 });

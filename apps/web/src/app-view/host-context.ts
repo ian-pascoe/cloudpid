@@ -154,15 +154,18 @@ export const hostContextOf = (env: HostEnvironment, tool: AppToolInfo): McpUiHos
 
 /**
  * The capabilities cloudpid advertises to a View, and nothing it does not do: the sandbox's CSP (the one the View
- * declared, which the proxy enforces as a header), and that it serves the View's calls of its own server's tools and
- * resources (`requests.ts`), without `listChanged` (the host sends no list-changed notification). Links, logging, clipboard
- * and messages are added by the tickets that serve them.
+ * declared, which the proxy enforces as a header), and, when the frame has a Session's client to serve them (`serverCalls`),
+ * the View's calls of its own server's tools and resources (`requests.ts`), without `listChanged` (the host sends no
+ * list-changed notification). Links, logging, clipboard and messages are added by the tickets that serve them.
  */
-export const hostCapabilities = (csp: McpUiResourceCsp | undefined): McpUiHostCapabilities => ({
-  sandbox: csp === undefined ? {} : { csp },
-  serverTools: {},
-  serverResources: {},
-});
+export const hostCapabilities = (
+  csp: McpUiResourceCsp | undefined,
+  serverCalls = false,
+): McpUiHostCapabilities => {
+  const sandbox = csp === undefined ? {} : { csp };
+
+  return serverCalls ? { sandbox, serverTools: {}, serverResources: {} } : { sandbox };
+};
 
 /**
  * What of `next` differs from `before`, by top-level key, for `host-context-changed` (which carries only what changed);

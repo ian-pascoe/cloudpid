@@ -329,6 +329,20 @@ describe("an App View's request", () => {
       true,
     );
     expect(Option.isNone(decodeClient({ type: "page_visible", id: "3" }))).toBe(true);
+
+    const log = { type: "mcp_app_log", id: "4", callId: "c", level: "warning", message: "m" };
+
+    expect(Option.isSome(decodeClient(log))).toBe(true);
+    expect(Option.isSome(decodeClient({ ...log, logger: "view" }))).toBe(true);
+    expect(Option.isNone(decodeClient({ ...log, message: "m".repeat(2049) }))).toBe(true);
+    expect(Option.isNone(decodeClient({ ...log, level: "l".repeat(129) }))).toBe(true);
+  });
+
+  it("says in hello whether the Session takes the App Views' messages, and a hello without it still reads", () => {
+    const decodeServer = Schema.decodeUnknownOption(ServerMessage);
+
+    expect(Option.isSome(decodeServer({ type: "hello", root: 1, appViews: true }))).toBe(true);
+    expect(Option.isSome(decodeServer({ type: "hello", root: 1 }))).toBe(true);
   });
 
   it("is answered with a result or an error, and a status a later build adds still reads", () => {

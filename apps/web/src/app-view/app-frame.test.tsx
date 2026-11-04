@@ -363,8 +363,13 @@ describe("a card's hold on a frame whose View is no longer live", () => {
 describe("a View's requests of its server, and signing in", () => {
   const SIGN_IN = (stepUp: boolean) => `/oauth/mcp/start?server=docs&step_up=${stepUp ? 1 : 0}`;
 
+  const logged: Array<readonly [string, string, string]> = [];
+
   const answering = (answer: McpAppRequestAnswer): AppRequestClient => ({
     appRequest: () => Effect.succeed(answer),
+    appLog: (callId, level, _logger, message) => {
+      logged.push([callId, level, message]);
+    },
   });
 
   const ask = (view: ReturnType<typeof frameOf>, id: number, method = "tools/call") => {
@@ -399,7 +404,7 @@ describe("a View's requests of its server, and signing in", () => {
     expect(answerTo(view, 7)).toEqual({ jsonrpc: "2.0", id: 7, result: { content: [] } });
   });
 
-  it("answers a method it does not serve as not found when it has no client", async () => {
+  it("advertises no server calls, and answers them as not found, when it has no client to serve them", async () => {
     render();
 
     const view = frameOf();
@@ -408,7 +413,56 @@ describe("a View's requests of its server, and signing in", () => {
     ask(view, 8);
     await flush();
 
+    const initialized = view.sent.find((each) => each.data["id"] === 1)?.data;
+
+    expect(initialized).toMatchObject({ result: { hostCapabilities: { sandbox: {} } } });
+    expect(JSON.stringify(initialized)).not.toContain("serverTools");
+    expect(JSON.stringify(initialized)).not.toContain("serverResources");
     expect(answerTo(view, 8)).toMatchObject({ error: { code: -32_601 } });
+  });
+
+  it("hands a View's log lines to the Session for its call, and drops them when it has no client", async () => {
+    render({ client: answering({ status: "result", result: {} }) });
+
+    const view = frameOf();
+
+    view.handshake();
+    view.say({
+      jsonrpc: "2.0",
+      method: "notifications/message",
+      params: { level: "warning", data: "from the view" },
+    });
+
+    expect(logged).toEqual([["c1", "warning", "from the view"]]);
+  });
+
+  it("keeps the last 50 of the record's audit log and the new entries in the details", async () => {
+    const entry = (at: number) => ({ at, kind: "tools/call", summary: `call ${at}` });
+
+    render({
+      client: answering({ status: "result", result: {}, audit: entry(50) }),
+      record: { ...record, audit: Array.from({ length: 50 }, (_, at) => entry(at)) },
+    });
+
+    const view = frameOf();
+
+    view.handshake();
+    ask(view, 9);
+    await flush();
+
+    act(() => {
+      host
+        .querySelector("button[aria-expanded]")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const lines = Array.from(host.querySelectorAll("ul[aria-label='Audit log'] li")).map(
+      (each) => each.textContent ?? "",
+    );
+
+    expect(lines).toHaveLength(50);
+    expect(lines[0]).toContain("call 1");
+    expect(lines.at(-1)).toContain("call 50");
   });
 
   it("answers the Session's error as the View's, and links Sign in when the server needs it", async () => {

@@ -624,6 +624,32 @@ describe("an App View's requests over the Session's socket", () => {
     );
   });
 
+  it("says in hello that it takes page_visible and mcp_app_log, so a client sends them only to a Session that does", async () => {
+    const { client } = await withViews();
+
+    await client.root();
+
+    expect(client.received[0]).toMatchObject({ type: "hello", appViews: true });
+  });
+
+  it("takes a View's log line over the socket, answered with null whatever its level and call (its span is the node test's)", async () => {
+    const { entry, client, visible } = await withViews();
+
+    await visible();
+
+    const log = (id: string, level: string, callId = entry.callId) => {
+      client.send({ type: "mcp_app_log", id, callId, level, logger: "view", message: "line" });
+    };
+
+    log("l1", "info");
+    log("l2", "error");
+    log("l3", "error", "nope");
+
+    for (const id of ["l1", "l2", "l3"]) {
+      expect(await client.answer(id)).toMatchObject({ result: null });
+    }
+  });
+
   it("is refused while the tab is hidden, or has not said it is visible, and nothing reaches the server", async () => {
     const { server, visible, ask } = await withViews();
 
@@ -666,6 +692,17 @@ describe("an App View's requests over the Session's socket", () => {
       status: "error",
       reason: "refused",
     });
+
+    // Both servers have an `echo`. A request that names `other` still calls `docs`' own, and `other` hears nothing.
+    expect(
+      await ask("tools/call", { name: "echo", arguments: { text: "to docs" }, server: "other" }),
+    ).toMatchObject({ status: "result", result: { content: [{ type: "text", text: "to docs" }] } });
+    expect(
+      server.received.filter((each) => JSON.stringify(each).includes("to docs")),
+    ).not.toHaveLength(0);
+    expect(elsewhere.received.filter((each) => JSON.stringify(each).includes("to docs"))).toEqual(
+      [],
+    );
 
     expect(await ask("tools/call", { name: "modelOnly", arguments: { text: "x" } })).toMatchObject({
       status: "error",
@@ -735,9 +772,11 @@ describe("an App View's requests over the Session's socket", () => {
   });
 
   it("is refused for a call whose server has been shadowed since, which the host checks", async () => {
-    const { stub, client, visible } = await withViews();
+    const { stub, client, server, visible } = await withViews();
 
     await visible();
+
+    const before = server.received.length;
 
     // A record that pins the origin of another server of the name `docs`.
     await runInDurableObject(stub, (instance: TestSession) =>
@@ -763,6 +802,9 @@ describe("an App View's requests over the Session's socket", () => {
     expect(await client.answer("shadow")).toMatchObject({
       result: { status: "error", reason: "unavailable" },
     });
+
+    // Nothing was sent to either server for it.
+    expect(server.received).toHaveLength(before);
   });
 
   it("answers a result over 1 MiB as an error, and cancels a request on the View's say-so, which cancels the server's call", async () => {

@@ -192,6 +192,28 @@ export const MAX_MCP_APP_KEY = 512;
 /** The longest `requestId` or `method` of an App View's request a client's message may carry. */
 export const MAX_MCP_APP_REQUEST_KEY = 128;
 
+/** The most characters of an App View's log message (`notifications/message`) the client sends and the Session keeps for telemetry. */
+export const MAX_MCP_APP_LOG_CHARS = 2048;
+
+/** JSON-RPC's codes an App View's request is answered with, and the server-error code its refused, cancelled and unavailable ones are. */
+export const MCP_APP_METHOD_NOT_FOUND = -32_601;
+export const MCP_APP_INVALID_PARAMS = -32_602;
+export const MCP_APP_INTERNAL_ERROR = -32_603;
+export const MCP_APP_REFUSED = -32_000;
+
+/** Why an App View's request failed: the `reason` of an error answer. A reason a later build adds reads as `failed`. */
+export const McpAppReason = Schema.Literals([
+  "sign_in",
+  "hidden",
+  "limit",
+  "refused",
+  "cancelled",
+  "unavailable",
+  "failed",
+]);
+
+export type McpAppReason = typeof McpAppReason.Type;
+
 /**
  * What `mcp_app_request` answers (`docs/architecture/mcp-apps.md` → An App View's calls): the server's `result` (a
  * `CallToolResult` or a `ReadResourceResult`, redacted of the Secrets the Session holds, never shaped as the model's), or an
@@ -220,6 +242,13 @@ export const McpAppRequestError = Schema.Struct({
 });
 
 export type McpAppRequestError = typeof McpAppRequestError.Type;
+
+/** An error answer for an App View's request: `reason`, the words for the View, and the JSON-RPC `code` (a refusal's, unless it says otherwise). */
+export const mcpAppError = (
+  reason: McpAppReason,
+  message: string,
+  code: number = MCP_APP_REFUSED,
+): McpAppRequestError => ({ status: "error", code, message, reason });
 
 export const McpAppRequestAnswer = Schema.Union([
   McpAppRequestResult,

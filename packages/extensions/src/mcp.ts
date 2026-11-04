@@ -84,12 +84,7 @@ export { appToolsOf } from "./mcp/app-tools.ts";
 
 export { MCP_APP_FEATURE, type McpAppHtmlInput, type McpAppRecorder } from "./mcp/apps.ts";
 
-export {
-  MCP_APP_INTERNAL_ERROR,
-  MCP_APP_INVALID_PARAMS,
-  MCP_APP_REFUSED,
-  type McpAppRequestInput,
-} from "./mcp/app-request.ts";
+export { type McpAppRequestInput } from "./mcp/app-request.ts";
 
 export {
   createMcpSignIns,

@@ -8,8 +8,14 @@ import type { McpAppAuditEntry, McpAppRequestAnswer } from "@cloudpid/protocol";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
-import { type AppViewRequest, appCallsOver } from "./mcp-app-calls.ts";
+import {
+  type AppViewLog,
+  type AppViewRequest,
+  APP_LOG_EVENT,
+  appCallsOver,
+} from "./mcp-app-calls.ts";
 
 const ok: McpAppRequestAnswer = {
   status: "result",
@@ -264,6 +270,28 @@ describe("a request from an App View", () => {
     expect(await run(calls, toolCall(view, "r61"))).toMatchObject({ status: "result" });
   });
 
+  it("counts a request it refused for the limit when it arrives, so a View that keeps asking stays refused", async () => {
+    const { calls, sent, advance } = session();
+    const view = socket();
+
+    for (let each = 0; each < 60; each++) await run(calls, toolCall(view, `r${each}`));
+
+    // Half a minute on, the first sixty have a half minute to go; sixty more asks arrive and are all refused.
+    advance(30_000);
+
+    for (let each = 60; each < 120; each++) {
+      expect(await run(calls, toolCall(view, `r${each}`))).toMatchObject({ reason: "limit" });
+    }
+
+    // The first sixty are past the minute now, but the sixty refused are not: still over the limit.
+    advance(30_001);
+    expect(await run(calls, toolCall(view, "r120"))).toMatchObject({ reason: "limit" });
+    expect(sent).toHaveLength(60);
+
+    advance(30_000);
+    expect(await run(calls, toolCall(view, "r121"))).toMatchObject({ status: "result" });
+  });
+
   it("aborts the request when the View cancels it, and every request when its socket goes", async () => {
     const signals: AbortSignal[] = [];
 
@@ -357,5 +385,82 @@ describe("a request from an App View", () => {
     expect(audit.map(([, entry]) => entry.summary)).toEqual([
       expect.stringMatching(/^tools\/call echo .* → refused: Tool echo is not for App Views$/),
     ]);
+  });
+});
+
+describe("a log line from an App View", () => {
+  /** Run the line, and read the events the spans it made recorded. */
+  const logged = async (
+    calls: ReturnType<typeof session>["calls"],
+    line: Partial<AppViewLog> & { readonly view: WebSocket },
+  ) => {
+    const spans: Tracer.NativeSpan[] = [];
+
+    await Effect.runPromise(
+      calls.log({ callId: "c1", level: "warning", message: "careful", ...line }).pipe(
+        Effect.provideService(
+          Tracer.Tracer,
+          Tracer.make({
+            span: (options) => {
+              const span = new Tracer.NativeSpan(options);
+
+              spans.push(span);
+
+              return span;
+            },
+          }),
+        ),
+      ),
+    );
+
+    return spans.flatMap((span) =>
+      span.events.map(([name, , attributes]) => ({ span: span.name, name, attributes })),
+    );
+  };
+
+  it("becomes a span event when it is a warning or above, redacted of the Secrets held", async () => {
+    const { calls } = session();
+
+    expect(
+      await logged(calls, {
+        view: socket(),
+        level: "error",
+        logger: "hunter2-logger",
+        message: "failed with hunter2",
+      }),
+    ).toEqual([
+      {
+        span: "mcp.app_log",
+        name: APP_LOG_EVENT,
+        attributes: { level: "error", logger: "[secret]-logger", message: "failed with [secret]" },
+      },
+    ]);
+  });
+
+  it("is cut to its limit, and reaches no audit log", async () => {
+    const { calls, audit } = session();
+
+    const [event] = await logged(calls, { view: socket(), message: "x".repeat(5000) });
+
+    expect(String(event?.attributes["message"])).toHaveLength(2048);
+    expect(audit).toEqual([]);
+  });
+
+  it("is dropped below warning, for a call with no record, and past sixty a minute", async () => {
+    const { calls, advance } = session();
+    const view = socket();
+
+    expect(await logged(calls, { view, level: "info" })).toEqual([]);
+    expect(await logged(calls, { view, level: "debug" })).toEqual([]);
+    expect(await logged(calls, { view, callId: "gone" })).toEqual([]);
+
+    // Two were counted already (the one with no record was not); a log line past sixty is dropped, until the minute passes.
+    let kept = 0;
+
+    for (let each = 0; each < 70; each++) kept += (await logged(calls, { view })).length;
+
+    expect(kept).toBe(58);
+    advance(60_001);
+    expect(await logged(calls, { view })).toHaveLength(1);
   });
 });

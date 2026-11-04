@@ -18,8 +18,15 @@ import {
   type McpHostRequestHooks,
   type McpHostRequestInput,
   type McpHostRequestResult,
+  visibilityOfMeta,
 } from "@cloudpid/mcp/types";
-import type { McpAppRequestAnswer, McpAppRequestError } from "@cloudpid/protocol";
+import {
+  MCP_APP_INTERNAL_ERROR,
+  mcpAppError,
+  type McpAppReason,
+  type McpAppRequestAnswer,
+  type McpAppRequestError,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
@@ -27,13 +34,8 @@ import * as Option from "effect/Option";
 import type { Mutable } from "effect/Types";
 import type { HostLost, McpHostClientService } from "./client.ts";
 import { type McpCallOrigin, contextOf, MCP_CALL_SLACK_MS, waitOf } from "./exchange.ts";
-import { isReachable, visibilityOf } from "./exposure.ts";
+import { isReachable } from "./exposure.ts";
 import { listedTools, type McpBuildServer } from "./tools.ts";
-
-/** JSON-RPC's codes, and the one an App View's refused, cancelled or unavailable request is answered with (its server-error range). */
-export const MCP_APP_INVALID_PARAMS = -32_602;
-export const MCP_APP_INTERNAL_ERROR = -32_603;
-export const MCP_APP_REFUSED = -32_000;
 
 /** What an App View's request is for: the call it was made in, and the request. The server is the call's record's. */
 export type McpAppRequestInput = {
@@ -66,11 +68,8 @@ export type McpAppRequestDeps = {
   readonly slackMs?: number | undefined;
 };
 
-const failure = (
-  reason: string,
-  message: string,
-  code: number = MCP_APP_REFUSED,
-): McpAppRequestError => ({ status: "error", code, message, reason });
+const failure: (reason: McpAppReason, message: string, code?: number) => McpAppRequestError =
+  mcpAppError;
 
 /** A promise that resolves when `signal` aborts, and never otherwise. */
 const abortedBy = (signal: AbortSignal) =>
@@ -103,7 +102,7 @@ const refusalOf = (
     );
   }
 
-  return visibilityOf(tool.value._meta).includes("app")
+  return visibilityOfMeta(tool.value._meta).includes("app")
     ? Option.none()
     : Option.some(
         failure("refused", `Tool ${input.name} of MCP server ${input.server} is not for App Views`),

@@ -174,7 +174,7 @@ describe("the handshake", () => {
       result: {
         protocolVersion: "2026-01-26",
         hostInfo: { name: "cloudpid", version: "1" },
-        hostCapabilities: { sandbox: {}, serverTools: {}, serverResources: {} },
+        hostCapabilities: { sandbox: {} },
         hostContext: context,
       },
     });

@@ -13,34 +13,35 @@
 //    `hidden`, a tool whose visibility includes `app`. The host checks the same again, and that the server is still the
 //    one the record names.
 //
+// A View's log line (`log`) is not a request: it is limited the same way, redacted, cut, and a `warning` or above becomes a
+// span event for telemetry; it reaches no model, transcript or audit log.
+//
 // The answer is redacted of the Secrets the Session holds, and a summary of it goes to the call's audit log. A request ends
 // when the host answers, when its View cancels it (`cancel`), or when its socket goes (`endViews`); a cancel aborts the
 // host's request. One span for each request, which names its server, method and outcome but never its arguments.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- the registry of what is in flight is plain mutable state, which the limits are counted in.
-import {
-  MCP_APP_INTERNAL_ERROR,
-  MCP_APP_INVALID_PARAMS,
-  MCP_APP_REFUSED,
-  type McpAppRequestInput,
-} from "@cloudpid/extensions/mcp";
-import type { JsonObject } from "@cloudpid/mcp/types";
+import type { McpAppRequestInput } from "@cloudpid/extensions/mcp";
+import { isWarningOrAbove, type JsonObject } from "@cloudpid/mcp/types";
 import {
   appAuditSummary,
   MAX_MCP_APP_IN_FLIGHT,
+  MAX_MCP_APP_LOG_CHARS,
   MAX_MCP_APP_PER_MINUTE,
+  MCP_APP_INTERNAL_ERROR,
+  MCP_APP_INVALID_PARAMS,
+  MCP_APP_METHOD_NOT_FOUND,
+  mcpAppError,
   type McpAppAuditEntry,
   type McpAppAuditSummary,
   type McpAppRequestAnswer,
   McpAppRequestError,
   McpAppRequestResult,
 } from "@cloudpid/protocol";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-
-/** JSON-RPC's "method not found", which an App View's request for any other method is answered with. */
-const METHOD_NOT_FOUND = -32_601;
 
 const MINUTE_MS = 60_000;
 
@@ -66,6 +67,18 @@ export type AppViewRequest = {
   readonly workspaceOf: (conversation: string) => Effect.Effect<string | undefined>;
 };
 
+/** An App View's log line, as its socket sent it. */
+export type AppViewLog = {
+  readonly view: WebSocket;
+  readonly callId: string;
+  readonly level: string;
+  readonly logger?: string | undefined;
+  readonly message: string;
+};
+
+/** The name of the span event a View's `warning` or above becomes. */
+export const APP_LOG_EVENT = "mcp.app_log";
+
 export type AppCallsOptions = {
   /** The kept record of call `callId`; none for a call that has none (evicted, or not an App's). */
   readonly record: (callId: string) => Option.Option<AppCallRecord>;
@@ -84,6 +97,8 @@ export type AppCallsOptions = {
 type ViewState = {
   /** When its requests of the last minute arrived. */
   stamps: Array<number>;
+  /** When its log lines of the last minute arrived. */
+  logStamps: Array<number>;
   readonly running: Map<string, AbortController>;
 };
 
@@ -92,6 +107,8 @@ export type AppCalls = {
   readonly request: (input: AppViewRequest) => Effect.Effect<McpAppRequestAnswer>;
   /** The View's request `requestId` of call `callId`, if it is still running: the host's request is aborted. */
   readonly cancel: (view: WebSocket, callId: string, requestId: string) => Effect.Effect<void>;
+  /** A log line the View sent (`notifications/message`): dropped when it is not one of a call that has a record, is over the limit, or is below `warning`. */
+  readonly log: (input: AppViewLog) => Effect.Effect<void>;
   /** The View's page went: everything it has in flight is aborted. */
   readonly endViews: (view: WebSocket) => Effect.Effect<void>;
 };
@@ -106,13 +123,6 @@ const ReadParams = Schema.Struct({ uri: Schema.String });
 const decodeToolParams = Schema.decodeUnknownOption(ToolParams);
 
 const decodeReadParams = Schema.decodeUnknownOption(ReadParams);
-
-const refused = (reason: string, message: string, code = MCP_APP_REFUSED): McpAppRequestError => ({
-  status: "error",
-  code,
-  message,
-  reason,
-});
 
 /** An AbortController, made outside the Effect that uses it. */
 const controller = () => new AbortController();
@@ -175,7 +185,7 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
     let state = calls.get(callId);
 
     if (state === undefined) {
-      state = { stamps: [], running: new Map() };
+      state = { stamps: [], logStamps: [], running: new Map() };
       calls.set(callId, state);
     }
 
@@ -189,7 +199,7 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
 
       if (method !== "tools/call" && method !== "resources/read") {
         return {
-          answer: refused("refused", `Method not found: ${method}`, METHOD_NOT_FOUND),
+          answer: mcpAppError("refused", `Method not found: ${method}`, MCP_APP_METHOD_NOT_FOUND),
           summary: undefined,
         };
       }
@@ -198,7 +208,7 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
 
       if (Option.isNone(asked)) {
         return {
-          answer: refused(
+          answer: mcpAppError(
             "refused",
             method === "tools/call"
               ? "tools/call needs params with the tool's name"
@@ -213,7 +223,7 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
 
       if (Option.isNone(record)) {
         return {
-          answer: refused("unavailable", "No App record of this Session keeps that call"),
+          answer: mcpAppError("unavailable", "No App record of this Session keeps that call"),
           summary: undefined,
         };
       }
@@ -239,7 +249,10 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
         (yield* options.archived)
       ) {
         return ended(
-          refused("refused", "This Session is archived: its App Views can read but not call tools"),
+          mcpAppError(
+            "refused",
+            "This Session is archived: its App Views can read but not call tools",
+          ),
         );
       }
 
@@ -259,7 +272,7 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
   const request: AppCalls["request"] = (input) =>
     Effect.gen(function* () {
       if (!input.visible) {
-        return refused(
+        return mcpAppError(
           "hidden",
           "The page is hidden: its App Views make no requests until it is visible",
         );
@@ -270,22 +283,26 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
 
       state.stamps = state.stamps.filter((each) => at - each < MINUTE_MS);
 
-      if (state.stamps.length >= MAX_MCP_APP_PER_MINUTE) {
-        return refused(
+      // Counted as it arrives, a refused request too, so a View is not let spend what it was refused. Only the newest
+      // minute's worth is kept: a View that is over the limit stays over it for as long as it keeps asking.
+      const over = state.stamps.length >= MAX_MCP_APP_PER_MINUTE;
+
+      state.stamps.push(at);
+      state.stamps.splice(0, state.stamps.length - MAX_MCP_APP_PER_MINUTE);
+
+      if (over) {
+        return mcpAppError(
           "limit",
           `At most ${MAX_MCP_APP_PER_MINUTE} requests a minute for each App View`,
         );
       }
 
-      // Counted as it arrives, so a View is not let spend what it was refused.
-      state.stamps.push(at);
-
       if (state.running.has(input.requestId)) {
-        return refused("limit", "That request id is already in flight");
+        return mcpAppError("limit", "That request id is already in flight");
       }
 
       if (state.running.size >= MAX_MCP_APP_IN_FLIGHT) {
-        return refused(
+        return mcpAppError(
           "limit",
           `At most ${MAX_MCP_APP_IN_FLIGHT} requests in flight for each App View`,
         );
@@ -304,10 +321,10 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
         ),
       );
 
-      const held = yield* options.secrets;
+      const redactor = yield* options.secrets;
 
       // Redacted before it leaves: the answer, and the line of the log.
-      const answer = held.redact(done.answer);
+      const answer = redactor.redact(done.answer);
 
       const outcome = outcomeOf(answer);
 
@@ -321,7 +338,7 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
       const entry: McpAppAuditEntry = {
         at: options.now(),
         kind: input.method,
-        summary: held.redact(appAuditSummary(done.summary)),
+        summary: redactor.redact(appAuditSummary(done.summary)),
       };
 
       yield* options.audit(input.callId, entry);
@@ -331,7 +348,11 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
       Effect.catchCause((cause) =>
         Effect.logWarning("An App View's request failed in the Session", cause).pipe(
           Effect.as<McpAppRequestAnswer>(
-            refused("failed", "The Session could not serve the request", MCP_APP_INTERNAL_ERROR),
+            mcpAppError(
+              "failed",
+              "The Session could not serve the request",
+              MCP_APP_INTERNAL_ERROR,
+            ),
           ),
         ),
       ),
@@ -354,5 +375,49 @@ export const appCallsOver = (options: AppCallsOptions): AppCalls => {
       views.delete(view);
     });
 
-  return { request, cancel, endViews };
+  const log: AppCalls["log"] = (input) =>
+    Effect.gen(function* () {
+      const record = options.record(input.callId);
+
+      if (Option.isNone(record)) return;
+
+      const state = stateOf(input.view, input.callId);
+      const at = options.now();
+
+      state.logStamps = state.logStamps.filter((each) => at - each < MINUTE_MS);
+
+      const over = state.logStamps.length >= MAX_MCP_APP_PER_MINUTE;
+
+      state.logStamps.push(at);
+      state.logStamps.splice(0, state.logStamps.length - MAX_MCP_APP_PER_MINUTE);
+
+      if (over || !isWarningOrAbove(input.level)) return;
+
+      const redactor = yield* options.secrets;
+
+      // Redacted, then cut, so a Secret is never cut into a piece that no longer matches it.
+      const message = redactor.redact(input.message).slice(0, MAX_MCP_APP_LOG_CHARS);
+      const logger = redactor.redact(input.logger ?? "");
+
+      yield* Effect.gen(function* () {
+        const span = yield* Effect.currentSpan;
+        const now = yield* Clock.currentTimeNanos;
+
+        span.event(APP_LOG_EVENT, now, { level: input.level, logger, message });
+      }).pipe(
+        Effect.withSpan("mcp.app_log", {
+          attributes: {
+            "mcp.server": record.value.server,
+            "mcp.app.call": input.callId,
+            "mcp.app.level": input.level,
+          },
+        }),
+      );
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("An App View's log line failed in the Session", cause),
+      ),
+    );
+
+  return { request, cancel, log, endViews };
 };

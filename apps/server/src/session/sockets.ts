@@ -990,6 +990,16 @@ export const sessionSocketsLayer = (
                   Effect.orElseSucceed(() => undefined),
                 ),
             });
+          case "mcp_app_log":
+            return mcpApps
+              .log({
+                view: socket,
+                callId: message.callId,
+                level: message.level,
+                logger: message.logger,
+                message: message.message,
+              })
+              .pipe(Effect.as(null));
           case "mcp_app_cancel":
             return mcpApps.cancel(socket, message.callId, message.requestId).pipe(Effect.as(null));
           case "viewed_set":
@@ -1107,7 +1117,12 @@ export const sessionSocketsLayer = (
 
         state.acceptWebSocket(server);
         server.serializeAttachment({ watches: [] } satisfies Attachment);
-        yield* send(server, copying ? { type: "hello", root, copying } : { type: "hello", root });
+        yield* send(
+          server,
+          copying
+            ? { type: "hello", root, copying, appViews: true }
+            : { type: "hello", root, appViews: true },
+        );
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),
         );

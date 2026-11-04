@@ -32,6 +32,8 @@ import {
   MAX_MCP_APP_RECORDS,
   MAX_MCP_APP_RECORDS_BYTES,
   MAX_MCP_APP_STUBS,
+  MCP_APP_INTERNAL_ERROR,
+  mcpAppError,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -618,12 +620,9 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     request:
       options.request ??
       (() =>
-        Effect.succeed<McpAppRequestAnswer>({
-          status: "error",
-          code: -32_603,
-          reason: "failed",
-          message: "This Session has no MCP tools",
-        })),
+        Effect.succeed<McpAppRequestAnswer>(
+          mcpAppError("failed", "This Session has no MCP tools", MCP_APP_INTERNAL_ERROR),
+        )),
     audit,
     secrets,
     archived: options.archived,

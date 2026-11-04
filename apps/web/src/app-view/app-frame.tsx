@@ -2,7 +2,6 @@
 // frame, the bridge to the View inside it, and the card's own chrome (what it is, whose, where it is served, its CSP).
 // The frame never takes focus and is given no permission of the browser's: those are what later tickets turn on.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off -- DOM effects: a native debounce timer and observers.
-import { MAX_MCP_APP_AUDIT } from "@cloudpid/protocol";
 import type { McpAppAuditEntry, McpAppRecord, McpAppTool } from "@cloudpid/protocol";
 import type { McpUiToolResultNotification } from "@modelcontextprotocol/ext-apps";
 import { Check, Copy } from "lucide-react";
@@ -21,7 +20,7 @@ import {
 } from "./host-context.ts";
 import type { AppPage } from "./load.ts";
 import { readEnvironment, scrollerOf } from "./page-environment.ts";
-import { viewRequestHandlers, type AppRequestClient } from "./requests.ts";
+import { auditLog, viewLogSink, viewRequestHandlers, type AppRequestClient } from "./requests.ts";
 
 /** How long a change of the card's size or the page's theme settles before the View is told. */
 const CONTEXT_DEBOUNCE_MS = 150;
@@ -244,7 +243,8 @@ const LiveFrame = ({
 
         return sent;
       },
-      capabilities: hostCapabilities(csp),
+      // Only a frame with a Session's client serves the View's calls, so it is the only one that says it does.
+      capabilities: hostCapabilities(csp, latest.current.client !== undefined),
       hostInfo: HOST_INFO,
       handlers:
         latest.current.client === undefined
@@ -254,9 +254,13 @@ const LiveFrame = ({
                 setSignIn((was) => ({ stepUp: need.stepUp || was?.stepUp === true }));
               },
               onAudit: (entry) => {
-                setAudited((was) => [...was, entry].slice(-MAX_MCP_APP_AUDIT));
+                setAudited((was) => auditLog(was, [entry]));
               },
             }),
+      logs:
+        latest.current.client === undefined
+          ? undefined
+          : viewLogSink(latest.current.client, record.callId),
       onEvent: (event) => {
         if (event.type === "failed") setFailed({ key: frameKey, reason: event.reason });
 
@@ -388,7 +392,7 @@ const LiveFrame = ({
           Details
         </button>
       </div>
-      {details && <AppDetails page={page} audit={[...record.audit, ...audited]} />}
+      {details && <AppDetails page={page} audit={auditLog(record.audit, audited)} />}
       <iframe
         ref={frame}
         key={frameKey}

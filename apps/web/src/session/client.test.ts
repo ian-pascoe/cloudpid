@@ -2981,14 +2981,101 @@ describe("the App calls on a Session connection", () => {
       }),
   );
 
-  it.effect("tells the Session its page is visible when the socket opens", () =>
+  /** Connect and greet as a Session of this build does, saying it takes the App Views' messages. */
+  const greeted = (socket: FakeSocket, hello: { readonly [key: string]: Value }) =>
     Effect.gen(function* () {
-      const { latest } = yield* setup();
+      yield* socket.open();
+      yield* socket.say({ type: "hello", root: 1, ...hello });
 
-      yield* watching(latest());
+      const watch = socket.commands().find((command) => command.type === "watch");
 
-      expect(latest().visibility()).toEqual([true]);
-    }),
+      yield* socket.say({ type: "result", id: watch?.id, result: null });
+      yield* socket.say(snapshot());
+    });
+
+  it.effect(
+    "tells a Session that says it takes them whether its page is visible, when the socket opens",
+    () =>
+      Effect.gen(function* () {
+        const { latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+
+        expect(latest().visibility()).toEqual([true]);
+      }),
+  );
+
+  it.effect(
+    "sends a Session from before no page_visible and no log line, so the owner never sees its error",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), {});
+
+        client.appLog("c1", "error", undefined, "a line");
+
+        expect(latest().visibility()).toEqual([]);
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "mcp_app_log"),
+        ).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "sends a View's log line to a Session that takes it, with its logger when there is one",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+
+        client.appLog("c1", "warning", "view", "careful");
+        client.appLog("c1", "error", undefined, "broke");
+
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "mcp_app_log"),
+        ).toEqual([
+          {
+            type: "mcp_app_log",
+            id: expect.any(String),
+            callId: "c1",
+            level: "warning",
+            logger: "view",
+            message: "careful",
+          },
+          {
+            type: "mcp_app_log",
+            id: expect.any(String),
+            callId: "c1",
+            level: "error",
+            message: "broke",
+          },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "fails a View's request that the dropped socket had in flight, saying the connection was lost",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+
+        const asked = yield* client
+          .appRequest("c1", "r1", "tools/call", { name: "slow" })
+          .pipe(Effect.flip, Effect.forkChild);
+
+        yield* settle;
+        yield* latest().drop();
+
+        expect((yield* Fiber.join(asked)).message).toContain("connection was lost");
+      }),
   );
 
   it.effect(

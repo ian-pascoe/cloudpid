@@ -452,6 +452,16 @@ export interface SessionClient {
     method: string,
     params: Schema.Json | undefined,
   ) => Effect.Effect<McpAppRequestAnswer, SessionCommandError>;
+  /**
+   * An App View's log line (`notifications/message`) for call `callId`, which the Session puts on a telemetry span. Sent
+   * to a Session that takes it (its `hello` said `appViews`) and dropped otherwise; nothing is answered.
+   */
+  readonly appLog: (
+    callId: string,
+    level: string,
+    logger: string | undefined,
+    message: string,
+  ) => void;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -645,8 +655,14 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     connection?.ws?.send(JSON.stringify(message));
   };
 
+  // Whether the Session on this connection takes `page_visible` and `mcp_app_log` (its `hello` says): one from before reads
+  // either as an unreadable message and answers an error, which the owner would see on every connect and tab switch.
+  let appViews = false;
+
   /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
   const sendVisibility = (): void => {
+    if (!appViews) return;
+
     send({
       type: "page_visible",
       id: nextCommandId(),
@@ -1004,6 +1020,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         const moved = root !== null && root !== message.root;
 
         root = message.root;
+        appViews = message.appViews === true;
         update({
           activeBranch: root,
           copying: message.copying === true,
@@ -1983,6 +2000,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       request((id) => ({ type: "mcp_app_mount", id, callId }), decodeMcpAppMounted),
     appPage: (callId) =>
       request((id) => ({ type: "mcp_app_html", id, callId }), decodeMcpAppHtmlAnswer),
+    appLog: (callId, level, logger, message) => {
+      if (!appViews) return;
+
+      const line: Extract<ClientMessage, { type: "mcp_app_log" }> = {
+        type: "mcp_app_log",
+        id: nextCommandId(),
+        callId,
+        level,
+        message,
+      };
+
+      send(logger === undefined ? line : { ...line, logger });
+    },
     appRequest: (callId, requestId, method, params) =>
       request((id) => {
         const message: Extract<ClientMessage, { type: "mcp_app_request" }> = {
