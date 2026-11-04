@@ -196,7 +196,7 @@ const Chat = () => {
   );
 };
 
-beforeEach(async () => {
+beforeEach(() => {
   // @ts-expect-error -- React's flag that its updates are wrapped in `act` in this test.
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
@@ -208,7 +208,17 @@ beforeEach(async () => {
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
+});
 
+/** What a test seeds: the `view` that names the origin its running page is of, and what its call's record pins. */
+interface Seed {
+  readonly pageView?: string;
+  readonly recordView?: string;
+  readonly recordServer?: string;
+}
+
+/** The Session as the page holds it, with the user's message; and the page of the call's tool and its record, as loads would give. */
+const start = async (seed: Seed = {}) => {
   view = reduceEvents(EMPTY_VIEW, [
     event({ type: "run_start", inputs: [1] }),
     event({
@@ -226,6 +236,14 @@ beforeEach(async () => {
   state = Effect.runSync(SubscriptionRef.make(INITIAL_SESSION_STATE));
   publish();
 
+  // What the record pins, as the Session kept it: the origin's `viewHash` and the server's name.
+  const server = seed.recordServer ?? record.server;
+
+  const pinned: McpAppRecord =
+    seed.recordView === undefined
+      ? { ...record, server }
+      : { ...record, server, viewHash: seed.recordView };
+
   registry = AtomRegistry.make({
     initialValues: [
       Atom.initialValue(keyValueStoreLayer, KeyValueStore.layerStorage(memoryStorage)),
@@ -237,12 +255,19 @@ beforeEach(async () => {
       // The page of the tool's View, for a call that runs; the call's record, once it has one.
       Atom.initialValue(
         appRunningAtom(runningKey("s1", "c1", NAME)),
-        AsyncResult.success({ status: "running" as const, page: PAGE }),
+        AsyncResult.success({
+          status: "running" as const,
+          page: seed.pageView === undefined ? PAGE : { ...PAGE, view: seed.pageView },
+        }),
       ),
       Atom.initialValue(
         appLoadAtom(appKey("s1", "c1")),
         // The record's page is another object, as a load of its own would make it: the frame is not swapped for it.
-        AsyncResult.success({ status: "view" as const, record, page: { ...PAGE } }),
+        AsyncResult.success({
+          status: "view" as const,
+          record: pinned,
+          page: { ...PAGE },
+        }),
       ),
     ],
   });
@@ -263,7 +288,7 @@ beforeEach(async () => {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
-});
+};
 
 afterEach(() => {
   act(() => {
@@ -292,6 +317,7 @@ const tick = async (ms: number) => {
 
 describe("an App call as it streams", () => {
   it("mounts at toolcall_start, streams its partial input, and the commit and the result remount nothing", async () => {
+    await start();
     await happens(event({ type: "message_start", message: message([]) }));
     expect(frames()).toHaveLength(0);
 
@@ -386,6 +412,7 @@ describe("an App call as it streams", () => {
   });
 
   it("tells the View its call did not finish when its message is cut, and keeps it mounted", async () => {
+    await start();
     await happens(event({ type: "message_start", message: message([]) }));
     await happens(
       update({ type: "toolcall_start", contentIndex: 0, block: call({ title: "Hel", rows: [] }) }),
@@ -415,6 +442,7 @@ describe("an App call as it streams", () => {
   });
 
   it("sends tool-cancelled before the teardown when the call goes from the transcript unfinished", async () => {
+    await start();
     await happens(event({ type: "message_start", message: message([]) }));
     await happens(
       update({ type: "toolcall_start", contentIndex: 0, block: call({ title: "Hel", rows: [] }) }),
@@ -434,6 +462,7 @@ describe("an App call as it streams", () => {
   });
 
   it("does not mount a View for a stopped call that was never seen running: a later load shows the summary", async () => {
+    await start();
     view = reduceEvents(view, [
       event({
         type: "entry_appended",
@@ -451,5 +480,134 @@ describe("an App call as it streams", () => {
 
     expect(host.textContent).toContain(NAME);
     expect(frames()).toHaveLength(0);
+  });
+
+  /** The call streams and commits, and its tool runs; its View is up and ready. */
+  const running = async () => {
+    await happens(event({ type: "message_start", message: message([]) }));
+    await happens(
+      update({ type: "toolcall_start", contentIndex: 0, block: call({ title: "", rows: [] }) }),
+    );
+
+    const frame = frames()[0] as HTMLIFrameElement;
+    const shown = viewOf(frame);
+
+    shown.handshake();
+    await happens(
+      event({
+        type: "message_end",
+        entry: entryOf({
+          id: 2,
+          conversationId: 1,
+          kind: "pi.assistant",
+          model: [message([call({ title: "Hello", rows: ["abc"] })])],
+        }),
+      }),
+    );
+    await happens(
+      event({ type: "tool_execution_start", toolCallId: "c1", toolName: NAME, args: {} }),
+    );
+
+    return { frame, shown };
+  };
+
+  /** The tool ends with its result entry; its record is in the Session's list only when `recorded`. */
+  const ends = async (recorded: boolean) => {
+    apps = recorded ? [entry] : [];
+    await happens(
+      event({
+        type: "entry_appended",
+        entry: entryOf({
+          id: 3,
+          conversationId: 1,
+          kind: "pi.tool",
+          model: [
+            {
+              role: "toolResult",
+              toolCallId: "c1",
+              toolName: NAME,
+              content: [{ type: "text", text: "done" }],
+              isError: false,
+              timestamp: 3,
+            },
+          ],
+        }),
+      }),
+    );
+    await happens(event({ type: "tool_execution_end", toolCallId: "c1", toolName: NAME }));
+    await happens(event({ type: "run_end", inputs: [1] }));
+  };
+
+  it("delivers the record's result when its viewHash is the one the page was read for", async () => {
+    await start({ pageView: "v-docs", recordView: "v-docs" });
+
+    const { frame, shown } = await running();
+
+    await ends(true);
+    expect(frames()).toEqual([frame]);
+    expect(shown.methods().at(-1)).toBe("ui/notifications/tool-result");
+  });
+
+  it("never delivers a record of another server to the View made before it: it is told the call is over, torn down, and the card says it is unavailable", async () => {
+    // The inventory named one server when the call started, and the call ran on another with the same name.
+    await start({ pageView: "v-repo", recordView: "v-owner" });
+
+    const { shown } = await running();
+
+    await ends(true);
+
+    const methods = shown.methods();
+
+    expect(methods).not.toContain("ui/notifications/tool-result");
+    expect(methods.slice(-2)).toEqual(["ui/notifications/tool-cancelled", "ui/resource-teardown"]);
+
+    shown.answerTeardown();
+    await tick(0);
+    expect(frames()).toHaveLength(0);
+    expect(host.textContent).toContain("App unavailable");
+    expect(shown.methods()).not.toContain("ui/notifications/tool-result");
+  });
+
+  it("never delivers a record whose server's name is not the page's, when the record pins no viewHash", async () => {
+    await start({ pageView: "v-docs", recordServer: "other" });
+
+    const { shown } = await running();
+
+    await ends(true);
+    expect(shown.methods()).not.toContain("ui/notifications/tool-result");
+    expect(shown.methods().slice(-2)).toEqual([
+      "ui/notifications/tool-cancelled",
+      "ui/resource-teardown",
+    ]);
+  });
+
+  it("tells the View its call is over when the call has its result and no record comes", async () => {
+    await start({ pageView: "v-docs", recordView: "v-docs" });
+
+    const { frame, shown } = await running();
+
+    await ends(false);
+
+    // The record's list comes on its own: a grace first.
+    await tick(1900);
+    expect(shown.methods()).not.toContain("ui/notifications/tool-cancelled");
+
+    await tick(200);
+    expect(shown.methods().at(-1)).toBe("ui/notifications/tool-cancelled");
+    expect(frames()).toEqual([frame]);
+  });
+
+  it("delivers a record that comes within the grace, and says nothing of a cancel", async () => {
+    await start({ pageView: "v-docs", recordView: "v-docs" });
+
+    const { shown } = await running();
+
+    await ends(false);
+    await tick(1000);
+    apps = [entry];
+    publish();
+    await tick(2500);
+    expect(shown.methods().at(-1)).toBe("ui/notifications/tool-result");
+    expect(shown.methods()).not.toContain("ui/notifications/tool-cancelled");
   });
 });

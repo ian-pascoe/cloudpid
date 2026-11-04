@@ -237,7 +237,7 @@ describe("loadRunningView", () => {
 
         expect(yield* loadRunningView(client, "mcp__docs__page", "c1", PAGE)).toEqual({
           status: "running",
-          page: { html: "<p>app</p>", meta: {}, origin: ORIGIN },
+          page: { html: "<p>app</p>", meta: {}, origin: ORIGIN, view: "v-one" },
         });
         expect(calls.tool).toEqual(["mcp__docs__page"]);
 

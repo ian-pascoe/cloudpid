@@ -4,14 +4,13 @@
 // streaming JSON parser (pi-ai's) made them, and the transcript keeps them as the call streams (`reduceView`'s streamed
 // tools), so this only paces what it is given. Pure over its clock, which a test supplies.
 // @effect-diagnostics missingPipeableSignature:off globalTimers:off globalDate:off -- a small throttle over an injected clock.
+import type { McpAppRecord } from "@cloudpid/protocol";
 
 /** The least time between two `tool-input-partial` of one call. */
 export const PARTIAL_INPUT_INTERVAL_MS = 250;
 
 /** The most bytes of arguments (their JSON, in UTF-8) a `tool-input-partial` is sent for. */
 export const MAX_PARTIAL_INPUT_BYTES = 1024 * 1024;
-
-import type { McpAppRecord } from "@cloudpid/protocol";
 
 /** The arguments of a call, as JSON. */
 export type ToolArguments = McpAppRecord["arguments"];

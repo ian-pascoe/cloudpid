@@ -491,6 +491,10 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       changed(keepRecord({ ...record.value, htmlHash: hash }, found.value.mountedAt));
     });
 
+  /** The page of the `ui://` resource an App tool declares, through the host, for call `callId` of it. */
+  const readDeclared = (declared: McpAppTool, callId: string, conversation: string) =>
+    options.html({ server: declared.server, uri: declared.uri, callId, conversation });
+
   const pageOf: McpAppsService["pageOf"] = (callId) =>
     Effect.suspend(() => {
       const found = Arr.findFirst(index(), (entry) => entry.callId === callId);
@@ -518,7 +522,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
           });
         }
 
-        return options.html({ server, uri: declared.value.uri, callId, conversation }).pipe(
+        return readDeclared(declared.value, callId, conversation).pipe(
           Effect.map((answer) => ofTheCallsServer(found.value, answer)),
           Effect.tap((answer) => {
             const hash = answer.status === "html" && "hash" in answer ? answer.hash : undefined;
@@ -553,10 +557,8 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
         });
       }
 
-      const { server, uri } = declared.value;
-
       // The call has no record, so no conversation of its own is known here: the host's log names the call only.
-      return options.html({ server, uri, callId, conversation: "" }).pipe(Effect.map(withOrigin));
+      return readDeclared(declared.value, callId, "").pipe(Effect.map(withOrigin));
     });
 
   const copiesFor: McpAppsService["copiesFor"] = (callIds) => {
