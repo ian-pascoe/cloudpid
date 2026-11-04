@@ -12,6 +12,7 @@ import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
+import type { TestSpillRead } from "../session/host.fixture.ts";
 import type { TestWorkspaceSession } from "./session.fixture.ts";
 import { uniqueWorkspace } from "./session.workerd.helpers.ts";
 
@@ -38,19 +39,11 @@ const withSpills = (slug: string) => {
 
   // The read runs on a test clock that only the wait for the slot moves (`TestWorkspaceSession.spill`): a Workspace call
   // a loaded runner is slow to answer is never what times it out.
-  const read = (
-    path: string,
-    held: Array<number> = [],
-    slotAfterMs = 0,
-    expandMs?: number,
-    duringWait?: () => Promise<void>,
-  ) =>
+  const read = (path: string, options: TestSpillRead = {}) =>
     runInDurableObject(stub, async (instance: TestWorkspaceSession) => {
       instance.bindWorkspace(slug);
 
-      if (expandMs !== undefined) instance.expandTimeoutMs(expandMs);
-
-      return instance.spill(path, held, slotAfterMs, duringWait);
+      return instance.spill(path, options);
     });
 
   return { spill, read, workspace };
@@ -152,7 +145,7 @@ describe("a Result Spill read for a preview", () => {
     const slots = async (path: string) => {
       const held: Array<number> = [];
 
-      await read(path, held);
+      await read(path, { held });
 
       return held;
     };
@@ -166,7 +159,7 @@ describe("a Result Spill read for a preview", () => {
     const between = await spill(new Uint8Array(PREVIEW_SLOT_OVER + 5), ".bin");
     const held: Array<number> = [];
 
-    expect(await read(between, held)).toMatchObject({ kind: "base64" });
+    expect(await read(between, { held })).toMatchObject({ kind: "base64" });
     expect(held).toEqual([PREVIEW_SLOT_OVER + 5]);
   });
 
@@ -175,7 +168,9 @@ describe("a Result Spill read for a preview", () => {
     const path = await spill(new Uint8Array(PREVIEW_SLOT_OVER + 5), ".bin");
 
     // The Workspace's limit is 1 s here, and the slot comes after 1.5 s of the read's clock.
-    expect(await read(path, [], 1500, 1000)).toMatchObject({ kind: "base64" });
+    expect(await read(path, { slotAfterMs: 1500, expandMs: 1000 })).toMatchObject({
+      kind: "base64",
+    });
   });
 
   it("reads the file it opened when cleanup removes it during the wait for the slot", async () => {
@@ -184,12 +179,12 @@ describe("a Result Spill read for a preview", () => {
     const path = await spill(new Uint8Array(PREVIEW_SLOT_OVER + 5), ".bin");
 
     // Run in the Session, which reaches the Workspace through a stub of its own.
-    const removed = async () => {
+    const removeSpill = async () => {
       getOrThrow(await workspaceOf(slug).remove(path, { force: true }, BACKGROUND_CONTEXT));
     };
 
     // The file was opened before the wait, so the wait outliving the file does not take it from the read.
-    expect(await read(path, [], 0, undefined, removed)).toMatchObject({
+    expect(await read(path, { duringWait: removeSpill })).toMatchObject({
       kind: "base64",
       base64: btoa("\0".repeat(PREVIEW_SLOT_OVER + 5)),
     });
