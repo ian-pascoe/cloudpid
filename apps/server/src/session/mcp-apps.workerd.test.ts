@@ -385,6 +385,8 @@ describe("an MCP App call over the Session's socket", () => {
             server: "docs",
             tool: "app",
             uri: URI,
+            // The tool's own schema, for the View's `toolInfo`.
+            inputSchema: { type: "object" },
             visibility: ["model", "app"],
           },
           {
@@ -392,6 +394,7 @@ describe("an MCP App call over the Session's socket", () => {
             server: "docs",
             tool: "hidden",
             uri: URI,
+            inputSchema: { type: "object" },
             visibility: ["app"],
           },
         ],
