@@ -124,7 +124,20 @@ const frameOf = () => {
 const render = (props: Partial<AppFrameProps> = {}) => {
   act(() => {
     root.render(
-      <AppFrame record={record} page={pageAt(ORIGIN)} title="Page" badge={null} {...props} />,
+      <AppFrame
+        record={record}
+        page={pageAt(ORIGIN)}
+        tool={{
+          name: "mcp__docs__page",
+          server: "docs",
+          tool: "page",
+          title: "Page",
+          uri: "ui://docs/page",
+          visibility: ["model", "app"],
+        }}
+        badge={null}
+        {...props}
+      />,
     );
   });
 };

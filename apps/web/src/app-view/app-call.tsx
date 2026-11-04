@@ -3,6 +3,7 @@
 //
 // Seams for the tickets that follow: `live` (the generation and live rule, collapse and Reopen, #490) is always true here;
 // the card is always where the transcript puts it (placement in a codemode strip or a subagent's thread is #490's).
+import type { McpAppTool } from "@cloudpid/protocol";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import * as Arr from "effect/Array";
@@ -26,7 +27,7 @@ const AppNote = ({ children }: { children: string }) => (
 const AppLoaded = ({
   sessionId,
   callId,
-  title,
+  tool,
   badge,
   closing,
   onFramed,
@@ -34,7 +35,7 @@ const AppLoaded = ({
 }: {
   sessionId: string;
   callId: string;
-  title: string | undefined;
+  tool: McpAppTool | undefined;
   badge: "offline" | "sign-in" | null;
   closing: boolean;
   onFramed: () => void;
@@ -54,7 +55,7 @@ const AppLoaded = ({
         <AppFrame
           record={load.record}
           page={load.page}
-          title={title}
+          tool={tool}
           badge={badge}
           closing={closing}
           onFramed={onFramed}
@@ -81,14 +82,14 @@ const AppLoaded = ({
 const AppMount = ({
   sessionId,
   callId,
-  title,
+  tool,
   badge,
   live,
   note,
 }: {
   sessionId: string;
   callId: string;
-  title: string | undefined;
+  tool: McpAppTool | undefined;
   badge: "offline" | "sign-in" | null;
   live: boolean;
   note: string;
@@ -104,7 +105,7 @@ const AppMount = ({
       key={generation}
       sessionId={sessionId}
       callId={callId}
-      title={title}
+      tool={tool}
       badge={badge}
       closing={!live}
       onFramed={() => {
@@ -155,7 +156,7 @@ export const AppCall = ({ callId, toolName }: { callId: string; toolName: string
     <AppMount
       sessionId={sessionId}
       callId={callId}
-      title={tool?.title}
+      tool={tool}
       badge={availability.kind === "mount" ? availability.badge : null}
       live={live}
       note={availability.kind === "evicted" ? "App data no longer kept" : "App unavailable"}

@@ -57,6 +57,19 @@ describe("hostStyleVariables", () => {
 describe("hostContextOf", () => {
   const tool = { callId: "c1", name: "page", title: "Page" };
 
+  it("gives toolInfo the tool's own input schema when the inventory has it, as an object schema", () => {
+    const schema = { type: "object", properties: { slug: { type: "string" } }, required: ["slug"] };
+
+    expect(hostContextOf(env, { ...tool, inputSchema: schema }).toolInfo?.tool.inputSchema).toEqual(
+      schema,
+    );
+    expect(hostContextOf(env, tool).toolInfo?.tool.inputSchema).toEqual({ type: "object" });
+    // Whatever `type` it declared, it is an object schema: that is what the spec requires of one.
+    expect(
+      hostContextOf(env, { ...tool, inputSchema: { type: "string" } }).toolInfo?.tool.inputSchema,
+    ).toEqual({ type: "object" });
+  });
+
   it("describes an inline card: the tool, theme, display mode, size, locale and platform", () => {
     const context = hostContextOf(env, tool);
 

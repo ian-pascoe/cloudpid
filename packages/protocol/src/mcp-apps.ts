@@ -35,6 +35,10 @@ export const MAX_MCP_APP_AUDIT = 50;
 /** The most App tools `mcp_app_tools` lists. */
 export const MAX_MCP_APP_TOOLS = 1000;
 
+/** The most UTF-16 code units of one App tool's `inputSchema` that `mcp_app_tools` carries, and of all of them together. */
+export const MAX_MCP_APP_SCHEMA_BYTES = 2048;
+export const MAX_MCP_APP_SCHEMAS_BYTES = 65_536;
+
 /** One entry of an App View's audit log: what it asked for, and what came of it. `kind` is a string so one a later build adds still reads. */
 export const McpAppAuditEntry = Schema.Struct({
   /** Epoch milliseconds. */
@@ -151,6 +155,11 @@ export const McpAppTool = Schema.Struct({
   title: Schema.optionalKey(Schema.String),
   /** The `ui://` resource the tool declares. */
   uri: Schema.String,
+  /**
+   * The tool's `inputSchema`, for the View's `toolInfo`: left out when it is over `MAX_MCP_APP_SCHEMA_BYTES`, or once the
+   * list's schemas have used `MAX_MCP_APP_SCHEMAS_BYTES`, since the list is sent whole on every connect and change.
+   */
+  inputSchema: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
   /** Its `_meta.ui.visibility`: `model`, `app`, or both, the default. */
   visibility: Schema.Array(Schema.String),
 });

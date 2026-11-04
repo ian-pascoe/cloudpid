@@ -2,6 +2,7 @@
 // the context `ui/initialize` answers and `host-context-changed` updates, and the capabilities it advertises. Pure over a
 // `HostEnvironment` the component reads from the page, so a test gives it any.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- small native tables of CSS variables.
+import type { McpAppTool } from "@cloudpid/protocol";
 import type {
   McpUiHostCapabilities,
   McpUiHostContext,
@@ -119,6 +120,8 @@ export interface AppToolInfo {
   readonly callId: string;
   readonly name: string;
   readonly title?: string | undefined;
+  /** The tool's `inputSchema` when the inventory carries it (bounded: `MAX_MCP_APP_SCHEMA_BYTES`); else a bare object schema. */
+  readonly inputSchema?: McpAppTool["inputSchema"] | undefined;
 }
 
 /**
@@ -130,7 +133,12 @@ export interface AppToolInfo {
 export const hostContextOf = (env: HostEnvironment, tool: AppToolInfo): McpUiHostContext => ({
   toolInfo: {
     id: tool.callId,
-    tool: { name: tool.name, title: tool.title, inputSchema: { type: "object" } },
+    tool: {
+      name: tool.name,
+      title: tool.title,
+      // An object schema, whatever the server declared: `type` is what the spec requires of one.
+      inputSchema: { ...tool.inputSchema, type: "object" },
+    },
   },
   theme: env.dark ? "dark" : "light",
   styles: { variables: hostStyleVariables(env.readProperty) },

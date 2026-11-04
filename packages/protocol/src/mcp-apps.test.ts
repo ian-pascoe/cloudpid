@@ -271,6 +271,11 @@ describe("the messages", () => {
 
     expect(parsed.apps[0]?.state).toBe("archived-later");
     expect(read(McpAppMounted, { status: "later" })).toEqual({ status: "later" });
+    // A server that is no longer the call's is a status of its own, with its reason.
+    expect(read(McpAppHtmlAnswer, { status: "unavailable", message: "Shadowed" })).toEqual({
+      status: "unavailable",
+      message: "Shadowed",
+    });
     expect(read(McpAppHtmlAnswer, { status: "later" })).toEqual({ status: "later" });
   });
 

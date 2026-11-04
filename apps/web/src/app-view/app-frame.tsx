@@ -2,7 +2,7 @@
 // frame, the bridge to the View inside it, and the card's own chrome (what it is, whose, where it is served, its CSP).
 // The frame never takes focus and is given no permission of the browser's: those are what later tickets turn on.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off -- DOM effects: a native debounce timer and observers.
-import type { McpAppRecord } from "@cloudpid/protocol";
+import type { McpAppRecord, McpAppTool } from "@cloudpid/protocol";
 import type { McpUiToolResultNotification } from "@modelcontextprotocol/ext-apps";
 import { Check, Copy } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -96,8 +96,8 @@ const AppDetails = ({ page }: { page: AppPage }) => {
 export interface AppFrameProps {
   readonly record: McpAppRecord;
   readonly page: AppPage;
-  /** The tool's title, when the inventory has one (`toolInfo`). */
-  readonly title: string | undefined;
+  /** The tool as the inventory lists it, for `toolInfo` (its title and input schema) and the frame's title. */
+  readonly tool: McpAppTool | undefined;
   /** The server's state as a badge: shown beside the App's name. */
   readonly badge: "offline" | "sign-in" | null;
   /**
@@ -144,7 +144,7 @@ export const AppFrame = (props: AppFrameProps) => {
 const LiveFrame = ({
   record,
   page,
-  title,
+  tool,
   badge,
   closing = false,
   cancelled,
@@ -165,9 +165,9 @@ const LiveFrame = ({
   const frameKey = `${src}\0${attempt}`;
 
   // The page's latest context, which a bridge reads when it answers `ui/initialize`, read again whenever it is needed.
-  const latest = useRef({ record, title, csp });
+  const latest = useRef({ record, tool, csp });
 
-  latest.current = { record, title, csp };
+  latest.current = { record, tool, csp };
 
   useLayoutEffect(() => {
     const element = frame.current;
@@ -183,7 +183,8 @@ const LiveFrame = ({
       return hostContextOf(readEnvironment(element.clientWidth, scroller.clientHeight), {
         callId: now.record.callId,
         name: now.record.tool,
-        title: now.title,
+        title: now.tool?.title,
+        inputSchema: now.tool?.inputSchema,
       });
     };
 
@@ -327,7 +328,7 @@ const LiveFrame = ({
         ref={frame}
         key={frameKey}
         src={src}
-        title={`App: ${title ?? record.tool} (${record.server})`}
+        title={`App: ${tool?.title ?? record.tool} (${record.server})`}
         sandbox="allow-scripts allow-same-origin"
         referrerPolicy="no-referrer"
         className={page.meta.prefersBorder === false ? "block w-full" : "block w-full border-t"}
