@@ -1191,6 +1191,7 @@ export const serveRegistryRpc = <R = never>(
             place === null ? Effect.succeed({ paths: [] }) : lookups.files(place, query),
           ),
         ),
+      draftComplete: ({ environment, ...input }) => mcpStatus.complete(environment, input),
       draftBranches: ({ environment }) =>
         knownEnvironment(environment).pipe(Effect.flatMap((known) => branches(known.repos))),
       removeWorkspace: ({ id }) =>

@@ -14,13 +14,21 @@ import {
   mcpToolNames,
   resolveExposure,
 } from "@cloudpid/config";
+import { completionAnswerOf } from "@cloudpid/extensions/mcp";
 import {
   readMcpApplyResult,
+  type McpHostRequestInput,
   McpServerLogResult,
   McpServersResult,
   type McpServerInventory,
 } from "@cloudpid/mcp/types";
 import {
+  MCP_COMPLETION_STATUS,
+  type McpCompletion,
+  type McpCompletionArgument,
+  type McpCompletionContext,
+  type McpCompletionRef,
+  noCompletion,
   McpNoEnvironment,
   McpReconnecting,
   McpServerLogEntries,
@@ -56,7 +64,9 @@ type StatusRegistry = Pick<RegistryMethods, "mcpServerNames" | "getSettingsOverr
 /** The Registry object and the host objects, by name, as the main Worker reaches them. */
 export type McpStatusObjects = {
   readonly registry: () => StatusRegistry;
-  readonly host: (name: string) => Pick<McpHostMethods, "servers" | "serverLog" | "apply">;
+  readonly host: (
+    name: string,
+  ) => Pick<McpHostMethods, "servers" | "serverLog" | "apply" | "request">;
 };
 
 /** The client's MCP status reads. Each answers a value, never fails. */
@@ -67,6 +77,21 @@ export type McpStatus = {
    * answer): the composer only misses its `/` rows.
    */
   readonly prompts: (environment: string) => Effect.Effect<PromptCatalog>;
+  /**
+   * The suggestions for an argument of a prompt or resource template of `environment`'s server `server`, for a composer with
+   * no Session yet (`draftComplete`): through the host's `completion/complete` as the owner's request, which starts nothing
+   * and carries no Workspace, so a stdio server (whose Container a new Session has not got) is `not_running`. Never fails:
+   * why there are none is the answer's status.
+   */
+  readonly complete: (
+    environment: string,
+    input: {
+      readonly server: string;
+      readonly ref: McpCompletionRef;
+      readonly argument: McpCompletionArgument;
+      readonly context?: McpCompletionContext | undefined;
+    },
+  ) => Effect.Effect<McpCompletion>;
   readonly servers: (environment: string) => Effect.Effect<McpServersView>;
   readonly serverLog: (input: {
     readonly environment: string;
@@ -264,6 +289,58 @@ export const mcpStatus = (objects: McpStatusObjects): McpStatus => ({
       Effect.catchCause((cause) =>
         Effect.logWarning(`Environment ${environment}'s MCP prompts were not read`, cause).pipe(
           Effect.as(NO_PROMPTS),
+        ),
+      ),
+    ),
+
+  complete: (environment, input) =>
+    Effect.gen(function* () {
+      const names = yield* namesOf(objects, environment);
+
+      // A server the Environment does not have never reaches its host.
+      if (names === undefined || Option.isNone(names) || !names.value.includes(input.server)) {
+        return noCompletion(MCP_COMPLETION_STATUS.unsupported);
+      }
+
+      const host = objects.host(mcpHostName(environment));
+      const answer = decodeServers(yield* host.servers({ names: [input.server], parts: [] }));
+
+      if (Option.isNone(answer) || Predicate.isTagged(answer.value, "HostFailed")) {
+        return noCompletion(MCP_COMPLETION_STATUS.failed);
+      }
+
+      const listed = Arr.findFirst(answer.value.servers, (each) => each.name === input.server);
+
+      if (Option.isNone(listed) || listed.value.completions !== true) {
+        return noCompletion(MCP_COMPLETION_STATUS.unsupported);
+      }
+
+      // The draft has no Workspace, so a stdio server has no Container to ask: nothing is started for it.
+      if (listed.value.server["type"] === "stdio") {
+        return noCompletion(MCP_COMPLETION_STATUS.notRunning);
+      }
+
+      const params: Mutable<
+        Extract<McpHostRequestInput, { readonly op: "completion/complete" }>["params"]
+      > = {
+        ref: input.ref,
+        argument: input.argument,
+      };
+
+      if (input.context !== undefined) params.context = input.context;
+
+      const request: McpHostRequestInput = {
+        op: "completion/complete",
+        server: input.server,
+        params,
+        ctx: { origin: "owner", start: false },
+      };
+
+      return completionAnswerOf(yield* host.request(request, {}));
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning(`Environment ${environment}'s MCP completion failed`, cause).pipe(
+          Effect.as(noCompletion(MCP_COMPLETION_STATUS.failed)),
         ),
       ),
     ),

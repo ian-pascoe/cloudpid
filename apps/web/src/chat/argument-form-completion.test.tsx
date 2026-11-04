@@ -1,0 +1,199 @@
+// @vitest-environment happy-dom
+// @effect-diagnostics preferEffectArray:off globalTimers:off newPromise:off asyncFunction:off -- a form driven in a DOM, its asks kept in native arrays.
+// The argument form's wiring to its completions (`docs/architecture/mcp-in-a-session.md` → As built (#485): completion): the
+// focus asks at once, typing asks once it stops, the answer is listed under the focused field and taken with the keys, and
+// closing the form cancels what is in flight.
+import type { McpCompletion } from "@cloudpid/protocol";
+import { act, useState } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CompletionAsk } from "./argument-completion.ts";
+import { ArgumentForm } from "./argument-form.tsx";
+
+const FIELDS = [
+  { name: "owner", required: true },
+  { name: "repo", required: false },
+];
+
+/** What the fake Session was asked, with the answer of each and whether it was aborted. */
+type Asked = {
+  readonly ask: CompletionAsk;
+  readonly signal: AbortSignal;
+  readonly answer: (completion: McpCompletion) => void;
+};
+
+const asked: Asked[] = [];
+
+const complete = (ask: CompletionAsk, signal: AbortSignal) =>
+  new Promise<McpCompletion>((resolve) => {
+    asked.push({ ask, signal, answer: resolve });
+  });
+
+const Form = ({ onDone = () => {} }: { onDone?: () => void }) => {
+  const [values, setValues] = useState<Record<string, string>>({ owner: "", repo: "" });
+
+  return (
+    <ArgumentForm
+      title="Review"
+      server="repos"
+      fields={FIELDS}
+      values={values}
+      completion={{ scope: "repos:review", complete }}
+      onChange={setValues}
+      onDone={onDone}
+      onCancel={() => {}}
+    />
+  );
+};
+
+let container: HTMLDivElement;
+let root: Root;
+
+const typeInto = (element: HTMLElement, value: string) => {
+  // oxlint-disable-next-line typescript/unbound-method -- the native value setter, called on the element
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+
+  act(() => {
+    setter?.call(element, value);
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+
+const press = (element: HTMLElement, key: string) => {
+  act(() => {
+    element.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
+};
+
+const field = (name: string) =>
+  container.querySelector<HTMLTextAreaElement>(`textarea[id$="-${name}"]`);
+
+const flush = async () => {
+  await act(async () => {
+    await Promise.resolve();
+  });
+};
+
+beforeEach(() => {
+  // @ts-expect-error -- React's act environment flag, which happy-dom does not set.
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  vi.useFakeTimers();
+  asked.length = 0;
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+
+afterEach(() => {
+  act(() => {
+    root.unmount();
+  });
+  container.remove();
+  vi.useRealTimers();
+});
+
+describe("the argument form with completions", () => {
+  it("asks for the first field's suggestions as the form opens, and lists them under it", async () => {
+    act(() => {
+      root.render(<Form />);
+    });
+    await flush();
+
+    expect(asked.map((each) => each.ask)).toEqual([
+      { field: "owner", argument: { name: "owner", value: "" }, context: {} },
+    ]);
+
+    asked[0]?.answer({ status: "ok", values: ["acme", "apex"], hasMore: false });
+    await flush();
+
+    expect(
+      [...container.querySelectorAll('[role="option"]')].map((each) => each.textContent),
+    ).toEqual(["acme", "apex"]);
+  });
+
+  it("drives the completer as the owner types: the older request is cancelled at the keystroke, the next is asked once typing stops with the other fields as context", async () => {
+    act(() => {
+      root.render(<Form />);
+    });
+    await flush();
+
+    const owner = field("owner");
+    const repo = field("repo");
+
+    if (owner === null || repo === null) throw new Error("the fields are not there");
+
+    typeInto(repo, "web");
+    // The focus was on the first field: typing in the other is its own edit, asked after the debounce.
+    act(() => {
+      owner.focus();
+    });
+    typeInto(owner, "ac");
+
+    // The request the focus made is for a value typed past.
+    expect(asked[0]?.signal.aborted).toBe(true);
+    // Nothing is asked while the owner is typing.
+    expect(asked).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(130);
+    });
+
+    const last = asked.find((each) => each.ask.argument.value === "ac");
+
+    expect(last?.ask).toEqual({
+      field: "owner",
+      argument: { name: "owner", value: "ac" },
+      context: { repo: "web" },
+    });
+  });
+
+  it("takes the highlighted suggestion with the arrows and Enter, and closes the list after", async () => {
+    act(() => {
+      root.render(<Form />);
+    });
+    await flush();
+    asked[0]?.answer({ status: "ok", values: ["acme", "apex"], hasMore: false });
+    await flush();
+
+    const owner = field("owner");
+
+    if (owner === null) throw new Error("the field is not there");
+
+    press(owner, "ArrowDown");
+    press(owner, "ArrowDown");
+    press(owner, "Enter");
+
+    expect(owner.value).toBe("apex");
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+  });
+
+  it("cancels the request in flight when the form closes", async () => {
+    act(() => {
+      root.render(<Form />);
+    });
+    await flush();
+
+    expect(asked[0]?.signal.aborted).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+    expect(asked[0]?.signal.aborted).toBe(true);
+
+    // The `afterEach` unmount is of a root that is already gone.
+    root = createRoot(container);
+  });
+
+  it("says why there are no suggestions, as a link when the owner can sign in", async () => {
+    act(() => {
+      root.render(<Form />);
+    });
+    await flush();
+    asked[0]?.answer({ status: "sign_in", values: [], hasMore: false });
+    await flush();
+
+    expect(container.querySelector('[role="status"]')?.textContent).toBe(
+      "Sign in to repos for suggestions",
+    );
+  });
+});

@@ -31,6 +31,7 @@ import {
   MENU_STATE,
   MAX_MENU_RESOURCES,
   MAX_RESOURCE_NAME,
+  isAppResourceUri,
   MAX_RESOURCE_URI,
   type McpMenuResource,
   type McpMenuServer,
@@ -316,6 +317,11 @@ export const readAttachedResource = <A>(
   deps: AttachedResourcesDeps,
   input: AttachedReadInput<A>,
 ): Effect.Effect<AttachedReadResult<A>> => {
+  // The menu leaves an App's resources out, but a template's values can make one: it is never attached.
+  if (isAppResourceUri(input.uri)) {
+    return Effect.succeed(gone("An App's resource cannot be attached"));
+  }
+
   const server = Arr.findFirst(deps.servers, (each) => each.name === input.server);
 
   if (Option.isNone(server)) {
@@ -562,24 +568,38 @@ const pageOf = (
     : Result.succeed({ entries: read.value[key] ?? [], cursor: read.value.nextCursor });
 };
 
+/** What one list of a server came to: what it kept, whether it stopped short, and the state of the page that failed. */
+type Listed<A> = {
+  readonly items: ReadonlyArray<A>;
+  readonly truncated: boolean;
+  readonly failure: string | undefined;
+};
+
 /**
- * One server's resource templates, page by page, bounded: what it lists, and whether the list stopped short. A page that
- * fails ends the list there (a server may list resources and no templates), and the row keeps what it has.
+ * One of a server's lists (`resources/list` or `resources/templates/list`), page by page, bounded: what `keep` makes of its
+ * entries up to `max`, whether it stopped short, and the state of the page that failed, which ends the list there.
  */
-const listTemplates = (
+const listPages = <A>(
   deps: AttachedResourcesDeps,
   server: McpBuildServer,
   conversation: string,
   workspace: string | undefined,
   signal: AbortSignal,
-): Effect.Effect<ReadonlyArray<McpMenuTemplate>> =>
+  list: {
+    readonly op: "resources/list" | "resources/templates/list";
+    readonly key: "resources" | "resourceTemplates";
+    readonly keep: (entry: Schema.Json) => ReadonlyArray<A>;
+    readonly max: number;
+  },
+): Effect.Effect<Listed<A>> =>
   Effect.gen(function* () {
-    const templates: Array<McpMenuTemplate> = [];
+    const items: Array<A> = [];
     let cursor: string | undefined;
+    let truncated = false;
 
-    for (let page = 0; page < MAX_MENU_PAGES && templates.length < MAX_MENU_TEMPLATES; page++) {
+    for (let page = 0; page < MAX_MENU_PAGES && !truncated; page++) {
       const request: McpHostRequestInput = {
-        op: "resources/templates/list",
+        op: list.op,
         server: server.name,
         params: cursor === undefined ? {} : { cursor },
         ctx: ownerContext(
@@ -590,71 +610,17 @@ const listTemplates = (
         ),
       };
 
-      const got = pageOf(
-        yield* asked(deps, server, signal, request, MENU_PAGE_MS),
-        "resourceTemplates",
-      );
+      const got = pageOf(yield* asked(deps, server, signal, request, MENU_PAGE_MS), list.key);
 
-      if (Result.isFailure(got)) break;
+      if (Result.isFailure(got)) return { items, truncated, failure: got.failure };
 
       for (const entry of got.success.entries) {
-        if (templates.length < MAX_MENU_TEMPLATES) templates.push(...menuTemplateOf(entry));
-      }
-
-      cursor = got.success.cursor;
-
-      if (cursor === undefined || cursor === "") break;
-    }
-
-    return templates;
-  });
-
-/** One server's resources, page by page: what the menu lists, bounded, or the state it is muted for. */
-const listServer = (
-  deps: AttachedResourcesDeps,
-  server: McpBuildServer,
-  conversation: string,
-  workspace: string | undefined,
-  signal: AbortSignal,
-): Effect.Effect<McpMenuServer> =>
-  Effect.gen(function* () {
-    const stdio = isStdio(server);
-    const base = { server: server.name, source: sourceOf(server) };
-    const muted = (state: string): McpMenuServer => ({ ...base, state, resources: [] });
-
-    // A host that would drop `ctx.start` starts the Container: a stdio server is not listed through one.
-    if (stdio && !deps.noStart) return muted(MENU_STATE.unavailable);
-
-    const resources: Array<McpMenuResource> = [];
-    let cursor: string | undefined;
-    let truncated = false;
-
-    for (let page = 0; page < MAX_MENU_PAGES && !truncated; page++) {
-      const request: McpHostRequestInput = {
-        op: "resources/list",
-        server: server.name,
-        params: cursor === undefined ? {} : { cursor },
-        ctx: ownerContext(deps, { callId: "resource-menu", conversation }, workspace, !stdio),
-      };
-
-      const answer = yield* asked(deps, server, signal, request, MENU_PAGE_MS);
-      const got = pageOf(answer);
-
-      // What was listed before the page that failed stays; a first page that fails mutes the row.
-      if (Result.isFailure(got)) {
-        if (resources.length === 0) return muted(got.failure);
-
-        truncated = true;
-        break;
-      }
-
-      for (const entry of got.success.entries) {
-        if (resources.length >= MAX_MENU_RESOURCES) {
+        if (items.length >= list.max) {
           truncated = true;
           break;
         }
 
-        resources.push(...menuResourceOf(entry));
+        items.push(...list.keep(entry));
       }
 
       cursor = got.success.cursor;
@@ -664,15 +630,63 @@ const listServer = (
       if (page === MAX_MENU_PAGES - 1) truncated = true;
     }
 
-    const templates = yield* listTemplates(deps, server, conversation, workspace, signal);
-    const row: Mutable<McpMenuServer> = { ...base, state: MENU_STATE.ok, resources };
+    return { items, truncated, failure: undefined };
+  });
 
-    if (templates.length > 0) row.templates = templates;
+/**
+ * One server's resources and its resource templates, each page by page and both at once: what the menu lists, bounded, or
+ * the state it is muted for. A first page of resources that fails mutes the row; a later one ends the list there. A server
+ * may list resources and no templates, so a failure of the templates leaves the row as it is.
+ */
+const listServer = (
+  deps: AttachedResourcesDeps,
+  server: McpBuildServer,
+  conversation: string,
+  workspace: string | undefined,
+  signal: AbortSignal,
+): Effect.Effect<McpMenuServer> =>
+  Effect.gen(function* () {
+    const base = { server: server.name, source: sourceOf(server) };
+    const muted = (state: string): McpMenuServer => ({ ...base, state, resources: [] });
+
+    // A host that would drop `ctx.start` starts the Container: a stdio server is not listed through one.
+    if (isStdio(server) && !deps.noStart) return muted(MENU_STATE.unavailable);
+
+    const [resources, templates] = yield* Effect.all(
+      [
+        listPages(deps, server, conversation, workspace, signal, {
+          op: "resources/list",
+          key: "resources",
+          keep: menuResourceOf,
+          max: MAX_MENU_RESOURCES,
+        }),
+        listPages(deps, server, conversation, workspace, signal, {
+          op: "resources/templates/list",
+          key: "resourceTemplates",
+          keep: menuTemplateOf,
+          max: MAX_MENU_TEMPLATES,
+        }),
+      ],
+      { concurrency: 2 },
+    );
+
+    // What was listed before the page that failed stays; a first page that fails mutes the row.
+    if (resources.failure !== undefined && resources.items.length === 0) {
+      return muted(resources.failure);
+    }
+
+    const row: Mutable<McpMenuServer> = {
+      ...base,
+      state: MENU_STATE.ok,
+      resources: resources.items,
+    };
+
+    if (templates.items.length > 0) row.templates = templates.items;
 
     // Whether the template's variables complete: the server declares it, and the host answers `completion/complete`.
     if (server.completions === true && deps.completions === true) row.completions = true;
 
-    if (truncated) row.truncated = true;
+    if (resources.truncated || resources.failure !== undefined) row.truncated = true;
 
     return row;
   });

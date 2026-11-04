@@ -223,3 +223,23 @@ describe("the argument form with completions", () => {
     expect(render(undefined, "repo://{owner}/web")).toContain("repo://{owner}/web");
   });
 });
+
+describe("the argument form held for a reason of its own", () => {
+  it("shows why Done is held, and disables it, though every required field is filled in", () => {
+    const html = renderToStaticMarkup(
+      <ArgumentForm
+        title="Any"
+        server="docs"
+        fields={[{ name: "target", required: true }]}
+        values={{ target: "ui://docs/page" }}
+        blocked="An App's ui:// resource cannot be attached"
+        onChange={() => {}}
+        onDone={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    expect(html).toContain("An App&#x27;s ui:// resource cannot be attached");
+    expect(html).toContain('type="button" disabled=""');
+  });
+});

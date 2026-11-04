@@ -182,7 +182,8 @@ describe("the @ menu's listing", () => {
     expect(listed.servers).toEqual([
       { server: "Files", source: "owner", state: "stopped", resources: [] },
     ]);
-    expect(requests(host).map((input) => input.ctx.start)).toEqual([false]);
+    // The templates are asked beside the resources, so a muted row has asked both.
+    expect(requests(host).map((input) => input.ctx.start)).toEqual([false, false]);
   });
 
   it("starts no stdio server through a host that would drop `start: false`, and says so in a muted row", async () => {
@@ -273,6 +274,39 @@ describe("the @ menu's listing", () => {
     expect((await menu(old.tools)).servers[0]).not.toHaveProperty("completions");
   });
 
+  it("asks a server's templates beside its resources, not after them", async () => {
+    const { host, tools } = await started([store("Docs")]);
+    const answers: Array<() => void> = [];
+
+    host.answer(
+      (input) =>
+        new Promise((resolve) => {
+          answers.push(() => {
+            resolve(
+              page(
+                input.op === "resources/templates/list"
+                  ? { resourceTemplates: [] }
+                  : { resources: [] },
+              ),
+            );
+          });
+        }),
+    );
+
+    const listing = menu(tools);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // Both are in flight before either is answered.
+    expect(requests(host).map((input) => input.op)).toEqual([
+      "resources/list",
+      "resources/templates/list",
+    ]);
+
+    for (const answer of answers) answer();
+    expect((await listing).servers[0]?.state).toBe("ok");
+  });
+
   it("keeps the row as it is when its templates cannot be listed", async () => {
     const { host, tools } = await started([store("Docs")]);
 
@@ -361,6 +395,20 @@ describe("the read at send", () => {
       status: "read",
       value: [{ blob: "aGk=", mimeType: "image/png" }],
     });
+  });
+
+  it("is gone for an App's `ui://` resource, which the menu leaves out and a template could still make, and asks nothing", async () => {
+    const { host, tools } = await started([store("Docs")]);
+
+    host.answer(() => Promise.resolve(contents({ uri: "ui://docs/page", text: "<html>" })));
+
+    for (const uri of ["ui://docs/page", "UI://docs/page"]) {
+      const answer = await read(tools, "Docs", uri);
+
+      expect(answer.status).toBe("gone");
+    }
+
+    expect(requests(host)).toEqual([]);
   });
 
   it("is gone for a resource the server does not have, and for a server that left", async () => {

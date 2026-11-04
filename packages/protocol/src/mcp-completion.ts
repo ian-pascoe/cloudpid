@@ -1,5 +1,5 @@
 // MCP argument completion (`docs/architecture/mcp-in-a-session.md` → Arguments and completions): what the argument form asks
-// the Session for as the owner types (`McpCompleteRef`, `McpCompleteArgument`), and what the Session answers
+// the Session for as the owner types (`McpCompletionRef`, `McpCompletionArgument`), and what the Session answers
 // (`McpCompletion`). Completion is UI-only: the model gets no completion tool, and nothing here is stored or sent to a
 // conversation. Everything here only gains: a status a later build adds reads as `failed` in an older client.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain functions over short lists of strings.
@@ -15,53 +15,52 @@ export const MAX_MCP_COMPLETION_VALUE_CHARS = 1_000;
  * The longest the typed value of the argument being completed, and a context value, may be, in characters. A context value
  * over it is left out by the form: a suggestion depends on identifiers, never on a long text.
  */
-export const MAX_MCP_COMPLETE_CONTEXT_VALUE_CHARS = 1_000;
+export const MAX_MCP_COMPLETE_ARGUMENT_VALUE_CHARS = 1_000;
 
 /** The most other arguments a completion carries as context. */
 export const MAX_MCP_COMPLETE_CONTEXT_ARGUMENTS = 32;
 
 /** The longest a name (of a prompt, an argument or a field) and a template's URI may be in a request, in characters. */
-export const MAX_MCP_COMPLETE_KEY = 2_048;
+export const MAX_MCP_COMPLETE_NAME_CHARS = 2_048;
 
 /** The most completions one socket may have asked in a minute, and in flight at once: over either is answered `failed`, nothing sent. */
 export const MAX_MCP_COMPLETE_PER_MINUTE = 600;
 
 export const MAX_MCP_COMPLETE_IN_FLIGHT = 16;
 
-/** How long the form waits after a keystroke before it asks, in ms (and asks at once when a field takes the focus). */
-export const MCP_COMPLETE_DEBOUNCE_MS = 120;
-
 /** What an argument being completed belongs to: a prompt by its name, or a resource template by its URI template. */
-export const McpCompleteRef = Schema.Union([
+export const McpCompletionRef = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("ref/prompt"),
-    name: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_KEY)),
+    name: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
   }),
   Schema.Struct({
     type: Schema.Literal("ref/resource"),
-    uri: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_KEY)),
+    uri: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
   }),
 ]);
 
-export type McpCompleteRef = typeof McpCompleteRef.Type;
+export type McpCompletionRef = typeof McpCompletionRef.Type;
 
 /** The argument being completed and what the owner has typed of it. */
-export const McpCompleteArgument = Schema.Struct({
-  name: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_KEY)),
-  value: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_CONTEXT_VALUE_CHARS)),
+export const McpCompletionArgument = Schema.Struct({
+  name: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
+  value: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_ARGUMENT_VALUE_CHARS)),
 });
 
-export type McpCompleteArgument = typeof McpCompleteArgument.Type;
+export type McpCompletionArgument = typeof McpCompletionArgument.Type;
 
 /** The other fields' non-empty values, for a server whose suggestions depend on them. */
-export const McpCompleteContext = Schema.Struct({
-  arguments: Schema.Record(
-    Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_KEY)),
-    Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_CONTEXT_VALUE_CHARS)),
-  ).check(Schema.isMaxProperties(MAX_MCP_COMPLETE_CONTEXT_ARGUMENTS)),
+export const McpCompletionContext = Schema.Struct({
+  arguments: Schema.optionalKey(
+    Schema.Record(
+      Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
+      Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_ARGUMENT_VALUE_CHARS)),
+    ).check(Schema.isMaxProperties(MAX_MCP_COMPLETE_CONTEXT_ARGUMENTS)),
+  ),
 });
 
-export type McpCompleteContext = typeof McpCompleteContext.Type;
+export type McpCompletionContext = typeof McpCompletionContext.Type;
 
 /**
  * How a completion came out. `ok`: the values are the server's. `unsupported`: the server does not declare completions, or

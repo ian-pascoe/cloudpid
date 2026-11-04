@@ -34,10 +34,6 @@ import {
   type McpWatchEntry,
   type McpResourcePreviewAnswer,
   type McpCompletion,
-  MAX_MCP_COMPLETE_IN_FLIGHT,
-  MAX_MCP_COMPLETE_PER_MINUTE,
-  MCP_COMPLETION_STATUS,
-  noCompletion,
   type McpElicitationRequest,
   type McpSamplingRequest,
   type McpSamplingSessionGrant,
@@ -95,7 +91,7 @@ import { SessionReviews } from "./reviews.ts";
 import { McpApps } from "./mcp-apps.ts";
 import { McpWatches } from "./mcp-watches.ts";
 import { McpResourcePreviews, type SpillRead } from "./mcp-resource-previews.ts";
-import { socketRequests } from "./socket-requests.ts";
+import { socketCompletions } from "./mcp-completions.ts";
 import { ViewedStore } from "./viewed.ts";
 
 /**
@@ -754,58 +750,25 @@ export const sessionSocketsLayer = (
           return fibers === undefined ? Effect.void : FiberMap.remove(fibers, conversationId);
         });
 
-      // The completions each socket has in flight (a requester of its own, keyed by `requestId`), and which request each of its
-      // form fields is waiting on: a newer request for a field cancels the older one (`mcp_complete`).
-      const completions = socketRequests(Date.now);
-      const completionFields = new WeakMap<WebSocket, Map<string, string>>();
+      // The completions of each socket (`mcp-completions.ts`): counted, in flight by `requestId`, and a newer request for a
+      // form field ends the older one.
+      const completions = socketCompletions(Date.now);
 
       /** One completion of a form field: its answer however it ends, which is never an error. Starts no Container. */
       const complete = (
         socket: WebSocket,
         message: Extract<ClientMessage, { type: "mcp_complete" }>,
       ) =>
-        Effect.suspend(() => {
-          const requester = completions.of(socket);
-          const fields = completionFields.get(socket) ?? new Map<string, string>();
-          const older = fields.get(message.field);
-
-          completionFields.set(socket, fields);
-
-          if (older !== undefined) requester.abort(older);
-
-          // A request that is over a limit, or names one in flight already, is not sent: nothing reads its answer.
-          if (
-            !requester.admits("complete", MAX_MCP_COMPLETE_PER_MINUTE) ||
-            requester.inFlight() >= MAX_MCP_COMPLETE_IN_FLIGHT ||
-            requester.running(message.requestId)
-          ) {
-            return Effect.succeed(noCompletion(MCP_COMPLETION_STATUS.failed));
-          }
-
-          const stop = requester.start(message.requestId);
-
-          fields.set(message.field, message.requestId);
-
-          return host
-            .mcpComplete({
-              conversationId: message.conversationId,
-              server: message.server,
-              ref: message.ref,
-              argument: message.argument,
-              context: message.context,
-              signal: stop.signal,
-            })
-            .pipe(
-              Effect.catchCause(() => Effect.succeed(noCompletion(MCP_COMPLETION_STATUS.failed))),
-              Effect.ensuring(
-                Effect.sync(() => {
-                  requester.finish(message.requestId);
-
-                  if (fields.get(message.field) === message.requestId) fields.delete(message.field);
-                }),
-              ),
-            );
-        });
+        completions.complete(socket, message, (signal) =>
+          host.mcpComplete({
+            conversationId: message.conversationId,
+            server: message.server,
+            ref: message.ref,
+            argument: message.argument,
+            context: message.context,
+            signal,
+          }),
+        );
 
       const command = (
         socket: WebSocket,
@@ -1236,7 +1199,7 @@ export const sessionSocketsLayer = (
             return complete(socket, message);
           case "mcp_complete_cancel":
             return Effect.sync(() => {
-              completions.find(socket)?.abort(message.requestId);
+              completions.cancel(socket, message.requestId);
 
               return null;
             });

@@ -30,9 +30,9 @@ import {
   McpAppContextAnswer,
   McpAppRequestAnswer,
   McpAppMounted,
-  McpCompleteArgument,
-  McpCompleteContext,
-  McpCompleteRef,
+  McpCompletionArgument,
+  McpCompletionContext,
+  McpCompletionRef,
   McpCompletion,
   McpResourcePreviewAnswer,
   resourceUnavailable,
@@ -531,9 +531,9 @@ export interface SessionClient {
       readonly requestId: string;
       readonly field: string;
       readonly server: string;
-      readonly ref: McpCompleteRef;
-      readonly argument: McpCompleteArgument;
-      readonly context?: McpCompleteContext | undefined;
+      readonly ref: McpCompletionRef;
+      readonly argument: McpCompletionArgument;
+      readonly context?: McpCompletionContext | undefined;
     },
   ) => Effect.Effect<McpCompletion, SessionCommandError>;
   /**

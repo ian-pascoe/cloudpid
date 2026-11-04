@@ -118,6 +118,7 @@ export const ArgumentForm = ({
   problem,
   completion,
   preview,
+  blocked,
   onChange,
   onDone,
   onCancel,
@@ -129,6 +130,8 @@ export const ArgumentForm = ({
   problem?: string | undefined;
   completion?: FormCompletion | undefined;
   preview?: string | undefined;
+  /** Why Done is held though the fields are filled in (a template's URI that cannot be attached): said under the fields. */
+  blocked?: string | undefined;
   onChange: (values: Record<string, string>) => void;
   onDone: () => void;
   onCancel: () => void;
@@ -136,7 +139,7 @@ export const ArgumentForm = ({
   const id = useId();
   const inputs = useRef<(HTMLTextAreaElement | null)[]>([]);
   const problemNow = promptArgumentsProblem(fields, values);
-  const valid = problemNow === undefined;
+  const valid = problemNow === undefined && blocked === undefined;
 
   // An empty required field is what the label's asterisk says; a value over a bound needs saying.
   const overBound = requiredFilled(fields, values) ? problemNow : undefined;
@@ -344,9 +347,9 @@ export const ArgumentForm = ({
           </div>
         );
       })}
-      {overBound !== undefined && (
+      {(overBound ?? blocked) !== undefined && (
         <p role="alert" className="text-xs text-destructive">
-          {overBound}
+          {overBound ?? blocked}
         </p>
       )}
       <div className="flex justify-end gap-2">

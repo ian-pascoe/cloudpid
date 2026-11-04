@@ -26,10 +26,10 @@ import {
   McpAppToolsMessage,
 } from "./mcp-apps.ts";
 import {
-  MAX_MCP_COMPLETE_KEY,
-  McpCompleteArgument,
-  McpCompleteContext,
-  McpCompleteRef,
+  MAX_MCP_COMPLETE_NAME_CHARS,
+  McpCompletionArgument,
+  McpCompletionContext,
+  McpCompletionRef,
 } from "./mcp-completion.ts";
 import { MAX_MCP_WATCH_KEY, McpWatchesMessage } from "./mcp-watches.ts";
 import { MAX_MCP_RESOURCE_KEY } from "./mcp-resources.ts";
@@ -870,13 +870,13 @@ export const McpResourceRead = Schema.Struct({
 export const McpComplete = Schema.Struct({
   type: Schema.Literal("mcp_complete"),
   id: CommandId,
-  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_KEY)),
-  field: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_KEY)),
+  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
+  field: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
   conversationId: Schema.optionalKey(ConversationId),
-  server: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_KEY)),
-  ref: McpCompleteRef,
-  argument: McpCompleteArgument,
-  context: Schema.optionalKey(McpCompleteContext),
+  server: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
+  ref: McpCompletionRef,
+  argument: McpCompletionArgument,
+  context: Schema.optionalKey(McpCompletionContext),
 });
 
 /**
@@ -886,7 +886,7 @@ export const McpComplete = Schema.Struct({
 export const McpCompleteCancel = Schema.Struct({
   type: Schema.Literal("mcp_complete_cancel"),
   id: CommandId,
-  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_KEY)),
+  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_COMPLETE_NAME_CHARS)),
 });
 
 /**

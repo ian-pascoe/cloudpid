@@ -88,13 +88,8 @@ import {
 } from "./mcp-prompt-state.ts";
 import { ComposerNote } from "./composer-note.tsx";
 import { PromptChipView } from "./prompt-chip.tsx";
-import {
-  PromptFormView,
-  type TemplateForm,
-  TemplateFormView,
-  templateFields,
-  templateResource,
-} from "./template-form.tsx";
+import { PromptFormView, TemplateFormView } from "./template-form.tsx";
+import { type TemplateForm, templateDone, templatePick } from "./template-form.ts";
 import { usePromptChip } from "./use-prompt-chip.ts";
 import { type ConversationKey, conversationKey, useShownSessionId } from "./conversation.ts";
 import { fileDragAtom, useFileDropZone } from "./file-drop.ts";
@@ -419,19 +414,22 @@ const ComposerBox = ({
       addResource({ server, uri: resource.uri, name: resource.title ?? resource.name });
     },
     pickTemplate: (server, template, completions) => {
-      const form: TemplateForm = { server, template, completions, values: {} };
+      const picked = templatePick(server, template, completions);
 
-      // A template with no variables is a resource already.
-      if (templateFields(template).length === 0) {
-        const resource = templateResource(form);
+      if (picked.kind === "attach") {
+        addResource(picked.resource);
 
-        addResource(resource);
+        return;
+      }
+
+      if (picked.kind === "refused") {
+        setNote({ tone: "error", text: picked.problem });
 
         return;
       }
 
       setNote(null);
-      setTemplateForm(form);
+      setTemplateForm(picked.form);
     },
   });
 
@@ -632,7 +630,12 @@ const ComposerBox = ({
             setTemplateForm({ ...templateForm, values });
           }}
           onDone={() => {
-            addResource(templateResource(templateForm));
+            const done = templateDone(templateForm);
+
+            // Held with its reason on the form, which says it already; nothing is attached.
+            if ("problem" in done) return;
+
+            addResource(done.resource);
             setTemplateForm(null);
             requestAnimationFrame(() => {
               input.current?.focus();

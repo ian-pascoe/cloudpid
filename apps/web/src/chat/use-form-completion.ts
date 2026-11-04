@@ -3,7 +3,7 @@
 
 // @effect-diagnostics missingPipeableSignature:off -- a hook, not a combinator.
 
-import type { McpCompleteRef } from "@cloudpid/protocol";
+import type { McpCompletionRef } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -26,7 +26,7 @@ export const useFormCompletion = ({
 }: {
   key: ConversationKey;
   server: string;
-  ref: McpCompleteRef;
+  ref: McpCompletionRef;
   enabled: boolean;
   signInHref: string | undefined;
 }): FormCompletion | undefined => {

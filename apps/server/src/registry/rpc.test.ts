@@ -115,16 +115,17 @@ type McpHostAnswers = {
   servers: unknown;
   serverLog: unknown;
   apply: unknown;
+  request: unknown;
 };
 
 /** A fake MCP host whose answers are scripted as they cross the edge, which is the point of an unknown one. */
 const scriptedMcpHost = (methods: {
-  [K in "servers" | "serverLog" | "apply"]: (
+  [K in "servers" | "serverLog" | "apply" | "request"]: (
     ...args: Parameters<McpHostMethods[K]>
   ) => Effect.Effect<unknown>;
 }) =>
   // SAFETY: the answers are `unknown` on purpose; the status reads decode them as they would an answer from the wire.
-  methods as Pick<McpHostMethods, "servers" | "serverLog" | "apply">;
+  methods as Pick<McpHostMethods, "servers" | "serverLog" | "apply" | "request">;
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
@@ -561,7 +562,11 @@ const fakeRegistries = () => {
     servers: { version: "v1", promptsVersion: "p1", servers: [] },
     serverLog: { _tag: "ServerLog", entries: [] },
     apply: { _tag: "Reloaded", servers: [] },
+    request: { _tag: "HostUnsupported", message: "not under test", op: "" },
   };
+
+  /** The requests the fake MCP hosts were sent, as they crossed the edge. */
+  const mcpHostRequests: Array<unknown> = [];
 
   /** Runs once, when the next Registry `createSession` is called: what happens just before it is answered. */
   let beforeCreate: (() => void) | undefined;
@@ -1554,6 +1559,7 @@ const fakeRegistries = () => {
     mcpSettings,
     mcpHostCalls,
     mcpHostAnswers,
+    mcpHostRequests,
     /** The sign-ins' reads and sign-out are `mcp/sign-in-manage.test.ts`'s: here they answer nothing. */
     mcpSignIns: {
       list: () => Effect.succeed(McpUnavailable.make({ message: "not under test" })),
@@ -1583,6 +1589,13 @@ const fakeRegistries = () => {
               );
 
               return mcpHostAnswers.apply;
+            }),
+          request: (input) =>
+            Effect.sync(() => {
+              mcpHostCalls.push(`${name} request ${input.op}`);
+              mcpHostRequests.push(input);
+
+              return mcpHostAnswers.request;
             }),
         }),
     }),
@@ -6247,6 +6260,115 @@ describe("the MCP status reads", () => {
     const failed = await call(fake, draft);
 
     expect(failed).toEqual({ commands: [], templates: [], skills: [] });
+  });
+
+  describe("the draft composer's completions", () => {
+    const completing = (extra: Readonly<Record<string, Schema.Json>> = {}) => {
+      const fake = fakeRegistries();
+
+      fake.mcpNames.set(DEFAULT_ENVIRONMENT, ["linear", "files"]);
+      fake.mcpHostAnswers.servers = {
+        version: "v1",
+        promptsVersion: "p1",
+        servers: [
+          server("linear", { completions: true, ...extra }),
+          server("plain"),
+          server("files", {
+            completions: true,
+            server: { type: "stdio", command: "files-mcp" },
+          }),
+        ],
+      };
+      fake.mcpHostAnswers.request = {
+        _tag: "Completed",
+        result: { kind: "inline", value: { completion: { values: ["acme"], hasMore: false } } },
+      };
+
+      return fake;
+    };
+
+    const ask = (
+      fake: ReturnType<typeof fakeRegistries>,
+      name: string,
+      ref: { type: "ref/prompt"; name: string } | { type: "ref/resource"; uri: string } = {
+        type: "ref/prompt",
+        name: "summarize",
+      },
+    ) =>
+      call(fake, (registry) =>
+        registry.draftComplete({
+          environment: DEFAULT_ENVIRONMENT,
+          server: name,
+          ref,
+          argument: { name: "owner", value: "ac" },
+          context: { arguments: { repo: "web" } },
+        }),
+      );
+
+    it("completes an HTTP server's argument through its host as the owner's request, which starts nothing", async () => {
+      const fake = completing();
+
+      expect(await ask(fake, "linear")).toEqual({ status: "ok", values: ["acme"], hasMore: false });
+      expect(fake.mcpHostRequests).toEqual([
+        {
+          op: "completion/complete",
+          server: "linear",
+          params: {
+            ref: { type: "ref/prompt", name: "summarize" },
+            argument: { name: "owner", value: "ac" },
+            context: { arguments: { repo: "web" } },
+          },
+          ctx: expect.objectContaining({ origin: "owner", start: false }),
+        },
+      ]);
+      expect(fake.mcpHostRequests).not.toContainEqual(
+        expect.objectContaining({ ctx: expect.objectContaining({ workspace: expect.anything() }) }),
+      );
+      // No Workspace or Container call of any kind.
+      expect(fake.calls).toEqual([]);
+    });
+
+    it("completes a template's variable by its URI template", async () => {
+      const fake = completing();
+
+      await ask(fake, "linear", { type: "ref/resource", uri: "repo://{owner}/{name}" });
+      expect(fake.mcpHostRequests).toEqual([
+        expect.objectContaining({
+          params: expect.objectContaining({
+            ref: { type: "ref/resource", uri: "repo://{owner}/{name}" },
+          }),
+        }),
+      ]);
+    });
+
+    it("never asks a server that does not declare completions, one the Environment does not have, or a stdio one, which has no Container to ask", async () => {
+      const fake = completing();
+
+      expect((await ask(fake, "plain")).status).toBe("unsupported");
+      expect((await ask(fake, "nobody")).status).toBe("unsupported");
+      expect((await ask(fake, "files")).status).toBe("not_running");
+      expect(fake.mcpHostRequests).toEqual([]);
+    });
+
+    it("answers `unsupported` for a host from before the op, `sign_in` for a server that wants it, and `failed` when the host breaks", async () => {
+      const fake = completing();
+
+      fake.mcpHostAnswers.request = {
+        _tag: "HostUnsupported",
+        message: "no",
+        op: "completion/complete",
+      };
+      expect((await ask(fake, "linear")).status).toBe("unsupported");
+
+      fake.mcpHostAnswers.request = {
+        _tag: "CallFailed",
+        error: { _tag: "SignInRequired", message: "sign in" },
+      };
+      expect((await ask(fake, "linear")).status).toBe("sign_in");
+
+      fake.mcpHostAnswers.servers = { _tag: "HostFailed", message: "no storage" };
+      expect((await ask(fake, "linear")).status).toBe("failed");
+    });
   });
 
   it("reads the log ring from the host's storage and never starts a Container or touches a Workspace", async () => {

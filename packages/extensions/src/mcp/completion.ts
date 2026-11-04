@@ -24,9 +24,9 @@ import {
 import {
   completionValues,
   MCP_COMPLETION_STATUS,
-  type McpCompleteArgument,
-  type McpCompleteContext,
-  type McpCompleteRef,
+  type McpCompletionArgument,
+  type McpCompletionContext,
+  type McpCompletionRef,
   type McpCompletion,
   noCompletion,
 } from "@cloudpid/protocol";
@@ -47,9 +47,9 @@ export const MCP_COMPLETIONS_FEATURE = "completions";
 export type McpCompletionInput = {
   /** The server's configured name. */
   readonly server: string;
-  readonly ref: McpCompleteRef;
-  readonly argument: McpCompleteArgument;
-  readonly context?: McpCompleteContext | undefined;
+  readonly ref: McpCompletionRef;
+  readonly argument: McpCompletionArgument;
+  readonly context?: McpCompletionContext | undefined;
   readonly conversation: string;
   /** The Workspace (`ws:<id>`) the conversation works in, where a stdio server runs; the Session's when it is none. Asked only for a stdio server. */
   readonly workspaceOf?: Effect.Effect<string | undefined> | undefined;
@@ -90,8 +90,8 @@ const failedWith = (error: McpHostCallFailed["error"]): McpCompletion =>
     Match.orElse(() => noCompletion(MCP_COMPLETION_STATUS.failed)),
   );
 
-/** The form's answer for what the host answered. */
-const answerOf = (answer: McpHostRequestResult | HostLost): McpCompletion =>
+/** The form's answer for what the host answered (the Registry answers the draft composer's through it too). */
+export const completionAnswerOf = (answer: McpHostRequestResult | HostLost): McpCompletion =>
   Match.value(answer).pipe(
     Match.tag("Completed", (done) => {
       const { result } = done;
@@ -187,7 +187,7 @@ export const completionOf = (
 
     const asked = deps.client
       .request(requestOf(deps, input, workspace), hooks)
-      .pipe(Effect.map(answerOf));
+      .pipe(Effect.map(completionAnswerOf));
 
     const answer = yield* asked.pipe(
       Effect.raceFirst(Effect.promise(() => abortedBy(input.signal)).pipe(Effect.as(cancelled))),

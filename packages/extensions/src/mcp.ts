@@ -133,7 +133,11 @@ export { MCP_NO_START_FEATURE } from "./mcp/no-start.ts";
 
 export { type McpResourcePreviewInput } from "./mcp/resource-preview.ts";
 
-export { MCP_COMPLETIONS_FEATURE, type McpCompletionInput } from "./mcp/completion.ts";
+export {
+  completionAnswerOf,
+  MCP_COMPLETIONS_FEATURE,
+  type McpCompletionInput,
+} from "./mcp/completion.ts";
 
 export {
   MCP_WATCHES_FEATURE,

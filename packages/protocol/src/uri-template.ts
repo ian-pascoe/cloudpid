@@ -104,6 +104,9 @@ const piecesOf = (template: string): ReadonlyArray<Piece> => {
   return pieces;
 };
 
+/** Whether the operator is one of the form-style query expressions (`{?…}`, `{&…}`), whose variables a URI can do without. */
+const isOptionalOperator = (operator: string): boolean => operator === "?" || operator === "&";
+
 /** The variables of `template`, each once, in the order they first appear. */
 export const uriTemplateVariables = (template: string): ReadonlyArray<UriTemplateVariable> => {
   const found = new Map<string, boolean>();
@@ -112,7 +115,7 @@ export const uriTemplateVariables = (template: string): ReadonlyArray<UriTemplat
     // oxlint-disable-next-line anti-slop/no-runtime-typeof -- a piece is a literal or an expression
     if (typeof piece === "string") continue;
 
-    const optional = piece.expression.operator === "?" || piece.expression.operator === "&";
+    const optional = isOptionalOperator(piece.expression.operator);
 
     for (const { name } of piece.expression.variables) {
       found.set(name, (found.get(name) ?? false) || !optional);
@@ -192,7 +195,7 @@ export const expandUriTemplate = (
       continue;
     }
 
-    const optional = piece.expression.operator === "?" || piece.expression.operator === "&";
+    const optional = isOptionalOperator(piece.expression.operator);
 
     const waiting =
       partial &&

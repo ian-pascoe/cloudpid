@@ -10,12 +10,14 @@
 import {
   completionStatusOf,
   MAX_MCP_COMPLETE_CONTEXT_ARGUMENTS,
-  MAX_MCP_COMPLETE_CONTEXT_VALUE_CHARS,
-  MCP_COMPLETE_DEBOUNCE_MS,
+  MAX_MCP_COMPLETE_ARGUMENT_VALUE_CHARS,
   MCP_COMPLETION_STATUS,
   type McpCompletion,
   rank,
 } from "@cloudpid/protocol";
+
+/** How long the form waits after a keystroke before it asks, in ms (it asks at once when a field takes the focus). */
+export const COMPLETE_DEBOUNCE_MS = 120;
 
 /** What one request asks: the field's own argument and value, and the other fields' non-empty values. */
 export interface CompletionAsk {
@@ -75,7 +77,7 @@ export const completionContext = (
   for (const [name, value] of Object.entries(values)) {
     if (name === except || value.trim() === "") continue;
 
-    if (value.length > MAX_MCP_COMPLETE_CONTEXT_VALUE_CHARS) continue;
+    if (value.length > MAX_MCP_COMPLETE_ARGUMENT_VALUE_CHARS) continue;
 
     if (count >= MAX_MCP_COMPLETE_CONTEXT_ARGUMENTS) break;
 
@@ -114,14 +116,14 @@ export interface Completer {
 
 /**
  * The completions of one form. `scope` names its server and ref, so a cache is never shared between forms; `debounceMs` is
- * the wait after a keystroke (`MCP_COMPLETE_DEBOUNCE_MS`).
+ * the wait after a keystroke (`COMPLETE_DEBOUNCE_MS`).
  */
 export const createCompleter = (options: {
   readonly scope: string;
   readonly complete: CompleteFn;
   readonly debounceMs?: number;
 }): Completer => {
-  const debounceMs = options.debounceMs ?? MCP_COMPLETE_DEBOUNCE_MS;
+  const debounceMs = options.debounceMs ?? COMPLETE_DEBOUNCE_MS;
   const fields = new Map<string, FieldSuggestions>();
   const cache = new Map<string, McpCompletion>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -186,7 +188,7 @@ export const createCompleter = (options: {
     if (closed || blocked !== undefined) return;
 
     // A value over the bound is not asked about: a suggestion depends on what the owner types first.
-    if (value.length > MAX_MCP_COMPLETE_CONTEXT_VALUE_CHARS) return;
+    if (value.length > MAX_MCP_COMPLETE_ARGUMENT_VALUE_CHARS) return;
 
     const request: CompletionAsk = {
       field,

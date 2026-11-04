@@ -62,6 +62,7 @@ const UNEXPECTED: Handlers = {
   listWorkspaces: unexpected("listWorkspaces"),
   draftCatalog: unexpected("draftCatalog"),
   draftFiles: unexpected("draftFiles"),
+  draftComplete: unexpected("draftComplete"),
   draftBranches: unexpected("draftBranches"),
   removeWorkspace: unexpected("removeWorkspace"),
   workspaceWork: unexpected("workspaceWork"),

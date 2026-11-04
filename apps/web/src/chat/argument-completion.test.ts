@@ -2,11 +2,12 @@
 // 120 ms after typing stops, a newer keystroke cancelling the older request, answers cached for the form's life, the last
 // answer narrowed while the next is awaited, and nothing asked again of a server that cannot answer.
 // @effect-diagnostics globalTimers:off asyncFunction:off newPromise:off preferEffectArray:off
-import { MCP_COMPLETE_DEBOUNCE_MS, type McpCompletion } from "@cloudpid/protocol";
+import type { McpCompletion } from "@cloudpid/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type CompleteFn,
   type CompletionAsk,
+  COMPLETE_DEBOUNCE_MS,
   completionContext,
   createCompleter,
   suggestionNote,
@@ -83,9 +84,9 @@ describe("a form's completions", () => {
     const completer = createCompleter({ scope: "docs", complete });
 
     completer.edit("repo", "c", { repo: "c" });
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS - 20);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS - 20);
     completer.edit("repo", "cl", { repo: "cl" });
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS - 20);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS - 20);
 
     expect(asked).toHaveLength(0);
 
@@ -99,7 +100,7 @@ describe("a form's completions", () => {
     const completer = createCompleter({ scope: "docs", complete });
 
     completer.edit("repo", "c", { repo: "c" });
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS);
 
     const [older] = asked;
 
@@ -110,7 +111,7 @@ describe("a form's completions", () => {
 
     expect(older?.signal.aborted).toBe(true);
 
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS);
 
     expect(asked.map((each) => each.ask.argument.value)).toEqual(["c", "cl"]);
 
@@ -155,7 +156,7 @@ describe("a form's completions", () => {
     expect(completer.state("repo")).toMatchObject({ status: "ok", values: ["cloud"] });
 
     completer.edit("repo", "cl", { owner: "ian", repo: "cl" });
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS);
 
     expect(asked).toHaveLength(2);
 
@@ -174,14 +175,14 @@ describe("a form's completions", () => {
     await flush();
 
     completer.edit("repo", "ab", { repo: "ab" });
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS);
 
     const [, out] = asked;
 
     expect(out?.signal.aborted).toBe(false);
 
     completer.edit("repo", "a", { repo: "a" });
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS);
 
     expect(out?.signal.aborted).toBe(true);
     expect(asked).toHaveLength(2);
@@ -231,7 +232,7 @@ describe("a form's completions", () => {
 
       completer.focus("owner", "", { owner: "" });
       completer.edit("repo", "x", { repo: "x" });
-      await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS);
+      await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS);
 
       expect(asked).toHaveLength(1);
       expect(completer.state("owner").status).toBe(status);
@@ -253,7 +254,7 @@ describe("a form's completions", () => {
     });
 
     completer.edit("repo", "cl", { repo: "cl" });
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS);
 
     expect(asked).toHaveLength(2);
     expect(suggestionNote(completer.state("repo"), "docs")).toEqual({
@@ -296,7 +297,7 @@ describe("a form's completions", () => {
 
     expect(asked[0]?.signal.aborted).toBe(true);
 
-    await vi.advanceTimersByTimeAsync(MCP_COMPLETE_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(COMPLETE_DEBOUNCE_MS);
     asked[0]?.answer(ok(["late"]));
     await flush();
 

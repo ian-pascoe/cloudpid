@@ -14,6 +14,12 @@ import * as Schema from "effect/Schema";
 import { AttachedResource } from "./attached-resources.ts";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { MarkedOrigin } from "./mcp-api.ts";
+import {
+  McpCompletion,
+  McpCompletionArgument,
+  McpCompletionContext,
+  McpCompletionRef,
+} from "./mcp-completion.ts";
 import { McpPromptData } from "./mcp-prompts.ts";
 import { McpRepoFilesView } from "./mcp-repo-files.ts";
 import { McpSignInsView, McpSignOutView } from "./mcp-sign-ins.ts";
@@ -1020,6 +1026,23 @@ export class RegistryRpcs extends RpcGroup.make(
     },
     success: FileMatches,
     error: EnvironmentError,
+  }),
+  /**
+   * The draft composer's completion of an argument of an MCP prompt or resource template of one of `environment`'s servers
+   * (`docs/architecture/mcp-in-a-session.md` → As built (#485): completion), as a Session's `mcp_complete` answers it, with no
+   * Session or Workspace: HTTP servers only (a stdio server answers `not_running`: there is no Container to ask), and it
+   * starts nothing. Never fails: why there are no suggestions is the answer's `status`. A Worker from before this RPC does
+   * not have it, which the web app reads as `unsupported`.
+   */
+  Rpc.make("draftComplete", {
+    payload: {
+      environment: EnvironmentId,
+      server: Schema.String,
+      ref: McpCompletionRef,
+      argument: McpCompletionArgument,
+      context: Schema.optionalKey(McpCompletionContext),
+    },
+    success: McpCompletion,
   }),
   /**
    * The draft's Start from menu (`docs/architecture/client-and-protocol.md` → Session list → New session): the branches of each of the

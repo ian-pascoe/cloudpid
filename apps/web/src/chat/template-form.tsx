@@ -4,49 +4,47 @@
 // → Arguments and completions): one for an MCP prompt, and one for a resource template picked from the `@` menu, whose
 // variables the owner fills in to make the resource's URI.
 
-import {
-  type McpMenuTemplate,
-  type McpPromptArgument,
-  expandUriTemplate,
-  uriTemplateVariables,
-} from "@cloudpid/protocol";
-import * as Arr from "effect/Array";
-import { ArgumentForm } from "./argument-form.tsx";
+import { expandUriTemplate } from "@cloudpid/protocol";
+import { ArgumentForm, type FormCompletion } from "./argument-form.tsx";
 import type { ConversationKey } from "./conversation.ts";
 import { promptTitle, type PromptForm } from "./mcp-prompt-state.ts";
+import {
+  type TemplateForm,
+  templateFields,
+  templateProblem,
+  templateTitle,
+} from "./template-form.ts";
+import { useDraftFormCompletion } from "../draft-completion.ts";
 import { useFormCompletion } from "./use-form-completion.ts";
 
-/** The form open on a resource template: its server, whether it completes, and the values typed so far. */
-export interface TemplateForm {
-  readonly server: string;
-  readonly template: McpMenuTemplate;
-  readonly completions: boolean;
-  readonly values: Readonly<Record<string, string>>;
-}
+/** The argument form of a prompt with its completions given: the Session composer's and the draft's differ in where they ask. */
+export const PromptFormBody = ({
+  form,
+  completion,
+  onChange,
+  onDone,
+  onCancel,
+}: {
+  form: PromptForm;
+  completion: FormCompletion | undefined;
+  onChange: (values: Record<string, string>) => void;
+  onDone: () => void;
+  onCancel: () => void;
+}) => (
+  <ArgumentForm
+    title={promptTitle(form.prompt)}
+    server={form.prompt.server}
+    fields={form.prompt.arguments}
+    values={form.values}
+    problem={form.problem}
+    completion={completion}
+    onChange={onChange}
+    onDone={onDone}
+    onCancel={onCancel}
+  />
+);
 
-/** What a template is called: its title, else its name. */
-export const templateTitle = (template: Pick<McpMenuTemplate, "title" | "name">): string =>
-  template.title ?? template.name;
-
-/** A template's variables as form fields: each by name, the ones its URI cannot do without required. */
-export const templateFields = (template: McpMenuTemplate): McpPromptArgument[] =>
-  Arr.map(uriTemplateVariables(template.uriTemplate), ({ name, required }) => ({ name, required }));
-
-/** The resource a template form's values make: its server, its URI and what the chip calls it. */
-export interface TemplateResource {
-  readonly server: string;
-  readonly uri: string;
-  readonly name: string;
-}
-
-/** The resource the form's values make: its URI, and what the chip calls it. */
-export const templateResource = (form: TemplateForm): TemplateResource => ({
-  server: form.server,
-  uri: expandUriTemplate(form.template.uriTemplate, form.values),
-  name: templateTitle(form.template),
-});
-
-/** The argument form of a prompt, asking the server for suggestions when it declares the capability. */
+/** The argument form of a prompt in a Session's composer, asking the Session for suggestions when the server declares the capability. */
 export const PromptFormView = ({
   conversation,
   form,
@@ -71,12 +69,40 @@ export const PromptFormView = ({
   });
 
   return (
-    <ArgumentForm
-      title={promptTitle(form.prompt)}
-      server={form.prompt.server}
-      fields={form.prompt.arguments}
-      values={form.values}
-      problem={form.problem}
+    <PromptFormBody
+      form={form}
+      completion={completion}
+      onChange={onChange}
+      onDone={onDone}
+      onCancel={onCancel}
+    />
+  );
+};
+
+/** The argument form of a prompt in the draft composer, asking the Registry (HTTP servers only) for suggestions. */
+export const DraftPromptFormView = ({
+  environment,
+  form,
+  onChange,
+  onDone,
+  onCancel,
+}: {
+  environment: string;
+  form: PromptForm;
+  onChange: (values: Record<string, string>) => void;
+  onDone: () => void;
+  onCancel: () => void;
+}) => {
+  const completion = useDraftFormCompletion({
+    environment,
+    server: form.prompt.server,
+    ref: { type: "ref/prompt", name: form.prompt.name },
+    enabled: form.prompt.completions,
+  });
+
+  return (
+    <PromptFormBody
+      form={form}
       completion={completion}
       onChange={onChange}
       onDone={onDone}
@@ -116,6 +142,7 @@ export const TemplateFormView = ({
       fields={templateFields(form.template)}
       values={form.values}
       preview={expandUriTemplate(form.template.uriTemplate, form.values, true)}
+      blocked={templateProblem(form)}
       completion={completion}
       onChange={onChange}
       onDone={onDone}

@@ -17,6 +17,23 @@ export const MAX_ATTACHED_RESOURCES = 10;
 /** The longest a resource's URI is kept, and a server name sent with it, in characters. */
 export const MAX_RESOURCE_URI = 2048;
 
+/** Whether `uri` is an App's resource (`ui://`, in any case), which the `@` menu leaves out and no message attaches. */
+export const isAppResourceUri = (uri: string): boolean => uri.toLowerCase().startsWith("ui://");
+
+/**
+ * Why the URI a resource template's values make cannot be attached, or undefined when it can: it is empty, over
+ * `MAX_RESOURCE_URI` (the Session's decoder would refuse the whole message), or an App's (`isAppResourceUri`).
+ */
+export const attachableUriProblem = (uri: string): string | undefined => {
+  if (uri === "") return "Fill in the template to make a URI";
+
+  if (uri.length > MAX_RESOURCE_URI) {
+    return `The URI is ${String(uri.length)} characters, over the ${String(MAX_RESOURCE_URI)} an attached resource may have`;
+  }
+
+  return isAppResourceUri(uri) ? "An App's ui:// resource cannot be attached" : undefined;
+};
+
 /** The longest name a chip keeps for a resource, in characters. */
 export const MAX_RESOURCE_NAME = 200;
 
