@@ -1,7 +1,17 @@
 // docs/architecture/mcp-apps.md → The App sandbox. Which origins the page frames an App View at, what of a declared CSP it keeps,
 // and the proxy URL it builds.
 import { describe, expect, it } from "vitest";
-import { declaredCsp, frameUrl, isSandboxOrigin } from "./frame-url.ts";
+import {
+  LOCAL_SANDBOX_ORIGIN as SERVER_LOCAL_ORIGIN,
+  viewHost,
+} from "../../../server/src/view-host.ts";
+import {
+  APP_DOMAIN,
+  LOCAL_SANDBOX_ORIGIN,
+  declaredCsp,
+  frameUrl,
+  isSandboxOrigin,
+} from "./frame-url.ts";
 
 const VIEW = "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app";
 
@@ -9,7 +19,15 @@ describe("isSandboxOrigin", () => {
   it("accepts a View's host, with or without a stage label, and the local sandbox", () => {
     expect(isSandboxOrigin(VIEW)).toBe(true);
     expect(isSandboxOrigin("https://aaaaaaaaaaaaaaaaaaaaaaaaaa--pr-12.ianpascoe.app")).toBe(true);
-    expect(isSandboxOrigin("http://localhost:1338")).toBe(true);
+    expect(isSandboxOrigin("http://127.0.0.1:1338")).toBe(true);
+  });
+
+  it("accepts the local sandbox in a development build only", () => {
+    expect(isSandboxOrigin("http://127.0.0.1:1338", true)).toBe(true);
+    expect(isSandboxOrigin("http://127.0.0.1:1338", false)).toBe(false);
+    expect(isSandboxOrigin(VIEW, false)).toBe(true);
+    // The test build is a development one, as `alchemy dev` is.
+    expect(isSandboxOrigin("http://127.0.0.1:1338")).toBe(true);
   });
 
   it("refuses anything else: another domain, a path, a port, a lookalike, a short hash", () => {
@@ -23,7 +41,9 @@ describe("isSandboxOrigin", () => {
       "https://AAAAAAAAAAAAAAAAAAAAAAAAAA.ianpascoe.app",
       "http://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app",
       "http://localhost:1337",
-      "https://localhost:1338",
+      // The old local sandbox origin shared the app's cookie jar.
+      "http://localhost:1338",
+      "https://127.0.0.1:1338",
       "",
     ]) {
       expect(isSandboxOrigin(origin), origin).toBe(false);
@@ -67,7 +87,7 @@ describe("frameUrl", () => {
   });
 
   it("names the page's own origin at the local sandbox only", () => {
-    const url = new URL(frameUrl("http://localhost:1338", undefined, "http://localhost:5173"));
+    const url = new URL(frameUrl("http://127.0.0.1:1338", undefined, "http://localhost:5173"));
 
     expect(url.searchParams.get("host")).toBe("http://localhost:5173");
   });
@@ -80,5 +100,21 @@ describe("frameUrl", () => {
 
   it("throws for an origin that is not a sandbox's, rather than frame it", () => {
     expect(() => frameUrl("https://evil.example", undefined, "x")).toThrow();
+  });
+});
+
+describe("the copies of the server's sandbox constants", () => {
+  // The page does not depend on the server's package, so it keeps its own copies; these hold them to the server's.
+  it("name the same local origin and the same domain", () => {
+    expect(LOCAL_SANDBOX_ORIGIN).toBe(SERVER_LOCAL_ORIGIN);
+    expect(viewHost("a".repeat(26), "prod")).toBe(`${"a".repeat(26)}.${APP_DOMAIN}`);
+  });
+
+  it("accept every origin the server builds for a View, on prod and on any stage", () => {
+    for (const stage of ["prod", "pr-12", "dev_ian", "preview-with-a-longer-label"]) {
+      expect(isSandboxOrigin(`https://${viewHost("a".repeat(26), stage)}`, false), stage).toBe(
+        true,
+      );
+    }
   });
 });

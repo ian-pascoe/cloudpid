@@ -260,8 +260,15 @@ export const createBridge = (options: BridgeOptions): Bridge => {
       Promise.resolve({ mode: options.hostContext().displayMode ?? "inline" }),
   };
 
+  // Own properties only: a View chooses the method, and `constructor`, `toString` and `__proto__` are on every object.
+  const ownHandler = (
+    handlers: Readonly<Record<string, RequestHandler>> | undefined,
+    method: string,
+  ): RequestHandler | undefined =>
+    handlers !== undefined && Object.hasOwn(handlers, method) ? handlers[method] : undefined;
+
   const handlerOf = (method: string): RequestHandler | undefined =>
-    options.handlers?.[method] ?? builtIns[method];
+    ownHandler(options.handlers, method) ?? ownHandler(builtIns, method);
 
   const ready = (): void => {
     if (initialized || closed) return;

@@ -16,7 +16,7 @@ const get = (url: string, env: Record<string, string> = LOCAL) =>
 
 describe("the App sandbox in local mode", () => {
   it.each(LOCAL_APP_ORIGINS)("serves the proxy page to %s, framed by it alone", async (origin) => {
-    const response = get(`http://localhost:1338/?host=${encodeURIComponent(origin)}`);
+    const response = get(`http://127.0.0.1:1338/?host=${encodeURIComponent(origin)}`);
     const csp = response.headers.get("content-security-policy") ?? "";
 
     expect(response.status).toBe(200);
@@ -33,7 +33,7 @@ describe("the App sandbox in local mode", () => {
     const csp = JSON.stringify({ connectDomains: ["https://api.example.com"] });
 
     const response = get(
-      `http://localhost:1338/?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}&csp=${encodeURIComponent(csp)}`,
+      `http://127.0.0.1:1338/?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}&csp=${encodeURIComponent(csp)}`,
     );
 
     expect(response.headers.get("content-security-policy")).toBe(
@@ -49,14 +49,14 @@ describe("the App sandbox in local mode", () => {
     "?host=http://localhost:1337%20http://evil.example",
     "?host=*",
   ])("answers 404 for a page whose host is not one of the local origins: %j", (query) => {
-    const response = get(`http://localhost:1338/${query}`);
+    const response = get(`http://127.0.0.1:1338/${query}`);
 
     expect(response.status).toBe(404);
     expect(response.headers.get("content-security-policy")).toBeNull();
   });
 
   it("serves /proxy.js with no ?host=, the same script for every origin", async () => {
-    const response = get("http://localhost:1338/proxy.js");
+    const response = get("http://127.0.0.1:1338/proxy.js");
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(PROXY_JS);
@@ -64,7 +64,7 @@ describe("the App sandbox in local mode", () => {
 
   it("is a 405 for another method, and a 404 for another path", () => {
     const post = worker.fetch(
-      new Request(`http://localhost:1338/?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}`, {
+      new Request(`http://127.0.0.1:1338/?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}`, {
         method: "POST",
       }),
       LOCAL,
@@ -73,7 +73,7 @@ describe("the App sandbox in local mode", () => {
     expect(post.status).toBe(405);
 
     const other = get(
-      `http://localhost:1338/x?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}`,
+      `http://127.0.0.1:1338/x?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}`,
     );
 
     expect(other.status).toBe(404);
@@ -82,14 +82,14 @@ describe("the App sandbox in local mode", () => {
   it("is not a mode a request can ask for: without the var, ?host= and a localhost host are a 404", () => {
     for (const env of [{}, { [SANDBOX_LOCAL_VAR]: "false" }, { [SANDBOX_LOCAL_VAR]: "1" }]) {
       const response = get(
-        `http://localhost:1338/?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}`,
+        `http://127.0.0.1:1338/?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}`,
         env,
       );
 
       expect(response.status).toBe(404);
     }
 
-    expect(get("http://localhost:1338/proxy.js", {}).status).toBe(404);
+    expect(get("http://127.0.0.1:1338/proxy.js", {}).status).toBe(404);
   });
 
   it("still takes a deployed host's origin from the hostname when the var is not set", () => {

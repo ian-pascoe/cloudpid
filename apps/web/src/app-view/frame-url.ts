@@ -9,19 +9,25 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 /** The registrable domain the App sandbox serves on (`apps/server/src/view-host.ts`, `APP_DOMAIN`); a View's origin is under it. */
-const APP_DOMAIN = "ianpascoe.app";
+export const APP_DOMAIN = "ianpascoe.app";
 
-/** The one origin every View has under `alchemy dev` (`LOCAL_SANDBOX_ORIGIN` of the same file). */
-const LOCAL_SANDBOX_ORIGIN = "http://localhost:1338";
+/**
+ * The one origin every View has under `alchemy dev` (`LOCAL_SANDBOX_ORIGIN` of the same file): the loopback address, so it is
+ * cross-site to the app at `localhost` and shares no cookies with it. A drift guard in `frame-url.test.ts` holds the copies equal.
+ */
+export const LOCAL_SANDBOX_ORIGIN = "http://127.0.0.1:1338";
 
 /** `https://<26 base32 characters>[--<label>].ianpascoe.app`, exactly: no path, port, credentials or other host. */
 const VIEW_ORIGIN = new RegExp(
   `^https://[a-z2-7]{26}(--[a-z0-9]([a-z0-9-]{0,33}[a-z0-9])?)?\\.${APP_DOMAIN.replaceAll(".", "\\.")}$`,
 );
 
-/** Whether `origin` is one the page may frame an App View at: a View's host on the sandbox's domain, or the local sandbox. */
-export const isSandboxOrigin = (origin: string): boolean =>
-  VIEW_ORIGIN.test(origin) || origin === LOCAL_SANDBOX_ORIGIN;
+/**
+ * Whether `origin` is one the page may frame an App View at: a View's host on the sandbox's domain, or, in a development
+ * build only (`dev`, Vite's `DEV`), the local sandbox: a production page never frames a loopback address.
+ */
+export const isSandboxOrigin = (origin: string, dev: boolean = import.meta.env.DEV): boolean =>
+  VIEW_ORIGIN.test(origin) || (dev && origin === LOCAL_SANDBOX_ORIGIN);
 
 /** Whether `origin` is the local sandbox, which has no hostname to tell it the app origin, so the page says it. */
 const isLocalSandbox = (origin: string): boolean => origin === LOCAL_SANDBOX_ORIGIN;

@@ -183,7 +183,7 @@ describe("viewOrigin", () => {
   it("is the one shared origin under alchemy dev, whatever the hash", () => {
     expect(viewOrigin({ hash: HASH, label: undefined, local: true })).toBe(LOCAL_SANDBOX_ORIGIN);
     expect(viewOrigin({ hash: OTHER_HASH, label: "x", local: true })).toBe(LOCAL_SANDBOX_ORIGIN);
-    expect(LOCAL_SANDBOX_ORIGIN).toBe("http://localhost:1338");
+    expect(LOCAL_SANDBOX_ORIGIN).toBe("http://127.0.0.1:1338");
   });
 
   it.each([
@@ -205,7 +205,7 @@ describe("localAppOriginOf", () => {
       null,
       "",
       "*",
-      "http://localhost:1338",
+      "http://127.0.0.1:1338",
       "http://localhost:1337/",
       "https://localhost:1337",
       "http://localhost:1337 http://evil.example",

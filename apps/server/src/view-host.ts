@@ -58,8 +58,12 @@ export const appOriginOf = (host: string): string | undefined => {
 /** The port the App sandbox is served on under `alchemy dev`: a second local port, beside the main Worker's 1337. */
 export const LOCAL_SANDBOX_PORT = 1338;
 
-/** The one origin every App View has under `alchemy dev`: no hash, no label, a shared origin. */
-export const LOCAL_SANDBOX_ORIGIN = `http://localhost:${LOCAL_SANDBOX_PORT}`;
+/**
+ * The one origin every App View has under `alchemy dev`: no hash, no label, a shared origin. Its host is `127.0.0.1`, not
+ * `localhost`: cookies are not scoped by port, so a View at `localhost:1338` would share the owner's cookie jar with the
+ * app at `localhost:1337` and Vite's `localhost:5173`; another host name makes it cross-site to both.
+ */
+export const LOCAL_SANDBOX_ORIGIN = `http://127.0.0.1:${LOCAL_SANDBOX_PORT}`;
 
 /**
  * The app origins under `alchemy dev`: the main Worker's (workerd) and Vite's, the two a page is served from there. The

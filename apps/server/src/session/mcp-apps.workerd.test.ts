@@ -438,7 +438,7 @@ describe("an MCP App call over the Session's socket", () => {
       result: { status: "html", hash: entry.htmlHash, html: PAGE, view: expect.any(String) },
     });
     expect(JSON.stringify(byCall)).toMatch(
-      /"origin":"https:\/\/[a-z2-7]{26}(--[a-z0-9-]+)?\.ianpascoe\.app"|"origin":"http:\/\/localhost:1338"/,
+      /"origin":"https:\/\/[a-z2-7]{26}(--[a-z0-9-]+)?\.ianpascoe\.app"|"origin":"http:\/\/127.0.0.1:1338"/,
     );
 
     client.send({ type: "mcp_app_html", id: "html-call-none", callId: "nope" });

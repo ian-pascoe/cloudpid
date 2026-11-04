@@ -454,6 +454,11 @@ describe("a View's requests", () => {
       "sampling/createMessage",
       "ui/request-teardown",
       "nope",
+      // Properties every object has, which a View may name: they are no handlers.
+      "constructor",
+      "toString",
+      "__proto__",
+      "hasOwnProperty",
     ]) {
       page.deliver(rpc(method, {}, 40));
       await vi.advanceTimersByTimeAsync(0);
@@ -462,6 +467,16 @@ describe("a View's requests", () => {
         id: 40,
         error: { code: METHOD_NOT_FOUND, message: `Method not found: ${method}` },
       });
+    }
+  });
+
+  it("does not take an inherited property of its handlers for one", async () => {
+    const { page } = await ready({ handlers: {} });
+
+    for (const method of ["constructor", "toString", "__proto__"]) {
+      page.deliver(rpc(method, {}, 41));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(page.posts.pop()?.data).toMatchObject({ id: 41, error: { code: METHOD_NOT_FOUND } });
     }
   });
 
