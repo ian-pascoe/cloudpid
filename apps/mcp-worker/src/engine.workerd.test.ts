@@ -91,19 +91,17 @@ const BIG = { name: "big", inputSchema: { type: "object" } };
 const bigCall = (bytes: number) =>
   ({ op: "tools/call", tool: BIG, arguments: { bytes }, ctx: AGENT }) as const;
 
-/** The text of a streamed `tools/call` result. */
-const streamedText = async (result: ReturnType<typeof decodeRequest>) => {
+/** The byte stream of a streamed result, which a test expects. */
+const streamBody = (result: ReturnType<typeof decodeRequest>) => {
   if (result.kind !== "complete" || result.result.kind !== "stream") {
     throw new Error(`not a streamed result: ${JSON.stringify(result)}`);
   }
 
-  // SAFETY: the stream carries a `tools/call` result's JSON.
-  const value = (await new Response(result.result.body).json()) as {
-    content: Array<{ text: string }>;
-  };
-
-  return value.content[0]?.text ?? "";
+  return result.result.body;
 };
+
+/** A promise and what resolves it. */
+const deferred = () => Promise.withResolvers<void>();
 
 /** Hooks of a caller that never aborts. */
 const patient = () => ({ untilAborted: () => new Promise<void>(() => undefined) });
@@ -115,30 +113,31 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Engine requests that give back what they hold of the byte budget however their test ends (#613): once it finishes,
- * each request still under way is aborted and each streamed result left unread is cancelled, a late request's as it
- * comes, so a failed test cannot hold the budget for the next.
+ * each request still under way is aborted and each streamed result not read to its end is cancelled, one being read
+ * included and a late request's as it comes, so a failed test cannot hold the budget for the next.
  */
 const heldRequests = () => {
-  let finish: () => void = () => undefined;
-
-  const finished = new Promise<void>((resolve) => {
-    finish = resolve;
-  });
-
+  const ended = deferred();
+  let testEnded = false;
   const pending = new Set<Promise<unknown>>();
-  const unread = new Set<ReadableStream<Uint8Array>>();
-  let over = false;
+
+  /** Each stream not yet read to its end, with its reader once a read began. */
+  const open = new Map<
+    ReadableStream<Uint8Array>,
+    ReadableStreamDefaultReader<Uint8Array> | undefined
+  >();
 
   const cancel = async (body: ReadableStream<Uint8Array>) => {
-    unread.delete(body);
+    const reader = open.get(body);
 
-    if (!body.locked) await body.cancel().catch(() => undefined);
+    open.delete(body);
+    await (reader ?? body).cancel().catch(() => undefined);
   };
 
   onTestFinished(async () => {
-    over = true;
-    finish();
-    await Promise.allSettled([...[...unread].map(cancel), ...pending]);
+    testEnded = true;
+    ended.resolve();
+    await Promise.allSettled([...[...open.keys()].map(cancel), ...pending]);
   });
 
   /** `req` of `server`, as a caller that aborts when `aborted` resolves or the test finishes. */
@@ -147,15 +146,17 @@ const heldRequests = () => {
     req: Parameters<McpEngineMethods["request"]>[2],
     aborted?: Promise<void>,
   ) => {
-    const untilAborted = aborted === undefined ? finished : Promise.race([aborted, finished]);
+    const untilAborted =
+      aborted === undefined ? ended.promise : Promise.race([aborted, ended.promise]);
 
     const call = env.MCP_ENGINE.request(server, {}, req, { untilAborted: () => untilAborted }).then(
       async (encoded) => {
         const result = decodeRequest(encoded);
 
         if (result.kind === "complete" && result.result.kind === "stream") {
-          if (over) await cancel(result.result.body);
-          else unread.add(result.result.body);
+          open.set(result.result.body, undefined);
+
+          if (testEnded) await cancel(result.result.body);
         }
 
         return result;
@@ -168,12 +169,28 @@ const heldRequests = () => {
     return call;
   };
 
-  /** The text of a streamed result, read to its end. */
-  const read = (result: ReturnType<typeof decodeRequest>) => {
-    if (result.kind === "complete" && result.result.kind === "stream")
-      unread.delete(result.result.body);
+  /** The text of a streamed `tools/call` result, read to its end; cancelled if the test ends first. */
+  const read = async (result: ReturnType<typeof decodeRequest>) => {
+    const body = streamBody(result);
+    const reader = body.getReader();
+    const chunks: Array<Uint8Array> = [];
 
-    return streamedText(result);
+    open.set(body, reader);
+
+    try {
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        chunks.push(chunk.value);
+      }
+    } finally {
+      open.delete(body);
+    }
+
+    // SAFETY: the stream carries a `tools/call` result's JSON.
+    const value = (await new Response(new Blob(chunks)).json()) as {
+      content: Array<{ text: string }>;
+    };
+
+    return value.content[0]?.text ?? "";
   };
 
   return { request, read };
@@ -847,20 +864,16 @@ describe("aborts", () => {
 
   it("aborts the server request when the caller aborts, and fails as a cut that may have run", async () => {
     const server = target("stateful", "abort");
-    let abort: () => void = () => undefined;
-
-    const aborted = new Promise<void>((resolve) => {
-      abort = resolve;
-    });
+    const aborted = deferred();
 
     const pending = heldRequests().request(
       server,
       { op: "tools/call", tool: { name: "hang", inputSchema: { type: "object" } }, ctx: AGENT },
-      aborted,
+      aborted.promise,
     );
 
     await expect.poll(async () => (await seen(server)).methods, POLL).toContain("tools/call");
-    abort();
+    aborted.resolve();
 
     expect(await pending).toMatchObject({
       kind: "failed",
@@ -903,9 +916,7 @@ describe("large results", () => {
       const called = await held.request(target(kind, `big-${kind}`), bigCall(bytes));
 
       expect(called).toMatchObject({ kind: "complete", result: { kind: "stream" } });
-      expect(
-        called.kind === "complete" && called.result.kind === "stream" && called.result.body,
-      ).toBeInstanceOf(ReadableStream);
+      expect(streamBody(called)).toBeInstanceOf(ReadableStream);
       expect((await held.read(called)).length).toBe(bytes);
     },
   );
@@ -963,16 +974,25 @@ describe("the byte budget", () => {
     });
     await expect.poll(async () => (await seen(hanging)).methods, POLL).toContain("tools/call");
 
-    const texts = await Promise.all(
-      ["a", "b", "c", "d"].map(async (key) =>
-        held.read(
-          await held.request(target("legacy", `hang-oversubscribe-${key}`), bigCall(3 * MiB)),
-        ),
-      ),
+    const lengths = Promise.all(
+      ["a", "b", "c", "d"].map(async (key) => {
+        const called = await held.request(
+          target("legacy", `hang-oversubscribe-${key}`),
+          bigCall(3 * MiB),
+        );
+
+        return (await held.read(called)).length;
+      }),
     );
 
-    expect(texts.map((text) => text.length)).toEqual([3 * MiB, 3 * MiB, 3 * MiB, 3 * MiB]);
-  }, 10_000);
+    // They take well under a second; held up by the hanging call, they would wait for its next bytes or its end.
+    expect(await Promise.race([lengths, sleep(10_000).then(() => "held up")])).toEqual([
+      3 * MiB,
+      3 * MiB,
+      3 * MiB,
+      3 * MiB,
+    ]);
+  });
 
   it.each([
     ["aborted", "budget-abort"],
@@ -982,21 +1002,17 @@ describe("the byte budget", () => {
     async (how, key) => {
       const held = heldRequests();
       const holder = await held.request(target("legacy", `${key}-1`), bigCall(10 * MiB));
-      let abort: () => void = () => undefined;
-
-      const aborted = new Promise<void>((resolve) => {
-        abort = resolve;
-      });
+      const aborted = deferred();
 
       const waiting = held.request(
         { ...target("legacy", `${key}-2`), timeoutMs: how === "timed out" ? 300 : 60_000 },
         bigCall(10 * MiB),
-        aborted,
+        aborted.promise,
       );
 
       if (how === "aborted") {
         await sleep(300);
-        abort();
+        aborted.resolve();
       }
 
       expect(await waiting).toMatchObject({
