@@ -58,7 +58,10 @@ const open = (
     redact: (value) => value,
   });
 
-  const questions = fake<McpQuestions["Service"]>({ pending: Effect.succeed(asked) });
+  const questions = fake<McpQuestions["Service"]>({
+    pending: Effect.succeed(asked),
+    pendingSampling: Effect.succeed([]),
+  });
 
   const layer = sessionMcpLayer({
     session: "s1",
