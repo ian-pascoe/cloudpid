@@ -14,7 +14,12 @@ import { PageRef } from "./attached-pages.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
-import { MAX_MCP_APP_KEY, McpAppsMessage, McpAppToolsMessage } from "./mcp-apps.ts";
+import {
+  MAX_MCP_APP_KEY,
+  MAX_MCP_APP_REQUEST_KEY,
+  McpAppsMessage,
+  McpAppToolsMessage,
+} from "./mcp-apps.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
 import {
   ElicitationContent,
@@ -668,6 +673,41 @@ export const McpAppHtml = Schema.Struct({
   callId: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY))),
 });
 
+/**
+ * An App View's request, forwarded by its page (`docs/architecture/mcp-apps.md` → An App View's calls, Socket messages):
+ * `method` is `tools/call` or `resources/read` with the View's own `params`, for the App View of call `callId`; the
+ * server is the call's record's, never the message's. `requestId` names the request for `mcp_app_cancel`, unique among
+ * the page's requests of that call. Answered with an `McpAppRequestAnswer`, however it ends; an answer is never an
+ * error message, so a refusal reads as the View's JSON-RPC error. A page that is not visible has its requests refused.
+ */
+export const McpAppRequest = Schema.Struct({
+  type: Schema.Literal("mcp_app_request"),
+  id: CommandId,
+  callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_REQUEST_KEY)),
+  method: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_REQUEST_KEY)),
+  params: Schema.optionalKey(Schema.Json),
+});
+
+/** Cancel the App View's request `requestId` of call `callId` that this socket sent, if it is still running: its answer is then the cancelled error. Answered with null. */
+export const McpAppCancel = Schema.Struct({
+  type: Schema.Literal("mcp_app_cancel"),
+  id: CommandId,
+  callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_REQUEST_KEY)),
+});
+
+/**
+ * Whether this page is visible (`document.visibilityState`): sent when the socket opens and whenever it changes. A socket
+ * that has not said is not visible, so a page that cannot say has its App Views' requests refused, and no background tab
+ * keeps a Container awake (`docs/architecture/mcp-apps.md` → An App View's calls). Answered with null.
+ */
+export const PageVisible = Schema.Struct({
+  type: Schema.Literal("page_visible"),
+  id: CommandId,
+  visible: Schema.Boolean,
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
   TreeRequest,
@@ -700,6 +740,9 @@ export const ClientMessage = Schema.Union([
   ViewedSet,
   McpAppMount,
   McpAppHtml,
+  McpAppRequest,
+  McpAppCancel,
+  PageVisible,
   WatchTaskGraph,
   UnwatchTaskGraph,
   WatchUsage,

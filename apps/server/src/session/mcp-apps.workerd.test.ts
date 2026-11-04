@@ -474,3 +474,351 @@ describe("an MCP App call over the Session's socket", () => {
     expect(await client.answer("html")).toMatchObject({ result: { status: "missing" } });
   });
 });
+
+/** The set of the Environment with a second server, `other`, which the App's server cannot reach. */
+const TWO: McpApplySet = {
+  ...SET,
+  hash: "h2",
+  entries: [
+    ...SET.entries,
+    {
+      name: "other",
+      source: { kind: "global" },
+      server: { type: "http", url: "https://other.example/mcp", headers: {}, exposure: "direct" },
+      hash: "hash-other",
+      conn: "conn-other",
+      identity: "identity-other",
+    },
+  ],
+};
+
+/** `docs`' tools: the App tool, one only the App sees, one only the model sees; `big` and `hang` come with `listMore`. */
+const viewServer = (options: Parameters<typeof modernServer>[0] = {}) =>
+  modernServer({
+    listMore: true,
+    resources: [
+      {
+        uri: URI,
+        name: "app",
+        mimeType: APP_MIME_TYPE,
+        contents: [{ uri: URI, mimeType: APP_MIME_TYPE, text: PAGE }],
+      },
+    ],
+    moreTools: [
+      appTool("app", URI),
+      { ...appTool("hidden", URI), _meta: { ui: { resourceUri: URI, visibility: ["app"] } } },
+      { ...appTool("modelOnly", URI), _meta: { ui: { resourceUri: URI, visibility: ["model"] } } },
+    ],
+    ...options,
+  });
+
+/** A Session over two servers, `docs` (`server`) and `other` (`elsewhere`), each with the call of `docs`' App made. */
+const withViews = async (options: Parameters<typeof modernServer>[0] = {}) => {
+  const server = viewServer(options);
+
+  const elsewhere = modernServer({
+    serverName: "other",
+    moreTools: [{ name: "secret", inputSchema: { type: "object" } }],
+  });
+
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+
+    return (new URL(request.url).hostname === "other.example" ? elsewhere : server).handle(request);
+  });
+
+  const environment = `env-${counter++}`;
+  const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+
+  await host.useRealEngine();
+  await host.apply(TWO);
+
+  const stub = env.SESSIONS.getByName(`mcp-${environment}`);
+
+  await runInDurableObject(stub, (instance: TestSession) => {
+    instance.mcpEnvironment(environment, 1);
+  });
+
+  await callTool(stub, "app");
+
+  const entry = await lastCall(stub);
+  const client = await connect(stub);
+
+  await client.root();
+
+  /** The page says it is visible, as a tab does when it connects. */
+  const visible = async (value = true) => {
+    const id = `visible-${counter++}`;
+
+    client.send({ type: "page_visible", id, visible: value });
+    await client.answer(id);
+  };
+
+  /** An App View's request, and its answer. */
+  const ask = async (
+    method: string,
+    params: Record<string, Schema.Json>,
+    requestId = `r-${counter++}`,
+  ) => {
+    const id = `ask-${counter++}`;
+
+    client.send({
+      type: "mcp_app_request",
+      id,
+      callId: entry.callId,
+      requestId,
+      method,
+      params,
+    });
+
+    const answered = await client.answer(id);
+
+    return answered?.type === "result" ? answered.result : undefined;
+  };
+
+  return { stub, host, server, elsewhere, entry, client, visible, ask };
+};
+
+describe("an App View's requests over the Session's socket", () => {
+  it("calls the tools its server lets Views call and reads its resources, and the model never sees them", async () => {
+    const { stub, entry, visible, ask } = await withViews();
+    const before = await runInDurableObject(stub, (instance: TestSession) => instance.tree());
+
+    await visible();
+
+    // An App-only tool, which the model is never offered; a tool with no `_meta`; and a read of the App's own page.
+    expect(
+      await ask("tools/call", { name: "hidden", arguments: { text: "from the view" } }),
+    ).toMatchObject({
+      status: "result",
+      result: { content: [{ type: "text", text: "from the view" }] },
+    });
+
+    expect(await ask("tools/call", { name: "echo", arguments: { text: "plain" } })).toMatchObject({
+      status: "result",
+      result: { content: [{ type: "text", text: "plain" }] },
+    });
+
+    expect(await ask("resources/read", { uri: URI })).toMatchObject({
+      status: "result",
+      result: { contents: [{ uri: URI, text: PAGE }] },
+    });
+
+    // Kept in the call's audit log, which a mount reads; nothing was written into the conversation.
+    const mounted = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.appMount(entry.callId),
+    );
+
+    expect(mounted).toMatchObject({ status: "record" });
+
+    if (mounted.status !== "record" || !("record" in mounted)) throw new Error("no record");
+
+    expect(mounted.record.audit.map((each) => each.summary)).toEqual([
+      expect.stringMatching(/^tools\/call hidden .*from the view.* → ok: from the view$/),
+      expect.stringMatching(/^tools\/call echo .*plain.* → ok: plain$/),
+      expect.stringMatching(/^resources\/read ui:\/\/docs\/app → ok: <main>fixture<\/main>$/),
+    ]);
+
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.tree())).toEqual(
+      before,
+    );
+  });
+
+  it("is refused while the tab is hidden, or has not said it is visible, and nothing reaches the server", async () => {
+    const { server, visible, ask } = await withViews();
+
+    const calls = () =>
+      server.received.filter((each) => JSON.stringify(each).includes("from the view")).length;
+
+    // A page that has not said it is visible is not.
+    expect(
+      await ask("tools/call", { name: "echo", arguments: { text: "from the view" } }),
+    ).toMatchObject({
+      status: "error",
+      reason: "hidden",
+    });
+
+    await visible();
+    expect(
+      await ask("tools/call", { name: "echo", arguments: { text: "from the view" } }),
+    ).toMatchObject({ status: "result" });
+    expect(calls()).toBe(1);
+
+    await visible(false);
+    expect(
+      await ask("tools/call", { name: "echo", arguments: { text: "from the view" } }),
+    ).toMatchObject({
+      status: "error",
+      reason: "hidden",
+    });
+    expect(calls()).toBe(1);
+  });
+
+  it("is refused another server's tool, a tool only the model sees, and a method it does not serve", async () => {
+    const { elsewhere, server, visible, ask } = await withViews();
+
+    await visible();
+
+    // `other`'s tool is not `docs`': the request names no server, so it is `docs` that is asked, and `docs` lists no such tool.
+    expect(
+      await ask("tools/call", { name: "secret", arguments: {}, server: "other" }),
+    ).toMatchObject({
+      status: "error",
+      reason: "refused",
+    });
+
+    expect(await ask("tools/call", { name: "modelOnly", arguments: { text: "x" } })).toMatchObject({
+      status: "error",
+      reason: "refused",
+      message: expect.stringContaining("not for App Views"),
+    });
+
+    expect(await ask("tools/list", {})).toMatchObject({ status: "error", code: -32_601 });
+    expect(await ask("sampling/createMessage", {})).toMatchObject({
+      status: "error",
+      code: -32_601,
+    });
+
+    // Neither server was sent any of it.
+    expect(
+      elsewhere.received.filter((each) => JSON.stringify(each).includes("tools/call")),
+    ).toEqual([]);
+    expect(server.received.filter((each) => JSON.stringify(each).includes("modelOnly"))).toEqual(
+      [],
+    );
+  });
+
+  it("is refused for a call whose record is gone, and for a server that is hidden since", async () => {
+    const { host, stub, entry, client, visible, ask } = await withViews();
+
+    await visible();
+
+    client.send({
+      type: "mcp_app_request",
+      id: "none",
+      callId: "nope",
+      requestId: "r",
+      method: "tools/call",
+      params: { name: "echo" },
+    });
+    expect(await client.answer("none")).toMatchObject({
+      result: { status: "error", reason: "unavailable" },
+    });
+
+    // The owner hides `docs`: its Views stay mounted, and their calls are refused, at the Session and at the host.
+    await host.apply({
+      ...TWO,
+      hash: "h3",
+      revision: 3,
+      entries: [
+        {
+          ...TWO.entries[0]!,
+          server: { ...TWO.entries[0]!.server, exposure: "hidden" },
+          hash: "hash-docs-hidden",
+        },
+        ...TWO.entries.slice(1),
+      ],
+    });
+
+    await callTool(stub, "echo").catch(() => undefined);
+
+    expect(await ask("tools/call", { name: "echo", arguments: { text: "x" } })).toMatchObject({
+      status: "error",
+      reason: "hidden",
+    });
+
+    expect(await ask("resources/read", { uri: URI })).toMatchObject({
+      status: "error",
+      reason: "hidden",
+    });
+    expect(entry.callId).toEqual(expect.any(String));
+  });
+
+  it("is refused for a call whose server has been shadowed since, which the host checks", async () => {
+    const { stub, client, visible } = await withViews();
+
+    await visible();
+
+    // A record that pins the origin of another server of the name `docs`.
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.appPut({
+        callId: "shadowed",
+        server: "docs",
+        tool: "app",
+        conversation: "1",
+        arguments: {},
+        viewHash: "zzzzzzzzzzzzzzzzzzzzzzzzzz",
+        result: { content: [] },
+      }),
+    );
+
+    client.send({
+      type: "mcp_app_request",
+      id: "shadow",
+      callId: "shadowed",
+      requestId: "r",
+      method: "tools/call",
+      params: { name: "echo", arguments: { text: "x" } },
+    });
+    expect(await client.answer("shadow")).toMatchObject({
+      result: { status: "error", reason: "unavailable" },
+    });
+  });
+
+  it("answers a result over 1 MiB as an error, and cancels a request on the View's say-so, which cancels the server's call", async () => {
+    const cancelled: string[] = [];
+    const { client, visible, ask, entry } = await withViews({ cancelled });
+
+    await visible();
+
+    expect(
+      await ask("tools/call", { name: "big", arguments: { bytes: 2 * 1024 * 1024 } }),
+    ).toMatchObject({
+      status: "error",
+      reason: "failed",
+      message: expect.stringContaining("too large"),
+    });
+
+    const hanging = ask("tools/call", { name: "hang", arguments: {} }, "slow");
+
+    // The server has the call; the View cancels it.
+    await settles(async () => expect(cancelled).toEqual([]));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    client.send({ type: "mcp_app_cancel", id: "cancel", callId: entry.callId, requestId: "slow" });
+
+    expect(await hanging).toMatchObject({ status: "error", reason: "cancelled" });
+    await settles(async () => expect(cancelled).toEqual(["hang"]));
+  });
+
+  it("is refused a tool call, but may read, once the Session is archived", async () => {
+    const { stub, visible, ask } = await withViews();
+
+    await visible();
+    await runInDurableObject(stub, (instance: TestSession) => {
+      instance.setArchived(true);
+    });
+
+    expect(await ask("tools/call", { name: "echo", arguments: { text: "x" } })).toMatchObject({
+      status: "error",
+      reason: "refused",
+    });
+
+    expect(await ask("resources/read", { uri: URI })).toMatchObject({ status: "result" });
+  });
+
+  it("limits a View to 60 requests a minute", async () => {
+    const { visible, ask } = await withViews();
+
+    await visible();
+
+    // Unreadable params are refused after they are counted: the limit holds whatever the View sends.
+    for (let each = 0; each < 60; each++) {
+      expect(await ask("tools/list", {})).toMatchObject({ status: "error", code: -32_601 });
+    }
+
+    expect(await ask("tools/call", { name: "echo", arguments: { text: "x" } })).toMatchObject({
+      status: "error",
+      reason: "limit",
+    });
+  }, 60_000);
+});

@@ -193,7 +193,7 @@ const answersOf = (deferring: boolean, pages: boolean): McpAnswers =>
 const SENT = "mcp.sent";
 
 /** How long the Session waits for a request to `server` since its start or its last progress, in ms. */
-const waitOf = (server: McpBuildServer, slackMs: number): number => {
+export const waitOf = (server: McpBuildServer, slackMs: number): number => {
   const { timeout } = server.server;
 
   return (

@@ -4,6 +4,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
+  appAuditSummary,
   appRecordBytes,
   boundAppRecord,
   MAX_MCP_APP_RECORD_BYTES,
@@ -11,6 +12,7 @@ import {
   McpAppHtmlAnswer,
   type McpAppRecord,
   McpAppMounted,
+  McpAppRequestAnswer,
   McpAppsMessage,
 } from "./mcp-apps.ts";
 import { ClientMessage, ServerMessage } from "./session.ts";
@@ -285,5 +287,100 @@ describe("the messages", () => {
     );
     expect(Option.isSome(decodeClient({ type: "mcp_app_html", id: "2", hash: "abc" }))).toBe(true);
     expect(Option.isNone(decodeClient({ type: "mcp_app_mount", id: "1" }))).toBe(true);
+  });
+});
+
+describe("an App View's request", () => {
+  const decodeClient = Schema.decodeUnknownOption(ClientMessage);
+  const decodeAnswer = Schema.decodeUnknownOption(McpAppRequestAnswer);
+
+  it("is the client's request, cancel and visibility, with the View's own params", () => {
+    const request = {
+      type: "mcp_app_request",
+      id: "1",
+      callId: "call-1",
+      requestId: "r1",
+      method: "tools/call",
+      params: { name: "echo", arguments: { text: "hi" } },
+    };
+
+    expect(Option.isSome(decodeClient(request))).toBe(true);
+    expect(
+      Option.isSome(
+        decodeClient({
+          type: "mcp_app_request",
+          id: "1",
+          callId: "c",
+          requestId: "r",
+          method: "resources/read",
+        }),
+      ),
+    ).toBe(true);
+    expect(Option.isNone(decodeClient({ ...request, requestId: "r".repeat(129) }))).toBe(true);
+    expect(Option.isNone(decodeClient({ ...request, callId: undefined }))).toBe(true);
+
+    expect(
+      Option.isSome(
+        decodeClient({ type: "mcp_app_cancel", id: "2", callId: "c", requestId: "r1" }),
+      ),
+    ).toBe(true);
+
+    expect(Option.isSome(decodeClient({ type: "page_visible", id: "3", visible: false }))).toBe(
+      true,
+    );
+    expect(Option.isNone(decodeClient({ type: "page_visible", id: "3" }))).toBe(true);
+  });
+
+  it("is answered with a result or an error, and a status a later build adds still reads", () => {
+    const read = (input: Schema.Json) => Option.getOrThrow(decodeAnswer(input));
+
+    expect(read({ status: "result", result: { content: [] } })).toEqual({
+      status: "result",
+      result: { content: [] },
+    });
+
+    expect(
+      read({ status: "error", code: -32_000, message: "m", reason: "sign_in", server: "docs" }),
+    ).toMatchObject({ reason: "sign_in", server: "docs" });
+
+    expect(read({ status: "later" })).toEqual({ status: "later" });
+  });
+
+  it("is summed up for the audit log in one line, the arguments cut to 2 KiB and the text to 500 characters", () => {
+    const summary = appAuditSummary({
+      method: "tools/call",
+      target: "echo",
+      arguments: { text: "é".repeat(3000) },
+      outcome: {
+        status: "result",
+        result: { content: [{ type: "text", text: `line one\nline two ${"x".repeat(900)}` }] },
+      },
+    });
+
+    expect(summary.startsWith('tools/call echo {"text":"é')).toBe(true);
+    expect(summary).not.toContain("\n");
+    expect(summary).toMatch(/ → ok: line one line two x+…$/);
+    // 2 KiB of arguments, 500 characters of text and the words around them.
+    expect(new TextEncoder().encode(summary).length).toBeLessThan(2048 + 500 * 1 + 60);
+
+    expect(
+      appAuditSummary({
+        method: "resources/read",
+        target: "ui://docs/page",
+        outcome: { status: "error", reason: "hidden", message: "The page is hidden" },
+      }),
+    ).toBe("resources/read ui://docs/page → hidden: The page is hidden");
+
+    expect(
+      appAuditSummary({
+        method: "tools/call",
+        target: "t",
+        arguments: {},
+        outcome: {
+          status: "result",
+          result: { isError: true, content: [{ type: "text", text: "no" }] },
+        },
+      }),
+    ).toBe("tools/call t → tool error: no");
   });
 });

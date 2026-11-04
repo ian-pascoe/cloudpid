@@ -1,0 +1,358 @@
+// An App View's calls, in the Session (`docs/architecture/mcp-apps.md` → An App View's calls): the checks that are the
+// Session's, in order, before anything is sent to the host:
+//
+// 1. **A visible page.** A request from a socket that has not said its page is visible is refused (`hidden`), so no
+//    background tab keeps a Container awake. The socket says it with `page_visible`; the Session never trusts a View for it,
+//    since only cloudpid's own page speaks on the socket.
+// 2. **The limits**, for each View (a socket's mount of one call): at most `MAX_MCP_APP_PER_MINUTE` requests a minute, counted
+//    when they arrive, and `MAX_MCP_APP_IN_FLIGHT` at once. A View that is over a limit is refused (`limit`).
+// 3. **A method it may make** (`tools/call`, `resources/read`; any other is `-32601`) with params of its shape (`-32602`).
+// 4. **The call's record**, which names the server: never the message (a View cannot ask for another server). A call
+//    that has no record kept (evicted, or never an App's) is refused. An archived Session forwards no `tools/call`, only reads.
+// 5. **What the extension checks against the inventory** (`McpTools.appRequest`): a server that is not switched off or
+//    `hidden`, a tool whose visibility includes `app`. The host checks the same again, and that the server is still the
+//    one the record names.
+//
+// The answer is redacted of the Secrets the Session holds, and a summary of it goes to the call's audit log. A request ends
+// when the host answers, when its View cancels it (`cancel`), or when its socket goes (`endViews`); a cancel aborts the
+// host's request. One span for each request, which names its server, method and outcome but never its arguments.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- the registry of what is in flight is plain mutable state, which the limits are counted in.
+import {
+  MCP_APP_INTERNAL_ERROR,
+  MCP_APP_INVALID_PARAMS,
+  MCP_APP_REFUSED,
+  type McpAppRequestInput,
+} from "@cloudpid/extensions/mcp";
+import type { JsonObject } from "@cloudpid/mcp/types";
+import {
+  appAuditSummary,
+  MAX_MCP_APP_IN_FLIGHT,
+  MAX_MCP_APP_PER_MINUTE,
+  type McpAppAuditEntry,
+  type McpAppAuditSummary,
+  type McpAppRequestAnswer,
+  McpAppRequestError,
+  McpAppRequestResult,
+} from "@cloudpid/protocol";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import type { Mutable } from "effect/Types";
+
+/** JSON-RPC's "method not found", which an App View's request for any other method is answered with. */
+const METHOD_NOT_FOUND = -32_601;
+
+const MINUTE_MS = 60_000;
+
+/** What the call's record says of it: its server, and what the call was made on. */
+export type AppCallRecord = {
+  readonly server: string;
+  readonly conversation: string;
+  /** What named the origin of the server's Views when the call ran. */
+  readonly viewHash?: string | undefined;
+};
+
+/** An App View's request, as its socket sent it. */
+export type AppViewRequest = {
+  /** The socket, which identifies the View's page: limits count and requests end with it. */
+  readonly view: WebSocket;
+  /** Whether the socket has said its page is visible. */
+  readonly visible: boolean;
+  readonly callId: string;
+  readonly requestId: string;
+  readonly method: string;
+  readonly params: Schema.Json | undefined;
+  /** The Workspace (`ws:<id>`) the call's conversation works in, asked for only by a stdio server's request. */
+  readonly workspaceOf: (conversation: string) => Effect.Effect<string | undefined>;
+};
+
+export type AppCallsOptions = {
+  /** The kept record of call `callId`; none for a call that has none (evicted, or not an App's). */
+  readonly record: (callId: string) => Option.Option<AppCallRecord>;
+  /** The request, once the Session's own checks pass: the MCP tools' `appRequest`. */
+  readonly request: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
+  /** Add `entry` to call `callId`'s audit log. Never fails. */
+  readonly audit: (callId: string, entry: McpAppAuditEntry) => Effect.Effect<void>;
+  /** The Secrets held, to redact what is returned and logged of them. */
+  readonly secrets: Effect.Effect<{ readonly redact: <A>(value: A) => A }>;
+  /** Whether the Session is archived: its Views may read, and call nothing. */
+  readonly archived?: Effect.Effect<boolean> | undefined;
+  readonly now: () => number;
+};
+
+/** One View's counts, and what it has in flight. */
+type ViewState = {
+  /** When its requests of the last minute arrived. */
+  stamps: Array<number>;
+  readonly running: Map<string, AbortController>;
+};
+
+export type AppCalls = {
+  /** One App View request: its answer, however it ends. Never fails. */
+  readonly request: (input: AppViewRequest) => Effect.Effect<McpAppRequestAnswer>;
+  /** The View's request `requestId` of call `callId`, if it is still running: the host's request is aborted. */
+  readonly cancel: (view: WebSocket, callId: string, requestId: string) => Effect.Effect<void>;
+  /** The View's page went: everything it has in flight is aborted. */
+  readonly endViews: (view: WebSocket) => Effect.Effect<void>;
+};
+
+const ToolParams = Schema.Struct({
+  name: Schema.String,
+  arguments: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+});
+
+const ReadParams = Schema.Struct({ uri: Schema.String });
+
+const decodeToolParams = Schema.decodeUnknownOption(ToolParams);
+
+const decodeReadParams = Schema.decodeUnknownOption(ReadParams);
+
+const refused = (reason: string, message: string, code = MCP_APP_REFUSED): McpAppRequestError => ({
+  status: "error",
+  code,
+  message,
+  reason,
+});
+
+/** An AbortController, made outside the Effect that uses it. */
+const controller = () => new AbortController();
+
+/** What an App View asked for, once its params are read. */
+type Asked =
+  | { readonly method: "tools/call"; readonly name: string; readonly arguments?: JsonObject }
+  | { readonly method: "resources/read"; readonly uri: string };
+
+const askedOf = (method: string, params: Schema.Json | undefined): Option.Option<Asked> => {
+  if (method === "tools/call") {
+    return Option.map(decodeToolParams(params), (each): Asked => {
+      const asked: Mutable<Extract<Asked, { method: "tools/call" }>> = {
+        method: "tools/call",
+        name: each.name,
+      };
+
+      if (each.arguments !== undefined) asked.arguments = each.arguments;
+
+      return asked;
+    });
+  }
+
+  return Option.map(decodeReadParams(params), (each): Asked => ({
+    method: "resources/read",
+    uri: each.uri,
+  }));
+};
+
+const isResult = Schema.is(McpAppRequestResult);
+
+const isError = Schema.is(McpAppRequestError);
+
+/** What an answer comes to, for the log. */
+const outcomeOf = (answer: McpAppRequestAnswer): McpAppAuditSummary["outcome"] => {
+  if (isResult(answer)) return { status: "result", result: answer.result };
+
+  if (isError(answer)) return { status: "error", reason: answer.reason, message: answer.message };
+
+  return { status: "error", reason: "failed", message: answer.message ?? "The request failed" };
+};
+
+/** What the Session made of a request: its answer, and what its audit log says, none for a request that was no call. */
+type Run = {
+  readonly answer: McpAppRequestAnswer;
+  readonly summary: McpAppAuditSummary | undefined;
+};
+
+export const appCallsOver = (options: AppCallsOptions): AppCalls => {
+  const views = new WeakMap<WebSocket, Map<string, ViewState>>();
+
+  const stateOf = (view: WebSocket, callId: string): ViewState => {
+    let calls = views.get(view);
+
+    if (calls === undefined) {
+      calls = new Map();
+      views.set(view, calls);
+    }
+
+    let state = calls.get(callId);
+
+    if (state === undefined) {
+      state = { stamps: [], running: new Map() };
+      calls.set(callId, state);
+    }
+
+    return state;
+  };
+
+  /** A request's own checks and what it comes to, before it is answered, redacted and logged. */
+  const run = (input: AppViewRequest, stop: AbortController): Effect.Effect<Run> =>
+    Effect.gen(function* () {
+      const { method } = input;
+
+      if (method !== "tools/call" && method !== "resources/read") {
+        return {
+          answer: refused("refused", `Method not found: ${method}`, METHOD_NOT_FOUND),
+          summary: undefined,
+        };
+      }
+
+      const asked = askedOf(method, input.params);
+
+      if (Option.isNone(asked)) {
+        return {
+          answer: refused(
+            "refused",
+            method === "tools/call"
+              ? "tools/call needs params with the tool's name"
+              : "resources/read needs params with a uri",
+            MCP_APP_INVALID_PARAMS,
+          ),
+          summary: undefined,
+        };
+      }
+
+      const record = options.record(input.callId);
+
+      if (Option.isNone(record)) {
+        return {
+          answer: refused("unavailable", "No App record of this Session keeps that call"),
+          summary: undefined,
+        };
+      }
+
+      const { server, conversation, viewHash } = record.value;
+      const what = asked.value;
+
+      yield* Effect.annotateCurrentSpan("mcp.server", server);
+
+      const ended = (answer: McpAppRequestAnswer): Run => ({
+        answer,
+        summary: {
+          method,
+          target: what.method === "tools/call" ? what.name : what.uri,
+          arguments: what.method === "tools/call" ? what.arguments : undefined,
+          outcome: outcomeOf(answer),
+        },
+      });
+
+      if (
+        what.method === "tools/call" &&
+        options.archived !== undefined &&
+        (yield* options.archived)
+      ) {
+        return ended(
+          refused("refused", "This Session is archived: its App Views can read but not call tools"),
+        );
+      }
+
+      const answer = yield* options.request({
+        ...what,
+        server,
+        callId: input.callId,
+        conversation,
+        viewHash,
+        signal: stop.signal,
+        workspaceOf: Effect.suspend(() => input.workspaceOf(conversation)),
+      });
+
+      return ended(answer);
+    });
+
+  const request: AppCalls["request"] = (input) =>
+    Effect.gen(function* () {
+      if (!input.visible) {
+        return refused(
+          "hidden",
+          "The page is hidden: its App Views make no requests until it is visible",
+        );
+      }
+
+      const state = stateOf(input.view, input.callId);
+      const at = options.now();
+
+      state.stamps = state.stamps.filter((each) => at - each < MINUTE_MS);
+
+      if (state.stamps.length >= MAX_MCP_APP_PER_MINUTE) {
+        return refused(
+          "limit",
+          `At most ${MAX_MCP_APP_PER_MINUTE} requests a minute for each App View`,
+        );
+      }
+
+      // Counted as it arrives, so a View is not let spend what it was refused.
+      state.stamps.push(at);
+
+      if (state.running.has(input.requestId)) {
+        return refused("limit", "That request id is already in flight");
+      }
+
+      if (state.running.size >= MAX_MCP_APP_IN_FLIGHT) {
+        return refused(
+          "limit",
+          `At most ${MAX_MCP_APP_IN_FLIGHT} requests in flight for each App View`,
+        );
+      }
+
+      // In flight from here, with no step between the check and this: concurrent requests cannot pass the limit together.
+      const stop = controller();
+
+      state.running.set(input.requestId, stop);
+
+      const done = yield* run(input, stop).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            state.running.delete(input.requestId);
+          }),
+        ),
+      );
+
+      const held = yield* options.secrets;
+
+      // Redacted before it leaves: the answer, and the line of the log.
+      const answer = held.redact(done.answer);
+
+      const outcome = outcomeOf(answer);
+
+      yield* Effect.annotateCurrentSpan(
+        "mcp.app.outcome",
+        outcome.status === "result" ? "result" : outcome.reason,
+      );
+
+      if (done.summary === undefined) return answer;
+
+      const entry: McpAppAuditEntry = {
+        at: options.now(),
+        kind: input.method,
+        summary: held.redact(appAuditSummary(done.summary)),
+      };
+
+      yield* options.audit(input.callId, entry);
+
+      return isResult(answer) || isError(answer) ? { ...answer, audit: entry } : answer;
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("An App View's request failed in the Session", cause).pipe(
+          Effect.as<McpAppRequestAnswer>(
+            refused("failed", "The Session could not serve the request", MCP_APP_INTERNAL_ERROR),
+          ),
+        ),
+      ),
+      Effect.withSpan("mcp.app_request", {
+        attributes: { "mcp.method": input.method, "mcp.app.call": input.callId },
+      }),
+    );
+
+  const cancel: AppCalls["cancel"] = (view, callId, requestId) =>
+    Effect.sync(() => {
+      views.get(view)?.get(callId)?.running.get(requestId)?.abort();
+    });
+
+  const endViews: AppCalls["endViews"] = (view) =>
+    Effect.sync(() => {
+      for (const state of views.get(view)?.values() ?? []) {
+        for (const stop of state.running.values()) stop.abort();
+      }
+
+      views.delete(view);
+    });
+
+  return { request, cancel, endViews };
+};

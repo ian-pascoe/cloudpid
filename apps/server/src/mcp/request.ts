@@ -62,6 +62,7 @@ import {
   NotAllowed,
   ProtocolViolation,
   UnknownServer,
+  visibilityOfMeta,
 } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
@@ -71,8 +72,6 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { normalizeMcpName } from "@cloudpid/config";
-import { viewHash, viewSourceOf } from "../view-hash.ts";
 import { appUriOf } from "./app-html.ts";
 import type { AppPage } from "./app-store.ts";
 import {
@@ -92,6 +91,7 @@ import {
   resolve,
   sendToEngine,
   serverOf,
+  viewHashOf,
 } from "./engine-round.ts";
 import { resourceRequest } from "./resources.ts";
 import { type McpDiscoveryServices, orHalt, writeOrHalt } from "./discovery.ts";
@@ -201,14 +201,6 @@ const mountedPage = (store: McpHostStoreService, hash: string) =>
  * `page` with the hash of its server's App sandbox origin (`viewHash`), when the host knows its Environment and the
  * server's source: the page itself is kept by content, never by server, so the origin is the asking server's.
  */
-const viewHashOf = (environment: string | undefined, server: StoredServer): string | undefined => {
-  const source = viewSourceOf(server.source);
-
-  return environment === undefined || source === undefined
-    ? undefined
-    : viewHash({ environment, source, normalizedName: normalizeMcpName(server.name) });
-};
-
 const withViewHash = (page: AppPage, environment: string | undefined, server: StoredServer) => {
   const id = viewHashOf(environment, server);
 
@@ -286,6 +278,18 @@ const toolCall = (
       return NotAllowed.make({
         message: `MCP server ${name} lists no tool ${call.op === "tools/call" ? call.params.name : call.params.tool}`,
       });
+    }
+
+    // An App View reaches only the tools whose `_meta.ui.visibility` includes `app`, checked again here after the Session's
+    // (`docs/architecture/mcp-apps.md` → An App View's calls).
+    if (ctx.origin === "app" && call.op === "tools/call") {
+      const held = heldTool(call.params.name);
+
+      if (Option.exists(held, (tool) => !visibilityOfMeta(tool["_meta"]).includes("app"))) {
+        return NotAllowed.make({
+          message: `Tool ${call.params.name} of MCP server ${name} is not for App Views`,
+        });
+      }
     }
 
     const reached = yield* reachServer(resolved.success);

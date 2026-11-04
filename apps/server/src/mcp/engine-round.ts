@@ -12,7 +12,7 @@
 // reported to the Registry as a discovery's is (`requestAccess`, in `discovery-auth.ts`); with no token to call with, the
 // request is not sent. The logs the server sent come back in the result, and are kept as a discovery's are (`recordLogs`).
 // @effect-diagnostics missingPipeableSignature:off missedPipeableOpportunity:off -- steps of the host's methods, not combinators.
-import { signsInOnItsOwn } from "@cloudpid/config";
+import { normalizeMcpName, signsInOnItsOwn } from "@cloudpid/config";
 import {
   Cut,
   McpHostCallFailed,
@@ -53,7 +53,8 @@ import { type EngineCallKind, McpLoadCaps } from "./limits.ts";
 import { recordLogs } from "./logs.ts";
 import { type ServerView, viewServers } from "./server-state.ts";
 import { processEnded } from "./stdio.ts";
-import { McpHostStore } from "./store.ts";
+import { McpHostStore, type StoredServer } from "./store.ts";
+import { viewHash, viewSourceOf } from "../view-hash.ts";
 
 /** The engine's `tools/call` request. */
 type McpEngineToolCall = Extract<McpEngineRequest, { readonly op: "tools/call" }>;
@@ -71,6 +72,21 @@ export const abortOf = (hooks: McpHostRequestHooks) =>
   hooks.untilAborted === undefined
     ? Effect.never
     : Effect.tryPromise(() => hooks.untilAborted?.() ?? Promise.resolve()).pipe(Effect.ignore);
+
+/**
+ * The hash of `server`'s App sandbox origin (`viewHash`), when the host knows its Environment and the server's source:
+ * what an App record pins, and what an `app` request names (`ctx.viewHash`).
+ */
+export const viewHashOf = (
+  environment: string | undefined,
+  server: StoredServer,
+): string | undefined => {
+  const source = viewSourceOf(server.source);
+
+  return environment === undefined || source === undefined
+    ? undefined
+    : viewHash({ environment, source, normalizedName: normalizeMcpName(server.name) });
+};
 
 /** What a request to a server of the set is sent through: the Environment, the server's view, the Workspace it runs in, if any, and all views. */
 export type Resolved = {
@@ -142,6 +158,22 @@ export const resolve = (
           identity: server.identity,
         }),
       );
+    }
+
+    // An App View's request names the origin hash of the server it was made on (its record's): a server of that name
+    // whose own is another has shadowed it since, and the View is not its to call (`mcp-apps.md` → An App View's calls).
+    if (ctx.origin === "app" && ctx.viewHash !== undefined) {
+      const current = viewHashOf(environment, server);
+
+      if (current !== undefined && current !== ctx.viewHash) {
+        return Result.fail(
+          ServerChanged.make({
+            message: `MCP server ${name} is not the one this App was made for`,
+            conn: server.conn,
+            identity: server.identity,
+          }),
+        );
+      }
     }
 
     // A cancel is allowed for a server switched off since: the task it started should not outlive the switch.

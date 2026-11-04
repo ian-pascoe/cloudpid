@@ -804,6 +804,16 @@ export class TestSession extends DurableObject {
         this.#mcpTools === undefined
           ? Effect.succeed({ status: "unsupported", message: "No MCP tools" })
           : this.#mcpTools.appHtml(input),
+      request: (input) =>
+        this.#mcpTools === undefined
+          ? Effect.succeed({
+              status: "error",
+              code: -32_603,
+              reason: "failed",
+              message: "No MCP tools",
+            })
+          : this.#mcpTools.appRequest(input),
+      archived: Effect.sync(() => this.ctx.storage.kv.get<boolean>("archived") === true),
       // As the Session's: a deployed `prod` stage's, with no label.
       viewOrigin: (view) => viewOrigin({ hash: view, label: undefined, local: false }),
     });

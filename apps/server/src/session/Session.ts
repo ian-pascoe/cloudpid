@@ -629,6 +629,10 @@ export const SessionLive = Session.make(
           storage: kv,
           sockets: state.raw,
           html: (input) => mcpTools.appHtml(input),
+          // An App View's requests, checked against the inventory and sent to the host as the View's own.
+          request: (input) => mcpTools.appRequest(input),
+          // An archived Session's Views may read and call nothing: a Registry that cannot say is read as archived.
+          archived: Effect.suspend(() => archivedSession).pipe(Effect.orElseSucceed(() => true)),
           // The origin a View is served on: from this stage's deploy-time label, never from a request's `Host`.
           viewOrigin: (view) =>
             viewOrigin({

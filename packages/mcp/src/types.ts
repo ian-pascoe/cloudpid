@@ -1072,6 +1072,12 @@ export const McpHostRequestContext = Schema.Struct({
   lastStatus: Schema.optionalKey(Schema.String),
   /** What the caller can answer; with the request's `onInput` hook, it says the call may be asked questions. */
   answers: Schema.optionalKey(McpAnswers),
+  /**
+   * For an `app` request: the `viewHash` its App record pinned, the origin hash of the server whose View makes it. A
+   * server of that name whose own is another (shadowed since) is `ServerChanged`, nothing sent
+   * (`docs/architecture/mcp-apps.md` → An App View's calls). Optional, so a host that does not know it checks nothing more.
+   */
+  viewHash: Schema.optionalKey(Schema.String),
 });
 
 export type McpHostRequestContext = typeof McpHostRequestContext.Type;
@@ -1191,6 +1197,19 @@ export const appUriOfMeta = (meta: Schema.Json | undefined): string | undefined 
   return Predicate.isString(uri) && uri.startsWith("ui://") && uri.length <= MCP_APP_URI_MAX_LENGTH
     ? uri
     : undefined;
+};
+
+/**
+ * Who a tool is for (`_meta.ui.visibility`, MCP Apps): `model`, `app`, or both, the default when `meta` has none or it
+ * cannot be read (`docs/architecture/mcp-apps.md` → Declaring and reading Apps). `meta` is the tool's whole `_meta`.
+ */
+export const visibilityOfMeta = (meta: Schema.Json | undefined): ReadonlyArray<string> => {
+  const ui = isJsonObject(meta) ? meta["ui"] : undefined;
+  const visibility = isJsonObject(ui) ? ui["visibility"] : undefined;
+
+  return Arr.isArray(visibility) && Arr.every(visibility, Predicate.isString)
+    ? visibility
+    : ["model", "app"];
 };
 
 /** The most an App's HTML may weigh, as text. */

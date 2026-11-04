@@ -35,7 +35,7 @@
 // conversation's last opened Context Window, so `windowOpened` is sent once per window across restarts.
 // @effect-diagnostics missingPipeableSignature:off -- builders over plain values.
 import type { McpCaller, McpRequestStart } from "@cloudpid/mcp/types";
-import type { McpAppHtmlAnswer } from "@cloudpid/protocol";
+import type { McpAppHtmlAnswer, McpAppRequestAnswer } from "@cloudpid/protocol";
 import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
@@ -63,6 +63,7 @@ import {
 import { signsIn } from "./mcp/sign-in-tool.ts";
 import { MCP_RESOURCE_FEATURE } from "./mcp/resources.ts";
 import { appToolsOf } from "./mcp/app-tools.ts";
+import { appRequestOf, type McpAppRequestInput } from "./mcp/app-request.ts";
 import { appHtmlOf, MCP_APP_FEATURE, type McpAppHtmlInput } from "./mcp/apps.ts";
 import {
   MCP_RESEND_FEATURE,
@@ -82,6 +83,13 @@ export { mayBeDirect } from "./mcp/exposure.ts";
 export { appToolsOf } from "./mcp/app-tools.ts";
 
 export { MCP_APP_FEATURE, type McpAppHtmlInput, type McpAppRecorder } from "./mcp/apps.ts";
+
+export {
+  MCP_APP_INTERNAL_ERROR,
+  MCP_APP_INVALID_PARAMS,
+  MCP_APP_REFUSED,
+  type McpAppRequestInput,
+} from "./mcp/app-request.ts";
 
 export {
   createMcpSignIns,
@@ -318,6 +326,12 @@ export type McpToolsService = {
    * last request start (`docs/architecture/mcp-apps.md` → Declaring and reading Apps). Never fails.
    */
   readonly appHtml: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
+  /**
+   * An App View's request to its own server (`docs/architecture/mcp-apps.md` → An App View's calls): checked against the
+   * inventory the tools were last built from (a server not switched off or `hidden`, a tool whose visibility includes
+   * `app`), sent to the host as an `app` request, and answered as the View is. Never fails.
+   */
+  readonly appRequest: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
   /**
@@ -718,6 +732,17 @@ export const makeMcpTools = (
         client,
         latest?.features.includes(MCP_APP_FEATURE) === true,
         latest?.origin ?? {},
+        input,
+      ),
+    appRequest: (input) =>
+      appRequestOf(
+        {
+          client,
+          servers: latest?.servers ?? [],
+          origin: latest?.origin ?? {},
+          ready: options.ready,
+          slackMs: options.slackMs,
+        },
         input,
       ),
     bindNotices: (next) => {
