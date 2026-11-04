@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { McpApplySet, McpEngineDiscoverResult } from "@cloudpid/mcp/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { eventually } from "../durable-waits.fixture.ts";
 import type { EngineScript } from "../mcp/host.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
@@ -286,6 +287,13 @@ describe("an MCP tool in a Session", () => {
     await settles(async () => expect(await host.engineCalls()).toHaveLength(1));
     await runInDurableObject(stub, (instance: TestSession) => instance.mcpOffered(["echo"]));
     await host.release(DOCS);
+    // The message is placed only once its request start ends, and `idle` does not count a message still being prepared,
+    // so a check right after the release can find the Session idle before the request: wait for the request (#632).
+    await eventually(
+      stub,
+      (instance: TestSession) => instance.offeredTools().length > 0,
+      "No request reached the model",
+    );
     await idle(stub);
 
     const [offered, namespaces] = await runInDurableObject(
