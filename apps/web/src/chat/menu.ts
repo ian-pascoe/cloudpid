@@ -138,11 +138,15 @@ const rankedInPasses = <A>(
   priority: (row: A) => number,
 ): readonly A[] => {
   const ranked: A[] = [];
+  const seen = new Set<A>();
 
   for (const key of keys) {
-    const rest = rows.filter((row) => !ranked.includes(row));
+    const rest = rows.filter((row) => !seen.has(row));
 
-    ranked.push(...rank(query, rest, key, (row) => -priority(row)));
+    for (const row of rank(query, rest, key, (each) => -priority(each))) {
+      ranked.push(row);
+      seen.add(row);
+    }
   }
 
   return ranked;

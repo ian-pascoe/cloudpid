@@ -204,7 +204,7 @@ describe("ranking with a tie-break", () => {
     { name: "alpha", priority: 0.2 },
     { name: "alpine", priority: 0.9 },
     { name: "beta", priority: 0.9 },
-    { name: "alp", priority: 0.9 },
+    { name: "alp", priority: 0.1 },
   ];
 
   const names = (query: string) =>
@@ -216,10 +216,10 @@ describe("ranking with a tie-break", () => {
     ).map(({ name }) => name);
 
   it("breaks a tie of match by it, then by order, and never overrides a better match", () => {
-    // `alp` is exact, then `alpine` and `alpha` are prefixes: by priority, higher first.
+    // `alp` is exact and has the lowest priority, yet stays first; `alpine` and `alpha` are prefixes: by priority, higher first.
     expect(names("alp")).toEqual(["alp", "alpine", "alpha"]);
     // With no query every candidate ties: priority, then the given order.
-    expect(names("")).toEqual(["alpine", "beta", "alp", "alpha"]);
+    expect(names("")).toEqual(["alpine", "beta", "alpha", "alp"]);
     // Without a tie-break the order is the given one.
     expect(rank("alp", items, ({ name }) => name).map(({ name }) => name)).toEqual([
       "alp",

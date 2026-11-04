@@ -2093,8 +2093,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /**
    * `draft`'s content with `inserted` (a block of text, and the images that belong with it) put before the first image from
-   * part `from` on: the owner's own parts, and an MCP prompt's before `from`, stay ahead of it. With what the draft's entry
-   * already keeps (`UserEntryData`), which a block adds its own to.
+   * part `from` on: the owner's own parts, and an MCP prompt's before `from`, stay ahead of it.
    */
   const withBlockBefore = (
     draft: InputSubmissionDraft,
@@ -2112,10 +2111,31 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       () => parts.length,
     );
 
-    return {
-      content: [...parts.slice(0, at), ...inserted, ...parts.slice(at)],
-      data: userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data }),
-    };
+    return [...parts.slice(0, at), ...inserted, ...parts.slice(at)];
+  };
+
+  /**
+   * The `cloudpid.user` entry of `draft` with `changes` (the pages or the resources a block adds) over what it already
+   * keeps (`UserEntryData`): a Review's Annotations stay beside the pages, an MCP prompt's data beside both.
+   */
+  const entryKeeping = (
+    draft: InputSubmissionDraft,
+    input: UserInput,
+    changes: {
+      readonly pages?: ReadonlyArray<AttachedPage>;
+      readonly resources?: ReadonlyArray<AttachedResource>;
+    } = {},
+  ) => {
+    const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
+
+    return ownerEntry({
+      display: data?.display ?? typedBeside(input),
+      skills: data?.skills ?? [],
+      pages: changes.pages ?? data?.pages,
+      review: data?.review,
+      mcpPrompt: data?.mcpPrompt,
+      resources: changes.resources ?? data?.resources,
+    });
   };
 
   const withPages = (
@@ -2124,25 +2144,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     pages: ReadonlyArray<AttachedPage>,
     // The parts the pages go after: an MCP prompt's block and images, which come before the owner's own parts.
     from = 0,
-  ): InputSubmissionDraft => {
-    const { content, data } = withBlockBefore(draft, from, [
-      { type: "text" as const, text: pageBlock(pages) },
-    ]);
-
-    return {
-      ...draft,
-      content,
-      // A Review's Annotations stay beside the pages.
-      entry: ownerEntry({
-        display: data?.display ?? typedBeside(input),
-        skills: data?.skills ?? [],
-        pages: Arr.map(pages, (page) => clampPage(page)),
-        review: data?.review,
-        mcpPrompt: data?.mcpPrompt,
-        resources: data?.resources,
-      }),
-    };
-  };
+  ): InputSubmissionDraft => ({
+    ...draft,
+    content: withBlockBefore(draft, from, [{ type: "text" as const, text: pageBlock(pages) }]),
+    entry: entryKeeping(draft, input, { pages: Arr.map(pages, (page) => clampPage(page)) }),
+  });
 
   /** A Review's data as the entry stores it. */
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: a Review's data is strings, numbers, and arrays and objects of them, as its Schema says: JSON, only typed read-only.
@@ -2772,25 +2778,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     input: UserInput,
     message: AttachedMessage,
     from: number,
-  ): InputSubmissionDraft => {
-    const { content, data } = withBlockBefore(draft, from, [
+  ): InputSubmissionDraft => ({
+    ...draft,
+    content: withBlockBefore(draft, from, [
       { type: "text" as const, text: message.block },
       ...message.images,
-    ]);
-
-    return {
-      ...draft,
-      content,
-      entry: ownerEntry({
-        display: data?.display ?? typedBeside(input),
-        skills: data?.skills ?? [],
-        pages: data?.pages,
-        review: data?.review,
-        mcpPrompt: data?.mcpPrompt,
-        resources: message.chips,
-      }),
-    };
-  };
+    ]),
+    entry: entryKeeping(draft, input, { resources: message.chips }),
+  });
 
   /**
    * Refuse `draft` when the Session could not store it: an image the providers do not take, or a message that would not
@@ -2846,16 +2841,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ? Effect.succeed(draft)
       : Schema.encodeEffect(SessionVia)(via).pipe(
           Effect.map((encoded) => {
-            const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
-
-            const kept = ownerEntry({
-              display: data?.display ?? typedBeside(input),
-              skills: data?.skills ?? [],
-              pages: data?.pages,
-              review: data?.review,
-              mcpPrompt: data?.mcpPrompt,
-              resources: data?.resources,
-            });
+            const kept = entryKeeping(draft, input);
 
             return { ...draft, entry: { ...kept, data: { ...kept.data, via: encoded } } };
           }),

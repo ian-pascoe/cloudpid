@@ -243,13 +243,7 @@ export type AttachedMessage = {
 };
 
 /** The block, images and chips of every resource of a message, in the order the owner attached them. */
-export const attachedMessage = (
-  made: ReadonlyArray<{
-    readonly elements: ReadonlyArray<string>;
-    readonly images: ReadonlyArray<PromptImage>;
-    readonly chip: AttachedResource;
-  }>,
-): AttachedMessage => ({
+export const attachedMessage = (made: ReadonlyArray<AttachedMade>): AttachedMessage => ({
   block: resourcesBlock(Arr.flatMap(made, ({ elements }) => elements)),
   images: Arr.flatMap(made, ({ images }) => images),
   chips: Arr.map(made, ({ chip }) => chip),
