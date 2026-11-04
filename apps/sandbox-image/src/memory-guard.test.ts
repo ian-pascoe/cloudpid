@@ -109,13 +109,13 @@ const startGuard = (earlyoom: string, notes: string) => {
 };
 
 /**
- * Waits until `check` holds, or fails, naming it, after 10 s: a deadline well under the tests' timeout, not a count of
- * polls, which a loaded runner's slow timers stretch or cut short (#632).
+ * Waits until `check` holds, or fails saying it never saw `what`, after 10 s: a deadline well under the tests' timeout,
+ * not a count of polls, which a loaded runner's slow timers stretch or cut short (#632).
  */
-const until = (check: () => boolean) =>
+const until = (what: string, check: () => boolean) =>
   vi.waitFor(
     () => {
-      if (!check()) throw new Error(`Never held: ${String(check)}`);
+      if (!check()) throw new Error(`Never saw ${what}`);
     },
     { timeout: 10_000, interval: 10 },
   );
@@ -208,7 +208,9 @@ describe("the guard", () => {
 
     const guard = startGuard(earlyoom.path, notes);
 
-    await until(() => guard.output.stdout.includes("process exited"));
+    await until('the guard print "process exited"', () =>
+      guard.output.stdout.includes("process exited"),
+    );
 
     expect(readFileSync(earlyoom.args, "utf8").split("\n")).toEqual([
       "-m",
@@ -243,7 +245,7 @@ describe("the guard", () => {
 
     const guard = startGuard(earlyoom.path, notes);
 
-    await until(() => guard.output.stdout.includes("done"));
+    await until('the guard print "done"', () => guard.output.stdout.includes("done"));
 
     expect(notesIn(notes)).toEqual([
       expect.stringContaining("stopped `vitest` (pid 1, 900 MiB)"),
@@ -263,7 +265,7 @@ describe("the guard", () => {
 
     const guard = startGuard(earlyoom.path, notes);
 
-    await until(() => guard.output.stdout.includes("done"));
+    await until('the guard print "done"', () => guard.output.stdout.includes("done"));
 
     expect(guard.output.stdout).toContain("sending SIGTERM when mem <= 15.00%");
     expect(notesIn(notes)).toEqual([]);
@@ -275,7 +277,7 @@ describe("the guard", () => {
 
     const guard = startGuard(earlyoom.path, notes);
 
-    await until(() => guard.output.stdout.includes("done"));
+    await until('the guard print "done"', () => guard.output.stdout.includes("done"));
 
     expect(notesIn(notes)).toEqual([expect.stringContaining("memory guard stopped a process at")]);
   });
@@ -284,7 +286,7 @@ describe("the guard", () => {
     const earlyoom = fakeEarlyoom(["up"]);
     const guard = startGuard(earlyoom.path, notesDirectory());
 
-    await until(() => guard.output.stdout.includes("up"));
+    await until('the guard print "up"', () => guard.output.stdout.includes("up"));
 
     const pid = earlyoom.pid();
 
@@ -293,7 +295,7 @@ describe("the guard", () => {
     guard.child.kill("SIGTERM");
 
     expect(await guard.exited).toBe(0);
-    await until(() => !alive(pid));
+    await until("earlyoom stop", () => !alive(pid));
   });
 
   it("says so on stderr and exits where earlyoom is missing", async () => {
@@ -363,7 +365,9 @@ describe("a command while the guard stops a process", () => {
     const earlyoom = fakeEarlyoom([sending("SIGTERM", 99, "python3", 5108)], go);
     const guard = startGuard(earlyoom.path, notes);
 
-    await until(() => guard.output.stdout.includes("earlyoom v1.7"));
+    await until('the guard print "earlyoom v1.7"', () =>
+      guard.output.stdout.includes("earlyoom v1.7"),
+    );
 
     const run = command(`touch ${go}; sleep 0.3; echo after`, notes);
 
