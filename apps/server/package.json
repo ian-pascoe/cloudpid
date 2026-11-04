@@ -13,7 +13,8 @@
   "scripts": {
     "typecheck": "effect-tsgo tsrs",
     "lint": "oxlint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "startup": "node scripts/startup.mjs"
   },
   "dependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.84",
@@ -42,6 +43,8 @@
     "marked": "^18.1.2"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.8"
+    "@cloudflare/vitest-plugin": "^1.4.8",
+    "@effect/platform-node": "^4.0.6",
+    "miniflare": "5.20261023.0-beta"
   }
 }

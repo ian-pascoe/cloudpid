@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { bypassAccessProps, bypassApplicationProps } from "./bypass-access.ts";
 import { appOrigin } from "./deployment.ts";
 import { appHost } from "./mcp-access.ts";
-import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./sign-in-routes.ts";
+import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";
 
 const run = (options: {
   readonly stage: string;

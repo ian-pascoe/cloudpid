@@ -83,6 +83,7 @@ import * as Order from "effect/Order";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { Caller } from "../access.ts";
+import { MCP_CALLS_PERIOD_S } from "../mcp-access.ts";
 import { type SessionsResult, shownStatus } from "../registry/session-page.ts";
 import type { CreatedSession, SessionRefusal } from "../registry/store.ts";
 
@@ -101,12 +102,6 @@ export const MCP_API_OPERATIONS_SERVED = [
   "importFinish",
   "importCancel",
 ] as const;
-
-/** The period of `MCP_CALLS`, in seconds: what a caller over the rate is told to wait at most. */
-export const MCP_CALLS_PERIOD_S = 60;
-
-/** The calls per period of `MCP_CALLS`, per identity. */
-export const MCP_CALLS_LIMIT = 120;
 
 /** What the endpoint reads of the Registry and the Sessions. Each is one RPC; a failure of any is `unavailable`. */
 export interface McpBackend {

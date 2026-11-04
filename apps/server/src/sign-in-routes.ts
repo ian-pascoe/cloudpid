@@ -5,7 +5,7 @@
 // names (sub-paths, any capitalisation, doubled slashes: #403). So the Worker decides which forms are the public paths
 // and refuses every other form under their prefixes itself. The two exact paths are served here, without the guard and never
 // reading identity (`mcp/sign-in-http.ts`); `/oauth/mcp/start` is not public, so it goes on to the guard like every other path.
-// @effect-diagnostics missingPipeableSignature:off -- `guardedRoutes` is what `worker.ts` calls with the guard and the handlers; it is not piped.
+// @effect-diagnostics missingPipeableSignature:off -- `guardedRoutes` is what `worker-init.ts` calls with the guard and the handlers; it is not piped.
 
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -13,12 +13,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { flow } from "effect/Function";
 import { type AccessGuard, guardAccess } from "./access.ts";
-
-/** The client document's path: public on every deployed stage. */
-export const CLIENT_DOCUMENT_PATH = "/oauth/mcp/client.json";
-
-/** The OAuth callback's path: public on every deployed stage, with an optional 12-character issuer hash below it. */
-export const CALLBACK_PATH = "/oauth/mcp/callback";
+import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";
 
 /** The start's path: behind Access, so it is no sign-in route here and goes on to the guard. */
 export const START_PATH = "/oauth/mcp/start";
@@ -167,7 +162,7 @@ export const serveSignInPaths =
 /**
  * What the main Worker wraps its routes in: the sign-in paths first, then the Access guard (`guardAccess`) for every
  * other request. The order is the point: a form of a public path must meet the router's 404, never the guard's answer
- * and never a route behind it. `worker.ts` builds its `fetch` with this, and the test of the composition is what keeps
+ * and never a route behind it. `worker-init.ts` builds its `fetch` with this, and the test of the composition is what keeps
  * the two from being swapped.
  */
 export const guardedRoutes = (guard: AccessGuard, handlers: SignInHandlers) =>

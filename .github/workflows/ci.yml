@@ -143,13 +143,16 @@ jobs:
       matrix:
         include:
           # `check` does not build; the web app's bundle is what the server serves, and `/cloudpid`'s bundle (which also
-          # fails when it reaches Workers code) is what the `pi-cloudpid` job publishes: make sure both still build.
+          # fails when it reaches Workers code) is what the `pi-cloudpid` job publishes: make sure both still build. The
+          # Server Worker's startup budget fails here what the deploy would refuse with `ScriptStartupError`
+          # (`docs/development/workers.md` → Startup).
           - name: Typecheck, lint, format, build
             part: static
             run: >-
               bunx turbo run typecheck lint
               && bun run format:check
               && bunx turbo run build --filter @cloudpid/web --filter @cloudpid/pi-cloudpid
+              && bun run --cwd apps/server startup
           - name: Tests
             part: tests
             run: bunx turbo run test --filter '!@cloudpid/server'

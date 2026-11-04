@@ -4,14 +4,8 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it, vi } from "vitest";
-import {
-  CALLBACK_PATH,
-  CLIENT_DOCUMENT_PATH,
-  guardedRoutes,
-  rawPathOf,
-  serveSignInPaths,
-  signInRoute,
-} from "./sign-in-routes.ts";
+import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";
+import { guardedRoutes, rawPathOf, serveSignInPaths, signInRoute } from "./sign-in-routes.ts";
 
 const HASH = "aB3_-9xYz012";
 
