@@ -359,6 +359,19 @@ describe("McpElicitationCard, a page to open", () => {
     expect(ready).toContain("press Done when you have finished at login.example.com");
   });
 
+  it("offers Decline on a Modern server's page only until it is opened; Cancel stays", () => {
+    const early = renderPage({ ...PAGE, retry: true, era: "modern" });
+    const opened = renderPage({ ...PAGE, retry: true, era: "modern", opened: true }, {}, true);
+    const legacy = renderPage({ ...PAGE, retry: true, era: "legacy", opened: true }, {}, true);
+
+    expect(early).toContain(">Decline<");
+    expect(opened).not.toContain(">Decline<");
+    expect(opened).toContain(">Cancel<");
+    expect(opened).toContain(">Done, try again<");
+    // A Legacy `-32042`'s Decline is offered throughout.
+    expect(legacy).toContain(">Decline<");
+  });
+
   it("says the server asked for the page again, and warns about a look-alike host", () => {
     const markup = renderPage({ ...PAGE, again: true, warning: "mixed_script" });
 

@@ -139,6 +139,12 @@ export const McpElicitationPage = Schema.Struct({
   warning: Schema.optionalKey(Schema.Literals(["idn", "mixed_script"])),
   opened: Schema.Boolean,
   retry: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * The Protocol era of the server that asked a page that is sent again (`retry`). A Modern page can no longer be declined
+   * once it is opened (Cancel is its way out); a Legacy `-32042`'s can be declined throughout. Absent reads as Legacy, so a
+   * client from before it keeps offering Decline, which the Session refuses for a Modern page.
+   */
+  era: Schema.optionalKey(Schema.Literals(["legacy", "modern"])),
   again: Schema.optionalKey(Schema.Literal(true)),
   finished: Schema.optionalKey(Schema.Literal(true)),
 });

@@ -249,6 +249,39 @@ describe("a Legacy server's page during its call", () => {
     );
   });
 
+  it("refuses a Decline once it is opened, since the server was answered accept: Cancel only closes the card", async () => {
+    const { host, questions, tools, session, pending } = await setup(150);
+    const replies: Array<Answer> = [];
+
+    host.answer(async (_input, hooks) => {
+      const reply = await hooks.onInput?.(visit());
+
+      if (reply !== undefined) replies.push(reply);
+
+      await until(async () => (await pending()).length === 0);
+
+      return DONE;
+    });
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length > 0);
+
+    const [request] = await pending();
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "opened" }));
+    await expect(
+      Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" })),
+    ).rejects.toThrow("This page is open");
+    expect(await pending()).toHaveLength(1);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "cancel" }));
+    await submitted.wait(context);
+
+    expect(replies).toEqual([{ kind: "answered", result: { action: "accept" } }]);
+  });
+
   it.each([
     ["http://auth.example.com/authorize", "the page isn't served over HTTPS"],
     ["https://user:pw@auth.example.com/", "the address has a username or password in it"],
@@ -455,6 +488,31 @@ describe("a Legacy server's -32042", () => {
     expect((await session.texts("toolResult")).join("\n")).toContain(
       "The user declined Docs-Site's request for input.",
     );
+  });
+
+  it("offers Decline throughout: after Open it still answers the whole round decline", async () => {
+    const { host, questions, tools, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+
+    host.answer(gated(resumes, ["page-1"]));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 1);
+
+    const [first] = await pending();
+
+    expect(first?.page).not.toHaveProperty("era");
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "decline" }));
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({ answers: { "page-1": { action: "decline" } } }),
+      }),
+    ]);
   });
 
   it("brings a page opened before back as not finished, with no new Notification and no count toward the cap", async () => {
@@ -1227,6 +1285,43 @@ describe("a Modern server's page", () => {
 
     await Effect.runPromise(questions.answer(second?.id ?? "", { action: "decline" }));
     await submitted.wait(context);
+  });
+
+  it("is left by Cancel once opened, never Decline: the Session refuses it and the server hears cancel", async () => {
+    const { host, questions, tools, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+
+    host.answer(asking(() => [modernVisit()], resumes));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 1);
+
+    const [request] = await pending();
+
+    // Before it is opened a Decline is told to the server; the card says the era, so it can hide Decline once opened.
+    expect(request?.page).toMatchObject({ opened: false, retry: true, era: "modern" });
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "opened" }));
+    expect((await pending())[0]?.page).toMatchObject({ opened: true, era: "modern" });
+    await expect(
+      Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" })),
+    ).rejects.toThrow("This page is open: cancel it instead");
+    expect(resumes).toEqual([]);
+    expect(await pending()).toHaveLength(1);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "cancel" }));
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({ answers: { page: { action: "cancel" } } }),
+      }),
+    ]);
+    expect((await session.texts("toolResult")).join("\n")).toContain(
+      "The user cancelled Docs-Site's request for input.",
+    );
   });
 
   it("answers only itself when declined: a form beside it keeps waiting, and the resume holds both", async () => {

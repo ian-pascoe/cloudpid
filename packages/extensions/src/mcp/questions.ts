@@ -17,7 +17,7 @@
 //   reader.
 // - **The notification** is told of the first question a call waits on, and of a later one only after 2 min with none
 //   waiting for that call.
-import { MCP_ELICITATION_WAIT_MS } from "@cloudpid/mcp/types";
+import { MCP_ELICITATION_WAIT_MS, type McpEra } from "@cloudpid/mcp/types";
 import {
   createDeferredQuestions,
   type McpDeferredAnswer,
@@ -230,7 +230,7 @@ type Waiting = {
   /** A page question the owner opened: the server goes on, and the card stays until the page is finished. */
   readonly opened: boolean;
   /** The Protocol era of the server that asked, for its settled record. */
-  readonly era?: "legacy" | "modern" | undefined;
+  readonly era?: McpEra | undefined;
 };
 
 /** The Session's MCP questions over its storage. Synchronous: the tools that ask are built before the runtime. */
@@ -399,6 +399,11 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       }
 
       if (given.action !== "opened") {
+        // Open answered the server `accept`: a Decline can no longer be told to it.
+        if (given.action === "decline" && held.opened) {
+          return yield* McpQuestionsError.make({ message: "This page is open: cancel it instead" });
+        }
+
         yield* finish(id, { action: given.action, by: "owner" });
 
         return;

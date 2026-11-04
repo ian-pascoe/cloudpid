@@ -26,6 +26,7 @@ import {
   type McpElicitationPage,
   type McpElicitationRequest,
 } from "@cloudpid/protocol";
+import type { McpEra } from "@cloudpid/mcp/types";
 import type { SealedValue, SecretVaultError } from "../secrets/vault.ts";
 import type { McpElicitationDetail } from "./details.ts";
 import {
@@ -41,6 +42,7 @@ import {
   type McpQuestionOutcome,
   McpQuestionsError,
   type McpQuestionStorage,
+  eraDefault,
   pageIdentityOf,
   questionId,
 } from "./question-records.ts";
@@ -103,7 +105,7 @@ type DeferredQuestion = {
    * The Protocol era of the server that asked. Absent in a question stored before the field (#487 kept only a Legacy
    * server's pages, and a deferred form is Modern): `eraOf` reads it as `legacy` for a page and `modern` for a form.
    */
-  readonly era?: "legacy" | "modern";
+  readonly era?: McpEra;
   /** What it asks: a form, or a page to open; absent reads as a form. */
   readonly mode?: "form" | "url";
 };
@@ -132,15 +134,14 @@ type DeferredRecord = {
 /** How a round's state is named in its record: a `ResumeState` is not, as before pages. */
 const stateOf = { Resume: undefined, Resend: "resend", Read: "read" } as const;
 
-/** The era an ask names, a page of a core that named none being a Legacy `-32042`'s. */
-const eraOfAsk = (ask: McpQuestionAsk): "legacy" | "modern" =>
-  ask.era ?? (ask.page === undefined ? "modern" : "legacy");
+/** The era an ask names, or the default of one from a core that named none. */
+const eraOfAsk = (ask: McpQuestionAsk): McpEra => ask.era ?? eraDefault(ask.page !== undefined);
 
 const kindOf = (question: DeferredQuestion): DeferredKind => question.kind ?? "elicitation";
 
 /** The era of the server that asked a question, for a record from before the field too. */
-const eraOf = (question: DeferredQuestion): "legacy" | "modern" =>
-  question.era ?? (question.mode === "url" ? "legacy" : "modern");
+const eraOf = (question: DeferredQuestion): McpEra =>
+  question.era ?? eraDefault(question.mode === "url");
 
 /** What names a stored page question across its call's rounds (`pageIdentityOf`). */
 const pageOf = (question: DeferredQuestion): string =>
@@ -725,6 +726,16 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           return "opened" as const;
         }
 
+        // A Modern page that is open is left by Cancel, not Decline (its Decline is for before it was opened); a Legacy
+        // `-32042`'s Decline is offered throughout.
+        if (
+          given.action === "decline" &&
+          eraOf(question) === "modern" &&
+          open.some((each) => each.id === question.id && each.request.page?.opened === true)
+        ) {
+          return "opened_page" as const;
+        }
+
         // A Modern round may hold forms beside its pages: Done is about its pages only.
         const pages = open.filter((each) => each.request.page !== undefined);
 
@@ -761,6 +772,12 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       if (settled === undefined)
         return yield* McpQuestionsError.make({ message: "This request ended" });
+
+      if (settled === "opened_page") {
+        return yield* McpQuestionsError.make({
+          message: "This page is open: cancel it instead",
+        });
+      }
 
       if (settled === "unopened") {
         return yield* McpQuestionsError.make({ message: "Open every page first" });

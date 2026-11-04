@@ -509,7 +509,8 @@ const WARNINGS = {
  * Open, a link that opens it in a new tab with no opener and is never followed by the card itself. Open's click tells
  * the Session (`opened`). A page the server goes on from by itself (no `retry`) reads "Opened · <server> goes on when
  * you finish there" once opened, with Open again; one that is sent again offers "Done, try again", on once every page
- * of the call has been opened (from any client), with Decline and Cancel always on.
+ * of the call has been opened (from any client), with Decline and Cancel always on (a Modern server's page loses Decline
+ * once opened: Cancel is its way out).
  */
 const PageCard = ({
   request,
@@ -623,17 +624,19 @@ const PageCard = ({
               >
                 Cancel
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={off}
-                onClick={() => {
-                  answer("decline");
-                }}
-              >
-                Decline
-              </Button>
+              {page.opened && page.era === "modern" ? null : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={off}
+                  onClick={() => {
+                    answer("decline");
+                  }}
+                >
+                  Decline
+                </Button>
+              )}
             </>
           )}
           {page.finished === true ? null : off ? (

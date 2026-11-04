@@ -9,6 +9,8 @@ import {
   MCP_ELICITATIONS_PER_CALL,
   validateElicitation,
 } from "@cloudpid/mcp/types";
+import { sha256Hex } from "@cloudpid/config";
+import type { McpEra } from "@cloudpid/mcp/types";
 import { holdsPlaceholder } from "../secrets/references.ts";
 import type {
   ElicitationContent,
@@ -97,7 +99,7 @@ export type McpQuestionAsk = {
   /** The call ends and is sent again once the owner is done at the page (a Legacy `-32042`, a Modern round), rather than going on by itself. */
   readonly retry?: true;
   /** The Protocol era of the server that asked; absent when the core that sent the question did not say. */
-  readonly era?: "legacy" | "modern";
+  readonly era?: McpEra;
   readonly notes: ReadonlyArray<string>;
 };
 
@@ -141,7 +143,7 @@ export type McpQuestionRecord = {
    * The Protocol era of the server that asked: a Legacy server's `-32042` and a Modern server's round are told apart
    * here. A record from before the field has none; a page then was a Legacy `-32042`'s, and a form a Modern server's.
    */
-  readonly era?: "legacy" | "modern";
+  readonly era?: McpEra;
   /** A page question: the address's origin only, never the rest of it. */
   readonly page?: { readonly origin: string };
   /** The message as the owner was shown it: redacted of the Secrets the Session held. */
@@ -190,25 +192,11 @@ export const MCP_PAGE_KEY_CHARS = 200;
 /** A page's key as the call's pages keep it: cut, so a server's long `elicitationId` cannot make the record large. */
 export const pageKeyOf = (key: string): string => key.slice(0, MCP_PAGE_KEY_CHARS);
 
-/** A 53-bit hash of `text` (cyrb53), as base 36: a page's address, kept short and never read back. */
-const hashOf = (text: string): string => {
-  let first = 0xdeadbeef;
-  let second = 0x41c6ce57;
-
-  for (let index = 0; index < text.length; index += 1) {
-    const code = text.charCodeAt(index);
-
-    first = Math.imul(first ^ code, 2654435761);
-    second = Math.imul(second ^ code, 1597334677);
-  }
-
-  first =
-    Math.imul(first ^ (first >>> 16), 2246822507) ^ Math.imul(second ^ (second >>> 13), 3266489909);
-  second =
-    Math.imul(second ^ (second >>> 16), 2246822507) ^ Math.imul(first ^ (first >>> 13), 3266489909);
-
-  return (4294967296 * (2097151 & second) + (first >>> 0)).toString(36);
-};
+/**
+ * The era of a question whose record or request names none (from before the field): a page was a Legacy `-32042`'s, and
+ * a form a Modern server's.
+ */
+export const eraDefault = (page: boolean): McpEra => (page ? "legacy" : "modern");
 
 /**
  * What names a page across a call's rounds, as `opened` keeps it. A Legacy server names its own page (`elicitationId`);
@@ -216,12 +204,12 @@ const hashOf = (text: string): string => {
  * address together do: the same key and address again is the same page.
  */
 export const pageIdentityOf = (
-  era: "legacy" | "modern" | undefined,
+  era: McpEra | undefined,
   key: string,
   url: string | undefined,
 ): string =>
   era === "modern" && url !== undefined
-    ? `${key.slice(0, MCP_PAGE_KEY_CHARS / 2)}#${hashOf(url)}`
+    ? `${key.slice(0, MCP_PAGE_KEY_CHARS / 2)}#${sha256Hex(url).slice(0, 32)}`
     : pageKeyOf(key);
 
 const pagesKey = (callId: string) => `mcp-question:pages:${callId}`;
@@ -546,6 +534,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
 
         if (ask.retry === true) page.retry = true;
 
+        if (ask.retry === true && ask.era !== undefined) page.era = ask.era;
+
         if (again) page.again = true;
 
         request.page = page;
@@ -566,7 +556,7 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       readonly reason?: string | undefined;
       readonly fields: ReadonlyArray<string>;
       /** The Protocol era of the server that asked. */
-      readonly era?: "legacy" | "modern" | undefined;
+      readonly era?: McpEra | undefined;
     },
     askedAt: number,
     now: number,

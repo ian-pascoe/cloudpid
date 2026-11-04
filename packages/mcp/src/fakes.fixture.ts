@@ -195,9 +195,10 @@ export const SAMPLE_TOOL = {
 
 /**
  * The fakes' tool that asks the client to open a page (`elicitation/create`, URL mode) during a Legacy call, and answers
- * with what it got as JSON text (on Modern it asks in `input_required` rounds, `rounds` of them). After an `accept` it waits `completeAfterMs` (when given) and tells the client the
+ * with what it got as JSON text. After an `accept` it waits `completeAfterMs` (when given) and tells the client the
  * owner finished there (`notifications/elicitation/complete`, on the call's own stream, or on the standalone one with
- * `completeOnStandalone`), then waits `holdMs` more before it answers.
+ * `completeOnStandalone`), then waits `holdMs` more before it answers. On Modern it asks in `input_required` rounds
+ * instead (`rounds` of them, default 1, each with the same page keyed `page`), and answers the last round's responses.
  */
 export const VISIT_TOOL = {
   name: "visit",

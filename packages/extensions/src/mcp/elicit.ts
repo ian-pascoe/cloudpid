@@ -208,6 +208,27 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
     });
   };
 
+  /** `request` as the question the Session keeps and shows: what it says, and who asks it (the call, its server's source and era). */
+  const askOf = (
+    request: typeof McpInputRequest.Encoded,
+    said: Pick<McpQuestionAsk, "message" | "form" | "notes" | "page">,
+  ): Mutable<McpQuestionAsk> => {
+    const question: Mutable<McpQuestionAsk> = {
+      key: request.key,
+      callId: call.callId,
+      conversationId: call.conversationId,
+      server: call.server,
+      tool: call.tool,
+      ...said,
+    };
+
+    if (call.source !== undefined) question.source = call.source;
+
+    if (request.era !== undefined) question.era = request.era;
+
+    return question;
+  };
+
   const answering = new Set<Promise<unknown>>();
 
   const answerInput: Eliciting["onInput"] = async (request) => {
@@ -248,20 +269,11 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
     }
 
-    const question: Mutable<McpQuestionAsk> = {
-      key: request.key,
-      callId: call.callId,
-      conversationId: call.conversationId,
-      server: call.server,
-      tool: call.tool,
+    const question = askOf(request, {
       message: plainMessage(message),
       form,
       notes: [...notes, ...cutNotes(message)],
-    };
-
-    if (call.source !== undefined) question.source = call.source;
-
-    if (request.era !== undefined) question.era = request.era;
+    });
 
     return keepOrAsk(request, question, answeredFields);
   };
@@ -396,25 +408,16 @@ export const elicitingHooks = (call: ElicitingCall): Eliciting => {
       return capped ? CANCELLED : { kind: "answered", result: { action: "decline" } };
     }
 
-    const question: Mutable<McpQuestionAsk> = {
-      key: request.key,
-      callId: call.callId,
-      conversationId: call.conversationId,
-      server: call.server,
-      tool: call.tool,
+    const question = askOf(request, {
       message: plainMessage(message),
       form: { fields: [] },
       page: checked.success,
       notes: cutNotes(message),
-    };
+    });
 
     // A Legacy `-32042`, or a Modern server's page, is kept for later and the call is sent again once the owner is done:
     // "Done, try again".
     if (request.mode === "deferrable") question.retry = true;
-
-    if (call.source !== undefined) question.source = call.source;
-
-    if (request.era !== undefined) question.era = request.era;
 
     return keepOrAsk(request, question, answeredFields);
   };
