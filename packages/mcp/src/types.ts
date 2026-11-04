@@ -1489,8 +1489,8 @@ export type McpHostCompleted = typeof McpHostCompleted.Type;
 /**
  * What a result of a task says of where it was made (`docs/architecture/mcp-sign-in.md` → The sign-in id): `signIn`,
  * the MCP sign-in id of the token the server was called with (absent for a server with no sign-in), so a follower can
- * tell "not reachable under the current sign-in" from "expired"; and `spawn`, the stdio process's id (never present
- * yet: tasks do not run on stdio servers, #494).
+ * tell "not reachable under the current sign-in" from "expired"; and `spawn`, the stdio process's id (present for a stdio
+ * server's task, #494: another one is a process that ended, which the Session reads as the task `unknown`).
  */
 const McpHostTaskOrigin = {
   signIn: Schema.optionalKey(Schema.String),
