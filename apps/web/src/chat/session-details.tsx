@@ -1,14 +1,14 @@
 // Session details (GLOSSARY.md → Session details): a small panel over the top right of the chat with what the owner
 // follows of the Session while reading, in sections: the root agent's Todo List, the Session's subagents, each
 // subagent opening its Subagent Pane (or its Subagent page), and the Changes in its Workspace, each file opening the
-// Diff pane at it. On a Subagent page they are the subagent's: its Todo List, the subagents below it, and the Changes
+// Diff pane at it, and the Session's grants for MCP servers' Sampling requests. On a Subagent page they are the subagent's: its Todo List, the subagents below it, and the Changes
 // of its Workspace. An icon button in the page's header opens and closes it, whatever there is to show; whether it is
 // open is kept in the page's layout.
 
 import type { GraphAgent, TodoTask } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { PanelRightOpen, SquareMenu } from "lucide-react";
+import { PanelRightOpen, SquareMenu, X } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { ChangesSection } from "../diff-pane/changes-summary.tsx";
@@ -17,7 +17,13 @@ import { cn } from "../lib/utils.ts";
 import { SUBAGENTS_PANE, subagentPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
 import { childrenOf } from "../session/agents.ts";
-import { conversationTodosAtom, sessionStatusAtom, taskGraphAtom } from "../session/atoms.ts";
+import {
+  conversationTodosAtom,
+  mcpSamplingGrantsAtom,
+  revokeMcpSamplingAtom,
+  sessionStatusAtom,
+  taskGraphAtom,
+} from "../session/atoms.ts";
 import { detailsOpenAtom } from "../session-layout-state.ts";
 import {
   conversationKey,
@@ -162,6 +168,49 @@ const SubagentsSection = ({ agents }: { agents: readonly GraphAgent[] }) => {
 };
 
 /**
+ * The Session's grants for MCP servers' Sampling requests (`docs/architecture/mcp-server-requests.md` → Sampling requests,
+ * The card): "Allow in this Session" and "Refuse in this Session", each with a ✕ that takes it back, so the server's next
+ * request asks again.
+ */
+const SamplingGrantsSection = () => {
+  const sessionId = useShownSessionId();
+  const grants = useAtomValue(mcpSamplingGrantsAtom(sessionId));
+  const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
+  const revoke = useAtomSet(revokeMcpSamplingAtom(sessionId));
+
+  if (grants.length === 0) return null;
+
+  return (
+    <section aria-label="Model use">
+      <h4 className="text-xs font-medium text-muted-foreground">Model use</h4>
+      <ul className="mt-1 text-sm">
+        {Arr.map(grants, (grant) => (
+          <li key={grant.server} className="flex items-center justify-between gap-2">
+            <span className="min-w-0 break-words">
+              {grant.action === "allow"
+                ? `${grant.server} may use your models in this Session`
+                : `${grant.server} is refused your models in this Session`}
+            </span>
+            <button
+              type="button"
+              disabled={!live}
+              aria-label={`Take back this Session's choice for ${grant.server}`}
+              title="Take it back: the next request asks again"
+              onClick={() => {
+                revoke(grant.server);
+              }}
+              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-3.5"
+            >
+              <X aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+};
+
+/**
  * The Session details of the Session shown, while the owner has them open: one section per thing to follow, each
  * headed by what it is, with no title of their own. Escape closes them and gives the focus back to the header's button.
  */
@@ -171,6 +220,7 @@ export const SessionDetails = () => {
   const { items, agents } = useDetails();
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
   const changed = useAtomValue(changesTotalsAtom(useShownChanges()), (totals) => totals.files > 0);
+  const granted = useAtomValue(mcpSamplingGrantsAtom(sessionId), (grants) => grants.length > 0);
 
   if (!open) return null;
 
@@ -194,12 +244,13 @@ export const SessionDetails = () => {
           Reconnecting: this may be out of date.
         </p>
       )}
-      {items.length === 0 && agents.length === 0 && !changed && (
+      {items.length === 0 && agents.length === 0 && !changed && !granted && (
         <p className="text-sm text-muted-foreground">Nothing to show yet.</p>
       )}
       {items.length > 0 && <TodoList tasks={items} />}
       {agents.length > 0 && <SubagentsSection agents={agents} />}
       {changed && <ChangesSection />}
+      <SamplingGrantsSection />
     </aside>
   );
 };

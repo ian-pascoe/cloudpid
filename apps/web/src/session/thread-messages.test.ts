@@ -542,6 +542,14 @@ describe("the thread messages of a view", () => {
     });
     expect(changed({ server: "docs", elicitation: [] })).not.toHaveProperty("artifact");
 
+    // And the Sampling requests it made: who decided and what came of each, never what was asked.
+    const sampled = { server: "docs", status: "answered", by: "owner", role: "small", id: "s-1" };
+
+    expect(changed({ server: "docs", sampling: [sampled] })).toMatchObject({
+      artifact: { samplings: [sampled] },
+    });
+    expect(changed({ server: "docs", sampling: [] })).not.toHaveProperty("artifact");
+
     // A change the owner approved first says so on its card; a declined call changed nothing.
     expect(
       changed({

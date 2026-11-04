@@ -260,7 +260,7 @@ const isGroup = (field: ElicitationField): boolean =>
   field.kind === "multi_choice" || (field.kind === "choice" && field.options.length <= RADIO_LIMIT);
 
 /** The time now, ticked each second; `fixed` (a test's) stops the clock. */
-const useNow = (fixed: number | undefined) => {
+export const useNow = (fixed: number | undefined) => {
   const [now, setNow] = useState(() => fixed ?? Date.now());
 
   useEffect(() => {
