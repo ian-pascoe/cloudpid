@@ -81,11 +81,13 @@ import {
   EraRowV1,
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
-  MCP_SAMPLING_WAIT_MS,
   MCP_INPUT_ROUNDS,
+  MCP_INTERNAL_ERROR,
   MCP_RESUME_STATE_EXPIRED,
   MCP_RESUME_STATE_MAX_BYTES,
   MCP_LIST_WALK_TIMEOUT_MS,
+  MCP_SAMPLING_REFUSED,
+  MCP_SAMPLING_WAIT_MS,
   MCP_TASK_TIMEOUT_MS,
   MCP_TASKS_EXTENSION,
   type McpCallContext,
@@ -168,17 +170,20 @@ export interface McpDeps {
    */
   readonly roots?: ReadonlyArray<McpRoot>;
   /**
-   * A Legacy server's question during a `tools/call` whose `ctx.answers` offers its kind (`docs/architecture/
-   * mcp-server-requests.md` → Questions): answered with what the server gets. The call's timeout is paused while it
-   * pends, and its wait is bounded by `ctx.answers.inputWaitMs` (10 minutes for an elicitation, 12 for a Sampling request),
-   * then it reads as a `cancel`, or for a Sampling request as a refusal. A question on any other stream or request, or
-   * with no `onInput`, is cancelled, and a Sampling request is refused ("no conversation to sample in"). With it, a
-   * Legacy connection declares `elicitation` (through `capabilities`) and answers what the server asks; one declares
-   * `sampling` when `capabilities` says so, and answers its requests the same way.
+   * A Legacy server's question during a call whose `ctx.answers` offers its kind (`docs/architecture/
+   * mcp-server-requests.md` → Questions): answered with what the server gets, the call's timeout paused while it pends
+   * and its wait bounded by `ctx.answers.inputWaitMs` (10 minutes for an elicitation, 12 for a Sampling request). When
+   * the wait runs out an elicitation reads as `cancel` and a Sampling request as a refusal.
+   *
+   * A question that no call can take is not asked: one on another stream, with no `onInput`, or of a kind the call did
+   * not offer is cancelled (an elicitation) or refused (a Sampling request). A Legacy connection declares `elicitation`
+   * and `sampling` as `capabilities` says, and answers what the server asks the same way.
    */
   readonly onInput?: (request: McpInputRequest) => Effect.Effect<McpInputAnswer>;
   /** The server stopped waiting for question `key` (its own `notifications/cancelled`): the card is withdrawn. */
   readonly onInputEnded?: (key: string) => void;
+  /** The server sent a request that uses a feature the spec deprecated (`"sampling"`), however it ends. Fails nothing. */
+  readonly onDeprecated?: (feature: string) => void;
 }
 
 /** A `notifications/message` as the server sent it: the level, the logger's name and the data, any JSON. */
@@ -300,12 +305,6 @@ export interface CallToolParams {
   readonly arguments?: Readonly<Record<string, Schema.Json>>;
 }
 
-/** The JSON-RPC code of a refusal, which is what a Sampling request the owner or cloudpid turns down gets (`-1`, the spec's). */
-const SAMPLING_REFUSED = -1;
-
-/** The JSON-RPC code of an internal error: a Sampling request the Session failed to answer. */
-const INTERNAL_ERROR = -32603;
-
 /** The most the SDK's own timer may be given: the core's deadline is the one that ends a call. */
 const SDK_TIMER_MAX_MS = 2_147_483_647;
 
@@ -318,8 +317,10 @@ interface Own {
 /** What a Legacy question is answered with, in the core: the result the server gets, or a refusal that is its error. */
 type QuestionAnswer = Exclude<McpInputAnswer, { readonly kind: "defer" }>;
 
-/** The call a question may be tied to: how long its questions may wait, and its clock to pause meanwhile. */
+/** The call a question may be tied to: what it offered, how long its questions may wait, and its clock to pause meanwhile. */
 interface Asking {
+  /** The kinds the call offered to answer (`ctx.answers`); a question of another kind is not asked. */
+  readonly offers: ReadonlySet<McpInputRequest["kind"]>;
   readonly waitMs: number;
   readonly pause: Effect.Effect<void>;
   readonly resume: Effect.Effect<void>;
@@ -774,8 +775,11 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
     // Sampling is declared only by a Legacy connection that was told to (the definition's key); like a form, a request
     // that belongs to no call that can take it is refused, and the server is told why.
     if (declared.sampling !== undefined) {
-      client.setRequestHandler("sampling/createMessage", (request, ctx) =>
-        Effect.runPromiseWith(context)(
+      client.setRequestHandler("sampling/createMessage", (request, ctx) => {
+        // Noted whatever becomes of the request: on a call's stream or the standalone one, answered or refused.
+        deps.onDeprecated?.("sampling");
+
+        return Effect.runPromiseWith(context)(
           askQuestion("sampling", request.params, ctx.mcpReq.id, ctx.mcpReq.signal),
         ).then((answer) => {
           if (answer.kind !== "sampled") {
@@ -786,8 +790,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
           // SAFETY: the Session's `CreateMessageResult`, which the SDK checks against the spec before the server gets it.
           return answer.result as CreateMessageResultWithTools;
-        }),
-      );
+        });
+      });
     }
 
     return client;
@@ -797,7 +801,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   const cancelled: QuestionAnswer = { kind: "answered", result: { action: "cancel" } };
 
   /** What a Sampling request gets when it is not answered: the server's error (`-1` is a refusal, the spec's own). */
-  const unsampled = (message: string, code = SAMPLING_REFUSED): QuestionAnswer => ({
+  const unsampled = (message: string, code = MCP_SAMPLING_REFUSED): QuestionAnswer => ({
     kind: "refused",
     message,
     code,
@@ -806,8 +810,8 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
   /** The error a Sampling request that was not given a reply ends with. */
   const noSampling = (answer: QuestionAnswer) =>
     answer.kind === "refused"
-      ? { code: answer.code ?? SAMPLING_REFUSED, message: answer.message }
-      : { code: INTERNAL_ERROR, message: "cloudpid could not answer the sampling request" };
+      ? { code: answer.code ?? MCP_SAMPLING_REFUSED, message: answer.message }
+      : { code: MCP_INTERNAL_ERROR, message: "cloudpid could not answer the sampling request" };
 
   /**
    * A Legacy server's question, an elicitation form or a Sampling request: tied by the tap to the call whose POST stream
@@ -831,6 +835,14 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
       if (call === undefined || onInput === undefined) return none;
 
+      // A call that offered only the other kind never takes this one: refused as an unoffered kind, never handed to a hook
+      // that reads only its own.
+      if (!call.offers.has(kind)) {
+        return sampling
+          ? unsampled("the call did not offer to answer a sampling request")
+          : cancelled;
+      }
+
       const key = String(id);
 
       const input: McpInputRequest = {
@@ -849,7 +861,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         Effect.catchCause(() =>
           Effect.succeed(
             sampling
-              ? unsampled("cloudpid could not answer the sampling request", INTERNAL_ERROR)
+              ? unsampled("cloudpid could not answer the sampling request", MCP_INTERNAL_ERROR)
               : cancelled,
           ),
         ),
@@ -882,7 +894,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
       // An answer of the other kind is one the Session should never give: a form is cancelled, a sample refused.
       if (sampling)
         return outcome.kind === "answered"
-          ? unsampled("cloudpid could not answer the sampling request", INTERNAL_ERROR)
+          ? unsampled("cloudpid could not answer the sampling request", MCP_INTERNAL_ERROR)
           : outcome;
 
       return outcome.kind === "sampled" ? cancelled : outcome;
@@ -1235,6 +1247,10 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
 
       if (askable && deadline !== undefined) {
         asking.set(token, {
+          offers: new Set<McpInputRequest["kind"]>([
+            ...(answers.elicitation === true ? (["elicitation"] as const) : []),
+            ...(answers.sampling === true ? (["sampling"] as const) : []),
+          ]),
           waitMs:
             answers.inputWaitMs ??
             (answers.sampling === true ? MCP_SAMPLING_WAIT_MS : MCP_ELICITATION_WAIT_MS),

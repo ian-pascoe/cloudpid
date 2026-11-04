@@ -947,6 +947,12 @@ export interface McpEngineHooks {
   ) => Promise<typeof McpInputAnswer.Encoded>;
   /** The server stopped waiting for question `key` (its own cancellation): the caller withdraws its card. */
   readonly onInputEnded?: (key: string) => void | Promise<void>;
+  /**
+   * The server used a feature the MCP spec deprecated (`"sampling"`: it sent a Sampling request), however the request
+   * ended: tied to a call or not, answered or refused (`docs/architecture/mcp-server-requests.md` → Sampling requests,
+   * Deprecation). A hook that fails or is slow fails nothing. An engine from before never calls it.
+   */
+  readonly onDeprecated?: (feature: string) => void | Promise<void>;
 }
 
 /** `McpEngine`'s arguments as they cross RPC, encoded; the engine decodes each. */

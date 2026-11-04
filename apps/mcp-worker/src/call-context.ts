@@ -168,6 +168,16 @@ const endedFrom = (ended: NonNullable<McpEngineHooks["onInputEnded"]>) => (key: 
   }
 };
 
+/** The host's `onDeprecated` hook as the core's: a note that is lost fails nothing. */
+const deprecatedFrom =
+  (noted: NonNullable<McpEngineHooks["onDeprecated"]>) => (feature: string) => {
+    try {
+      void Promise.resolve(noted(feature)).catch(() => undefined);
+    } catch {
+      // A stub whose caller is gone may throw at once: the note is dropped.
+    }
+  };
+
 /** Opens one call's context: its rows, its lease on the byte budget and its deps. */
 export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   prior: McpEnginePrior,
@@ -226,6 +236,8 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
   if (hooks.onInput !== undefined) deps.onInput = inputFrom(hooks.onInput);
 
   if (hooks.onInputEnded !== undefined) deps.onInputEnded = endedFrom(hooks.onInputEnded);
+
+  if (hooks.onDeprecated !== undefined) deps.onDeprecated = deprecatedFrom(hooks.onDeprecated);
 
   // A Worker's clock moves with I/O, and each notice arrives by I/O.
   if (hooks.onProgress !== undefined) deps.onProgress = progressTo(hooks.onProgress, Date.now);

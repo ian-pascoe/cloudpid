@@ -37,12 +37,20 @@ export const MCP_ELICITATIONS_PER_CALL = 10;
  */
 export const MCP_SAMPLING_WAIT_MS = 12 * 60 * 1000;
 
+/** The JSON-RPC code a Sampling request turned down gets: `-1`, the spec's refusal. */
+export const MCP_SAMPLING_REFUSED = -1;
+
+/** The JSON-RPC code of a request that is invalid, or that cloudpid cannot serve. */
+export const MCP_INVALID_PARAMS = -32602;
+
+/** The JSON-RPC code of an internal error: a Sampling request whose model failed, or that the Session failed to answer. */
+export const MCP_INTERNAL_ERROR = -32603;
+
 /**
  * A server's question, as the core surfaces it to a call's `onInput` (`mcp-server-requests.md` → Questions). `key` names
- * it within its call; `params` are the server's own parameters (an elicitation's `message` and `requestedSchema`, a Sampling request's `messages` and the rest of
- * `sampling/createMessage`'s);
- * `live` means it can be answered only while its call waits (a Legacy server's), `deferrable` that it may be answered
- * later (a Modern server's).
+ * it within its call; `kind` says which it is, and `params` are the server's own: an elicitation's `message` and
+ * `requestedSchema`, or the `sampling/createMessage` parameters of a Sampling request. `live` means it can be answered
+ * only while its call waits (a Legacy server's), `deferrable` that it may be answered later (a Modern server's).
  */
 export const McpInputRequest = Schema.Struct({
   key: Schema.String,

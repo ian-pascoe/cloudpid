@@ -88,6 +88,8 @@ export type RequestScript = {
   readonly hold?: boolean;
   readonly reject?: string;
   readonly auth?: ReadonlyArray<boolean>;
+  /** The deprecated features the engine tells the host the server used (`onDeprecated`), before it answers. */
+  readonly deprecated?: ReadonlyArray<string>;
 };
 
 /**
@@ -352,6 +354,8 @@ export class TestMcpHost extends DurableObject {
       }
 
       for (const stale of script.auth ?? []) tokens.push(await hooks.auth?.(stale));
+
+      for (const feature of script.deprecated ?? []) await hooks.onDeprecated?.(feature);
 
       if (script.hold === true) await this.#holdUntilReleased(keyOf(target));
 

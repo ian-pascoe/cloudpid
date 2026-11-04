@@ -152,6 +152,27 @@ describe("a Legacy server's Sampling request", () => {
     expect(options.sampled).toEqual([{ error: expect.stringContaining(message), code }]);
   });
 
+  it("is refused `-1`, and never handed to onInput, on a call that offered only to answer forms", async () => {
+    const options = { moreTools: [SAMPLE_TOOL], sampled: [] };
+    const server = legacyStatefulServer(options);
+    let asked = 0;
+
+    const outcome = await call(
+      sampling(server, () => {
+        asked += 1;
+
+        return Effect.succeed(REPLY);
+      }),
+      { ...AGENT, answers: { elicitation: true, inputWaitMs: 600_000 } },
+    );
+
+    expect(asked).toBe(0);
+    expect(textOf(outcome)[0]).toContain("did not offer to answer a sampling request");
+    expect(options.sampled).toEqual([
+      { error: expect.stringContaining("did not offer"), code: -1 },
+    ]);
+  });
+
   it("is refused, whatever the Session answers, when it was answered as a form or kept for later", async () => {
     for (const answer of [
       { kind: "defer" as const },
@@ -187,6 +208,28 @@ describe("a Legacy server's Sampling request", () => {
     expect(options.sampled).toEqual([
       { error: expect.stringContaining("no conversation to sample in"), code: -1 },
     ]);
+  });
+
+  it.each([
+    ["on the call's own stream", SAMPLING, {}],
+    ["on the standalone stream", SAMPLING, { standalone: true }],
+    ["on a call that cannot answer it", AGENT, {}],
+    ["on a call that offered only forms", { ...AGENT, answers: { elicitation: true } }, {}],
+  ])("is noted as deprecated %s, however it ends", async (_name, ctx, args) => {
+    const options = { moreTools: [SAMPLE_TOOL], sampled: [] };
+    const noted: string[] = [];
+
+    await call(
+      sampling(legacyStatefulServer(options), () => Effect.succeed(REPLY), {
+        onDeprecated: (feature) => {
+          noted.push(feature);
+        },
+      }),
+      ctx,
+      args,
+    );
+
+    expect(noted).toEqual(["sampling"]);
   });
 
   it("is refused without asking when the call cannot answer it", async () => {
