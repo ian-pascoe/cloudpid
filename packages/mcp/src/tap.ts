@@ -367,9 +367,9 @@ export class EventSplitter {
     this.limit = limit;
   }
 
-  /** Whether what is held of the event being read ends in a line ending (or may). */
+  /** Whether what is held of the event being read ends in a line ending. */
   get endsInLineEnd() {
-    return this.heldCr || this.lineEnd;
+    return this.lineEnd;
   }
 
   /** The event being read, so far. */
@@ -636,9 +636,12 @@ const watchStream = (
         onSome: (decoded) => (Array.isArray(decoded) ? decoded : [decoded]),
       });
 
+      // The SDK reads an event with no type or the type `message`, and no other.
+      const read = fields.type === undefined || fields.type === "message";
+
       for (const message of messages) {
         // An answer to the request has its id and no method (a server's own request has one).
-        if (message.id === request.id && message.method === undefined) {
+        if (read && message.id === request.id && message.method === undefined) {
           answered = true;
         }
 

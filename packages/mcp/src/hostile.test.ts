@@ -633,6 +633,45 @@ describe.each(legacyBases)("a %s server that ends a call's stream early", (_name
     expect(resumedAfter(server)).toEqual(["a-1"]);
   });
 
+  it("does not dispatch an answer a CR-ended early end left with its last line cut short", async () => {
+    // The tap ends the line the SDK was left holding, so the discard that follows needs no line ending of its own.
+    const server = resumable(
+      base(),
+      (rpc) => stream(`id: a-1\n\ndata:${JSON.stringify(answerOf(rpc, "premature"))}\rid: a-`),
+      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
+    );
+
+    const { called } = await attempt(server);
+
+    expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
+    expect(resumedAfter(server)).toEqual(["a-1"]);
+  });
+
+  it("does not take an answer in an event the SDK ignores for the answer: another type is not read", async () => {
+    const ignored = (rpc: RpcBody, id?: string) =>
+      stream(
+        `${id === undefined ? "" : `id: ${id}\n`}event: other\ndata: ${JSON.stringify(answerOf(rpc, "ignored"))}\n\n`,
+      );
+
+    // No event id: cut at once, not left waiting for its timeout.
+    const bare = resumable(
+      base(),
+      (rpc) => ignored(rpc),
+      (rpc) => stream(event(answerOf(rpc, "x"))),
+    );
+
+    expect((await attempt(bare)).called).toEqual(failedWith(Cut, { mayHaveRun: true }));
+
+    // With one: resumed to the answer the SDK reads.
+    const resumed = resumable(
+      base(),
+      (rpc) => ignored(rpc, "a-1"),
+      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-2" })),
+    );
+
+    expect((await attempt(resumed)).called).toEqual({ content: [{ type: "text", text: "whole" }] });
+  });
+
   it("keeps a first resumed line from joining a whitespace-only line the early end left", async () => {
     const server = resumable(
       base(),
