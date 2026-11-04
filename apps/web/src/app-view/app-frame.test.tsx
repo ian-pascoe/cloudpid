@@ -649,7 +649,11 @@ describe("a View's requests of its server, and signing in", () => {
     );
 
     const client: AppRequestClient = { appRequest, appLog: () => undefined };
-    const speech = { message: vi.fn(() => Promise.resolve("held" as const)) };
+
+    const speech = {
+      message: vi.fn(() => Promise.resolve("held" as const)),
+      context: vi.fn(() => Promise.resolve({ held: true, message: undefined })),
+    };
 
     render({
       client,
@@ -671,12 +675,19 @@ describe("a View's requests of its server, and signing in", () => {
       method: "ui/message",
       params: { role: "user", content: [{ type: "text", text: "hi" }] },
     });
+    view.say({
+      jsonrpc: "2.0",
+      id: 11,
+      method: "ui/update-model-context",
+      params: { content: [{ type: "text", text: "state" }] },
+    });
     await flush();
 
-    for (const id of [7, 8, 9])
+    for (const id of [7, 8, 9, 11])
       expect(answerTo(view, id)).toMatchObject({ error: { code: -32_000 } });
     expect(appRequest).not.toHaveBeenCalled();
     expect(speech.message).not.toHaveBeenCalled();
+    expect(speech.context).not.toHaveBeenCalled();
 
     // The record is there: the same frame's handlers serve.
     render({ client, speech, record, running: undefined });
@@ -684,6 +695,16 @@ describe("a View's requests of its server, and signing in", () => {
     await flush();
     expect(answerTo(view, 10)).toEqual({ jsonrpc: "2.0", id: 10, result: { content: [] } });
     expect(appRequest).toHaveBeenCalledTimes(1);
+
+    view.say({
+      jsonrpc: "2.0",
+      id: 12,
+      method: "ui/update-model-context",
+      params: { content: [{ type: "text", text: "state" }] },
+    });
+    await flush();
+    expect(speech.context).toHaveBeenCalledTimes(1);
+    expect(answerTo(view, 12)).toMatchObject({ id: 12, result: {} });
   });
 
   it('forwards only resources/read, and badges it "Read only", when its place says it may only read', async () => {

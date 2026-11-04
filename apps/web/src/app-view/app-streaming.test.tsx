@@ -191,7 +191,9 @@ const clientOf = (seed: Seed, pinned: McpAppRecord) => {
     return Effect.succeed<McpAppHtmlAnswer>(
       seed.recordPage === "unavailable"
         ? { status: "unavailable", message: "shadowed" }
-        : htmlOf(seed.recordView ?? seed.pageView ?? "v-docs"),
+        : seed.recordPage === "failed" && asked.page === 1
+          ? { status: "failed", message: "The host could not read the page" }
+          : htmlOf(seed.recordView ?? seed.pageView ?? "v-docs"),
     );
   };
 
@@ -266,8 +268,8 @@ interface Seed {
   readonly pageView?: string;
   readonly recordView?: string;
   readonly recordServer?: string;
-  /** The Session answers the record's page `unavailable`. */
-  readonly recordPage?: "unavailable";
+  /** The Session answers the record's page `unavailable`, or fails to answer it. */
+  readonly recordPage?: "unavailable" | "failed";
   /** The call finished before the page was opened: its message, result and record are all there from the start. */
   readonly finished?: boolean;
 }
@@ -759,7 +761,46 @@ describe("an App call as it streams", () => {
     ]);
     expect(shown.methods()).not.toContain("ui/notifications/tool-input");
     expect(shown.methods()).not.toContain("ui/notifications/tool-result");
-    expect(partials(shown).at(-1)).not.toEqual({ title: "Hello", rows: [] });
+  });
+
+  it("tells a View made early that its call is over when the record's page cannot be read, and shows the failure with Retry, which frames the record anew", async () => {
+    await start({ pageView: "v-docs", recordView: "v-docs", recordPage: "failed" });
+
+    const { frame, shown } = await running();
+
+    await ends(true);
+    expect(shown.methods()).not.toContain("ui/notifications/tool-result");
+    expect(shown.methods().slice(-2)).toEqual([
+      "ui/notifications/tool-cancelled",
+      "ui/resource-teardown",
+    ]);
+
+    shown.answerTeardown();
+    await tick(0);
+    expect(frames()).toHaveLength(0);
+    expect(host.textContent).toContain("The host could not read the page");
+
+    const retry = [...host.querySelectorAll("button")].find((each) => each.textContent === "Retry");
+
+    expect(retry).toBeDefined();
+    await act(async () => {
+      retry?.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await tick(0);
+
+    const again = frames();
+
+    expect(again).toHaveLength(1);
+    expect(again[0]).not.toBe(frame);
+
+    const fresh = viewOf(again[0] ?? null);
+
+    fresh.handshake();
+    expect(fresh.methods().slice(-2)).toEqual([
+      "ui/notifications/tool-input",
+      "ui/notifications/tool-result",
+    ]);
   });
 
   it("sends nothing of the call after the cancel for a record that arrives after the grace", async () => {

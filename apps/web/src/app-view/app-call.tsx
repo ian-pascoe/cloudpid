@@ -283,6 +283,11 @@ const AppLoaded = ({
           recordView.record.viewHash !== held.page.view))) ||
       recordLoad?.status === "unavailable");
 
+  // A View made early whose record cannot be read (the Session failed to answer for its page) is of a call that has ended, and
+  // is told so: it is torn down, and the card says why with Retry, which reads the record again into a frame made new.
+  const failed =
+    held?.early === true && recordLoad?.status === "failed" ? recordLoad.reason : undefined;
+
   // A View ended for that is replaced by the note once it has torn down.
   const [retired, setRetired] = useState(false);
 
@@ -325,7 +330,7 @@ const AppLoaded = ({
             callId,
             server: tool.server,
             tool: tool.tool,
-            arguments: inProgress && !shadowed ? progress.arguments : undefined,
+            arguments: inProgress ? progress.arguments : undefined,
             final: progress?.phase === "running",
           };
 
@@ -336,11 +341,13 @@ const AppLoaded = ({
         cancelled={
           shadowed
             ? SHADOWED_REASON
-            : recordView === undefined && progress?.phase === "stopped"
-              ? STOPPED_REASON
-              : recordView === undefined && ended && gaveUp
-                ? NO_RECORD_REASON
-                : undefined
+            : failed !== undefined
+              ? failed
+              : recordView === undefined && progress?.phase === "stopped"
+                ? STOPPED_REASON
+                : recordView === undefined && ended && gaveUp
+                  ? NO_RECORD_REASON
+                  : undefined
         }
         page={page}
         tool={tool}
@@ -368,9 +375,12 @@ const AppLoaded = ({
         controls={controls}
         onRequestMode={onRequestMode}
         onFocused={onFocused}
-        closing={closing || shadowed}
+        closing={closing || shadowed || failed !== undefined}
         onClosed={() => {
           if (shadowed) setRetired(true);
+
+          // Its frame gone, the card shows the failure (below) with Retry, and a record read later is framed anew.
+          if (failed !== undefined) setHeld(undefined);
 
           if (closing) onClosed();
         }}
