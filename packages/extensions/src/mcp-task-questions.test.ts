@@ -1243,6 +1243,35 @@ describe("a round whose update the server partly took", () => {
     await finish();
   });
 
+  it("holds a page back too: an opened page the server omitted is sent alone again when it lists it again", async () => {
+    const { observe, questions, lose, sent, keys, finish } = await rig();
+    const PAGES = { p1: PAGE, p2: PAGE } satisfies Record<string, JsonObject>;
+
+    await observe(PAGES);
+
+    for (const card of await Effect.runPromise(questions.pending)) {
+      await Effect.runPromise(questions.answer(card.id, { action: "opened" }));
+    }
+
+    // The update that carries both pages is lost.
+    lose(1);
+    await observe(PAGES);
+    expect(sent.map((each) => Object.keys(each))).toEqual([["p1", "p2"]]);
+    expect(keys()).toMatchObject({ p1: { state: "sending" }, p2: { state: "sending" } });
+
+    // The server lists `p2` alone: `p1` is not sent again, as it may list it again, and `p2` is.
+    await observe({ p2: PAGE });
+    expect(sent.map((each) => Object.keys(each))).toEqual([["p1", "p2"], ["p2"]]);
+    expect(keys()).toMatchObject({ p1: { state: "sending" }, p2: { state: "sent" } });
+
+    await observe(PAGES);
+
+    expect(sent.map((each) => Object.keys(each))).toEqual([["p1", "p2"], ["p2"], ["p1"]]);
+    expect(sent[2]).toEqual({ p1: { action: "accept" } });
+    expect(keys()).toMatchObject({ p1: { state: "sent" }, p2: { state: "sent" } });
+    await finish();
+  });
+
   it("sends an update again once, though another key of the round was sent in between", async () => {
     const { observe, questions, loseAt, sent, doc, finish } = await rig();
 

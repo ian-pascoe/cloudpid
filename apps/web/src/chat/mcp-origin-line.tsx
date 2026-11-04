@@ -32,9 +32,9 @@ export const McpOriginLine = ({
 
   return (
     <p className="mt-1 text-xs text-muted-foreground">
-      {request.app === true ? (
+      {request.task === undefined && request.app === true ? (
         `${request.server}'s app`
-      ) : request.prompt === undefined ? (
+      ) : request.task !== undefined || request.prompt === undefined ? (
         <>
           during <span className="font-mono">{request.tool}</span> ·{" "}
           {request.task === undefined ? null : `MCP task ${request.task} · `}
@@ -55,11 +55,12 @@ export const McpOriginLine = ({
  * without an answer.
  */
 export const endsLine = (request: McpAsker, deadline: number, now: number): string => {
-  if (request.app === true) {
+  // A task's is first, as in `askOriginOf`.
+  if (request.task === undefined && request.app === true) {
     return `${request.server}'s app goes on without an answer in ${countdown(deadline, now)}`;
   }
 
-  return request.prompt === undefined
+  return request.task !== undefined || request.prompt === undefined
     ? `${request.server}'s call ends in ${countdown(deadline, now)}`
     : `${request.server}'s prompt goes on without an answer in ${countdown(deadline, now)}`;
 };

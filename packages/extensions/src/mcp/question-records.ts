@@ -370,7 +370,8 @@ export type McpWaitingKind = {
 
 /**
  * Whose question it is: an agent's call's, a prompt send's (`prompt` is its title), an App View's call's (`app`) or an MCP
- * task's (`task` is its handle). The one rule for a record's `origin`, a span's `mcp.origin` and how long a question waits.
+ * task's (`task` is its handle). The one rule for a Sampling record's `origin` and span's `mcp.origin`, and for how long a question waits (an elicitation's
+ * record keeps no origin, so its span says `task` or `agent` by its owner, `spanOf`).
  */
 export const askOriginOf = (origin: {
   readonly prompt?: string | undefined;

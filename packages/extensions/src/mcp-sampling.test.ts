@@ -195,11 +195,16 @@ describe("MCP sampling", () => {
       });
     }));
 
-  test("names whose request a sample was in its span: an agent's call, a prompt send's or an MCP task's", () =>
+  test("names whose request a sample was in its span: an agent's call, a prompt send's, an App View's or an MCP task's", () =>
     Effect.gen(function* () {
       const origins: Array<unknown> = [];
 
-      for (const over of [{}, { prompt: "Daily" }, { task: "mcp-task-1" }]) {
+      for (const over of [
+        {},
+        { prompt: "Daily" },
+        { app: true as const },
+        { task: "mcp-task-1" },
+      ]) {
         const spans: Array<Tracer.NativeSpan> = [];
 
         const tracer = Tracer.make({
@@ -222,7 +227,7 @@ describe("MCP sampling", () => {
         origins.push(Object.fromEntries(span?.attributes ?? [])["mcp.origin"]);
       }
 
-      expect(origins).toEqual(["agent", "prompt", "task"]);
+      expect(origins).toEqual(["agent", "prompt", "app", "task"]);
     }));
 
   test("gives the span of a sample that fails inside the outcome and why it ended as", () =>

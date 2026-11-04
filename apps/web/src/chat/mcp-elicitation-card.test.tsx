@@ -94,6 +94,14 @@ describe("a question of an MCP task", () => {
     expect(html).toContain("MCP task mcp-task-1 ·");
     expect(render(request(FORM))).not.toContain("MCP task");
   });
+
+  it("reads as a task's when the request says both, as the origin rule does", () => {
+    const html = render(request(FORM, { task: "mcp-task-1", app: true, prompt: "Daily" }));
+
+    expect(html).toContain("MCP task mcp-task-1 ·");
+    expect(html).not.toContain("&#x27;s app");
+    expect(html).not.toContain("getting prompt");
+  });
 });
 
 describe("several questions of one call", () => {
