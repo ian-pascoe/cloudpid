@@ -81,6 +81,7 @@ import type {
   WaitRequest,
   WorkspaceChanges,
 } from "@cloudpid/protocol";
+import { MCP_APP_INTERNAL_ERROR, mcpAppError } from "@cloudpid/protocol";
 import {
   addTask,
   emptyMcpExtension,
@@ -804,6 +805,11 @@ export class TestSession extends DurableObject {
         this.#mcpTools === undefined
           ? Effect.succeed({ status: "unsupported", message: "No MCP tools" })
           : this.#mcpTools.appHtml(input),
+      request: (input) =>
+        this.#mcpTools === undefined
+          ? Effect.succeed(mcpAppError("failed", "No MCP tools", MCP_APP_INTERNAL_ERROR))
+          : this.#mcpTools.appRequest(input),
+      archived: Effect.sync(() => this.ctx.storage.kv.get<boolean>("archived") === true),
       // As the Session's: a deployed `prod` stage's, with no label.
       viewOrigin: (view) => viewOrigin({ hash: view, label: undefined, local: false }),
     });

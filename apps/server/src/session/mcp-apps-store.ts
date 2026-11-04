@@ -12,7 +12,7 @@
 // are bound when the runtime builds its layer, as the MCP questions' are (`./mcp-questions.ts`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain storage reads,
 // under Effect.sync.
-import type { McpAppHtmlInput } from "@cloudpid/extensions/mcp";
+import type { McpAppHtmlInput, McpAppRequestInput } from "@cloudpid/extensions/mcp";
 import { Secrets, type SecretsService } from "@cloudpid/extensions/secrets";
 import {
   appRecordBytes,
@@ -20,15 +20,20 @@ import {
   type ConversationId,
   type McpAppCopy,
   type McpAppDraft,
+  type McpAppAuditEntry,
   type McpAppEntry,
   type McpAppHtmlAnswer,
   McpAppRecord,
+  type McpAppRequestAnswer,
   type McpAppMounted,
   type McpAppStub,
   type McpAppTool,
+  MAX_MCP_APP_AUDIT,
   MAX_MCP_APP_RECORDS,
   MAX_MCP_APP_RECORDS_BYTES,
   MAX_MCP_APP_STUBS,
+  MCP_APP_INTERNAL_ERROR,
+  mcpAppError,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -40,6 +45,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Mutable } from "effect/Types";
+import { appCallsOver } from "./mcp-app-calls.ts";
 import { McpApps, type McpAppsService } from "./mcp-apps.ts";
 import { mcpAppToolsMessage, send, type SocketState } from "./sockets.ts";
 
@@ -57,6 +63,12 @@ const INDEX_KEY = "cloudpid:mcp-apps";
 const PART_LENGTH = 256 * 1024;
 
 const partKey = (callId: string, part: number) => `cloudpid:mcp-app:${callId}:${part}`;
+
+/**
+ * Where a call's audit log is kept (`docs/architecture/mcp-apps.md` → An App View's calls): a value of its own, so a request
+ * of a View rewrites a few KiB and never the record (up to 1 MiB) or the index. A mount reads it into the record it answers.
+ */
+const auditKey = (callId: string) => `cloudpid:mcp-app-audit:${callId}`;
 
 /**
  * One call's entry of the index: a record's (`kept`, with its size and parts) or a stub's (`evicted`). `mountedAt` orders
@@ -95,6 +107,13 @@ export type SessionMcpAppsOptions = {
    * answer. It may throw for a `view` that is not a host's label of a View; the answer then has no origin.
    */
   readonly viewOrigin?: (view: string) => string;
+  /**
+   * An App View's request to its server, once the Session's checks pass (`McpTools.appRequest`): the MCP tools check it
+   * against the inventory and send it to the host as an `app` request.
+   */
+  readonly request?: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
+  /** Whether the Session is archived: its App Views may read, and call no tool. Absent: never. */
+  readonly archived?: Effect.Effect<boolean>;
   /** The time in epoch milliseconds, `Date.now` unless a test sets it. */
   readonly now?: () => number;
 };
@@ -205,14 +224,23 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
   const parts = (entry: IndexEntry): ReadonlyArray<string> =>
     Arr.makeBy(entry.parts, (part) => storage.get<string>(partKey(entry.callId, part)) ?? "");
 
+  /** Everything kept of the record: its parts and its audit log. */
   const dropParts = (entry: IndexEntry) => {
     for (let part = 0; part < entry.parts; part++) storage.delete(partKey(entry.callId, part));
+
+    storage.delete(auditKey(entry.callId));
   };
 
-  /** The record of a kept entry, or none when its parts are gone or unreadable. */
+  const readAudit = (callId: string): ReadonlyArray<McpAppAuditEntry> =>
+    storage.get<ReadonlyArray<McpAppAuditEntry>>(auditKey(callId)) ?? [];
+
+  /** The record of a kept entry with its audit log, or none when its parts are gone or unreadable. */
   const readRecord = (entry: IndexEntry) => {
     try {
-      return decodeRecord(JSON.parse(Arr.join(parts(entry), "")));
+      return Option.map(decodeRecord(JSON.parse(Arr.join(parts(entry), ""))), (record) => ({
+        ...record,
+        audit: readAudit(entry.callId),
+      }));
     } catch {
       return Option.none();
     }
@@ -272,10 +300,16 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     record: McpAppRecord,
     mountedAt: number,
   ): ReadonlyArray<IndexEntry> => {
-    const text = JSON.stringify(record);
+    // The audit log has a value of its own: the record's JSON, which is all the parts hold, carries none.
+    const stored: McpAppRecord = { ...record, audit: [] };
+    const text = JSON.stringify(stored);
     const old = Arr.findFirst(entries, (entry) => entry.callId === record.callId);
 
     if (Option.isSome(old)) dropParts(old.value);
+
+    if (record.audit.length > 0) {
+      storage.put(auditKey(record.callId), Arr.takeRight(record.audit, MAX_MCP_APP_AUDIT));
+    }
 
     const count = Math.max(1, Math.ceil(text.length / PART_LENGTH));
 
@@ -286,7 +320,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       );
     }
 
-    const entry = keptOf(record, count, mountedAt);
+    const entry = keptOf(stored, count, mountedAt);
 
     return Option.isSome(old)
       ? Arr.map(entries, (each) => (each.callId === record.callId ? entry : each))
@@ -560,7 +594,43 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
     );
 
+  /** Add `entry` to the audit log of call `callId`'s record, the last `MAX_MCP_APP_AUDIT` kept; none for a call with no record kept. */
+  const audit = (callId: string, entry: McpAppAuditEntry) =>
+    Effect.sync(() => {
+      const found = Arr.findFirst(index(), (each) => each.callId === callId);
+
+      if (Option.isNone(found) || found.value.state !== "kept") return;
+
+      storage.put(
+        auditKey(callId),
+        Arr.takeRight([...readAudit(callId), entry], MAX_MCP_APP_AUDIT),
+      );
+    });
+
+  const calls = appCallsOver({
+    record: (callId) =>
+      Option.map(
+        Arr.findFirst(index(), (entry) => entry.callId === callId && entry.state === "kept"),
+        (entry) => ({
+          server: entry.server,
+          conversation: entry.conversation,
+          viewHash: entry.viewHash,
+        }),
+      ),
+    request:
+      options.request ??
+      (() =>
+        Effect.succeed<McpAppRequestAnswer>(
+          mcpAppError("failed", "This Session has no MCP tools", MCP_APP_INTERNAL_ERROR),
+        )),
+    audit,
+    secrets,
+    archived: options.archived,
+    now,
+  });
+
   const service: McpAppsService = {
+    ...calls,
     put,
     setTools: (next) => {
       const key = JSON.stringify(next);

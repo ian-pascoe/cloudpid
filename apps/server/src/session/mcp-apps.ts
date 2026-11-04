@@ -10,13 +10,15 @@ import type {
   McpAppMounted,
   McpAppTool,
 } from "@cloudpid/protocol";
+import type { AppCalls } from "./mcp-app-calls.ts";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 /** What the Session holds of its App records, and of its inventory's App tools. */
 export type McpAppsService = McpAppRecorder &
-  McpAppCopies & {
+  McpAppCopies &
+  AppCalls & {
     /** The App calls of `conversation`, oldest first: what `mcp_apps` lists. */
     readonly list: (conversation: ConversationId) => Effect.Effect<ReadonlyArray<McpAppEntry>>;
     /** `conversation`'s App calls now, and again each time they change. */

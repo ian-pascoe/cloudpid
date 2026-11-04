@@ -25,6 +25,7 @@ import {
   SessionTree,
   LiveViewLinks,
   McpAppHtmlAnswer,
+  McpAppRequestAnswer,
   McpAppMounted,
   OwnerTabLinks,
   OwnerTabListing,
@@ -439,6 +440,28 @@ export interface SessionClient {
    * is none (an answer, not a failure). Fails as `catalog` does.
    */
   readonly appPage: (callId: string) => Effect.Effect<McpAppHtmlAnswer, SessionCommandError>;
+  /**
+   * An App View's request (`docs/architecture/mcp-apps.md` → An App View's calls): `method` (`tools/call` or `resources/read`)
+   * with the View's `params`, for the View of call `callId`; `requestId` names it for the cancel. The Session's answer is
+   * the result or the View's error (an answer, not a failure); fails as `catalog` does when the socket is down ("connection
+   * lost"). Interrupting the effect cancels the request at the Session.
+   */
+  readonly appRequest: (
+    callId: string,
+    requestId: string,
+    method: string,
+    params: Schema.Json | undefined,
+  ) => Effect.Effect<McpAppRequestAnswer, SessionCommandError>;
+  /**
+   * An App View's log line (`notifications/message`) for call `callId`, which the Session puts on a telemetry span. Sent
+   * to a Session that takes it (its `hello` said `appViews`) and dropped otherwise; nothing is answered.
+   */
+  readonly appLog: (
+    callId: string,
+    level: string,
+    logger: string | undefined,
+    message: string,
+  ) => void;
 }
 
 /** A conversation ID as the protocol brands it. */
@@ -530,6 +553,8 @@ const decodeOwnerTabListing = Schema.decodeUnknownOption(OwnerTabListing);
 const decodeMcpAppMounted = Schema.decodeUnknownOption(McpAppMounted);
 
 const decodeMcpAppHtmlAnswer = Schema.decodeUnknownOption(McpAppHtmlAnswer);
+
+const decodeMcpAppRequestAnswer = Schema.decodeUnknownOption(McpAppRequestAnswer);
 
 const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
 
@@ -628,6 +653,22 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
   const send = (message: ClientMessage): void => {
     connection?.ws?.send(JSON.stringify(message));
+  };
+
+  // Whether the Session on this connection takes `page_visible` and `mcp_app_log` (its `hello` says): one from before reads
+  // either as an unreadable message and answers an error, which the owner would see on every connect and tab switch.
+  let appViews = false;
+
+  /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
+  const sendVisibility = (): void => {
+    if (!appViews) return;
+
+    send({
+      type: "page_visible",
+      id: nextCommandId(),
+      // Only a page that says it is hidden is: one with no document, or a test's stub of one, is not.
+      visible: typeof document === "undefined" || document.visibilityState !== "hidden",
+    });
   };
 
   const lanes = (view: SessionView): QueueLanes => {
@@ -940,6 +981,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     if (connection === ended) connection = null;
 
     watched = false;
+    // The next `hello` says whether the Session that answers takes the App Views' messages.
+    appViews = false;
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of pending) submit.sent = false;
@@ -980,6 +1023,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         const moved = root !== null && root !== message.root;
 
         root = message.root;
+        appViews = message.appViews === true;
         update({
           activeBranch: root,
           copying: message.copying === true,
@@ -994,6 +1038,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         if (usageWanted) send({ type: "watch_usage", id: nextCommandId() });
 
         if (changesWanted) send({ type: "watch_changes", id: nextCommandId() });
+
+        // A socket that has not said its page is visible is not: the Session refuses its App Views' requests.
+        sendVisibility();
 
         for (const conversationId of changesWatches) sendChangesWatch(conversationId);
 
@@ -1614,6 +1661,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       ),
   });
 
+  // The page's visibility, as it changes (a page with no document, or a test's stub with no events, never changes).
+  if (typeof document !== "undefined" && "addEventListener" in document) {
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        document.addEventListener("visibilitychange", sendVisibility);
+      }),
+      () =>
+        Effect.sync(() => {
+          document.removeEventListener("visibilitychange", sendVisibility);
+        }),
+    );
+  }
+
   // Closing the scope: the supervisor stops first (its socket closes with it), then the client says it is closed.
   yield* Effect.addFinalizer(() =>
     step(() => {
@@ -1943,6 +2003,38 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       request((id) => ({ type: "mcp_app_mount", id, callId }), decodeMcpAppMounted),
     appPage: (callId) =>
       request((id) => ({ type: "mcp_app_html", id, callId }), decodeMcpAppHtmlAnswer),
+    appLog: (callId, level, logger, message) => {
+      if (!appViews) return;
+
+      const line: Extract<ClientMessage, { type: "mcp_app_log" }> = {
+        type: "mcp_app_log",
+        id: nextCommandId(),
+        callId,
+        level,
+        message,
+      };
+
+      send(logger === undefined ? line : { ...line, logger });
+    },
+    appRequest: (callId, requestId, method, params) =>
+      request((id) => {
+        const message: Extract<ClientMessage, { type: "mcp_app_request" }> = {
+          type: "mcp_app_request",
+          id,
+          callId,
+          requestId,
+          method,
+        };
+
+        return params === undefined ? message : { ...message, params };
+      }, decodeMcpAppRequestAnswer).pipe(
+        // The View gave up (its teardown, or it cancelled): the Session ends the request, and the host's with it.
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            send({ type: "mcp_app_cancel", id: nextCommandId(), callId, requestId });
+          }),
+        ),
+      ),
   };
 
   return client;

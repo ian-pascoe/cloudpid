@@ -31,6 +31,11 @@ import type {
   McpUiToolInputPartialNotification,
   McpUiToolResultNotification,
 } from "@modelcontextprotocol/ext-apps";
+import {
+  MCP_APP_INTERNAL_ERROR,
+  MCP_APP_INVALID_PARAMS,
+  MCP_APP_METHOD_NOT_FOUND,
+} from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -62,6 +67,9 @@ const HOST_CONTEXT_CHANGED =
 
 const RESOURCE_TEARDOWN = "ui/resource-teardown" satisfies McpUiResourceTeardownRequest["method"];
 
+/** The View's log line (MCP's `notifications/message`), which goes to `options.logs` and nowhere else. */
+const LOG_MESSAGE = "notifications/message";
+
 const REQUEST_DISPLAY_MODE =
   "ui/request-display-mode" satisfies McpUiRequestDisplayModeRequest["method"];
 
@@ -73,10 +81,6 @@ export const INITIALIZE_TIMEOUT_MS = 10_000;
 
 /** How long a teardown waits for the View's answer before the frame goes anyway (`docs/architecture/mcp-apps.md` → App Views in the transcript: Teardown). */
 export const TEARDOWN_TIMEOUT_MS = 2000;
-
-/** JSON-RPC's own error codes, and the one `ui/open-link` answers a dismissal with. */
-export const METHOD_NOT_FOUND = -32_601;
-const INTERNAL_ERROR = -32_603;
 
 /** What the page's `window` gives a message: the window it came from, the origin of that window's document, and the data. */
 export interface IncomingMessage {
@@ -132,7 +136,9 @@ export interface BridgeOptions {
   readonly capabilities: McpUiHostCapabilities;
   readonly hostInfo: { readonly name: string; readonly version: string };
   /** Handlers of a View's requests, by method: the seam the tickets that serve more of them plug into. */
-  readonly handlers?: Readonly<Record<string, RequestHandler>>;
+  readonly handlers?: Readonly<Record<string, RequestHandler>> | undefined;
+  /** The `params` of each `notifications/message` the View sends, for telemetry (`requests.ts`); dropped when there is none. */
+  readonly logs?: ((params: unknown) => void) | undefined;
   readonly onEvent: (event: BridgeEvent) => void;
 }
 
@@ -242,7 +248,9 @@ export const createBridge = (options: BridgeOptions): Bridge => {
       const asked = decodeInitialize(params);
 
       if (Option.isNone(asked)) {
-        return Promise.reject(new RpcError(-32_602, "ui/initialize needs a protocolVersion"));
+        return Promise.reject(
+          new RpcError(MCP_APP_INVALID_PARAMS, "ui/initialize needs a protocolVersion"),
+        );
       }
 
       const result: McpUiInitializeResult = {
@@ -290,7 +298,7 @@ export const createBridge = (options: BridgeOptions): Bridge => {
     const handler = handlerOf(method);
 
     if (handler === undefined) {
-      respond(id, { error: new RpcError(METHOD_NOT_FOUND, `Method not found: ${method}`) });
+      respond(id, { error: new RpcError(MCP_APP_METHOD_NOT_FOUND, `Method not found: ${method}`) });
 
       return;
     }
@@ -304,7 +312,7 @@ export const createBridge = (options: BridgeOptions): Bridge => {
           error:
             error instanceof RpcError
               ? error
-              : new RpcError(INTERNAL_ERROR, "The host could not answer"),
+              : new RpcError(MCP_APP_INTERNAL_ERROR, "The host could not answer"),
         });
       },
     );
@@ -324,7 +332,13 @@ export const createBridge = (options: BridgeOptions): Bridge => {
       if (Option.isSome(size)) options.onEvent({ type: "size", ...size.value });
     }
 
-    // Any other notification (`notifications/message` among them) is nothing the host serves yet; it is dropped.
+    if (method === LOG_MESSAGE) {
+      options.logs?.(params);
+
+      return;
+    }
+
+    // Any other notification is nothing the host serves yet; it is dropped.
   };
 
   let initializeAnswered = false;

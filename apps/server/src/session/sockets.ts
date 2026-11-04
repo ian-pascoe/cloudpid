@@ -26,6 +26,7 @@ import {
   type McpAppEntry,
   type McpAppHtmlAnswer,
   type McpAppMounted,
+  type McpAppRequestAnswer,
   type McpAppTool,
   type McpElicitationRequest,
   type McpSamplingRequest,
@@ -105,6 +106,8 @@ const Attachment = Schema.Struct({
   usage: Schema.optionalKey(Schema.Boolean),
   changes: Schema.optionalKey(Schema.Boolean),
   conversationChanges: ConversationId.pipe(Schema.Array, Schema.optionalKey),
+  /** Whether the page said it is visible (`page_visible`); a page that has not said is not. */
+  visible: Schema.optionalKey(Schema.Boolean),
 });
 
 type Attachment = typeof Attachment.Type;
@@ -324,6 +327,16 @@ const setWatched = (socket: WebSocket, conversationId: ConversationId, watched: 
       ...attachment,
       watches: watched ? Arr.append(others, conversationId) : others,
     } satisfies Attachment);
+  });
+
+/** The conversation an App record names, as the number's text it keeps. */
+// SAFETY: a record's `conversation` is the text of the `ConversationId` it was made in.
+const conversationOf = (text: string): ConversationId => Number(text) as ConversationId;
+
+/** Record whether `socket`'s page is visible. */
+const setVisible = (socket: WebSocket, visible: boolean) =>
+  Effect.sync(() => {
+    socket.serializeAttachment({ ...readAttachment(socket), visible } satisfies Attachment);
   });
 
 /** Record that `socket` watches the task graph, or no longer does. */
@@ -678,6 +691,7 @@ export const sessionSocketsLayer = (
         | OwnerTabListing
         | McpAppMounted
         | McpAppHtmlAnswer
+        | McpAppRequestAnswer
         | null,
         | SessionError
         | SecretsError
@@ -959,6 +973,35 @@ export const sessionSocketsLayer = (
                   message: "The message names neither a call nor a page",
                 })
               : mcpApps.html(message.hash);
+          case "page_visible":
+            return setVisible(socket, message.visible).pipe(Effect.as(null));
+          case "mcp_app_request":
+            return mcpApps.request({
+              view: socket,
+              visible: readAttachment(socket).visible === true,
+              callId: message.callId,
+              requestId: message.requestId,
+              method: message.method,
+              params: message.params,
+              // Only a stdio server's request asks: the Workspace its call's conversation works in.
+              workspaceOf: (conversation) =>
+                host.workspaceOf(conversationOf(conversation)).pipe(
+                  Effect.map((workspace) => workspace?.object),
+                  Effect.orElseSucceed(() => undefined),
+                ),
+            });
+          case "mcp_app_log":
+            return mcpApps
+              .log({
+                view: socket,
+                callId: message.callId,
+                level: message.level,
+                logger: message.logger,
+                message: message.message,
+              })
+              .pipe(Effect.as(null));
+          case "mcp_app_cancel":
+            return mcpApps.cancel(socket, message.callId, message.requestId).pipe(Effect.as(null));
           case "viewed_set":
             return viewed
               .set({ repo: message.repo, pull: message.pull, path: message.path }, message.blob)
@@ -1020,7 +1063,10 @@ export const sessionSocketsLayer = (
 
           watching.delete(socket);
 
-          return fibers === undefined ? Effect.void : FiberMap.clear(fibers);
+          // The page went: what its App Views have in flight is cancelled.
+          return mcpApps
+            .endViews(socket)
+            .pipe(Effect.andThen(fibers === undefined ? Effect.void : FiberMap.clear(fibers)));
         });
 
       /** Tell every connected client which Session branch is active now, so each watches it instead. */
@@ -1071,7 +1117,12 @@ export const sessionSocketsLayer = (
 
         state.acceptWebSocket(server);
         server.serializeAttachment({ watches: [] } satisfies Attachment);
-        yield* send(server, copying ? { type: "hello", root, copying } : { type: "hello", root });
+        yield* send(
+          server,
+          copying
+            ? { type: "hello", root, copying, appViews: true }
+            : { type: "hello", root, appViews: true },
+        );
         yield* host.picks.pipe(
           Effect.flatMap((picks) => send(server, { type: "picked", ...picks })),
         );

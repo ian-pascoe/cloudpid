@@ -3,6 +3,7 @@
 // server not discovered yet may have a `direct` tool (the first request waits only for those).
 // @effect-diagnostics missingPipeableSignature:off -- readers of plain values, not combinators.
 import { type McpExposure, matchesToolPattern, mcpToolPrefix } from "@cloudpid/config";
+import { visibilityOfMeta } from "@cloudpid/mcp/types";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -91,20 +92,6 @@ export const flagsOf = (exposure: Exclude<McpExposure, "hidden">) => {
   }
 };
 
-/** The part of a tool's `_meta` that says who sees it (MCP Apps). */
-const Visibility = Schema.Struct({
-  ui: Schema.Struct({ visibility: Schema.Array(Schema.String) }),
-});
-
-const decodeVisibility = Schema.decodeUnknownOption(Visibility);
-
-/** A tool's `_meta.ui.visibility` (MCP Apps): `model` and `app` when it has none, or one that cannot be read. */
-export const visibilityOf = (meta: Schema.Json | undefined): ReadonlyArray<string> =>
-  Option.match(decodeVisibility(meta), {
-    onNone: () => ["model", "app"],
-    onSome: ({ ui }) => ui.visibility,
-  });
-
 /** Whether a tool's `_meta.ui.visibility` (MCP Apps) lets the model see it: absent, or unreadable, means it does. */
 export const reachesModel = (meta: Schema.Json | undefined): boolean =>
-  visibilityOf(meta).includes("model");
+  visibilityOfMeta(meta).includes("model");

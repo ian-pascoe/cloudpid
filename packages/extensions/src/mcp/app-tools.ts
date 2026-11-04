@@ -2,7 +2,7 @@
 // Apps, Socket messages).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off -- builders over plain values; a schema's size is its JSON text's length.
 import { mcpToolNames } from "@cloudpid/config";
-import { appUriOfMeta, isJsonObject } from "@cloudpid/mcp/types";
+import { appUriOfMeta, isJsonObject, visibilityOfMeta } from "@cloudpid/mcp/types";
 import {
   MAX_MCP_APP_SCHEMA_CHARS,
   MAX_MCP_APP_SCHEMAS_CHARS,
@@ -12,7 +12,6 @@ import {
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import type { Mutable } from "effect/Types";
-import { visibilityOf } from "./exposure.ts";
 import { listedTools, type McpBuildServer } from "./tools.ts";
 
 /**
@@ -45,7 +44,7 @@ export const appToolsOf = (servers: ReadonlyArray<McpBuildServer>): ReadonlyArra
           server: server.name,
           tool: tool.name,
           uri,
-          visibility: visibilityOf(tool._meta),
+          visibility: visibilityOfMeta(tool._meta),
         };
 
         if (tool.title !== undefined) app.title = tool.title;

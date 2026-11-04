@@ -88,8 +88,19 @@ export class FakeSocket implements Socket.WebSocketLike {
     }).pipe(Effect.andThen(settle));
   }
 
-  /** The commands sent so far, without heartbeats. */
+  /** The commands sent so far, without heartbeats and the page's visibility (`visibility`, which every open socket sends). */
   commands(): Array<{ readonly [key: string]: Value }> {
+    return this.everything().filter((command) => command["type"] !== "page_visible");
+  }
+
+  /** The `visible` of each `page_visible` sent so far. */
+  visibility(): Value[] {
+    return this.everything()
+      .filter((command) => command["type"] === "page_visible")
+      .map((command) => command["visible"]);
+  }
+
+  private everything(): Array<{ readonly [key: string]: Value }> {
     return this.sent.filter((text) => text !== "ping").map((text) => JSON.parse(text));
   }
 

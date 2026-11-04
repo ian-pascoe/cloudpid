@@ -21,6 +21,7 @@ import {
   readStreamed,
   type McpAppHtmlInput,
   type McpAppRecorder,
+  type McpAppRequestInput,
   type McpHostClientService,
   type McpNotices,
   type McpQuestionsService,
@@ -34,7 +35,7 @@ import {
   type SweepHarness,
 } from "@cloudpid/extensions/mcp";
 import { reloadToolSearch } from "@cloudpid/extensions/tool-search";
-import type { McpAppHtmlAnswer } from "@cloudpid/protocol";
+import { mcpAppError, type McpAppHtmlAnswer, type McpAppRequestAnswer } from "@cloudpid/protocol";
 import {
   HostFailed,
   type McpApplyResult,
@@ -281,6 +282,8 @@ export type SessionMcpOptions = {
 export type SessionMcp = SessionHostMcp<never> & {
   /** The page under an App record's `htmlHash`, through the host's `ui/html`, when it lists `app_html`. Never fails. */
   readonly appHtml: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
+  /** An App View's request to its server, checked and sent as the View's own (`McpTools.appRequest`). Never fails. */
+  readonly appRequest: (input: McpAppRequestInput) => Effect.Effect<McpAppRequestAnswer>;
 };
 
 /** The Session host's MCP tools (`SessionHostOptions.mcp`), with one `McpTools` for the Session's Environment. */
@@ -554,6 +557,13 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
         })
       : held.tools.appHtml(input);
 
+  const appRequest: SessionMcp["appRequest"] = (input) =>
+    held === undefined
+      ? Effect.succeed<McpAppRequestAnswer>(
+          mcpAppError("unavailable", "This Session has no MCP servers"),
+        )
+      : held.tools.appRequest(input);
+
   /** The models, Roles, limit and Usage the sampler works with, once the host's Harness is open. */
   const bindSampling = (binding: McpSamplingBinding) => {
     options.sampling?.bind(binding);
@@ -569,6 +579,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     notify,
     prompts,
     appHtml,
+    appRequest,
   };
 };
 

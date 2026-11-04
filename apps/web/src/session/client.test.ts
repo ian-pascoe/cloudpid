@@ -2930,6 +2930,197 @@ describe("the App calls on a Session connection", () => {
   );
 
   it.effect(
+    "sends a View's request by its call and name, answers with the Session's answer, and cancels it when interrupted",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* watching(latest());
+
+        const asked = yield* client
+          .appRequest("c1", "r1", "tools/call", { name: "weather" })
+          .pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const sent = latest()
+          .commands()
+          .find((command) => command.type === "mcp_app_request");
+
+        expect(sent).toEqual({
+          type: "mcp_app_request",
+          id: expect.any(String),
+          callId: "c1",
+          requestId: "r1",
+          method: "tools/call",
+          params: { name: "weather" },
+        });
+        yield* latest().say({
+          type: "result",
+          id: sent?.id,
+          result: { status: "result", result: { content: [] } },
+        });
+        expect(yield* Fiber.join(asked)).toEqual({ status: "result", result: { content: [] } });
+
+        const abandoned = yield* client
+          .appRequest("c1", "r2", "resources/read", undefined)
+          .pipe(Effect.forkChild);
+
+        yield* settle;
+        yield* Fiber.interrupt(abandoned);
+
+        const commands = latest().commands();
+
+        expect(commands.find((command) => command.requestId === "r2")).not.toHaveProperty("params");
+        expect(commands.find((command) => command.type === "mcp_app_cancel")).toEqual({
+          type: "mcp_app_cancel",
+          id: expect.any(String),
+          callId: "c1",
+          requestId: "r2",
+        });
+      }),
+  );
+
+  /** Connect and greet as a Session of this build does, saying it takes the App Views' messages. */
+  const greeted = (socket: FakeSocket, hello: { readonly [key: string]: Value }) =>
+    Effect.gen(function* () {
+      yield* socket.open();
+      yield* socket.say({ type: "hello", root: 1, ...hello });
+
+      const watch = socket.commands().find((command) => command.type === "watch");
+
+      yield* socket.say({ type: "result", id: watch?.id, result: null });
+      yield* socket.say(snapshot());
+    });
+
+  it.effect(
+    "tells a Session that says it takes them whether its page is visible, when the socket opens",
+    () =>
+      Effect.gen(function* () {
+        const { latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+
+        expect(latest().visibility()).toEqual([true]);
+      }),
+  );
+
+  it.effect(
+    "sends a Session from before no page_visible and no log line, so the owner never sees its error",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), {});
+
+        client.appLog("c1", "error", undefined, "a line");
+
+        expect(latest().visibility()).toEqual([]);
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "mcp_app_log"),
+        ).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "sends a View's log line to a Session that takes it, with its logger when there is one",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+
+        client.appLog("c1", "warning", "view", "careful");
+        client.appLog("c1", "error", undefined, "broke");
+
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "mcp_app_log"),
+        ).toEqual([
+          {
+            type: "mcp_app_log",
+            id: expect.any(String),
+            callId: "c1",
+            level: "warning",
+            logger: "view",
+            message: "careful",
+          },
+          {
+            type: "mcp_app_log",
+            id: expect.any(String),
+            callId: "c1",
+            level: "error",
+            message: "broke",
+          },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "decides again at each hello: a Session that replaces one that took them, and does not say so, is sent nothing",
+    () =>
+      Effect.gen(function* () {
+        const { client, sockets, latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+        yield* latest().drop();
+        yield* advance(1_000);
+
+        const reconnected = sockets[1]!;
+
+        yield* reconnected.open();
+        yield* reconnected.say({ type: "hello", root: 1 });
+        client.appLog("c1", "error", undefined, "a line");
+
+        expect(reconnected.visibility()).toEqual([]);
+        expect(reconnected.commands().filter((command) => command.type === "mcp_app_log")).toEqual(
+          [],
+        );
+      }),
+  );
+
+  it.effect("connects on a page whose `document` is a stub with no events or visibility", () =>
+    Effect.gen(function* () {
+      vi.stubGlobal("document", { body: {} });
+
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          vi.unstubAllGlobals();
+        }),
+      );
+
+      const { latest } = yield* setup();
+
+      yield* greeted(latest(), { appViews: true });
+
+      // Nothing says it is hidden, so it is not.
+      expect(latest().visibility()).toEqual([true]);
+    }),
+  );
+
+  it.effect(
+    "fails a View's request that the dropped socket had in flight, saying the connection was lost",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+
+        const asked = yield* client
+          .appRequest("c1", "r1", "tools/call", { name: "slow" })
+          .pipe(Effect.flip, Effect.forkChild);
+
+        yield* settle;
+        yield* latest().drop();
+
+        expect((yield* Fiber.join(asked)).message).toContain("connection was lost");
+      }),
+  );
+
+  it.effect(
     "mounts a call by its ID and reads its page by it, each answered as the Session did",
     () =>
       Effect.gen(function* () {

@@ -14,7 +14,13 @@ import { PageRef } from "./attached-pages.ts";
 import { ConversationId } from "./conversation-id.ts";
 import { SecretKeep } from "./environment-secrets.ts";
 import { LastRunMessage } from "./last-run.ts";
-import { MAX_MCP_APP_KEY, McpAppsMessage, McpAppToolsMessage } from "./mcp-apps.ts";
+import {
+  MAX_MCP_APP_KEY,
+  MAX_MCP_APP_LOG_CHARS,
+  MAX_MCP_APP_REQUEST_KEY,
+  McpAppsMessage,
+  McpAppToolsMessage,
+} from "./mcp-apps.ts";
 import { McpSignInRequest, MAX_SIGN_IN_REASON } from "./mcp-sign-in-requests.ts";
 import {
   ElicitationContent,
@@ -668,6 +674,55 @@ export const McpAppHtml = Schema.Struct({
   callId: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY))),
 });
 
+/**
+ * An App View's request, forwarded by its page (`docs/architecture/mcp-apps.md` → An App View's calls, Socket messages):
+ * `method` is `tools/call` or `resources/read` with the View's own `params`, for the App View of call `callId`; the
+ * server is the call's record's, never the message's. `requestId` names the request for `mcp_app_cancel`, unique among
+ * the page's requests of that call. Answered with an `McpAppRequestAnswer`, however it ends; an answer is never an
+ * error message, so a refusal reads as the View's JSON-RPC error. A page that is not visible has its requests refused.
+ */
+export const McpAppRequest = Schema.Struct({
+  type: Schema.Literal("mcp_app_request"),
+  id: CommandId,
+  callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_REQUEST_KEY)),
+  method: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_REQUEST_KEY)),
+  params: Schema.optionalKey(Schema.Json),
+});
+
+/** Cancel the App View's request `requestId` of call `callId` that this socket sent, if it is still running: its answer is then the cancelled error. Answered with null. */
+export const McpAppCancel = Schema.Struct({
+  type: Schema.Literal("mcp_app_cancel"),
+  id: CommandId,
+  callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+  requestId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_REQUEST_KEY)),
+});
+
+/**
+ * An App View's `notifications/message` (a log line), for the App View of call `callId`: the Session redacts it, cuts it to
+ * `MAX_MCP_APP_LOG_CHARS`, and puts a `warning` or above on a telemetry span as a span event; the rest is dropped. Nothing
+ * reaches the model, a transcript or the audit log. Answered with null; sent only to a Session that says `appViews` in `hello`.
+ */
+export const McpAppLog = Schema.Struct({
+  type: Schema.Literal("mcp_app_log"),
+  id: CommandId,
+  callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
+  level: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_REQUEST_KEY)),
+  logger: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_REQUEST_KEY))),
+  message: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_LOG_CHARS)),
+});
+
+/**
+ * Whether this page is visible (`document.visibilityState`): sent when the socket opens and whenever it changes. A socket
+ * that has not said is not visible, so a page that cannot say has its App Views' requests refused, and no background tab
+ * keeps a Container awake (`docs/architecture/mcp-apps.md` → An App View's calls). Answered with null.
+ */
+export const PageVisible = Schema.Struct({
+  type: Schema.Literal("page_visible"),
+  id: CommandId,
+  visible: Schema.Boolean,
+});
+
 /** Client → server. */
 export const ClientMessage = Schema.Union([
   TreeRequest,
@@ -700,6 +755,10 @@ export const ClientMessage = Schema.Union([
   ViewedSet,
   McpAppMount,
   McpAppHtml,
+  McpAppRequest,
+  McpAppCancel,
+  McpAppLog,
+  PageVisible,
   WatchTaskGraph,
   UnwatchTaskGraph,
   WatchUsage,
@@ -721,12 +780,15 @@ export type ClientMessage = typeof ClientMessage.Type;
  * Sent once on connect: the Session's active branch (GLOSSARY.md → Session branch) as `root`, to `watch` and to submit
  * to without a `conversationId`; `copying` while the Session is still being filled from the one it is a Fork or Clone
  * of. `root` keeps the name it had before Session branches, when the root conversation was the only one, so a client
- * still open across the deploy reads it as it did.
+ * still open across the deploy reads it as it did. `appViews` says the Session takes `page_visible` and `mcp_app_log`: a
+ * client sends them only to a Session that says so, since one from before reads them as an unreadable message and
+ * answers an error (`docs/architecture/mcp.md` → Deploys).
  */
 export const Hello = Schema.Struct({
   type: Schema.Literal("hello"),
   root: ConversationId,
   copying: Schema.optionalKey(Schema.Boolean),
+  appViews: Schema.optionalKey(Schema.Boolean),
 });
 
 /**

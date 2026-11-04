@@ -32,6 +32,20 @@ export const MAX_MCP_APP_STUBS = 2000;
 /** The most entries an App's audit log keeps (`docs/architecture/mcp-apps.md` → An App View's calls). */
 export const MAX_MCP_APP_AUDIT = 50;
 
+/**
+ * An App View's limits (`docs/architecture/mcp-apps.md` → An App View's calls): requests in flight at once, and requests a
+ * minute, for each View (a Session socket's mount of one call), counted whether or not the request is let through.
+ */
+export const MAX_MCP_APP_IN_FLIGHT = 4;
+export const MAX_MCP_APP_PER_MINUTE = 60;
+
+/** The log lines (`notifications/message`) a View may send in a minute, counted the same way. */
+export const MAX_MCP_APP_LOGS_PER_MINUTE = 60;
+
+/** What an audit entry keeps of a request: its arguments, in UTF-8 bytes (cut at a character), and the result's or error's text, in characters. */
+export const MCP_APP_AUDIT_ARGS_BYTES = 2048;
+export const MCP_APP_AUDIT_TEXT_CHARS = 500;
+
 /** The most App tools `mcp_app_tools` lists. */
 export const MAX_MCP_APP_TOOLS = 1000;
 
@@ -177,6 +191,75 @@ export const McpAppToolsMessage = Schema.Struct({
 
 /** The longest `callId` or `hash` a client's message may carry. */
 export const MAX_MCP_APP_KEY = 512;
+
+/** The longest `requestId` or `method` of an App View's request a client's message may carry. */
+export const MAX_MCP_APP_REQUEST_KEY = 128;
+
+/** The most characters of an App View's log message (`notifications/message`) the client sends and the Session keeps for telemetry. */
+export const MAX_MCP_APP_LOG_CHARS = 2048;
+
+/** JSON-RPC's codes an App View's request is answered with, and the server-error code its refused, cancelled and unavailable ones are. */
+export const MCP_APP_METHOD_NOT_FOUND = -32_601;
+export const MCP_APP_INVALID_PARAMS = -32_602;
+export const MCP_APP_INTERNAL_ERROR = -32_603;
+export const MCP_APP_REFUSED = -32_000;
+
+/** Why an App View's request failed: the `reason` of an error answer. A reason a later build adds reads as `failed`. */
+export const McpAppReason = Schema.Literals([
+  "sign_in",
+  "hidden",
+  "limit",
+  "refused",
+  "cancelled",
+  "unavailable",
+  "failed",
+]);
+
+export type McpAppReason = typeof McpAppReason.Type;
+
+/**
+ * What `mcp_app_request` answers (`docs/architecture/mcp-apps.md` → An App View's calls): the server's `result` (a
+ * `CallToolResult` or a `ReadResourceResult`, redacted of the Secrets the Session holds, never shaped as the model's), or an
+ * `error` the View is answered with as JSON-RPC's: `code` and `message`, and `reason`, which says why (`sign_in`, `hidden`,
+ * `limit`, `refused`, `cancelled`, `unavailable`, `failed`; a reason this build does not know reads as `failed`). A
+ * `sign_in` error names the `server`, and `stepUp` when the sign-in it has is not enough; the card links Sign in. `audit` is
+ * the entry the Session kept of the request, for the card's details; absent when none was kept (a refused request leaves
+ * none). A status this build does not know reads as an error.
+ */
+export const McpAppRequestResult = Schema.Struct({
+  status: Schema.Literal("result"),
+  result: Schema.Record(Schema.String, Schema.Json),
+  audit: Schema.optionalKey(McpAppAuditEntry),
+});
+
+export type McpAppRequestResult = typeof McpAppRequestResult.Type;
+
+export const McpAppRequestError = Schema.Struct({
+  status: Schema.Literal("error"),
+  code: Schema.Finite,
+  message: Schema.String,
+  reason: Schema.String,
+  server: Schema.optionalKey(Schema.String),
+  stepUp: Schema.optionalKey(Schema.Boolean),
+  audit: Schema.optionalKey(McpAppAuditEntry),
+});
+
+export type McpAppRequestError = typeof McpAppRequestError.Type;
+
+/** An error answer for an App View's request: `reason`, the words for the View, and the JSON-RPC `code` (a refusal's, unless it says otherwise). */
+export const mcpAppError = (
+  reason: McpAppReason,
+  message: string,
+  code: number = MCP_APP_REFUSED,
+): McpAppRequestError => ({ status: "error", code, message, reason });
+
+export const McpAppRequestAnswer = Schema.Union([
+  McpAppRequestResult,
+  McpAppRequestError,
+  Schema.Struct({ status: Schema.String, message: Schema.optionalKey(Schema.String) }),
+]);
+
+export type McpAppRequestAnswer = typeof McpAppRequestAnswer.Type;
 
 /**
  * What `mcp_app_mount` answers: the call's `record`, a `stub` (evicted: the summary only) or `none` (no record of the call:
@@ -520,4 +603,73 @@ export const boundAppRecord = (
   }
 
   return cut ? { ...current, truncated: true } : current;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The audit log
+
+/** The first text of a `CallToolResult`'s `content` or a `ReadResourceResult`'s `contents`: what an audit entry says of what came back. */
+const firstTextOf = (result: JsonRecord): string | undefined => {
+  for (const key of ["content", "contents"]) {
+    const blocks = result[key];
+
+    if (!Arr.isArray(blocks)) continue;
+
+    // SAFETY: `result` is JSON, whose array is an array of JSON values.
+    for (const block of blocks as ReadonlyArray<Json>) {
+      if (isRecord(block) && Predicate.isString(block["text"])) return block["text"];
+    }
+  }
+
+  return undefined;
+};
+
+/** `text` on one line: whitespace runs are a space, and at most `max` characters, `…` marking a cut. */
+const oneLineCut = (text: string, max: number): string => {
+  const line = text.replaceAll(/\s+/g, " ").trim();
+
+  return line.length <= max ? line : `${line.slice(0, max - 1)}…`;
+};
+
+/** What an App View asked for and what came of it, as the audit log's summary (`MCP_APP_AUDIT_ARGS_BYTES`, `MCP_APP_AUDIT_TEXT_CHARS`). */
+export type McpAppAuditSummary = {
+  readonly method: string;
+  /** The tool's name, or the resource's URI. */
+  readonly target: string;
+  readonly arguments?: Json | undefined;
+  /** The answer: its `result`, or its error's `reason` and `message`. */
+  readonly outcome:
+    | { readonly status: "result"; readonly result: JsonRecord }
+    | { readonly status: "error"; readonly reason: string; readonly message: string };
+};
+
+/**
+ * One line for the audit log (`docs/architecture/mcp-apps.md` → An App View's calls): `<method> <target> <arguments> →
+ * <outcome>`, with the arguments' JSON cut to `MCP_APP_AUDIT_ARGS_BYTES` and the outcome's text to `MCP_APP_AUDIT_TEXT_CHARS`
+ * characters. It names no more than the View sent and the server answered; the caller redacts the Secrets held.
+ */
+export const appAuditSummary = (what: McpAppAuditSummary): string => {
+  const target = oneLineCut(what.target, 200);
+
+  const sent =
+    what.arguments === undefined ||
+    (isRecord(what.arguments) && Object.keys(what.arguments).length === 0)
+      ? ""
+      : ` ${cutUtf8(JSON.stringify(what.arguments), MCP_APP_AUDIT_ARGS_BYTES)}`;
+
+  const { outcome } = what;
+
+  const text =
+    outcome.status === "result"
+      ? (() => {
+          const first = firstTextOf(outcome.result);
+          const label = outcome.result["isError"] === true ? "tool error" : "ok";
+
+          return first === undefined
+            ? label
+            : `${label}: ${oneLineCut(first, MCP_APP_AUDIT_TEXT_CHARS)}`;
+        })()
+      : `${outcome.reason}: ${oneLineCut(outcome.message, MCP_APP_AUDIT_TEXT_CHARS)}`;
+
+  return `${what.method} ${target}${sent} → ${text}`;
 };
