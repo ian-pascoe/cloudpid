@@ -51,6 +51,7 @@ import {
   send,
 } from "./exchange.ts";
 import { withElicitation } from "./elicit.ts";
+import { withSampling } from "./sample.ts";
 import { exposureKeys, flagsOf, isReachable, reachesModel } from "./exposure.ts";
 import { type McpResultContext, resultFor } from "./result.ts";
 import { resourceTools } from "./resources.ts";
@@ -72,6 +73,13 @@ export const extensionName = "mcp";
 export const MCP_RESUME_FEATURE = "resume";
 
 /**
+ * The host feature a call answers a Legacy server's Sampling requests with: a host that lists it declares `sampling` to a
+ * server whose definition says `allow` (`docs/architecture/mcp-server-requests.md` → Sampling requests). Without it no
+ * server is told it may sample, so none asks.
+ */
+export const MCP_SAMPLING_FEATURE = "sampling";
+
+/**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
  * build reads (`timeout`, `description` and the Exposure keys), so what a Session keeps of a build never holds the
  * entry's URL, headers, `env` or OAuth, where a literal credential may be. Decoding an inventory's server drops the rest.
@@ -90,6 +98,8 @@ export const McpBuildServer = Schema.Struct({
     type: Schema.optionalKey(Schema.Json),
     timeout: Schema.optionalKey(Schema.Json),
     description: Schema.optionalKey(Schema.Json),
+    /** `allow` for a server whose Sampling requests are answered on the Session's models; `ask` and `deny` answer none yet. */
+    sampling: Schema.optionalKey(Schema.Json),
     exposure: Schema.optionalKey(Schema.Json),
     toolExposure: Schema.optionalKey(Schema.Json),
   }),
@@ -153,6 +163,7 @@ const toolFor = (
   readServer: string | undefined,
   appHtml: boolean,
   defers: boolean,
+  samples: boolean,
 ): ToolRegistration => {
   const base = baseDetails(server.name, tool);
   const app = options.apps !== undefined && appUriOfMeta(tool._meta) !== undefined;
@@ -166,6 +177,7 @@ const toolFor = (
     details: base,
     subject: "tool",
     defers,
+    samples,
   };
 
   return {
@@ -226,7 +238,9 @@ const toolFor = (
         },
       );
 
-      return sent.ok ? withElicitation(sent.value, sent.asked) : sent.result;
+      return sent.ok
+        ? withSampling(withElicitation(sent.value, sent.asked), sent.sampled)
+        : sent.result;
     },
   };
 };
@@ -276,6 +290,9 @@ export const mcpExtension = (
   // A Modern server's questions wait for the owner past their round only on a host that resumes the call.
   const defers = build.features?.includes(MCP_RESUME_FEATURE) === true;
 
+  // A Legacy server's Sampling requests are answered only on a host that lists `sampling` (it declares them to the server).
+  const samples = build.features?.includes(MCP_SAMPLING_FEATURE) === true;
+
   const tools = Arr.flatMap(build.servers, (server) => {
     const listed = listedTools(server);
 
@@ -312,6 +329,7 @@ export const mcpExtension = (
               readServerOf(server),
               appHtml,
               defers,
+              samples,
             ),
           );
     });
