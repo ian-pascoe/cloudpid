@@ -30,7 +30,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
+import { type AgentChangeAuthor, type AgentChanges, recordedAuthor } from "./agent-changes.ts";
 import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { mcpServerNamed, resolvedMcpServers } from "./mcp-set.ts";
 import {
@@ -191,10 +191,7 @@ export const changeSettings = (
       changes.record({
         scope: SETTINGS_SCOPE,
         at: now,
-        actor: "agent",
-        session: author.session,
-        conversation: author.conversation,
-        tool: author.tool,
+        ...recordedAuthor(author),
         reason: author.reason,
         field,
         before,
@@ -398,10 +395,7 @@ export const changeSettingsOverrides = (
       return changes.record({
         scope: environment,
         at: now,
-        actor: "agent",
-        session: author.session,
-        conversation: author.conversation,
-        tool: author.tool,
+        ...recordedAuthor(author),
         reason: author.reason,
         field,
         before: beforeInherited
@@ -460,10 +454,7 @@ const changeEnvironmentInstructions = (
   const recorded = changes.record({
     scope: known.environment,
     at: now,
-    actor: "agent",
-    session: author.session,
-    conversation: author.conversation,
-    tool: author.tool,
+    ...recordedAuthor(author),
     reason: author.reason,
     field: INSTRUCTIONS_ROOT,
     before,

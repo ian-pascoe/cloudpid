@@ -27,7 +27,7 @@ const write = async (
   );
 
 describe("the Sampling card's write of the definition", () => {
-  it("sets sampling at Global for a Global definition, as the owner's approved change, and pushes the Environment's host", async () => {
+  it("sets sampling at Global for a Global definition, as the owner's own change, and pushes the Environment's host", async () => {
     const world = await setup({ global: { mcp: { servers: { docs: ENTRY } } } });
     const result = await write(world, { kind: "global" }, "allow");
 
@@ -35,7 +35,9 @@ describe("the Sampling card's write of the definition", () => {
     expect(world.world.global).toMatchObject({
       mcp: { servers: { docs: { ...ENTRY, sampling: "allow" } } },
     });
-    expect(world.changeCalls).toEqual([{ scope: "*", approved: true, guard: undefined }]);
+    expect(world.changeCalls).toEqual([
+      { scope: "*", approved: false, guard: undefined, actor: "owner" },
+    ]);
     expect(world.recorded).toMatchObject([
       { field: "mcp.servers.docs", tool: SAMPLING_WRITE_TOOL, conversation: ROOT_CONVERSATION_ID },
     ]);
@@ -54,7 +56,9 @@ describe("the Sampling card's write of the definition", () => {
     expect(world.world.environments[DEFAULT]?.overrides).toMatchObject({
       mcp: { servers: { docs: { ...ENTRY, sampling: "off" } } },
     });
-    expect(world.changeCalls).toEqual([{ scope: DEFAULT, approved: true, guard: undefined }]);
+    expect(world.changeCalls).toEqual([
+      { scope: DEFAULT, approved: false, guard: undefined, actor: "owner" },
+    ]);
   });
 
   it("changes nothing for a Repo's definition or an unknown source", async () => {

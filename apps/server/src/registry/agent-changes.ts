@@ -58,7 +58,23 @@ export type AgentChangeAuthor = {
   readonly reason: string;
   /** Set when the owner approved the change before it was made (GLOSSARY.md → Approval). */
   readonly approved?: true | undefined;
+  /**
+   * Set when the change is the owner's own act, made through the Session (the Sampling card's *Always allow* and *Never*):
+   * recorded as the owner's change, with no Session, conversation or tool, and with no revert, as the owner's reverts have.
+   */
+  readonly actor?: "owner" | undefined;
 };
+
+/** Who a change by `author` is recorded as made by: the owner (no Session, conversation or tool) or the agent. */
+export const recordedAuthor = (author: AgentChangeAuthor) =>
+  author.actor === "owner"
+    ? ({ actor: "owner", session: null, conversation: null, tool: null } as const)
+    : ({
+        actor: "agent",
+        session: author.session,
+        conversation: author.conversation,
+        tool: author.tool,
+      } as const);
 
 /**
  * One Container setting of an Environment or at Global, given a new value: `field` is a setting's name (`idleMinutes`)

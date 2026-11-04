@@ -72,7 +72,7 @@ export const rememberSampling =
           conversation: conversationId,
           tool: SAMPLING_WRITE_TOOL,
           reason: `the owner chose ${value === "allow" ? "Always allow" : "Never"} on ${server}'s sampling card`,
-          approved: true,
+          actor: "owner",
         },
       });
 

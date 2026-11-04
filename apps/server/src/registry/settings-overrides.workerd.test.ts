@@ -60,6 +60,7 @@ const inRegistry = <A>(
       changes: ReadonlyArray<SettingsFieldChange>,
       environment?: string,
       at?: number,
+      by?: AgentChangeAuthor,
     ) => ReturnType<typeof changeSettingsOverrides>;
     readonly revert: (id: number, environment?: string) => ReturnType<typeof revertAgentChange>;
   }) => A,
@@ -79,12 +80,12 @@ const inRegistry = <A>(
       setGlobal: (overrides) => {
         if (Result.isFailure(writeSettings(store, overrides, 5))) throw new Error("bad Global");
       },
-      change: (wanted, environment = STAGING, at = 1_000) =>
+      change: (wanted, environment = STAGING, at = 1_000, by = author) =>
         changeSettingsOverrides(
           storage,
           store,
           changes,
-          { environment, changes: wanted, author },
+          { environment, changes: wanted, author: by },
           at,
         ),
       revert: (id, environment = STAGING) =>
@@ -225,6 +226,34 @@ describe("the agent's change of an Environment's Settings", () => {
       expect(change([{ field: "model", value: SONNET }])).toEqual({ status: "unchanged" });
       expect(changes.list(STAGING)).toHaveLength(1);
       expect(changes.list(SETTINGS_SCOPE)).toEqual([]);
+    }));
+
+  it("is recorded as the owner's, with no Session or tool and no revert, when the owner made it through the Session", () =>
+    inRegistry(({ change, changes, revert }) => {
+      const made = change([{ field: "model", value: SONNET }], STAGING, 1_000, {
+        ...author,
+        tool: "mcp_sampling_answer",
+        reason: "the owner chose Always allow",
+        actor: "owner",
+      });
+
+      expect(made).toMatchObject({
+        status: "changed",
+        changes: [
+          {
+            actor: "owner",
+            session: null,
+            conversation: null,
+            tool: null,
+            reason: "the owner chose Always allow",
+            field: "model",
+          },
+        ],
+      });
+      expect(changes.list(STAGING)).toHaveLength(1);
+
+      // The owner's own change has no revert, as the owner's revert has none.
+      expect(revert(changes.list(STAGING)[0]?.id ?? 0).status).not.toBe("reverted");
     }));
 
   it("resets a field, recorded as inherited after, and records nothing for one that inherits", () =>
