@@ -886,7 +886,7 @@ describe("servers", () => {
 });
 
 describe("apply({ kind: 'destroy' })", () => {
-  it("drops the discoveries in flight before it wipes the storage, and passes the engine no callback", async () => {
+  it("drops the discoveries in flight before it wipes the storage, and passes the engine no callback but the deprecation note", async () => {
     const host = freshHost();
 
     await host.apply(setOf(entry("linear")));
@@ -901,6 +901,6 @@ describe("apply({ kind: 'destroy' })", () => {
     await settled(host);
 
     expect(await host.dump()).not.toContain("conn-linear");
-    expect((await host.engineCalls()).map((call) => call.hooks)).toEqual([[]]);
+    expect((await host.engineCalls()).map((call) => call.hooks)).toEqual([["onDeprecated"]]);
   });
 });

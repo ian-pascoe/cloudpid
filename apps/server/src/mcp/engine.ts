@@ -3,9 +3,10 @@
 // build cannot read, an engine that cannot be reached and one that does not answer in time are one failure,
 // `McpEngineUnreachable`, which the host reads as the server being unavailable for now.
 //
-// A discovery passes the engine no hooks: it runs as a fiber in the host's runtime, often past the invocation that
-// started it, and a function stub lives only as long as the invocation that made it (#409 answer 2), so an
-// `untilAborted()` would cut it about 72 s later. The RPC itself is the object's own pending I/O, which keeps the object
+// A discovery passes the engine one hook only, `onDeprecated`, so a server's Sampling request is noted on any path, a
+// discovery's included; a note lost to a dead stub fails nothing. It passes no other: it runs as a fiber in the host's
+// runtime, often past the invocation that started it, and a function stub lives only as long as the invocation that
+// made it (#409 answer 2), so an `untilAborted()` would cut it about 72 s later. The RPC itself is the object's own pending I/O, which keeps the object
 // in memory for up to 15 minutes (Cloudflare's Durable Object lifecycle, "Pending operations prevent eviction"), and
 // the engine runs the discovery to its own bounds. That keep-alive is the documented behaviour, not yet verified on a
 // deployed stage: #409's 72 s also falls inside the 70-140 s idle eviction, so a deployed test still has to hold one
@@ -53,6 +54,7 @@ export type McpEngineClientService = {
   readonly discover: (
     target: McpEngineTarget,
     prior: PriorRows,
+    hooks?: Pick<McpEngineHooks, "onDeprecated">,
   ) => Effect.Effect<McpEngineDiscoverResult, McpEngineUnreachable>;
   /**
    * Send `request` to the server `target` names, from the rows the host keeps for it, with the caller's `hooks`: a
@@ -106,14 +108,14 @@ export const mcpEngineClient = (
         ),
       );
     }),
-  discover: (target, prior) =>
+  discover: (target, prior, hooks = {}) =>
     Effect.gen(function* () {
       const encoded = yield* encodeTarget(target).pipe(
         Effect.mapError(() => unreachable("The server's target could not be encoded")),
       );
 
       const answer = yield* Effect.tryPromise({
-        try: () => engine.discover(encoded, prior, {}),
+        try: () => engine.discover(encoded, prior, hooks),
         catch: (error) =>
           unreachable(
             `The MCP engine could not be reached: ${error instanceof Error ? error.message : "no answer"}`,

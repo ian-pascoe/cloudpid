@@ -13,7 +13,7 @@
 // failure on the host's side (the engine out of reach or silent) is not the server's: it leaves its state as it was,
 // held back for 30 s. No discovery holds its slot past `DISCOVERY_DEADLINE_MS`: it is then given up the same way.
 // @effect-diagnostics missingPipeableSignature:off -- the scheduler's operations, not combinators.
-import { allowsSampling, signsInOnItsOwn } from "@cloudpid/config";
+import { samplingOf, signsInOnItsOwn } from "@cloudpid/config";
 import { currentTraceId } from "@cloudpid/telemetry";
 import {
   isJsonObject,
@@ -43,6 +43,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Semaphore from "effect/Semaphore";
 import type * as Types from "effect/Types";
+import { deprecationHook } from "./deprecation-notes.ts";
 import { authorizedDiscovery, type DiscoveryAccess } from "./discovery-auth.ts";
 import { DISCOVER_TIMEOUT_MS, McpEngineClient } from "./engine.ts";
 import { inventoryRows } from "./inventory.ts";
@@ -273,7 +274,7 @@ export const targetOf = (
       };
 
       // A Legacy connection to a server that `allow`s it declares `sampling` (the owner's yes on a card is not built yet).
-      if (allowsSampling(server.server)) reached.sampling = true;
+      if (samplingOf(server.server) === "answer") reached.sampling = true;
 
       // A connection that signs in on its own declares the OAuth Client Credentials extension, and no other does.
       if (signsInOnItsOwn(server.server)) {
@@ -420,6 +421,7 @@ const discoverOne = (
 
     const store = yield* McpHostStore;
     const engine = yield* McpEngineClient;
+    const run = Effect.runPromiseWith(yield* Effect.context<never>());
     const caps = yield* McpLoadCaps;
     const { conn } = view.server;
     const previous = statusBefore(view.status);
@@ -472,7 +474,12 @@ const discoverOne = (
       const call = (target: McpEngineTarget) =>
         caps.inFlight(
           conn,
-          caps.engineCall("background", engine.discover(target, store.prior(conn, workspace))),
+          caps.engineCall(
+            "background",
+            engine.discover(target, store.prior(conn, workspace), {
+              onDeprecated: deprecationHook(store, view.server, run),
+            }),
+          ),
           workspace,
         );
 

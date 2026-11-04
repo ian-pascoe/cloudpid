@@ -114,7 +114,17 @@ const open = (
 
   const answer = (text: string) => observe(fauxAssistantMessage(text));
 
-  return { sampler, storage, faux, usages, seen, answer, observe };
+  return {
+    sampler,
+    storage,
+    faux,
+    usages,
+    seen,
+    answer,
+    observe,
+    models,
+    roles: () => options.roles ?? ROLES,
+  };
 };
 
 const ask = (params: JsonObject, over: Partial<McpSamplingAsk> = {}): McpSamplingAsk => ({
@@ -180,6 +190,49 @@ describe("MCP sampling", () => {
         "mcp.sampling.model": "claude-haiku-5-5",
         "mcp.sampling.tokens": expect.any(Number),
         "mcp.sampling.cost": expect.any(Number),
+      });
+    }));
+
+  test("gives the span of a sample that fails inside the outcome and why it ended as", () =>
+    Effect.gen(function* () {
+      const spans: Array<Tracer.NativeSpan> = [];
+
+      const tracer = Tracer.make({
+        span: (options) => {
+          const span = new Tracer.NativeSpan(options);
+
+          spans.push(span);
+
+          return span;
+        },
+      });
+
+      const { sampler, faux, answer, models, roles } = open();
+
+      // A usage binding that throws: the sample fails inside, after the model answered.
+      sampler.bind({
+        models,
+        roles,
+        overLimit: () => Promise.resolve(undefined),
+        usage: () => {
+          throw new Error("the usage could not be kept");
+        },
+      });
+
+      faux.setResponses([answer("hello")]);
+
+      const outcome = yield* sampler
+        .sample(ask(HI))
+        .pipe(Effect.provideService(Tracer.Tracer, tracer));
+
+      expect(refusedWith(outcome)?.code).toBe(-32603);
+
+      const [span] = spans.filter((each) => each.name === "mcp.sampling.sample");
+
+      expect(Object.fromEntries(span?.attributes ?? [])).toMatchObject({
+        "mcp.sampling.outcome": "failed",
+        "mcp.sampling.by": "cloudpid",
+        "mcp.sampling.why": "internal",
       });
     }));
 

@@ -92,7 +92,7 @@ export const McpBuildServer = Schema.Struct({
     type: Schema.optionalKey(Schema.Json),
     timeout: Schema.optionalKey(Schema.Json),
     description: Schema.optionalKey(Schema.Json),
-    /** `ask`, `allow` or `off` (`ask` by default): only `allow` has its Sampling requests answered, on the Session's models, for now (`allowsSampling`). */
+    /** `ask`, `allow` or `off` (`ask` by default): only `allow` has its Sampling requests answered, on the Session's models, for now (`samplingOf`). */
     sampling: Schema.optionalKey(Schema.Json),
     exposure: Schema.optionalKey(Schema.Json),
     toolExposure: Schema.optionalKey(Schema.Json),

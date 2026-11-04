@@ -38,7 +38,7 @@ import {
   McpStale,
   REDISCOVERING_CHANGES,
 } from "@cloudpid/mcp/types";
-import { allowsSamplingOnStdio, normalizeMcpName } from "@cloudpid/config";
+import { normalizeMcpName, samplingOf } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -585,7 +585,7 @@ const toServerInventory = (view: ServerView, parts: ReadonlyArray<string>): McpS
     problems: [
       ...(meta?.problems ?? []),
       // A stdio server's `allow` is not declared until its bridge carries Legacy questions: told, not silent (#569).
-      ...(allowsSamplingOnStdio(view.server.server) ? [{ problem: STDIO_SAMPLING_PROBLEM }] : []),
+      ...(samplingOf(view.server.server) === "stdio" ? [{ problem: STDIO_SAMPLING_PROBLEM }] : []),
     ],
   };
 

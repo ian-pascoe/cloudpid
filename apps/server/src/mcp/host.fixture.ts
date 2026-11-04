@@ -66,6 +66,8 @@ export type EngineScript = {
   readonly result: typeof McpEngineDiscoverResult.Encoded;
   readonly hold?: boolean;
   readonly reject?: string;
+  /** The deprecated features the engine tells the host the server used (`onDeprecated`), before it answers. */
+  readonly deprecated?: ReadonlyArray<string>;
 };
 
 /**
@@ -88,7 +90,7 @@ export type RequestScript = {
   readonly hold?: boolean;
   readonly reject?: string;
   readonly auth?: ReadonlyArray<boolean>;
-  /** The deprecated features the engine tells the host the server used (`onDeprecated`), before it answers. */
+  /** As `EngineScript.deprecated`. */
   readonly deprecated?: ReadonlyArray<string>;
 };
 
@@ -377,6 +379,8 @@ export class TestMcpHost extends DurableObject {
       const script = queue.shift();
 
       if (script === undefined) return unscripted(keyOf(target));
+
+      for (const feature of script.deprecated ?? []) await hooks.onDeprecated?.(feature);
 
       if (script.hold === true) await this.#holdUntilReleased(keyOf(target));
 

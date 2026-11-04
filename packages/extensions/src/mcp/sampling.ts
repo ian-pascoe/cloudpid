@@ -522,12 +522,8 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
         detail: detailOf(record),
       } satisfies McpSamplingOutcome;
     }).pipe(
-      // The span says what it ended as and who decided, never what was asked or answered.
-      Effect.tap((outcome) => Effect.annotateCurrentSpan(spanAttributes(outcome.detail))),
-      Effect.withSpan("mcp.sampling.sample", {
-        attributes: { "mcp.server": ask.server, "mcp.origin": "agent" },
-      }),
-      // Whatever goes wrong inside is a failure of the model seam, told to the server as one.
+      // Whatever goes wrong inside is a failure of the model seam, told to the server as one, inside the span so that it
+      // too says what it ended as.
       Effect.catchCause((cause) =>
         Effect.logWarning("A Sampling request could not be answered", cause).pipe(
           Effect.as({
@@ -538,6 +534,11 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
           } satisfies McpSamplingOutcome),
         ),
       ),
+      // The span says what it ended as and who decided, never what was asked or answered.
+      Effect.tap((outcome) => Effect.annotateCurrentSpan(spanAttributes(outcome.detail))),
+      Effect.withSpan("mcp.sampling.sample", {
+        attributes: { "mcp.server": ask.server, "mcp.origin": "agent" },
+      }),
     );
 
   return {

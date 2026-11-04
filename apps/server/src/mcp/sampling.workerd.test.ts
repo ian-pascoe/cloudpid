@@ -125,6 +125,23 @@ describe("the host and a server's Sampling requests", () => {
     ).toHaveLength(2);
   });
 
+  it("notes it from a discovery too, which passes the engine the hook", async () => {
+    const host = freshHost();
+
+    await host.apply(setOf(entry("docs")));
+    await host.scriptEngine(urlOf("docs"), [{ result: found, deprecated: ["sampling"] }]);
+    await host.requestStart({
+      caller: { session: "s-1", conversation: "1", workspace: "ws:w-1" },
+      waitFor: ["docs"],
+      waitMs: 5000,
+    });
+
+    expect((await statusOf(host))?.status?.deprecated).toEqual(["sampling"]);
+    expect(
+      (await host.observed()).split("used sampling, which the MCP spec deprecated"),
+    ).toHaveLength(2);
+  });
+
   it("notes it, through the real engine, for a request the call did not offer to answer, which is refused", async () => {
     const options = { moreTools: [SAMPLE_TOOL], sampled: [] };
     const server = legacyStatefulServer(options);

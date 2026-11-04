@@ -47,6 +47,7 @@ import {
   targetOf,
   type McpDiscoveryServices,
 } from "./discovery.ts";
+import { deprecationHook } from "./deprecation-notes.ts";
 import { McpEngineClient } from "./engine.ts";
 import { type EngineCallKind, McpLoadCaps } from "./limits.ts";
 import { recordLogs } from "./logs.ts";
@@ -320,15 +321,7 @@ export const sendToEngine = (
     // want of a conversation), is noted on its status and logged, once per server per host lifetime (SEP-2577 deprecates
     // sampling: `mcp-server-requests.md` → Sampling requests, Deprecation). An engine from before never calls the hook.
     const noting: Pick<McpEngineHooks, "onDeprecated"> = {
-      onDeprecated: (feature) => {
-        if (store.noteDeprecated(server.conn, feature)) {
-          void run(
-            Effect.logWarning(
-              `${server.name} used ${feature}, which the MCP spec deprecated in 2026-07-28 (SEP-2577) and may remove from the first revision released on or after 2027-07-28`,
-            ),
-          );
-        }
-      },
+      onDeprecated: deprecationHook(store, server, run),
     };
 
     const engineHooks: McpEngineHooks =

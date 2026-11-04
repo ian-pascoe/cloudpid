@@ -14,7 +14,7 @@
 // round ends as `InputRequired`, is stored whole and marked (`mcp.wait.<r>`), and the call waits with no clock running;
 // once the owner has answered, `mcp.resumed.<r>` is written and the resume sent. A rerun after a restart waits again
 // for a round so marked, and settles any other call it finds sent as one that may have run.
-import { allowsSampling } from "@cloudpid/config";
+import { samplingOf } from "@cloudpid/config";
 import {
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
@@ -395,10 +395,12 @@ export const send = async <A>(
           resume: Effect.suspend(() => clock?.resume ?? Effect.void),
         });
 
-  // A Legacy HTTP server whose definition says `allow` is answered its Sampling requests on the Session's models. A
-  // stdio server declares none (its Container is the owner's own), and a request that is not a tool's call has no use for it.
+  // A Legacy HTTP server whose definition says `allow` is answered its Sampling requests on the Session's models, on a
+  // tool's call and a resource read (`exchange.samples`); a stdio server declares none until #569.
   const sampling =
-    options.sampling !== undefined && exchange.samples === true && allowsSampling(server.server)
+    options.sampling !== undefined &&
+    exchange.samples === true &&
+    samplingOf(server.server) === "answer"
       ? samplingHooks({
           sampling: options.sampling,
           server: server.name,
