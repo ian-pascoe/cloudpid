@@ -132,8 +132,12 @@ const test = (name: string, body: () => Effect.Effect<void, unknown>) =>
 /** A moment for the fibers forked so far to run. */
 const settle = Effect.repeat(Effect.yieldNow, { times: 8 });
 
-/** Wait, in real time, until `check` stops throwing. */
-const eventually = (check: () => void) => Effect.promise(() => vi.waitFor(check));
+/**
+ * Wait, in real time, until `check` stops throwing, for 10 s: well under the tests' timeout, rather than `vi.waitFor`'s
+ * 1 s default, which a loaded runner can pass (#632).
+ */
+const eventually = (check: () => void) =>
+  Effect.promise(() => vi.waitFor(check, { timeout: 10_000, interval: 10 }));
 
 const refusedWith = (outcome: McpSamplingOutcome) =>
   outcome.kind === "refused" ? { code: outcome.code, message: outcome.message } : undefined;
