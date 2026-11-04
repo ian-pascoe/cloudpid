@@ -5,6 +5,7 @@ import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import { REQUEST_COST, type TestSession } from "./host.fixture.ts";
 
 /** A new Workspace of the default Environment, as `createSession` makes one. */
@@ -39,14 +40,11 @@ const fresh = () => env.SESSIONS.get(env.SESSIONS.newUniqueId());
 const eventually = async (
   stub: DurableObjectStub<TestSession>,
   check: (instance: TestSession, state: DurableObjectState) => Promise<boolean>,
-): Promise<void> => {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    if (await runInDurableObject(stub, check)) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Condition not reached");
-};
+): Promise<void> =>
+  poll(
+    () => runInDurableObject(stub, check),
+    () => "Condition not reached",
+  );
 
 let counter = 0;
 

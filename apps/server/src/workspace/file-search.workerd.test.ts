@@ -8,6 +8,7 @@ import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import type { TestWorkspaceSession } from "./session.fixture.ts";
 import { call, sessionOn, uniqueWorkspace } from "./session.workerd.helpers.ts";
 
@@ -30,14 +31,19 @@ const connect = async (stub: DurableObjectStub<TestWorkspaceSession>) => {
   return {
     send: (message: ClientMessage) => socket.send(JSON.stringify(message)),
     answer: async (id: string) => {
-      for (let attempt = 0; attempt < 1000; attempt++) {
-        const found = received.find((message) => "id" in message && message.id === id);
+      let found: ServerMessage | undefined;
 
-        if (found !== undefined) return found;
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
+      await poll(
+        () => {
+          found = received.find((message) => "id" in message && message.id === id);
 
-      throw new Error(`No answer to ${id}: ${JSON.stringify(received)}`);
+          return found !== undefined;
+        },
+        () => `No answer to ${id}: ${JSON.stringify(received)}`,
+      );
+
+      // SAFETY: `poll` returned, so the answer was found.
+      return found as ServerMessage;
     },
     close: () => socket.close(),
   };

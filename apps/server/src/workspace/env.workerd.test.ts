@@ -18,6 +18,7 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "c
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import { IdleStop } from "./idle.ts";
 import { ContainerLaunch, type LaunchRecord } from "./launch.ts";
 import { ContainerResizes } from "./resize.ts";
@@ -197,12 +198,11 @@ describe("ComputerExecutionEnv over many calls", () => {
     await lingering;
 
     // A disposed stub reaches the Workspace DO asynchronously.
-    for (let attempt = 0; attempt < 100; attempt++) {
+    await poll(async () => {
       const live = await workspace.liveStubs();
 
-      if (live.workspaces === 0 && live.execs === 0) break;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
+      return live.workspaces === 0 && live.execs === 0;
+    });
 
     const live = await workspace.liveStubs();
 
@@ -1071,13 +1071,6 @@ describe("restarting a Workspace's Container", () => {
 });
 
 describe("a spare Workspace preparing itself", () => {
-  /** Wait for `done` to hold, as work the alarm started goes on after it. */
-  const until = async (done: () => Promise<boolean>) => {
-    for (let tries = 0; tries < 200 && !(await done()); tries++) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  };
-
   it("readies itself at its alarm, over its own files and Container", async () => {
     const workspace = env.WORKSPACES.getByName("spare-prepares");
 
@@ -1096,7 +1089,8 @@ describe("a spare Workspace preparing itself", () => {
         state.storage.get("cloudpid:spare-preparation"),
       );
 
-    await until(async () => (await preparation()) === undefined);
+    // Work the alarm started goes on after it.
+    await poll(async () => (await preparation()) === undefined);
 
     // The settings were handed over, and the clone found missing (its `.git/HEAD` read from the files) was asked of
     // the Container, with its Setup and Start Scripts; this one has no Container, so the readying failed, and the

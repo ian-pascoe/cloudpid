@@ -24,6 +24,7 @@ import {
   REQUEST_COST,
   type TestSession,
 } from "./host.fixture.ts";
+import { poll } from "../poll.fixture.ts";
 import { approvalRequests } from "./sockets.ts";
 
 declare global {
@@ -64,16 +65,18 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
 
   /** Messages after `from`, once `done` holds of them. */
   const until = async (done: (messages: readonly ServerMessage[]) => boolean, from = 0) => {
-    for (let attempt = 0; attempt < 300; attempt++) {
-      const messages = received.slice(from);
+    let messages: readonly ServerMessage[] = [];
 
-      if (done(messages)) return messages;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await poll(
+      () => {
+        messages = received.slice(from);
 
-    throw new Error(
-      `Never received the expected messages: ${JSON.stringify(received.slice(from))}`,
+        return done(messages);
+      },
+      () => `Never received the expected messages: ${JSON.stringify(received.slice(from))}`,
     );
+
+    return messages;
   };
 
   return {
@@ -144,14 +147,11 @@ const Submitted = Schema.Struct({
 });
 
 /** Wait until `stub`'s Session has no work live. */
-const idle = async (stub: DurableObjectStub<TestSession>) => {
-  for (let attempt = 0; attempt < 300; attempt++) {
-    if (await runInDurableObject(stub, (instance: TestSession) => instance.idle())) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-
-  throw new Error("Never idle");
-};
+const idle = (stub: DurableObjectStub<TestSession>) =>
+  poll(
+    () => runInDurableObject(stub, (instance: TestSession) => instance.idle()),
+    () => "Never idle",
+  );
 
 /** The conversations each of `stub`'s sockets records as watched, read inside the object. */
 const recordedWatches = (stub: DurableObjectStub<TestSession>) =>
@@ -653,7 +653,13 @@ describe("a watch", () => {
     // Waking restarts the watches: the root's with a snapshot, the other's not at all.
     expect(await recordedWatches(stub)).toEqual([{ watches: [root] }]);
 
-    const woken = await client.until((messages) => messages.length >= 2, before);
+    // The root's snapshot and the error, not any two messages: the root's Todo List and App calls may come first.
+    const woken = await client.until(
+      (messages) =>
+        eventsOf(messages, root).length > 0 &&
+        Arr.some(messages, (message) => message.type === "error"),
+      before,
+    );
 
     expect(woken).toContainEqual({
       type: "error",
@@ -662,16 +668,23 @@ describe("a watch", () => {
     });
     expect(types(eventsOf(woken, root))).toEqual(["snapshot"]);
 
-    // The next wake does not retry it.
+    // The next wake does not retry it. The root's snapshot says the wake restarted the watches, and the answer to a
+    // command sent after the wake comes after all it sent, an error included.
     await evictDurableObject(stub);
 
     const again = client.received.length;
 
     await recordedWatches(stub);
-    await client.until((messages) => messages.length >= 1, again);
-    expect(Arr.filter(client.received.slice(again), (message) => message.type === "error")).toEqual(
-      [],
+    client.send({ type: "configure", id: "after" });
+
+    const rewoken = await client.until(
+      (messages) =>
+        eventsOf(messages, root).length > 0 &&
+        Arr.some(messages, (message) => "id" in message && message.id === "after"),
+      again,
     );
+
+    expect(Arr.filter(rewoken, (message) => message.type === "error")).toEqual([]);
   });
 
   it("answers the heartbeat while the Session hibernates, without waking it", async () => {
@@ -688,10 +701,7 @@ describe("a watch", () => {
 
     client.sendText(HEARTBEAT.request);
 
-    for (let attempt = 0; attempt < 300 && client.pongs() === 0; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
+    await poll(() => client.pongs() > 0);
     expect(client.pongs()).toBe(1);
     expect(constructions.get(stub.id.toString())).toBe(instances);
   });
@@ -921,7 +931,8 @@ describe("a Changes watch", () => {
   it("lists the Changes once for every client that watches them, and sends each the list", async () => {
     const stub = fresh();
 
-    await setChanges(stub, { running: { repos: [repoChanges("a.ts")] }, delayMs: 50 });
+    // The first listing waits until all three watch, however slowly a loaded runner sends their watches.
+    await setChanges(stub, { running: { repos: [repoChanges("a.ts")] }, held: true });
 
     const first = await connect(stub);
     const second = await connect(stub);
@@ -933,19 +944,16 @@ describe("a Changes watch", () => {
     expect(await first.answer("watch")).toEqual({ type: "result", id: "watch", result: null });
     await second.answer("watch");
     await third.answer("watch");
+    await runInDurableObject(stub, (instance: TestSession) => instance.releaseChanges());
 
     const sent = { type: "changes", repos: [repoChanges("a.ts")], startingContainer: false };
 
+    // The second and third watches came while the first listing ran: one more after it, for all three, where one
+    // listing per client would make three. Wait for both: the second can land before a busy runner looks for the first.
     for (const client of [first, second, third]) {
       expect(
-        changeLists(await client.until((messages) => changeLists(messages).length === 1)),
-      ).toEqual([sent]);
-    }
-
-    // The second and third watches came while the first listing ran: one more after it, for all three, where one
-    // listing per client would make three.
-    for (const client of [first, second, third]) {
-      await client.until((messages) => changeLists(messages).length === 2);
+        changeLists(await client.until((messages) => changeLists(messages).length >= 2)),
+      ).toEqual([sent, sent]);
     }
 
     expect(await changesCalls(stub)).toEqual([false, false]);
