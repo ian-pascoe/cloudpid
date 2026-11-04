@@ -922,3 +922,149 @@ describe("the count of followed MCP tasks the Registry is told", () => {
     expect(await reportedTasks(after)).toEqual([1]);
   });
 });
+
+describe("the owner's MCP tasks over the socket", () => {
+  /** A task that went on in the background, and a client connected to its Session. */
+  const detached = async () => {
+    const opened = await open();
+
+    await script(opened.stub, [
+      REPORT({ region: "eu", polls: 100_000 }),
+      "It runs in the background.",
+    ]);
+    await submit(opened.stub, "report");
+    await finishedRuns(opened.stub, 1);
+
+    return opened;
+  };
+
+  /** The latest `mcp_tasks` list a client received. */
+  const listed = (received: ReadonlyArray<ServerMessage>) =>
+    received.findLast((message) => message.type === "mcp_tasks");
+
+  /** The `error` a client received for command `id`. */
+  const refusalOf = (received: ReadonlyArray<ServerMessage>, id: string) =>
+    received.find((message) => message.type === "error" && message.id === id);
+
+  it("says in hello that it takes the owner's commands, and lists the tasks after it and whenever they change", async () => {
+    spyOnLogs();
+
+    const { stub, server } = await open();
+    const owner = await connect(stub);
+
+    await settles(async () =>
+      expect(owner.received.some((message) => message.type === "hello")).toBe(true),
+    );
+    expect(owner.received.find((message) => message.type === "hello")).toMatchObject({
+      mcpTasks: true,
+    });
+    // After `hello`, an empty list too, so a client that reconnects drops what it showed.
+    await settles(async () =>
+      expect(listed(owner.received)).toEqual({ type: "mcp_tasks", tasks: [] }),
+    );
+
+    await script(stub, [REPORT({ region: "eu", polls: 100_000 }), "It runs in the background."]);
+    await submit(stub, "report");
+    await settles(async () =>
+      expect(listed(owner.received)).toMatchObject({
+        tasks: [
+          {
+            task: "mcp-task-1",
+            server: "docs",
+            tool: "mcp__docs__report",
+            status: "working",
+            background: true,
+            conversationId: expect.any(Number),
+            callId: expect.any(String),
+          },
+        ],
+      }),
+    );
+    expect(callsOf(server, "tools/call")).toBe(1);
+    await expectNoServerId(stub, owner.received);
+
+    // A client that connects later is sent the list at once.
+    const later = await connect(stub);
+
+    await settles(async () =>
+      expect(listed(later.received)).toMatchObject({ tasks: [{ task: "mcp-task-1" }] }),
+    );
+    later.close();
+    owner.close();
+  });
+
+  it("cancels a task for the owner at the server, once, and the list says who ended it", async () => {
+    const { stub, server } = await detached();
+    const owner = await connect(stub);
+
+    await settles(async () =>
+      expect(listed(owner.received)).toMatchObject({ tasks: [{ status: "working" }] }),
+    );
+    owner.send({ type: "mcp_task_cancel", id: "cancel-1", task: "mcp-task-1" });
+    await settles(async () =>
+      expect(owner.received).toContainEqual({ type: "result", id: "cancel-1", result: null }),
+    );
+    await settles(async () =>
+      expect(listed(owner.received)).toMatchObject({
+        tasks: [{ status: "cancelled", end: { by: "owner" }, endedAt: expect.any(Number) }],
+      }),
+    );
+    expect(callsOf(server, "tasks/cancel")).toBe(1);
+    await followingNone(stub);
+
+    // A task that ended is refused, and so is one the Session never had.
+    owner.send({ type: "mcp_task_cancel", id: "cancel-2", task: "mcp-task-1" });
+    owner.send({ type: "mcp_task_cancel", id: "cancel-3", task: "mcp-task-9" });
+    await settles(async () =>
+      expect(refusalOf(owner.received, "cancel-2")).toMatchObject({
+        message: "The task has ended",
+      }),
+    );
+    await settles(async () =>
+      expect(refusalOf(owner.received, "cancel-3")).toMatchObject({
+        message: "The Session has no such MCP task",
+      }),
+    );
+    expect(callsOf(server, "tasks/cancel")).toBe(1);
+    owner.close();
+  });
+
+  it("keeps a Container only for a stdio server's task, and says so for an HTTP one", async () => {
+    const { stub } = await detached();
+    const owner = await connect(stub);
+
+    await settles(async () =>
+      expect(listed(owner.received)).toMatchObject({ tasks: [{ status: "working" }] }),
+    );
+    owner.send({ type: "container_keep", id: "keep-1", task: "mcp-task-1" });
+    owner.send({ type: "container_keep", id: "keep-2", task: "mcp-task-9" });
+    await settles(async () =>
+      expect(refusalOf(owner.received, "keep-1")).toMatchObject({
+        message: "Only a stdio server's task keeps a Container",
+      }),
+    );
+    await settles(async () =>
+      expect(refusalOf(owner.received, "keep-2")).toMatchObject({
+        message: "The Session has no such MCP task",
+      }),
+    );
+    owner.close();
+  });
+
+  it("is ended by Stop all, and the list follows", async () => {
+    const { stub, server } = await detached();
+    const owner = await connect(stub);
+
+    await settles(async () =>
+      expect(listed(owner.received)).toMatchObject({ tasks: [{ status: "working" }] }),
+    );
+    expect(await stopAll(stub)).toBeLessThan(5000);
+    await settles(async () =>
+      expect(listed(owner.received)).toMatchObject({
+        tasks: [{ status: "cancelled", end: { by: "stop" } }],
+      }),
+    );
+    expect(callsOf(server, "tasks/cancel")).toBe(1);
+    owner.close();
+  });
+});

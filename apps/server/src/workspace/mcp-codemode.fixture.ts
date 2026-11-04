@@ -16,6 +16,7 @@ import {
   mcpExtension,
   MCP_RESUME_FEATURE,
   MCP_SAMPLING_FEATURE,
+  MCP_TASKS_FEATURE,
 } from "@cloudpid/extensions/mcp";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import type { SettingsReload } from "@cloudpid/extensions/settings";
@@ -26,6 +27,10 @@ import {
   McpHostInputRequired,
   type McpInputRequest,
   Unsupported,
+  McpHostTaskAck,
+  McpHostTaskStarted,
+  McpHostTaskState,
+  type McpTaskSnapshot,
 } from "@cloudpid/mcp/types";
 import type {
   ElicitationContent,
@@ -40,6 +45,20 @@ const ERA = "mcp-fake-era";
 const CALLS = "mcp-fake-calls";
 const RESUMES = "mcp-fake-resumes";
 const SAMPLING = "mcp-fake-sampling";
+const TASK_MODE = "mcp-fake-task";
+const TASK_SENT = "mcp-fake-task-sent";
+
+/** The task the fake server runs for `report`: it works until it is cancelled. */
+const taskSnapshot = (status: "working" | "cancelled"): McpTaskSnapshot =>
+  // SAFETY: only the statuses that carry no more than the common fields are made here.
+  ({
+    taskId: "srv-task-secret",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    lastUpdatedAt: "2026-01-01T00:00:00.000Z",
+    ttlMs: 600_000,
+    status,
+    statusMessage: "Making the report",
+  }) as McpTaskSnapshot;
 
 /** The form the `ask` tool asks. */
 const QUESTION: typeof McpInputRequest.Encoded = {
@@ -77,7 +96,10 @@ const DOCS: McpBuildServer = {
   state: "connected",
   discoveredAt: 1,
   server: { exposure: "direct" },
-  tools: [{ name: "ask", inputSchema: { type: "object" } }],
+  tools: [
+    { name: "ask", inputSchema: { type: "object" } },
+    { name: "report", inputSchema: { type: "object" }, execution: { taskSupport: "optional" } },
+  ],
 };
 
 const text = (value: string) =>
@@ -97,6 +119,32 @@ export class TestMcpCodemodeSession extends TestCodemodeSession {
       apply: () => Effect.die("The fake host takes no push"),
       request: (input, hooks) =>
         Effect.promise(async () => {
+          if (kv.get<boolean>(TASK_MODE) === true && input.op !== "resume") {
+            const sentSoFar = kv.get<Record<string, number>>(TASK_SENT) ?? {};
+
+            kv.put(TASK_SENT, { ...sentSoFar, [input.op]: (sentSoFar[input.op] ?? 0) + 1 });
+
+            if (input.op === "tools/call") {
+              return input.ctx.allowTask === true
+                ? McpHostTaskStarted.make({ task: taskSnapshot("working"), conn: "conn-docs" })
+                : text("a plain result");
+            }
+
+            if (input.op === "tasks/cancel") {
+              kv.put("mcp-fake-cancelled", true);
+
+              return McpHostTaskAck.make({});
+            }
+
+            if (input.op === "tasks/get") {
+              return McpHostTaskState.make({
+                task: taskSnapshot(
+                  kv.get<boolean>("mcp-fake-cancelled") === true ? "cancelled" : "working",
+                ),
+              });
+            }
+          }
+
           if (input.op === "resume") {
             count(RESUMES);
             kv.put("mcp-fake-answers", input.params.answers);
@@ -158,14 +206,44 @@ export class TestMcpCodemodeSession extends TestCodemodeSession {
       {
         servers: [DOCS],
         offered: [],
-        features: ["inventory", "call", MCP_RESUME_FEATURE, MCP_SAMPLING_FEATURE],
+        features: [
+          "inventory",
+          "call",
+          MCP_RESUME_FEATURE,
+          MCP_SAMPLING_FEATURE,
+          MCP_TASKS_FEATURE,
+        ],
       },
       this.#host(),
       { session: this.ctx.id.toString(), workspace: "ws:test" },
-      { questions: this.mcpQuestionsService(), sampling: this.mcpSamplingService() },
+      {
+        questions: this.mcpQuestionsService(),
+        sampling: this.mcpSamplingService(),
+        // The inline window is short, so a script's call detaches within a test's wait.
+        tasks: {
+          storage: this.ctx.storage.kv,
+          timing: {
+            windowMs: 300,
+            pollMs: 50,
+            unknownGraceMs: 300,
+            backoffMs: 100,
+            cancelGraceMs: 300,
+          },
+        },
+      },
     );
 
     return Effect.map(super.hostExtensions(), (base) => [...base, mcp]);
+  }
+
+  /** Make the fake server run `report` as an MCP task that works until it is cancelled. */
+  mcpTasks(): void {
+    this.ctx.storage.kv.put(TASK_MODE, true);
+  }
+
+  /** How many `tools/call`, `tasks/get` and `tasks/cancel` the task-running fake was sent, by operation. */
+  mcpTaskSent(): Record<string, number> {
+    return this.ctx.storage.kv.get<Record<string, number>>(TASK_SENT) ?? {};
   }
 
   /** Make the fake answer as a Legacy server does from now on. */
