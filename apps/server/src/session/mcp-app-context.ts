@@ -31,6 +31,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import type * as Types from "effect/Types";
+import type { SessionError } from "./errors.ts";
 import { socketRequests } from "./socket-requests.ts";
 import type { McpWatchesService } from "./mcp-watches.ts";
 import type { SessionKv } from "./session-kv.ts";
@@ -88,9 +89,12 @@ export type AppContexts = {
     readonly text: string;
     /**
      * The conversation to give it to, asked once the record and the View's limit have passed (it may read a History); none when
-     * no conversation can take it, which refuses the context. Left out: the one the call's record names.
+     * no conversation can take it, which refuses the context; one that fails (storage) refuses it with "could not hold". Left out: the
+     * one the call's record names.
      */
-    readonly where?: ((call: AppContextCall) => Effect.Effect<string | undefined>) | undefined;
+    readonly where?:
+      | ((call: AppContextCall) => Effect.Effect<string | undefined, SessionError>)
+      | undefined;
   }) => Effect.Effect<McpAppContextAnswer>;
   /** What the record of call `callId` says of it; none for a call with no record. */
   readonly callOf: (callId: string) => AppContextCall | undefined;

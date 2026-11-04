@@ -162,7 +162,7 @@ export type ExportedAppContext = {
  * another Session branch, whose model's reading says nothing of this one's.
  */
 const contextStanding = ({ context, here }: ExportedAppContext): string => {
-  if (!here) return "held for another Session branch, not given to this one";
+  if (!here) return "held for another Session branch";
 
   return context.delivered === true ? "sent to the model" : "pending, not yet sent";
 };

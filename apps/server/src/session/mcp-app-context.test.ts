@@ -10,6 +10,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import { describe, expect, it } from "vitest";
 import { type AppContextCall, appContextsOver } from "./mcp-app-context.ts";
+import { SessionError } from "./errors.ts";
 import type { SessionKv } from "./session-kv.ts";
 
 const memory = (): SessionKv => {
@@ -338,6 +339,25 @@ describe("App context", () => {
       await Effect.runPromise(contexts.hold({ view, callId: "one", text: "over", where })),
     ).toMatchObject({ status: "refused", message: expect.stringContaining("a minute") });
     expect(asked).toBe(before);
+  });
+
+  it("is refused with its own reason when the conversation cannot be chosen for a failure, not as a left branch", async () => {
+    const { contexts, view } = open();
+
+    const answer = await Effect.runPromise(
+      contexts.hold({
+        view,
+        callId: "one",
+        text: "x",
+        where: () => Effect.fail(SessionError.make({ operation: "entries", message: "storage" })),
+      }),
+    );
+
+    expect(answer).toMatchObject({
+      status: "refused",
+      message: "The Session could not hold the context",
+    });
+    expect(contexts.contextOf("one")).toBeUndefined();
   });
 
   it("says, for an export of a conversation, whether the context was held for it", async () => {

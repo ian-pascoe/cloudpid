@@ -572,6 +572,26 @@ describe("an App View kept across a move of the active branch", () => {
     expect(await noticesOf(stub, branch)).toEqual([]);
   });
 
+  it("remembers that a branch made before the call does not hold it, for that branch only", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+    const before = await moveTo(stub, "user", "before");
+
+    expect(await rig.context("not yet", rig.entry.callId, before)).toMatchObject({
+      status: "refused",
+    });
+    // A refusal again, now from what is remembered.
+    expect(await rig.context("still not", rig.entry.callId, before)).toMatchObject({
+      status: "refused",
+    });
+
+    // A branch made at the call holds it, though another branch was found not to.
+    const at = await moveTo(stub, "assistant", "at");
+
+    expect(at).not.toBe(before);
+    expect(await rig.context("now", rig.entry.callId, at)).toMatchObject({ status: "held" });
+  });
+
   it("does not take a branch's History for holding the call because it holds other calls", async () => {
     const rig = await withApp();
     const { stub } = rig;
@@ -712,9 +732,7 @@ describe("an App View kept across a move of the active branch", () => {
 
     const content = await exported();
 
-    expect(content).toContain(
-      "Last App context (held for another Session branch, not given to this one)",
-    );
+    expect(content).toContain("Last App context (held for another Session branch)");
     expect(content).not.toContain("sent to the model");
   });
 });

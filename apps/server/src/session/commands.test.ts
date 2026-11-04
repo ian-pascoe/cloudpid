@@ -229,7 +229,7 @@ describe("exportMarkdown of an App", () => {
     });
 
     expect(markdown).toContain(
-      "Last App context (held for another Session branch, not given to this one):\n\n> seen by branch B only",
+      "Last App context (held for another Session branch):\n\n> seen by branch B only",
     );
     expect(markdown).not.toContain("sent to the model");
   });
