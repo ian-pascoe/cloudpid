@@ -167,7 +167,8 @@ describe("MCP sampling on a definition that says ask", () => {
         source: { kind: "global" },
         deadline: 10 * 60 * 1000,
       });
-      expect(told).toEqual([{ server: "demo", sampling: true }]);
+      // The Notification follows the announcement: under load it may not have run yet.
+      yield* eventually(() => expect(told).toEqual([{ server: "demo", sampling: true }]));
 
       yield* questions.answerSampling("call-1:1", { choice: "allow_call" });
 
