@@ -4,6 +4,7 @@
 // Seams for the tickets that follow: `live` (the generation and live rule, collapse and Reopen, #490) is always true here;
 // the card is always where the transcript puts it (placement in a codemode strip or a subagent's thread is #490's).
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useState } from "react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
@@ -22,16 +23,22 @@ const AppNote = ({ children }: { children: string }) => (
 );
 
 /** The View of call `callId`, loaded when this mounts: it shows nothing while it loads (the card has the call's state). */
-const AppMount = ({
+const AppLoaded = ({
   sessionId,
   callId,
   title,
   badge,
+  closing,
+  onFramed,
+  onClosed,
 }: {
   sessionId: string;
   callId: string;
   title: string | undefined;
   badge: "offline" | "sign-in" | null;
+  closing: boolean;
+  onFramed: () => void;
+  onClosed: () => void;
 }) => {
   const key = appKey(sessionId, callId);
   const result = useAtomValue(appLoadAtom(key));
@@ -43,7 +50,17 @@ const AppMount = ({
 
   switch (load.status) {
     case "view":
-      return <AppFrame record={load.record} page={load.page} title={title} badge={badge} />;
+      return (
+        <AppFrame
+          record={load.record}
+          page={load.page}
+          title={title}
+          badge={badge}
+          closing={closing}
+          onFramed={onFramed}
+          onClosed={onClosed}
+        />
+      );
     case "unavailable":
       return <AppNote>App unavailable</AppNote>;
     case "stub":
@@ -53,6 +70,52 @@ const AppMount = ({
     case "none":
       return null;
   }
+};
+
+/**
+ * The View of call `callId` while `live`, or the `note` that says why there is none. A View whose call stops being live
+ * (evicted, its server off or shadowed) is not unmounted from under its frame: the frame stays, closing, until the View has
+ * answered its teardown (`AppFrame`), and only then does the note replace it. `generation` makes a View that comes back
+ * (the server reconnects) a new frame, never the dead one.
+ */
+const AppMount = ({
+  sessionId,
+  callId,
+  title,
+  badge,
+  live,
+  note,
+}: {
+  sessionId: string;
+  callId: string;
+  title: string | undefined;
+  badge: "offline" | "sign-in" | null;
+  live: boolean;
+  note: string;
+}) => {
+  const [framed, setFramed] = useState(false);
+  const [generation, setGeneration] = useState(0);
+
+  // Nothing is mounted for a call that is not live, and nothing to wait for when no frame was.
+  if (!live && !framed) return <AppNote>{note}</AppNote>;
+
+  return (
+    <AppLoaded
+      key={generation}
+      sessionId={sessionId}
+      callId={callId}
+      title={title}
+      badge={badge}
+      closing={!live}
+      onFramed={() => {
+        setFramed(true);
+      }}
+      onClosed={() => {
+        setFramed(false);
+        setGeneration((count) => count + 1);
+      }}
+    />
+  );
 };
 
 /**
@@ -84,21 +147,18 @@ export const AppCall = ({ callId, toolName }: { callId: string; toolName: string
     serverState: server === undefined ? undefined : statuses.chips[server]?.state,
   });
 
-  switch (availability.kind) {
-    case "none":
-      return null;
-    case "unavailable":
-      return <AppNote>App unavailable</AppNote>;
-    case "evicted":
-      return <AppNote>App data no longer kept</AppNote>;
-    case "mount":
-      return (
-        <AppMount
-          sessionId={sessionId}
-          callId={callId}
-          title={tool?.title}
-          badge={availability.badge}
-        />
-      );
-  }
+  if (availability.kind === "none") return null;
+
+  const live = availability.kind === "mount";
+
+  return (
+    <AppMount
+      sessionId={sessionId}
+      callId={callId}
+      title={tool?.title}
+      badge={availability.kind === "mount" ? availability.badge : null}
+      live={live}
+      note={availability.kind === "evicted" ? "App data no longer kept" : "App unavailable"}
+    />
+  );
 };

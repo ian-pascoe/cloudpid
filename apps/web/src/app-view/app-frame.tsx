@@ -5,10 +5,10 @@
 import type { McpAppRecord } from "@cloudpid/protocol";
 import type { McpUiToolResultNotification } from "@modelcontextprotocol/ext-apps";
 import { Check, Copy } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { copyToClipboard } from "../lib/clipboard.ts";
-import { createBridge, type Bridge } from "./bridge.ts";
+import { createBridge, retire, type Bridge } from "./bridge.ts";
 import { declaredCsp, frameUrl } from "./frame-url.ts";
 import {
   changedContext,
@@ -100,6 +100,16 @@ export interface AppFrameProps {
   readonly title: string | undefined;
   /** The server's state as a badge: shown beside the App's name. */
   readonly badge: "offline" | "sign-in" | null;
+  /**
+   * The card is ending this View (its call was evicted, its server is gone or shadowed, or the owner collapsed it): the frame
+   * stays until its View has been told to tear down and has answered (at most 2 s), then `onClosed` says it may go.
+   */
+  readonly closing?: boolean;
+  /** For a call that did not finish: the `tool-cancelled` reason sent before the teardown (the streaming mount's, #496). */
+  readonly cancelled?: string;
+  readonly onClosed?: () => void;
+  /** The View's frame is in the card: what ends it must wait for its teardown. */
+  readonly onFramed?: () => void;
 }
 
 const BADGES = { offline: "Server offline", "sign-in": "Needs sign-in" } as const;
@@ -110,8 +120,39 @@ const BADGES = { offline: "Server offline", "sign-in": "Needs sign-in" } as cons
  * builds both again). The View is sent the call's arguments and whole result as soon as it is ready; it is told of the page's
  * theme and the card's width as they change, and its own height is the card's, up to the inline cap.
  */
-export const AppFrame = ({ record, page, title, badge }: AppFrameProps) => {
+export const AppFrame = (props: AppFrameProps) => {
+  // What the frame is of. A page or call that differs from it is not swapped in at once: the View it holds is told to tear
+  // down first, and the new frame mounts when it has answered (`epoch` makes it a new component, with new state).
+  const [shown, setShown] = useState({ record: props.record, page: props.page, epoch: 0 });
+  const differs = shown.page !== props.page || shown.record.callId !== props.record.callId;
+
+  return (
+    <LiveFrame
+      {...props}
+      key={shown.epoch}
+      record={shown.record}
+      page={shown.page}
+      closing={props.closing === true || differs}
+      onClosed={() => {
+        if (props.closing === true) props.onClosed?.();
+        else setShown((was) => ({ record: props.record, page: props.page, epoch: was.epoch + 1 }));
+      }}
+    />
+  );
+};
+
+const LiveFrame = ({
+  record,
+  page,
+  title,
+  badge,
+  closing = false,
+  cancelled,
+  onClosed,
+  onFramed,
+}: AppFrameProps) => {
   const frame = useRef<HTMLIFrameElement>(null);
+  const bridgeRef = useRef<Bridge | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
   // What the frame reported, by the frame it reported it: a new frame (Retry, another page) starts again.
   const [failed, setFailed] = useState<{ key: string; reason: string } | null>(null);
@@ -180,6 +221,7 @@ export const AppFrame = ({ record, page, title, badge }: AppFrameProps) => {
       },
     });
 
+    bridgeRef.current = bridge;
     bridge.start();
     bridge.toolInput(record.arguments);
     // SAFETY: the record keeps the whole CallToolResult as JSON (`content`, `structuredContent`, `isError`, `_meta`), which is what `tool-result` carries.
@@ -215,9 +257,36 @@ export const AppFrame = ({ record, page, title, badge }: AppFrameProps) => {
       // The View is asked to tear down, and the frame goes with the card at once: React cannot wait the 2 s the
       // spec allows it, so a View that saves on teardown is not sure to finish (docs/architecture/mcp-apps.md → As built).
       void bridge.teardown();
+      bridgeRef.current = undefined;
     };
     // The bridge is the frame's: it is built again for another page, origin, call or Retry, never for a context change.
   }, [frameKey, page.origin, page.html, record.callId]);
+
+  // A card that ends its View keeps the frame until the View has torn down: the frame leaves only when `onClosed` is told.
+  // A View that never came up (no bridge) has nothing to tear down.
+  const latestClosed = useRef(onClosed);
+
+  latestClosed.current = onClosed;
+
+  const cancelReason = useRef(cancelled);
+
+  cancelReason.current = cancelled;
+
+  useEffect(() => {
+    if (!closing) return;
+
+    const bridge = bridgeRef.current;
+
+    void (bridge === undefined ? Promise.resolve() : retire(bridge, cancelReason.current)).then(
+      () => {
+        latestClosed.current?.();
+      },
+    );
+  }, [closing]);
+
+  useEffect(() => {
+    onFramed?.();
+  }, []);
 
   if (failed?.key === frameKey) {
     return (

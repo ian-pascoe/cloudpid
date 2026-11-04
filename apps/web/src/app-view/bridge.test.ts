@@ -10,6 +10,7 @@ import {
   MCP_APPS_PROTOCOL_VERSION,
   METHOD_NOT_FOUND,
   RpcError,
+  retire,
   TEARDOWN_TIMEOUT_MS,
   createBridge,
   type BridgeEvent,
@@ -572,6 +573,35 @@ describe("teardown", () => {
     await tearing;
     expect(done).toBe(true);
     expect(page.listeners.size).toBe(0);
+  });
+
+  it("sends one teardown however often it is asked, and every asker waits for its answer", async () => {
+    const { page, bridge } = await ready();
+    const first = bridge.teardown();
+    const second = bridge.teardown();
+
+    expect(methodsOf(page)).toEqual(["ui/resource-teardown"]);
+    page.deliver({ jsonrpc: "2.0", id: page.posts[0]?.data["id"], result: {} });
+    await Promise.all([first, second]);
+  });
+
+  it("retires a View of an unfinished call with tool-cancelled first, then the teardown, in that order", async () => {
+    const { page, bridge } = await ready();
+    const retiring = retire(bridge, "evicted");
+
+    expect(methodsOf(page)).toEqual(["ui/notifications/tool-cancelled", "ui/resource-teardown"]);
+    expect(page.posts[0]?.data["params"]).toEqual({ reason: "evicted" });
+    page.deliver({ jsonrpc: "2.0", id: page.posts[1]?.data["id"], result: {} });
+    await retiring;
+  });
+
+  it("retires a finished call's View with the teardown alone", async () => {
+    const { page, bridge } = await ready();
+    const retiring = retire(bridge);
+
+    expect(methodsOf(page)).toEqual(["ui/resource-teardown"]);
+    page.deliver({ jsonrpc: "2.0", id: page.posts[0]?.data["id"], result: {} });
+    await retiring;
   });
 
   it("waits at most 2 s for a View that does not answer", async () => {

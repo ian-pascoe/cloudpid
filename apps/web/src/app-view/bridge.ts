@@ -9,7 +9,7 @@
 // origin, both; the bridge posts to that origin only, never `"*"`; and it answers a View's request only through a handler it
 // was given, `-32601` for any other method.
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type, anti-slop/no-known-value-widening -- the bridge is where a View's `postMessage` data is decoded (`receive`, against `Envelope`); the `params` of a request are the View's own JSON, which the handler that serves the method decodes, and a JSON-RPC message of the host's is posted as it is built */
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off extendsNativeError:off globalTimers:off newPromise:off -- a
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off preferEffectRecord:off extendsNativeError:off globalTimers:off newPromise:off -- a
 // synchronous state machine over `postMessage` events: its queue is a native array mutated in place, its two timers
 // (the View's 10 s, the teardown's 2 s) and its promise are the browser's, and `RpcError` is a JSON-RPC error, never an
 // Effect failure.
@@ -197,6 +197,7 @@ export const createBridge = (options: BridgeOptions): Bridge => {
   let initializeTimer: ReturnType<typeof setTimeout> | undefined;
   let nextId = 1;
   let queue: Notification[] = [];
+  let tearing: Promise<void> | undefined;
 
   const aborts = new AbortController();
   const pending = new Map<string | number, (answer: { readonly ok: boolean }) => void>();
@@ -445,8 +446,9 @@ export const createBridge = (options: BridgeOptions): Bridge => {
     hostContextChanged: (change) => {
       send(HOST_CONTEXT_CHANGED, change);
     },
+    // Once: a second call, while the first waits for its answer, waits for the same one.
     teardown: () =>
-      new Promise<void>((resolve) => {
+      (tearing ??= new Promise<void>((resolve) => {
         if (closed || !initialized) {
           close();
           resolve();
@@ -469,7 +471,18 @@ export const createBridge = (options: BridgeOptions): Bridge => {
         });
 
         post({ jsonrpc: "2.0", id, method: RESOURCE_TEARDOWN, params: {} });
-      }),
+      })),
     close,
   };
+};
+
+/**
+ * End a View's life the way the spec asks of a host that is about to remove its frame: `tool-cancelled` first when the call
+ * did not finish (`cancelled` is its reason), then `ui/resource-teardown`, waited for at most {@link TEARDOWN_TIMEOUT_MS}.
+ * Resolves when the frame may go; the owner removes the frame only then.
+ */
+export const retire = (bridge: Bridge, cancelled?: string): Promise<void> => {
+  if (cancelled !== undefined) bridge.toolCancelled(cancelled);
+
+  return bridge.teardown();
 };
