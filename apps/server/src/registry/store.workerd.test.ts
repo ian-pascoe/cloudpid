@@ -221,7 +221,7 @@ describe("the Registry store", () => {
     expect(await registry.listSessions()).toHaveLength(1);
   });
 
-  it("refuses to list or write a status it does not know", async () => {
+  it("refuses to write a status it does not know", async () => {
     const registry = fresh();
 
     await registry.createSession(
@@ -229,11 +229,50 @@ describe("the Registry store", () => {
       1_000,
     );
     // Inside the object, so the throw is caught here instead of surfacing as an uncaught exception.
-    await runInDurableObject(registry, (instance: TestRegistry, state) => {
+    await runInDurableObject(registry, (instance: TestRegistry) => {
       // @ts-expect-error -- a status outside the union, as a caller that skipped the type might send
       expect(() => instance.setSessionStatus("s-1", "exploded", 2_000)).toThrow(/Unknown/);
-      state.storage.sql.exec("UPDATE sessions SET status = 'exploded'");
-      expect(() => instance.listSessions()).toThrow(/Unknown/);
+    });
+    expect(await registry.getSession("s-1")).toMatchObject({ status: "idle", updatedAt: 1_000 });
+  });
+
+  it("reads a status or a title source a later build wrote as idle and the owner's, and still lists the Session", async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      { id: "s-1", title: "Fix the build", workspace: newWorkspace("1a2b3c4d") },
+      1_000,
+    );
+    await registry.createSession(
+      { id: "s-2", title: null, workspace: newWorkspace("5e6f7a8b") },
+      2_000,
+    );
+    // A row a later build wrote, read after a revert or by an instance its code update has not reached yet
+    // (`docs/development/workers.md` → Bindings: a stored state has a fallback member).
+    await runInDurableObject(registry, (_, state) => {
+      state.storage.sql.exec(
+        "UPDATE sessions SET status = 'waiting', title_source = 'agent' WHERE id = 's-1'",
+      );
+      state.storage.sql.exec(
+        "UPDATE sessions SET agents = ? WHERE id = 's-1'",
+        JSON.stringify([
+          { id: "agent-1", parent: "root", role: null, status: "waiting" },
+          { id: "agent-2", parent: "root", role: null, status: "working" },
+        ]),
+      );
+    });
+
+    expect(await sessionIds(registry)).toEqual(["s-2", "s-1"]);
+    // Idle: not known to run. The owner's: a title is there, and a generated one never replaces it.
+    expect(await registry.getSession("s-1")).toMatchObject({
+      status: "idle",
+      title: "Fix the build",
+      titleSource: "owner",
+      // A subagent's status it does not know reads as idle, and the others still show.
+      agents: [
+        { id: "agent-1", parent: "root", role: null, status: "idle" },
+        { id: "agent-2", parent: "root", role: null, status: "working" },
+      ],
     });
   });
 
@@ -737,6 +776,25 @@ describe("the Registry store", () => {
       await registry.archiveSession("s-2", late + 3);
 
       expect(await start(registry, "s-4", late + 4)).toMatchObject({ id: "s-4" });
+    });
+
+    it("counts a status a later build wrote as running, though a listing shows it idle", async () => {
+      const registry = fresh();
+
+      await start(registry, "s-1", 1_000);
+      await start(registry, "s-2", 1_000);
+      await registry.setSessionStatus("s-1", "running", 2_000);
+      // A status this build does not know, such as a later build's Session waiting for its owner, may be one that runs:
+      // a start never passes the cap on it.
+      await runInDurableObject(registry, (_, state) => {
+        state.storage.sql.exec("UPDATE sessions SET status = 'waiting' WHERE id = 's-2'");
+      });
+
+      expect(await start(registry, "s-3", 10 * minute)).toEqual({
+        refused: "too-many-running",
+        limit: 2,
+      });
+      expect(await registry.getSession("s-2")).toMatchObject({ status: "idle" });
     });
 
     it("counts imported Sessions, but not the owner's own or a Fork's, and no cap means none", async () => {

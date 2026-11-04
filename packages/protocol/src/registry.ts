@@ -21,6 +21,7 @@ import {
   McpCompletionRef,
 } from "./mcp-completion.ts";
 import { McpPromptData } from "./mcp-prompts.ts";
+import { openLiterals } from "./open-literals.ts";
 import { McpRepoFilesView } from "./mcp-repo-files.ts";
 import { McpSignInsView, McpSignOutView } from "./mcp-sign-ins.ts";
 import { McpReconnectView, McpServerLogView, McpServersView } from "./mcp-status.ts";
@@ -125,8 +126,11 @@ export const SessionAgent = Schema.Struct({
   parent: Schema.String,
   /** The model role it was started with, if any. */
   role: Schema.NullOr(Schema.String),
-  /** `working` while its conversation has live work, otherwise `idle`. */
-  status: Schema.Literals(["working", "idle"]),
+  /**
+   * `working` while its conversation has live work, otherwise `idle`. A status this version does not know (a later
+   * build's Session reported it) falls back to `idle`, an existing member, so the rest of the summary still reads.
+   */
+  status: openLiterals(Schema.Literals(["working", "idle"]), "idle"),
   /** The branch of the Subagent Workspace it works in; absent for one that works in the Session's Workspace. */
   branch: Schema.optionalKey(Schema.String),
 });

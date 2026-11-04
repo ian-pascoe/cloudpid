@@ -143,6 +143,9 @@ const open = (
             return { status: "unchanged" as const, value: "all" };
           case "rejected":
             return { status: "rejected" as const, message: "no" };
+          default:
+            // SAFETY: a status a later Registry answers, which this build does not know: outside the union on purpose.
+            return { status: globalAnswer } as never;
         }
       }),
     listEnvironmentSecrets: () =>
@@ -343,6 +346,9 @@ const open = (
             return { status: "rejected" as const, message: "no" };
           case "missing":
             return { status: "missing" as const };
+          default:
+            // SAFETY: a status a later Registry answers, which this build does not know: outside the union on purpose.
+            return { status: answer } as never;
         }
       }),
   } as EnvironmentsRegistry;
@@ -816,6 +822,22 @@ describe("the Session's Environments", () => {
       ).toBe(status);
       expect(handedOver).toEqual([]);
       expect(upkept).toEqual([]);
+    }
+  });
+
+  it("refuse a change the Registry answered with a status this build does not know, handing and upkeeping nothing", async () => {
+    // SAFETY: a status outside the union, as a later Registry answers (`docs/development/workers.md` → Bindings).
+    const later = "later" as "changed";
+
+    for (const environment of ["default", "*"]) {
+      const { environments, handedOver, upkept, sparesKept } = open(later, later);
+
+      expect(
+        await Effect.runPromise(environments.change({ environment, change, author })),
+      ).toMatchObject({ status: "rejected", message: expect.stringContaining("does not know") });
+      expect(handedOver).toEqual([]);
+      expect(upkept).toEqual([]);
+      expect(sparesKept).toEqual([]);
     }
   });
 

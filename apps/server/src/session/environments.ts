@@ -128,6 +128,16 @@ const hiddenInAll = (
 const GLOBAL = { id: GLOBAL_ID, name: GLOBAL_NAME };
 
 /**
+ * A change the Registry answered with a status this build does not know (a later Registry's): a refusal, never the path
+ * of a change that was made, though the Registry may have recorded it (`docs/development/workers.md` \u2192 Bindings).
+ */
+const unknownAnswer = {
+  status: "rejected",
+  message:
+    "The Registry answered in a way this version of the Session does not know, so whether the change was made is not known: read the setting again before changing it.",
+} as const;
+
+/**
  * The Builds' upkeep after a kept Secret changed (its Build mark, or one more kept) or a variable kept
  * Global did, as the main Worker runs it after the owner's: the Builds it may reach are looked at again, each
  * Environment's for one kept Global (`*`).
@@ -526,6 +536,8 @@ export const sessionEnvironments = ({
               };
             case "changed":
               break;
+            default:
+              return unknownAnswer;
           }
 
           // The Session's own Workspace takes it now unless its Environment overrides the field.
@@ -579,6 +591,8 @@ export const sessionEnvironments = ({
             };
           case "changed":
             break;
+          default:
+            return unknownAnswer;
         }
 
         // The Session's own Workspace takes it now, not at its next readying; one that cannot be reached gets it then.
