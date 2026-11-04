@@ -1952,6 +1952,15 @@ export class TestSession extends DurableObject {
 
   /** The root conversation's entries, oldest first: each one's kind, data, and the text of its message. */
   rootEntries(): Promise<
+    ReadonlyArray<{ readonly kind: string; readonly data: unknown; readonly text: string }>
+  > {
+    return this.importedEntries().then((entries) =>
+      Arr.map(entries, ({ kind, data, text }) => ({ kind, data, text })),
+    );
+  }
+
+  /** `rootEntries` with each entry's ID and head too, which a Session import's tests read to see how entries are numbered and where the context starts. */
+  importedEntries(): Promise<
     ReadonlyArray<{
       readonly id: number;
       readonly kind: string;

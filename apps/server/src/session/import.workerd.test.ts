@@ -103,7 +103,7 @@ const send = async (stub: Stub, text: string, offset = 0) =>
   okValue(await stub.stageAppend({ offset, data: text }));
 
 const entriesOf = (stub: Stub) =>
-  runInDurableObject(stub, (instance: TestSession) => instance.rootEntries());
+  runInDurableObject(stub, (instance: TestSession) => instance.importedEntries());
 
 describe("a Session import in the Session object", () => {
   it("shows importing, refuses messages and moves, and keeps the slices where they end", async () => {
