@@ -2,6 +2,7 @@
 // form): cloudpid's own `ElicitationForm`, which the Session makes of the server's `requestedSchema` and the web draws,
 // so the web never reads raw JSON Schema. The normalizer that makes one and the validator that checks an answer against
 // it are in `@cloudpid/mcp/types` (`elicitation.ts`); the schemas are here because the socket's messages carry them.
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { ConversationId } from "./conversation-id.ts";
 
@@ -139,6 +140,18 @@ export const McpElicitationPage = Schema.Struct({
   warning: Schema.optionalKey(Schema.Literals(["idn", "mixed_script"])),
   opened: Schema.Boolean,
   retry: Schema.optionalKey(Schema.Literal(true)),
+  /**
+   * The Protocol era of the server that asked a page that is sent again (`retry`). A Modern page can no longer be declined
+   * once it is opened (Cancel is its way out); a Legacy `-32042`'s can be declined throughout. An era this version does
+   * not know reads as `unknown`, never as a decoding failure that would drop the whole list (`docs/architecture/mcp.md`
+   * → Deploys); only `modern` hides Decline, so a client from before the field keeps offering it, which the Session
+   * refuses for a Modern page.
+   */
+  era: Schema.optionalKey(
+    Schema.Literals(["legacy", "modern", "unknown"]).pipe(
+      Schema.catchDecoding(() => Effect.succeedSome("unknown" as const)),
+    ),
+  ),
   again: Schema.optionalKey(Schema.Literal(true)),
   finished: Schema.optionalKey(Schema.Literal(true)),
 });

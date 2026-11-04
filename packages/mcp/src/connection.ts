@@ -914,6 +914,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         kind,
         params: jsonObjectOf(params),
         mode: "live",
+        era: "legacy",
       };
 
       const answered = onInput(input).pipe(
@@ -1514,7 +1515,14 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
         return { key, answer: { action: "cancel" } };
       }
 
-      const input: McpInputRequest = { key, kind: "elicitation", params, mode: "deferrable" };
+      const input: McpInputRequest = {
+        key,
+        kind: "elicitation",
+        params,
+        mode: "deferrable",
+        era: "modern",
+      };
+
       const answer = yield* onInput(input);
 
       if (answer.kind === "defer") {
@@ -1576,6 +1584,7 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
           kind: "elicitation",
           params: page,
           mode: "deferrable",
+          era: "legacy",
         };
 
         const kept = onInput === undefined ? undefined : yield* onInput(input);
@@ -2136,11 +2145,12 @@ export const connect = Effect.fn("mcp.connect")(function* (target: McpTarget, de
    */
   const readResource = (uri: string, ctx: McpCallContext, options: ReadOptions = {}) =>
     Effect.gen(function* () {
-      const meta = metaFor(ctx);
+      // A read has no resume: its caller's deferrals are cancels, so it declares no page either (a Modern server's page
+      // waits for a resume).
+      const asking = noDeferral(ctx);
+      const meta = metaFor(asking);
       const params: ReadParams = meta === undefined ? { uri } : { uri, _meta: meta };
       const more = options.app === true ? { [APP_READ_HEADER]: "1" } : undefined;
-      // A read has no resume: its caller's deferrals are cancels.
-      const asking = noDeferral(ctx);
 
       const first = yield* readOnce(params, asking, more, {
         // A `-32042` is a question for a read that keeps pages; to any other it is the server's error.

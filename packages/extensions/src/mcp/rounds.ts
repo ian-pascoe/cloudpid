@@ -130,8 +130,9 @@ export const resumeOf = async (
     }
 
     call.asked?.push(detail);
+    // A page's `accept` ("Done, try again") has no content: the owner entered nothing the server could read.
     answers[key] =
-      outcome.action === "accept"
+      outcome.action === "accept" && page === undefined
         ? { action: "accept", content: mutableContent(outcome.content) }
         : { action: outcome.action };
   }

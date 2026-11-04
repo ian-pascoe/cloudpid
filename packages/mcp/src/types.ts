@@ -62,7 +62,9 @@ export const McpAnswers = Schema.Struct({
    * The caller keeps a Legacy server's `-32042` (URL elicitation required) for later, as it does a Modern round with
    * `defer` (which it sets too): the request may be answered `pages_required` with a `ResendState`, and `resend` sends
    * it again once the owner has opened the pages. Without it a `-32042` is the server's error, as before. A new success
-   * shape, so asked for apart from `defer` (`docs/architecture/mcp.md` → Deploys).
+   * shape, so asked for apart from `defer` (`docs/architecture/mcp.md` → Deploys). With `defer` it is also what makes a
+   * Modern request declare the elicitation's `url` mode: the caller keeps a page for later and sends the call again once
+   * the owner is done there, as `resume` does for any Modern round (a read, which has no `resume`, declares none).
    */
   pages: Schema.optionalKey(Schema.Boolean),
 });

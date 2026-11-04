@@ -223,12 +223,18 @@ export const openCall = Effect.fn("mcp.engine.openCall")(function* (
     // that cannot take it is cancelled, and a server that sees `url` may answer a `tools/call` `-32042`, which a call
     // that cannot wait for a page gets as the server's error (`docs/architecture/mcp-server-requests.md` → Questions,
     // Elicitation requests). A Modern request declares per request: the form of an elicitation only on a call whose caller
-    // offers it (`ctx.answers`) and has an `onInput` to answer with (Modern `url` comes with its own slice, #493).
+    // offers it (`ctx.answers`) and has an `onInput` to answer with; its `url` mode also only where the caller keeps the
+    // page for later (`defer`) and resumes it (`pages`), since a Modern page is answered once the owner is done there.
     capabilities: (ctx?: McpCallContext) =>
       ctx === undefined
         ? { elicitation: { form: {}, url: {} } }
         : ctx.answers?.elicitation === true && hooks.onInput !== undefined
-          ? { elicitation: { form: {} } }
+          ? {
+              elicitation:
+                ctx.answers.defer === true && ctx.answers.pages === true
+                  ? { form: {}, url: {} }
+                  : { form: {} },
+            }
           : {},
     clientInfo: { name: "cloudpid", version: env.version },
     onLog: logs.hear,

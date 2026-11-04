@@ -9,6 +9,8 @@ import {
   MCP_ELICITATIONS_PER_CALL,
   validateElicitation,
 } from "@cloudpid/mcp/types";
+import { sha256Hex } from "@cloudpid/config";
+import type { McpEra } from "@cloudpid/mcp/types";
 import { holdsPlaceholder } from "../secrets/references.ts";
 import type {
   ElicitationContent,
@@ -49,6 +51,9 @@ export const MCP_ELICITATION_CAP_REASON = "elicitation limit for this call reach
 
 /** Why a question the Session's storage cannot take (a replaced Session's) is cancelled, never shown. */
 export const MCP_QUESTION_UNRECORDED_REASON = "cloudpid could not record the question";
+
+/** Why a page a call cannot wait for is cancelled: a Modern server asked for one the call never declared it could take. */
+export const MCP_PAGE_NOT_KEPT_REASON = "the call cannot wait for a page";
 
 /** Why a question is cancelled when its call is over: it ended, or it went with an earlier instance. */
 export const MCP_CALL_ENDED_REASON = "the server's call ended";
@@ -91,8 +96,10 @@ export type McpQuestionAsk = {
   readonly form: ElicitationForm;
   /** The page to open (URL mode). */
   readonly page?: McpQuestionPage;
-  /** The call ends and is sent again once the owner is done at the page (a Legacy `-32042`), rather than going on by itself. */
+  /** The call ends and is sent again once the owner is done at the page (a Legacy `-32042`, a Modern round), rather than going on by itself. */
   readonly retry?: true;
+  /** The Protocol era of the server that asked; absent when the core that sent the question did not say. */
+  readonly era?: McpEra;
   readonly notes: ReadonlyArray<string>;
 };
 
@@ -114,7 +121,7 @@ export type McpPageRef = { readonly host: string; readonly origin: string };
 /** A form or page cloudpid ended before showing it: a credential, an address it declines, or a malformed request. */
 export type McpQuestionUnseen = Omit<
   McpQuestionAsk,
-  "key" | "form" | "notes" | "source" | "page" | "retry"
+  "key" | "form" | "notes" | "source" | "page" | "retry" | "era"
 > & {
   readonly form?: ElicitationForm;
   /** The host of the page it was, when it was a page question (URL mode). */
@@ -132,8 +139,11 @@ export type McpQuestionRecord = {
   readonly server: string;
   readonly tool: string;
   readonly mode: "form" | "url";
-  /** The Protocol era of the server that asked: a Legacy server's `-32042` and a Modern server's round are told apart here. */
-  readonly era?: "legacy";
+  /**
+   * The Protocol era of the server that asked: a Legacy server's `-32042` and a Modern server's round are told apart
+   * here. A record from before the field has none; a page then was a Legacy `-32042`'s, and a form a Modern server's.
+   */
+  readonly era?: McpEra;
   /** A page question: the address's origin only, never the rest of it. */
   readonly page?: { readonly origin: string };
   /** The message as the owner was shown it: redacted of the Secrets the Session held. */
@@ -181,6 +191,26 @@ export const MCP_PAGE_KEY_CHARS = 200;
 
 /** A page's key as the call's pages keep it: cut, so a server's long `elicitationId` cannot make the record large. */
 export const pageKeyOf = (key: string): string => key.slice(0, MCP_PAGE_KEY_CHARS);
+
+/**
+ * The era of a question whose record or request names none (from before the field): a page was a Legacy `-32042`'s, and
+ * a form a Modern server's.
+ */
+export const eraDefault = (page: boolean): McpEra => (page ? "legacy" : "modern");
+
+/**
+ * What names a page across a call's rounds, as `opened` keeps it. A Legacy server names its own page (`elicitationId`);
+ * a Modern one does not (`2026-07-28` has no `elicitationId`), so the round's key for the question and the page's
+ * address together do: the same key and address again is the same page.
+ */
+export const pageIdentityOf = (
+  era: McpEra | undefined,
+  key: string,
+  url: string | undefined,
+): string =>
+  era === "modern" && url !== undefined
+    ? `${key.slice(0, MCP_PAGE_KEY_CHARS / 2)}#${sha256Hex(url).slice(0, 32)}`
+    : pageKeyOf(key);
 
 const pagesKey = (callId: string) => `mcp-question:pages:${callId}`;
 
@@ -415,7 +445,7 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
 
   /** A request turned away at the call's cap, recorded. */
   const turnedAway = (
-    ask: Omit<McpQuestionAsk, "key" | "form" | "notes" | "source" | "page" | "retry"> & {
+    ask: Omit<McpQuestionAsk, "key" | "form" | "notes" | "source" | "page" | "retry" | "era"> & {
       readonly form?: ElicitationForm;
       readonly notes?: ReadonlyArray<string>;
       readonly page?: { readonly url: string } | { readonly origin: string };
@@ -504,6 +534,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
 
         if (ask.retry === true) page.retry = true;
 
+        if (ask.retry === true && ask.era !== undefined) page.era = ask.era;
+
         if (again) page.again = true;
 
         request.page = page;
@@ -523,8 +555,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       readonly by: McpQuestionRecord["by"];
       readonly reason?: string | undefined;
       readonly fields: ReadonlyArray<string>;
-      /** A server that spoke Legacy asked it. */
-      readonly era?: "legacy" | undefined;
+      /** The Protocol era of the server that asked. */
+      readonly era?: McpEra | undefined;
     },
     askedAt: number,
     now: number,

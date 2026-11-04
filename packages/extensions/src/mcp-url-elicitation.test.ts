@@ -7,6 +7,7 @@
 import {
   MCP_HOST_FEATURES,
   McpHostCompleted,
+  McpHostInputRequired,
   McpHostPagesRequired,
   type McpInputAnswer,
 } from "@cloudpid/mcp/types";
@@ -29,6 +30,7 @@ import {
 import {
   MCP_PAGE_KEY_CHARS,
   MCP_PAGES_KEPT,
+  pageIdentityOf,
   pageKeyOf,
   questionBasics,
 } from "./mcp/question-records.ts";
@@ -247,6 +249,39 @@ describe("a Legacy server's page during its call", () => {
     );
   });
 
+  it("refuses a Decline once it is opened, since the server was answered accept: Cancel only closes the card", async () => {
+    const { host, questions, tools, session, pending } = await setup(150);
+    const replies: Array<Answer> = [];
+
+    host.answer(async (_input, hooks) => {
+      const reply = await hooks.onInput?.(visit());
+
+      if (reply !== undefined) replies.push(reply);
+
+      await until(async () => (await pending()).length === 0);
+
+      return DONE;
+    });
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length > 0);
+
+    const [request] = await pending();
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "opened" }));
+    await expect(
+      Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" })),
+    ).rejects.toThrow("This page is open");
+    expect(await pending()).toHaveLength(1);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "cancel" }));
+    await submitted.wait(context);
+
+    expect(replies).toEqual([{ kind: "answered", result: { action: "accept" } }]);
+  });
+
   it.each([
     ["http://auth.example.com/authorize", "the page isn't served over HTTPS"],
     ["https://user:pw@auth.example.com/", "the address has a username or password in it"],
@@ -400,8 +435,8 @@ describe("a Legacy server's -32042", () => {
         params: expect.objectContaining({
           conn: "conn-docs",
           answers: {
-            "page-1": { action: "accept", content: {} },
-            "page-2": { action: "accept", content: {} },
+            "page-1": { action: "accept" },
+            "page-2": { action: "accept" },
           },
         }),
       }),
@@ -453,6 +488,31 @@ describe("a Legacy server's -32042", () => {
     expect((await session.texts("toolResult")).join("\n")).toContain(
       "The user declined Docs-Site's request for input.",
     );
+  });
+
+  it("offers Decline throughout: after Open it still answers the whole round decline", async () => {
+    const { host, questions, tools, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+
+    host.answer(gated(resumes, ["page-1"]));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 1);
+
+    const [first] = await pending();
+
+    expect(first?.page).not.toHaveProperty("era");
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "decline" }));
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({ answers: { "page-1": { action: "decline" } } }),
+      }),
+    ]);
   });
 
   it("brings a page opened before back as not finished, with no new Notification and no count toward the cap", async () => {
@@ -663,7 +723,7 @@ describe("a -32042 round across a restart", () => {
       expect.objectContaining({
         op: "resend",
         params: expect.objectContaining({
-          answers: { "page-1": { action: "accept", content: {} } },
+          answers: { "page-1": { action: "accept" } },
         }),
       }),
     ]);
@@ -1008,5 +1068,449 @@ describe("a Legacy server's -32042 on read_mcp_resource", () => {
       "Authorization needed. File-Store kept asking for the same page; stopped after 10 tries",
     );
     expect(sent).toHaveLength(11);
+  });
+});
+
+/** A Modern server's page, as the core hands it to `onInput`: its round's key for it, and no `elicitationId`. */
+const modernVisit = (url = PAGE, key = "page", message = "Sign in") => ({
+  key,
+  kind: "elicitation" as const,
+  params: { mode: "url", url, message },
+  mode: "deferrable" as const,
+  era: "modern" as const,
+});
+
+const NAME_FORM = {
+  type: "object",
+  properties: { name: { type: "string", title: "Your name" } },
+  required: ["name"],
+};
+
+const modernForm = (key = "q1") => ({
+  key,
+  kind: "elicitation" as const,
+  params: { message: "Who are you?", requestedSchema: NAME_FORM },
+  mode: "deferrable" as const,
+  era: "modern" as const,
+});
+
+const MODERN_STATE = { v: 1, method: "tools/call", name: "search", arguments: {}, round: 1 };
+
+/**
+ * A host whose Modern call asks `asks()` in each round: the round ends as `input_required` when every question is
+ * deferred, and a `resume` is answered `done` unless `again()` says the server asks the same questions once more.
+ */
+const asking =
+  (
+    asks: () => ReadonlyArray<ReturnType<typeof modernVisit | typeof modernForm>>,
+    resumes: Array<Sent>,
+    again?: () => boolean,
+  ) =>
+  async (input: Sent, hooks: Parameters<FakeMcpAnswer>[1]) => {
+    if (input.op === "resume") {
+      resumes.push(input);
+
+      if (again?.() !== true) return DONE;
+    }
+
+    const requests = asks();
+    const replies = await Promise.all(requests.map(async (each) => hooks.onInput?.(each)));
+
+    return replies.every((reply) => reply?.kind === "defer")
+      ? McpHostInputRequired.make({
+          requests,
+          resume: { ...MODERN_STATE, round: input.op === "resume" ? 2 : 1 },
+          conn: "conn-docs",
+        })
+      : DONE;
+  };
+
+describe("a Modern server's page", () => {
+  it("is kept with its round: Open is not an answer, Done sends one resume with an accept, and the call goes on", async () => {
+    const { host, memory, questions, tools, told, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+    const sent: Array<Sent> = [];
+
+    host.answer(async (input, hooks) => {
+      sent.push(input);
+
+      return asking(() => [modernVisit()], resumes)(input, hooks);
+    });
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 1);
+
+    // The call said it keeps pages for later, and it declared that to the host as a Modern call's.
+    expect(sent[0]?.ctx.answers).toMatchObject({ elicitation: true, defer: true, pages: true });
+
+    const [request] = await pending();
+
+    expect(request).toMatchObject({
+      server: "Docs-Site",
+      message: "Sign in",
+      waits: "owner",
+      page: {
+        url: PAGE,
+        host: "auth.example.com",
+        domain: "example.com",
+        opened: false,
+        retry: true,
+      },
+    });
+    expect(told).toEqual([{ server: "Docs-Site", page: true }]);
+
+    // Opened, it still waits: the server is answered when the owner is Done, not before.
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "opened" }));
+    expect(resumes).toEqual([]);
+    expect((await pending())[0]?.page?.opened).toBe(true);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "done" }));
+    await submitted.wait(context);
+
+    // One resume, carrying the owner's accept and nothing else: a page has no content.
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        op: "resume",
+        params: {
+          tool: "search",
+          conn: "conn-docs",
+          resume: MODERN_STATE,
+          answers: { page: { action: "accept" } },
+        },
+      }),
+    ]);
+    expect(sent.filter((each) => each.op === "tools/call")).toHaveLength(1);
+    expect(await session.texts("toolResult")).toEqual(["done"]);
+    expect(await detailsOf(session)).toEqual([
+      expect.objectContaining({
+        elicitation: [
+          {
+            server: "Docs-Site",
+            mode: "url",
+            action: "accept",
+            by: "owner",
+            fields: [],
+            host: "auth.example.com",
+          },
+        ],
+      }),
+    ]);
+    expect(memory.keys().filter((key) => /^mcp-question:[dq]/.test(key))).toEqual([]);
+    expect(await Effect.runPromise(questions.records)).toEqual([
+      expect.objectContaining({ mode: "url", era: "modern", action: "accept", by: "owner" }),
+    ]);
+  });
+
+  it("is brought back as not finished when the next round has the same key and address, quietly and uncounted", async () => {
+    const { host, questions, tools, told, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+    let again = true;
+
+    host.answer(
+      asking(
+        () => [modernVisit()],
+        resumes,
+        () => {
+          const asks = again;
+
+          again = false;
+
+          return asks;
+        },
+      ),
+    );
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 1);
+
+    const [first] = await pending();
+
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "done" }));
+    await until(async () => (await pending()).some((each) => each.page?.again === true));
+
+    const [second] = await pending();
+
+    expect(second?.id).not.toEqual(first?.id);
+    expect(second?.page).toMatchObject({ opened: false, retry: true, again: true });
+    // The owner was told of this page once.
+    expect(told).toHaveLength(1);
+
+    await Effect.runPromise(questions.answer(second?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(questions.answer(second?.id ?? "", { action: "done" }));
+    await submitted.wait(context);
+
+    expect(resumes).toHaveLength(2);
+    expect(await session.texts("toolResult")).toEqual(["done"]);
+  });
+
+  it("is a new page, not a repeat, when the same key comes with another address", async () => {
+    const { host, questions, tools, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+    let round = 0;
+
+    host.answer(
+      asking(
+        () => [modernVisit(round === 0 ? PAGE : "https://auth.example.com/authorize?state=other")],
+        resumes,
+        () => {
+          round += 1;
+
+          return round === 1;
+        },
+      ),
+    );
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 1);
+
+    const [first] = await pending();
+
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(questions.answer(first?.id ?? "", { action: "done" }));
+    await until(async () => (await pending()).some((each) => each.id !== first?.id));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const [second] = await pending();
+
+    // A page the server names with another address is a new one to the owner, not "Not finished".
+    expect(second?.page?.again).toBeUndefined();
+    expect(second?.page?.url).toBe("https://auth.example.com/authorize?state=other");
+
+    await Effect.runPromise(questions.answer(second?.id ?? "", { action: "decline" }));
+    await submitted.wait(context);
+  });
+
+  it("is left by Cancel once opened, never Decline: the Session refuses it and the server hears cancel", async () => {
+    const { host, questions, tools, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+
+    host.answer(asking(() => [modernVisit()], resumes));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 1);
+
+    const [request] = await pending();
+
+    // Before it is opened a Decline is told to the server; the card says the era, so it can hide Decline once opened.
+    expect(request?.page).toMatchObject({ opened: false, retry: true, era: "modern" });
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "opened" }));
+    expect((await pending())[0]?.page).toMatchObject({ opened: true, era: "modern" });
+    await expect(
+      Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" })),
+    ).rejects.toThrow("This page is open: cancel it instead");
+    expect(resumes).toEqual([]);
+    expect(await pending()).toHaveLength(1);
+
+    await Effect.runPromise(questions.answer(request?.id ?? "", { action: "cancel" }));
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({ answers: { page: { action: "cancel" } } }),
+      }),
+    ]);
+    expect((await session.texts("toolResult")).join("\n")).toContain(
+      "The user cancelled Docs-Site's request for input.",
+    );
+  });
+
+  it("answers only itself when declined: a form beside it keeps waiting, and the resume holds both", async () => {
+    const { host, questions, tools, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+
+    host.answer(asking(() => [modernForm(), modernVisit()], resumes));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 2);
+
+    const requests = await pending();
+    const form = requests.find((each) => each.page === undefined);
+    const page = requests.find((each) => each.page !== undefined);
+
+    await Effect.runPromise(questions.answer(page?.id ?? "", { action: "decline" }));
+    expect(resumes).toEqual([]);
+    expect((await pending()).map((each) => each.id)).toEqual([form?.id]);
+
+    await Effect.runPromise(
+      questions.answer(form?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+    );
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({
+          answers: {
+            q1: { action: "accept", content: { name: "Ada" } },
+            page: { action: "decline" },
+          },
+        }),
+      }),
+    ]);
+    expect((await session.texts("toolResult")).join("\n")).toContain(
+      "The user declined Docs-Site's request for input.",
+    );
+  });
+
+  it("answers Done for its pages only, so a form beside it still has its own answer to give", async () => {
+    const { host, questions, tools, session, pending } = await setup();
+    const resumes: Array<Sent> = [];
+
+    host.answer(asking(() => [modernForm(), modernVisit()], resumes));
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await until(async () => (await pending()).length === 2);
+
+    const requests = await pending();
+    const form = requests.find((each) => each.page === undefined);
+    const page = requests.find((each) => each.page !== undefined);
+
+    await Effect.runPromise(questions.answer(page?.id ?? "", { action: "opened" }));
+    await Effect.runPromise(questions.answer(page?.id ?? "", { action: "done" }));
+    expect(resumes).toEqual([]);
+    expect((await pending()).map((each) => each.id)).toEqual([form?.id]);
+
+    await Effect.runPromise(questions.answer(form?.id ?? "", { action: "cancel" }));
+    await submitted.wait(context);
+
+    expect(resumes).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({
+          answers: { q1: { action: "cancel" }, page: { action: "accept" } },
+        }),
+      }),
+    ]);
+  });
+
+  it("is told cancel by a call that keeps no questions, whatever the server asked", async () => {
+    const memory = memoryStorage();
+    const host = fakeMcpHost([DOCS]);
+
+    const questions = createMcpQuestions({
+      storage: memory.storage,
+      announce: () => Effect.void,
+      notify: () => Effect.void,
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+    });
+
+    const tools = makeMcpTools(host.client, memoryMcpToolsStore(), { slackMs: 0, questions });
+
+    const session = await open((request) =>
+      request.text === "go" ? call(["mcp__docs_site__search", {}]) : answer("ok"),
+    );
+
+    const seen: Array<Answer | undefined> = [];
+
+    host.answer(async (_input, hooks) => {
+      seen.push(await hooks.onInput?.(modernVisit()));
+
+      return DONE;
+    });
+    await session.start(tools);
+
+    const submitted = await session.root.submit({ type: "input", content: "go" }, context);
+
+    await submitted.wait(context);
+
+    expect(seen).toEqual([{ kind: "answered", result: { action: "cancel" } }]);
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect((await detailsOf(session))[0]).toMatchObject({
+      elicitation: [
+        expect.objectContaining({
+          mode: "url",
+          action: "cancel",
+          by: "cloudpid",
+          reason: "the call cannot wait for a page",
+        }),
+      ],
+    });
+  });
+});
+
+describe("the era a question's record names", () => {
+  const ASK_MODERN: McpQuestionAsk = {
+    key: "page",
+    callId: "call-7",
+    conversationId: ROOT_CONVERSATION_ID,
+    server: "Docs-Site",
+    tool: "mcp__docs_site__search",
+    message: "Sign in",
+    form: { fields: [] },
+    notes: [],
+    page: { url: PAGE, host: "auth.example.com", domain: "example.com" },
+    retry: true,
+    era: "modern",
+  };
+
+  const { page: _page, retry: _retry, ...FORM_ASK } = ASK_MODERN;
+
+  const questionsOver = async (memory: ReturnType<typeof memoryStorage>) =>
+    createMcpQuestions({
+      storage: memory.storage,
+      announce: () => Effect.void,
+      notify: () => Effect.void,
+      redact: (shown) => Effect.succeed(shown),
+      holdsSecret: () => Effect.succeed(false),
+      vault: await testVault(),
+    });
+
+  const eras = async (ask: McpQuestionAsk, forget: boolean) => {
+    const memory = memoryStorage();
+    const questions = await questionsOver(memory);
+
+    expect(await Effect.runPromise(questions.defer(ask))).toBe("deferred");
+
+    // A record from before the field has no `era`.
+    if (forget) {
+      for (const key of memory.keys().filter((each) => each.startsWith("mcp-question:q:"))) {
+        const { era: _era, ...kept } = memory.storage.get<{ era?: string }>(key) ?? {};
+
+        memory.storage.put(key, kept);
+      }
+    }
+
+    await Effect.runPromise(questions.settleCall(ask.callId));
+
+    return (await Effect.runPromise(questions.records)).map((each) => each.era);
+  };
+
+  it("is the one the core said, for a page and a form", async () => {
+    expect(await eras(ASK_MODERN, false)).toEqual(["modern"]);
+    expect(await eras({ ...ASK_MODERN, era: "legacy" }, false)).toEqual(["legacy"]);
+    expect(await eras(FORM_ASK, false)).toEqual(["modern"]);
+  });
+
+  it("reads a page stored before the field as a Legacy server's, and a form as a Modern server's", async () => {
+    expect(await eras(ASK_MODERN, true)).toEqual(["legacy"]);
+    expect(await eras(FORM_ASK, true)).toEqual(["modern"]);
+  });
+
+  it("names a Modern page by its key and address, and a Legacy one by its own id", () => {
+    const long = `https://auth.example.com/authorize?state=${"x".repeat(5000)}`;
+    const a = pageIdentityOf("modern", "page", PAGE);
+
+    expect(pageIdentityOf("modern", "page", PAGE)).toBe(a);
+    expect(pageIdentityOf("modern", "page", `${PAGE}2`)).not.toBe(a);
+    expect(pageIdentityOf("modern", "other", PAGE)).not.toBe(a);
+    expect(pageIdentityOf("modern", "page", long).length).toBeLessThanOrEqual(MCP_PAGE_KEY_CHARS);
+    expect(pageIdentityOf("modern", "page", `${long}y`)).not.toBe(
+      pageIdentityOf("modern", "page", long),
+    );
+    expect(pageIdentityOf("legacy", "page-1", PAGE)).toBe("page-1");
+    expect(pageIdentityOf(undefined, "page-1", PAGE)).toBe("page-1");
   });
 });

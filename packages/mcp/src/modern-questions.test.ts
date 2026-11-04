@@ -16,6 +16,7 @@ import {
   fetchTo,
   modernServer,
   TASKS_EXTENSION,
+  VISIT_TOOL,
 } from "./fakes.fixture.ts";
 import type { CallToolResult } from "@modelcontextprotocol/client";
 import { connect, type InputRequired, type McpDeps, type Outcome } from "./index.ts";
@@ -150,6 +151,7 @@ describe("A Modern server's questions", () => {
         key: "q1",
         kind: "elicitation",
         mode: "deferrable",
+        era: "modern",
         params: expect.objectContaining({ message: "Who are you?", requestedSchema: FORM }),
       },
     ]);
@@ -322,6 +324,71 @@ describe("A Modern server's questions", () => {
       q2: { action: "decline" },
       roots: { roots: ROOTS },
     });
+  });
+
+  it("keeps a page the server asks the owner to open, and resumes the call with an accept once it is done", async () => {
+    const options = { moreTools: [VISIT_TOOL], asked: [] };
+    const server = modernServer(options);
+    const seen: Array<McpInputRequest> = [];
+    const declared: Array<McpCallContext | undefined> = [];
+    const PAGING: McpCallContext = { ...DEFERRING, answers: { ...DEFERRING.answers, pages: true } };
+
+    const given = deps(server, () => ({ kind: "defer" }), seen, {
+      capabilities: (ctx) => {
+        declared.push(ctx);
+
+        return { elicitation: { form: {}, url: {} } };
+      },
+    });
+
+    const deferred = inputRequired(
+      valueOf(
+        await run(
+          Effect.gen(function* () {
+            const connection = yield* connect(TARGET, given);
+
+            return yield* settled(
+              connection.callTool(
+                {
+                  tool: VISIT_TOOL,
+                  arguments: { url: "https://login.example.com/go", message: "Sign in" },
+                },
+                PAGING,
+              ),
+            );
+          }),
+        ),
+      ),
+    );
+
+    // A page is a question to keep like a form, told apart by its params, and says the era that asked.
+    expect(seen).toEqual([
+      {
+        key: "page",
+        kind: "elicitation",
+        mode: "deferrable",
+        era: "modern",
+        params: expect.objectContaining({
+          mode: "url",
+          url: "https://login.example.com/go",
+          message: "Sign in",
+        }),
+      },
+    ]);
+    expect(deferred.resume).toMatchObject({ requestState: "visit-1", deferred: ["page"] });
+    expect(declared).toContainEqual(PAGING);
+
+    const resumed = valueOf(
+      await resume(
+        given,
+        JSON.parse(JSON.stringify(deferred.resume)),
+        { page: { action: "accept" } },
+        PAGING,
+      ),
+    );
+
+    expect(answeredText(resumed)).toEqual({ page: { action: "accept" } });
+    expect(options.asked).toEqual([{ round: 1, responses: { page: { action: "accept" } } }]);
   });
 
   it("answers a round on the MCP task wire too, for a call offered a task", async () => {

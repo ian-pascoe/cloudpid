@@ -47,16 +47,27 @@ export const MCP_INVALID_PARAMS = -32602;
 export const MCP_INTERNAL_ERROR = -32603;
 
 /**
+ * The Protocol era of the server that asked a question: Legacy (`2025-11-25` or earlier) or Modern (`2026-07-28` or
+ * later). The client protocol's own `McpEra` (`@cloudpid/protocol/mcp-api`) is an open set that adds `unknown`.
+ */
+export const McpEra = Schema.Literals(["legacy", "modern"]);
+
+export type McpEra = typeof McpEra.Type;
+
+/**
  * A server's question, as the core surfaces it to a call's `onInput` (`mcp-server-requests.md` → Questions). `key` names
  * it within its call; `kind` says which it is, and `params` are the server's own: an elicitation's `message` and
  * `requestedSchema`, or the `sampling/createMessage` parameters of a Sampling request. `live` means it can be answered
- * only while its call waits (a Legacy server's), `deferrable` that it may be answered later (a Modern server's).
+ * only while its call waits (a Legacy server's), `deferrable` that it may be answered later (a Modern server's, or a
+ * Legacy `-32042`'s page). `era` is the Protocol era of the server that asked, which the caller keeps in the question's
+ * record: absent from a core from before it, which the Session reads as Modern for a form and Legacy for a page.
  */
 export const McpInputRequest = Schema.Struct({
   key: Schema.String,
   kind: Schema.Literals(["elicitation", "sampling"]),
   params: JsonObject,
   mode: Schema.Literals(["live", "deferrable"]),
+  era: Schema.optionalKey(McpEra),
 });
 
 export type McpInputRequest = typeof McpInputRequest.Type;

@@ -426,6 +426,31 @@ describe("a Modern MCP server's form in a Session", () => {
 
 const PAGE_URL = "https://login.example.com/authorize?state=1";
 
+/** A Session whose host runs the real engine against a fake Modern server that has the `visit` tool. */
+const openModern = async (asked: Array<Schema.Json>) => {
+  const environment = `env-${counter++}`;
+  const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+  const server = modernServer({ moreTools: [VISIT_TOOL], asked });
+
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
+    server.handle(new Request(input, init)),
+  );
+
+  await host.useRealEngine();
+  await host.apply(SET);
+
+  const stub = env.SESSIONS.getByName(`mcp-${environment}`);
+
+  await runInDurableObject(stub, (instance: TestSession) => {
+    instance.mcpEnvironment(environment, 1);
+  });
+
+  return { stub, server };
+};
+
+const visitModern = (rounds: number) =>
+  `call:mcp__docs__visit:${JSON.stringify({ url: PAGE_URL, message: "Sign in", rounds })}`;
+
 describe("a Legacy MCP server's page in a Session", () => {
   it("is opened in the call: the server is told at once, and the card goes when the call ends", async () => {
     const { stub, asked } = await open([]);
@@ -700,6 +725,164 @@ describe("a Legacy MCP server's page in a Session", () => {
     );
 
     expect(results.join("\n")).toContain("kept asking for the same page; stopped after 10 tries");
+    owner.close();
+  });
+});
+
+describe("a Modern MCP server's page in a Session", () => {
+  it("is declared to the server, kept between the call's rounds, and answered once the owner is Done", async () => {
+    const asked: Array<Schema.Json> = [];
+    const { stub, server } = await openModern(asked);
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([visitModern(1), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "visit" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    const [request] = owner.requests();
+
+    expect(request).toMatchObject({
+      server: "docs",
+      message: "Sign in",
+      waits: "owner",
+      page: {
+        url: PAGE_URL,
+        host: "login.example.com",
+        domain: "example.com",
+        opened: false,
+        retry: true,
+      },
+    });
+    expect(await inputPushes(stub)).toEqual([
+      { kind: "input", names: [], mcp: { server: "docs", kind: "elicitation", page: true } },
+    ]);
+
+    // The call declared `url` along with the form, in the request's `_meta`.
+    const call = server.received.find((received) => received.rpc?.method === "tools/call");
+
+    expect(JSON.stringify(call?.rpc?.params?.["_meta"])).toContain(
+      '"elicitation":{"form":{},"url":{}}',
+    );
+
+    // Done is not offered before the page is opened, and Open answers nothing: the server hears nothing meanwhile.
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "early",
+      request: request?.id ?? "",
+      action: "done",
+    });
+    await settles(async () =>
+      expect(owner.received).toContainEqual(
+        expect.objectContaining({ type: "error", id: "early" }),
+      ),
+    );
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "open",
+      request: request?.id ?? "",
+      action: "opened",
+    });
+    await settles(async () => expect(owner.requests()[0]?.page?.opened).toBe(true));
+    expect(asked).toEqual([]);
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(1);
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "done",
+      request: request?.id ?? "",
+      action: "done",
+    });
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+
+    // One more `tools/call`: the resume, carrying the accept and no content.
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(2);
+    expect(asked).toEqual([{ round: 1, responses: { page: { action: "accept" } } }]);
+
+    // Nothing of the round is left in the Session's storage.
+    const dump = await storageDump(stub);
+
+    expect(dump.map(([key]) => key).filter((key) => key.startsWith("mcp-question:d"))).toEqual([]);
+    expect(dump.map(([key]) => key).filter((key) => key.startsWith("mcp-question:q"))).toEqual([]);
+    owner.close();
+  });
+
+  it("reads Not finished when the server asks for the same page again, then Done sends the next resume", async () => {
+    const asked: Array<Schema.Json> = [];
+    const { stub, server } = await openModern(asked);
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([visitModern(2), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "visit" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    const [first] = owner.requests();
+
+    for (const action of ["opened", "done"] as const) {
+      owner.send({ type: "mcp_elicitation_answer", id: action, request: first?.id ?? "", action });
+    }
+
+    await settles(async () => expect(owner.requests()[0]?.page?.again).toBe(true));
+
+    const [second] = owner.requests();
+
+    expect(second?.id).not.toEqual(first?.id);
+    expect(second?.page).toMatchObject({ url: PAGE_URL, opened: false, retry: true, again: true });
+    // The owner was told once.
+    expect(await inputPushes(stub)).toHaveLength(1);
+
+    for (const action of ["opened", "done"] as const) {
+      owner.send({ type: "mcp_elicitation_answer", id: action, request: second?.id ?? "", action });
+    }
+
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(3);
+    expect(asked).toEqual([
+      { round: 1, responses: { page: { action: "accept" } } },
+      { round: 2, responses: { page: { action: "accept" } } },
+    ]);
+    owner.close();
+  });
+
+  it("is declined before it is opened: the server is told decline, and the agent reads that", async () => {
+    const asked: Array<Schema.Json> = [];
+    const { stub } = await openModern(asked);
+    const owner = await connect(stub);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([visitModern(1), "done"]);
+      await instance.submit({ requestId: "turn-1", text: "visit" });
+    });
+    await settles(async () => expect(owner.requests()).toHaveLength(1));
+
+    const [request] = owner.requests();
+
+    owner.send({
+      type: "mcp_elicitation_answer",
+      id: "no",
+      request: request?.id ?? "",
+      action: "decline",
+    });
+    await settles(async () => expect(owner.requests()).toEqual([]));
+    await settles(async () =>
+      expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+    );
+    expect(asked).toEqual([{ round: 1, responses: { page: { action: "decline" } } }]);
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.join("\n")).toContain("The user declined docs's request for input.");
     owner.close();
   });
 });

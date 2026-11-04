@@ -197,7 +197,8 @@ export const SAMPLE_TOOL = {
  * The fakes' tool that asks the client to open a page (`elicitation/create`, URL mode) during a Legacy call, and answers
  * with what it got as JSON text. After an `accept` it waits `completeAfterMs` (when given) and tells the client the
  * owner finished there (`notifications/elicitation/complete`, on the call's own stream, or on the standalone one with
- * `completeOnStandalone`), then waits `holdMs` more before it answers.
+ * `completeOnStandalone`), then waits `holdMs` more before it answers. On Modern it asks in `input_required` rounds
+ * instead (`rounds` of them, default 1, each with the same page keyed `page`), and answers the last round's responses.
  */
 export const VISIT_TOOL = {
   name: "visit",
@@ -211,6 +212,7 @@ export const VISIT_TOOL = {
       completeAfterMs: { type: "number" },
       completeOnStandalone: { type: "boolean" },
       holdMs: { type: "number" },
+      rounds: { type: "number" },
     },
   },
 };
@@ -231,6 +233,8 @@ const VisitArguments = Schema.Struct({
   completeAfterMs: Schema.optionalKey(Schema.Int),
   completeOnStandalone: Schema.optionalKey(Schema.Boolean),
   holdMs: Schema.optionalKey(Schema.Int),
+  /** Modern: how many rounds the server asks for the page (default 1) before it answers. */
+  rounds: Schema.optionalKey(Schema.Int),
 });
 
 /**
@@ -722,8 +726,39 @@ const fakeMcp = (
       }
 
       case "visit": {
-        const { url, message, elicitationId, completeAfterMs, completeOnStandalone, holdMs } =
-          Schema.decodeUnknownSync(VisitArguments)(request.params.arguments);
+        const {
+          url,
+          message,
+          elicitationId,
+          completeAfterMs,
+          completeOnStandalone,
+          holdMs,
+          rounds,
+        } = Schema.decodeUnknownSync(VisitArguments)(request.params.arguments);
+
+        // Modern asks in an `input_required` round (`rounds`, default 1, each with the same page, keyed `page`) and reads
+        // what the client answered from the retry, recording it in `asked` with the round it came back in.
+        if (modern) {
+          const state = ctx.mcpReq.requestState<string>();
+          const round = state === undefined ? 0 : Number(state.replace("visit-", ""));
+          const responses = ctx.mcpReq.inputResponses ?? {};
+
+          if (round > 0) {
+            // SAFETY: the client's answers are JSON.
+            options.asked?.push({ round, responses: { ...responses } as Json });
+          }
+
+          if (round >= (rounds ?? 1)) {
+            return { content: [{ type: "text", text: JSON.stringify(responses) }] };
+          }
+
+          return inputRequired({
+            inputRequests: {
+              page: inputRequired.elicitUrl({ url, message: message ?? "Open the page" }),
+            },
+            requestState: `visit-${round + 1}`,
+          });
+        }
 
         const id = elicitationId ?? "e1";
 
