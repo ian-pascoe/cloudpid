@@ -1,4 +1,5 @@
 // docs/architecture/mcp-apps.md → App messages and App context: the chip of the last context a View told the model.
+// @effect-diagnostics asyncFunction:off preferEffectRecord:off -- promises a speech handler answers, and the keys of the speech a card offers.
 import * as Effect from "effect/Effect";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";

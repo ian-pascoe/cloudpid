@@ -86,13 +86,24 @@ export type AppContexts = {
     readonly view: WebSocket;
     readonly callId: string;
     readonly text: string;
-    /** The conversation to give it to: the one the View is shown in, when its History holds the call; else the record's. */
-    readonly conversation?: string | undefined;
+    /**
+     * The conversation to give it to, asked once the record and the View's limit have passed (it may read a History); none when
+     * no conversation can take it, which refuses the context. Left out: the one the call's record names.
+     */
+    readonly where?: ((call: AppContextCall) => Effect.Effect<string | undefined>) | undefined;
   }) => Effect.Effect<McpAppContextAnswer>;
   /** What the record of call `callId` says of it; none for a call with no record. */
   readonly callOf: (callId: string) => AppContextCall | undefined;
   /** The last context of call `callId`, for the card's chip. */
   readonly contextOf: (callId: string) => McpAppContext | undefined;
+  /**
+   * The last context of call `callId` as seen from `conversation` (an export of it): `here` when it was held for that conversation,
+   * so its delivered flag says what its model has read; else it was held for another branch, which says nothing of this one.
+   */
+  readonly contextFor: (
+    callId: string,
+    conversation: string,
+  ) => { readonly context: McpAppContext; readonly here: boolean } | undefined;
   /** Take the pending contexts of `conversation`, as one notice; none when it has none that another take has not taken. */
   readonly take: (conversation: string) => Effect.Effect<AppContextTaken | undefined>;
   /** Drop the pending contexts of `conversation` (its branch was moved off); delivered ones stay as they were. */
@@ -200,7 +211,7 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
     return new Set([...(Option.isSome(gone) ? [gone.value.conversation] : []), ...homeOf(callId)]);
   };
 
-  const hold: AppContexts["hold"] = ({ view, callId, text, conversation: shown }) =>
+  const hold: AppContexts["hold"] = ({ view, callId, text, where }) =>
     Effect.gen(function* () {
       const call = options.call(callId);
 
@@ -232,7 +243,15 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
       }
 
       const hash = sha256Hex(cleaned);
-      const conversation = shown ?? call.value.conversation;
+      const conversation = where === undefined ? call.value.conversation : yield* where(call.value);
+
+      if (conversation === undefined) {
+        return {
+          status: "refused",
+          message:
+            "The conversation that call was made in was left, and the one shown does not hold it: there is nothing to tell",
+        };
+      }
 
       // The same text again (a remount sends it) for the conversation that has it: held once. One whose conversation is not the
       // one that has it (the View is shown in another branch now) is held again for that one, which has not been told.
@@ -240,18 +259,13 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
         return { status: "held", context: showing(current) };
       }
 
-      // The cap is on distinct calls: a call's own pending context is replaced, whatever else waits.
-      const replacing =
-        current !== undefined &&
-        current.delivered !== true &&
-        current.conversation === conversation;
-
+      // The cap is on distinct calls: a call's own pending context is not counted, so it is always replaced.
       const waiting = Arr.filter(
         index(),
         (each) => each.conversation === conversation && !each.delivered && each.callId !== callId,
       ).length;
 
-      if (!replacing && waiting >= MAX_MCP_APP_PENDING) {
+      if (waiting >= MAX_MCP_APP_PENDING) {
         return {
           status: "refused",
           message: `At most ${MAX_MCP_APP_PENDING} App contexts wait for a conversation: they are given to the model with the owner's next message`,
@@ -389,6 +403,13 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
       const held = read(callId);
 
       return held === undefined ? undefined : showing(held);
+    },
+    contextFor: (callId, conversation) => {
+      const held = read(callId);
+
+      return held === undefined
+        ? undefined
+        : { context: showing(held), here: held.conversation === conversation };
     },
     take,
     drop,

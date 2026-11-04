@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → The bridge: `ui/open-link`. Only http and https are taken, the owner confirms with the whole URL
 // in front of them, dismissing answers -32000, and a newer request replaces the one waiting.
 /* oxlint-disable anti-slop/no-unknown-parameters -- a View's params are whatever it sent */
-// @effect-diagnostics preferEffectArray:off -- recorded calls in native lists.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off -- recorded calls in native lists, and promises a handler answers.
 import { describe, expect, it, vi } from "vitest";
 import { RpcError } from "./bridge.ts";
 import { DISMISSED, linkOf, openLinkHandler, type PendingLink, shownLink } from "./open-link.ts";

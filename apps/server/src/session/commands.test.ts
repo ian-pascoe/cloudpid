@@ -204,8 +204,8 @@ describe("exportMarkdown of an App", () => {
   it("gives the last context of the App's call, sent to the model or still pending", () => {
     const text = "picked the red chart\nand zoomed";
 
-    const held = (context: McpAppContext) => ({
-      appContext: (callId: string) => (callId === "c1" ? context : undefined),
+    const held = (context: McpAppContext, here = true) => ({
+      appContext: (callId: string) => (callId === "c1" ? { context, here } : undefined),
     });
 
     expect(
@@ -216,6 +216,22 @@ describe("exportMarkdown of an App", () => {
     expect(exportMarkdown(1, entries, exportedAt, held({ hash: "h", text, at: 1 }))).toContain(
       "Last App context (pending, not yet sent):\n\n> picked the red chart",
     );
+  });
+
+  it("does not say a context was sent to the model of a conversation it was held for another branch of", () => {
+    const text = "seen by branch B only";
+
+    const markdown = exportMarkdown(1, entries, exportedAt, {
+      appContext: (callId) =>
+        callId === "c1"
+          ? { context: { hash: "h", text, at: 1, delivered: true }, here: false }
+          : undefined,
+    });
+
+    expect(markdown).toContain(
+      "Last App context (held for another Session branch, not given to this one):\n\n> seen by branch B only",
+    );
+    expect(markdown).not.toContain("sent to the model");
   });
 });
 

@@ -2610,9 +2610,11 @@ export class TestSession extends DurableObject {
     await Effect.runPromise(this.#mcpWatches().service.started(watch));
   }
 
-  /** The App calls of the root conversation, as `mcp_apps` lists them. */
-  appCalls(): Promise<ReadonlyArray<McpAppEntry>> {
-    return Effect.runPromise(this.#mcpApps().service.list(ROOT_CONVERSATION_ID));
+  /** The App calls of the root conversation (or `conversationId`), as `mcp_apps` lists them. */
+  appCalls(
+    conversationId: ConversationId = ROOT_CONVERSATION_ID,
+  ): Promise<ReadonlyArray<McpAppEntry>> {
+    return Effect.runPromise(this.#mcpApps().service.list(conversationId));
   }
 
   /** Mount App call `callId`, as `mcp_app_mount` does. */

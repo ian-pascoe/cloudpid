@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → App messages and App context. The bridge's handlers for a View's `ui/message` and
 // `ui/update-model-context`: what they take, what they hand on, and how they answer.
 /* oxlint-disable anti-slop/no-unknown-parameters -- a View's params are whatever it sent */
-// @effect-diagnostics preferEffectArray:off -- recorded calls in native lists.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off -- recorded calls in native lists, and promises a handler answers.
 import { MAX_APP_MESSAGE_CHARS, MAX_MCP_APP_CONTEXT_INPUT } from "@cloudpid/protocol";
 import { describe, expect, it, vi } from "vitest";
 import {

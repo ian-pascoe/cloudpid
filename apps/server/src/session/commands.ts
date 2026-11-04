@@ -143,19 +143,33 @@ const isAppResult = (
 /** What an export says of an App call: it mounted an App it cannot show, and the last context the App gave the model. */
 const appCallMarkdown = (
   part: Extract<TranscriptPart, { type: "tool-result" }>,
-  context: McpAppContext | undefined,
+  held: ExportedAppContext | undefined,
 ): string[] => [
   `_App: ${appToolOf(part.name)} (not rendered)_`,
-  ...(context === undefined
+  ...(held === undefined
     ? []
-    : [
-        `Last App context (${context.delivered === true ? "sent to the model" : "pending, not yet sent"}):\n\n${quoted(context.text)}`,
-      ]),
+    : [`Last App context (${contextStanding(held)}):\n\n${quoted(held.context.text)}`]),
 ];
+
+/** A call's last context as seen from the conversation exported: `here` when it was held for that conversation. */
+export type ExportedAppContext = {
+  readonly context: McpAppContext;
+  readonly here: boolean;
+};
+
+/**
+ * What an export says of where a context stands: what the exported conversation's model has read, or that it was held for
+ * another Session branch, whose model's reading says nothing of this one's.
+ */
+const contextStanding = ({ context, here }: ExportedAppContext): string => {
+  if (!here) return "held for another Session branch, not given to this one";
+
+  return context.delivered === true ? "sent to the model" : "pending, not yet sent";
+};
 
 /** What an export reads beside the entries: the App contexts the Session holds, by call. */
 export type ExportOptions = {
-  readonly appContext?: ((callId: string) => McpAppContext | undefined) | undefined;
+  readonly appContext?: ((callId: string) => ExportedAppContext | undefined) | undefined;
 };
 
 /** One message of the History as Markdown. */

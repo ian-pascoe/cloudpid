@@ -1154,28 +1154,24 @@ export const sessionSocketsLayer = (
           case "mcp_app_context":
             // Held pending in the Session; a busy conversation is then written them at its next boundary.
             return Effect.gen(function* () {
-              const call = mcpApps.contexts.callOf(message.callId);
-              const shown = message.conversationId;
-
-              // The conversation the page shows the View in, when its History holds the call; else the one the call was made in.
-              const conversation =
-                call === undefined
-                  ? undefined
-                  : shown !== undefined &&
-                      String(shown) !== call.conversation &&
-                      (yield* host.callInHistory(shown, call.parentCall ?? message.callId))
-                    ? String(shown)
-                    : call.conversation;
+              let target: string | undefined;
 
               const answer = yield* mcpApps.contexts.hold({
                 view: socket,
                 callId: message.callId,
                 text: message.text,
-                conversation,
+                where: (call) =>
+                  host.appContextTarget(call, message.callId, message.conversationId).pipe(
+                    Effect.tap((conversation) =>
+                      Effect.sync(() => {
+                        target = conversation;
+                      }),
+                    ),
+                  ),
               });
 
-              if (answer.status === "held" && conversation !== undefined) {
-                yield* host.appContextHeld(conversationOf(conversation));
+              if (answer.status === "held" && target !== undefined) {
+                yield* host.appContextHeld(conversationOf(target));
               }
 
               return answer;

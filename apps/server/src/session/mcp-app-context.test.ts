@@ -7,6 +7,7 @@ import { MAX_MCP_APP_CONTEXT_BYTES, MAX_MCP_APP_PENDING } from "@cloudpid/protoc
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import { describe, expect, it } from "vitest";
 import { type AppContextCall, appContextsOver } from "./mcp-app-context.ts";
 import type { SessionKv } from "./session-kv.ts";
@@ -35,7 +36,7 @@ const open = (calls: Record<string, AppContextCall> = {}, secret = "hunter2") =>
     ["one", { server: "docs", tool: "show", conversation: "1" }],
     ["two", { server: "maps", tool: "view", conversation: "1" }],
     ["other", { server: "docs", tool: "show", conversation: "2" }],
-    ...Object.entries(calls),
+    ...Record.toEntries(calls),
   ]);
 
   const contexts = appContextsOver({
@@ -292,7 +293,12 @@ describe("App context", () => {
 
     // Shown in conversation 2 now: the text was delivered to 1, and is not to 2.
     const moved = await Effect.runPromise(
-      contexts.hold({ view, callId: "one", text: "same text", conversation: "2" }),
+      contexts.hold({
+        view,
+        callId: "one",
+        text: "same text",
+        where: () => Effect.succeed("2"),
+      }),
     );
 
     expect(moved).toMatchObject({ status: "held" });
@@ -302,6 +308,53 @@ describe("App context", () => {
     expect((await Effect.runPromise(contexts.take("2")))?.entry.kind).toBe(
       "cloudpid.mcp-app-context",
     );
+  });
+
+  it("is refused, held for nothing, when no conversation can take it, and asks only once the View is within its limit", async () => {
+    const { contexts, view } = open();
+    let asked = 0;
+
+    const where = () =>
+      Effect.sync(() => {
+        asked += 1;
+
+        return undefined;
+      });
+
+    expect(
+      await Effect.runPromise(contexts.hold({ view, callId: "one", text: "left", where })),
+    ).toMatchObject({ status: "refused" });
+    expect(contexts.contextOf("one")).toBeUndefined();
+    expect(asked).toBe(1);
+
+    // Past a minute's worth the History is not read at all.
+    for (let n = 0; n < 60; n++) {
+      await Effect.runPromise(contexts.hold({ view, callId: "one", text: `n${n}`, where }));
+    }
+
+    const before = asked;
+
+    expect(
+      await Effect.runPromise(contexts.hold({ view, callId: "one", text: "over", where })),
+    ).toMatchObject({ status: "refused", message: expect.stringContaining("a minute") });
+    expect(asked).toBe(before);
+  });
+
+  it("says, for an export of a conversation, whether the context was held for it", async () => {
+    const { contexts, hold } = open();
+
+    await hold("one", "for conversation 1");
+    await Effect.runPromise(
+      contexts.take("1").pipe(Effect.flatMap((taken) => taken?.delivered ?? Effect.void)),
+    );
+
+    expect(contexts.contextFor("one", "1")).toMatchObject({
+      here: true,
+      context: { text: "for conversation 1", delivered: true },
+    });
+    // Another branch's model never read it.
+    expect(contexts.contextFor("one", "2")?.here).toBe(false);
+    expect(contexts.contextFor("none", "1")).toBeUndefined();
   });
 
   it("refuses a context past what a conversation may wait with, and a View past its minute", async () => {

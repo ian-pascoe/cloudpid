@@ -177,7 +177,7 @@ import type { ImportDefaults } from "./import-model.ts";
 import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
 import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure } from "./errors.ts";
-import type { AppContexts } from "./mcp-app-context.ts";
+import type { AppContextCall, AppContexts } from "./mcp-app-context.ts";
 import type { PromptCatalog } from "./mcp-prompt-catalog.ts";
 import type { HoldSlot, SpillRead } from "./mcp-resource-previews.ts";
 import { promptFileName, promptMessage, type PromptFile } from "./mcp-prompt.ts";
@@ -773,11 +773,15 @@ export type SessionHostService = {
    */
   readonly appContextHeld: (conversation: ConversationId) => Effect.Effect<void>;
   /**
-   * Whether the model's tool call `callId` is in `conversation`'s History: made in it, or in a branch it was forked from before
-   * the point it was made at. For an App View shown in a conversation other than the one its call was made in (kept across a
-   * move of the active branch). Never fails: a History that cannot be read does not hold it.
+   * The conversation an App View's context for `call` goes to, or none when no conversation can take it: the one the page
+   * shows the View in (`shown`) when its History holds the call, else the one the call was made in; a Session branch that was
+   * left gives way to the active branch when that holds the call. Never fails.
    */
-  readonly callInHistory: (conversation: ConversationId, callId: string) => Effect.Effect<boolean>;
+  readonly appContextTarget: (
+    call: AppContextCall,
+    callId: string,
+    shown: ConversationId | undefined,
+  ) => Effect.Effect<string | undefined>;
   /** The root conversation's ID; the root is created when absent. */
   readonly root: Effect.Effect<ConversationId, SessionError>;
   /** The active branch's conversation ID (GLOSSARY.md → Session branch); the root is created when absent. */
@@ -1345,8 +1349,34 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const { active, treeState } = branches;
 
-  const callInHistory = (conversation: ConversationId, callId: string): Effect.Effect<boolean> =>
-    branches.historyHolds(conversation, callId).pipe(Effect.orElseSucceed(() => false));
+  /**
+   * The conversation an App View's context for `call` goes to, as a string ID, or none when no conversation can take it: the
+   * one the page shows the View in (`shown`) when its History holds the call, else the one the call was made in. A Session
+   * branch the active branch has moved off is given nothing (its pending contexts were dropped when it was left, and one held
+   * now would wait for good and take up a slot): the active branch takes it when its History holds the call, else it is refused.
+   */
+  const appContextTarget = (
+    call: AppContextCall,
+    callId: string,
+    shown: ConversationId | undefined,
+  ): Effect.Effect<string | undefined> =>
+    Effect.gen(function* () {
+      // A call nested in a `codemode` script is in the History as the script's call.
+      const made = call.parentCall ?? callId;
+
+      const target =
+        shown !== undefined &&
+        String(shown) !== call.conversation &&
+        (yield* branches.historyHolds(shown, made))
+          ? String(shown)
+          : call.conversation;
+
+      if (!(yield* branches.isLeft(toConversationId(Number(target))))) return target;
+
+      const { id } = yield* active;
+
+      return (yield* branches.historyHolds(id, made)) ? String(id) : undefined;
+    }).pipe(Effect.orElseSucceed(() => undefined));
 
   /** Bring the active branch's agent to the one it wants, so its next request runs on it; nothing is written when it does. */
   const applyAgent = Effect.gen(function* () {
@@ -3336,7 +3366,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         conversation.id,
         DateTime.formatIso(yield* DateTime.now),
         MAX_EXPORT_BYTES,
-        { appContext: options.appContexts?.contextOf },
+        {
+          appContext: (callId) => options.appContexts?.contextFor(callId, String(conversation.id)),
+        },
       );
 
       let cursor: Cursor | undefined;
@@ -4062,7 +4094,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         Effect.asVoid,
       ),
     appContextHeld,
-    callInHistory,
+    appContextTarget,
     submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
     alarm: wakeAndResume,

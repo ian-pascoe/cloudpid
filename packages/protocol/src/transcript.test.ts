@@ -1,4 +1,5 @@
 import type { EntryRecord } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import type { Annotation, PageAnnotation } from "./annotations.ts";
 import { cropLabel, renderReview, reviewMessage } from "./review.ts";
@@ -143,7 +144,7 @@ describe("App messages in the transcript", () => {
       entryWith([{ callId: "c1", server: "docs", text: "Pick B" }], "Pick B"),
     );
 
-    expect(same?.parts.map((part) => (part.type === "text" ? part.text : ""))).toEqual([
+    expect(Arr.map(same?.parts ?? [], (part) => (part.type === "text" ? part.text : ""))).toEqual([
       "Pick B",
       "Pick A",
     ]);

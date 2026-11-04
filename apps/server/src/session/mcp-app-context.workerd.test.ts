@@ -526,25 +526,42 @@ describe("an App View kept across a move of the active branch", () => {
     });
   });
 
-  it("gives it to the conversation the call was made in when the conversation the page names does not hold the call", async () => {
+  /** Move the active branch to a new one at `position` of the first assistant or owner message; its ID. */
+  const moveTo = async (
+    stub: DurableObjectStub<TestSession>,
+    role: "assistant" | "user",
+    position: "at" | "before",
+    which = 0,
+  ) => {
+    const node = (await nodes(stub)).nodes.filter((each) => each.role === role)[which];
+
+    if (node === undefined) throw new Error(`No ${role} message`);
+
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.navigate({ entryId: node.id, position }),
+      ),
+    ).toHaveProperty("navigated");
+
+    return runInDurableObject(stub, (instance: TestSession) => instance.activeBranch());
+  };
+
+  const noticesOf = async (stub: DurableObjectStub<TestSession>, branch: ConversationId) =>
+    Arr.filter(await entries(stub, branch), (each) => each.kind === KIND);
+
+  it("refuses it, when the branch moved to does not hold the call and the conversation the call was made in was left", async () => {
     const rig = await withApp();
     const { stub } = rig;
-    const first = (await nodes(stub)).nodes.find((node) => node.role === "user");
 
-    if (first === undefined) throw new Error("No owner message");
-
-    // A branch from before the call: its History does not hold it.
-    await runInDurableObject(stub, (instance: TestSession) =>
-      instance.navigate({ entryId: first.id, position: "before" }),
-    );
-
-    const branch = await runInDurableObject(stub, (instance: TestSession) =>
-      instance.activeBranch(),
-    );
+    // A branch from before the call: its History does not hold it, and the conversation the call was made in is left.
+    const branch = await moveTo(stub, "user", "before");
 
     expect(await rig.context("not for this branch", rig.entry.callId, branch)).toMatchObject({
-      status: "held",
+      status: "refused",
     });
+    // From an App Pane, which names no conversation: the same.
+    expect(await rig.context("from a pane")).toMatchObject({ status: "refused" });
+    expect((await callOf(rig))?.context).toBeUndefined();
 
     await runInDurableObject(stub, async (instance: TestSession) => {
       instance.script(["ok"]);
@@ -552,7 +569,153 @@ describe("an App View kept across a move of the active branch", () => {
     });
     await idle(stub);
 
-    expect((await entries(stub, branch)).filter((each) => each.kind === KIND)).toEqual([]);
+    expect(await noticesOf(stub, branch)).toEqual([]);
+  });
+
+  it("does not take a branch's History for holding the call because it holds other calls", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+    const branch = await moveTo(stub, "user", "before");
+
+    // The branch makes a call of its own to the same tool: its History holds that one, not the first.
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script([`call:mcp__docs__app:${JSON.stringify({ text: "again" })}`, "done"]);
+      await instance.submit({ requestId: "again-1", text: "call it again" });
+    });
+    await idle(stub);
+
+    const second = (
+      await runInDurableObject(stub, (instance: TestSession) => instance.appCalls(branch))
+    ).at(-1);
+
+    expect(second).toBeDefined();
+    expect(await rig.context("for the first call", rig.entry.callId, branch)).toMatchObject({
+      status: "refused",
+    });
+    expect(await rig.context("for the second", second?.callId, branch)).toMatchObject({
+      status: "held",
+    });
+  });
+
+  it("gives it to the active branch when the page names no conversation and the call was made in one left, if that branch holds the call", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+    const branch = await moveTo(stub, "assistant", "at");
+
+    // An App Pane names no conversation; the call's own is the root, which was left.
+    expect(await rig.context("from a pane")).toMatchObject({ status: "held" });
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["Noted."]);
+      await instance.submit({ requestId: "pane-1", text: "and now?" });
+    });
+    await idle(stub);
+
+    expect(await noticesOf(stub, branch)).toHaveLength(1);
+  });
+
+  it("tells a busy branch moved to at once, writing the notice at its next boundary", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+    const branch = await moveTo(stub, "assistant", "at");
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["gate:Working on it."]);
+      await instance.submit({ requestId: "busy-moved", text: "go" });
+      await instance.gated.promise;
+    });
+    expect(await rig.context("while busy", rig.entry.callId, branch)).toMatchObject({
+      status: "held",
+    });
+    await runInDurableObject(stub, (instance: TestSession) => instance.open());
+    await idle(stub);
+
+    // No other input was sent: the busy conversation was told as its run went on.
+    expect(await noticesOf(stub, branch)).toHaveLength(1);
+  });
+
+  it("finds a call nested in a codemode script by the script's call, which is the one in the History", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+    const branch = await moveTo(stub, "assistant", "at");
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.appPut({
+        callId: "nested-1",
+        parentCall: rig.entry.callId,
+        server: "docs",
+        tool: "app",
+        conversation: "1",
+        arguments: {},
+        htmlHash: "hash-nested",
+        result: { content: [{ type: "text", text: "ok" }] },
+      }),
+    );
+    expect(await rig.context("from a nested call", "nested-1", branch)).toMatchObject({
+      status: "held",
+    });
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["Noted."]);
+      await instance.submit({ requestId: "nested-1", text: "and now?" });
+    });
+    await idle(stub);
+
+    expect((await noticesOf(stub, branch))[0]?.text).toContain("from a nested call");
+  });
+
+  it("is exported as held for another branch by a branch whose model never read it", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+    const root = await runInDurableObject(stub, (instance: TestSession) => instance.activeBranch());
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["Fine."]);
+      await instance.submit({ requestId: "second-turn", text: "another turn" });
+    });
+    await idle(stub);
+
+    // A branch from before the second turn: its History holds the call and its result.
+    const branch = await moveTo(stub, "user", "before", 1);
+
+    await rig.context("seen by the new branch", rig.entry.callId, branch);
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["Noted."]);
+      await instance.submit({ requestId: "export-moved", text: "next" });
+    });
+    await idle(stub);
+
+    const exported = () =>
+      runInDurableObject(stub, async (instance: TestSession) => {
+        const answer = await instance.command("export", "");
+
+        if (!("outcome" in answer)) throw new Error(answer.failure);
+
+        return answer.outcome.file?.content ?? "";
+      });
+
+    expect(await exported()).toContain("Last App context (sent to the model)");
+
+    // Back on the branch the call was made in: the model there never read it.
+    const home = (await nodes(stub)).nodes.findLast(
+      (node) => node.role === "assistant" && node.conversationId === root,
+    );
+
+    if (home === undefined) throw new Error("No answer on the first branch");
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.navigate({ entryId: home.id, position: "at" }),
+    );
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.activeBranch())).toBe(
+      root,
+    );
+
+    const content = await exported();
+
+    expect(content).toContain(
+      "Last App context (held for another Session branch, not given to this one)",
+    );
+    expect(content).not.toContain("sent to the model");
   });
 });
 

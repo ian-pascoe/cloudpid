@@ -99,7 +99,18 @@ const movedBranch = () =>
     yield* socket.say({
       type: "mcp_apps",
       conversationId: 1,
-      apps: [{ callId: "call-1", server: "docs", tool: "page", state: "kept", at: 1 }],
+      apps: [
+        { callId: "call-1", server: "docs", tool: "page", state: "kept", at: 1 },
+        // Made inside a codemode script, whose call is the one the History holds.
+        {
+          callId: "nested-1",
+          parentCall: "call-1",
+          server: "docs",
+          tool: "page",
+          state: "kept",
+          at: 2,
+        },
+      ],
     });
 
     return chat;
@@ -113,6 +124,19 @@ describe("where an App View is shown", () => {
         const { registry } = yield* movedBranch();
 
         expect(registry.get(shownInAtom(appKey("s1", "call-1")))).toEqual({
+          key: ROOT,
+          conversation: 2,
+        });
+      }),
+  );
+
+  it.effect(
+    "is the root's thread for a call nested in a script the History holds, by the script's call",
+    () =>
+      Effect.gen(function* () {
+        const { registry } = yield* movedBranch();
+
+        expect(registry.get(shownInAtom(appKey("s1", "nested-1")))).toEqual({
           key: ROOT,
           conversation: 2,
         });
