@@ -28,6 +28,8 @@ import {
   McpAppHtmlAnswer,
   McpAppRequestAnswer,
   McpAppMounted,
+  McpResourcePreviewAnswer,
+  resourceUnavailable,
   OwnerTabLinks,
   OwnerTabListing,
   type McpPromptRef,
@@ -479,6 +481,20 @@ export interface SessionClient {
     params: Schema.Json | undefined,
   ) => Effect.Effect<McpAppRequestAnswer, SessionCommandError>;
   /**
+   * The owner's preview of a resource a tool call's card links (`docs/architecture/mcp-in-a-session.md` → Resource links and
+   * embedded resources): the Session reads `uri` of MCP server `server` for the conversation `conversationId` names (the
+   * active branch's when none), and never starts a Container to do it. `path` is a Result Spill's, which the Session
+   * reads from the Workspace when the file is still there. The answer is the contents or why there are none (an answer,
+   * not a failure: a Session from before it, whose `hello` did not say `resourcePreviews`, is answered
+   * `session_unsupported` here, with nothing sent); fails as `catalog` does when the socket is down.
+   */
+  readonly resourcePreview: (
+    conversationId: number | undefined,
+    server: string,
+    uri: string,
+    path?: string,
+  ) => Effect.Effect<McpResourcePreviewAnswer, SessionCommandError>;
+  /**
    * An App View's log line (`notifications/message`) for call `callId`, which the Session puts on a telemetry span. Sent
    * to a Session that takes it (its `hello` said `appViews`) and dropped otherwise; nothing is answered.
    */
@@ -589,6 +605,8 @@ const decodeMcpAppHtmlAnswer = Schema.decodeUnknownOption(McpAppHtmlAnswer);
 
 const decodeMcpAppRequestAnswer = Schema.decodeUnknownOption(McpAppRequestAnswer);
 
+const decodeMcpResourcePreviewAnswer = Schema.decodeUnknownOption(McpResourcePreviewAnswer);
+
 const decodeChangeFile = Schema.decodeUnknownOption(ChangeFile);
 
 const decodeSamplingRecord = Schema.decodeUnknownOption(Schema.NullOr(McpSamplingRecordView));
@@ -698,6 +716,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   // before reads either as an unreadable message, and a message sent without its resources would not say so.
   // `null` until the connection's `hello` has said.
   let attachedResources: boolean | null = null;
+  // Whether it takes `mcp_resource_read` (`hello.resourcePreviews`), on the same terms.
+  let resourcePreviews = false;
 
   /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
   const sendVisibility = (): void => {
@@ -1047,6 +1067,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     appViews = false;
     mcpTasks = false;
     attachedResources = null;
+    resourcePreviews = false;
 
     // What was sent went with the socket; the answers will not come.
     for (const submit of pending) submit.sent = false;
@@ -1090,6 +1111,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         appViews = message.appViews === true;
         mcpTasks = message.mcpTasks === true;
         attachedResources = message.attachedResources === true;
+        resourcePreviews = message.resourcePreviews === true;
         update({
           activeBranch: root,
           copying: message.copying === true,
@@ -2131,6 +2153,28 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
       send(logger === undefined ? line : { ...line, logger });
     },
+    resourcePreview: (conversationId, server, uri, path) =>
+      resourcePreviews
+        ? request((id) => {
+            const message: Types.Mutable<Extract<ClientMessage, { type: "mcp_resource_read" }>> = {
+              type: "mcp_resource_read",
+              id,
+              server,
+              uri,
+            };
+
+            if (conversationId !== undefined) message.conversationId = conversation(conversationId);
+
+            if (path !== undefined) message.path = path;
+
+            return message;
+          }, decodeMcpResourcePreviewAnswer)
+        : Effect.succeed(
+            resourceUnavailable(
+              "session_unsupported",
+              "This Session cannot read resources for a preview yet",
+            ),
+          ),
     appRequest: (callId, requestId, method, params) =>
       request((id) => {
         const message: Extract<ClientMessage, { type: "mcp_app_request" }> = {

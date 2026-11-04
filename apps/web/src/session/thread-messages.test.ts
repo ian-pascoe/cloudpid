@@ -1,4 +1,9 @@
-import { EMPTY_VIEW, type SessionView, type TranscriptMessage } from "@cloudpid/protocol";
+import {
+  EMPTY_VIEW,
+  type SessionView,
+  type TranscriptMessage,
+  type TranscriptPart,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import {
@@ -836,5 +841,74 @@ describe("the thread messages of a view", () => {
         metadata: { custom: { title: "Context reset" } },
       },
     ]);
+  });
+});
+
+describe("the resources of an MCP result", () => {
+  const called = (
+    details: NonNullable<Extract<TranscriptPart, { type: "tool-result" }>["details"]>,
+    content: ReadonlyArray<
+      { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+    >,
+  ) =>
+    toThreadMessages(
+      view({
+        messages: [
+          user("1", "go"),
+          assistant("2", [{ type: "tool-call", id: "c1", name: "mcp__docs__find", arguments: {} }]),
+          {
+            id: "r-c1",
+            role: "tool",
+            timestamp: 3,
+            parts: [
+              {
+                type: "tool-result",
+                id: "c1",
+                name: "mcp__docs__find",
+                content: [...content],
+                error: false,
+                details,
+              },
+            ],
+          },
+        ],
+      }),
+    )[1]?.content[0];
+
+  it("puts what the result names on the call's card, with the text or image the transcript holds of an embedded one", () => {
+    const part = called(
+      {
+        server: "docs",
+        tool: "find",
+        resources: [
+          { uri: "https://x.test/a.md", kind: "link" },
+          { uri: "file:///n.md", kind: "text", part: 1, at: 1 },
+        ],
+      },
+      [
+        { type: "text", text: "[link]" },
+        { type: "text", text: "# Embedded" },
+      ],
+    );
+
+    expect(part).toMatchObject({
+      artifact: {
+        resources: [
+          { server: "docs", uri: "https://x.test/a.md", kind: "link" },
+          {
+            server: "docs",
+            uri: "file:///n.md",
+            kind: "text",
+            held: { kind: "text", text: "# Embedded" },
+          },
+        ],
+      },
+    });
+  });
+
+  it("leaves a call with no resources with no artifact for them", () => {
+    expect(
+      called({ server: "docs", tool: "find" }, [{ type: "text", text: "x" }]),
+    ).not.toHaveProperty("artifact");
   });
 });

@@ -3201,6 +3201,97 @@ describe("the App calls on a Session connection", () => {
       }),
   );
 
+  it.effect(
+    "sends a resource preview's read to a Session that says it takes one, with the conversation when there is one, and answers its answer",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { resourcePreviews: true });
+
+        const asked = yield* client
+          .resourcePreview(4, "docs", "file:///a.md")
+          .pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const sent = latest()
+          .commands()
+          .find((command) => command.type === "mcp_resource_read");
+
+        expect(sent).toEqual({
+          type: "mcp_resource_read",
+          id: expect.any(String),
+          conversationId: 4,
+          server: "docs",
+          uri: "file:///a.md",
+        });
+        yield* latest().say({
+          type: "result",
+          id: sent?.id,
+          result: { status: "contents", contents: [{ uri: "file:///a.md", text: "hi" }] },
+        });
+        expect(yield* Fiber.join(asked)).toEqual({
+          status: "contents",
+          contents: [{ uri: "file:///a.md", text: "hi" }],
+        });
+
+        // A Result Spill's chip names the file it was saved to, which the Session reads from the Workspace.
+        const spilled = yield* client
+          .resourcePreview(
+            undefined,
+            "docs",
+            "file:///a.png",
+            "/workspace/.cloudpid/tmp/tmp-a/mcp-b.png",
+          )
+          .pipe(Effect.forkChild);
+
+        yield* settle;
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "mcp_resource_read")
+            .at(-1),
+        ).toMatchObject({ uri: "file:///a.png", path: "/workspace/.cloudpid/tmp/tmp-a/mcp-b.png" });
+        yield* Fiber.interrupt(spilled);
+
+        // The root's own thread names no conversation: the Session reads in its active branch's.
+        const root = yield* client
+          .resourcePreview(undefined, "docs", "x://y")
+          .pipe(Effect.forkChild);
+
+        yield* settle;
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "mcp_resource_read")
+            .at(-1),
+        ).not.toHaveProperty("conversationId");
+        yield* Fiber.interrupt(root);
+      }),
+  );
+
+  it.effect(
+    "sends a Session from before resource previews nothing, which would answer an error: the card is told it is unsupported",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { appViews: true });
+
+        expect(yield* client.resourcePreview(undefined, "docs", "file:///a.md")).toEqual({
+          status: "unavailable",
+          reason: "session_unsupported",
+          message: expect.stringContaining("cannot read resources"),
+        });
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "mcp_resource_read"),
+        ).toEqual([]);
+      }),
+  );
+
   it.effect("connects on a page whose `document` is a stub with no events or visibility", () =>
     Effect.gen(function* () {
       vi.stubGlobal("document", { body: {} });

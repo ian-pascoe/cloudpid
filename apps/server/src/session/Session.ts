@@ -96,6 +96,7 @@ import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
 import { mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { sessionMcpWatches } from "./mcp-watches-store.ts";
+import { mcpResourcePreviewsLayer } from "./mcp-resource-previews.ts";
 import { sessionKeepSecrets } from "./secret-keeping.ts";
 import { SecretsConfig, sessionSecretsLayer } from "./secrets.ts";
 import {
@@ -678,6 +679,11 @@ export const SessionLive = Session.make(
           codemode: (namespaces) => codemodeWith(sandbox, namespaces),
         });
 
+        // The owner's previews of the links on a card, read through the MCP tools: the host starts no Container for them.
+        const mcpResourcePreviews = mcpResourcePreviewsLayer({
+          read: (input) => mcpTools.resourcePreview(input),
+        });
+
         // When the browser was last used is kept in this object's storage; the host's alarm closes it once idle.
         const sessionBrowser = browserSessionLayer({ host: browser, storage: kv });
 
@@ -1050,8 +1056,10 @@ export const SessionLive = Session.make(
             // The MCP servers' questions, checked against the Secrets, which are built below.
             // The sampler too, which redacts its records of the same Secrets.
             Layer.provideMerge(Layer.merge(mcpQuestions.layer, mcpSampling.layer)),
-            // The App records, redacted of the same Secrets, and the Resource watches' list the sockets send and end.
-            Layer.provideMerge(Layer.merge(mcpApps.layer, mcpWatches.layer)),
+            // The App records, redacted of the same Secrets, the Resource watches' list the sockets send and end, and the owner's previews, which are not redacted.
+            Layer.provideMerge(
+              Layer.mergeAll(mcpApps.layer, mcpWatches.layer, mcpResourcePreviews),
+            ),
             // The Sign-in requests, which redact the agent's words of the same Secrets.
             // The MCP tasks, which redact what a server writes of them of the same Secrets.
             Layer.provideMerge(Layer.merge(mcpSignIns.layer, mcpTasks.layer)),

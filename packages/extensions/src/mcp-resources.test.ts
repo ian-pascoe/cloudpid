@@ -874,7 +874,8 @@ describe("a resource link in a tool's result", () => {
 
     expect(refsIn(detail)).toEqual([
       { uri: "file:///a.md", mimeType: "text/markdown", size: 2048, kind: "link", part: 1 },
-      { uri: "file:///b.txt", mimeType: "text/plain", size: 6, kind: "text", part: 2 },
+      // The transcript holds the text itself, where the output has it.
+      { uri: "file:///b.txt", mimeType: "text/plain", size: 6, kind: "text", part: 2, at: 2 },
       expect.objectContaining({
         uri: "file:///c.pdf",
         kind: "spill",
@@ -883,6 +884,74 @@ describe("a resource link in a tool's result", () => {
         path: expect.stringMatching(/\.pdf$/),
       }),
     ]);
+  });
+
+  it("says where the output holds an embedded image or text, so the card previews it from the transcript", async () => {
+    const { session } = await calling(
+      [withTool({ resources: true })],
+      async () =>
+        McpHostCompleted.make({
+          result: {
+            kind: "inline",
+            value: {
+              content: [
+                { type: "resource_link", uri: "file:///l.md" },
+                {
+                  type: "resource",
+                  resource: { uri: "file:///p.png", mimeType: "image/png", blob: "iVBORw0KGgo=" },
+                },
+                { type: "resource", resource: { uri: "file:///t.md", text: "# T" } },
+              ],
+            },
+          },
+        }),
+      [["mcp__docs_site__search", {}]],
+    );
+
+    const [detail] = await detailsOf(session);
+    const [, content] = (await results(session))[0] ?? [];
+
+    expect(refsIn(detail)).toEqual([
+      expect.objectContaining({ uri: "file:///l.md", kind: "link" }),
+      expect.objectContaining({ uri: "file:///p.png", kind: "image", part: 1, at: 1 }),
+      expect.objectContaining({ uri: "file:///t.md", kind: "text", part: 2, at: 2 }),
+    ]);
+    expect(refsIn(detail)[0]).not.toHaveProperty("at");
+    expect(content?.[1]).toMatchObject({ type: "image", data: "iVBORw0KGgo=" });
+    expect(content?.[2]).toEqual({ type: "text", text: "# T" });
+  });
+
+  it("gives no `at` to a text the limits cut, which the output no longer holds, and moves an image's to where it is", async () => {
+    const { session } = await calling(
+      [withTool({ resources: true })],
+      async () =>
+        McpHostCompleted.make({
+          result: {
+            kind: "inline",
+            value: {
+              content: [
+                { type: "text", text: "line\n".repeat(3000) },
+                { type: "resource", resource: { uri: "file:///t.md", text: "# T" } },
+                {
+                  type: "resource",
+                  resource: { uri: "file:///p.png", mimeType: "image/png", blob: "iVBORw0KGgo=" },
+                },
+              ],
+            },
+          },
+        }),
+      [["mcp__docs_site__search", {}]],
+    );
+
+    const [detail] = await detailsOf(session);
+    const [, content] = (await results(session))[0] ?? [];
+
+    const [text, image] = refsIn(detail);
+
+    expect(text).toMatchObject({ uri: "file:///t.md", kind: "text", part: 1 });
+    expect(text).not.toHaveProperty("at");
+    expect(image).toMatchObject({ uri: "file:///p.png", kind: "image", part: 2, at: 1 });
+    expect(content?.[1]).toMatchObject({ type: "image" });
   });
 
   it("keeps at most 20", async () => {

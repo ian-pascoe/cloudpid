@@ -4,6 +4,7 @@
 // reference (`Piece.ref`), which `details.resources` keeps.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off -- conversions of plain values.
 import { isJsonObject } from "@cloudpid/mcp/types";
+import { base64Bytes, bytesFromBase64, MAX_MCP_RESOURCE_KEY } from "@cloudpid/protocol";
 import { utf8ByteLength } from "@earendil-works/chord/output";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import * as Arr from "effect/Array";
@@ -11,7 +12,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { MAX_REF_URI, type McpResourceRef } from "./details.ts";
+import type { McpResourceRef } from "./details.ts";
 import type { Spill } from "./spill.ts";
 
 /** A content block of a `tools/call` result of a type this build knows, as far as the Session reads it. */
@@ -73,7 +74,7 @@ export type ModelOptions = {
   readonly readServer?: string | undefined;
 };
 
-/** The reference of a resource, none for a URI past `MAX_REF_URI`. */
+/** The reference of a resource, none for a URI past `MAX_MCP_RESOURCE_KEY`. */
 export const refOf = (
   uri: string,
   kind: McpResourceRef["kind"],
@@ -84,7 +85,7 @@ export const refOf = (
     readonly path?: string | undefined;
   } = {},
 ): McpResourceRef | undefined => {
-  if (uri.length > MAX_REF_URI) return undefined;
+  if (uri.length > MAX_MCP_RESOURCE_KEY) return undefined;
 
   const ref: Mutable<McpResourceRef> = { uri, kind, part };
 
@@ -104,13 +105,6 @@ const withRef = (piece: Piece, ref: McpResourceRef | undefined): Piece =>
 const serverText = (text: string): Piece => ({ content: textOf(text), note: false });
 
 const noteOf = (line: TextContent): Piece => ({ content: line, note: true });
-
-/** How many bytes `base64` decodes to, without decoding it. */
-export const base64Bytes = (base64: string): number => {
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-
-  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
-};
 
 /** The image types every provider takes; any other image is saved to a file instead. */
 const IMAGE_TYPES: ReadonlySet<string> = new Set([
@@ -143,16 +137,6 @@ const sizeOf = (bytes: number): string => {
     : `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 };
 
-/** `base64`'s bytes; it throws for text that is not base64. */
-export const bytesOf = (base64: string): Uint8Array => {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-
-  return bytes;
-};
-
 /** The extension a saved file gets: the one `uri`'s path ends in, else `.bin`. */
 export const suffixOf = (uri: string | undefined): string =>
   (uri === undefined ? undefined : /\.[A-Za-z0-9]{1,8}$/.exec(uri.split(/[?#]/)[0] ?? "")?.[0]) ??
@@ -171,11 +155,9 @@ const saved = async (
 ): Promise<{ readonly line: TextContent; readonly path?: string; readonly size?: number }> => {
   const label = `${what}${uri === undefined ? "" : ` ${oneLine(uri, URI_LIMIT)}`} (${oneLine(mimeType ?? "unknown type", FIELD_LIMIT)}`;
 
-  let bytes: Uint8Array;
+  const bytes = bytesFromBase64(base64);
 
-  try {
-    bytes = bytesOf(base64);
-  } catch {
+  if (bytes === undefined) {
     return { line: textOf(`[${label}) could not be read: its data is not base64]`) };
   }
 

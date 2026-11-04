@@ -88,14 +88,13 @@ export type McpSamplingDetail = {
 /** The most resources a call's `details` names. */
 export const MAX_RESOURCE_REFS = 20;
 
-/** The longest URI a reference keeps, in characters: a longer one is left out, since half of a URI names nothing. */
-export const MAX_REF_URI = 2048;
-
 /**
  * A resource a call's result names or holds, as `details.resources` records it for the web (`docs/architecture/
  * mcp-in-a-session.md` → Resource links and embedded resources): a `link` the server pointed to, an embedded or read
  * `text` or `image` the model was shown, or a `spill` saved to the Workspace (`path`). `part` is the index of the
- * content block (or of the read's contents) it came from. Never the resource's contents.
+ * content block (or of the read's contents) it came from. Never the resource's contents. `at` is the index in the result's
+ * `output` where the transcript holds the resource's own data (an image, or a text the limits did not cut), which the
+ * card previews without a read; absent when the transcript holds none of it.
  */
 export type McpResourceRef = {
   readonly uri: string;
@@ -105,6 +104,7 @@ export type McpResourceRef = {
   readonly kind: "text" | "image" | "spill" | "link";
   readonly part?: number;
   readonly path?: string;
+  readonly at?: number;
 };
 
 /**

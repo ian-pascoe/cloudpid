@@ -32,6 +32,7 @@ import {
   type ResourceMenuInput,
   type SweepHarness,
   type TaskOwnerHarness,
+  PREVIEW_SLOT_OVER,
   viewOfTasks,
 } from "@cloudpid/extensions/mcp";
 import {
@@ -89,6 +90,9 @@ import {
   type UserEntryData,
   userEntryData,
   type McpAppCopies,
+  base64FromBytes,
+  isMcpSpillPath,
+  MAX_MCP_RESOURCE_PREVIEW_BYTES,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -173,6 +177,7 @@ import type { HeldStop } from "../workspace/idle.ts";
 import { showHeldStops as showHeldStopsIn } from "./held-stops.ts";
 import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure } from "./errors.ts";
 import type { PromptCatalog } from "./mcp-prompt-catalog.ts";
+import type { HoldSlot, SpillRead } from "./mcp-resource-previews.ts";
 import { promptFileName, promptMessage, type PromptFile } from "./mcp-prompt.ts";
 import {
   type AttachedBudgets,
@@ -290,6 +295,13 @@ type WithdrawnRequest = { readonly requestId: string; readonly at: number };
 /** An entry ID from the number a client passed in a cursor. */
 // SAFETY: entry IDs are positive integers; the caller checked the number is one it was given.
 const entryId = (id: number): EntryId => id as EntryId;
+
+/** The directories of a spill's `path` below `/workspace`, outermost first: `/workspace/.cloudpid`, `…/tmp` and `…/tmp-<id>`. */
+const spillDirectoriesOf = (path: string): ReadonlyArray<string> => {
+  const parts = path.split("/").slice(2, -1);
+
+  return Arr.map(parts, (_, index) => `/workspace/${Arr.join(Arr.take(parts, index + 1), "/")}`);
+};
 
 /** A conversation ID from the number a client passed in a cursor. */
 // SAFETY: conversation IDs are positive integers; a number that names none finds no conversation.
@@ -915,6 +927,18 @@ export type SessionHostService = {
   readonly directory: (
     conversationId?: ConversationId,
   ) => Effect.Effect<string | undefined, SessionError>;
+  /**
+   * What the Workspace holds at `path`, a Result Spill's path (`isMcpSpillPath`; any other is `missing`), for the owner's
+   * preview of it, as base64: read through the conversation's lookup environment, which never starts the Container (ADR-0018),
+   * with no symbolic link followed (a link is `missing`), and `too_large` past `MAX_MCP_RESOURCE_PREVIEW_BYTES` without
+   * reading it. A file over `PREVIEW_SLOT_OVER` is read only once `hold` has taken the decode slot, with its size. A file
+   * cleanup removed is `missing`.
+   */
+  readonly spill: (
+    conversationId: ConversationId | undefined,
+    path: string,
+    hold: (bytes: number) => HoldSlot,
+  ) => Effect.Effect<SpillRead, SessionError>;
   /**
    * A page of the History of the active branch, or of the conversation `conversationId` names, before entry
    * `before`, oldest first (`historyPage`): what a transcript shows of the Context Windows its snapshot left out.
@@ -1947,6 +1971,75 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const fromDiscovery = Effect.mapError((error: SkillsError) =>
     SessionError.make({ operation: "discover", message: error.message }),
   );
+
+  /** `work`, failing with a `TimeoutError` when the Workspace takes longer than `EXPAND_TIMEOUT` to answer. */
+  const withinExpandTimeout = <A, E>(work: Effect.Effect<A, E>) =>
+    Effect.timeout(work, options.expandTimeout ?? EXPAND_TIMEOUT);
+
+  /**
+   * The file at `path` in `env`, as base64, for `SessionHost.spill`. The Workspace's `canonicalPath` resolves no link, so
+   * each directory of `path` below `/workspace` is looked at (a link is not followed, `fileInfo` is an lstat), and the
+   * file is opened without following one, so its size and kind are those of what is read. A directory swapped for a link
+   * between the look and the open is not caught: only the Workspace's own writers can make that, and they are the
+   * owner's. Each Workspace call is bounded (`bounded`), and the wait for the decode slot is not: it is the previews ahead's.
+   */
+  const spillOf = (
+    env: ExecutionEnv,
+    path: string,
+    hold: (bytes: number) => HoldSlot,
+    bounded: <A, E>(work: Effect.Effect<A, E>) => Effect.Effect<A, E | Cause.TimeoutError>,
+  ) =>
+    Effect.gen(function* () {
+      const missing: SpillRead = { kind: "missing" };
+
+      const opened = yield* bounded(
+        Effect.gen(function* () {
+          for (const directory of spillDirectoriesOf(path)) {
+            const info = yield* attempt("spill", () => env.fileInfo(directory, context));
+
+            if (!info.ok || info.value.kind !== "directory") return undefined;
+          }
+
+          const reader = yield* attempt("spill", () =>
+            env.openBinaryReader(path, { noFollow: true }, context),
+          );
+
+          return reader.ok ? reader.value : undefined;
+        }),
+      );
+
+      if (opened === undefined) return missing;
+
+      const reader = opened;
+
+      return yield* Effect.gen(function* () {
+        const info = yield* bounded(attempt("spill", () => reader.info(context)));
+
+        if (!info.ok || info.value.kind !== "file") return missing;
+
+        const size = info.value.size;
+
+        if (size > MAX_MCP_RESOURCE_PREVIEW_BYTES) return { kind: "too_large" } as const;
+
+        // The wait for the slot is the previews ahead's, not the Workspace's: it is not under the Workspace's time limit.
+        if (size > PREVIEW_SLOT_OVER) {
+          const taken = yield* hold(size);
+
+          if (taken !== "held") return { kind: taken } as const;
+        }
+
+        const read = yield* bounded(attempt("spill", () => reader.read(0, size, context)));
+
+        // The bytes are let go once they are text: only the base64 is returned.
+        return read.ok
+          ? ({ kind: "base64", base64: base64FromBytes(read.value) } as const)
+          : missing;
+      }).pipe(
+        Effect.ensuring(
+          Effect.promise(() => reader.close(BACKGROUND_CONTEXT).catch(() => undefined)),
+        ),
+      );
+    });
 
   /** The Skills a conversation in `env` can name, those the model is not offered too. */
   const skillsIn = (env: ExecutionEnv): Effect.Effect<ReadonlyArray<Skill>, SessionError> =>
@@ -3914,6 +4007,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       addressed(conversationId).pipe(
         Effect.flatMap((conversation) => resourceMenuFor(conversation)),
       ),
+    spill: (conversationId, path, hold) =>
+      !isMcpSpillPath(path)
+        ? Effect.succeed<SpillRead>({ kind: "missing" })
+        : addressed(conversationId).pipe(
+            Effect.flatMap((conversation) =>
+              environment(conversation, { lookup: true }).pipe(withinExpandTimeout),
+            ),
+            Effect.flatMap((env) =>
+              env === undefined
+                ? Effect.succeed<SpillRead>({ kind: "missing" })
+                : spillOf(env, path, hold, withinExpandTimeout),
+            ),
+            // The Workspace that cannot answer in time has no file to show: the card reads the resource instead.
+            Effect.catchTag("TimeoutError", () => Effect.succeed<SpillRead>({ kind: "missing" })),
+          ),
     history: ({ before, conversationId }) =>
       addressed(conversationId).pipe(
         Effect.flatMap((conversation) =>

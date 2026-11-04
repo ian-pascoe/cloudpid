@@ -56,12 +56,6 @@ import { isAppResource } from "./resource-list.ts";
 import { MCP_STREAM_SLOT_WAIT_MS, readStreamed } from "./stream.ts";
 import type { McpBuildServer } from "./tools.ts";
 
-/**
- * The host feature that takes `ctx.start: false` on a `resources/read` (`MCP_HOST_FEATURES`): a stdio server's read then
- * never starts its Container. Without it a stdio server is not read for a preview or listed for the menu.
- */
-export const MCP_NO_START_FEATURE = "no_start";
-
 /** How long the menu waits for one page of a server's list, in ms. */
 const MENU_PAGE_MS = 10_000;
 

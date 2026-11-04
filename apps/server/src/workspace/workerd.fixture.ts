@@ -286,6 +286,14 @@ export class TestWorkspace extends Workspace {
     }
   }
 
+  /** A symbolic link at `path` (absolute) to `target`, making its directory. */
+  async putSymlink(path: string, target: string): Promise<void> {
+    const workspace = await this.#computer();
+
+    await ensureDirectory(workspace.fs, path.slice(0, path.lastIndexOf("/")));
+    await workspace.fs.symlink(target, path);
+  }
+
   /**
    * For the Changes measurements (`changes.bench.workerd.test.ts`): what each of isomorphic-git's reads holds is kept
    * until `releaseMeasured`, so the heap sampled from outside sees it. Timed by the caller: workerd's clock stands still
