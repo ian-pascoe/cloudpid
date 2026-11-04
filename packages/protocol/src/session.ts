@@ -747,7 +747,7 @@ export const McpAppRequest = Schema.Struct({
 
 /**
  * An App View's `ui/update-model-context`, as its page forwards it (`docs/architecture/mcp-apps.md` → App messages and App
- * context): the text of what it told the model, for the App View of call `callId`. The Session holds it pending (the latest
+ * context): the text of what it told the model, for the App View of call `callId` (shown in `conversationId`, when it says). The Session holds it pending (the latest
  * for the call, the same text held once), after cleaning, redacting and cutting it, and gives it to the call's conversation
  * as an untrusted notice. Answered with an `McpAppContextAnswer`. Sent only to a Session that says `appContext` in `hello`.
  */
@@ -756,6 +756,12 @@ export const McpAppContextCommand = Schema.Struct({
   id: CommandId,
   callId: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_KEY)),
   text: Schema.String.check(Schema.isMaxLength(MAX_MCP_APP_CONTEXT_INPUT)),
+  /**
+   * The conversation the page shows the View in (the active branch's for the root's thread, a subagent's for its own): a call
+   * made before a move of the active branch is shown in the branch moved to. The Session gives the context to it when that
+   * conversation's History holds the call, and to the conversation the call was made in otherwise.
+   */
+  conversationId: Schema.optionalKey(ConversationId),
 });
 
 /** Cancel the App View's request `requestId` of call `callId` that this socket sent, if it is still running: its answer is then the cancelled error. Answered with null. */

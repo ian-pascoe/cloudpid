@@ -94,6 +94,7 @@ import { importWakeAt, SessionImport, sessionImportLayer } from "./import.ts";
 import { importStaging } from "./import-staging.ts";
 import { SessionMcp, sessionMcpLayer } from "./mcp.ts";
 import { mcpHostClient, sessionMcp } from "./mcp-host.ts";
+import { leaveConversation } from "./mcp-app-context.ts";
 import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { sessionMcpWatches } from "./mcp-watches-store.ts";
 import { mcpResourcePreviewsLayer } from "./mcp-resource-previews.ts";
@@ -1021,10 +1022,7 @@ export const SessionLive = Session.make(
                 // The App contexts Views sent, which the host writes to a conversation as an untrusted notice.
                 appContexts: mcpApps.service.contexts,
                 // The Resource watches of a branch the Session moved off are ended at the hosts, and its pending App contexts dropped.
-                onBranchLeft: (conversation) =>
-                  mcpWatches.service
-                    .endConversation(conversation)
-                    .pipe(Effect.andThen(mcpApps.service.contexts.drop(String(conversation)))),
+                onBranchLeft: leaveConversation(mcpWatches.service, mcpApps.service.contexts),
                 env: workspace.env,
                 // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,
@@ -1172,10 +1170,7 @@ export const SessionLive = Session.make(
                 Effect.tap((deletion) =>
                   Effect.forEach(
                     deletion.conversations,
-                    (conversation) =>
-                      mcpWatches.service
-                        .endConversation(conversation)
-                        .pipe(Effect.andThen(mcpApps.service.contexts.drop(String(conversation)))),
+                    leaveConversation(mcpWatches.service, mcpApps.service.contexts),
                     { discard: true },
                   ),
                 ),

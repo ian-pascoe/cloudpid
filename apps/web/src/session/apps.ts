@@ -16,23 +16,3 @@ export const appEntries = (apps: McpApps): ReadonlyArray<McpAppEntry> =>
 /** The App call `callId` made, in whichever conversation; undefined when the Session has none. */
 export const appEntryOf = (apps: McpApps, callId: string): McpAppEntry | undefined =>
   Arr.findFirst(appEntries(apps), (entry) => entry.callId === callId).pipe(Option.getOrUndefined);
-
-/**
- * The conversation that made call `callId`, as a composer is keyed by it: undefined for the root's (`root`, the active
- * branch), else the subagent's. Undefined too for a call the Session has none of.
- */
-export const appConversationOf = (
-  apps: McpApps,
-  callId: string,
-  root: number | null,
-): number | undefined => {
-  const found = Arr.findFirst(Record.toEntries(apps), ([, entries]) =>
-    Arr.some(entries, (entry) => entry.callId === callId),
-  );
-
-  if (Option.isNone(found)) return undefined;
-
-  const id = Number(found.value[0]);
-
-  return id === root || Number.isNaN(id) ? undefined : id;
-};

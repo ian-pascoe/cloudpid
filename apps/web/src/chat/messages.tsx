@@ -38,6 +38,7 @@ import {
   ATTACHED_KIND,
   type AttachedPage,
   type AttachedResource,
+  fromApp,
   type SentAppMessage,
   resourceKey,
   resourceLabel,
@@ -144,9 +145,7 @@ const PageChip = ({ page }: { page: AttachedPage }) => (
  */
 const AppMessage = ({ message }: { message: SentAppMessage }) => (
   <li className="rounded-md border bg-background px-2.5 py-1.5 text-sm whitespace-normal">
-    <p className="text-xs text-muted-foreground">
-      {message.server === "" ? "Sent from an app" : `Sent from the ${message.server} app`}
-    </p>
+    <p className="text-xs text-muted-foreground">{`Sent from ${fromApp(message.server)}`}</p>
     <p className="mt-0.5 whitespace-pre-wrap">{message.text}</p>
   </li>
 );

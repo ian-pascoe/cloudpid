@@ -7,7 +7,13 @@
 // on this device. The frame itself is `app-frame.tsx`'s.
 // @effect-diagnostics missingPipeableSignature:off -- a hook over the Session's atoms, not a combinator.
 import { GLOBAL_SCOPE, type McpAppContext, type McpAppTool } from "@cloudpid/protocol";
-import { useAtom, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
+import {
+  RegistryContext,
+  useAtom,
+  useAtomRefresh,
+  useAtomSet,
+  useAtomValue,
+} from "@effect/atom-react";
 import {
   createContext,
   use,
@@ -21,7 +27,6 @@ import type { ComponentType, ReactNode } from "react";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type * as Types from "effect/Types";
-import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { Button } from "../components/ui/button.tsx";
@@ -36,15 +41,10 @@ import { appPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
 import { appChoiceAtom, sessionLayoutAtom } from "../session-layout-state.ts";
 import { sessionPath } from "../router.ts";
-import { appConversationOf, appEntries, appEntryOf } from "../session/apps.ts";
-import {
-  activeBranchAtom,
-  mcpAppsAtom,
-  mcpAppToolsAtom,
-  sessionClientAtom,
-} from "../session/atoms.ts";
+import { appEntries, appEntryOf } from "../session/apps.ts";
+import { mcpAppsAtom, mcpAppToolsAtom, sessionClientAtom } from "../session/atoms.ts";
 import { mcpSignInStartHref } from "../settings/mcp-sign-in-model.ts";
-import { addAppMessageAtom, type AppMessageChipState } from "../chat/attachments-state.ts";
+import type { AppMessageChipState } from "../chat/attachments-state.ts";
 import type { SessionClient } from "../session/client.ts";
 import { BROWSER_PANE } from "../panes.ts";
 import { browserPaneKey, ownerTabActionAtom } from "../live-view/browser-pane-atoms.ts";
@@ -63,6 +63,7 @@ import { appAvailability, type AppAvailability } from "./availability.ts";
 import type { DisplayMode } from "./host-context.ts";
 import { callsOfScript, isAppLive, stripRows } from "./generation.ts";
 import { appPlaces, PLACE_NAMES, type AppPlace, type AppPlaces } from "./places.ts";
+import { holdWhereShown, shownInAtom } from "./shown-in.ts";
 import { afterTeardown, paneElement } from "./teardown.ts";
 
 /** The places of this page: one for the app. A test gives its own. */
@@ -151,8 +152,6 @@ export interface AppFacts {
   readonly archived: boolean;
   /** The last context the View told the model, with whether it was delivered. */
   readonly context: McpAppContext | undefined;
-  /** The conversation the call was made in, as its composer is keyed: undefined for the root's. */
-  readonly conversationId: number | undefined;
 }
 
 /** What a place hands the component that loads and frames a call's View. */
@@ -168,7 +167,7 @@ export interface AppLoadedProps {
 
 /** The View of call `callId`, loaded when this mounts: it shows nothing while it loads (the card has the call's state). */
 const AppLoaded = ({
-  facts: { sessionId, callId, tool, badge, archived, context, conversationId },
+  facts: { sessionId, callId, tool, badge, archived, context },
   place,
   controls,
   onRequestMode,
@@ -182,10 +181,8 @@ const AppLoaded = ({
   const client = useAtomValue(sessionClientAtom(sessionId));
   const environment = useAtomValue(sessionEnvironmentAtom(sessionId));
 
-  // What the View may say to the conversation: its messages go to the composer of the conversation the call was made in.
-  const holdMessage = useAtomSet(addAppMessageAtom(conversationKey(sessionId, conversationId)), {
-    mode: "promiseExit",
-  });
+  // What the View may say to the conversation is read where the View is shown when it says it, not as of this render.
+  const registry = use(RegistryContext);
 
   // "Open in Browser Pane": the Pane is opened, and the Owner tab goes to the link on the Pane's own connection.
   const actOnPanes = useAtomSet(panesAtom);
@@ -202,10 +199,8 @@ const AppLoaded = ({
     AsyncResult.isSuccess(client) ? client.value : undefined,
     callId,
     load.status === "view" ? load.record.server : "",
-    (chip) =>
-      holdMessage(chip).then((exit) =>
-        Exit.isSuccess(exit) && exit.value === "held" ? "held" : "refused",
-      ),
+    (chip) => holdWhereShown(registry, key, chip),
+    () => registry.get(shownInAtom(key))?.conversation,
   );
 
   switch (load.status) {
@@ -256,14 +251,16 @@ const AppLoaded = ({
 
 /**
  * What a card lets its View say to the conversation, as far as the Session on this connection takes it (its `hello` says): a
- * message is held in the composer as a chip, a context goes to the Session. A Session that does not take either is offered
- * none, so the View is not told the host does it.
+ * message is held in the composer as a chip (`hold`, which answers `refused` when the conversation the View is shown in has
+ * no composer), a context goes to the Session with the conversation the View is shown in now (`shownIn`). A Session that does
+ * not take either is offered none, so the View is not told the host does it.
  */
 export const speechOf = (
   client: Pick<SessionClient, "appContext" | "takes"> | undefined,
   callId: string,
   server: string,
   hold: (chip: AppMessageChipState) => Promise<"held" | "refused">,
+  shownIn: () => number | undefined,
 ): Partial<AppSpeech> => {
   const speech: Types.Mutable<Partial<AppSpeech>> = {};
 
@@ -275,7 +272,7 @@ export const speechOf = (
 
   if (takes.appContext) {
     speech.context = (text) =>
-      Effect.runPromise(client.appContext(callId, text)).then(
+      Effect.runPromise(client.appContext(callId, text, shownIn())).then(
         (answer) => ({
           held: answer.status === "held",
           message: "message" in answer ? answer.message : undefined,
@@ -397,7 +394,6 @@ export const useAppFacts = (callId: string, toolName: string | undefined): AppFa
   const archived = useAtomValue(sessionArchivedAtom(sessionId));
 
   const entry = appEntryOf(apps, callId);
-  const root = useAtomValue(activeBranchAtom(sessionId));
 
   // A call's tool as the model names it: the one a card was given, else the inventory's for the entry's server and tool.
   const named =
@@ -433,7 +429,6 @@ export const useAppFacts = (callId: string, toolName: string | undefined): AppFa
     mountable: availability.kind === "mount",
     archived,
     context: entry?.context,
-    conversationId: appConversationOf(apps, callId, root),
   };
 };
 

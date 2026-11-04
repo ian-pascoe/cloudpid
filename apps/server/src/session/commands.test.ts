@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off
 import type { EntryRecord } from "@earendil-works/pi-durable";
-import { SESSION_COMMANDS } from "@cloudpid/protocol";
+import { type McpAppContext, SESSION_COMMANDS } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { catalogOf, exportMarkdown, markdownExport } from "./commands.ts";
 
@@ -154,50 +154,68 @@ describe("exportMarkdown", () => {
 });
 
 describe("exportMarkdown of an App", () => {
-  it("quotes an App message and notes an App's result as not rendered", () => {
-    const markdown = exportMarkdown(
-      1,
-      [
-        entry({
-          id: 1,
-          kind: "cloudpid.user",
-          data: {
-            display: "go",
-            skills: [],
-            app: [{ callId: "c1", server: "docs", text: "Pick A\nor B" }],
-          },
-          model: [
-            {
-              role: "user",
-              content: [
-                { type: "text", text: "go" },
-                { type: "text", text: "Pick A\nor B" },
-              ],
-              timestamp: 1,
-            },
+  const entries = [
+    entry({
+      id: 1,
+      kind: "cloudpid.user",
+      data: {
+        display: "go",
+        skills: [],
+        app: [{ callId: "c1", server: "docs", text: "Pick A\nor B" }],
+      },
+      model: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "go" },
+            { type: "text", text: "Pick A\nor B" },
           ],
-        }),
-        entry({
-          id: 2,
-          kind: "pi.tool",
-          model: [
-            {
-              role: "toolResult",
-              toolCallId: "c1",
-              toolName: "mcp__docs__chart",
-              content: [{ type: "text", text: "ok" }],
-              details: { meta: { ui: { resourceUri: "ui://docs/chart" } } },
-              isError: false,
-              timestamp: 2,
-            },
-          ],
-        }),
+          timestamp: 1,
+        },
       ],
-      "2026-01-02T00:00:00.000Z",
-    );
+    }),
+    entry({
+      id: 2,
+      kind: "pi.tool",
+      model: [
+        {
+          role: "toolResult",
+          toolCallId: "c1",
+          toolName: "mcp__docs__chart",
+          content: [{ type: "text", text: "ok" }],
+          details: { meta: { ui: { resourceUri: "ui://docs/chart" } } },
+          isError: false,
+          timestamp: 2,
+        },
+      ],
+    }),
+  ];
+
+  const exportedAt = "2026-01-02T00:00:00.000Z";
+
+  it("quotes an App message and notes an App's result as not rendered", () => {
+    const markdown = exportMarkdown(1, entries, exportedAt);
 
     expect(markdown).toContain("## Owner\n\ngo\n\nSent from the docs app:\n\n> Pick A\n> or B");
     expect(markdown).toContain("_App: docs/chart (not rendered)_");
+    expect(markdown).not.toContain("Last App context");
+  });
+
+  it("gives the last context of the App's call, sent to the model or still pending", () => {
+    const text = "picked the red chart\nand zoomed";
+
+    const held = (context: McpAppContext) => ({
+      appContext: (callId: string) => (callId === "c1" ? context : undefined),
+    });
+
+    expect(
+      exportMarkdown(1, entries, exportedAt, held({ hash: "h", text, at: 1, delivered: true })),
+    ).toContain(
+      "_App: docs/chart (not rendered)_\n\nLast App context (sent to the model):\n\n> picked the red chart\n> and zoomed",
+    );
+    expect(exportMarkdown(1, entries, exportedAt, held({ hash: "h", text, at: 1 }))).toContain(
+      "Last App context (pending, not yet sent):\n\n> picked the red chart",
+    );
   });
 });
 

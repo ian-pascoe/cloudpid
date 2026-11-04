@@ -96,6 +96,9 @@ export interface FrameWindow {
   readonly postMessage: (message: unknown, targetOrigin: string) => void;
 }
 
+/** JSON-RPC's implementation-defined error that answers a request the host would not take: a refusal that is no fault of the View's. */
+export const HOST_REFUSED = -32000;
+
 /** A failure a handler answers a View's request with, as JSON-RPC does: its `code` and `message`. */
 export class RpcError extends Error {
   readonly code: number;

@@ -2,7 +2,7 @@
 import * as Effect from "effect/Effect";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AppContextChip, contextLine } from "./app-context-chip.tsx";
+import { AppContextChip, SHOWN_CHARS } from "./app-context-chip.tsx";
 import { speechOf } from "./app-call.tsx";
 
 describe("the context chip", () => {
@@ -26,8 +26,11 @@ describe("the context chip", () => {
   });
 
   it("cuts a long context to a line", () => {
-    expect(contextLine("x".repeat(400))).toHaveLength(120);
-    expect(contextLine("x".repeat(400)).endsWith("…")).toBe(true);
+    expect(
+      renderToStaticMarkup(
+        <AppContextChip context={{ hash: "h", text: "x".repeat(400), at: 1 }} />,
+      ),
+    ).toContain(`>${"x".repeat(SHOWN_CHARS - 1)}…<`);
   });
 });
 
@@ -37,18 +40,26 @@ describe("what a card lets its View say", () => {
     appContext: () => Effect.die("not used"),
   });
 
+  const nowhere = () => undefined;
+
   it("offers a message and a context only as far as the Session on the connection takes them", () => {
     const hold = () => Promise.resolve("held" as const);
 
-    expect(speechOf(undefined, "c1", "docs", hold)).toEqual({});
+    expect(speechOf(undefined, "c1", "docs", hold, nowhere)).toEqual({});
     expect(
-      Object.keys(speechOf(client({ appMessages: false, appContext: false }), "c1", "docs", hold)),
+      Object.keys(
+        speechOf(client({ appMessages: false, appContext: false }), "c1", "docs", hold, nowhere),
+      ),
     ).toEqual([]);
     expect(
-      Object.keys(speechOf(client({ appMessages: true, appContext: false }), "c1", "docs", hold)),
+      Object.keys(
+        speechOf(client({ appMessages: true, appContext: false }), "c1", "docs", hold, nowhere),
+      ),
     ).toEqual(["message"]);
     expect(
-      Object.keys(speechOf(client({ appMessages: true, appContext: true }), "c1", "docs", hold)),
+      Object.keys(
+        speechOf(client({ appMessages: true, appContext: true }), "c1", "docs", hold, nowhere),
+      ),
     ).toEqual(["message", "context"]);
   });
 
@@ -64,9 +75,38 @@ describe("what a card lets its View say", () => {
 
         return Promise.resolve("held");
       },
+      nowhere,
     );
 
     await expect(speech.message?.("Pick A")).resolves.toBe("held");
     expect(held).toEqual([{ callId: "c1", server: "docs", text: "Pick A" }]);
+  });
+
+  it("sends a context with the conversation its View is shown in when it is sent, not when the card rendered", async () => {
+    const asked: unknown[] = [];
+    let shown: number | undefined = 1;
+
+    const speech = speechOf(
+      {
+        takes: () => ({ appMessages: false, appContext: true }),
+        appContext: (callId, text, conversationId) => {
+          asked.push([callId, text, conversationId]);
+
+          return Effect.succeed({ status: "held" as const });
+        },
+      },
+      "c1",
+      "docs",
+      () => Promise.resolve("held"),
+      () => shown,
+    );
+
+    await speech.context?.("one");
+    shown = 7;
+    await speech.context?.("two");
+    expect(asked).toEqual([
+      ["c1", "one", 1],
+      ["c1", "two", 7],
+    ]);
   });
 });

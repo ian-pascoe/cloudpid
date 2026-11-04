@@ -42,7 +42,7 @@ export const UserEntryData = Schema.Struct({
     Schema.catchDecoding(() => Effect.succeedNone),
   ),
   review: Schema.optionalKey(ReviewData),
-  // The App messages the owner sent with it (`submit.app`), each also a text part of the model's message: the transcript shows "sent from the <server> app" for them. A mark this version cannot read leaves the entry readable, without it.
+  // The App messages the owner sent with it (`submit.app`). Each is also a text part of the model's message; the transcript shows it as sent from its App, not as the owner's words. One this version cannot read leaves the entry readable, without it.
   app: SentAppMessage.pipe(
     Schema.Array,
     Schema.optionalKey,

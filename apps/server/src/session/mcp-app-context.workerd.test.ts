@@ -12,6 +12,7 @@ import { secretReference } from "@cloudpid/extensions/secrets";
 import type { McpApplySet } from "@cloudpid/mcp/types";
 import {
   type ClientMessage,
+  type ConversationId,
   McpAppContextAnswer,
   type McpAppEntry,
   projectEntry,
@@ -166,10 +167,14 @@ const withApp = async () => {
   await client.hello();
 
   /** An App View's context, as its page forwards it: the answer. */
-  const context = async (text: string, callId = entry.callId) => {
+  const context = async (text: string, callId = entry.callId, conversationId?: ConversationId) => {
     const id = `ctx-${counter++}`;
 
-    client.send({ type: "mcp_app_context", id, callId, text });
+    client.send(
+      conversationId === undefined
+        ? { type: "mcp_app_context", id, callId, text }
+        : { type: "mcp_app_context", id, callId, text, conversationId },
+    );
 
     const answered = await client.answer(id);
 
@@ -202,8 +207,8 @@ const withApp = async () => {
 
 type Rig = Awaited<ReturnType<typeof withApp>>;
 
-const entries = (stub: DurableObjectStub<TestSession>) =>
-  runInDurableObject(stub, (instance: TestSession) => instance.rootEntries());
+const entries = (stub: DurableObjectStub<TestSession>, conversationId?: ConversationId) =>
+  runInDurableObject(stub, (instance: TestSession) => instance.rootEntries(conversationId));
 
 const callOf = async (rig: Rig): Promise<McpAppEntry | undefined> =>
   (await runInDurableObject(rig.stub, (instance: TestSession) => instance.appCalls())).find(
@@ -441,6 +446,115 @@ const projected = (
     data,
     model: [{ role: "user", content, timestamp: 0 }],
   } as never);
+
+describe("an App View's context in /export", () => {
+  it("is in the export beside the App's call, pending and then sent to the model", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+
+    const exported = () =>
+      runInDurableObject(stub, async (instance: TestSession) => {
+        const answer = await instance.command("export", "");
+
+        if (!("outcome" in answer)) throw new Error(answer.failure);
+
+        return answer.outcome.file?.content ?? "";
+      });
+
+    expect(await exported()).not.toContain("Last App context");
+
+    await rig.context("picked the red chart");
+    expect(await exported()).toContain(
+      "_App: docs/app (not rendered)_\n\nLast App context (pending, not yet sent):\n\n> picked the red chart",
+    );
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["Noted."]);
+      await instance.submit({ requestId: "export-1", text: "next" });
+    });
+    await idle(stub);
+    expect(await exported()).toContain(
+      "Last App context (sent to the model):\n\n> picked the red chart",
+    );
+  });
+});
+
+describe("an App View kept across a move of the active branch", () => {
+  const nodes = (stub: DurableObjectStub<TestSession>) =>
+    runInDurableObject(stub, (instance: TestSession) => instance.tree());
+
+  it("gives its context to the branch moved to, whose History holds the call, at the next input there", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+    const answer = (await nodes(stub)).nodes.find((node) => node.role === "assistant");
+
+    if (answer === undefined) throw new Error("No answer");
+
+    const root = await runInDurableObject(stub, (instance: TestSession) => instance.activeBranch());
+
+    // A new branch at the message that made the call: made in the conversation left, it is in this one's History.
+    expect(
+      await runInDurableObject(stub, (instance: TestSession) =>
+        instance.navigate({ entryId: answer.id, position: "at" }),
+      ),
+    ).toHaveProperty("navigated");
+
+    const branch = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.activeBranch(),
+    );
+
+    expect(branch).not.toBe(root);
+
+    // Shown in the branch moved to, it is given to that one, not to the conversation the call was made in.
+    expect(await rig.context("picked the blue chart", rig.entry.callId, branch)).toMatchObject({
+      status: "held",
+    });
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["Noted."]);
+      await instance.submit({ requestId: "moved-1", text: "and now?" });
+    });
+    await idle(stub);
+
+    const notice = (await entries(stub, branch)).filter((each) => each.kind === KIND);
+
+    expect(notice).toHaveLength(1);
+    expect(notice[0]?.text).toContain('<app server="docs" tool="app">picked the blue chart</app>');
+    expect((await callOf(rig))?.context).toMatchObject({
+      text: "picked the blue chart",
+      delivered: true,
+    });
+  });
+
+  it("gives it to the conversation the call was made in when the conversation the page names does not hold the call", async () => {
+    const rig = await withApp();
+    const { stub } = rig;
+    const first = (await nodes(stub)).nodes.find((node) => node.role === "user");
+
+    if (first === undefined) throw new Error("No owner message");
+
+    // A branch from before the call: its History does not hold it.
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.navigate({ entryId: first.id, position: "before" }),
+    );
+
+    const branch = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.activeBranch(),
+    );
+
+    expect(await rig.context("not for this branch", rig.entry.callId, branch)).toMatchObject({
+      status: "held",
+    });
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.script(["ok"]);
+      await instance.submit({ requestId: "other-1", text: "hello" });
+    });
+    await idle(stub);
+
+    expect((await entries(stub, branch)).filter((each) => each.kind === KIND)).toEqual([]);
+  });
+});
 
 describe("an App message in a Session", () => {
   it("goes with the owner's own send as a part of its own after what they typed, named by the call's server, and is kept for the transcript", async () => {

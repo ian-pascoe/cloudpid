@@ -419,6 +419,9 @@ const utf8Length = (text: string): number => {
 /** What `record` weighs: its JSON, in UTF-8 bytes. */
 export const appRecordBytes = (record: McpAppRecord): number => utf8Length(JSON.stringify(record));
 
+/** Where an App message came from, as a phrase: "the docs app", or "an app" for one whose server is gone (an empty name). */
+export const fromApp = (server: string): string => (server === "" ? "an app" : `the ${server} app`);
+
 /** `text` cut to at most `max` UTF-8 bytes, at a character's end. */
 export const cutUtf8 = (text: string, max: number): string => {
   let bytes = 0;

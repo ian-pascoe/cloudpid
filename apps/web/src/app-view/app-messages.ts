@@ -15,8 +15,7 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { DISMISSED } from "./open-link.ts";
-import { type BridgeOptions, RpcError, type RequestHandler } from "./bridge.ts";
+import { type BridgeOptions, HOST_REFUSED, RpcError, type RequestHandler } from "./bridge.ts";
 
 /** What the card does with the View's messages and context; each is only there when the frame can serve it. */
 export interface AppSpeech {
@@ -79,7 +78,7 @@ const cut = (text: string, max: number): string => {
 /**
  * The bridge's handlers for a View's `ui/message` and `ui/update-model-context`, as far as `speech` has them. A message is
  * answered `{}` once the composer holds it and `{ isError: true }` when it does not (no room, an archived Session, a Session
- * that cannot take it); a context `{}` once held and a `-32000` error with the Session's reason when it is not. Params that
+ * that cannot take it); a context `{}` once held and a `HOST_REFUSED` (`-32000`) error with the Session's reason when it is not. Params that
  * are not the spec's, or a message with no text, are `-32602`.
  */
 export const speechHandlers = (
@@ -118,7 +117,7 @@ export const speechHandlers = (
       );
 
       if (!answer.held)
-        throw new RpcError(DISMISSED, answer.message ?? "The host did not take the context");
+        throw new RpcError(HOST_REFUSED, answer.message ?? "The host did not take the context");
 
       return {};
     };

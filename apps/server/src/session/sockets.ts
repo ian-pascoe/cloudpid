@@ -1153,20 +1153,33 @@ export const sessionSocketsLayer = (
               .pipe(Effect.as(null));
           case "mcp_app_context":
             // Held pending in the Session; a busy conversation is then written them at its next boundary.
-            return mcpApps.contexts
-              .hold({ view: socket, callId: message.callId, text: message.text })
-              .pipe(
-                Effect.tap((answer) => {
-                  const conversation =
-                    answer.status === "held"
-                      ? mcpApps.contexts.conversationOf(message.callId)
-                      : undefined;
+            return Effect.gen(function* () {
+              const call = mcpApps.contexts.callOf(message.callId);
+              const shown = message.conversationId;
 
-                  return conversation === undefined
-                    ? Effect.void
-                    : host.appContextHeld(conversationOf(conversation));
-                }),
-              );
+              // The conversation the page shows the View in, when its History holds the call; else the one the call was made in.
+              const conversation =
+                call === undefined
+                  ? undefined
+                  : shown !== undefined &&
+                      String(shown) !== call.conversation &&
+                      (yield* host.callInHistory(shown, call.parentCall ?? message.callId))
+                    ? String(shown)
+                    : call.conversation;
+
+              const answer = yield* mcpApps.contexts.hold({
+                view: socket,
+                callId: message.callId,
+                text: message.text,
+                conversation,
+              });
+
+              if (answer.status === "held" && conversation !== undefined) {
+                yield* host.appContextHeld(conversationOf(conversation));
+              }
+
+              return answer;
+            });
           case "mcp_app_cancel":
             return mcpApps.cancel(socket, message.callId, message.requestId).pipe(Effect.as(null));
           case "mcp_task_cancel":

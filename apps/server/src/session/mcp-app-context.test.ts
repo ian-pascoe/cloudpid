@@ -282,6 +282,28 @@ describe("App context", () => {
     );
   });
 
+  it("holds a View's context for the conversation it is shown in, and again, though the same text, when it is shown in another", async () => {
+    const { contexts, hold, changes, view } = open();
+
+    await hold("one", "same text");
+    await Effect.runPromise(
+      contexts.take("1").pipe(Effect.flatMap((taken) => taken?.delivered ?? Effect.void)),
+    );
+
+    // Shown in conversation 2 now: the text was delivered to 1, and is not to 2.
+    const moved = await Effect.runPromise(
+      contexts.hold({ view, callId: "one", text: "same text", conversation: "2" }),
+    );
+
+    expect(moved).toMatchObject({ status: "held" });
+    expect(changes.at(-1)).toEqual(new Set(["1", "2"]));
+    expect(contexts.contextOf("one")?.delivered).toBeUndefined();
+    expect(await Effect.runPromise(contexts.take("1"))).toBeUndefined();
+    expect((await Effect.runPromise(contexts.take("2")))?.entry.kind).toBe(
+      "cloudpid.mcp-app-context",
+    );
+  });
+
   it("refuses a context past what a conversation may wait with, and a View past its minute", async () => {
     const calls: Record<string, AppContextCall> = {};
 

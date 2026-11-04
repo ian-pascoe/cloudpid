@@ -2,7 +2,12 @@
 // it came from, and Edit and Discard.
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AppMessageChips, chipSource, chipText, withEditedMessage } from "./app-message-chips.tsx";
+import {
+  AppMessageChips,
+  chipSource,
+  SHOWN_CHARS,
+  withEditedMessage,
+} from "./app-message-chips.tsx";
 import type { AttachmentsState } from "./attachments-state.ts";
 
 const state = (apps: AttachmentsState["apps"]): AttachmentsState => ({
@@ -34,19 +39,21 @@ describe("the composer's App message chips", () => {
     expect(html).toContain("Pick A");
     expect(html).toContain("From the docs app");
     expect(html).toContain("From the maps app");
-    expect(html).toContain('aria-label="Edit the message from docs"');
-    expect(html).toContain('aria-label="Discard the message from maps"');
+    expect(html).toContain('aria-label="Edit the message from the docs app"');
+    expect(html).toContain('aria-label="Discard the message from the maps app"');
     expect(html.match(/>Edit</g)).toHaveLength(2);
     expect(html.match(/>Discard</g)).toHaveLength(2);
   });
 
-  it("says only 'an App' for a call whose record was gone", () => {
-    expect(chipSource({ callId: "c1", server: "", text: "x" })).toBe("From an App");
+  it("says only 'an app' for a call whose record was gone", () => {
+    expect(chipSource({ callId: "c1", server: "", text: "x" })).toBe("From an app");
   });
 
   it("shows one cut line and keeps the whole text as its tooltip", () => {
-    expect(chipText("a\n\n  b   c")).toBe("a b c");
-    expect(chipText("x".repeat(500))).toHaveLength(200);
+    expect(render([{ callId: "c1", server: "docs", text: "a\n\n  b   c" }])).toContain(">a b c<");
+    expect(render([{ callId: "c1", server: "docs", text: "x".repeat(500) }])).toContain(
+      `>${"x".repeat(SHOWN_CHARS - 1)}…<`,
+    );
 
     const long = "word ".repeat(100).trim();
 

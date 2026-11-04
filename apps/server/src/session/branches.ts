@@ -58,6 +58,15 @@ export type NavigateRequest = TreePoint & { readonly summary?: BranchSummaryRequ
 export const NAVIGATE_WHILE_PREPARING =
   "The Session tree cannot be navigated while a message is being prepared: wait for it to be sent.";
 
+/** Whether `entry` is the model's message that made tool call `callId`. */
+const madeCall = (entry: EntryRecord, callId: string): boolean =>
+  Arr.some(
+    entry.model ?? [],
+    (message) =>
+      message.role === "assistant" &&
+      Arr.some(message.content, (part) => part.type === "toolCall" && part.id === callId),
+  );
+
 /** What the Session tree's moves take from the Session host. */
 export type BranchesOptions = {
   readonly harness: PiHarness;
@@ -376,5 +385,58 @@ export const sessionBranches = (options: BranchesOptions) => {
     );
   });
 
-  return { treeState, active, busyReason, tree, navigate, switchBranch, stopEverything };
+  /** The most entries `historyHolds` reads of one conversation looking for a call: a History past it is not searched further. */
+  const HISTORY_SEARCH_ENTRIES = 20 * BRANCH_PAGE;
+
+  /** Calls found in a conversation's History, by `<conversation>:<call>`: a History only grows, so a found call stays found. */
+  const found = new Set<string>();
+
+  /**
+   * Whether model call `callId` was made in conversation `conversationId`'s History: in its own entries, or in those of the
+   * branches it was forked from, up to the point it was made at (a conversation's entries include them). An App View kept across
+   * a move of the active branch is of a call made before the branch point, in a conversation the Session has left.
+   */
+  const historyHolds = (conversationId: ConversationId, callId: string) =>
+    Effect.gen(function* () {
+      const key = `${String(conversationId)}:${callId}`;
+
+      if (found.has(key)) return true;
+
+      const conversation = yield* attempt("conversation", () =>
+        harness.conversation(conversationId, context),
+      );
+
+      if (conversation === undefined) return false;
+
+      let cursor: Cursor | undefined;
+      let read = 0;
+
+      do {
+        const page = yield* attempt("entries", () =>
+          conversation.entries({ order: "descending" }, BRANCH_PAGE, cursor, context),
+        );
+
+        if (page.items.some((entry) => madeCall(entry, callId))) {
+          found.add(key);
+
+          return true;
+        }
+
+        read += page.items.length;
+        cursor = page.next;
+      } while (cursor !== undefined && read < HISTORY_SEARCH_ENTRIES);
+
+      return false;
+    });
+
+  return {
+    treeState,
+    active,
+    busyReason,
+    tree,
+    navigate,
+    switchBranch,
+    stopEverything,
+    historyHolds,
+  };
 };

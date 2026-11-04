@@ -29,6 +29,7 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as FiberSet from "effect/FiberSet";
 import * as Queue from "effect/Queue";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
+import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import * as Atom from "effect/reactivity/Atom";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -826,6 +827,25 @@ export const removeResourceAtom = Atom.family((key: ConversationKey) =>
 export const addAppMessageAtom = Atom.family((key: ConversationKey) =>
   addAppMessageTo(attachmentsProgramAtom(key)),
 );
+
+/**
+ * Hold an App View's message in the composer of conversation `key` and wait for the answer: `held`, or `refused` (no room, or
+ * the Attachments could not be built). Read at the call, from the registry, not through a hook that a View's handler would
+ * hold stale.
+ */
+export const holdAppMessage = (
+  registry: AtomRegistry.AtomRegistry,
+  key: ConversationKey,
+  chip: AppMessageChipState,
+): Promise<"held" | "refused"> => {
+  const hold = addAppMessageAtom(key);
+
+  registry.set(hold, chip);
+
+  return Effect.runPromiseExit(
+    AtomRegistry.getResult(registry, hold, { suspendOnWaiting: true }),
+  ).then((exit) => (Exit.isSuccess(exit) && exit.value === "held" ? "held" : "refused"));
+};
 
 /** Take an App message off the conversation's message, by its call (Discard, or Edit once its text is in the input). */
 export const removeAppMessageAtom = Atom.family((key: ConversationKey) =>

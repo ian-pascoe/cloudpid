@@ -3251,6 +3251,32 @@ describe("the App calls on a Session connection", () => {
   );
 
   it.effect(
+    "names the conversation its View is shown in when it says one, and none otherwise",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest } = yield* setup();
+
+        yield* greeted(latest(), { appContext: true });
+
+        const asked = yield* client.appContext("c1", "moved", 5).pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const command = latest()
+          .commands()
+          .find((each) => each.type === "mcp_app_context");
+
+        expect(command).toMatchObject({ callId: "c1", text: "moved", conversationId: 5 });
+        yield* latest().say({
+          type: "result",
+          id: command?.id,
+          result: { status: "held", context: { hash: "h", text: "moved", at: 1 } },
+        });
+        yield* Fiber.join(asked);
+      }),
+  );
+
+  it.effect(
     "sends a Session from before no App context, answering refused, and decides again at each hello",
     () =>
       Effect.gen(function* () {

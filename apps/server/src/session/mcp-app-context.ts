@@ -16,6 +16,7 @@ import {
 } from "@cloudpid/extensions/mcp";
 import {
   cleanText,
+  type ConversationId,
   cutUtf8,
   MAX_MCP_APP_CONTEXT_BYTES,
   MAX_MCP_APP_CONTEXTS,
@@ -31,6 +32,7 @@ import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import type * as Types from "effect/Types";
 import { socketRequests } from "./socket-requests.ts";
+import type { McpWatchesService } from "./mcp-watches.ts";
 import type { SessionKv } from "./session-kv.ts";
 
 /** What the call's record says of it: the server and tool whose View it is, and the conversation it was made in. */
@@ -38,6 +40,8 @@ export type AppContextCall = {
   readonly server: string;
   readonly tool: string;
   readonly conversation: string;
+  /** For a call nested in a `codemode` script, the script's call: the one the model's History holds. */
+  readonly parentCall?: string | undefined;
 };
 
 /** The index of every held context, oldest first. */
@@ -82,9 +86,11 @@ export type AppContexts = {
     readonly view: WebSocket;
     readonly callId: string;
     readonly text: string;
+    /** The conversation to give it to: the one the View is shown in, when its History holds the call; else the record's. */
+    readonly conversation?: string | undefined;
   }) => Effect.Effect<McpAppContextAnswer>;
-  /** The conversation call `callId` was made in, as its record says; none for a call with no record. */
-  readonly conversationOf: (callId: string) => string | undefined;
+  /** What the record of call `callId` says of it; none for a call with no record. */
+  readonly callOf: (callId: string) => AppContextCall | undefined;
   /** The last context of call `callId`, for the card's chip. */
   readonly contextOf: (callId: string) => McpAppContext | undefined;
   /** Take the pending contexts of `conversation`, as one notice; none when it has none that another take has not taken. */
@@ -92,6 +98,14 @@ export type AppContexts = {
   /** Drop the pending contexts of `conversation` (its branch was moved off); delivered ones stay as they were. */
   readonly drop: (conversation: string) => Effect.Effect<void>;
 };
+
+/**
+ * What the Session ends of a conversation it has left (the active branch moved off it, or its subagent was deleted): the
+ * Resource watches its agent started, silently, and the App contexts still pending for it.
+ */
+export const leaveConversation =
+  (watches: McpWatchesService, contexts: AppContexts) => (conversation: ConversationId) =>
+    watches.endConversation(conversation).pipe(Effect.andThen(contexts.drop(String(conversation))));
 
 export type AppContextsOptions = {
   readonly storage: SessionKv;
@@ -105,7 +119,7 @@ export type AppContextsOptions = {
 };
 
 /** What a client sees of a held context. */
-const shown = (held: Held): McpAppContext => {
+const showing = (held: Held): McpAppContext => {
   const context: Types.Mutable<McpAppContext> = { hash: held.hash, text: held.text, at: held.at };
 
   if (held.delivered === true) context.delivered = true;
@@ -137,9 +151,16 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
 
   const claimKey = (callId: string, hash: string) => `${callId}:${hash}`;
 
+  /** The conversation the call's record is of, which lists the call (its chip is read from there), as a set of none or one. */
+  const homeOf = (callId: string): ReadonlyArray<string> =>
+    Option.match(options.call(callId), {
+      onNone: () => [],
+      onSome: (call) => [call.conversation],
+    });
+
   /** Write `held` as call `callId`'s context, and its index entry; the oldest delivered, then the oldest, past the bound are dropped. */
   const keep = (callId: string, held: Held): ReadonlySet<string> => {
-    const touched = new Set<string>([held.conversation]);
+    const touched = new Set<string>([held.conversation, ...homeOf(callId)]);
 
     const item: IndexItem = {
       callId,
@@ -176,10 +197,10 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
       Arr.filter(index(), (each) => each.callId !== callId),
     );
 
-    return new Set(Option.isSome(gone) ? [gone.value.conversation] : []);
+    return new Set([...(Option.isSome(gone) ? [gone.value.conversation] : []), ...homeOf(callId)]);
   };
 
-  const hold: AppContexts["hold"] = ({ view, callId, text }) =>
+  const hold: AppContexts["hold"] = ({ view, callId, text, conversation: shown }) =>
     Effect.gen(function* () {
       const call = options.call(callId);
 
@@ -203,7 +224,7 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
       if (cleaned === "") {
         if (current === undefined) return { status: "held" };
 
-        if (current.delivered === true) return { status: "held", context: shown(current) };
+        if (current.delivered === true) return { status: "held", context: showing(current) };
 
         options.changed(remove(callId));
 
@@ -211,19 +232,26 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
       }
 
       const hash = sha256Hex(cleaned);
+      const conversation = shown ?? call.value.conversation;
 
-      // The same text again (a remount sends it): held once.
-      if (current?.hash === hash) return { status: "held", context: shown(current) };
+      // The same text again (a remount sends it) for the conversation that has it: held once. One whose conversation is not the
+      // one that has it (the View is shown in another branch now) is held again for that one, which has not been told.
+      if (current?.hash === hash && current.conversation === conversation) {
+        return { status: "held", context: showing(current) };
+      }
+
+      // The cap is on distinct calls: a call's own pending context is replaced, whatever else waits.
+      const replacing =
+        current !== undefined &&
+        current.delivered !== true &&
+        current.conversation === conversation;
 
       const waiting = Arr.filter(
         index(),
-        (each) =>
-          each.conversation === call.value.conversation &&
-          !each.delivered &&
-          each.callId !== callId,
+        (each) => each.conversation === conversation && !each.delivered && each.callId !== callId,
       ).length;
 
-      if (waiting >= MAX_MCP_APP_PENDING) {
+      if (!replacing && waiting >= MAX_MCP_APP_PENDING) {
         return {
           status: "refused",
           message: `At most ${MAX_MCP_APP_PENDING} App contexts wait for a conversation: they are given to the model with the owner's next message`,
@@ -234,14 +262,14 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
         hash,
         text: cleaned,
         at: now(),
-        conversation: call.value.conversation,
+        conversation,
         server: call.value.server,
         tool: call.value.tool,
       };
 
       options.changed(keep(callId, held));
 
-      return { status: "held", context: shown(held) };
+      return { status: "held", context: showing(held) };
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("An App View's context failed in the Session", cause).pipe(
@@ -356,11 +384,11 @@ export const appContextsOver = (options: AppContextsOptions): AppContexts => {
 
   return {
     hold,
-    conversationOf: (callId) => Option.getOrUndefined(options.call(callId))?.conversation,
+    callOf: (callId) => Option.getOrUndefined(options.call(callId)),
     contextOf: (callId) => {
       const held = read(callId);
 
-      return held === undefined ? undefined : shown(held);
+      return held === undefined ? undefined : showing(held);
     },
     take,
     drop,

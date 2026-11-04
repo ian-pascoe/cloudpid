@@ -50,6 +50,7 @@ import {
   waitingFor,
 } from "./attachments-state.ts";
 import { catalogAtom } from "./catalog.ts";
+import { useComposerMounted } from "./composer-mounts.ts";
 import { AttachPageButton, PageChips } from "./page-chips.tsx";
 import { resourceMenuAtom } from "./mcp-resource-menu.ts";
 import { AppMessageChips, withEditedMessage } from "./app-message-chips.tsx";
@@ -199,6 +200,9 @@ const ComposerBox = ({
   const runSessionCommand = useCall(sessionCommandAtom(key));
   const copy = useCall(copyAtom);
   const store = useContext(RegistryContext);
+
+  useComposerMounted(key);
+
   const lastWhenBusy = useRef<WhenBusy>("followUp");
   const refreshCatalog = useAtomSet(state.refreshCatalog);
   const sessions = useAtomValue(sessionListAtom);

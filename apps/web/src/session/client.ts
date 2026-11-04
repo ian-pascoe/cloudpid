@@ -510,10 +510,13 @@ export interface SessionClient {
    * An App View's `ui/update-model-context` for call `callId` (`docs/architecture/mcp-apps.md` → App messages and App
    * context): the Session holds it and gives it to the model as an untrusted notice. The answer is `held` or `refused` (an
    * answer, not a failure); a Session whose `hello` did not say `appContext` is answered `refused` with nothing sent.
+   * `conversationId` is the conversation the page shows the View in: a View kept across a move of the active branch is of a
+   * call made in another one, and the Session gives the context to the one shown when its History holds the call.
    */
   readonly appContext: (
     callId: string,
     text: string,
+    conversationId?: number,
   ) => Effect.Effect<McpAppContextAnswer, SessionCommandError>;
   /**
    * What the Session on this connection takes of an App's messages (its `hello` says): the composer holds an App message
@@ -2213,12 +2216,20 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
       send(logger === undefined ? line : { ...line, logger });
     },
-    appContext: (callId, text) =>
+    appContext: (callId, text, conversationId) =>
       appContext
-        ? request(
-            (id) => ({ type: "mcp_app_context", id, callId, text }),
-            decodeMcpAppContextAnswer,
-          )
+        ? request((id) => {
+            const message: Types.Mutable<Extract<ClientMessage, { type: "mcp_app_context" }>> = {
+              type: "mcp_app_context",
+              id,
+              callId,
+              text,
+            };
+
+            if (conversationId !== undefined) message.conversationId = conversation(conversationId);
+
+            return message;
+          }, decodeMcpAppContextAnswer)
         : Effect.succeed({
             status: "refused",
             message: "This Session cannot take App context until it is updated",

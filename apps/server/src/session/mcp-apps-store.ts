@@ -254,7 +254,12 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     call: (callId) =>
       Option.map(
         Arr.findFirst(index(), (entry) => entry.callId === callId),
-        (entry) => ({ server: entry.server, tool: entry.tool, conversation: entry.conversation }),
+        (entry) => ({
+          server: entry.server,
+          tool: entry.tool,
+          conversation: entry.conversation,
+          parentCall: entry.parentCall,
+        }),
       ),
     secrets,
     changed,

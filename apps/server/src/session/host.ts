@@ -772,6 +772,12 @@ export type SessionHostService = {
    * Never fails: what goes wrong is logged, and the contexts stay pending.
    */
   readonly appContextHeld: (conversation: ConversationId) => Effect.Effect<void>;
+  /**
+   * Whether the model's tool call `callId` is in `conversation`'s History: made in it, or in a branch it was forked from before
+   * the point it was made at. For an App View shown in a conversation other than the one its call was made in (kept across a
+   * move of the active branch). Never fails: a History that cannot be read does not hold it.
+   */
+  readonly callInHistory: (conversation: ConversationId, callId: string) => Effect.Effect<boolean>;
   /** The root conversation's ID; the root is created when absent. */
   readonly root: Effect.Effect<ConversationId, SessionError>;
   /** The active branch's conversation ID (GLOSSARY.md → Session branch); the root is created when absent. */
@@ -1338,6 +1344,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   });
 
   const { active, treeState } = branches;
+
+  const callInHistory = (conversation: ConversationId, callId: string): Effect.Effect<boolean> =>
+    branches.historyHolds(conversation, callId).pipe(Effect.orElseSucceed(() => false));
 
   /** Bring the active branch's agent to the one it wants, so its next request runs on it; nothing is written when it does. */
   const applyAgent = Effect.gen(function* () {
@@ -3323,7 +3332,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    */
   const historyMarkdown = (conversation: Conversation) =>
     Effect.gen(function* () {
-      const built = markdownExport(conversation.id, DateTime.formatIso(yield* DateTime.now));
+      const built = markdownExport(
+        conversation.id,
+        DateTime.formatIso(yield* DateTime.now),
+        MAX_EXPORT_BYTES,
+        { appContext: options.appContexts?.contextOf },
+      );
+
       let cursor: Cursor | undefined;
 
       do {
@@ -4047,6 +4062,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         Effect.asVoid,
       ),
     appContextHeld,
+    callInHistory,
     submit: (prompt) => admit(prompt).pipe(Effect.map((submission) => submission.id)),
     prompt: answer,
     alarm: wakeAndResume,

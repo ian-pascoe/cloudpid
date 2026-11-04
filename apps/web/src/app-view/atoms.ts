@@ -24,7 +24,7 @@ export interface AppKey {
 /** The key as a string, which an atom family compares by. */
 export const appKey = (sessionId: string, callId: string): string => `${sessionId}\0${callId}`;
 
-const unkey = (key: string): AppKey => {
+export const unkey = (key: string): AppKey => {
   const [sessionId = "", callId = ""] = key.split("\0");
 
   return { sessionId, callId };

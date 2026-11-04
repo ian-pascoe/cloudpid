@@ -1,4 +1,4 @@
-// docs/architecture/mcp-apps.md → App sandbox, The bridge: `ui/open-link`. A View asks the host to open a link; nothing is opened
+// `docs/architecture/mcp-apps.md` → The bridge: `ui/open-link`. A View asks the host to open a link; nothing is opened
 // without the owner: only `http` and `https` URLs are taken, the card shows the whole URL with its host emphasised, and the owner
 // opens it (a new tab with no `opener` or referrer, or the Browser Pane) or dismisses it, which answers the View `-32000`. One
 // request waits at a time: a newer one replaces it, and the replaced one is answered as dismissed.
