@@ -58,7 +58,10 @@ import { viewHash, viewSourceOf } from "../view-hash.ts";
 /** The engine's `tools/call` request. */
 type McpEngineToolCall = Extract<McpEngineRequest, { readonly op: "tools/call" }>;
 
-export const callFailed = (error: McpHostCallFailed["error"]) => McpHostCallFailed.make({ error });
+export const callFailed = (error: McpHostCallFailed["error"], spawn?: string) =>
+  spawn === undefined
+    ? McpHostCallFailed.make({ error })
+    : McpHostCallFailed.make({ error, spawn });
 
 /** A server's `timeout` when its entry has none (`targetOf` always sets one). */
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -471,7 +474,10 @@ export const sendToEngine = (
       const refusal = access.refusal?.(result);
 
       return Result.fail(
-        callFailed(refusal === undefined ? result.error : Unreachable.make({ message: refusal })),
+        callFailed(
+          refusal === undefined ? result.error : Unreachable.make({ message: refusal }),
+          result.spawn,
+        ),
       );
     }
 

@@ -16,6 +16,7 @@
 // for a round so marked, and settles any other call it finds sent as one that may have run.
 import { declaresSampling, samplingOf } from "@cloudpid/config";
 import {
+  isJsonObject,
   MCP_CONNECT_TIMEOUT_MS,
   MCP_ELICITATION_WAIT_MS,
   MCP_INPUT_ROUNDS,
@@ -25,6 +26,7 @@ import {
   type McpHostRequest,
   type McpHostRequestContext,
   type McpHostRequestHooks,
+  type McpHostRequestResult,
   type McpHostResourceRequest,
   type PausableDeadline,
   pausableDeadline,
@@ -221,6 +223,27 @@ const answersOf = (deferring: boolean, pages: boolean): McpAnswers =>
 
 /** The marker written before a call's request leaves: a rerun that finds it settles the call, and never sends it again. */
 const SENT = "mcp.sent";
+
+/** The stdio process a host answer says it came from (`spawn`), when it carries one. */
+const spawnOf = (result: McpHostRequestResult): string | undefined =>
+  Predicate.isTagged(result, "Completed") ||
+  Predicate.isTagged(result, "CallFailed") ||
+  Predicate.isTagged(result, "InputRequired") ||
+  Predicate.isTagged(result, "PagesRequired")
+    ? result.spawn
+    : undefined;
+
+/** Whether a host answer to a `resume` or `resend` is a failure: the call failed, or the server's result is an error. */
+const failedAfterAsking = (result: McpHostRequestResult): boolean =>
+  Predicate.isTagged(result, "CallFailed") ||
+  (Predicate.isTagged(result, "Completed") &&
+    result.result.kind === "inline" &&
+    isJsonObject(result.result.value) &&
+    result.result.value["isError"] === true);
+
+/** What a call that was answered by another process than the one that asked says. */
+const restartedWhileWaiting = (server: string): string =>
+  `${server}'s process restarted while it waited for your answer, so it may have lost track; calling it again starts over`;
 
 /** How long the Session waits for a request to `server` since its start or its last progress, in ms. */
 export const waitOf = (server: McpBuildServer, slackMs: number): number => {
@@ -730,9 +753,22 @@ export const send = async <A>(
         next = resumed.request;
       }
 
+      const sentAgain = next.op === "resume" || next.op === "resend";
       const result = await once(next);
 
       if (result === undefined) return failed(hostLostResult(base, subject));
+
+      // A stdio server's process that restarted while its questions waited is likely to have lost the call: its error is
+      // told with that, since "unknown request" alone would send the model after the wrong cause.
+      if (
+        sentAgain &&
+        round?.spawn !== undefined &&
+        spawnOf(result) !== undefined &&
+        spawnOf(result) !== round.spawn &&
+        failedAfterAsking(result)
+      ) {
+        return failed(failedWith(restartedWhileWaiting(server.name), base));
+      }
 
       // The server answered with an MCP task, which only a call offered one gets: the call waits for it inline, then goes
       // on in the background (`./task-inline.ts`).
@@ -782,6 +818,10 @@ export const send = async <A>(
         }
       }
 
+      // A stdio server asking again from another process than the last round's has restarted since it last asked.
+      const asker = spawnOf(result);
+      const restarted = round?.spawn !== undefined && asker !== undefined && asker !== round.spawn;
+
       // The server asked questions the call keeps: the round is stored whole, then marked, and the call waits.
       round = {
         callId: api.callId,
@@ -795,6 +835,10 @@ export const send = async <A>(
           : McpRoundState.Resume({ state: result.resume }),
         asked: [...(asking?.asked ?? [])],
       };
+
+      if (asker !== undefined) round = { ...round, spawn: asker };
+
+      if (restarted) round = { ...round, restarted: true };
 
       // Nothing can record the round (a replaced Session): the call is dropped, and the instance after this one settles
       // it as one that may have run.

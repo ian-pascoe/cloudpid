@@ -1508,6 +1508,12 @@ export const McpHostCompleted = Schema.TaggedStruct("Completed", {
   watch: Schema.optionalKey(
     Schema.Struct({ started: Schema.Boolean, reason: Schema.optionalKey(Schema.String) }),
   ),
+  /**
+   * A stdio server's process that answered a `resume` or `resend` (its spawn id, as a task's): another one than the
+   * `InputRequired` carried is a process that restarted while the questions waited. Gain-only; absent for an HTTP server
+   * and from a host from before it.
+   */
+  spawn: Schema.optionalKey(Schema.String),
 });
 
 export type McpHostCompleted = typeof McpHostCompleted.Type;
@@ -1602,6 +1608,8 @@ export type ServerChanged = typeof ServerChanged.Type;
 /** The request failed on the way to the server, or the server failed it: the core's failure. */
 export const McpHostCallFailed = Schema.TaggedStruct("CallFailed", {
   error: McpErrorWire,
+  /** As `McpHostCompleted.spawn`: the stdio process the failed `resume` or `resend` reached. Gain-only. */
+  spawn: Schema.optionalKey(Schema.String),
 });
 
 export type McpHostCallFailed = typeof McpHostCallFailed.Type;

@@ -7,10 +7,12 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
 import {
   type JsonObject,
+  McpHostCallFailed,
   McpHostCompleted,
   McpHostInputRequired,
   type McpInputAnswer,
 } from "@cloudpid/mcp/types";
+import { ServerError } from "@cloudpid/mcp/types";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
@@ -252,6 +254,115 @@ describe("a Modern server's form", () => {
     await expect(
       Effect.runPromise(questions.answer(request?.id ?? "", { action: "decline" })),
     ).rejects.toThrow("This request ended");
+  });
+
+  describe("from a stdio server's process that restarts (#569)", () => {
+    /** A host whose asks come from the processes in `spawns`, in order, and whose resume is answered by `resumed`. */
+    const stdio = (spawns: string[], resumed: Awaited<ReturnType<FakeMcpAnswer>>) => {
+      let asked = 0;
+
+      return async (input: Sent, hooks: Parameters<FakeMcpAnswer>[1]) => {
+        if (input.op === "resume") return resumed;
+
+        await hooks.onInput?.(ask());
+        asked += 1;
+
+        return McpHostInputRequired.make({
+          requests: [ask()],
+          resume: STATE,
+          conn: "conn-docs",
+          spawn: spawns[asked - 1] ?? "spawn-x",
+        });
+      };
+    };
+
+    const failing = (spawn: string) =>
+      McpHostCallFailed.make({
+        error: ServerError.make({ message: "unknown request", code: -32602 }),
+        spawn,
+      });
+
+    /** Runs the call, answers its first question and returns what the model got. */
+    const answered = async (host: Awaited<ReturnType<typeof setup>>) => {
+      await host.session.start(host.tools);
+
+      const submitted = await host.session.root.submit({ type: "input", content: "go" }, context);
+
+      await until(async () => (await Effect.runPromise(host.questions.pending)).length > 0);
+
+      const [request] = await Effect.runPromise(host.questions.pending);
+
+      await Effect.runPromise(
+        host.questions.answer(request?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+      );
+      await submitted.wait(context);
+
+      return (await host.session.texts("toolResult")).join("\n");
+    };
+
+    it("tells the agent a resume that failed on another process, with the restart as the likely cause", async () => {
+      const host = await setup();
+
+      host.host.answer(stdio(["spawn-1"], failing("spawn-2")));
+
+      expect(await answered(host)).toContain(
+        "Docs-Site's process restarted while it waited for your answer, so it may have lost track; calling it again starts over",
+      );
+    });
+
+    it("leaves a resume the same process answered as the server's own, error or not", async () => {
+      const host = await setup();
+
+      host.host.answer(stdio(["spawn-1"], failing("spawn-1")));
+
+      const text = await answered(host);
+
+      expect(text).toContain("unknown request");
+      expect(text).not.toContain("restarted");
+    });
+
+    it("notes on the card of an ask that comes from another process than the last one's", async () => {
+      const host = await setup();
+      const { questions, session } = host;
+
+      let asked = 0;
+
+      // The call asks from one process, and its resume asks again from another.
+      host.host.answer(async (_input, hooks) => {
+        await hooks.onInput?.(ask(String(asked)));
+        asked += 1;
+
+        return asked <= 2
+          ? McpHostInputRequired.make({
+              requests: [ask(String(asked))],
+              resume: STATE,
+              conn: "conn-docs",
+              spawn: `spawn-${asked}`,
+            })
+          : DONE;
+      });
+      await session.start(host.tools);
+      await session.root.submit({ type: "input", content: "go" }, context);
+
+      await until(async () => (await Effect.runPromise(questions.pending)).length > 0);
+
+      const [one] = await Effect.runPromise(questions.pending);
+
+      expect(one?.notes).not.toContain("Docs-Site restarted since it last asked");
+
+      await Effect.runPromise(
+        questions.answer(one?.id ?? "", { action: "accept", content: { name: "Ada" } }),
+      );
+      await until(async () =>
+        (await Effect.runPromise(questions.pending)).some((each) => each.id !== one?.id),
+      );
+
+      const again = (await Effect.runPromise(questions.pending)).find(
+        (each) => each.id !== one?.id,
+      );
+
+      expect(again?.notes).toContain("Docs-Site restarted since it last asked");
+    });
   });
 
   it("seals an answer given while the call waits, and the resume opens it", async () => {

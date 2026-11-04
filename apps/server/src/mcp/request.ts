@@ -788,12 +788,22 @@ const answered = (
 
       if (result.kind !== "complete") return misread;
 
-      return result.structuredOutput === undefined
-        ? McpHostCompleted.make({ result: result.result })
-        : McpHostCompleted.make({
-            result: result.result,
-            structuredOutput: result.structuredOutput,
-          });
+      {
+        const completed: Mutable<McpHostCompleted> = McpHostCompleted.make({
+          result: result.result,
+        });
+
+        if (result.structuredOutput !== undefined) {
+          completed.structuredOutput = result.structuredOutput;
+        }
+
+        // The process that answered a `resume` or `resend`, so the caller can tell one that restarted since it asked.
+        if (result.spawn !== undefined && (call.op === "resume" || call.op === "resend")) {
+          completed.spawn = result.spawn;
+        }
+
+        return completed;
+      }
 
     case "tasks/get": {
       if (result.kind !== "task_state") return misread;

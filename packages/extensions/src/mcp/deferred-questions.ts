@@ -179,6 +179,8 @@ type DeferredRecord = {
     readonly sampled?: number;
     /** Whether its cards show: set once `mcp.wait.<r>` is written. */
     readonly shown?: boolean;
+    /** The stdio process that asked it (`McpDeferredRound.spawn`); absent for an HTTP server and in a round stored before it. */
+    readonly spawn?: string;
   };
 };
 
@@ -267,6 +269,13 @@ export type McpDeferredRound = {
   readonly tool: string;
   /** The state the host gave, as the request that follows is built from it. */
   readonly state: McpRoundState;
+  /**
+   * A stdio server's process (its spawn id) that asked the round: a resume answered by another one, with an error, says
+   * the process restarted while the questions waited (#569, #388 D15).
+   */
+  readonly spawn?: string;
+  /** The process that asked this round is not the one that asked the round before: its cards say it restarted. */
+  readonly restarted?: true;
   /** What became of the call's questions so far, for its `details`: never a value. */
   readonly asked: ReadonlyArray<McpElicitationDetail>;
 };
@@ -661,19 +670,38 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       // The record, with its chunk count, first: a chunk whose write fails is dropped with the record (`removeRecord`).
       yield* Effect.try(() => {
-        writeRecord({
-          ...record,
-          round: {
-            n: round.round,
-            conn: round.conn,
-            tool: round.tool,
-            chunks,
-            asked: round.asked,
-            count: asked,
-            sampled: basics.callOf(callId).sampled,
-            state: stateOf[round.state._tag],
-          },
-        });
+        const kept: Mutable<NonNullable<DeferredRecord["round"]>> = {
+          n: round.round,
+          conn: round.conn,
+          tool: round.tool,
+          chunks,
+          asked: round.asked,
+          count: asked,
+          sampled: basics.callOf(callId).sampled,
+          state: stateOf[round.state._tag],
+        };
+
+        if (round.spawn !== undefined) kept.spawn = round.spawn;
+
+        writeRecord({ ...record, round: kept });
+
+        // The server's process is not the one that asked before: each form and page of the round says so.
+        if (round.restarted === true) {
+          for (const question of questionsOf(record)) {
+            if (isElicitation(question)) {
+              storage.put(questionKey(question.id), {
+                ...question,
+                request: {
+                  ...question.request,
+                  notes: [
+                    ...question.request.notes,
+                    `${record.server} restarted since it last asked`,
+                  ],
+                },
+              });
+            }
+          }
+        }
 
         for (let n = 0; n < chunks; n += 1) {
           storage.put(chunkKey(callId, n), text.slice(n * RESUME_CHUNK, (n + 1) * RESUME_CHUNK));
@@ -772,7 +800,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
 
       active.add(callId);
 
-      return {
+      const stored: Mutable<McpDeferredRound> = {
         callId,
         round: round.n,
         conn: round.conn,
@@ -783,7 +811,11 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           Match.orElse(() => McpRoundState.Resume({ state: resume.value })),
         ),
         asked: round.asked,
-      } satisfies McpDeferredRound;
+      };
+
+      if (round.spawn !== undefined) stored.spawn = round.spawn;
+
+      return stored;
     });
 
   /**
