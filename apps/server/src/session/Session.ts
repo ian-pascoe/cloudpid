@@ -61,6 +61,7 @@ import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
+import { sessionMcpTasks } from "./mcp-tasks.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { sessionSettingsMcpAccess } from "./settings-mcp-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
@@ -638,6 +639,7 @@ export const SessionLive = Session.make(
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
         const mcpTools = sessionMcp({
           apps: mcpApps.service,
+          tasks: sessionMcpTasks({ storage: kv }),
           questions: mcpQuestions.service,
           sampling: mcpSampling.service,
           signIns: mcpSignIns.service,

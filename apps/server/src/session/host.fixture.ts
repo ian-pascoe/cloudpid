@@ -86,6 +86,7 @@ import {
   type McpHostClientService,
   type McpQuestionsService,
   rememberSampling,
+  type McpTasksTiming,
 } from "@cloudpid/extensions/mcp";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
@@ -144,6 +145,7 @@ import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
+import { sessionMcpTasks } from "./mcp-tasks.ts";
 import {
   instructionsSettings,
   reloadSessionExtensions,
@@ -818,6 +820,12 @@ export class TestSession extends DurableObject {
 
     const mcp = sessionMcp({
       apps: this.#mcpApps().service,
+      // The times of MCP tasks, shortened by `mcpTaskTiming` for the tests that wait them out: read when a task needs
+      // them, as the test sets them after the Session is built.
+      tasks: Object.defineProperty(sessionMcpTasks({ storage: kv }), "timing", {
+        enumerable: true,
+        get: () => kv.get<McpTasksTiming>("mcp-task-timing"),
+      }),
       questions: this.#mcpQuestions().service,
       sampling: this.#mcpSampling().service,
       signIns: this.#mcpSignIns().service,
@@ -2242,6 +2250,14 @@ export class TestSession extends DurableObject {
   /** Put this Session in Environment `environment`, whose MCP set has `servers` servers, as the Registry says. */
   mcpEnvironment(environment: string, servers: number): void {
     this.ctx.storage.kv.put("mcp", { environment, servers });
+  }
+
+  /**
+   * Shorter times for the MCP tasks of this Session (the window, the polls, the grace of a `-32602`, the backoff and the
+   * wait for an ignored cancel), read when its MCP tools are built: set it before the Session starts, or evict it.
+   */
+  mcpTaskTiming(timing: McpTasksTiming): void {
+    this.ctx.storage.kv.put("mcp-task-timing", timing);
   }
 
   /** Offer `offered` in the Settings of a Session with MCP tools, and read them again as a settings change does. */

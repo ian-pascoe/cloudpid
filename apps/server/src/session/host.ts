@@ -206,6 +206,22 @@ const HELD_STOPS_TIMEOUT: Duration.Input = "5 seconds";
 /** The submissions the owner made whose Run's end has not been notified yet, in the Session's key-value storage. */
 const NOTIFY_KEY = "notify-submissions";
 
+/** The part of the Session's key-value storage the notified Runs are kept in. */
+export type SessionNoticeKv = {
+  get<T>(key: string): T | undefined;
+  put<T>(key: string, value: T): void;
+};
+
+/**
+ * Add `id` to the Runs whose end the owner is told of, though the owner did not make it: the follow-up Run a follower of an
+ * MCP task starts when the task ends (`docs/architecture/mcp-server-requests.md` → MCP tasks, Delivery). The host tells
+ * the owner of each as it does of the owner's own.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a plain function over storage, not a combinator.
+export const recordRunNotice = (kv: SessionNoticeKv, id: SubmissionId): void => {
+  kv.put(NOTIFY_KEY, Arr.dedupe([...(kv.get<SubmissionId[]>(NOTIFY_KEY) ?? []), id]));
+};
+
 /**
  * Where the inputs admitted to the Session's conversations are kept, the newest `MAX_INPUTS`: the MCP endpoint's wait
  * finds the Run that ended among them (pi-durable lists no settled submission).
@@ -376,6 +392,12 @@ export type SessionHostMcp<R> = {
    * requests). Called once, with `bind`. Absent: no server's Sampling request is answered.
    */
   readonly bindSampling?: (binding: McpSamplingBinding) => void;
+  /**
+   * What the host does when a follower of an MCP task starts a Run of its own (`docs/architecture/mcp-server-requests.md`
+   * → MCP tasks, Delivery): wait for the Session to be idle and tell the owner the Run's end, as it does for the owner's.
+   * Called once, before anything resumes.
+   */
+  readonly watchRuns?: (started: () => void) => void;
   /**
    * Tell conversation `conversationId` that the `mcp_servers` listing changed, if its section was shown another one: run
    * after a request start's install, before its message is placed. Never fails.
@@ -3117,6 +3139,11 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       Effect.logWarning("Watching the subagents for the Registry failed", error),
     ),
   );
+
+  // A Run an MCP task's follower started is notified as one the owner's submission started.
+  options.mcp?.watchRuns?.(() => {
+    runAgents(settleWhenIdle);
+  });
 
   yield* wakeAndResume;
 

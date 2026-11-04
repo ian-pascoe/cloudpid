@@ -1,0 +1,448 @@
+// An MCP task the agent's call started, followed end to end (`docs/architecture/mcp-server-requests.md` → MCP tasks): the
+// call goes Session → host → the real `McpEngine` → a fake Modern server that answers `report` with a task. One that ends
+// inside the window returns as a synchronous call would; one still going at the window's end detaches, and the Session's
+// follower polls it until it ends, writes the ended entry and starts a follow-up Run, which the owner is pushed the end
+// of; `mcp_task_wait` reads the result; an eviction of the Session in either phase loses nothing and sends `tools/call` once;
+// a server that cannot be reached is retried, one that does not know the task is given a grace and then `unknown`, one that
+// ignores `tasks/cancel` is `stopped`; and the server's task id reaches nothing the model, a client, a log or the Session's
+// storage holds. The times are shortened with `mcpTaskTiming` (`host.fixture.ts`): nothing else is changed.
+// workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
+import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+import { modernTaskServer, rpcMethods, type TaskServer } from "@cloudpid/mcp/testing";
+import type { McpApplySet } from "@cloudpid/mcp/types";
+import { type ServerMessage, ServerMessageJson } from "@cloudpid/protocol";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TestSession } from "./host.fixture.ts";
+
+const decode = Schema.decodeUnknownEffect(ServerMessageJson);
+
+const settles = <A>(check: () => Promise<A>) =>
+  vi.waitFor(check, { timeout: 15_000, interval: 50 });
+
+let counter = 0;
+
+const SET: McpApplySet = {
+  kind: "set",
+  hash: "h1",
+  revision: 1,
+  entries: [
+    {
+      name: "docs",
+      source: { kind: "global" },
+      server: { type: "http", url: "https://docs.example/mcp", headers: {}, exposure: "direct" },
+      hash: "hash-docs",
+      conn: "conn-docs",
+      identity: "identity-docs",
+    },
+  ],
+};
+
+/** Times that fit a test: a window of 400 ms, a poll every 50 ms, a grace of 300 ms. */
+const TIMING = { windowMs: 400, pollMs: 50, graceMs: 300, backoffMs: 100, cancelGraceMs: 300 };
+
+const REPORT = (
+  args: { readonly region?: string; readonly polls?: number; readonly inline?: boolean } = {},
+) => `call:mcp__docs__report:${JSON.stringify(args)}`;
+
+/** The fake server's own id for a task: `task-1`, which the model, a client, a log and the storage must never hold. */
+const SERVER_ID = /(?<![\w-])task-\d/;
+
+/** What a test can change in the fetch the host's engine reaches the server with. */
+type Wire = {
+  /** Reject `tasks/get` as an unreachable server does. */
+  unreachable: boolean;
+  /** Answer `tasks/cancel` with an acknowledgement and do nothing. */
+  ignoreCancel: boolean;
+  /** The `tasks/cancel` the fetch answered itself. */
+  ignored: number;
+};
+
+const rpcMethodOf = async (request: Request): Promise<string | undefined> => {
+  try {
+    // SAFETY: the engine posts JSON-RPC bodies.
+    const body = (await request.clone().json()) as { readonly method?: string };
+
+    return body.method;
+  } catch {
+    return undefined;
+  }
+};
+
+/** A Session whose host runs the real engine against a fake Modern server that has the `report` tool. */
+const open = async (timing: Record<string, number> = TIMING, name = "mcp") => {
+  const environment = `env-${counter++}`;
+  const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+  const server = modernTaskServer();
+  const wire: Wire = { unreachable: false, ignoreCancel: false, ignored: 0 };
+
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    const method = await rpcMethodOf(request);
+
+    if (wire.unreachable && method === "tasks/get") throw new TypeError("Network connection lost");
+
+    if (wire.ignoreCancel && method === "tasks/cancel") {
+      wire.ignored += 1;
+
+      return Response.json({ jsonrpc: "2.0", id: 1, result: { resultType: "complete" } });
+    }
+
+    return server.handle(request);
+  });
+
+  await host.useRealEngine();
+  await host.apply(SET);
+
+  const stub = env.SESSIONS.getByName(`${name}-${environment}`);
+
+  await runInDurableObject(stub, (instance: TestSession) => {
+    instance.mcpEnvironment(environment, 1);
+    instance.mcpTaskTiming(timing);
+  });
+
+  return { stub, server, wire, environment };
+};
+
+/** The Session after every object was aborted, as a deploy leaves it: the host hands its work to the real engine again. */
+const evict = async (environment: string) => {
+  await abortAllDurableObjects();
+  await env.MCP_HOSTS.getByName(`mcp:${environment}`).useRealEngine();
+
+  const after = env.SESSIONS.getByName(`mcp-${environment}`);
+
+  await runDurableObjectAlarm(after);
+
+  return after;
+};
+
+/** Submit a turn on the Session. */
+const submit = (stub: DurableObjectStub<TestSession>, text: string, requestId = "turn-1") =>
+  runInDurableObject(stub, (instance: TestSession) => instance.submit({ requestId, text }));
+
+const script = (stub: DurableObjectStub<TestSession>, responses: ReadonlyArray<string>) =>
+  runInDurableObject(stub, (instance: TestSession) => instance.script(responses));
+
+const idle = (stub: DurableObjectStub<TestSession>) =>
+  settles(async () =>
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true),
+  );
+
+const results = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(stub, (instance: TestSession) => instance.toolResults());
+
+const requests = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(stub, (instance: TestSession) => instance.requestMessages());
+
+const pushes = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(stub, (instance: TestSession) => instance.notified());
+
+/** Wait until the owner was pushed the end of `count` Runs. */
+const finishedRuns = (stub: DurableObjectStub<TestSession>, count: number) =>
+  settles(async () =>
+    expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(count),
+  );
+
+/** The calls the server was sent, by method. */
+const callsOf = (server: TaskServer, method: string) =>
+  rpcMethods(server).filter((sent) => sent === method).length;
+
+/** Everything the Session's storage holds in its key-value store, as text. */
+const storageDump = (stub: DurableObjectStub<TestSession>) =>
+  runInDurableObject(stub, (_instance: TestSession, state) =>
+    JSON.stringify([...state.storage.kv.list()]),
+  );
+
+/** A client of a Session's socket that keeps every message the Session sent it. */
+const connect = async (stub: DurableObjectStub<TestSession>) => {
+  const response = await stub.fetch("http://session/socket", { headers: { Upgrade: "websocket" } });
+  const socket = response.webSocket;
+
+  if (socket === null) throw new Error(`No socket: ${response.status}`);
+  socket.accept();
+
+  const received: ServerMessage[] = [];
+
+  socket.addEventListener("message", (event) => {
+    received.push(Effect.runSync(decode(event.data)));
+  });
+
+  return { received, close: () => socket.close() };
+};
+
+const logs: string[] = [];
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  logs.length = 0;
+});
+
+const spyOnLogs = () => {
+  for (const method of ["log", "info", "warn", "error", "debug"] as const) {
+    vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((arg) => String(arg)).join(" "));
+    });
+  }
+};
+
+/** What the server's id must not be found in, after a test ran: the model's context, the sockets, the logs, the storage. */
+const expectNoServerId = async (
+  stub: DurableObjectStub<TestSession>,
+  ...more: ReadonlyArray<ReadonlyArray<ServerMessage> | undefined>
+) => {
+  const model = [...(await results(stub)), ...(await requests(stub))].join("\n");
+
+  expect(model).not.toMatch(SERVER_ID);
+  expect(logs.join("\n")).not.toMatch(SERVER_ID);
+  expect(await storageDump(stub)).not.toMatch(SERVER_ID);
+
+  for (const messages of more) expect(JSON.stringify(messages ?? [])).not.toMatch(SERVER_ID);
+};
+
+describe("an MCP task the agent's call started", () => {
+  it("ends inside the window and returns as a synchronous call would", async () => {
+    spyOnLogs();
+
+    const opened = await open();
+    const { stub, server } = opened;
+    const owner = await connect(stub);
+
+    await script(stub, [REPORT({ region: "eu", polls: 2 }), "done"]);
+    await submit(stub, "report");
+    await idle(stub);
+
+    expect(await results(stub)).toEqual([expect.stringContaining("report:eu")]);
+    // One `tools/call`, with the extension declared; a poll or two, and no follower left over.
+    expect(callsOf(server, "tools/call")).toBe(1);
+    expect(callsOf(server, "tasks/get")).toBeGreaterThanOrEqual(2);
+    expect(server.declared.filter((sent) => sent.method === "tools/call")).toEqual([
+      { method: "tools/call", tasks: true },
+    ]);
+    // Nothing detached: no tool was loaded, no entry told of an end.
+    expect((await requests(stub)).join("\n")).not.toContain("MCP task ended");
+    expect(await pushes(stub)).toEqual([expect.objectContaining({ kind: "finished" })]);
+    await expectNoServerId(stub, owner.received);
+    owner.close();
+  });
+
+  it("returns what a server that ends the call at once returns, with no task", async () => {
+    const { stub, server } = await open();
+
+    await script(stub, [REPORT({ inline: true }), "done"]);
+    await submit(stub, "report");
+    await idle(stub);
+
+    expect(await results(stub)).toEqual([expect.stringContaining("report:")]);
+    expect(callsOf(server, "tasks/get")).toBe(0);
+  });
+
+  it("detaches at the window, is followed to its end, and tells the agent in a Run of its own", async () => {
+    spyOnLogs();
+
+    const opened = await open();
+    const { stub, server } = opened;
+    const owner = await connect(stub);
+
+    // 14 polls of 50 ms outlast the 400 ms window; the first turn ends detached, the follow-up Run reads the result.
+    await script(stub, [
+      REPORT({ region: "eu", polls: 14 }),
+      "It runs in the background.",
+      "call:mcp_task_wait:" + JSON.stringify({ task: "mcp-task-1" }),
+      "The report is in.",
+    ]);
+    await submit(stub, "report");
+
+    // The call returned its handle and loaded the tools.
+    await settles(async () =>
+      expect((await results(stub)).join("\n")).toContain("runs as MCP task mcp-task-1"),
+    );
+    await settles(async () => expect((await results(stub)).join("\n")).toContain("report:eu"));
+    await idle(stub);
+
+    const model = (await requests(stub)).join("\n");
+
+    // The entry that told the agent says what ended in cloudpid's words, and the wait read the result.
+    expect(model).toContain("[MCP task ended | task=mcp-task-1 | server=docs");
+    expect(model).toContain("status=completed");
+    expect(callsOf(server, "tools/call")).toBe(1);
+    // The owner was told each Run ended: the turn's, and the follow-up Run the end started.
+    await settles(async () =>
+      expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(2),
+    );
+    await expectNoServerId(stub, owner.received);
+    owner.close();
+  });
+
+  it("is followed through an eviction of the Session after it detached, and `tools/call` goes out once", async () => {
+    const opened = await open();
+    const { stub, server, environment } = opened;
+
+    await script(stub, [
+      REPORT({ region: "us", polls: 30 }),
+      "It runs in the background.",
+      "call:mcp_task_wait:" + JSON.stringify({ task: "mcp-task-1" }),
+      "The report is in.",
+    ]);
+    await submit(stub, "report");
+    await settles(async () =>
+      expect((await results(stub)).join("\n")).toContain("runs as MCP task mcp-task-1"),
+    );
+
+    const after = await evict(environment);
+
+    await settles(async () => expect((await results(after)).join("\n")).toContain("report:us"));
+    await idle(after);
+
+    expect(callsOf(server, "tools/call")).toBe(1);
+    expect((await requests(after)).join("\n")).toContain("[MCP task ended | task=mcp-task-1");
+  });
+
+  it("is followed through an eviction of the Session inside the window, and `tools/call` goes out once", async () => {
+    const opened = await open({ ...TIMING, windowMs: 5000 });
+    const { stub, server, environment } = opened;
+
+    await script(stub, [REPORT({ region: "ap", polls: 20 }), "done"]);
+    await submit(stub, "report");
+    await settles(async () => expect(callsOf(server, "tasks/get")).toBeGreaterThanOrEqual(2));
+
+    const after = await evict(environment);
+
+    await settles(async () => expect((await results(after)).join("\n")).toContain("report:ap"));
+    await idle(after);
+
+    // The call that was waiting reran, found its record and went on polling: the result is the task's.
+    expect(await results(after)).toEqual([expect.stringContaining("report:ap")]);
+    expect(callsOf(server, "tools/call")).toBe(1);
+    await expectNoServerId(after);
+  });
+
+  it("retries a server that cannot be reached and goes on once it can", async () => {
+    const opened = await open();
+    const { stub, server, wire } = opened;
+
+    await script(stub, [
+      REPORT({ region: "eu", polls: 14 }),
+      "It runs in the background.",
+      "call:mcp_task_wait:" + JSON.stringify({ task: "mcp-task-1" }),
+      "The report is in.",
+    ]);
+    await submit(stub, "report");
+    await settles(async () =>
+      expect((await results(stub)).join("\n")).toContain("runs as MCP task mcp-task-1"),
+    );
+
+    // A deploy of the server, or a network cut: the follower is not ended by it.
+    wire.unreachable = true;
+
+    const polls = callsOf(server, "tasks/get");
+
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(false);
+    expect((await requests(stub)).join("\n")).not.toContain("MCP task ended");
+
+    wire.unreachable = false;
+    await settles(async () => expect((await results(stub)).join("\n")).toContain("report:eu"));
+    await idle(stub);
+
+    expect(callsOf(server, "tasks/get")).toBeGreaterThan(polls);
+    expect(callsOf(server, "tools/call")).toBe(1);
+  });
+
+  it("is `unknown` once a server that lost the task has not found it for the grace", async () => {
+    const opened = await open();
+    const { stub, server } = opened;
+
+    await script(stub, [
+      REPORT({ polls: 1000 }),
+      "It runs in the background.",
+      "The task is gone.",
+    ]);
+    await submit(stub, "report");
+    await settles(async () =>
+      expect((await results(stub)).join("\n")).toContain("runs as MCP task mcp-task-1"),
+    );
+
+    // The server restarted and lost its tasks: `-32602` for the 300 ms grace, then the end.
+    server.tasks.clear();
+    await settles(async () =>
+      expect((await requests(stub)).join("\n")).toContain("status=unknown"),
+    );
+    await idle(stub);
+
+    expect(callsOf(server, "tools/call")).toBe(1);
+  });
+
+  it("is `stopped` when the server ignores the agent's cancel for the grace, and the agent is told in a notice", async () => {
+    const opened = await open();
+    const { stub, server, wire } = opened;
+
+    wire.ignoreCancel = true;
+    await script(stub, [
+      REPORT({ polls: 1000 }),
+      "It runs in the background.",
+      "call:mcp_task_cancel:" + JSON.stringify({ task: "mcp-task-1" }),
+      "Cancelling it.",
+      "It is stopped.",
+    ]);
+    await submit(stub, "report");
+    await finishedRuns(stub, 1);
+    await submit(stub, "cancel it", "turn-2");
+    await finishedRuns(stub, 2);
+    await idle(stub);
+
+    // The server was asked to cancel; it never did, and cloudpid says so, to the agent, in a notice: no Run.
+    expect(wire.ignored).toBe(1);
+    expect(server.tasks.get("task-1")?.status).toBe("working");
+
+    await submit(stub, "and?", "turn-3");
+    await finishedRuns(stub, 3);
+
+    const last = (await requests(stub)).at(-1) ?? "";
+
+    expect(last).toContain("[MCP task notice | task=mcp-task-1 | server=docs | status=stopped");
+    expect(last).not.toContain("[MCP task ended");
+    await expectNoServerId(stub);
+  });
+
+  it("is cancelled at the server when the agent cancels it, and the agent is told in a notice", async () => {
+    const opened = await open();
+    const { stub, server } = opened;
+
+    await script(stub, [
+      REPORT({ polls: 1000 }),
+      "It runs in the background.",
+      "call:mcp_task_cancel:" + JSON.stringify({ task: "mcp-task-1" }),
+      "Cancelling it.",
+      "It is cancelled.",
+    ]);
+    await submit(stub, "report");
+    await finishedRuns(stub, 1);
+    await submit(stub, "cancel it", "turn-2");
+    await finishedRuns(stub, 2);
+    await idle(stub);
+    await submit(stub, "and?", "turn-3");
+    await finishedRuns(stub, 3);
+
+    expect(server.tasks.get("task-1")?.status).toBe("cancelled");
+    expect(callsOf(server, "tools/call")).toBe(1);
+    expect((await requests(stub)).at(-1) ?? "").toContain(
+      "[MCP task notice | task=mcp-task-1 | server=docs | status=cancelled | by=you]",
+    );
+  });
+
+  it("is cancelled at the server when Stop aborts a call inside the window", async () => {
+    const opened = await open({ ...TIMING, windowMs: 10_000 });
+    const { stub, server } = opened;
+
+    await script(stub, [REPORT({ polls: 1000 }), "stopped"]);
+    await submit(stub, "report");
+    await settles(async () => expect(callsOf(server, "tasks/get")).toBeGreaterThanOrEqual(1));
+    await runInDurableObject(stub, (instance: TestSession) => instance.abortRoot());
+    await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
+    await idle(stub);
+  });
+});

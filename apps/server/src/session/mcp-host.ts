@@ -27,6 +27,7 @@ import {
   type McpSamplingBinding,
   type McpSamplingService,
   type McpSignInsService,
+  type McpTasksOptions,
   type McpToolOptions,
   type McpToolsService,
   type McpToolsStore,
@@ -271,6 +272,8 @@ export type SessionMcpOptions = {
   readonly signIns?: McpSignInsService;
   /** Where the records of App calls and the inventory's App tools are kept (`./mcp-apps-store.ts`). */
   readonly apps?: McpAppRecorder;
+  /** What follows the MCP tasks of the agent's calls (`./mcp-tasks.ts`): with it, a root call is offered one. */
+  readonly tasks?: McpTasksOptions;
 };
 
 /** The Session host's MCP tools, and the page of an App record, which the sockets serve through the same host client. */
@@ -285,6 +288,9 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
 
   /** Where the notices are written, once the host's Harness is open. */
   let notices: McpNotices | undefined;
+
+  /** What the host does when a follower of an MCP task starts a Run (`watchRuns`). */
+  let runStarted: (() => void) | undefined;
 
   /**
    * The Workspace marked used before any host call, tried twice: false when it never answered, and the request start
@@ -321,6 +327,19 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     if (options.signIns !== undefined) toolOptions.signIns = options.signIns;
 
     if (options.apps !== undefined) toolOptions.apps = options.apps;
+
+    // A Run a follower starts is one the host tells the owner the end of (`watchRuns`).
+    if (options.tasks !== undefined) {
+      const { submitted } = options.tasks;
+
+      toolOptions.tasks = {
+        ...options.tasks,
+        submitted: (id) => {
+          submitted?.(id);
+          runStarted?.();
+        },
+      };
+    }
 
     const tools = makeMcpTools(
       options.host(environment),
@@ -415,6 +434,10 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
   const bind = (next: McpNotices) => {
     notices = next;
     held?.tools.bindNotices(next);
+  };
+
+  const watchRuns = (next: () => void) => {
+    runStarted = next;
   };
 
   const notify = (conversationId: ConversationId, values: SessionSettingsValues) => {
@@ -527,7 +550,7 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     options.sampling?.bind(binding);
   };
 
-  return { start, reinstall, bind, bindSampling, notify, prompts, appHtml };
+  return { start, reinstall, bind, bindSampling, watchRuns, notify, prompts, appHtml };
 };
 
 /** What a prompt get came to: the result `use` made, or why it is refused. */

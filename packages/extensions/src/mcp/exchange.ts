@@ -60,6 +60,12 @@ import { type McpDeferredRound, McpRoundState, type McpQuestionsService } from "
 import { resumeOf, type Rounds, storeRound, waitingRound } from "./rounds.ts";
 import type { McpSignInsService } from "./sign-in.ts";
 import { readStreamed, type StreamLimits } from "./stream.ts";
+import type { McpTaskFollower } from "./task-follow.ts";
+import { followInline, recordOfCall, startTask, type TaskCall } from "./task-inline.ts";
+import { windowMsOf } from "./task-policy.ts";
+import type { McpTasksOptions } from "./task-port.ts";
+import type { McpResultPool } from "./task-results.ts";
+import { atCap, McpTasksDoc, type McpTaskRecord } from "./task-state.ts";
 import type { McpBuildServer } from "./tools.ts";
 
 /** A server's `timeout` when its entry has none, in seconds (`DEFAULT_MCP_TIMEOUT`). */
@@ -127,6 +133,12 @@ export type McpToolOptions = {
    * App tool is recorded. Without it nothing is.
    */
   readonly apps?: McpAppRecorder | undefined;
+  /**
+   * How the Session follows the MCP tasks its root agent's calls start (`docs/architecture/mcp-server-requests.md` → MCP
+   * tasks): with it, and a host that lists `tasks`, a root call is offered one, the `mcp` extension carries the follower and
+   * registers `mcp_tasks`, `mcp_task_wait` and `mcp_task_cancel`. Without it nothing is offered.
+   */
+  readonly tasks?: McpTasksOptions | undefined;
 };
 
 /** Who the Session's calls are made for: the Session and its Workspace (`ws:<id>`). */
@@ -257,6 +269,7 @@ export const contextOf = (
   origin: McpCallOrigin,
   call: { readonly callId: string; readonly conversation: string },
   answers?: McpAnswers,
+  allowTask?: boolean,
 ): McpHostRequestContext => {
   const ctx: Mutable<McpHostRequestContext> = {
     origin: "agent",
@@ -269,6 +282,8 @@ export const contextOf = (
   if (origin.workspace !== undefined) ctx.workspace = origin.workspace;
 
   if (answers !== undefined) ctx.answers = answers;
+
+  if (allowTask === true) ctx.allowTask = true;
 
   return ctx;
 };
@@ -294,6 +309,39 @@ export type Exchange = {
   readonly samples?: boolean | undefined;
   /** Whether the host also resends a Legacy `-32042` (its `resend` feature): the call then keeps its pages for later too. */
   readonly pages?: boolean | undefined;
+  /**
+   * What the call needs to follow an MCP task its server answers it with (`./task-inline.ts`): present for a tool's call on
+   * a host that lists `tasks`, when the Session follows MCP tasks. Whether a given call is offered one is `followsTasks`.
+   */
+  readonly tasking?: McpTasking | undefined;
+};
+
+/** The Session's means of following MCP tasks, as a tool's exchange holds them. */
+export type McpTasking = {
+  readonly tasks: McpTasksOptions;
+  readonly follower: McpTaskFollower;
+  readonly pool: McpResultPool;
+};
+
+/**
+ * Whether this call is offered an MCP task (`allowTask`): the one place the line is drawn for #488. Only the root
+ * conversation's own direct calls, to an HTTP server, while the Session and the server are under their caps; subagents,
+ * `codemode` scripts, stdio and App Views come with #494.
+ */
+export const followsTasks = async (
+  exchange: Exchange,
+  api: ToolExecutionApi,
+  context: Context,
+): Promise<boolean> => {
+  if (exchange.tasking === undefined || exchange.subject !== "tool") return false;
+
+  if (exchange.server.server.type === "stdio") return false;
+
+  if ((await isSubagentCall(api, context)) || (await isNested(api, context))) return false;
+
+  const state = await api.snapshot(McpTasksDoc, context).catch(() => undefined);
+
+  return state === undefined || !atCap(state, exchange.server.name);
 };
 
 /**
@@ -336,6 +384,7 @@ export const send = async <A>(
   build: (
     workspace: string | undefined,
     answers: McpAnswers | undefined,
+    allowTask: boolean,
   ) => McpHostRequest | McpHostResourceRequest,
   onValue: OnValue<A>,
 ): Promise<Sent<A>> => {
@@ -365,17 +414,29 @@ export const send = async <A>(
 
   let waiting: McpDeferredRound | undefined;
 
+  // The MCP task the call started before a restart: its record is written in the commit that stores it, so one is found
+  // whether or not the `mcp.task` marker followed it.
+  let resumedTask: McpTaskRecord | undefined;
+
   if (remember && (await api.memo<boolean>(SENT, context)) !== undefined) {
-    // A rerun after a restart: a round of questions stored and not yet resumed waits again. Anything else was sent
-    // once, so the call may have run, and is never sent again.
+    // A rerun after a restart: a round of questions stored and not yet resumed waits again, and an MCP task the call
+    // started is followed from where it was. Anything else was sent once, so the call may have run, and is never sent
+    // again.
     waiting = rounds === undefined ? undefined : await waitingRound(rounds);
 
-    if (waiting === undefined) {
+    if (waiting === undefined && exchange.tasking !== undefined) {
+      resumedTask = await recordOfCall(api, context, api.callId);
+    }
+
+    if (waiting === undefined && resumedTask === undefined) {
       if (questions !== undefined) await Effect.runPromise(questions.settleCall(api.callId));
 
       return failed(interruptedResult(tool, base));
     }
   }
+
+  const allowTask =
+    remember && resumedTask === undefined && (await followsTasks(exchange, api, context));
 
   // An HTTP server is called from the Session's Workspace, as it always was. A stdio server runs in the Container of the
   // Workspace that calls it: a conversation in a Subagent Workspace calls for it, not for the Session's, and the
@@ -454,7 +515,23 @@ export const send = async <A>(
   const request = build(
     workspace,
     sampling === undefined ? questionAnswers : withSamplingAnswers(questionAnswers),
+    allowTask,
   );
+
+  /** What following an MCP task needs, for a call whose server answers with one. */
+  const taskCall = (): TaskCall | undefined =>
+    exchange.tasking === undefined
+      ? undefined
+      : {
+          api,
+          context,
+          client,
+          tasks: exchange.tasking.tasks,
+          origin: { session: origin.session, workspace },
+          follower: exchange.tasking.follower,
+          pool: exchange.tasking.pool,
+          base,
+        };
 
   // Durable before the request leaves, so a restart finds the call sent.
   if (remember && waiting === undefined) await api.memo(SENT, true, context);
@@ -553,6 +630,13 @@ export const send = async <A>(
    * and resumed, until the host answers anything else. A rerun starts from the round it found waiting.
    */
   const finished = async (): Promise<Sent<A>> => {
+    const resumed = taskCall();
+
+    // An MCP task the call started before a restart is followed on; its `tools/call` is never sent again.
+    if (resumedTask !== undefined && resumed !== undefined) {
+      return failed(await followInline(resumed, resumedTask));
+    }
+
     let round = waiting;
     // A read's `-32042` message: the server's own error, which the read ends with when a page is not accepted.
     let pagesMessage = "";
@@ -591,6 +675,22 @@ export const send = async <A>(
       const result = await once(next);
 
       if (result === undefined) return failed(hostLostResult(base, subject));
+
+      // The server answered with an MCP task, which only a call offered one gets: the call waits for it inline, then goes
+      // on in the background (`./task-inline.ts`).
+      const following = taskCall();
+
+      if (Predicate.isTagged(result, "Task") && following !== undefined) {
+        const record = await startTask(following, result, {
+          server: server.name,
+          tool: next.op === "tools/call" ? next.params.name : (round?.tool ?? ""),
+          modelTool: tool,
+          windowMs: following.tasks.timing?.windowMs ?? windowMsOf(server.server.timeout),
+          source: server.source,
+        });
+
+        return failed(await followInline(following, record));
+      }
 
       if (
         !(

@@ -66,6 +66,7 @@ import {
   MCP_RESEND_FEATURE,
   MCP_RESUME_FEATURE,
   MCP_SAMPLING_FEATURE,
+  MCP_TASKS_FEATURE,
   McpBuildServer,
   mcpExtension,
   mcpNamespaces,
@@ -142,12 +143,28 @@ export {
 
 export { type McpCheckResult, type McpNotices, mcpNotices } from "./mcp/notices.ts";
 
+export { type McpTasksOptions, type McpTasksTiming } from "./mcp/task-port.ts";
+
+export { type McpTaskStorage, MCP_TASK_POOL_BYTES } from "./mcp/task-results.ts";
+
+export {
+  MCP_TASK_ENDED_KIND,
+  MCP_TASK_FOLLOWER,
+  MCP_TASK_NOTICE_KIND,
+  MCP_TASK_TOOL_NAMES,
+  MCP_TASKS_KIND,
+  McpTasksDoc,
+  type McpTaskRecord,
+  type McpTasksState,
+} from "./mcp/task-state.ts";
+
 export {
   extensionName,
   MCP_CALL_SLACK_MS,
   MCP_RESEND_FEATURE,
   MCP_RESUME_FEATURE,
   MCP_SAMPLING_FEATURE,
+  MCP_TASKS_FEATURE,
   type McpBuild,
   McpBuildServer,
   type McpCallOrigin,
@@ -177,6 +194,7 @@ export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESUME_FEATURE,
   MCP_RESEND_FEATURE,
   MCP_SAMPLING_FEATURE,
+  MCP_TASKS_FEATURE,
 ];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */
@@ -478,7 +496,18 @@ export const makeMcpTools = (
     stillShown: (conversation) => check(conversation),
   });
 
-  const sectionOptions: McpToolOptions = { ...options, sections: [section] };
+  // The note an end the owner caused leaves is written through the notices, bound once the Session's Harness is open.
+  const tasks: McpToolOptions["tasks"] =
+    options.tasks === undefined
+      ? undefined
+      : {
+          ...options.tasks,
+          write:
+            options.tasks.write ??
+            ((conversation, note) => notices?.write?.(conversation, note) ?? Promise.resolve()),
+        };
+
+  const sectionOptions: McpToolOptions = { ...options, tasks, sections: [section] };
 
   /** Keep `next`, read as number `read`, unless a later read was kept. */
   const keep = (read: number, next: McpInventory | undefined) => {

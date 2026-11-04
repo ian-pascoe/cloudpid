@@ -47,6 +47,7 @@ import {
   type Exchange,
   MCP_RESEND_FEATURE,
   type McpCallOrigin,
+  type McpTasking,
   type McpToolOptions,
   parentCallOf,
   samplesOf,
@@ -55,6 +56,9 @@ import {
 import { withElicitation } from "./elicit.ts";
 import { withSampling } from "./sample.ts";
 import { exposureKeys, flagsOf, isReachable, reachesModel } from "./exposure.ts";
+import { taskFollower } from "./task-follow.ts";
+import { resultPool } from "./task-results.ts";
+import { taskTools } from "./task-tools.ts";
 import { type McpResultContext, resultFor } from "./result.ts";
 import { resourceTools } from "./resources.ts";
 import { signInTool } from "./sign-in-tool.ts";
@@ -81,6 +85,12 @@ export const MCP_RESUME_FEATURE = "resume";
 
 /** What the host can keep for later for a call: a Modern round of questions, and a Legacy `-32042`'s pages. */
 type HostKeeps = { readonly defers: boolean; readonly pages: boolean };
+
+/**
+ * The host feature that says it knows the `tasks/*` ops (`MCP_HOST_FEATURES`): a call is offered an MCP task, and the
+ * `mcp_tasks` tools are registered, only on a host that lists it.
+ */
+export const MCP_TASKS_FEATURE = "tasks";
 
 /**
  * A server as the tools are built from it: its name, state, tools and `instructions`, and of its entry only what the
@@ -167,6 +177,7 @@ const toolFor = (
   appHtml: boolean,
   keeps: HostKeeps,
   samples: boolean,
+  tasking: McpTasking | undefined,
 ): ToolRegistration => {
   const base = baseDetails(server.name, tool);
   const app = options.apps !== undefined && appUriOfMeta(tool._meta) !== undefined;
@@ -182,6 +193,7 @@ const toolFor = (
     defers: keeps.defers,
     pages: keeps.pages,
     samples,
+    tasking,
   };
 
   return {
@@ -198,12 +210,13 @@ const toolFor = (
         exchange,
         api,
         context,
-        (workspace, answers) =>
+        (workspace, answers, allowTask) =>
           requestOf(
             contextOf(
               { ...origin, workspace },
               { callId: api.callId, conversation: String(api.conversationId) },
               answers,
+              allowTask,
             ),
             server.name,
             tool.name,
@@ -301,6 +314,21 @@ export const mcpExtension = (
   // A Legacy server's Sampling requests are answered only on a host that lists `sampling` (it declares them to the server).
   const samples = samplesOf(build);
 
+  // MCP tasks are followed on a host that knows the ops, by a Session that keeps what following needs.
+  const pool = options.tasks === undefined ? undefined : resultPool(options.tasks.storage);
+
+  const follower =
+    options.tasks === undefined ||
+    pool === undefined ||
+    build.features?.includes(MCP_TASKS_FEATURE) !== true
+      ? undefined
+      : taskFollower({ client, origin, tasks: options.tasks, pool });
+
+  const tasking: McpTasking | undefined =
+    options.tasks === undefined || pool === undefined || follower === undefined
+      ? undefined
+      : { tasks: options.tasks, follower, pool };
+
   const tools = Arr.flatMap(build.servers, (server) => {
     const listed = listedTools(server);
 
@@ -338,6 +366,7 @@ export const mcpExtension = (
               appHtml,
               keeps,
               samples,
+              tasking,
             ),
           );
     });
@@ -347,8 +376,14 @@ export const mcpExtension = (
 
   return defineExtension({
     name: extensionName,
-    tools: [...tools, ...resources, ...(asking === undefined ? [] : [asking])],
+    tools: [
+      ...tools,
+      ...resources,
+      ...(asking === undefined ? [] : [asking]),
+      ...(pool === undefined || follower === undefined ? [] : taskTools(client, origin, pool)),
+    ],
     sections: options.sections ?? [],
+    tasks: follower === undefined ? [] : [follower],
   });
 };
 
