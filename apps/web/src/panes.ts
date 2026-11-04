@@ -32,6 +32,8 @@ export interface PaneLookups {
   readonly agentOfHandoff: (requestId: string) => string | undefined;
   /** The subagent that runs conversation `conversationId`, when the task graph lists it. */
   readonly agentOfConversation: (conversationId: number) => string | undefined;
+  /** The server whose App View call `callId` made, when the Session's App calls list it. */
+  readonly serverOfApp: (callId: string) => string | undefined;
 }
 
 /** One kind of Pane. */
@@ -76,10 +78,20 @@ const subagentLabel = (argument: string | undefined, lookups: PaneLookups): Pane
     : { name: subagentPaneName(conversationId, lookups.agentOfConversation(conversationId)) };
 };
 
+/** The longest call ID an App Pane's key carries (`MAX_MCP_APP_KEY`, which the socket's messages bound it by). */
+const MAX_APP_CALL_ID = 512;
+
+/** An App Pane's tab: "App", and the server whose App View it shows once the Session's App calls list the call. */
+const appLabel = (argument: string | undefined, lookups: PaneLookups): PaneLabel => {
+  const server = argument === undefined ? undefined : lookups.serverOfApp(argument);
+
+  return server === undefined ? { name: "App" } : { name: "App", agent: server };
+};
+
 /**
  * The Pane types: the New pane, the Subagents Pane, the Session tree Pane, the Browser Pane and the Diff pane, one each
  * per Session, a Subagent Pane per subagent the owner opens (`subagent:<conversationId>`), and a Live View per Browser Handoff waiting
- * (`live-view:<requestId>`). The Terminal (#139) joins them here, and in the New pane's choices (`new-pane.tsx`) if the
+ * (`live-view:<requestId>`), and an App Pane per App View popped out (`app:<callId>`). The Terminal (#139) joins them here, and in the New pane's choices (`new-pane.tsx`) if the
  * owner opens it.
  */
 export const PANE_TYPES = [
@@ -95,6 +107,12 @@ export const PANE_TYPES = [
   { id: "browser", multiple: false, label: () => ({ name: "Browser" }) },
   { id: "diff", multiple: false, label: () => ({ name: "Diff" }) },
   { id: "live-view", multiple: true, label: liveViewLabel },
+  {
+    id: "app",
+    multiple: true,
+    accepts: (argument) => argument.length <= MAX_APP_CALL_ID,
+    label: appLabel,
+  },
 ] as const satisfies readonly PaneType[];
 
 /** The ID of a type in `PANE_TYPES`. */
@@ -133,6 +151,9 @@ const currentKey = (key: string, types: readonly PaneType[]): string =>
 
 /** The key of the Session tree Pane. */
 export const TREE_PANE = "tree";
+
+/** The key of the App Pane that shows call `callId`'s App View, one per App View (docs/architecture/mcp-apps.md → App Panes). */
+export const appPaneKey = (callId: string): string => `app:${callId}`;
 
 /** The key of the Browser Pane: the Session's browser, in an Owner tab. Its tab is labelled "Browser". */
 export const BROWSER_PANE = "browser";

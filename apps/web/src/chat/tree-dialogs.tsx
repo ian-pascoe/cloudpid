@@ -4,6 +4,7 @@
 // the Session branch left, which message a `/fork` starts before and where a `/fork` or `/clone` goes, and the Git
 // branch of a Fork or Clone's new Workspace.
 
+import { afterTeardown } from "../app-view/teardown.ts";
 import { ownBranchProblem } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
@@ -49,13 +50,20 @@ const SummaryChoices = ({ close }: { close: () => void }) => {
 
   const go = (summary: { readonly instructions?: string } | undefined) => {
     setForm({ focus, running: true, failure: null });
-    void navigate({ point: pending.point, summary }).then((exit) => {
-      const why = exitFailure(exit);
+    // The Views of the thread are torn down first, and those whose calls the branch keeps are mounted again after.
+    afterTeardown(
+      () => {
+        void navigate({ point: pending.point, summary }).then((exit) => {
+          const why = exitFailure(exit);
 
-      setForm({ focus, running: false, failure: why });
+          setForm({ focus, running: false, failure: why });
 
-      if (why === null) close();
-    });
+          if (why === null) close();
+        });
+      },
+      undefined,
+      true,
+    );
   };
 
   return (

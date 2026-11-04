@@ -7,8 +7,9 @@
 //
 // It holds the Pane area (the Panes open, the one shown, whether the area is hidden), whether the Session details are
 // open, which of the transcript's subagent cards are open, which of the transcript's disclosures (tool cards,
-// thinking, Skills, notices) are open, and the Session tree Pane's filter. A subagent open in a Pane of its own is one
-// of the Panes. Only the Sessions shown last are kept (`MAX_LAYOUTS`): a Session not opened for that long starts
+// thinking, Skills, notices) are open, which App Views the owner reopened or collapsed (docs/architecture/mcp-apps.md →
+// App Views in the transcript), and the Session tree Pane's filter. A subagent open in a Pane of its own is one of the
+// Panes, and so is an App View popped out (`app:<callId>`). Only the Sessions shown last are kept (`MAX_LAYOUTS`): a Session not opened for that long starts
 // afresh.
 
 import * as Schema from "effect/Schema";
@@ -32,6 +33,10 @@ export interface SessionLayout {
   readonly openCards: readonly number[];
   /** The transcript's disclosures open (`disclosureKey`). */
   readonly openDisclosures: readonly string[];
+  /** The calls whose App Views the owner reopened: live until they collapse them, whatever the generation rule says. */
+  readonly openApps: readonly string[];
+  /** The calls whose App Views the owner collapsed: collapsed until they reopen them. */
+  readonly collapsedApps: readonly string[];
   readonly treeFilter: TreeFilter;
 }
 
@@ -41,6 +46,8 @@ export const DEFAULT_LAYOUT: SessionLayout = {
   detailsOpen: false,
   openCards: [],
   openDisclosures: [],
+  openApps: [],
+  collapsedApps: [],
   treeFilter: "default",
 };
 
@@ -66,6 +73,8 @@ const StoredLayout = Schema.Struct({
   detailsOpen: Schema.optional(Schema.Boolean),
   openCards: Schema.Array(Schema.Finite).pipe(Schema.optional),
   openDisclosures: Schema.Array(Schema.String).pipe(Schema.optional),
+  openApps: Schema.Array(Schema.String).pipe(Schema.optional),
+  collapsedApps: Schema.Array(Schema.String).pipe(Schema.optional),
   treeFilter: Schema.optional(Schema.Literals(TREE_FILTER_VALUES)),
 });
 
@@ -103,6 +112,8 @@ export const layoutOf = (stored: StoredLayouts, sessionId: string): SessionLayou
     detailsOpen: found.detailsOpen ?? false,
     openCards: found.openCards ?? [],
     openDisclosures: found.openDisclosures ?? [],
+    openApps: found.openApps ?? [],
+    collapsedApps: found.collapsedApps ?? [],
     treeFilter: found.treeFilter ?? "default",
   };
 };
@@ -133,6 +144,29 @@ export const withOpen = <A extends string | number>(
 
   return open ? [...others, id].slice(-MAX_OPEN) : others;
 };
+
+/** What the owner chose of an App View on this device: reopened it, or collapsed it; undefined when they chose nothing. */
+export type AppChoice = "open" | "collapsed";
+
+/** The owner's choice of call `callId`'s App View in `layout`. */
+export const appChoiceOf = (
+  layout: Pick<SessionLayout, "openApps" | "collapsedApps">,
+  callId: string,
+): AppChoice | undefined => {
+  if (layout.collapsedApps.includes(callId)) return "collapsed";
+
+  return layout.openApps.includes(callId) ? "open" : undefined;
+};
+
+/** The lists of `layout` with call `callId`'s App View reopened, collapsed, or (`undefined`) left to the generation rule. */
+export const withAppChoice = (
+  layout: Pick<SessionLayout, "openApps" | "collapsedApps">,
+  callId: string,
+  choice: AppChoice | undefined,
+): Pick<SessionLayout, "openApps" | "collapsedApps"> => ({
+  openApps: withOpen(layout.openApps, callId, choice === "open"),
+  collapsedApps: withOpen(layout.collapsedApps, callId, choice === "collapsed"),
+});
 
 /**
  * A disclosure of a thread on the Session's page, as its open state is kept: in the root's thread or a subagent's

@@ -77,7 +77,7 @@ describe("hostContextOf", () => {
       toolInfo: { id: "c1", tool: { name: "page", title: "Page" } },
       theme: "dark",
       displayMode: "inline",
-      availableDisplayModes: ["inline"],
+      availableDisplayModes: ["inline", "fullscreen"],
       containerDimensions: { width: 600, maxHeight: 640 },
       locale: "en-GB",
       timeZone: "Europe/London",
@@ -88,6 +88,24 @@ describe("hostContextOf", () => {
       theme: "light",
       platform: "mobile",
     });
+    expect(context).not.toHaveProperty("safeAreaInsets");
+  });
+
+  it("describes an App Pane: fullscreen, both axes fixed, and a sheet's safe area only when it is one", () => {
+    const pane = { mode: "fullscreen", height: 720 } as const;
+
+    expect(hostContextOf(env, tool, pane)).toMatchObject({
+      displayMode: "fullscreen",
+      containerDimensions: { width: 600, height: 720 },
+    });
+    expect(hostContextOf(env, tool, pane)).not.toHaveProperty("safeAreaInsets");
+    expect(hostContextOf(env, tool, pane).containerDimensions).not.toHaveProperty("maxHeight");
+
+    const insets = { top: 47, right: 0, bottom: 34, left: 0 };
+
+    expect(
+      hostContextOf({ ...env, mobile: true }, tool, { ...pane, safeAreaInsets: insets }),
+    ).toMatchObject({ platform: "mobile", safeAreaInsets: insets });
   });
 });
 

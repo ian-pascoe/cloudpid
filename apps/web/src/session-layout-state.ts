@@ -12,6 +12,9 @@ import {
   disclosureKey,
   layoutKey,
   layoutOf,
+  appChoiceOf,
+  withAppChoice,
+  type AppChoice,
   StoredLayouts,
   withLayout,
   withOpen,
@@ -104,6 +107,25 @@ export const subagentCardOpenAtom = (key: string, conversationId: number) =>
  */
 export const disclosureOpenAtom = (key: string, disclosure: TranscriptDisclosure) =>
   disclosures(key)(disclosureKey(disclosure));
+
+const appChoices = Atom.family((key: string) => {
+  const layout = sessionLayoutAtom(key);
+
+  return Atom.family((callId: string) =>
+    Atom.writable(
+      (get): AppChoice | undefined => appChoiceOf(get(layout), callId),
+      (ctx, choice: AppChoice | undefined) => {
+        ctx.set(layout, withAppChoice(ctx.get(layout), callId, choice));
+      },
+    ),
+  );
+});
+
+/**
+ * What the owner chose of call `callId`'s App View on the page whose layout key is `key`: `open` (reopened), `collapsed`,
+ * or undefined (the generation rule decides); writing it keeps the choice on this device (`undefined` forgets it).
+ */
+export const appChoiceAtom = (key: string, callId: string) => appChoices(key)(callId);
 
 /** Whether the Session details are open on the page whose layout key is `key`; writing it opens or closes them there. */
 export const detailsOpenAtom = Atom.family((key: string) => {

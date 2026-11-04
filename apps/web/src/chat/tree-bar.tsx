@@ -6,6 +6,7 @@
 // Session branch that has siblings, and the bar under the owner's messages and the answers of the active branch
 // (Copy, Branch, and Fork or Clone).
 
+import { afterTeardown } from "../app-view/teardown.ts";
 import { useAuiState } from "@assistant-ui/react";
 import type { SessionTree, TreeNode } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
@@ -86,9 +87,16 @@ const Chevrons = ({ tree, id }: { tree: SessionTree; id: number }) => {
     const conversationId = branchThrough(tree, sibling.id) ?? sibling.conversationId;
 
     show(null);
-    void switchBranch(conversationId).then((exit) => {
-      show(exitFailure(exit));
-    });
+    // The Views of the thread are torn down first, and those whose calls the branch keeps are mounted again after.
+    afterTeardown(
+      () => {
+        void switchBranch(conversationId).then((exit) => {
+          show(exitFailure(exit));
+        });
+      },
+      undefined,
+      true,
+    );
   };
 
   return (

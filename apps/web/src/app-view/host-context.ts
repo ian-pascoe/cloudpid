@@ -115,6 +115,21 @@ export interface HostEnvironment {
   readonly maxHeight: number;
 }
 
+/** How an App View is shown: in its card (`inline`) or in an App Pane (`fullscreen`): docs/architecture/mcp-apps.md → App Panes. */
+export type DisplayMode = "inline" | "fullscreen";
+
+/** The display modes cloudpid offers: `pip` is refused. */
+export const AVAILABLE_DISPLAY_MODES: ReadonlyArray<DisplayMode> = ["inline", "fullscreen"];
+
+/** How a View is shown, for the host context. */
+export interface DisplayContext {
+  readonly mode: DisplayMode;
+  /** An App Pane's height in px: both its axes are fixed there (an inline card's height is the View's own, up to `maxHeight`). */
+  readonly height?: number | undefined;
+  /** An App Pane on a phone is a sheet: the insets the device keeps clear, in px. */
+  readonly safeAreaInsets?: McpUiHostContext["safeAreaInsets"];
+}
+
 /** The tool an App View is shown for, as `toolInfo` names it: the server's own name for the tool. */
 export interface AppToolInfo {
   readonly callId: string;
@@ -126,31 +141,45 @@ export interface AppToolInfo {
 
 /**
  * The host context of an inline App View (`docs/architecture/mcp-apps.md` → The bridge): the tool, the theme from
- * `prefers-color-scheme`, the mapped design tokens and system font stacks, the display mode (only `inline` is offered
- * here), the container's dimensions (width fixed, height flexible up to `maxHeight`), the locale, the time zone, the
- * platform and the device's capabilities. `safeAreaInsets` is a sheet's, which the App Pane adds.
+ * `prefers-color-scheme`, the mapped design tokens and system font stacks, the display mode (`inline` in a card,
+ * `fullscreen` in an App Pane), the container's dimensions (inline: width fixed, height flexible up to `maxHeight`; in a
+ * Pane, both fixed), the locale, the time zone, the platform and the device's capabilities. `safeAreaInsets` is a sheet's:
+ * only an App Pane on a phone gives it.
  */
-export const hostContextOf = (env: HostEnvironment, tool: AppToolInfo): McpUiHostContext => ({
-  toolInfo: {
-    id: tool.callId,
-    tool: {
-      name: tool.name,
-      title: tool.title,
-      // An object schema, whatever the server declared: `type` is what the spec requires of one.
-      inputSchema: { ...tool.inputSchema, type: "object" },
+export const hostContextOf = (
+  env: HostEnvironment,
+  tool: AppToolInfo,
+  display: DisplayContext = { mode: "inline" },
+): McpUiHostContext => {
+  const context: McpUiHostContext = {
+    toolInfo: {
+      id: tool.callId,
+      tool: {
+        name: tool.name,
+        title: tool.title,
+        // An object schema, whatever the server declared: `type` is what the spec requires of one.
+        inputSchema: { ...tool.inputSchema, type: "object" },
+      },
     },
-  },
-  theme: env.dark ? "dark" : "light",
-  styles: { variables: hostStyleVariables(env.readProperty) },
-  displayMode: "inline",
-  availableDisplayModes: ["inline"],
-  containerDimensions: { width: env.width, maxHeight: env.maxHeight },
-  locale: env.locale,
-  timeZone: env.timeZone,
-  userAgent: env.userAgent,
-  platform: env.mobile ? "mobile" : "web",
-  deviceCapabilities: { touch: env.touch, hover: env.hover },
-});
+    theme: env.dark ? "dark" : "light",
+    styles: { variables: hostStyleVariables(env.readProperty) },
+    displayMode: display.mode,
+    availableDisplayModes: [...AVAILABLE_DISPLAY_MODES],
+    containerDimensions:
+      display.mode === "fullscreen" && display.height !== undefined
+        ? { width: env.width, height: display.height }
+        : { width: env.width, maxHeight: env.maxHeight },
+    locale: env.locale,
+    timeZone: env.timeZone,
+    userAgent: env.userAgent,
+    platform: env.mobile ? "mobile" : "web",
+    deviceCapabilities: { touch: env.touch, hover: env.hover },
+  };
+
+  if (display.safeAreaInsets !== undefined) context.safeAreaInsets = display.safeAreaInsets;
+
+  return context;
+};
 
 /**
  * The capabilities cloudpid advertises to a View, and nothing it does not do: the sandbox's CSP (the one the View

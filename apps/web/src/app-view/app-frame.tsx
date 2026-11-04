@@ -9,9 +9,12 @@ import * as DateTime from "effect/DateTime";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { copyToClipboard } from "../lib/clipboard.ts";
+import { cn } from "../lib/utils.ts";
 import { createBridge, retire, type Bridge } from "./bridge.ts";
+import { displayModeHandler, modeOfPlace } from "./display-mode.ts";
 import { declaredCsp, frameUrl } from "./frame-url.ts";
 import {
+  type DisplayMode,
   changedContext,
   hostCapabilities,
   hostContextOf,
@@ -19,8 +22,10 @@ import {
   inlineHeight,
 } from "./host-context.ts";
 import type { AppPage } from "./load.ts";
-import { readEnvironment, scrollerOf } from "./page-environment.ts";
+import { readEnvironment, readSafeAreaInsets, scrollerOf } from "./page-environment.ts";
+import type { AppPlace } from "./places.ts";
 import { auditLog, viewLogSink, viewRequestHandlers, type AppRequestClient } from "./requests.ts";
+import { appViews } from "./teardown.ts";
 
 /** How long a change of the card's size or the page's theme settles before the View is told. */
 const CONTEXT_DEBOUNCE_MS = 150;
@@ -124,20 +129,33 @@ export interface AppFrameProps {
   readonly tool: McpAppTool | undefined;
   /** The server's state as a badge: shown beside the App's name. */
   readonly badge: "offline" | "sign-in" | null;
+  /** Where it is shown: its card, a Subagent Pane or page's thread, or an App Pane (`fullscreen`, filling the Pane). */
+  readonly place?: AppPlace;
+  /** What the owner can do about the View from its header: collapse it, pop it out to an App Pane, or put it back. */
+  readonly controls?: AppControls;
+  /** The View asked for another display mode (`ui/request-display-mode`): its place moves it, tearing it down first. */
+  readonly onRequestMode?: (mode: DisplayMode) => void;
+  /** The View has, or no longer has, the keyboard focus: a View in use is not collapsed for a newer generation. */
+  readonly onFocused?: (focused: boolean) => void;
   /** The Session's client, which serves the View's requests of its server (`requests.ts`); none, and the View is served none. */
   readonly client?: AppRequestClient;
   /** The link that signs in to the call's server (a step-up, for more access), or none while the Environment is unknown. */
   readonly signInHref?: (stepUp: boolean) => string | undefined;
   /**
-   * The card is ending this View (its call was evicted, its server is gone or shadowed, or the owner collapsed it): the frame
-   * stays until its View has been told to tear down and has answered (at most 2 s), then `onClosed` says it may go.
+   * Its place is ending this View (its call was evicted, its server is gone or shadowed, the owner collapsed or moved it):
+   * the frame stays until its View has been told to tear down and has answered (at most 2 s), then `onClosed` says it may go.
    */
   readonly closing?: boolean;
   /** For a call that did not finish: the `tool-cancelled` reason sent before the teardown (the streaming mount's, #496). */
   readonly cancelled?: string;
   readonly onClosed?: () => void;
-  /** The View's frame is in the card: what ends it must wait for its teardown. */
-  readonly onFramed?: () => void;
+}
+
+/** The header's buttons a place adds: each is there only when the place can do it. */
+export interface AppControls {
+  readonly onCollapse?: () => void;
+  readonly onPopOut?: () => void;
+  readonly onBack?: () => void;
 }
 
 const BADGES = { offline: "Server offline", "sign-in": "Needs sign-in" } as const;
@@ -174,12 +192,15 @@ const LiveFrame = ({
   page,
   tool,
   badge,
+  place = "card",
+  controls,
+  onRequestMode,
+  onFocused,
   client,
   signInHref,
   closing = false,
   cancelled,
   onClosed,
-  onFramed,
 }: AppFrameProps) => {
   const frame = useRef<HTMLIFrameElement>(null);
   const bridgeRef = useRef<Bridge | undefined>(undefined);
@@ -198,9 +219,10 @@ const LiveFrame = ({
   const frameKey = `${src}\0${attempt}`;
 
   // The page's latest context, which a bridge reads when it answers `ui/initialize`, read again whenever it is needed.
-  const latest = useRef({ record, tool, csp, client });
+  const latest = useRef({ record, tool, csp, place, onRequestMode, client });
 
-  latest.current = { record, tool, csp, client };
+  latest.current = { record, tool, csp, place, onRequestMode, client };
+  const inPane = place === "app-pane";
 
   useLayoutEffect(() => {
     const element = frame.current;
@@ -213,12 +235,23 @@ const LiveFrame = ({
     const contextNow = () => {
       const now = latest.current;
 
-      return hostContextOf(readEnvironment(element.clientWidth, scroller.clientHeight), {
-        callId: now.record.callId,
-        name: now.record.tool,
-        title: now.tool?.title,
-        inputSchema: now.tool?.inputSchema,
-      });
+      const env = readEnvironment(element.clientWidth, scroller.clientHeight);
+
+      return hostContextOf(
+        env,
+        {
+          callId: now.record.callId,
+          name: now.record.tool,
+          title: now.tool?.title,
+          inputSchema: now.tool?.inputSchema,
+        },
+        {
+          mode: modeOfPlace(now.place),
+          // An App Pane's height is fixed as its width is, and on a phone it is a sheet.
+          height: now.place === "app-pane" ? element.clientHeight : undefined,
+          safeAreaInsets: now.place === "app-pane" && env.mobile ? readSafeAreaInsets() : undefined,
+        },
+      );
     };
 
     let sent = contextNow();
@@ -246,9 +279,9 @@ const LiveFrame = ({
       // Only a frame with a Session's client serves the View's calls, so it is the only one that says it does.
       capabilities: hostCapabilities(csp, latest.current.client !== undefined),
       hostInfo: HOST_INFO,
-      handlers:
-        latest.current.client === undefined
-          ? undefined
+      handlers: {
+        ...(latest.current.client === undefined
+          ? {}
           : viewRequestHandlers(latest.current.client, record.callId, {
               onSignIn: (need) => {
                 setSignIn((was) => ({ stepUp: need.stepUp || was?.stepUp === true }));
@@ -256,7 +289,11 @@ const LiveFrame = ({
               onAudit: (entry) => {
                 setAudited((was) => auditLog(was, [entry]));
               },
-            }),
+            })),
+        "ui/request-display-mode": displayModeHandler(latest.current.place, (mode) => {
+          latest.current.onRequestMode?.(mode);
+        }),
+      },
       logs:
         latest.current.client === undefined
           ? undefined
@@ -312,7 +349,7 @@ const LiveFrame = ({
     // The bridge is the frame's: it is built again for another page, origin, call or Retry, never for a context change.
   }, [frameKey, page.origin, page.html, record.callId]);
 
-  // A card that ends its View keeps the frame until the View has torn down: the frame leaves only when `onClosed` is told.
+  // A place that ends its View keeps the frame until the View has torn down: the frame leaves only when `onClosed` is told.
   // A View that never came up (no bridge) has nothing to tear down.
   const latestClosed = useRef(onClosed);
 
@@ -322,27 +359,61 @@ const LiveFrame = ({
 
   cancelReason.current = cancelled;
 
-  // Once per frame: a frame that has been told to close is dead (its bridge closes with the teardown), and its card makes
-  // a new one, so a second run of this effect (a Strict Mode double run, a `closing` that flips back and on) must not retire
-  // it, or say `onClosed`, again.
-  const retired = useRef(false);
+  // Once per frame: a frame that has been told to close is dead (its bridge closes with the teardown), and its place makes
+  // a new one, so a second ask (a Strict Mode double run, a `closing` that flips back and on, a guard that finds it already
+  // closing) must not retire it, or say `onClosed`, again. It is the same promise.
+  const retiring = useRef<Promise<void> | undefined>(undefined);
+
+  const closeOnce = (restart: boolean): Promise<void> => {
+    retiring.current ??= (
+      bridgeRef.current === undefined
+        ? Promise.resolve()
+        : retire(bridgeRef.current, cancelReason.current)
+    ).then(() => {
+      if (restart) latestClosed.current?.();
+    });
+
+    return retiring.current;
+  };
+
+  const closeRef = useRef(closeOnce);
+
+  closeRef.current = closeOnce;
 
   useEffect(() => {
-    if (!closing || retired.current) return;
-
-    retired.current = true;
-
-    const bridge = bridgeRef.current;
-
-    void (bridge === undefined ? Promise.resolve() : retire(bridge, cancelReason.current)).then(
-      () => {
-        latestClosed.current?.();
-      },
-    );
+    if (closing) void closeRef.current(true);
   }, [closing]);
 
+  // An unmount the page drives (leaving it, a subagent's card closed, a branch switched) removes the frame at once, which
+  // ends its View without a word, so what is about to cause one asks first (`teardown.ts`): it finds this frame here.
+  useEffect(
+    () =>
+      appViews.register({
+        callId: record.callId,
+        element: () => frame.current,
+        retire: (restart) => closeRef.current(restart),
+      }),
+    [record.callId],
+  );
+
+  // Whether the View has the keyboard focus: the window blurs when it moves into the frame, which is then the active element.
+  const latestFocused = useRef(onFocused);
+
+  latestFocused.current = onFocused;
+
   useEffect(() => {
-    onFramed?.();
+    const check = () => {
+      latestFocused.current?.(document.activeElement === frame.current);
+    };
+
+    window.addEventListener("blur", check);
+    window.addEventListener("focus", check);
+
+    return () => {
+      window.removeEventListener("blur", check);
+      window.removeEventListener("focus", check);
+      latestFocused.current?.(false);
+    };
   }, []);
 
   if (failed?.key === frameKey) {
@@ -360,9 +431,17 @@ const LiveFrame = ({
   const height = inlineHeight(reported, scrollerHeight);
   const shownBadge = badge === "sign-in" || signIn !== null ? "sign-in" : badge;
   const signInLink = shownBadge === "sign-in" ? signInHref?.(signIn?.stepUp === true) : undefined;
+  const frameClass = page.meta.prefersBorder === false ? "block w-full" : "block w-full border-t";
 
   return (
-    <div className="my-2 overflow-hidden rounded-md border" data-app-view={record.callId}>
+    <div
+      className={cn(
+        "overflow-hidden rounded-md border",
+        // An App Pane is the View's whole container: both axes are fixed, and it fills the Pane.
+        inPane ? "flex min-h-0 flex-1 flex-col" : "my-2",
+      )}
+      data-app-view={record.callId}
+    >
       <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
         <span className="text-foreground">App</span>
         <span>·</span>
@@ -381,16 +460,19 @@ const LiveFrame = ({
             Sign in
           </a>
         )}
-        <button
-          type="button"
-          className="ml-auto shrink-0 rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
-          aria-expanded={details}
-          onClick={() => {
-            setDetails((open) => !open);
-          }}
-        >
-          Details
-        </button>
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          <AppControlButtons controls={controls} />
+          <button
+            type="button"
+            className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
+            aria-expanded={details}
+            onClick={() => {
+              setDetails((open) => !open);
+            }}
+          >
+            Details
+          </button>
+        </span>
       </div>
       {details && <AppDetails page={page} audit={auditLog(record.audit, audited)} />}
       <iframe
@@ -400,9 +482,42 @@ const LiveFrame = ({
         title={`App: ${tool?.title ?? record.tool} (${record.server})`}
         sandbox="allow-scripts allow-same-origin"
         referrerPolicy="no-referrer"
-        className={page.meta.prefersBorder === false ? "block w-full" : "block w-full border-t"}
-        style={{ height }}
+        className={cn(frameClass, inPane && "min-h-0 flex-1")}
+        style={inPane ? undefined : { height }}
       />
     </div>
   );
 };
+
+/** What the owner can do about a View from its header: collapse it, pop it out, or put it back in the chat. */
+const AppControlButtons = ({ controls }: { controls: AppControls | undefined }) => (
+  <>
+    {controls?.onCollapse !== undefined && (
+      <button
+        type="button"
+        className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
+        onClick={controls.onCollapse}
+      >
+        Collapse
+      </button>
+    )}
+    {controls?.onPopOut !== undefined && (
+      <button
+        type="button"
+        className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
+        onClick={controls.onPopOut}
+      >
+        Pop out
+      </button>
+    )}
+    {controls?.onBack !== undefined && (
+      <button
+        type="button"
+        className="rounded-sm px-1 hover:bg-accent hover:text-accent-foreground"
+        onClick={controls.onBack}
+      >
+        Back to chat
+      </button>
+    )}
+  </>
+);

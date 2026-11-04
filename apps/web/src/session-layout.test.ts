@@ -1,11 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Arr from "effect/Array";
 import {
+  appChoiceOf,
   DEFAULT_LAYOUT,
   disclosureKey,
   layoutOf,
   MAX_LAYOUTS,
   withLayout,
+  withAppChoice,
   withOpen,
   withShown,
   type SessionLayout,
@@ -27,6 +29,8 @@ describe("a Session's layout on this device", () => {
       detailsOpen: true,
       openCards: [3, 4],
       openDisclosures: ["root/tool:call-1"],
+      openApps: ["c1"],
+      collapsedApps: ["c2"],
       treeFilter: "user-only",
     });
 
@@ -109,5 +113,44 @@ describe("the things open in a layout", () => {
     expect(
       disclosureKey({ conversationId: undefined, kind: "thinking", messageId: "4", index: 1 }),
     ).toBe("root/thinking:4:1");
+  });
+});
+
+describe("the App Views the owner reopened or collapsed on this device", () => {
+  it("are kept with the layout, which is per page, so a popped-out View's Pane and a choice are this device's", () => {
+    const kept = layout({
+      panes: { open: ["app:c1"], shown: "app:c1", hidden: false },
+      ...withAppChoice(DEFAULT_LAYOUT, "c1", "open"),
+    });
+
+    const stored = withLayout([], "s", kept);
+
+    expect(layoutOf(stored, "s")).toEqual(kept);
+    expect(layoutOf(stored, "s/agents/agent-1").panes.open).toEqual([]);
+    expect(layoutOf(stored, "s/agents/agent-1").openApps).toEqual([]);
+  });
+
+  it("is a choice of one kind at a time: reopening ends a collapse, and collapsing a reopening", () => {
+    const collapsed = withAppChoice(DEFAULT_LAYOUT, "c1", "collapsed");
+
+    expect(appChoiceOf(collapsed, "c1")).toBe("collapsed");
+
+    const reopened = withAppChoice(collapsed, "c1", "open");
+
+    expect(appChoiceOf(reopened, "c1")).toBe("open");
+    expect(reopened.collapsedApps).toEqual([]);
+    expect(appChoiceOf(withAppChoice(reopened, "c1", "collapsed"), "c1")).toBe("collapsed");
+    expect(appChoiceOf(withAppChoice(reopened, "c1", undefined), "c1")).toBeUndefined();
+    expect(appChoiceOf(DEFAULT_LAYOUT, "c1")).toBeUndefined();
+  });
+
+  it("keep the last ones chosen only", () => {
+    const many = Arr.reduce(Arr.range(1, 130), DEFAULT_LAYOUT, (current, n) => ({
+      ...current,
+      ...withAppChoice(current, `c${n}`, "open"),
+    }));
+
+    expect(many.openApps).toHaveLength(100);
+    expect(many.openApps.at(-1)).toBe("c130");
   });
 });

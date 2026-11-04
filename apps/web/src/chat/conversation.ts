@@ -7,6 +7,7 @@ import { useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { createContext, use } from "react";
+import type { AppPlace } from "../app-view/places.ts";
 import { layoutKey } from "../session-layout.ts";
 import { ROOT_AGENT } from "../session/agents.ts";
 import { type ConversationKey, conversationKey } from "../session/conversation-key.ts";
@@ -59,3 +60,13 @@ export const ThreadConversation = createContext<number | undefined>(undefined);
 
 /** The conversation of the thread this renders in; undefined for the root's. */
 export const useThreadConversation = (): number | undefined => use(ThreadConversation);
+
+/**
+ * Where the thread this renders in shows an App View (docs/architecture/mcp-apps.md → App Views in the transcript): in its
+ * card, or in a Subagent Pane or on a Subagent page, which take the View before a card does. `child-thread.tsx` provides
+ * it; the root's thread is the card's.
+ */
+export const ThreadPlace = createContext<AppPlace>("card");
+
+/** The place a View in this thread's cards is mounted in. */
+export const useThreadPlace = (): AppPlace => use(ThreadPlace);

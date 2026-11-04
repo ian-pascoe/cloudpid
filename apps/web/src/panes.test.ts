@@ -3,12 +3,14 @@
 import { liveViewPaneKey } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
+  appPaneKey,
   applyPaneAction,
   BROWSER_PANE,
   conversationOfSubagentPane,
   NO_PANES,
   paneAreaOf,
   paneKeyOf,
+  paneTypesOf,
   samePaneArea,
   searchWithPaneArea,
   subagentPaneKey,
@@ -23,6 +25,7 @@ import {
 const lookups = (known: Partial<PaneLookups> = {}): PaneLookups => ({
   agentOfHandoff: () => undefined,
   agentOfConversation: () => undefined,
+  serverOfApp: () => undefined,
   ...known,
 });
 
@@ -94,6 +97,25 @@ describe("a Pane key", () => {
     // The root agent's handoff, or one the page does not know (yet): no agent.
     expect(pane?.type.label("call-1", known)).toEqual({ name: "Live View" });
     expect(paneKeyOf("live-view")).toBeUndefined();
+  });
+
+  it("knows an App Pane per App View, keyed by its call, named for its server once the page knows the call", () => {
+    const key = appPaneKey("call_1|fc:2");
+    const pane = paneKeyOf(key);
+
+    // The key splits at its first colon only: a call ID may hold more.
+    expect(key).toBe("app:call_1|fc:2");
+    expect(pane?.argument).toBe("call_1|fc:2");
+    expect(pane?.type.label(pane.argument, lookups())).toEqual({ name: "App" });
+    expect(pane?.type.label(pane.argument, lookups({ serverOfApp: () => "docs" }))).toEqual({
+      name: "App",
+      agent: "docs",
+    });
+    // One per App View, and its call is needed; a Subagent page opens it too.
+    expect(paneKeyOf("app")).toBeUndefined();
+    expect(paneKeyOf("app:")).toBeUndefined();
+    expect(paneKeyOf(key, paneTypesOf(true))?.type.id).toBe("app");
+    expect(paneKeyOf(`app:${"x".repeat(513)}`)).toBeUndefined();
   });
 
   it("knows a Subagent Pane per conversation, named for its agent, or its conversation until the page knows the agent", () => {

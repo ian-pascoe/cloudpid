@@ -33,3 +33,30 @@ export const readEnvironment = (width: number, scrollerHeight: number): HostEnvi
     maxHeight: inlineMaxHeight(scrollerHeight),
   };
 };
+
+/**
+ * The insets the device keeps clear (a notch, the home indicator), in px, as `env(safe-area-inset-*)` resolves them: read
+ * through a probe element, since CSS gives them out only to a property. Zero where the device has none.
+ */
+export const readSafeAreaInsets = () => {
+  const probe = document.createElement("div");
+
+  probe.style.cssText =
+    "position:fixed;visibility:hidden;pointer-events:none;" +
+    "padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)";
+  document.body.append(probe);
+
+  const style = getComputedStyle(probe);
+  const inset = (value: string): number => Number.parseFloat(value) || 0;
+
+  const insets = {
+    top: inset(style.paddingTop),
+    right: inset(style.paddingRight),
+    bottom: inset(style.paddingBottom),
+    left: inset(style.paddingLeft),
+  };
+
+  probe.remove();
+
+  return insets;
+};

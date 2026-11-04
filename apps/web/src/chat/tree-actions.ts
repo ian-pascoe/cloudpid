@@ -4,6 +4,7 @@
 // last sent it, whether the active branch can be left, and the moves and Forks the bar, the Pane, the dialogs and the
 // Slash commands make.
 
+import { afterTeardown } from "../app-view/teardown.ts";
 import type { SessionTree, TreePoint } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -65,9 +66,16 @@ export const useMove = (): ((point: TreePoint) => void) => {
     }
 
     show(null);
-    void navigate({ point }).then((exit) => {
-      show(exitFailure(exit));
-    });
+    // The Views of the thread are torn down first, and those whose calls the branch keeps are mounted again after.
+    afterTeardown(
+      () => {
+        void navigate({ point }).then((exit) => {
+          show(exitFailure(exit));
+        });
+      },
+      undefined,
+      true,
+    );
   };
 };
 
