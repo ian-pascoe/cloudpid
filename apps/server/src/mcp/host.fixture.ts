@@ -134,6 +134,8 @@ export type RecordedSpan = {
   readonly traceId: string;
   readonly spanId: string;
   readonly parentId: string | undefined;
+  /** Whether a tracer exports it: a span the host started unsampled is recorded here and goes nowhere. */
+  readonly sampled: boolean;
   readonly attributes: Readonly<Record<string, string | number | boolean>>;
   readonly events: ReadonlyArray<{
     readonly name: string;
@@ -476,6 +478,9 @@ export class TestMcpHost extends DurableObject {
     }),
   );
 
+  /** The `op` whose requests fail (`failRequests`). */
+  #failing: string | undefined;
+
   readonly #methods = mcpHostMethods(environmentOfMcpHost(this.ctx.id.name), this.#runtime);
 
   /**
@@ -605,6 +610,7 @@ export class TestMcpHost extends DurableObject {
       traceId: span.traceId,
       spanId: span.spanId,
       parentId: Option.getOrUndefined(Option.map(span.parent, (parent) => parent.spanId)),
+      sampled: span.sampled,
       attributes: scalars(Record.fromEntries(span.attributes)),
       events: span.events.map(([name, , attributes]) => ({
         name,
@@ -622,6 +628,10 @@ export class TestMcpHost extends DurableObject {
     input: typeof McpHostRequestInput.Encoded,
     hooks: McpHostRequestHooks,
   ): Promise<McpHostRequestResult> {
+    if (this.#failing !== undefined && input.op === this.#failing) {
+      return Promise.reject(new Error("This Durable Object's code was updated"));
+    }
+
     // What the caller is told, and whether its `untilAborted` fired (resolved or rejected) before the answer was given,
     // are read back by a test: the caller going away after the answer cancels nothing.
     let answered = false;
@@ -646,6 +656,14 @@ export class TestMcpHost extends DurableObject {
 
       return answer;
     });
+  }
+
+  /**
+   * Make `request` of `op` fail as a host that a code update replaced does, its RPC breaking (`HostLost` at the Session),
+   * until `failRequests(undefined)`.
+   */
+  failRequests(op: string | undefined): void {
+    this.#failing = op;
   }
 
   /** The tags of the answers `request` gave its callers, in order. */

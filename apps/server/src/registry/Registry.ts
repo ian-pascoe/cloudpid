@@ -397,6 +397,14 @@ export type RegistryMethods = {
     readonly id: string;
     readonly agents: ReadonlyArray<SessionAgent>;
   }) => Effect.Effect<void>;
+  /**
+   * The Session DO reports how many MCP tasks it follows in the background, at each settle where that changed; an
+   * archived Session's report is kept too. A Session that is not registered is ignored.
+   */
+  readonly setSessionMcpTasks: (input: {
+    readonly id: string;
+    readonly count: number;
+  }) => Effect.Effect<void>;
   /** The owner names a Session: the title is theirs from then on. The Session's record, or null when it is not registered. */
   readonly renameSession: (input: {
     readonly id: string;
@@ -1349,6 +1357,8 @@ export const RegistryLive = Registry.make(
             ),
           setSessionAgents: ({ id, agents }) =>
             Effect.sync(() => store.setSessionAgents(id, agents)),
+          setSessionMcpTasks: ({ id, count }) =>
+            Effect.sync(() => store.setSessionMcpTasks(id, count)),
           renameSession: ({ id, title }) => Effect.sync(() => store.renameSession(id, title)),
           setGeneratedTitle: ({ id, title }) =>
             Effect.sync(() => store.setGeneratedTitle(id, title)),

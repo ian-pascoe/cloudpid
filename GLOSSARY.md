@@ -451,8 +451,8 @@ An MCP server's ask, during a call the agent or the owner made or an MCP task su
 _Avoid_: Approval (that is for an Agent change), Sign-in request (that is the agent's ask for an MCP sign-in), input request, question or form (alone), elicitation (alone, for one request)
 
 **MCP task**:
-Work an MCP server goes on doing after answering the call that started it. The call waits for it as long as the server's MCP server definition lets a request wait, at most ten minutes; if it is still working then, it goes on in the background, and the agent is told when it ends and reads its result then. The owner or the agent can cancel one, which the server may not honour.
-_Avoid_: Task (alone: that is a Todo Item, or pi-durable's work), background job, async call
+Work an MCP server goes on doing after answering the call that started it. The call waits for it as long as the server's MCP server definition lets a request wait, at most ten minutes; if it is still working then, it goes on in the background, and the agent is told when it ends and reads its result then. The owner or the agent can cancel one, which the server may not honour. The agent names one by cloudpid's own handle (`mcp-task-3`), never the server's task id, and a follower in the Session, a pi-durable task of its own, polls it while it goes on in the background.
+_Avoid_: Task (alone: that is a Todo Item, or pi-durable's work), background job, async call, task id (the server's id, which is never shown)
 
 **MCP endpoint**:
 cloudpid's own MCP server, through which a Local agent works with cloudpid as the owner: it lists Environments and Sessions, starts and messages Sessions, waits for their Runs and reads their transcripts. It never asks the Local agent anything and answers nothing that waits for the owner.

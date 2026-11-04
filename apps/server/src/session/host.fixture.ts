@@ -82,10 +82,13 @@ import type {
   WorkspaceChanges,
 } from "@cloudpid/protocol";
 import {
+  addTask,
   emptyMcpExtension,
   type McpHostClientService,
   type McpQuestionsService,
   rememberSampling,
+  McpTasksDoc,
+  type McpTasksTiming,
 } from "@cloudpid/extensions/mcp";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import {
@@ -105,6 +108,7 @@ import {
   LiveDoc,
   ROOT_CONVERSATION_ID,
   type SnapshotEvent,
+  type TaskId,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -144,6 +148,7 @@ import { sessionMcpApps } from "./mcp-apps-store.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
+import { sessionMcpTasks } from "./mcp-tasks.ts";
 import {
   instructionsSettings,
   reloadSessionExtensions,
@@ -728,6 +733,15 @@ export class TestSession extends DurableObject {
     return this.#questions;
   }
 
+  /** The Session's MCP tasks, made once: the MCP tools follow with its options, the runtime provides its layer. */
+  #tasks: ReturnType<typeof sessionMcpTasks> | undefined;
+
+  #mcpTasks(): ReturnType<typeof sessionMcpTasks> {
+    this.#tasks ??= sessionMcpTasks({ storage: this.ctx.storage.kv });
+
+    return this.#tasks;
+  }
+
   /** The Session's MCP questions, for a subclass that builds MCP tools of its own. */
   protected mcpQuestionsService(): McpQuestionsService {
     return this.#mcpQuestions().service;
@@ -818,6 +832,12 @@ export class TestSession extends DurableObject {
 
     const mcp = sessionMcp({
       apps: this.#mcpApps().service,
+      // The times of MCP tasks, shortened by `mcpTaskTiming` for the tests that wait them out: read when a task needs
+      // them, as the test sets them after the Session is built.
+      tasks: Object.defineProperty(this.#mcpTasks().options, "timing", {
+        enumerable: true,
+        get: () => kv.get<McpTasksTiming>("mcp-task-timing"),
+      }),
       questions: this.#mcpQuestions().service,
       sampling: this.#mcpSampling().service,
       signIns: this.#mcpSignIns().service,
@@ -1100,6 +1120,11 @@ export class TestSession extends DurableObject {
                         try: () => this.#reportAgents(agents),
                         catch: (cause) => ReportError.make({ message: String(cause) }),
                       }),
+                    reportMcpTasks: (count) =>
+                      Effect.tryPromise({
+                        try: () => this.#reportMcpTasks(count),
+                        catch: (cause) => ReportError.make({ message: String(cause) }),
+                      }),
                     notify: (event) =>
                       Effect.tryPromise({
                         try: () => this.#notify(event),
@@ -1234,6 +1259,7 @@ export class TestSession extends DurableObject {
           Layer.provideMerge(Layer.merge(this.#mcpQuestions().layer, this.#mcpSampling().layer)),
           Layer.provideMerge(this.#mcpApps().layer),
           Layer.provideMerge(this.#mcpSignIns().layer),
+          Layer.provideMerge(this.#mcpTasks().layer),
           Layer.provideMerge(
             sessionSecretsLayer({
               encryptionKey: SECRETS_KEY,
@@ -2077,6 +2103,59 @@ export class TestSession extends DurableObject {
     );
   }
 
+  /**
+   * Leave an inline MCP task's record whose call is no longer live, as a call that was cut off leaves it (`taskId` is
+   * the server's id for it): what the sweep ends.
+   */
+  leaveOrphanMcpTask(taskId: string): Promise<void> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+
+        yield* callDurable("commit", (context) =>
+          harness.harness.commit(async (tx) => {
+            addTask(await tx.doc(McpTasksDoc), {
+              taskId,
+              server: "docs",
+              tool: "report",
+              modelTool: "mcp__docs__report",
+              conn: "conn-docs",
+              transport: "http",
+              conversation: ROOT_CONVERSATION_ID,
+              agent: "root",
+              callId: "call-gone",
+              // SAFETY: the ID of no task that is live.
+              callTask: 987_654 as TaskId,
+              windowMs: 600_000,
+              createdAt: Date.now(),
+              ttlMs: null,
+              status: "working",
+            });
+          }, context),
+        );
+      }),
+    );
+  }
+
+  /** The Session's MCP task records, by handle: where each stands and who ended it. */
+  mcpTaskRecords(): Promise<Readonly<Record<string, { status: string; by?: string }>>> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+
+        const doc = yield* callDurable("snapshot", (context) =>
+          harness.harness.snapshot(McpTasksDoc, context),
+        );
+
+        return Record.map(doc?.tasks ?? {}, (task) =>
+          task.end === undefined
+            ? { status: task.status }
+            : { status: task.status, by: task.end.by },
+        );
+      }),
+    );
+  }
+
   /** The tasks of the root conversation's Todo List. */
   todoTitles(): Promise<readonly string[]> {
     return this.#runtime.runPromise(
@@ -2244,6 +2323,14 @@ export class TestSession extends DurableObject {
     this.ctx.storage.kv.put("mcp", { environment, servers });
   }
 
+  /**
+   * Shorter times for the MCP tasks of this Session (the window, the polls, the grace of a `-32602`, the backoff and the
+   * wait for an ignored cancel), read when its MCP tools are built: set it before the Session starts, or evict it.
+   */
+  mcpTaskTiming(timing: McpTasksTiming): void {
+    this.ctx.storage.kv.put("mcp-task-timing", timing);
+  }
+
   /** Offer `offered` in the Settings of a Session with MCP tools, and read them again as a settings change does. */
   mcpOffered(offered: ReadonlyArray<string>): Promise<void> {
     this.ctx.storage.kv.put("mcp-global", { tools: { offered } });
@@ -2383,6 +2470,11 @@ export class TestSession extends DurableObject {
     // The runtime builds the service's layer, which binds the Secrets its redaction needs.
     await this.#runtime.runPromise(Effect.void);
     await Effect.runPromise(this.#mcpApps().service.put(draft));
+  }
+
+  /** Stop everything, as Stop all and Archive do: every branch and every subagent, background work included. */
+  stopEverything(): Promise<void> {
+    return Effect.runPromise(this.#host.stopEverything);
   }
 
   /** Stop the root conversation's run, as a client's `abort` does. */
@@ -2821,6 +2913,32 @@ export class TestSession extends DurableObject {
   }
 
   /** The subagents this Session reported to the Registry, oldest first. */
+  /** As `#report`, for the number of MCP tasks the Session follows: recorded for a test to read. */
+  async #reportMcpTasks(count: number): Promise<void> {
+    const { kv } = this.ctx.storage;
+    const mode = kv.get<string>("reportMode");
+
+    if (mode === "failing") throw new Error("Registry is down");
+
+    if (mode === "hanging") await new Promise(() => undefined);
+
+    const registry = kv.get<string>("registry");
+
+    if (registry !== undefined) {
+      await this.env.REGISTRIES.getByName(registry).setSessionMcpTasks(
+        this.ctx.id.name ?? "",
+        count,
+      );
+    }
+
+    kv.put("reportedMcpTasks", [...(kv.get<number[]>("reportedMcpTasks") ?? []), count]);
+  }
+
+  /** The numbers of MCP tasks this Session reported to the Registry, oldest first. */
+  reportedMcpTasks(): ReadonlyArray<number> {
+    return this.ctx.storage.kv.get<number[]>("reportedMcpTasks") ?? [];
+  }
+
   reportedAgents(): ReadonlyArray<ReadonlyArray<SessionAgent>> {
     return this.ctx.storage.kv.get<ReadonlyArray<SessionAgent>[]>("reportedAgents") ?? [];
   }

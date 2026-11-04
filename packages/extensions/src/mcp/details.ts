@@ -16,6 +16,7 @@ import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { storedBytes } from "../stored-bytes.ts";
 import type { McpSamplingGrant } from "./sampling-records.ts";
+import type { McpTaskState } from "./task-state.ts";
 
 /** The hints of a tool's annotations that are booleans, which the card shows as badges; they are untrusted and gate nothing. */
 export const HINTS = [
@@ -118,7 +119,13 @@ export type McpDetails = {
   readonly meta?: { readonly [key: string]: JsonValue };
   readonly full_output_path?: string;
   readonly progress?: McpProgress;
-  readonly error?: "too_large" | "invalid_structured_output";
+  readonly error?:
+    | "too_large"
+    | "invalid_structured_output"
+    | "mcp_task_failed"
+    | "mcp_task_cancelled"
+    | "mcp_task_unknown"
+    | "mcp_task_stopped";
   readonly cut?: "host_lost" | "engine_lost";
   /** The questions the server asked during the call, answered; absent when it asked none. */
   readonly elicitation?: Array<McpElicitationDetail>;
@@ -133,6 +140,16 @@ export type McpDetails = {
   readonly sign_in_request?: string;
   /** The resources the result names or holds, at most `MAX_RESOURCE_REFS`; absent when it has none. */
   readonly resources?: Array<McpResourceRef>;
+  /**
+   * The call ran as an MCP task (`docs/architecture/mcp-server-requests.md` → MCP tasks): its handle, never the server's
+   * id, how it stands (`background` once the call returned and it went on), and how long it ran when it ended.
+   */
+  readonly mcp_task?: {
+    readonly task: string;
+    readonly status: McpTaskState;
+    readonly after_ms?: number;
+    readonly background?: boolean;
+  };
 };
 
 /** How much `meta` the card keeps of a tool's `_meta` (stored); keys past it are left out. */

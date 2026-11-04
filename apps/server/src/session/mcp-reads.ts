@@ -20,8 +20,17 @@ export type FollowState = {
   readonly activeBranch: number;
   /** Whether the Session is being filled as a Fork, Clone or import: it takes no input yet. */
   readonly copying: boolean;
-  /** Whether no task is live and no input is unsettled anywhere in the Session. */
+  /**
+   * Whether no work is live and no input is unsettled anywhere in the Session. A follower of an MCP task is not work: a
+   * conversation that only follows MCP tasks is idle (`docs/architecture/mcp-server-requests.md` → MCP tasks).
+   */
   readonly idle: boolean;
+  /**
+   * Whether a follower of an MCP task of the addressed conversation (the active branch's, by default) is live: only Stop all
+   * (`session_stop` with `subagents`) reaches it. A follower of a branch that is not active is not counted, since Stop all
+   * does not reach it.
+   */
+  readonly following: boolean;
   /** Whether an input of the conversation is queued or being answered. */
   readonly unsettled: boolean;
   /** Whether a task is parked (pi-durable's restart limit): nothing moves until the owner retries it. */

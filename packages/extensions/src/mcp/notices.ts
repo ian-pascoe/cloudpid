@@ -12,7 +12,13 @@
 // earlier notice is reused, a flip back included. The checks of one conversation run one at a time.
 // @effect-diagnostics asyncFunction:off globalDate:off -- plain Promise code over pi-durable's commits.
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId, ContextView, EntryId, Harness } from "@earendil-works/pi-durable";
+import type {
+  ConversationId,
+  ContextView,
+  EntryDraft,
+  EntryId,
+  Harness,
+} from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import {
@@ -57,6 +63,14 @@ export type McpNotices = {
   }) => Promise<ReadonlyArray<McpCheckResult>>;
   /** Every conversation of the Session. */
   readonly conversations: () => Promise<ReadonlyArray<ConversationId>>;
+  /**
+   * Write `entry` to `conversation` as a `write` submission, placed at its next boundary and never starting a Run, once
+   * for its `requestId`: how a task follower leaves a note for an end the owner caused (`./task-follow.ts`).
+   */
+  readonly write?: (
+    conversation: ConversationId,
+    note: { readonly requestId: string; readonly entry: EntryDraft },
+  ) => Promise<void>;
 };
 
 /** How many conversations a check reads at once. */
@@ -225,6 +239,14 @@ export const mcpNotices = (harness: Harness): McpNotices => {
   };
 
   return {
+    write: async (conversation, note) => {
+      const handle = await harness.conversation(conversation, context);
+
+      await handle?.submit(
+        { type: "write", requestId: note.requestId, entry: note.entry },
+        context,
+      );
+    },
     check: async ({ conversations, listing, features }) => {
       // One answer for every conversation checked, asked once: a conversation is read again only if written since.
       const shared = queuedOf();

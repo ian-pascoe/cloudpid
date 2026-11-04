@@ -9,7 +9,7 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off newPromise:off
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { ASK_TOOL, modernServer, rpcMethods } from "@cloudpid/mcp/testing";
+import { ASK_TOOL, modernServer, modernTaskServer, rpcMethods } from "@cloudpid/mcp/testing";
 import type { McpApplySet, McpEngineDiscoverResult } from "@cloudpid/mcp/types";
 import type * as Schema from "effect/Schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -199,5 +199,50 @@ describe("a Session replaced mid-call", () => {
     // Session that could not record it, not lost to a Session that was reset before it came.
     expect(await host.requestAnswers()).toEqual(["Completed"]);
     expect(await host.abortsSeen()).toBe(0);
+  });
+
+  it("cancels at the server the MCP task its call started, which nothing could record, and sends the call once", async () => {
+    const environment = `env-${counter++}`;
+    const name = `mcp-replaced-${environment}`;
+    const host = env.MCP_HOSTS.getByName(`mcp:${environment}`);
+    const server = modernTaskServer();
+    const gate = Promise.withResolvers<void>();
+    let calls = 0;
+
+    // The first `tools/call` waits at the gate, so the code update reaches the Session before the server's task does.
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const body = request.method === "POST" ? await request.clone().text() : "";
+
+      if (body.includes('"tools/call"') && (calls += 1) === 1) await gate.promise;
+
+      return server.handle(request);
+    });
+
+    await host.useRealEngine();
+    await host.apply(SET);
+
+    const stub = env.SESSIONS.getByName(name);
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      instance.mcpEnvironment(environment, 1);
+      instance.script(['call:mcp__docs__report:{"polls":1000}', "done"]);
+      await instance.submit({ requestId: "turn-1", text: "report" });
+    });
+
+    await settles(async () => expect(calls).toBe(1));
+    await runInDurableObject(stub, (instance: TestSession) => instance.replace());
+    gate.resolve();
+
+    // The replaced instance could not store the record, so nothing would follow the task: it was cancelled at the server.
+    await settles(async () => expect(server.tasks.get("task-1")?.status).toBe("cancelled"));
+
+    const results = await afterReplace(name, stub.id.toString());
+
+    expect(rpcMethods(server).filter((method) => method === "tools/call")).toHaveLength(1);
+    expect(rpcMethods(server).filter((method) => method === "tasks/cancel")).toHaveLength(1);
+    expect(results.at(-1)).toMatch(
+      /was interrupted and may have partially run; it was not sent again\./,
+    );
   });
 });

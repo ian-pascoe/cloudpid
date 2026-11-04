@@ -117,6 +117,23 @@ const turnSettled = (stub: DurableObjectStub<TestSubagentSession>, status: strin
       (await instance.subagents())?.agents["agent-1"]?.turns.at(-1)?.status === status,
   );
 
+it("stops the subagents of a branch that is not active when the Session is archived (everything stopped)", async () => {
+  const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
+
+  await delegateQuietly(stub);
+
+  // The tree moves on before the message, leaving the branch the subagent works on behind.
+  await eventually(stub, async (instance) => "active" in (await instance.navigateToStart(false)));
+  expect(
+    (
+      await runInDurableObject(stub, (instance: TestSubagentSession) => instance.subagents())
+    )?.agents["agent-1"]?.turns.at(-1)?.status,
+  ).toBe("running");
+
+  await runInDurableObject(stub, (instance: TestSubagentSession) => instance.stopEverything());
+  await turnSettled(stub, "aborted");
+});
+
 it("lets the owner abort one subagent: its turn ends aborted and the root is left alone", async () => {
   const stub = env.SUBAGENT_SESSIONS.get(env.SUBAGENT_SESSIONS.newUniqueId());
   const child = await delegateQuietly(stub);

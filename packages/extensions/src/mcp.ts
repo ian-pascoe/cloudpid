@@ -40,6 +40,7 @@ import type { ConversationId, Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -50,6 +51,7 @@ import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
 import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
 import { type McpNotices } from "./mcp/notices.ts";
+import { type SweepHarness, sweepTasks } from "./mcp/task-sweep.ts";
 import {
   EMPTY_LISTING,
   introFeaturesOf,
@@ -66,6 +68,7 @@ import {
   MCP_RESEND_FEATURE,
   MCP_RESUME_FEATURE,
   MCP_SAMPLING_FEATURE,
+  MCP_TASKS_FEATURE,
   McpBuildServer,
   mcpExtension,
   mcpNamespaces,
@@ -142,12 +145,31 @@ export {
 
 export { type McpCheckResult, type McpNotices, mcpNotices } from "./mcp/notices.ts";
 
+export { type McpTasksOptions, type McpTasksTiming } from "./mcp/task-port.ts";
+
+export { type McpTaskStorage, MCP_TASK_POOL_BYTES } from "./mcp/task-results.ts";
+
+export { type SweepHarness, sweepTasks, type TaskSweep } from "./mcp/task-sweep.ts";
+
+export {
+  addTask,
+  MCP_TASK_ENDED_KIND,
+  MCP_TASK_FOLLOWER,
+  MCP_TASK_NOTICE_KIND,
+  MCP_TASK_TOOL_NAMES,
+  MCP_TASKS_KIND,
+  McpTasksDoc,
+  type McpTaskRecord,
+  type McpTasksState,
+} from "./mcp/task-state.ts";
+
 export {
   extensionName,
   MCP_CALL_SLACK_MS,
   MCP_RESEND_FEATURE,
   MCP_RESUME_FEATURE,
   MCP_SAMPLING_FEATURE,
+  MCP_TASKS_FEATURE,
   type McpBuild,
   McpBuildServer,
   type McpCallOrigin,
@@ -177,6 +199,7 @@ export const MCP_OPTIONAL_TOOL_FEATURES: ReadonlyArray<string> = [
   MCP_RESUME_FEATURE,
   MCP_RESEND_FEATURE,
   MCP_SAMPLING_FEATURE,
+  MCP_TASKS_FEATURE,
 ];
 
 /** How long a Session's first request waits for servers with no inventory whose tools may be `direct`: 10 s. */
@@ -297,6 +320,11 @@ export type McpToolsService = {
   readonly appHtml: (input: McpAppHtmlInput) => Effect.Effect<McpAppHtmlAnswer>;
   /** Where notices are written: bound by the Session host once its Harness is open, before anything runs. */
   readonly bindNotices: (notices: McpNotices) => void;
+  /**
+   * The sweep at every wake (`docs/architecture/mcp-server-requests.md` → MCP tasks): cancel the inline tasks whose call is
+   * no longer live, and end their records. Never fails: what could not be swept is swept at the next wake.
+   */
+  readonly sweepTasks: (harness: SweepHarness) => Effect.Effect<void>;
   /**
    * Tell `conversation` of the listing as it is if its section was shown another, and finish a broadcast that failed
    * (a request start's check, outside any lock: it never fails, and a failure is logged and tried again by the next).
@@ -478,7 +506,18 @@ export const makeMcpTools = (
     stillShown: (conversation) => check(conversation),
   });
 
-  const sectionOptions: McpToolOptions = { ...options, sections: [section] };
+  // The note an end the owner caused leaves is written through the notices, bound once the Session's Harness is open.
+  const tasks: McpToolOptions["tasks"] =
+    options.tasks === undefined
+      ? undefined
+      : {
+          ...options.tasks,
+          write:
+            options.tasks.write ??
+            ((conversation, note) => notices?.write?.(conversation, note) ?? Promise.resolve()),
+        };
+
+  const sectionOptions: McpToolOptions = { ...options, tasks, sections: [section] };
 
   /** Keep `next`, read as number `read`, unless a later read was kept. */
   const keep = (read: number, next: McpInventory | undefined) => {
@@ -684,6 +723,23 @@ export const makeMcpTools = (
     bindNotices: (next) => {
       notices = next;
     },
+    sweepTasks: (harness) =>
+      options.tasks === undefined
+        ? Effect.void
+        : Effect.flatMap(Clock.currentTimeMillis, (at) =>
+            Effect.tryPromise(() =>
+              sweepTasks({ harness, client, origin: latest?.origin ?? {}, now: () => at }),
+            ),
+          ).pipe(
+            Effect.flatMap((ended) =>
+              ended === 0
+                ? Effect.void
+                : Effect.logInfo(`Ended ${ended} MCP task(s) whose call was gone`),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("The sweep of the MCP tasks failed", cause),
+            ),
+          ),
     notify: (conversation) => Effect.andThen(check(conversation), broadcast),
   };
 };

@@ -61,6 +61,7 @@ import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
+import { sessionMcpTasks } from "./mcp-tasks.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { sessionSettingsMcpAccess } from "./settings-mcp-access.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
@@ -343,6 +344,10 @@ export const SessionLive = Session.make(
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
               : registries.getByName(REGISTRY_NAME).setSessionAgents({ id: name, agents }),
+          reportMcpTasks: (count) =>
+            name === undefined
+              ? ReportError.make({ message: "The Session's name is unknown" })
+              : registries.getByName(REGISTRY_NAME).setSessionMcpTasks({ id: name, count }),
           notify: (event) =>
             name === undefined
               ? ReportError.make({ message: "The Session's name is unknown" })
@@ -635,9 +640,14 @@ export const SessionLive = Session.make(
             }),
         });
 
+        // The MCP tasks the agent's calls started: followed in the background, results kept in this object's storage
+        // (`./mcp-tasks.ts`).
+        const mcpTasks = sessionMcpTasks({ storage: kv });
+
         // The MCP tools of the Session's Environment, from its `McpHost` (`./mcp-host.ts`).
         const mcpTools = sessionMcp({
           apps: mcpApps.service,
+          tasks: mcpTasks.options,
           questions: mcpQuestions.service,
           sampling: mcpSampling.service,
           signIns: mcpSignIns.service,
@@ -1025,7 +1035,8 @@ export const SessionLive = Session.make(
             // The App records, redacted of the same Secrets.
             Layer.provideMerge(mcpApps.layer),
             // The Sign-in requests, which redact the agent's words of the same Secrets.
-            Layer.provideMerge(mcpSignIns.layer),
+            // The MCP tasks, which redact what a server writes of them of the same Secrets.
+            Layer.provideMerge(Layer.merge(mcpSignIns.layer, mcpTasks.layer)),
             Layer.provideMerge(sessionSecrets),
             Layer.provideMerge(sessionChanges),
             Layer.provideMerge(sessionComparisons),

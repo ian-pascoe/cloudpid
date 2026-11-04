@@ -165,6 +165,11 @@ export const SessionRecord = Schema.Struct({
    * that has not reported any since the field was added, which shows none.
    */
   agents: SessionAgent.pipe(Schema.Array, Schema.optionalKey),
+  /**
+   * How many MCP tasks the Session follows in the background, as it last reported them (`mcpTasks`); absent while it
+   * follows none and for a Session that has not reported since the field was added.
+   */
+  mcpTasks: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 
 export type SessionRecord = typeof SessionRecord.Type;
