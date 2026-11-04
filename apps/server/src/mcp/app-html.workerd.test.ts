@@ -1060,8 +1060,9 @@ describe("against a fixture App server", () => {
     for (let at = 0; at < EVICTED; at++) {
       await callApp(host, `big${at}`);
 
-      // The call never waits for its read (`mcp-apps.md` → Declaring and reading Apps), so the page is waited for by its
-      // own row, not by a count of rows: past the bound there are sixteen before the read keeps it and after.
+      // The call never waits for its read (`mcp-apps.md` → Declaring and reading Apps), so the page is waited for by
+      // its own row, not by a count of rows: past the bound there are sixteen rows both before the read keeps the
+      // page and after.
       hashes.push(
         await waitFor(async () => {
           const row = (await host.appUiRows()).find((each) => each.uri === `ui://docs/big${at}`);
@@ -1071,7 +1072,7 @@ describe("against a fixture App server", () => {
           return row.hash;
         }),
       );
-      // The keeping evicted and pruned in the same write.
+      // The keeping's own write evicts and prunes in the same transaction, so the count is final once the row exists.
       expect(await host.appUiRows()).toHaveLength(at + 1 > 16 ? 16 : at + 1);
     }
 
