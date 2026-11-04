@@ -118,6 +118,25 @@ export const decisionOf = (verdict: McpSamplingVerdict, own: string): McpSamplin
     : { action: "allow", role, grant: verdict.grant };
 };
 
+/** The span of a question that ended (`docs/architecture/mcp-server-requests.md` → Telemetry and testing). */
+export const ELICITATION_SPAN = "mcp.elicitation.request";
+
+/**
+ * What the span of a question says of it: the server, the origin (an agent's call, the only one so far), the mode, the
+ * era, how it ended and who decided, how many fields were answered and how long it waited. Never the message, the form,
+ * the address (its origin is in the record, not here) or a value.
+ */
+export const spanOf = (record: McpQuestionRecord) => ({
+  "mcp.server": record.server,
+  "mcp.origin": "agent",
+  "mcp.elicitation.mode": record.mode,
+  "mcp.elicitation.era": record.era ?? eraDefault(record.mode === "url"),
+  "mcp.elicitation.action": record.action,
+  "mcp.elicitation.by": record.by,
+  "mcp.elicitation.fields": record.fields.length,
+  "mcp.elicitation.wait_ms": Math.max(0, record.settledAt - record.askedAt),
+});
+
 const SETTLED_KEY = "mcp-question:settled";
 const settledKey = (id: string) => `mcp-question:s:${id}`;
 
@@ -357,6 +376,31 @@ const stringsOf = (content: ElicitationContent): ReadonlyArray<readonly [string,
   return found;
 };
 
+/**
+ * The IDs a call's records are found under: the call's own, and for a `codemode` script's nested call
+ * (`<parent call>/<key>`, pi-durable's) every call it is nested in, which is the result an export or a Fork finds it by.
+ */
+export const callKeysOf = (callId: string): ReadonlyArray<string> => {
+  const keys = [callId];
+
+  for (let at = callId.indexOf("/"); at > 0; at = callId.indexOf("/", at + 1)) {
+    keys.push(callId.slice(0, at));
+  }
+
+  return keys;
+};
+
+/** What a Session does with the question records of a Fork or Clone (`ExportPage.questions`): which are its calls', and keeping them. */
+export type McpQuestionCopies = {
+  /** The settled records of the calls whose result entry is among `callIds`, and of the calls nested in them. */
+  readonly copiesFor: (callIds: ReadonlyArray<string>) => ReadonlyArray<McpQuestionRecord>;
+  /** Keep the records a Fork or Clone's source sent, as the calls of conversation `conversationId`; the bound of the newest 100 applies. */
+  readonly adopt: (
+    records: ReadonlyArray<McpQuestionRecord>,
+    conversationId: McpQuestionRecord["conversationId"],
+  ) => void;
+};
+
 export type McpQuestionBasicsOptions = {
   readonly storage: McpQuestionStorage;
   /** `value` with every Secret the Session holds replaced by its reference: all the owner is shown, and all a record keeps. */
@@ -415,15 +459,43 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     Schema.encodeEffect(RecordText)(record).pipe(
       Effect.flatMap((text) => Effect.try(() => keepNow(record, text))),
       Effect.catch((cause) => Effect.logWarning("Could not keep an MCP question's record", cause)),
+      // One span per question that ended, whatever the storage did with its record (`docs/architecture/
+      // mcp-server-requests.md` → Telemetry and testing): what it asked and how it ended, never its content.
+      Effect.andThen(
+        Effect.void.pipe(Effect.withSpan(ELICITATION_SPAN, { attributes: spanOf(record) })),
+      ),
     );
 
-  const records = Effect.sync(() =>
+  const settled = (): ReadonlyArray<McpQuestionRecord> =>
     Arr.filterMap(storage.get<string[]>(SETTLED_KEY) ?? [], (id) => {
       const record = storage.get<McpQuestionRecord>(settledKey(id));
 
       return record === undefined ? Result.failVoid : Result.succeed(record);
-    }),
-  );
+    });
+
+  const records = Effect.sync(settled);
+
+  const copiesFor: McpQuestionCopies["copiesFor"] = (callIds) => {
+    if (callIds.length === 0) return [];
+
+    const wanted = new Set(callIds);
+
+    return Arr.filter(settled(), (record) =>
+      Arr.some(callKeysOf(record.callId), (key) => wanted.has(key)),
+    );
+  };
+
+  const adopt: McpQuestionCopies["adopt"] = (copied, conversationId) => {
+    for (const each of copied) {
+      const record: McpQuestionRecord = { ...each, conversationId };
+
+      try {
+        keepNow(record, JSON.stringify(record));
+      } catch {
+        // A storage that cannot take a record loses that record, never the Fork.
+      }
+    }
+  };
 
   const callOf = (callId: string): McpCallState => {
     const held = calls.get(callId) ?? {
@@ -728,6 +800,8 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
     calls,
     keep,
     records,
+    copiesFor,
+    adopt,
     callOf,
     pagesOf,
     openedPages,

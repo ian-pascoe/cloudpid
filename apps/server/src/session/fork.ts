@@ -5,6 +5,7 @@
 // appends them to its root conversation, renumbered, then takes the documents a fork carries (Notes, the Todo List) and
 // the agent as of the point.
 import type { ContextState } from "@cloudpid/extensions/context";
+import type { McpQuestionRecord } from "@cloudpid/extensions/mcp";
 import type { TodoState } from "@cloudpid/extensions/todo";
 import type {
   AttachedResource,
@@ -77,12 +78,14 @@ export type ExportRequest = {
 /**
  * One page of the entries a Fork copies, oldest first, and the entry the next page starts after (null: the last), and the
  * App records (and stubs) of the calls those entries hold the results of (`apps`; absent when there are none, or from a
- * Session before App records: a page only ever gains).
+ * Session before App records: a page only ever gains), and likewise the settled question records of those calls
+ * (`questions`, never a value).
  */
 export type ExportPage = {
   readonly entries: ReadonlyArray<EntryRecord>;
   readonly next: number | null;
   readonly apps?: ReadonlyArray<McpAppCopy>;
+  readonly questions?: ReadonlyArray<McpQuestionRecord>;
 };
 
 /** The IDs of the tool calls whose results `entry` holds: the calls it copies, and the `codemode` calls that nested ones belong to. */
@@ -93,6 +96,9 @@ export const toolResultIds = (entry: EntryRecord): ReadonlyArray<string> =>
 
 /** What a copy of the entries carries of each: the App records of the calls whose results it holds (`McpAppsService.copiesFor`). */
 export type AppCopier = (entry: EntryRecord) => ReadonlyArray<McpAppCopy>;
+
+/** What a copy of the entries carries of each besides: the settled question records of the calls whose results it holds. */
+export type QuestionCopier = (entry: EntryRecord) => ReadonlyArray<McpQuestionRecord>;
 
 /** What a record is left as when it does not fit a page: its stub (who the call was, and its time). */
 const stubOfCopy = (copy: McpAppCopy): McpAppCopy => {
@@ -143,9 +149,11 @@ export const exportPage = (
   entries: ReadonlyArray<EntryRecord>,
   more: boolean,
   appsOf?: AppCopier,
+  questionsOf?: QuestionCopier,
 ): ExportPage => {
   const kept: EntryRecord[] = [];
   const apps: McpAppCopy[] = [];
+  const questions: McpQuestionRecord[] = [];
   let size = 0;
 
   for (const entry of entries) {
@@ -154,19 +162,32 @@ export const exportPage = (
     const copies =
       appsOf === undefined ? [] : fitCopies(appsOf(entry), Math.max(0, MAX_COPY_PAGE_SIZE - own));
 
-    const length = own + Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length);
+    // A settled record is at most 64 KiB and the Session keeps 100, so the records of a page fit beside its entries.
+    const asked = questionsOf === undefined ? [] : questionsOf(entry);
+
+    const length =
+      own +
+      Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length) +
+      Arr.reduce(asked, 0, (sum, record) => sum + JSON.stringify(record).length);
 
     if (kept.length > 0 && size + length > MAX_COPY_PAGE_SIZE) break;
 
     kept.push(entry);
     apps.push(...copies);
+    questions.push(...asked);
     size += length;
   }
 
   const last = kept.at(-1);
   const next = last === undefined || (!more && kept.length === entries.length) ? null : last.id;
 
-  return apps.length === 0 ? { entries: kept, next } : { entries: kept, next, apps };
+  const page: Mutable<ExportPage> = { entries: kept, next };
+
+  if (apps.length > 0) page.apps = apps;
+
+  if (questions.length > 0) page.questions = questions;
+
+  return page;
 };
 
 /** The source Session's side of filling a Fork or Clone. */
@@ -180,6 +201,7 @@ export type FillTarget<E, R> = {
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
+    questions?: ReadonlyArray<McpQuestionRecord>,
   ) => Effect.Effect<void, E, R>;
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, E, R>;
 };
@@ -206,7 +228,7 @@ export const fillSession = <E, R>(
           after,
         });
 
-        yield* target.importEntries(page.entries, page.apps);
+        yield* target.importEntries(page.entries, page.apps, page.questions);
         after = page.next;
       } while (after !== null);
     }

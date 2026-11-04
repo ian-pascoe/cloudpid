@@ -16,7 +16,7 @@ import { DeployCredentials, Environments } from "@cloudpid/extensions/environmen
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { InstructionsSettings } from "@cloudpid/extensions/instructions";
-import { rememberSampling } from "@cloudpid/extensions/mcp";
+import { type McpQuestionRecord, rememberSampling } from "@cloudpid/extensions/mcp";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
 import { scrubbingModels, Secrets } from "@cloudpid/extensions/secrets";
 import { SettingsAccess } from "@cloudpid/extensions/settings";
@@ -59,6 +59,7 @@ import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
+import { sessionMcpRecords } from "./mcp-records.ts";
 import { sessionMcpSampling } from "./mcp-sampling.ts";
 import { sessionMcpSignIns } from "./mcp-sign-ins.ts";
 import { sessionMcpTasks } from "./mcp-tasks.ts";
@@ -201,6 +202,7 @@ export type SessionMethods = {
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
+    questions?: ReadonlyArray<McpQuestionRecord>,
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents a Fork or Clone carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
@@ -1023,6 +1025,10 @@ export const SessionLive = Session.make(
                 appContexts: mcpApps.service.contexts,
                 // The Resource watches of a branch the Session moved off are ended at the hosts, and its pending App contexts dropped.
                 onBranchLeft: leaveConversation(mcpWatches.service, mcpApps.service.contexts),
+                records: sessionMcpRecords({
+                  questions: mcpQuestions.service,
+                  sampling: mcpSampling.service,
+                }),
                 env: workspace.env,
                 // The composer's catalog and `@` menu do not wait for the Session's Workspace to be readied.
                 lookupEnv: workspace.lookupEnv,
@@ -1153,8 +1159,8 @@ export const SessionLive = Session.make(
           forkSource: (request) => invoked("session.fork.source", host.forkSource(request)),
           exportEntries: (request) => invoked("session.fork.export", host.exportEntries(request)),
           importStart: () => invoked("session.fork.start", host.importStart),
-          importEntries: (entries, apps) =>
-            invoked("session.fork.import", host.importEntries(entries, apps)),
+          importEntries: (entries, apps, questions) =>
+            invoked("session.fork.import", host.importEntries(entries, apps, questions)),
           importFinish: (plan) =>
             invoked(
               "session.fork.finish",

@@ -235,6 +235,54 @@ describe("exportMarkdown of an App", () => {
   });
 });
 
+describe("exportMarkdown of the questions an MCP call asked", () => {
+  it("puts a line for each under the result of its call, and none under another's", () => {
+    const result = (id: number, callId: string) =>
+      entry({
+        id,
+        kind: "pi.tool",
+        model: [
+          {
+            role: "toolResult",
+            toolCallId: callId,
+            toolName: "mcp__docs__ask",
+            content: [{ type: "text", text: "done" }],
+            isError: false,
+            timestamp: id,
+          },
+        ],
+      });
+
+    const markdown = exportMarkdown(
+      1,
+      [result(1, "c1"), result(2, "c2")],
+      "2026-01-02T00:00:00.000Z",
+      {
+        mcpLines: new Map([
+          [
+            "c1",
+            [
+              "Elicitation: docs · form · submitted (name, email)",
+              "Sampling: docs · large · 1,204 tokens · $0.02",
+            ],
+          ],
+        ]),
+      },
+    );
+
+    expect(markdown).toBe(
+      [
+        "# Conversation 1",
+        "_Exported 2026-01-02T00:00:00.000Z_",
+        "**Tool result** `mcp__docs__ask`\n\n```\ndone\n```",
+        "Elicitation: docs · form · submitted (name, email)",
+        "Sampling: docs · large · 1,204 tokens · $0.02",
+        "**Tool result** `mcp__docs__ask`\n\n```\ndone\n```",
+      ].join("\n\n") + "\n",
+    );
+  });
+});
+
 describe("exportMarkdown of an MCP prompt", () => {
   it("writes what the owner typed, the prompt with its arguments, the block it got as a quote, and its resources by URI", () => {
     const block =

@@ -4,7 +4,13 @@
 // the rest. The main Worker drives both (`fillSession`). What is copied, in plain functions, is `fork.ts`'s.
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { TodoDoc } from "@cloudpid/extensions/todo";
-import type { AttachedResource, McpAppCopies, McpAppCopy, McpPromptData } from "@cloudpid/protocol";
+import type { McpQuestionCopies, McpQuestionRecord } from "@cloudpid/extensions/mcp";
+import type {
+  AttachedResource,
+  McpAppCopies,
+  McpAppCopy,
+  McpPromptData,
+} from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AgentDoc,
@@ -128,6 +134,8 @@ export type ForksOptions = {
   readonly picked: () => AgentPick;
   /** The Session's App records: a Fork or Clone carries those of the calls it copies (`McpAppsService`). */
   readonly apps?: McpAppCopies | undefined;
+  /** The Session's settled question records: a Fork or Clone carries those of the calls it copies (`McpQuestionsService.copies`). */
+  readonly questions?: McpQuestionCopies | undefined;
   /** Runs `effect` in turn with the owner's messages, so none is admitted between a check and what follows it. */
   readonly inArrivalOrder: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 };
@@ -281,13 +289,16 @@ export const sessionForks = (options: ForksOptions) => {
         );
       }),
       Effect.map((page) => {
-        const { apps } = options;
+        const { apps, questions } = options;
 
         // The records of the calls whose results the page holds go with it, so no page is larger than the RPC allows.
         return exportPage(
           page.items,
           page.next !== undefined,
           apps === undefined ? undefined : (entry) => apps.copiesFor(toolResultIds(entry)),
+          questions === undefined
+            ? undefined
+            : (entry) => questions.copiesFor(toolResultIds(entry)),
         );
       }),
     );
@@ -301,7 +312,11 @@ export const sessionForks = (options: ForksOptions) => {
    * Append a page of the source's entries to the root conversation, renumbered, and keep the App records it carries (a
    * source from before App records sends none) as the root conversation's.
    */
-  const importEntries = (entries: ReadonlyArray<EntryRecord>, apps?: ReadonlyArray<McpAppCopy>) =>
+  const importEntries = (
+    entries: ReadonlyArray<EntryRecord>,
+    apps?: ReadonlyArray<McpAppCopy>,
+    questions?: ReadonlyArray<McpQuestionRecord>,
+  ) =>
     Effect.gen(function* () {
       const filling = kv.get<Filling | null>(FILL_KEY) ?? null;
 
@@ -325,6 +340,11 @@ export const sessionForks = (options: ForksOptions) => {
 
       if (apps !== undefined && apps.length > 0) {
         yield* Effect.sync(() => options.apps?.adopt(apps, ROOT_CONVERSATION_ID));
+      }
+
+      // A source from before question records sends none.
+      if (questions !== undefined && questions.length > 0) {
+        yield* Effect.sync(() => options.questions?.adopt(questions, ROOT_CONVERSATION_ID));
       }
 
       kv.put(FILL_KEY, {

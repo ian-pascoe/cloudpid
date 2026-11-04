@@ -13,8 +13,8 @@
 // - **One record per question** in the Session's storage (an implementation word): `mcp-question:waiting` lists the
 //   questions waiting (small: who asks, which call, when), and each question that ended leaves a settled record
 //   (`question-records.ts`) with the message and form the owner was shown (redacted of held Secrets). The full request
-//   is in memory only. Nothing reads the records yet: the call card and `/export` lines that will (#569) are their
-//   reader.
+//   is in memory only. `/export`, a Fork or Clone and the question's span read the records (`export-lines.ts`,
+//   `copies`; #569).
 // - **The notification** is told of the first question a call waits on, and of a later one only after 2 min with none
 //   waiting for that call.
 import { MCP_ELICITATION_WAIT_MS, type McpEra } from "@cloudpid/mcp/types";
@@ -35,6 +35,7 @@ import {
   MCP_RUN_STOPPED_REASON,
   type McpQuestionAnswer,
   type McpQuestionAsk,
+  type McpQuestionCopies,
   type McpQuestionOutcome,
   type McpQuestionRecord,
   McpQuestionsError,
@@ -99,6 +100,8 @@ export {
   type McpQuestionAnswer,
   type McpPageRef,
   type McpQuestionAsk,
+  type McpQuestionCopies,
+  callKeysOf,
   type McpQuestionOutcome,
   type McpQuestionRecord,
   type McpQuestionStorage,
@@ -173,6 +176,8 @@ export type McpQuestionsService = {
   readonly expireStale: Effect.Effect<void>;
   /** The settled records, newest last. */
   readonly records: Effect.Effect<ReadonlyArray<McpQuestionRecord>>;
+  /** What a Fork or Clone carries of the settled records, and keeps of the ones it was sent. */
+  readonly copies: McpQuestionCopies;
   /**
    * Show the owner a Sampling request the sampler checked and wait for their decision, from any client (the first answer
    * wins). It ends with the owner's allow or refusal, or a refusal of cloudpid's own: the 10 min bound, the call's end
@@ -719,9 +724,26 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       },
     });
 
+  // The servers whose unseen declines were logged: once per server for as long as this instance lives.
+  const warned = new Set<string>();
+
+  /** A `warning` log, once per server, that cloudpid declined or cancelled a request of it unseen. Names no value. */
+  const warnOnce = (server: string, action: "decline" | "cancel") =>
+    Effect.suspend(() => {
+      if (warned.has(server)) return Effect.void;
+
+      warned.add(server);
+
+      return Effect.logWarning(
+        `cloudpid ${action === "decline" ? "declined" : "cancelled"} a request for input from MCP server ${server} unseen; later ones are recorded, not logged`,
+      );
+    });
+
   const unseen: McpQuestionsService["unseen"] = (form) =>
     Effect.gen(function* () {
       const sequence = yield* basics.count(form);
+
+      yield* warnOnce(form.server, form.action);
 
       if (sequence === undefined) return "capped" as const;
 
@@ -832,5 +854,6 @@ export const createMcpQuestions = (options: McpQuestionsOptions): McpQuestionsSe
       yield* tell;
     }),
     records: basics.records,
+    copies: { copiesFor: basics.copiesFor, adopt: basics.adopt },
   } satisfies McpQuestionsService;
 };

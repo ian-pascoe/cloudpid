@@ -174,6 +174,7 @@ export {
   McpQuestions,
   McpQuestionsError,
   type McpQuestionAsk,
+  type McpQuestionCopies,
   type McpQuestionOutcome,
   type McpQuestionRecord,
   type McpQuestionsOptions,
@@ -183,6 +184,8 @@ export {
 } from "./mcp/questions.ts";
 
 export { rememberSampling, SAMPLING_WRITE_TOOL } from "./mcp/sampling-write.ts";
+
+export { exportLinesOf } from "./mcp/export-lines.ts";
 
 export {
   createMcpSampling,

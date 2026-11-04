@@ -116,6 +116,12 @@ const promptMarkdown = (prompt: NonNullable<TranscriptMessage["mcpPrompt"]>): st
   ];
 };
 
+/**
+ * What an export says of the questions the MCP calls asked, by the ID of the call whose result it follows
+ * (`exportLinesOf`): "Elicitation: docs · form · submitted (name)", "Sampling: docs · Smart · 1,204 tokens · $0.02".
+ */
+export type McpExportLines = ReadonlyMap<string, ReadonlyArray<string>>;
+
 /** What an export says of the App messages an owner's message sent: each text as a blockquote, from the App it came from. */
 const appMarkdown = (app: NonNullable<TranscriptMessage["app"]>): string[] =>
   app.map(({ server, text }) => `Sent from ${fromApp(server)}:\n\n${quoted(text)}`);
@@ -170,6 +176,8 @@ const contextStanding = ({ context, here }: ExportedAppContext): string => {
 /** What an export reads beside the entries: the App contexts the Session holds, by call. */
 export type ExportOptions = {
   readonly appContext?: ((callId: string) => ExportedAppContext | undefined) | undefined;
+  /** The questions the calls asked, by call (`McpExportLines`): a line for each follows its call's result. */
+  readonly mcpLines?: McpExportLines | undefined;
 };
 
 /** One message of the History as Markdown. */
@@ -224,6 +232,8 @@ const messageMarkdown = (
                 ...(isAppResult(part.details)
                   ? appCallMarkdown(part, options.appContext?.(part.id))
                   : []),
+                // The questions the call asked, kept outside the History, as one line each.
+                ...(options.mcpLines?.get(part.id) ?? []),
               ]
             : [],
         )
