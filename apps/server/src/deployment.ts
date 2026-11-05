@@ -138,10 +138,9 @@ export const checkedAppOrigin = (served: {
  * for a stage whose label is refused, `prod` aside.
  *
  * This is the Worker's own, owner-only application, and it stays that: the MCP endpoint has an application of its own
- * (`mcp-access.ts`), with `public` destination `<host>/mcp` on every deployed stage, managed OAuth, the owner's Allow and
- * Service Auth for the Local agent's service token. Its `aud` and the token's client ID are the Worker's vars
- * `CLOUDPID_MCP_ACCESS_AUD` and `MCP_SERVICE_TOKEN_CLIENT_ID`; `alchemy dev` declares neither. A third application, the
- * Bypass of ADR-0035 (`bypass-access.ts`), has two `public` destinations, `<host>/oauth/mcp/client.json` and
+ * (`mcp-access.ts`), with `public` destination `<host>/mcp` on every deployed stage, managed OAuth and the owner's Allow
+ * alone. Its `aud` is the Worker's var `CLOUDPID_MCP_ACCESS_AUD`; `alchemy dev` declares neither the application nor the
+ * var. A third application, the Bypass of ADR-0035 (`bypass-access.ts`), has two `public` destinations, `<host>/oauth/mcp/client.json` and
  * `<host>/oauth/mcp/callback`, and one Bypass/Everyone policy; it too is declared only while the Worker is live. The Worker
  * refuses every other form of those two paths itself (`sign-in-routes.ts`).
  *

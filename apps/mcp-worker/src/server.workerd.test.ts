@@ -146,7 +146,7 @@ class FakeApi extends RpcTarget {
   }
 
   get auth() {
-    return "service_token" as const;
+    return "oauth" as const;
   }
 }
 
