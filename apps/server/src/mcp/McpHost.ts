@@ -8,7 +8,8 @@
 // `tools/call` (`request`), and the host's access tokens (`ask` of the Registry, kept in memory, and the reports of what
 // a server answered: `McpRegistryPort`'s `accessToken` and `reportAuth` below), over one `ManagedRuntime` kept for the
 // object's life. The other `request` ops and the rest of `apply` come with their slices; an `apply` kind or `op` this
-// build does not know fails as `HostUnsupported`.
+// build does not know fails as `HostUnsupported`. Its `alarm` only holds it in memory while a discovery is in flight
+// (`keep-alive.ts`): it is armed by nothing else, and starts nothing.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import {
@@ -29,7 +30,7 @@ import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { workersTracing } from "../tracing.ts";
 import { mcpEngineClient } from "./engine.ts";
 import {
-  type McpHostMethods,
+  type McpHostObject,
   mcpHostLayer,
   mcpHostMethods,
   type McpRegistryPortService,
@@ -39,7 +40,7 @@ import { environmentOfMcpHost } from "./name.ts";
 import { openMcpHostStore } from "./store.ts";
 
 /** One Environment's MCP host. The class name is the Durable Object class name in every stage's migrations. */
-export class McpHost extends Cloudflare.DurableObject<McpHost, McpHostMethods>()("McpHost") {}
+export class McpHost extends Cloudflare.DurableObject<McpHost, McpHostObject>()("McpHost") {}
 
 const decodeAnswer = Schema.decodeUnknownEffect(McpServerSetAnswer);
 
@@ -124,11 +125,12 @@ export const McpHostLive = McpHost.make(
             // SAFETY: the Server Worker binds `McpWorker`'s `McpEngine` entrypoint as `MCP_ENGINE` (`worker.ts`), whose
             // stub answers `McpEngineMethods`.
             engine: mcpEngineClient(worker[MCP_ENGINE_BINDING] as McpEngineMethods),
+            alarm: state.raw.storage,
             references: Layer.succeed(Tracer.Tracer, telemetry.tracer),
           }),
         );
 
-        return mcpHostMethods(environment, runtime) satisfies McpHostMethods;
+        return mcpHostMethods(environment, runtime) satisfies McpHostObject;
       }),
     ),
   ),
