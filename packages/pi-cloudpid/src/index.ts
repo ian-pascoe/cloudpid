@@ -1,9 +1,11 @@
 // @effect-diagnostics asyncFunction:off nodeBuiltinImport:off -- plain Promises, as pi's extension API and child processes give them; runs on node, on the owner's machine.
 /**
- * `/cloudpid import|login|logout` (docs/architecture/mcp-endpoint.md → Session import → The `/cloudpid` command). Dev
- * loop: `pi -e packages/pi-cloudpid/src/index.ts`. It registers a command and nothing else: no tool, no MCP server (the
- * model-facing `cloudpid` entry is the owner's own `mcp.json`; see README.md). The endpoint is read from pi's settings
- * on every run, so nothing is cached between runs.
+ * `/cloudpid import|login|logout` and the `cloudpid` MCP server (docs/architecture/mcp-endpoint.md → Session import →
+ * The `/cloudpid` command). Dev loop: `pi -e packages/pi-cloudpid/src/index.ts`. It registers a command, and on every
+ * `session_start` the MCP server for the model's connection (`mcp-server.ts`); no tool. The endpoint is read from pi's
+ * settings on every run and every session start, so nothing is cached between them. The settings can only be read with
+ * a session's `cwd` and project trust, which the load does not have and `session_start` does (it fires after pi bound
+ * the extension, so a registration made there connects at once: `mcp_servers_change`).
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -11,16 +13,18 @@ import {
   CONFIG_DIR_NAME,
   type ExtensionAPI,
   type ExtensionCommandContext,
+  type ExtensionContext,
   getAgentDir,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { fileAuthStore } from "./auth-store.ts";
 import { completionsFor, parseCommand } from "./command.ts";
-import { clientName, readConfig, type SettingsSource } from "./config.ts";
+import { clientName, type Config, readConfig, type SettingsSource } from "./config.ts";
 import { connectEndpoint } from "./endpoint.ts";
 import { ApiFailure, Refusal } from "./errors.ts";
 import type { Host } from "./flow.ts";
 import { gitIn } from "./git.ts";
+import { mcpRegistration } from "./mcp-server.ts";
 import { runCommand, type RunDeps } from "./run.ts";
 import { snapshotOf } from "./session.ts";
 import { openInBrowser, signIn } from "./signin.ts";
@@ -37,10 +41,13 @@ const hostOf = (pi: ExtensionAPI, ctx: ExtensionCommandContext): Host => ({
 });
 
 /**
- * pi's settings as of now. The command context has no settings manager, so this reads the two files with pi's own
- * (`SettingsManager.create`, which honours the trust of this project and `PI_CODING_AGENT_DIR`) on each run.
+ * pi's settings as of now. Neither the command context nor the `session_start` one has a settings manager, so this
+ * reads the two files with pi's own (`SettingsManager.create`, which honours the trust of this project and
+ * `PI_CODING_AGENT_DIR`) on each run.
  */
-const settingsOf = (ctx: ExtensionCommandContext): SettingsSource => {
+const settingsOf = (
+  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "sessionManager">,
+): SettingsSource => {
   const agentDir = getAgentDir();
 
   return {
@@ -92,7 +99,25 @@ export const messageOf = (error: Error): string => {
   return `cloudpid: the import failed: ${error.message}`;
 };
 
+/** The endpoint from pi's settings, or none when they do not give one: unset and invalid both mean no server. */
+const configOf = (ctx: ExtensionContext): Config | undefined => {
+  try {
+    return readConfig(settingsOf(ctx));
+  } catch (error) {
+    if (error instanceof Refusal) return undefined;
+
+    throw error;
+  }
+};
+
 export default function (pi: ExtensionAPI): void {
+  const syncServer = mcpRegistration(pi);
+
+  // Registrations are not saved, and a session switch or `/reload` runs this again, with the settings of its cwd.
+  pi.on("session_start", (_event, ctx) => {
+    syncServer(configOf(ctx), (message) => ctx.ui.notify(message, "warning"));
+  });
+
   pi.registerCommand("cloudpid", {
     description:
       "cloudpid: import [instruction] imports this pi session into cloudpid; login and logout manage the sign-in",

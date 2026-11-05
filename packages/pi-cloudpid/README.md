@@ -22,18 +22,9 @@ The design is [`docs/architecture/mcp-endpoint.md`](https://github.com/ian-pasco
 
 3. **Sign in.** `/cloudpid login` opens your browser to cloudpid's sign-in (Cloudflare Access, as the owner) and catches the redirect on a loopback port. Over SSH, or anywhere the browser cannot reach that port, paste the URL it ends up at into the prompt pi shows. The sign-in is kept in `~/.pi/agent/cloudpid-auth.json` (mode 0600, one entry per endpoint, so a project pointed at a preview stage has its own), refreshed before it expires and whenever the endpoint refuses it. `/cloudpid logout` deletes the sign-in of the configured endpoint. `/cloudpid import` offers to sign in when there is none, or when it has ended (a grant lasts 14 days). Both `import` and `login` need pi's interactive mode (`import` refuses without it, even with a stored sign-in; `login` opens a browser or asks you to paste), so sign in from interactive pi.
 
-4. **Optional: let the model use cloudpid too.** `/cloudpid` registers no MCP server. The model-facing entry is your own, in `~/.pi/agent/mcp.json` (sign in with `/mcp`; Access's managed OAuth, separate from `/cloudpid login`), and it should hide the import tools, which are for `/cloudpid` and never for a model:
+4. **Optional: let the model use cloudpid too.** Nothing to write: the extension registers a `cloudpid` MCP server with pi from the same `cloudpid.baseUrl` each time a pi session starts (so also after `/new`, `/resume` and `/reload`), with the import tools hidden, since they are for `/cloudpid` and never for a model. Sign in with pi's `/mcp` (select `cloudpid`, then Sign in; Access's managed OAuth, kept in pi's `mcp-auth.json`), and its tools reach the model as `mcp__cloudpid__*`. With the setting unset or invalid, nothing is registered and nothing is shown (a server registered earlier is unregistered when a later session, in another project, resolves no URL). A change to `cloudpid.baseUrl` reaches the model's connection at the next session start or `/reload`; `/cloudpid` reads it on every run. If `~/.pi/agent/mcp.json` already has a `cloudpid` entry, that one wins (`/mcp` shows the override), and you can delete it. If another extension has registered the name `cloudpid`, pi refuses the registration and the extension shows one warning. Needs a pi that has `pi.registerMcpServer` (1.4 and later).
 
-   ```json
-   {
-     "mcpServers": {
-       "cloudpid": {
-         "url": "https://<host>/mcp",
-         "toolExposure": { "session_import_*": "hidden" }
-       }
-     }
-   }
-   ```
+   **Why two sign-ins.** `/mcp` signs pi's connection in, the one the model's tool calls use; `/cloudpid login` signs in the import's own connection. `/cloudpid import` cannot use pi's: a command handler has no `executeTool` (only a tool's `execute()` has), and the import tools are hidden from the model and so out of its reach. Both are you, signed in to the same Access application, and neither reads the other's file (`mcp-auth.json` and `cloudpid-auth.json`).
 
 5. **Add the Repo to an Environment** in cloudpid, if it is not in one: `/cloudpid` matches your checkout's `origin` to the Repos of your Environments and never creates one.
 
