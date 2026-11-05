@@ -77,3 +77,87 @@ index 774212f45368f90fcaf23d5948f2fa4e59d059a6..476c0d9ea8a714532918c355e181b350
      }
      async callGlobal(call) {
          const discovery = DISCOVERY_GLOBALS.includes(call.name);
+diff --git a/dist/harness/scheduler.js b/dist/harness/scheduler.js
+index ba7a0169b9bc54cd3123a4cc770d8d7a5c61b63d..ee0038c394f5e7183aff8c231867dce5fbc1d509 100644
+--- a/dist/harness/scheduler.js
++++ b/dist/harness/scheduler.js
+@@ -2015,6 +2015,26 @@ export class TaskScheduler {
+                     return candidate;
+                 }, rest[1]);
+             }),
++            // cloudpid patch (#647): a durable wait the task reached (an owner's answer kept in storage, which a rerun waits
++            // for again) is progress: its restart count starts over, as after a new state. So does its owners', which wait
++            // for it in memory (a code mode call waiting for its nested call), up to the first that is parked or being
++            // aborted: that one stays parked until `retry()` resumes it, and its abort handler keeps its own limit. Gated
++            // like a memo write.
++            progressed: (context) => this.#gated(invocation, async (tx, current) => {
++                // Every read before the first write, as a transaction requires.
++                const chain = [current];
++                for (let owner = current.owner; owner !== undefined;) {
++                    const record = await tx.task(owner);
++                    if (record === undefined || record.abortRequested || this.#parked(record))
++                        break;
++                    chain.push(record);
++                    owner = record.owner;
++                }
++                for (const record of chain) {
++                    if (record.restarts !== undefined)
++                        tx.setTask(progressed(record));
++                }
++            }, context),
+             sleepUntil: (until, checkpoint, context) => this.#gated(invocation, (tx, current) => this.#commitState(tx, invocation, current, { status: "sleeping", checkpoint, until }), context),
+             watchDoc: ((...args) => this.#watchDoc(invocation, args)),
+             snapshot: ((...args) => this.#read(invocation, () => sessionMethod(this.#session, "snapshot")(...args))),
+diff --git a/dist/harness/tool.js b/dist/harness/tool.js
+index 63f2b88a8d177ad134533fd3132f80aea4c83561..69d14e546736100d9e01f790a7dff1e161157975 100644
+--- a/dist/harness/tool.js
++++ b/dist/harness/tool.js
+@@ -264,6 +264,11 @@ async function run(runtime, input, call, tool, args, context) {
+             return result;
+         },
+         memo: runtime.memo,
++        // cloudpid patch (#647): the call reached a durable wait (`TaskRuntime.progressed`).
++        progressed: async (progressContext) => {
++            assertLive();
++            await runtime.progressed(progressContext);
++        },
+         createTask: async (task, input, options, taskContext) => {
+             const child = options.ownership.kind === "task" && !resumes ? { abandonOnRestart: true, ...options } : options;
+             let id;
+diff --git a/dist/harness/types.d.ts b/dist/harness/types.d.ts
+index 192a9cce35ad4729009d2e3f75f475c8dffa16c8..46412fba0d88e6918d9b85de3ada99e621aa8dac 100644
+--- a/dist/harness/types.d.ts
++++ b/dist/harness/types.d.ts
+@@ -192,6 +192,15 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
+     commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T>;
+     memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
+     memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
++    /**
++     * cloudpid patch (#647): commit that this call reached a durable wait, such as an owner's answer kept in storage that
++     * a rerun waits for again. The call's restart count starts over, as after a new state, and so do the counts of the
++     * calls that wait for it in memory (a code mode call, for its nested call) up to the first that is parked or being
++     * aborted, so the restarts that cut them off while it waits do not reach `settings.restartLimit`; an attempt cut off
++     * before it calls this still counts. Call it once the wait is stored and the attempt is about to await. Rejects once
++     * the call has settled.
++     */
++    progressed(context: Context): Promise<void>;
+     /**
+      * Create a task in one commit. A child task of a tool that is not replay-safe defaults to `abandonOnRestart`: the
+      * tool never resumes after a restart, so nothing awaits the child then.
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index 746fd257ea8bd36fa0968b0ef6a61a98d656b31b..61ff8cb0da9b294fbfa6d25d6e1da0e14d7581d6 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -240,6 +240,12 @@ export interface TaskRuntime<I, S, R, H extends object> extends DocumentObserver
+     memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
+     /** Store `candidate` unless a memo already exists; return the durable winner. */
+     memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
++    /**
++     * cloudpid patch (#647): commit that the task reached a durable wait, so its restart count starts over, as after a new
++     * state, and so do its owners', which wait for it in memory, up to the first that is parked or being aborted. Gated
++     * like a memo write: it rejects once the invocation has ended.
++     */
++    progressed(context: Context): Promise<void>;
+     /** Committed task record. */
+     getTask<T>(id: TaskId<T>, context: Context): Promise<TaskRecord<JsonValue, JsonValue, T> | undefined>;
+     /** Resolve with the task's terminal receipt; rejects when the invocation ends. */

@@ -978,9 +978,12 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
    * round; one whose sealed answer cannot be opened is a `cancel` of cloudpid's own. `undefined`: the call has no round
    * stored (it was settled meanwhile).
    */
-  const awaitRound = (callId: string) =>
+  const awaitRound = (callId: string, waiting: Effect.Effect<void> = Effect.void) =>
     Effect.gen(function* () {
       active.add(callId);
+
+      /** Whether this attempt marked its wait yet: once, before it first waits. */
+      let marked = false;
 
       while (true) {
         // Made before the record is read: an answer that lands between the read and the wait still wakes it.
@@ -1011,7 +1014,12 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           );
         }
 
-        yield* Deferred.await(signal).pipe(
+        // Marked once, before the first wait, and guarded as the wait is: a Stop while it marks withdraws the round too.
+        const mark = marked ? Effect.void : waiting;
+
+        marked = true;
+
+        yield* Effect.andThen(mark, Deferred.await(signal)).pipe(
           Effect.onInterrupt(() =>
             Effect.andThen(
               Effect.sync(() => rounds.delete(callId)),

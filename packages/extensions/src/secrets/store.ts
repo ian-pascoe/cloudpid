@@ -132,11 +132,21 @@ export type SecretsService = {
   readonly nextExpiry: Effect.Effect<number | undefined>;
   /**
    * Ask the owner for `ask.names` and wait for the answer. Asking again with the same `id` waits for the same ask, or
-   * returns its answer when it came while no call waited. Cancelling the wait withdraws the ask.
+   * returns its answer when it came while no call waited. Cancelling the wait withdraws the ask. `waiting` runs once the
+   * ask is stored, just before the wait (not when the answer is kept already): the call's `reachedWait`, so restarts
+   * that cut the waiting call off do not end it (#647).
    */
-  readonly ask: (ask: SecretAsk) => Effect.Effect<ReadonlyArray<AskOutcome>, SecretsError>;
+  readonly ask: (
+    ask: SecretAsk,
+    waiting?: Effect.Effect<void>,
+  ) => Effect.Effect<ReadonlyArray<AskOutcome>, SecretsError>;
   /** The asks waiting for the owner, oldest first. */
   readonly pending: Effect.Effect<ReadonlyArray<SecretAsk>>;
+  /**
+   * The call that asked `id` ended without coming back for it (the Session aborted it: #647): withdraw its ask if it
+   * still waits, and drop an answer kept for it.
+   */
+  readonly settle: (id: string) => Effect.Effect<void>;
   /**
    * Withdraw every ask no call in this instance waits for, and drop the answers no call took. Run only while no work is
    * live: then no call can still come back for them (one an eviction cut off has rerun by then), so they were
@@ -373,7 +383,7 @@ const makeSecrets = ({
         return remaining.length === asks().length ? Effect.void : putAsks(remaining);
       });
 
-    const ask = (request: SecretAsk) =>
+    const ask = (request: SecretAsk, waiting: Effect.Effect<void> = Effect.void) =>
       Effect.gen(function* () {
         const ready = takeAnswer(request.id);
 
@@ -391,7 +401,9 @@ const makeSecrets = ({
           if (asked !== undefined) yield* Effect.forkDetach(asked(request));
         }
 
-        yield* Deferred.await(waiter).pipe(Effect.onInterrupt(() => withdraw(request.id)));
+        yield* Effect.andThen(waiting, Deferred.await(waiter)).pipe(
+          Effect.onInterrupt(() => withdraw(request.id)),
+        );
         waiters.delete(request.id);
 
         const outcomes = takeAnswer(request.id);
@@ -629,6 +641,12 @@ const makeSecrets = ({
       }),
       ask,
       pending: Effect.sync(asks),
+      settle: (id) =>
+        Effect.suspend(() => {
+          takeAnswer(id);
+
+          return withdraw(id);
+        }),
       dropAbandoned: Effect.suspend(() => {
         if (Object.keys(answers()).length > 0) storage.put(ANSWERS_KEY, {});
 

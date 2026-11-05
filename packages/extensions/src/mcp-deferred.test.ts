@@ -15,6 +15,7 @@ import {
 import { ServerError } from "@cloudpid/mcp/types";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import { describe, expect, it } from "vitest";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf, startOf } from "./mcp.fixture.ts";
@@ -758,6 +759,57 @@ describe("a deferred round in the Session's storage", () => {
     // Told once, however often it is shown (the push is in the background).
     await until(async () => told.length > 0);
     expect(told).toEqual(["Docs-Site"]);
+  });
+
+  it("marks the call's wait once, after its round is stored, and not for a round answered already", async () => {
+    const { questions } = await service();
+    const marks: (readonly string[])[] = [];
+
+    /** The call's wait mark: the questions waiting when it was made. */
+    const marking = Effect.flatMap(questions.pending, (pending) =>
+      Effect.sync(() => void marks.push(pending.map((question) => question.id))),
+    );
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.defer({ ...ASK, key: "8", message: "And your team?" }));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    const waiting = Effect.runPromise(questions.awaitRound(ASK.callId, marking));
+
+    await until(async () => marks.length > 0);
+    // The round's first answer leaves the call waiting for the other: still one mark.
+    await Effect.runPromise(questions.answer("call-9:1", { action: "decline" }));
+    await Effect.runPromise(questions.answer("call-9:2", { action: "decline" }));
+    await waiting;
+
+    // A rerun that finds every answer takes them, and has no wait to mark.
+    await Effect.runPromise(questions.awaitRound(ASK.callId, marking));
+
+    expect(marks).toEqual([["call-9:1", "call-9:2"]]);
+  });
+
+  it("withdraws the round when Stop comes while the call marks its wait", async () => {
+    const { questions, memory } = await service();
+    const marking = Promise.withResolvers<void>();
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    // A mark that never ends, as one the storage holds up.
+    const waiting = Effect.runFork(
+      questions.awaitRound(
+        ASK.callId,
+        Effect.sync(() => marking.resolve()).pipe(Effect.andThen(Effect.never)),
+      ),
+    );
+
+    await marking.promise;
+    await Effect.runPromise(waiting.pipe(Fiber.interrupt));
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(memory.keys().filter((key) => /^mcp-question:[dq]/.test(key))).toEqual([]);
   });
 
   it("leaves a round whose state is a later build's alone: it is not resumed as a call's", async () => {

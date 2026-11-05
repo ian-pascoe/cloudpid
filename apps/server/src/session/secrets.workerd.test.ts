@@ -1,5 +1,6 @@
 // Secrets over the Session socket, against real Durable Object storage: the agent's request reaches the clients as a
-// masked-form request, the owner's answer lets a tool use the value, and a pending request survives an eviction.
+// masked-form request, the owner's answer lets a tool use the value, and a pending request survives evictions (more of
+// them than pi-durable's restart limit: #647).
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
@@ -14,7 +15,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
-import { idle } from "../durable-waits.fixture.ts";
+import { idle, PAST_THE_RESTART_LIMIT, restartRepeatedly } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
@@ -233,6 +234,48 @@ describe("Secrets over the Session socket", () => {
 
     before.close();
     await evictDurableObject(stub);
+
+    const after = await connect(stub);
+    const shown = only(await after.next(isPending));
+
+    expect(shown).toEqual(asked);
+
+    after.send({
+      type: "secret_answer",
+      id: "answer",
+      request: shown.id,
+      values: { API_KEY: VALUE },
+    });
+    expect(await after.next(isAnswer("answer"))).toMatchObject({ type: "result" });
+
+    await idle(stub);
+
+    const results = await runInDurableObject(stub, (instance: TestSession) =>
+      instance.toolResults(),
+    );
+
+    expect(results.at(-1)).toBe(`echo: key=${secretReference("API_KEY")}`);
+  });
+
+  it("keeps a waiting request through more restarts than pi-durable's limit, and finishes the call", async () => {
+    const stub = env.SESSIONS.get(env.SESSIONS.newUniqueId());
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.script(SCRIPT));
+
+    const before = await connect(stub);
+
+    before.send({ type: "submit", id: "go", input: "Call the API" });
+
+    const asked = only(await before.next(isPending));
+
+    before.close();
+
+    // Each rerun waits for the same request again, and its wait is progress: no restart is left counting toward the limit.
+    await restartRepeatedly(
+      stub,
+      PAST_THE_RESTART_LIMIT,
+      (calls) => calls.length === 1 && calls.every((call) => call.restarts === 0),
+    );
 
     const after = await connect(stub);
     const shown = only(await after.next(isPending));

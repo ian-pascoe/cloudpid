@@ -17,7 +17,7 @@
 // not go through the model's arguments, so the hook blocks a call that references one and points to the server's
 // `headers` or `env`, where `${NAME}` is resolved by the host.
 import { isMcpExtensionToolName } from "@cloudpid/config";
-import { defineEffectTool, effectHook, effectSection } from "@cloudpid/effect-durable";
+import { defineEffectTool, effectHook, effectSection, reachedWait } from "@cloudpid/effect-durable";
 import { SecretKeep } from "@cloudpid/protocol";
 import type { JsonValue as DetailsJson } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -506,7 +506,7 @@ export const secretsExtension = (
 
           if (keep !== undefined) request.keep = keep;
 
-          const outcomes = yield* secrets.ask(request);
+          const outcomes = yield* secrets.ask(request, reachedWait(api));
 
           const cancelled = Arr.some(outcomes, (outcome) => outcome.status === "cancelled");
 

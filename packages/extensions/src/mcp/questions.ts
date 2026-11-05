@@ -300,10 +300,12 @@ export type McpQuestionsService = {
    * Wait until every question of the call's round has its answer, and give them, accepted content opened. An answer the
    * owner gave while no call waited is taken at once. An interrupted wait (Stop) withdraws the questions and drops the
    * round; one whose sealed answer cannot be opened is a `cancel` of cloudpid's own. `undefined`: the call has no round
-   * stored (it was settled meanwhile).
+   * stored (it was settled meanwhile). `waiting` runs once, just before the call first waits (not when every answer is
+   * in already): the call's `reachedWait`, so restarts that cut the waiting call off do not end it (#647).
    */
   readonly awaitRound: (
     callId: string,
+    waiting?: Effect.Effect<void>,
   ) => Effect.Effect<ReadonlyArray<McpDeferredAnswer> | undefined>;
   /**
    * The round's resume is on its way (`mcp.resumed.<r>` is written): its questions are settled, their sealed answers

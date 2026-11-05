@@ -10,6 +10,7 @@ import {
   type ApprovalCall,
   type ApprovalChange,
   type ApprovalStorage,
+  type ApprovalsService,
   makeApprovals,
   withApproval,
 } from "./approvals.ts";
@@ -59,7 +60,21 @@ const CHANGE: ApprovalChange = {
   expected: 5,
 };
 
-const API: ApprovalCall = { taskId: 7, conversationId: 1 };
+const API: ApprovalCall = { taskId: 7, conversationId: 1, progressed: async () => {} };
+
+/** The call `API` describes, recording the requests that waited each time it marked its wait as progress. */
+const marking = (approvals: ApprovalsService) => {
+  const marks: (readonly string[])[] = [];
+
+  const api: ApprovalCall = {
+    ...API,
+    progressed: async () => {
+      marks.push(Effect.runSync(approvals.pending).map((request) => request.id));
+    },
+  };
+
+  return { api, marks };
+};
 
 const REQUEST: ApprovalAsk = { ...CHANGE, id: "7", conversationId: 1 };
 
@@ -160,6 +175,44 @@ describe("Approval requests", () => {
     );
 
     expect(result).toEqual({ approved: true, expected: 5 });
+  });
+
+  it("mark the call's wait as progress once its request is stored, at each rerun, and not for an answer kept", async () => {
+    const storage = memoryStorage();
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const first = yield* open(storage);
+        const asking = marking(first.approvals);
+
+        // The call that asked is cut off by the eviction once it waits.
+        yield* Effect.forkDetach(
+          withApproval(first.approvals, asking.api, CHANGE, (answer) => Effect.succeed(answer)),
+        );
+        yield* settle;
+
+        const second = yield* open(storage);
+        const rerun = marking(second.approvals);
+
+        yield* Effect.forkDetach(
+          withApproval(second.approvals, rerun.api, CHANGE, (answer) => Effect.succeed(answer)),
+        );
+        yield* settle;
+
+        // Answered while no call waited: the next rerun takes it at once, and has no wait to mark.
+        const third = yield* open(storage);
+        const answered = marking(third.approvals);
+
+        yield* third.approvals.answer("7", { approve: true });
+        yield* withApproval(third.approvals, answered.api, CHANGE, (answer) =>
+          Effect.succeed(answer),
+        );
+
+        return { asked: asking.marks, rerun: rerun.marks, answered: answered.marks };
+      }),
+    );
+
+    expect(result).toEqual({ asked: [["7"]], rerun: [["7"]], answered: [] });
   });
 
   it("keep an answer the owner gave while no call waited, for the rerun to take", async () => {

@@ -349,7 +349,7 @@ The extension `io.modelcontextprotocol/oauth-client-credentials` ([Signing in](h
     - The Session sends `mcp_sign_in_requests` to every client.
     - The card shows the server, its source, the URL host, the authorization server's host, the agent's reason marked as the agent's, and any step-up scopes.
     - The owner signs in from the card, or declines with `mcp_sign_in_answer` (an optional reason).
-    - There is no deadline, and Stop withdraws the request. It survives eviction and re-checks the sign-in on resume.
+    - There is no deadline, and Stop withdraws the request, as does the Session's end of a call the restart limit parked, for that call (`settleCall`; [_Session host_](overview.md#session-host)). It survives eviction and re-checks the sign-in on resume. Once the call waits on the request, it marks its wait as progress (`reachedWait`), so the restarts of a Session that hibernates while it waits never reach pi-durable's restart limit ([#647](https://github.com/ian-pascoe/cloudpid/issues/647); [_Session host_](overview.md#session-host)).
     - Parallel asks in one conversation join one request.
   - **Results:**
     - `signed_in`, after `servers` with `waitMs: 10000` (`serverStatus`): "N tools from your next request" or "still connecting";

@@ -126,6 +126,9 @@ import {
   type SubmissionId,
   type SubmissionRecord,
   type TaskGraph,
+  type TaskId,
+  type TaskInspection,
+  ToolTask,
   type UserInput,
   type WatchEnd,
   watchEvents,
@@ -214,7 +217,7 @@ import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file
 import { cropParts, fitCrops } from "./crops.ts";
 import { type InputProblem, inputProblemOf, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
-import { earliest } from "./wake.ts";
+import { earliest, type EndedCall } from "./wake.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { AgentsReport, sessionAgentsOf } from "./agents-report.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
@@ -614,6 +617,12 @@ export type SessionHostOptions<R = never> = {
    * request whose call was abandoned while the object was evicted.
    */
   readonly onIdle?: Effect.Effect<void, never, R>;
+  /**
+   * Withdraws the owner requests (an Approval, a Secret request, a Sign-in request, an MCP server's questions) of a tool
+   * call the Session ends for good without it running again: one the restart limit parked, or a call it made
+   * (`endParkedCalls`). Run before the call is aborted.
+   */
+  readonly withdrawCall?: (call: EndedCall) => Effect.Effect<void, never, R>;
   /**
    * Runs the moment the Session has gone idle after work, before anything else of its settling: closes the Last run and
    * ends it in the background (`runs.ts`), so it never delays the owner's notification. Given a way to read the newest
@@ -1046,6 +1055,27 @@ const sameAgent = (have: Agent, want: AgentChange): boolean =>
 /** The alarm heartbeat's next time. */
 const heartbeat = Clock.currentTimeMillis.pipe(Effect.map((now) => now + HEARTBEAT_MS));
 
+/**
+ * A tool call task's input (pi-durable's `ToolTaskInput`), as far as its tool call's id goes: kept in a nested call's
+ * input, beside a model call's. Restated, so an upgrade must check it (`docs/development/dependencies.md`).
+ */
+const ToolCallInput = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("model"), callId: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("nested"), call: Schema.Struct({ id: Schema.String }) }),
+]);
+
+const decodeToolCallInput = Schema.decodeUnknownOption(ToolCallInput);
+
+/** The tool call a tool call task runs: its task and, when its input says it, its tool call's id. */
+const endedCallOf = (task: { readonly id: TaskId; readonly input: unknown }): EndedCall => ({
+  taskId: task.id,
+  callId: Option.getOrUndefined(
+    Option.map(decodeToolCallInput(task.input), (input) =>
+      input.kind === "model" ? input.callId : input.call.id,
+    ),
+  ),
+});
+
 /** Open the Harness on the object's `storage`, under the `pi_` prefix, after arming a fallback alarm. */
 const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
   options: SessionHostOptions<R>,
@@ -1089,8 +1119,9 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
     }),
   );
 
-  // What the Harness reports without failing a call (a task that faulted, one the restart limit parked, whose Run stays
-  // busy until it is stopped, a hook or listener that threw) is otherwise dropped. `info` names the task, never content.
+  // What the Harness reports without failing a call (a task that faulted, one the restart limit parked, a hook or
+  // listener that threw) is otherwise dropped. `info` names the task, never content. A tool call it parks is ended at
+  // each wake (`endParkedCalls`), read from the Harness rather than from this report, which comes once.
   const onReport: HarnessOptions["onReport"] = (error, info) => {
     run(Effect.logWarning(`pi-durable reported ${info.type}`, info, error));
   };
@@ -1136,6 +1167,70 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const onIdle =
     options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
+
+  /** Withdraw the owner requests of a tool call ended for good. */
+  const withdrawCall = (call: EndedCall) =>
+    options.withdrawCall === undefined
+      ? Effect.void
+      : Effect.provideContext(options.withdrawCall(call), services);
+
+  /**
+   * End each tool call the restart limit parked: one cut off that many times before it reached a wait (a call that
+   * waits marks it as progress: `reachedWait`), which nothing in cloudpid would run again (no `retryTask`), so its Run
+   * would stay busy until stopped. It is aborted, as pi-durable 1.5 ends such a call itself: the abort settles it with an
+   * error result the agent reads, and the Run goes on. The owner requests it left, and those of the calls it made (which
+   * its abort ends without running them again), are withdrawn first (`withdrawCall`): an answer given meanwhile would
+   * be taken and then dropped, and a Run that goes on and asks again would show a dead card beside it.
+   *
+   * Read from `tasks` (the Harness's at this wake), not from pi-durable's `task_parked` report, which comes once, at the
+   * open that parks the call: a call an earlier instance parked and could not end (an abort that failed, an instance
+   * stopped first, a build before this one) is ended at the next wake. Says whether there was one to end, and whether
+   * one could not be.
+   */
+  const endParkedCalls = (tasks: ReadonlyArray<TaskInspection>) => {
+    const parked = Arr.filter(
+      tasks,
+      ({ record, state }) =>
+        record.kind === ToolTask.definition.name &&
+        state.kind === "blocked" &&
+        state.reason === "restart_limit",
+    );
+
+    if (parked.length === 0) return Effect.succeed({ ended: false, failed: false });
+
+    const ending = new Set<number>(Arr.map(parked, ({ record }) => record.id));
+
+    const owners = new Map<number, number | undefined>(
+      Arr.map(tasks, ({ record }) => [record.id, record.owner]),
+    );
+
+    /** Whether task `id` is a parked call, or below one. */
+    const ended = (id: number | undefined): boolean =>
+      id !== undefined && (ending.has(id) || ended(owners.get(id)));
+
+    const calls = Arr.filter(
+      tasks,
+      ({ record }) => record.kind === ToolTask.definition.name && ended(record.id),
+    );
+
+    return Effect.forEach(calls, ({ record }) => withdrawCall(endedCallOf(record)), {
+      discard: true,
+    }).pipe(
+      Effect.andThen(
+        Effect.forEach(parked, ({ record }) =>
+          attempt("abortTask", () => harness.harness.abortTask(record.id, context)).pipe(
+            Effect.as(true),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("A tool call the restart limit parked was not ended", cause).pipe(
+                Effect.as(false),
+              ),
+            ),
+          ),
+        ),
+      ),
+      Effect.map((aborted) => ({ ended: true, failed: !Arr.every(aborted, (done) => done) })),
+    );
+  };
 
   /** The newest entry of a conversation, 0 when it has none. */
   const newestEntry = async (conversationId: ConversationId): Promise<number> => {
@@ -1535,28 +1630,31 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    * installed definition can run, or one the restart limit parked, never becomes runnable by waking, and a waiting task
    * counts through the live tasks it waits on.
    */
-  const wake: Effect.Effect<Wake, SessionError> = inspect.pipe(
-    Effect.map(({ tasks }) => {
-      const runnable = (task: (typeof tasks)[number]) =>
-        task.state.kind !== "blocked" && task.state.kind !== "waiting";
+  const wakeOf = (tasks: ReadonlyArray<TaskInspection>): Wake => {
+    const runnable = (task: (typeof tasks)[number]) =>
+      task.state.kind !== "blocked" && task.state.kind !== "waiting";
 
-      const following = Arr.filter(tasks, isFollower);
-      const awake = Arr.filter(following, runnable);
-      const sleeping = Arr.filter(awake, (task) => task.state.kind === "sleeping");
+    const following = Arr.filter(tasks, isFollower);
+    const awake = Arr.filter(following, runnable);
+    const sleeping = Arr.filter(awake, (task) => task.state.kind === "sleeping");
 
-      return {
-        active: Arr.some(working(tasks), runnable),
-        followers: {
-          count: following.length,
-          needsHeartbeat: awake.length > sleeping.length,
-          until: earliest(
-            ...Arr.map(sleeping, (task) =>
-              task.state.kind === "sleeping" ? task.state.until : undefined,
-            ),
+    return {
+      active: Arr.some(working(tasks), runnable),
+      followers: {
+        count: following.length,
+        needsHeartbeat: awake.length > sleeping.length,
+        until: earliest(
+          ...Arr.map(sleeping, (task) =>
+            task.state.kind === "sleeping" ? task.state.until : undefined,
           ),
-        },
-      };
-    }),
+        ),
+      },
+    };
+  };
+
+  /** The wake of the tasks live now. */
+  const wake: Effect.Effect<Wake, SessionError> = inspect.pipe(
+    Effect.map(({ tasks }) => wakeOf(tasks)),
   );
 
   const armHeartbeat = heartbeat.pipe(
@@ -1841,8 +1939,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   });
 
   // Armed before `resume()` runs anything, as for any call that can start work. The work it resumes runs under its span.
-  const wakeAndResume = wake.pipe(
-    Effect.flatMap(arm),
+  //
+  // The tool calls the restart limit parked are ended before the wake is read: a parked call is no live work, but the Run
+  // it held goes on once it is ended, so the wake counts it, as a heartbeat and a `running` report. An abort that
+  // failed keeps the heartbeat, so the next beat tries again rather than the next wake from another cause.
+  const wakeAndResume = inspect.pipe(
+    Effect.flatMap(({ tasks }) =>
+      endParkedCalls(tasks).pipe(
+        Effect.flatMap(({ ended, failed }) =>
+          (ended ? wake : Effect.succeed(wakeOf(tasks))).pipe(
+            Effect.flatMap(arm),
+            Effect.andThen(failed ? armHeartbeat : Effect.void),
+          ),
+        ),
+      ),
+    ),
     Effect.andThen(harness.resume.pipe(Effect.withSpan("session.resume"))),
     Effect.andThen(settleWhenIdle),
     serially,

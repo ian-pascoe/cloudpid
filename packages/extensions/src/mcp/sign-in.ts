@@ -9,6 +9,9 @@
 //   main Worker, which wakes it (`resolve`); the outcome is kept until the calls that waited take it.
 // - **No deadline.** Only the owner's answer, a sign-in, the server leaving the set or Stop ends one. Stop interrupts the
 //   waiting calls, and a request left with no call is withdrawn (its waiter row in the Registry goes too).
+// - **Waiting is progress.** Each attempt that reaches the wait marks it (`reachedWait`), so the restarts that cut a
+//   waiting call off (the Session hibernates while nobody looks, and each heartbeat starts it again) never end the call
+//   (#647). A call the Session ends for good leaves its requests (`settleCall`).
 // - **Parallel asks join.** A request is one per (conversation, server): a second call that asks while one is open waits on
 //   the same request, and one answer ends them all.
 // - **The Registry holds the waiter row** (`mcp_sign_in_waiters`), one per request, and says which request is the first open
@@ -100,9 +103,14 @@ export type McpSignInsService = {
   /**
    * Ask the owner to sign in to `ask.server` and wait for how it ends. Immediate when the sign-in stands already or does
    * not apply. Asking again with a call the request already holds (a rerun) rejoins it and asks the Registry once more.
-   * Interrupting the wait (Stop) leaves the request, and withdraws it when no call is left on it. Never fails.
+   * Interrupting the wait (Stop) leaves the request, and withdraws it when no call is left on it. Never fails. `waiting`
+   * runs once the request is stored, just before the wait (not when its outcome is known already): the call's
+   * `reachedWait`, so restarts that cut the waiting call off do not end it (#647).
    */
-  readonly ask: (ask: McpSignInAsk) => Effect.Effect<McpSignInOutcome>;
+  readonly ask: (
+    ask: McpSignInAsk,
+    waiting?: Effect.Effect<void>,
+  ) => Effect.Effect<McpSignInOutcome>;
   /** The requests waiting for the owner, oldest first. */
   readonly pending: Effect.Effect<ReadonlyArray<McpSignInRequest>>;
   /** The owner's decline of request `id`. Fails when no such request waits. */
@@ -124,6 +132,12 @@ export type McpSignInsService = {
    * that was not carried (an older deploy, a host's `working` report). A Registry that cannot be reached leaves them open.
    */
   readonly recheck: Effect.Effect<void>;
+  /**
+   * The call `callId` ended without coming back (the Session aborted it: #647): it leaves the requests it waits on, and
+   * a request left with no call is withdrawn, with the Registry's waiter. `callId` is the call as `ask` names it: its
+   * task's id (`mcp_sign_in_ask` asks with `String(api.taskId)`), not its tool call's.
+   */
+  readonly settleCall: (callId: string) => Effect.Effect<void>;
   /** Withdraw every request no call in this instance waits for. Run only while no work is live. */
   readonly dropAbandoned: Effect.Effect<void>;
 };
@@ -399,7 +413,7 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
       }),
     );
 
-  const wait = (callId: string, id: string) =>
+  const wait = (callId: string, id: string, waiting: Effect.Effect<void>) =>
     Effect.gen(function* () {
       const current = find(id);
 
@@ -412,14 +426,17 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
       const waiter = waiters.get(id) ?? (yield* Deferred.make<McpSignInOutcome>());
 
       waiters.set(id, waiter);
+      yield* waiting;
 
       return yield* Deferred.await(waiter);
     }).pipe(Effect.ensuring(leave(callId, id)));
 
-  const ask: McpSignInsService["ask"] = (call) =>
+  const ask: McpSignInsService["ask"] = (call, waiting = Effect.void) =>
     prepare(call).pipe(
       Effect.flatMap((prepared) =>
-        "ended" in prepared ? Effect.succeed(prepared.ended) : wait(call.callId, prepared.id),
+        "ended" in prepared
+          ? Effect.succeed(prepared.ended)
+          : wait(call.callId, prepared.id, waiting),
       ),
     );
 
@@ -464,6 +481,12 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
         }
       }),
     recheck: Effect.suspend(() => Effect.forEach(open(), recheckOne, { discard: true })),
+    settleCall: (callId) =>
+      Effect.forEach(
+        Arr.filter(held(), (each) => each.calls.includes(callId)),
+        (each) => leave(callId, each.request.id),
+        { discard: true },
+      ),
     dropAbandoned: Effect.gen(function* () {
       let dropped = 0;
 

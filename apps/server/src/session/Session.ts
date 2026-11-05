@@ -116,7 +116,7 @@ import { runsOpeningTools, SessionRuns, sessionRunsLayer } from "./runs.ts";
 import { annotationsPruningTools, SessionReviews, sessionReviewsLayer } from "./reviews.ts";
 import { importReadying } from "./import-readying.ts";
 import { destroySession, SESSION_DELETED_REASON, stopSession } from "./lifecycle.ts";
-import { onIdle, wakeAt } from "./wake.ts";
+import { onIdle, wakeAt, withdrawCall } from "./wake.ts";
 import {
   cachedPlacement,
   type Placement,
@@ -1060,6 +1060,13 @@ export const SessionLive = Session.make(
                       mcpQuestions.service,
                     ),
                 ),
+                // A tool call the Session ended for good takes its owner requests with it.
+                withdrawCall: (call) =>
+                  Effect.flatMap(
+                    Effect.all([Effect.service(Secrets), Effect.service(Approvals)]),
+                    ([held, approvals]) =>
+                      withdrawCall(held, approvals, mcpSignIns.service, mcpQuestions.service)(call),
+                  ),
               }),
             ),
             // The MCP servers' questions, checked against the Secrets, which are built below.

@@ -939,7 +939,7 @@ describe("session_wait", () => {
 
   it.each([
     ["owner_needed", "cloudpid", /you cannot/],
-    ["stalled", "parked", /parked/],
+    ["stalled", "parked", /parked .* until the owner stops the Run/],
     ["timeout", "keep waiting", /session_wait again/],
     ["import_ended", "session_get", /session_get/],
   ] as const)(
