@@ -442,7 +442,7 @@ ${SETUP_STEPS}`);
   const file = scope === "project" ? files.project : files.global;
   return { url: endpointUrl(settings.baseUrl, `\`cloudpid.baseUrl\` in ${file}`) };
 };
-var BUILD_SHA = "a23226513c3f82333101adcae098dd016abac10f";
+var BUILD_SHA = "7ba559a3800b1e5cbf32dd596d955dc2baa09720";
 var clientName = (sha = BUILD_SHA) => `pi-cloudpid/${sha.slice(0, 12)}`;
 
 // ../../node_modules/.bun/@modelcontextprotocol+client@2.4.0/node_modules/@modelcontextprotocol/client/dist/chunk-DYPzFuB5.mjs
@@ -24650,6 +24650,44 @@ var stashAll = async (git, message) => {
   await read(git, ["stash", "push", "--include-untracked", "-m", message]);
 };
 
+// src/mcp-server.ts
+var MCP_SERVER_NAME = "cloudpid";
+var MCP_SERVER_DESCRIPTION = "cloudpid's Sessions, Runs and transcripts: start, follow, read and stop the owner's agent work.";
+var serverConfigOf = (config) => ({
+  url: config.url.href,
+  toolExposure: { "session_import_*": "hidden" },
+  description: MCP_SERVER_DESCRIPTION
+});
+var mcpRegistration = (pi) => {
+  let registered;
+  let warned;
+  return (config, warn) => {
+    const lastWarning = warned;
+    warned = undefined;
+    if (config === undefined) {
+      if (registered === undefined)
+        return;
+      registered = undefined;
+      try {
+        pi.unregisterMcpServer(MCP_SERVER_NAME);
+      } catch {}
+      return;
+    }
+    if (config.url.href === registered)
+      return;
+    try {
+      pi.registerMcpServer(MCP_SERVER_NAME, serverConfigOf(config));
+      registered = config.url.href;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      warned = reason;
+      if (reason !== lastWarning) {
+        warn(`cloudpid: pi did not take the "${MCP_SERVER_NAME}" MCP server: ${reason}`);
+      }
+    }
+  };
+};
+
 // src/origin.ts
 var SCP_STYLE = /^(?:[^@/\s\\]+@)?([^:/\s\\]{2,}):(?!\/)([^\\]+)$/;
 var tidy = (path) => path.replace(/\/+$/, "").replace(/\.git$/i, "").replace(/\/+$/, "");
@@ -25406,7 +25444,20 @@ var messageOf = (error) => {
   }
   return `cloudpid: the import failed: ${error.message}`;
 };
+var configOrNone = (ctx) => {
+  try {
+    return readConfig(settingsOf(ctx));
+  } catch (error) {
+    if (error instanceof Refusal)
+      return;
+    throw error;
+  }
+};
 function src_default(pi) {
+  const syncMcpServer = mcpRegistration(pi);
+  pi.on("session_start", (_event, ctx) => {
+    syncMcpServer(configOrNone(ctx), (message) => ctx.ui.notify(message, "warning"));
+  });
   pi.registerCommand("cloudpid", {
     description: "cloudpid: import [instruction] imports this pi session into cloudpid; login and logout manage the sign-in",
     getArgumentCompletions: (prefix) => completionsFor(prefix),
