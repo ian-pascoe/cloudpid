@@ -24,6 +24,9 @@ export interface ProbeDeps {
 }
 
 const DIR = "/workspace/probe-143";
+let instanceId: string | undefined;
+const instance = () => (instanceId ??= crypto.randomUUID().slice(0, 8));
+const VERSION = 2;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const stripAnsi = (text: string) =>
   text
@@ -129,7 +132,7 @@ export const runProbe = async (op: string, deps: ProbeDeps): Promise<unknown> =>
 
   if (op === "abort") {
     setTimeout(() => deps.abort(), 10);
-    return { aborting: true };
+    return { aborting: true, instance: instance() };
   }
 
   if (op === "check-long") {
@@ -142,7 +145,7 @@ export const runProbe = async (op: string, deps: ProbeDeps): Promise<unknown> =>
         `ps -o pid,pgid,stat,etime,cmd -p ${String(pid)} || echo "pid ${String(pid)} gone"; ps -eo pid,cmd | grep -c 'sleep 901' `,
       ]),
     );
-    return { op, pid, steps };
+    return { op, pid, instance: instance(), version: VERSION, at: new Date().toISOString(), steps };
   }
 
   // 1. Connect through computer, so the bootstrap runs and the files are pushed.
@@ -163,7 +166,7 @@ export const runProbe = async (op: string, deps: ProbeDeps): Promise<unknown> =>
       deps.kv.put("probe-143:long-pid", pid);
       return { platformPid: process.pid, pid, raw: pty.raw };
     });
-    return { op, steps };
+    return { op, instance: instance(), steps };
   }
 
   // 5. The exec's environment, without and with a PTY.
@@ -308,6 +311,33 @@ export const runProbe = async (op: string, deps: ProbeDeps): Promise<unknown> =>
       "ps -eo pid,pgid,stat,cmd | grep '[s]leep 777' || echo 'no sleep 777'",
     ]);
     return { child, killDefault: killed, killed9, ps };
+  });
+
+  await step("kill-session-from-another-exec", async () => {
+    const process = await container().exec(["bash", "-i"], { pty: { cols: 80, rows: 24 } });
+    const p = new Pty(process);
+    const sid = await p.run("sleep 780 & (sleep 781 &); echo SID=$(ps -o sid= -p $$ | tr -d ' ')");
+    const innerSid = /SID=(\d+)/.exec(sid.output.split("\n").slice(-3).join("\n"))?.[1] ?? "none";
+    const killer = await execOutput(container(), [
+      "bash",
+      "-c",
+      `sid=${innerSid}; echo "exec pid=${process.pid} inner sid=$sid"; pkill -KILL -s "$sid"; sleep 0.3; ps -eo pid,pgid,sid,cmd | grep -E '[s]leep 78(0|1)|[b]ash -i' || echo 'none left'`,
+    ]);
+    return { sid, killer, exit: await within(process.exitCode, 3_000) };
+  });
+
+  await step("env-option-replaces-or-merges", () =>
+    execOutput(container(), ["bash", "-c", ENV_NAMES], { env: { PATH: "/usr/bin:/bin", PROBE: "1" } }),
+  );
+  await step("env-option-pty", async () => {
+    const process = await container().exec(["bash", "--norc", "-i"], {
+      pty: { cols: 80, rows: 24 },
+      env: { PATH: "/usr/bin:/bin", PROBE: "1", TERM: "xterm-256color" },
+    });
+    const p = new Pty(process);
+    const ran = await p.run(ENV_NAMES);
+    process.kill(9);
+    return ran;
   });
 
   await step("exit-code", async () => {

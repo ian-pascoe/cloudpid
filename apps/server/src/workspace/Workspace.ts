@@ -1391,7 +1391,11 @@ export class Workspace extends ContainerHost {
     const fs = this.#workspace.fs;
     const result = await runProbe(op, {
       container: () => this.ctx.container,
-      fs: fs as never,
+      fs: {
+        writeFile: (path, content) => fs.writeFile(path, content),
+        readFile: (path) => fs.readFile(path, "utf8"),
+        exists: (path) => fs.stat(path).then(() => true, () => false),
+      },
       ensureDirectory: (path) => probeEnsureDirectory(fs as never, path),
       push: async () => {
         for await (const progress of this.#workspace.push(CONTAINER_BACKEND_ID)) {
