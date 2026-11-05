@@ -50,8 +50,8 @@ import { skillBlocksIn, type UserEntryData, userEntryData } from "./user-entry.t
 const isCropType = Schema.is(PageCropType);
 
 /**
- * The display model of a transcript. The Session returns pi's own entries; the UI folds them into these messages, in
- * the browser for a snapshot and for streamed events alike.
+ * The display model of a transcript. The Session sends pi's own entries; the UI projects them into these messages, in
+ * the browser (`view.ts`).
  */
 export type TranscriptPart =
   | TextContent
@@ -404,7 +404,7 @@ export const projectEntry = (entry: EntryRecord): TranscriptMessage | undefined 
   return projectMessage(message, String(entry.id));
 };
 
-/** Project a snapshot's entries. */
+/** Project entries, leaving out those with no projection. */
 export const projectEntries = (entries: readonly EntryRecord[]): TranscriptMessage[] =>
   entries.flatMap((entry) => {
     const message = projectEntry(entry);

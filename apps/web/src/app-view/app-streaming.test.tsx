@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true,"handleDisabledFileLoadingAsSuccess":true}}
 // docs/architecture/mcp-apps.md → App Views in the transcript (Remounting), Lifecycle (Mounting, Cancelled). A call of an App
-// tool as it streams, through the whole path: pi's events folded into the view (`reduceEvents`), the thread's messages
+// tool as it streams, through the whole path: pi's conversation view, its operations applied and merged as the client
+// does (`ConversationMirror`) and projected with the App tools' names, the thread's messages
 // (`toThreadMessages`), assistant-ui's own rendering of them and the real card (`ToolCallCard`) with its View's real frame
 // and bridge; only the Session's socket and the sandbox page are replaced. The View mounts as the call starts, is sent the
 // partial input, the final input at the commit and the result at the end, and the frame is the same element throughout:
 // nothing remounts on the commit.
-/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-chained-type-assertions -- the traffic of a fake frame and pi's events as the reducer reads them */
+/* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-chained-type-assertions -- the traffic of a fake frame and pi's view as the projection reads it */
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off newPromise:off asyncFunction:off -- a DOM and its timers, driven by hand.
 import {
   AssistantRuntimeProvider,
@@ -23,7 +24,9 @@ import type {
   McpAppTool,
   SessionView,
 } from "@cloudpid/protocol";
-import { EMPTY_VIEW, reduceEvents } from "@cloudpid/protocol";
+import { ConversationMirror } from "@cloudpid/protocol/mirror";
+import { diffRevisions } from "@earendil-works/chord/delta";
+import type { ConversationView } from "@earendil-works/pi-durable";
 import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
@@ -80,10 +83,7 @@ const usage = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-// The events and entries are the parts of pi's shapes the reducer reads.
-type AgentEvent = Parameters<typeof reduceEvents>[1][number];
-
-const event = (value: Record<string, unknown>): AgentEvent => value as unknown as AgentEvent;
+// The views and entries are the parts of pi's shapes the projection reads.
 const entryOf = (value: Record<string, unknown>): Record<string, unknown> => value;
 
 const call = (args: Record<string, unknown>) => ({
@@ -104,8 +104,75 @@ const message = (content: unknown[]) => ({
   timestamp: 2,
 });
 
-const update = (...changes: Record<string, unknown>[]) =>
-  event({ type: "message_update", usage, changes });
+const RUN = { taskId: 1, inputs: [1], turns: 0 };
+
+const USER = entryOf({
+  id: 1,
+  conversationId: 1,
+  kind: "pi.user",
+  model: [{ role: "user", content: "show me", timestamp: 1 }],
+});
+
+/** The call's message as it is committed, whole. */
+const ANSWER = entryOf({
+  id: 2,
+  conversationId: 1,
+  kind: "pi.assistant",
+  model: [message([call({ title: "Hello", rows: ["abc"] })])],
+});
+
+/** The call's message as it is committed when the owner stops it. */
+const CUT = entryOf({
+  id: 2,
+  conversationId: 1,
+  kind: "pi.assistant",
+  model: [{ ...message([call({ title: "Hel", rows: [] })]), stopReason: "aborted" }],
+});
+
+const RESULT = entryOf({
+  id: 3,
+  conversationId: 1,
+  kind: "pi.tool",
+  model: [
+    {
+      role: "toolResult",
+      toolCallId: "c1",
+      toolName: NAME,
+      content: [{ type: "text", text: "done" }],
+      isError: false,
+      timestamp: 3,
+    },
+  ],
+});
+
+/** pi's conversation view, with `entries` and `pi.live`. */
+const piView = (entries: readonly Record<string, unknown>[], live: Record<string, unknown>) =>
+  ({ conversation: { id: 1 }, entries, docs: { "pi.live": live } }) as unknown as ConversationView;
+
+/** The model streams a message, holding the call with `args` so far, or nothing yet. */
+const streams = (args?: Record<string, unknown>) =>
+  piView([USER], {
+    run: RUN,
+    generation: { attempt: 1, message: message(args === undefined ? [] : [call(args)]) },
+  });
+
+/** The call's message is committed, and the run goes on. */
+const committed = (answer = ANSWER) => piView([USER, answer], { run: RUN });
+
+/** The call's tool runs. */
+const toolRuns = piView([USER, ANSWER], {
+  run: RUN,
+  tools: [{ callId: "c1", name: NAME, status: "running", taskId: 5 }],
+});
+
+/** The call's tool is done, with its result entry. */
+const resulted = piView([USER, ANSWER, RESULT], {
+  run: RUN,
+  tools: [{ callId: "c1", name: NAME, status: "done", taskId: 5, entry: 3 }],
+});
+
+/** The run ends, the transcript `entries`. */
+const ended = (...entries: Record<string, unknown>[]) => piView(entries, {});
 
 installFakeFrames();
 
@@ -115,6 +182,10 @@ let registry: AtomRegistry.AtomRegistry;
 let state: SubscriptionRef.SubscriptionRef<SessionState>;
 let view: SessionView;
 let apps: readonly McpAppEntry[];
+
+/** pi's view as the Session last sent it, and the client's copy of it. */
+let pi: ConversationView;
+let mirror: ConversationMirror;
 
 const publish = () => {
   Effect.runSync(
@@ -127,10 +198,17 @@ const publish = () => {
   );
 };
 
-/** Pi's events reach the page: folded as the client folds them, with the App tools' names. */
-const happens = async (...events: AgentEvent[]) => {
-  view = reduceEvents(view, events, new Set([NAME]));
+/** pi's view becomes `next`: its operations reach the client, which applies them and projects the view. */
+const changes = (next: ConversationView) => {
+  mirror.receive({ type: "ops", ops: diffRevisions(pi as never, next as never) });
+  pi = next;
+  view = mirror.view(new Set([NAME]));
   publish();
+};
+
+/** `changes`, and the page renders what it shows. */
+const happens = async (next: ConversationView) => {
+  changes(next);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
@@ -276,54 +354,12 @@ interface Seed {
 
 /** The Session as the page holds it, with the user's message; and the page of the call's tool and its record, as loads would give. */
 const start = async (seed: Seed = {}) => {
-  view = reduceEvents(EMPTY_VIEW, [
-    event({ type: "run_start", inputs: [1] }),
-    event({
-      type: "entry_appended",
-      entry: entryOf({
-        id: 1,
-        conversationId: 1,
-        kind: "pi.user",
-        model: [{ role: "user", content: "show me", timestamp: 1 }],
-      }),
-    }),
-  ]);
-
-  apps = [];
-
-  if (seed.finished === true) {
-    view = reduceEvents(view, [
-      event({
-        type: "entry_appended",
-        entry: entryOf({
-          id: 2,
-          conversationId: 1,
-          kind: "pi.assistant",
-          model: [message([call({ title: "Hello", rows: ["abc"] })])],
-        }),
-      }),
-      event({
-        type: "entry_appended",
-        entry: entryOf({
-          id: 3,
-          conversationId: 1,
-          kind: "pi.tool",
-          model: [
-            {
-              role: "toolResult",
-              toolCallId: "c1",
-              toolName: NAME,
-              content: [{ type: "text", text: "done" }],
-              isError: false,
-              timestamp: 3,
-            },
-          ],
-        }),
-      }),
-      event({ type: "run_end", inputs: [1] }),
-    ]);
-    apps = [entry];
-  }
+  // The call finished before the page was opened: its message, result and record are all there from the start.
+  pi = seed.finished === true ? ended(USER, ANSWER, RESULT) : piView([USER], { run: RUN });
+  apps = seed.finished === true ? [entry] : [];
+  mirror = new ConversationMirror(() => Promise.reject(new Error("No pages in this test")));
+  mirror.receive({ type: "view", view: pi });
+  view = mirror.view(new Set([NAME]));
 
   asked.mount = 0;
   asked.page = 0;
@@ -397,16 +433,10 @@ const tick = async (ms: number) => {
 describe("an App call as it streams", () => {
   it("mounts at toolcall_start, streams its partial input, and the commit and the result remount nothing", async () => {
     await start();
-    await happens(event({ type: "message_start", message: message([]) }));
+    await happens(streams());
     expect(frames()).toHaveLength(0);
 
-    await happens(
-      update({
-        type: "toolcall_start",
-        contentIndex: 0,
-        block: call({ title: "", rows: ["a"] }),
-      }),
-    );
+    await happens(streams({ title: "", rows: ["a"] }));
 
     // The View mounts as the call starts, before any argument has arrived.
     expect(frames()).toHaveLength(1);
@@ -418,32 +448,16 @@ describe("an App call as it streams", () => {
     expect(partials(shown)).toEqual([{ title: "", rows: ["a"] }]);
 
     // Tokens arrive faster than the interval: the latest goes when it is up, not each.
-    await happens(
-      update({ type: "toolcall_delta", contentIndex: 0, path: ["title"], delta: "Hel" }),
-    );
-    await happens(
-      update({ type: "toolcall_delta", contentIndex: 0, path: ["title"], delta: "lo" }),
-    );
+    await happens(streams({ title: "Hel", rows: ["a"] }));
+    await happens(streams({ title: "Hello", rows: ["a"] }));
     expect(partials(shown)).toHaveLength(1);
     await tick(250);
     expect(partials(shown).at(-1)).toEqual({ title: "Hello", rows: ["a"] });
 
-    await happens(
-      update({ type: "toolcall_delta", contentIndex: 0, path: ["rows", 0], delta: "bc" }),
-    );
+    await happens(streams({ title: "Hello", rows: ["abc"] }));
 
     // The commit: the live message becomes the entry. The frame is the same element, and gets the final input once.
-    await happens(
-      event({
-        type: "message_end",
-        entry: entryOf({
-          id: 2,
-          conversationId: 1,
-          kind: "pi.assistant",
-          model: [message([call({ title: "Hello", rows: ["abc"] })])],
-        }),
-      }),
-    );
+    await happens(committed());
     expect(frames()).toEqual([frame]);
     expect(
       shown.methods().filter((method) => method === "ui/notifications/tool-input"),
@@ -455,34 +469,12 @@ describe("an App call as it streams", () => {
     ).toEqual({ arguments: { title: "Hello", rows: ["abc"] } });
 
     // The tool runs, ends, and its record and result entry arrive: the result reaches the same View.
-    await happens(
-      event({ type: "tool_execution_start", toolCallId: "c1", toolName: NAME, args: {} }),
-    );
+    await happens(toolRuns);
     expect(frames()).toEqual([frame]);
 
     apps = [entry];
-    await happens(
-      event({
-        type: "entry_appended",
-        entry: entryOf({
-          id: 3,
-          conversationId: 1,
-          kind: "pi.tool",
-          model: [
-            {
-              role: "toolResult",
-              toolCallId: "c1",
-              toolName: NAME,
-              content: [{ type: "text", text: "done" }],
-              isError: false,
-              timestamp: 3,
-            },
-          ],
-        }),
-      }),
-    );
-    await happens(event({ type: "tool_execution_end", toolCallId: "c1", toolName: NAME }));
-    await happens(event({ type: "run_end", inputs: [1] }));
+    await happens(resulted);
+    await happens(ended(USER, ANSWER, RESULT));
 
     expect(frames()).toEqual([frame]);
     expect(shown.methods().at(-1)).toBe("ui/notifications/tool-result");
@@ -492,10 +484,8 @@ describe("an App call as it streams", () => {
 
   it("tells the View its call did not finish when its message is cut, and keeps it mounted", async () => {
     await start();
-    await happens(event({ type: "message_start", message: message([]) }));
-    await happens(
-      update({ type: "toolcall_start", contentIndex: 0, block: call({ title: "Hel", rows: [] }) }),
-    );
+    await happens(streams());
+    await happens(streams({ title: "Hel", rows: [] }));
 
     const frame = frames()[0] as HTMLIFrameElement;
     const shown = viewOf(frame);
@@ -503,18 +493,8 @@ describe("an App call as it streams", () => {
     shown.handshake();
 
     // Stop: the message is committed as it was cut, and no tool runs.
-    await happens(
-      event({
-        type: "message_end",
-        entry: entryOf({
-          id: 2,
-          conversationId: 1,
-          kind: "pi.assistant",
-          model: [{ ...message([call({ title: "Hel", rows: [] })]), stopReason: "aborted" }],
-        }),
-      }),
-    );
-    await happens(event({ type: "run_end", inputs: [1] }));
+    await happens(committed(CUT));
+    await happens(ended(USER, CUT));
 
     expect(shown.methods().at(-1)).toBe("ui/notifications/tool-cancelled");
     expect(frames()).toEqual([frame]);
@@ -522,17 +502,15 @@ describe("an App call as it streams", () => {
 
   it("sends tool-cancelled before the teardown when the call goes from the transcript unfinished", async () => {
     await start();
-    await happens(event({ type: "message_start", message: message([]) }));
-    await happens(
-      update({ type: "toolcall_start", contentIndex: 0, block: call({ title: "Hel", rows: [] }) }),
-    );
+    await happens(streams());
+    await happens(streams({ title: "Hel", rows: [] }));
 
     const shown = viewOf(frames()[0] ?? null);
 
     shown.handshake();
 
     // The run ends and the message that was streaming is dropped, not committed.
-    await happens(event({ type: "run_end", inputs: [1] }));
+    await happens(ended(USER));
 
     expect(shown.methods().slice(-2)).toEqual([
       "ui/notifications/tool-cancelled",
@@ -542,19 +520,7 @@ describe("an App call as it streams", () => {
 
   it("does not mount a View for a stopped call that was never seen running: a later load shows the summary", async () => {
     await start();
-    view = reduceEvents(view, [
-      event({
-        type: "entry_appended",
-        entry: entryOf({
-          id: 2,
-          conversationId: 1,
-          kind: "pi.assistant",
-          model: [{ ...message([call({ title: "Hel", rows: [] })]), stopReason: "aborted" }],
-        }),
-      }),
-      event({ type: "run_end", inputs: [1] }),
-    ]);
-    publish();
+    changes(ended(USER, CUT));
     await tick(0);
 
     expect(host.textContent).toContain(NAME);
@@ -563,29 +529,15 @@ describe("an App call as it streams", () => {
 
   /** The call streams and commits, and its tool runs; its View is up and ready. */
   const running = async () => {
-    await happens(event({ type: "message_start", message: message([]) }));
-    await happens(
-      update({ type: "toolcall_start", contentIndex: 0, block: call({ title: "", rows: [] }) }),
-    );
+    await happens(streams());
+    await happens(streams({ title: "", rows: [] }));
 
     const frame = frames()[0] as HTMLIFrameElement;
     const shown = viewOf(frame);
 
     shown.handshake();
-    await happens(
-      event({
-        type: "message_end",
-        entry: entryOf({
-          id: 2,
-          conversationId: 1,
-          kind: "pi.assistant",
-          model: [message([call({ title: "Hello", rows: ["abc"] })])],
-        }),
-      }),
-    );
-    await happens(
-      event({ type: "tool_execution_start", toolCallId: "c1", toolName: NAME, args: {} }),
-    );
+    await happens(committed());
+    await happens(toolRuns);
 
     return { frame, shown };
   };
@@ -593,28 +545,8 @@ describe("an App call as it streams", () => {
   /** The tool ends with its result entry; its record is in the Session's list only when `recorded`. */
   const ends = async (recorded: boolean) => {
     apps = recorded ? [entry] : [];
-    await happens(
-      event({
-        type: "entry_appended",
-        entry: entryOf({
-          id: 3,
-          conversationId: 1,
-          kind: "pi.tool",
-          model: [
-            {
-              role: "toolResult",
-              toolCallId: "c1",
-              toolName: NAME,
-              content: [{ type: "text", text: "done" }],
-              isError: false,
-              timestamp: 3,
-            },
-          ],
-        }),
-      }),
-    );
-    await happens(event({ type: "tool_execution_end", toolCallId: "c1", toolName: NAME }));
-    await happens(event({ type: "run_end", inputs: [1] }));
+    await happens(resulted);
+    await happens(ended(USER, ANSWER, RESULT));
   };
 
   it("delivers the record's result when its viewHash is the one the page was read for", async () => {
@@ -739,10 +671,8 @@ describe("an App call as it streams", () => {
   it("sends a shadowed View no more of the call when its record arrives while the call still streams", async () => {
     await start({ pageView: "v-repo", recordView: "v-owner" });
 
-    await happens(event({ type: "message_start", message: message([]) }));
-    await happens(
-      update({ type: "toolcall_start", contentIndex: 0, block: call({ title: "He", rows: [] }) }),
-    );
+    await happens(streams());
+    await happens(streams({ title: "He", rows: [] }));
 
     const shown = viewOf(frames()[0] ?? null);
 
@@ -750,9 +680,7 @@ describe("an App call as it streams", () => {
 
     // The Session keeps the record while the model is still emitting the call (the server named is another's).
     apps = [entry];
-    await happens(
-      update({ type: "toolcall_delta", contentIndex: 0, path: ["title"], delta: "llo" }),
-    );
+    await happens(streams({ title: "Hello", rows: [] }));
     await tick(300);
 
     expect(shown.methods().slice(-2)).toEqual([

@@ -19,7 +19,15 @@ import {
   SessionProbe,
   type SessionClient,
 } from "./client.ts";
-import { FakeSocket, settle, type Value } from "./client.testing.ts";
+import {
+  FakeSocket,
+  opsFrame as changes,
+  RUN,
+  settle,
+  viewFrame as snapshot,
+  type Pi,
+  type Value,
+} from "./client.testing.ts";
 import type { OutgoingMessage, Reachability } from "./state.ts";
 
 /** Let `millis` of the test clock pass, and what it woke run. */
@@ -67,26 +75,8 @@ const entry = (id: number, text: string) => ({
   model: [{ role: "user", content: text, timestamp: id }],
 });
 
-const snapshot = (extra: { readonly [key: string]: Value } = {}) => ({
-  type: "events",
-  conversationId: 1,
-  events: [
-    {
-      type: "snapshot",
-      entries: [],
-      tools: [],
-      nestedTools: [],
-      compactions: [],
-      inbox: [],
-      agent: {},
-      usage: {},
-      ...extra,
-    },
-  ],
-});
-
 /** Connect, greet, and answer the watch, as a Session does. */
-const watching = (socket: FakeSocket, extra: { readonly [key: string]: Value } = {}) =>
+const watching = (socket: FakeSocket, extra: Pi = {}) =>
   Effect.gen(function* () {
     yield* socket.open();
     yield* socket.say({ type: "hello", root: 1 });
@@ -166,13 +156,13 @@ describe("a Session connection", () => {
         ]);
         expect(state().status).toBe("connecting");
 
-        yield* latest().say({ ...snapshot(), conversationId: 7 });
+        yield* latest().say(snapshot({}, 7));
 
         expect(state().status).toBe("live");
       }),
   );
 
-  it.effect("folds event batches into the view, a snapshot first", () =>
+  it.effect("applies the view's operations to the view, the view first", () =>
     Effect.gen(function* () {
       const { latest, state } = yield* setup();
 
@@ -182,14 +172,12 @@ describe("a Session connection", () => {
         [{ type: "text", text: "hello" }],
       ]);
 
-      yield* latest().say({
-        type: "events",
-        conversationId: 1,
-        events: [
-          { type: "run_start", inputs: [2] },
-          { type: "entry_appended", entry: entry(2, "more") },
-        ],
-      });
+      yield* latest().say(
+        changes(
+          { entries: [entry(1, "hello")] },
+          { entries: [entry(1, "hello"), entry(2, "more")], live: { run: RUN } },
+        ),
+      );
 
       expect(state().view).toMatchObject({ running: true });
       expect(state().view.messages).toHaveLength(2);
@@ -218,11 +206,7 @@ describe("a Session connection", () => {
 
       listener.mockClear();
       yield* Fiber.interrupt(subscription);
-      yield* latest().say({
-        type: "events",
-        conversationId: 1,
-        events: [{ type: "run_start", inputs: [1] }],
-      });
+      yield* latest().say(changes({}, { live: { run: RUN } }));
 
       expect(listener).not.toHaveBeenCalled();
     }),
@@ -283,11 +267,7 @@ describe("a Session connection", () => {
       const submit = latest().commands().at(-1);
 
       yield* latest().say({ type: "result", id: submit?.id, result: { submissionId: "sub-1" } });
-      yield* latest().say({
-        type: "events",
-        conversationId: 1,
-        events: [{ type: "inbox_update", items: [{ id: "sub-1", mode: "followUp" }] }],
-      });
+      yield* latest().say(changes({}, { inbox: [{ id: "sub-1", mode: "followUp" }] }));
 
       expect(state().queue).toEqual({
         steer: [],
@@ -317,11 +297,7 @@ describe("a Session connection", () => {
         expect(submit).toMatchObject({ type: "submit", input, whenBusy: "followUp" });
 
         yield* latest().say({ type: "result", id: submit?.id, result: { submissionId: "sub-1" } });
-        yield* latest().say({
-          type: "events",
-          conversationId: 1,
-          events: [{ type: "inbox_update", items: [{ id: "sub-1", mode: "followUp" }] }],
-        });
+        yield* latest().say(changes({}, { inbox: [{ id: "sub-1", mode: "followUp" }] }));
 
         expect(state().queue.followUp).toEqual([{ id: "sub-1", text: "look · Attached: a.png" }]);
       }),
@@ -1562,7 +1538,7 @@ describe("a Session connection", () => {
 
         expect(state().queue).toBe(before);
 
-        yield* latest().say({ type: "events", conversationId: 1, events: [] });
+        yield* latest().say({ type: "ops", conversationId: 1, ops: [] });
 
         expect(state().queue).toBe(before);
       }),
@@ -1639,18 +1615,14 @@ describe("a Session connection", () => {
 });
 
 /** Answer the watch of conversation `id`, and say its snapshot, as a Session does. */
-const watchingThread = (
-  socket: FakeSocket,
-  id: number,
-  extra: { readonly [key: string]: Value } = {},
-) =>
+const watchingThread = (socket: FakeSocket, id: number, extra: Pi = {}) =>
   Effect.gen(function* () {
     const watch = socket
       .commands()
       .find((command) => command.type === "watch" && command.conversationId === id);
 
     yield* socket.say({ type: "result", id: watch?.id, result: null });
-    yield* socket.say({ ...snapshot(extra), conversationId: id });
+    yield* socket.say(snapshot(extra, id));
   });
 
 const threadEntry = (conversationId: number, id: number, text: string) => ({
@@ -1688,11 +1660,13 @@ describe("a subagent's thread on a Session connection", () => {
           [{ type: "text", text: "root text" }],
         ]);
 
-        yield* latest().say({
-          type: "events",
-          conversationId: 2,
-          events: [{ type: "run_start", inputs: [5] }],
-        });
+        yield* latest().say(
+          changes(
+            { entries: [threadEntry(2, 5, "child text")] },
+            { entries: [threadEntry(2, 5, "child text")], live: { run: RUN } },
+            2,
+          ),
+        );
 
         expect(state().threads[2]?.view.running).toBe(true);
         expect(state().view.running).toBe(false);
@@ -1740,7 +1714,7 @@ describe("a subagent's thread on a Session connection", () => {
   );
 
   it.effect(
-    "is watched again, from a fresh snapshot, when the Session says hello on a new socket",
+    "is watched again, from after its newest entry, when the Session says hello on a new socket",
     () =>
       Effect.gen(function* () {
         const { client, sockets, latest, state } = yield* setup();
@@ -1758,9 +1732,9 @@ describe("a subagent's thread on a Session connection", () => {
 
         expect(reconnected.commands()).toEqual([
           { type: "watch", id: expect.any(String), conversationId: 1 },
-          { type: "watch", id: expect.any(String), conversationId: 2 },
+          { type: "watch", id: expect.any(String), conversationId: 2, from: 6 },
         ]);
-        // The last view stays until the snapshot replaces it.
+        // The last view stays until the new one is merged into it.
         expect(state().threads[2]?.view.messages).toHaveLength(1);
       }),
   );
@@ -1819,11 +1793,7 @@ describe("a subagent's thread on a Session connection", () => {
         .find((command) => command.type === "submit");
 
       yield* latest().say({ type: "result", id: submit?.id, result: { submissionId: 9 } });
-      yield* latest().say({
-        type: "events",
-        conversationId: 2,
-        events: [{ type: "inbox_update", items: [{ id: 9, mode: "followUp" }] }],
-      });
+      yield* latest().say(changes({}, { inbox: [{ id: 9, mode: "followUp" }] }, 2));
 
       expect(state().threads[2]?.queue.followUp).toEqual([{ id: "9", text: "later" }]);
       expect(state().queue.followUp).toEqual([]);
@@ -2823,56 +2793,101 @@ describe("the catalog and Slash commands", () => {
   );
 
   it.effect(
-    "loads a page of earlier History into the view of the conversation it was asked for",
+    "loads a page of earlier entries into the transcript of the conversation it was asked for",
     () =>
       Effect.gen(function* () {
         const { client, latest, state } = yield* setup();
 
-        const reset = (conversationId: number, id: number) => ({
-          ...threadEntry(conversationId, id, "handoff"),
-          kind: "pi.reset",
-          head: id,
-        });
-
-        yield* watching(latest(), { entries: [reset(1, 5), entry(6, "new")] });
+        yield* watching(latest(), { entries: [entry(6, "new")], before: 5 });
         yield* watchThread(client, 2);
-        yield* watchingThread(latest(), 2, { entries: [reset(2, 9)] });
+        yield* watchingThread(latest(), 2, { entries: [threadEntry(2, 10, "child")], before: 9 });
 
-        expect(state().view.before).toBe(5);
+        expect(state().view.earlier).toBe(true);
+        expect(state().threads["2"]?.view.earlier).toBe(true);
 
-        const root = yield* asking(client.loadEarlier(5));
-        const child = yield* asking(client.loadEarlier(9, 2));
+        const root = yield* asking(client.loadEarlier());
+        const child = yield* asking(client.loadEarlier(2));
 
         const [rootAsk, childAsk] = latest()
           .commands()
-          .filter((command) => command.type === "history");
+          .filter((command) => command.type === "entries");
 
-        expect(rootAsk).toEqual({ type: "history", id: rootAsk?.id, before: 5 });
+        expect(rootAsk).toEqual({
+          type: "entries",
+          id: rootAsk?.id,
+          query: { maxEntryId: 5, order: "descending" },
+          limit: 50,
+        });
         expect(childAsk).toEqual({
-          type: "history",
+          type: "entries",
           id: childAsk?.id,
-          before: 9,
           conversationId: 2,
+          query: { maxEntryId: 9, order: "descending" },
+          limit: 50,
         });
 
+        // The root's transcript goes back further; the thread's starts with the page.
         yield* latest().say({
           type: "result",
           id: rootAsk?.id,
-          result: { entries: [entry(3, "old")], before: 3 },
+          result: { items: [entry(5, "old")], next: {} },
         });
         yield* latest().say({
           type: "result",
           id: childAsk?.id,
-          result: { entries: [threadEntry(2, 8, "child")], before: null },
+          result: { items: [threadEntry(2, 9, "child old")] },
         });
         yield* Fiber.join(root);
         yield* Fiber.join(child);
 
-        expect(state().view.earlier.map((message) => message.id)).toEqual(["3"]);
-        expect(state().view.before).toBe(3);
-        expect(state().threads["2"]?.view.earlier.map((message) => message.id)).toEqual(["8"]);
-        expect(state().threads["2"]?.view.before).toBeNull();
+        expect(state().view.messages.map((message) => message.id)).toEqual(["5", "6"]);
+        expect(state().view.earlier).toBe(true);
+        expect(state().threads["2"]?.view.messages.map((message) => message.id)).toEqual([
+          "9",
+          "10",
+        ]);
+        expect(state().threads["2"]?.view.earlier).toBe(false);
       }),
+  );
+
+  it.effect("fills a gap a reconnect left in the transcript, a page at a time", () =>
+    Effect.gen(function* () {
+      const { sockets, latest, state } = yield* setup();
+
+      yield* watching(latest(), { entries: [entry(1, "kept")] });
+      yield* latest().drop();
+      yield* advance(60_000);
+
+      expect(sockets).toHaveLength(2);
+
+      // The watch continues the transcript, but more was written while away than a window holds.
+      yield* latest().open();
+      yield* latest().say({ type: "hello", root: 1 });
+
+      const watch = latest()
+        .commands()
+        .find((command) => command.type === "watch");
+
+      expect(watch).toEqual({ type: "watch", id: watch?.id, conversationId: 1, from: 2 });
+
+      yield* latest().say({ type: "result", id: watch?.id, result: null });
+      yield* latest().say(snapshot({ entries: [entry(9, "newest")], before: 8 }));
+
+      const ask = latest()
+        .commands()
+        .find((command) => command.type === "entries");
+
+      expect(ask).toMatchObject({ type: "entries", query: { minEntryId: 2, maxEntryId: 8 } });
+
+      yield* latest().say({
+        type: "result",
+        id: ask?.id,
+        result: { items: [entry(2, "missed"), entry(8, "missed too")] },
+      });
+      yield* settle;
+
+      expect(state().view.messages.map((message) => message.id)).toEqual(["1", "2", "8", "9"]);
+    }),
   );
 
   it.effect("runs a command and resolves with what it did, or rejects with why it could not", () =>
@@ -2948,10 +2963,10 @@ describe("a Session's tree", () => {
         expect(watch).toMatchObject({ type: "watch", conversationId: 7 });
         expect(state()).toMatchObject({ activeBranch: 7, treeVersion: 1 });
 
-        // The new branch's events are the root view's; the old one's are not.
+        // The new branch's view is the root view; the old one's is not.
         yield* latest().say({ type: "result", id: watch?.id, result: null });
-        yield* latest().say({ ...snapshot({ entries: [entry(3, "other")] }), conversationId: 7 });
-        yield* latest().say({ ...snapshot({ entries: [entry(2, "old")] }), conversationId: 1 });
+        yield* latest().say(snapshot({ entries: [entry(3, "other")] }, 7));
+        yield* latest().say(snapshot({ entries: [entry(2, "old")] }));
 
         expect(state().view.messages.map((message) => message.id)).toEqual(["3"]);
 
@@ -3039,17 +3054,22 @@ describe("the App calls on a Session connection", () => {
       yield* watching(latest());
       yield* latest().say(appTools);
 
-      const callOf = (name: string) => ({ type: "toolCall", id: name, name, arguments: { t: "" } });
+      const callOf = (name: string, t: string) => ({
+        type: "toolCall",
+        id: name,
+        name,
+        arguments: { t },
+      });
 
-      yield* latest().say({
-        type: "events",
-        conversationId: 1,
-        events: [
-          {
-            type: "message_start",
+      /** The model streams a message calling both tools, with `t` so far. */
+      const streams = (t: string): Pi => ({
+        live: {
+          run: RUN,
+          generation: {
+            attempt: 1,
             message: {
               role: "assistant",
-              content: [],
+              content: [callOf("mcp__docs__page", t), callOf("mcp__docs__other", t)],
               api: "",
               provider: "p",
               model: "m",
@@ -3058,18 +3078,11 @@ describe("the App calls on a Session connection", () => {
               timestamp: 1,
             },
           },
-          {
-            type: "message_update",
-            usage: {},
-            changes: [
-              { type: "toolcall_start", contentIndex: 0, block: callOf("mcp__docs__page") },
-              { type: "toolcall_start", contentIndex: 1, block: callOf("mcp__docs__other") },
-              { type: "toolcall_delta", contentIndex: 0, path: ["t"], delta: "abc" },
-              { type: "toolcall_delta", contentIndex: 1, path: ["t"], delta: "abc" },
-            ],
-          },
-        ],
+        },
       });
+
+      yield* latest().say(changes({}, streams("")));
+      yield* latest().say(changes(streams(""), streams("abc")));
 
       expect(state().view.live?.parts).toEqual([
         {
@@ -3082,7 +3095,7 @@ describe("the App calls on a Session connection", () => {
           type: "tool-call",
           id: "mcp__docs__other",
           name: "mcp__docs__other",
-          arguments: { t: "" },
+          arguments: {},
         },
       ]);
     }),

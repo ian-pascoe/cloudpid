@@ -1,7 +1,7 @@
 // What the `settings_mcp` read tools say, as text (`docs/architecture/mcp-configuration.md` → The agent's changes → Lists,
 // Results): the words of `settings_mcp_list`, `settings_mcp_get` and `settings_mcp_reload` over their values
 // (`./settings-mcp-values.ts`). It says only what a value holds: never a resolved `${NAME}`, a hash or a token.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off globalDate:off -- text built from plain values.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off globalDate:off -- text built from plain values.
 import * as Arr from "effect/Array";
 import type * as Schema from "effect/Schema";
 import { GLOBAL_SETTINGS_SCOPE } from "./settings.ts";

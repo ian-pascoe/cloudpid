@@ -5,7 +5,7 @@
 // @effect-diagnostics asyncFunction:off globalTimers:off preferEffectArray:off
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { FileWatcher, WatchChange } from "@earendil-works/pi-durable/env";
+import type { FileWatcher, FileChange } from "@earendil-works/pi-durable/env";
 import { type Call, isUnreachable } from "./client.ts";
 import { isWithin } from "./paths.ts";
 import type { ScanTarget, Snapshot } from "./wire.ts";
@@ -24,7 +24,7 @@ export class PollingWatcher implements FileWatcher {
   readonly mode = "polling";
   readonly #call: Call;
   readonly #targets: readonly ScanTarget[];
-  readonly #onChange: (change: WatchChange) => void;
+  readonly #onChange: (change: FileChange) => void;
   readonly #intervalMs: number;
   readonly #maxDirectories: number;
   #snapshot = new Map<string, string>();
@@ -37,7 +37,7 @@ export class PollingWatcher implements FileWatcher {
   private constructor(
     call: Call,
     targets: readonly ScanTarget[],
-    onChange: (change: WatchChange) => void,
+    onChange: (change: FileChange) => void,
     options: PollingOptions,
   ) {
     this.#call = call;
@@ -51,7 +51,7 @@ export class PollingWatcher implements FileWatcher {
   static async open(
     call: Call,
     targets: readonly ScanTarget[],
-    onChange: (change: WatchChange) => void,
+    onChange: (change: FileChange) => void,
     options: PollingOptions,
     context: Context,
   ) {
@@ -65,7 +65,7 @@ export class PollingWatcher implements FileWatcher {
     return { ok: true as const, value: watcher };
   }
 
-  async close(_context: Context): Promise<void> {
+  async stop(_context: Context): Promise<void> {
     this.#closed = true;
     clearTimeout(this.#timer);
     this.#timer = undefined;
@@ -101,7 +101,7 @@ export class PollingWatcher implements FileWatcher {
     }
 
     if (!next.ok) {
-      this.#deliver({ error: next.error });
+      this.#deliver({ kind: "failed", error: next.error });
       this.#closed = true;
 
       return;
@@ -114,8 +114,8 @@ export class PollingWatcher implements FileWatcher {
 
     if (this.#uncertain) {
       this.#uncertain = false;
-      this.#deliver({ overflow: true });
-    } else if (changed.size > 0) this.#deliver({ paths: [...changed].sort() });
+      this.#deliver({ kind: "overflow" });
+    } else if (changed.size > 0) this.#deliver({ kind: "paths", paths: [...changed].sort() });
   }
 
   #diff(next: ReadonlyMap<string, string>): Set<string> {
@@ -138,7 +138,7 @@ export class PollingWatcher implements FileWatcher {
     return this.#targets.find((target) => isWithin(target.path, path))?.path ?? path;
   }
 
-  #deliver(change: WatchChange): void {
+  #deliver(change: FileChange): void {
     if (this.#closed) return;
 
     try {

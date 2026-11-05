@@ -13,7 +13,7 @@
 // resolvers before and after, then `checkMcpWidening`) waits for the owner's Approval; one that narrows is made at once, the
 // Registry checking again as it writes (`./settings-mcp-commit.ts`). After a change is applied the Session pushes the new set
 // to the host of each Environment it reached (`pushMcpSet`).
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off
 import {
   isMcpToolName,
   MCP_EXPOSURES,

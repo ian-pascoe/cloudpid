@@ -30,7 +30,6 @@ import {
   type McpHostRequest,
   type McpHostRequestContext,
 } from "@cloudpid/mcp/types";
-import type { TSchema } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   type Extension,
@@ -161,13 +160,10 @@ export const listedTools = (
   Arr.filterMap(server.tools ?? [], (tool) => Result.fromOption(decodeTool(tool), () => undefined));
 
 /** A tool's `inputSchema` as its parameters: an object schema, or a loose object for anything else. */
-const parametersOf = (tool: ToolDeclaration): TSchema => {
+const parametersOf = (tool: ToolDeclaration): JsonObject => {
   const schema = tool.inputSchema;
 
-  // SAFETY: an object JSON Schema, which pi-ai's `TSchema` describes; TypeBox's are JSON Schema too.
-  return (
-    isJsonObject(schema) && schema["type"] === "object" ? schema : { type: "object" }
-  ) as TSchema;
+  return isJsonObject(schema) && schema["type"] === "object" ? schema : { type: "object" };
 };
 
 /** The request a call of `tool` of `server` sends. */

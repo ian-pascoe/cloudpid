@@ -17,7 +17,7 @@
 //   `GET /_bridge/status`.
 // - `x-cloudpid-spawn` (the spawn id, where a child is concerned) and `x-cloudpid-bridge` (the level) are on every
 //   response. `/_bridge/health`, `/_bridge/status` and `POST /_bridge/stop { key }` never spawn a child.
-// @effect-diagnostics nodeBuiltinImport:off processEnv:off globalConsole:off globalTimers:off globalDate:off globalRandom:off preferEffectArray:off preferEffectRecord:off strictBooleanExpressions:off newPromise:off asyncFunction:off unnecessaryArrowBlock:off schemaSync:off preferSchemaOverJson:off
+// @effect-diagnostics nodeBuiltinImport:off processEnv:off globalConsole:off globalTimers:off globalDate:off globalRandom:off preferEffectArray:off preferEffectRecord:off strictBooleanExpressions:off newPromise:off asyncFunction:off unnecessaryArrowBlock:off schemaSync:off globalJsonInEffect:off
 /* oxlint-disable anti-slop/no-runtime-typeof -- this file's JSON guards are where the bridge's input is decoded, and it has no dependency to decode it with */
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";

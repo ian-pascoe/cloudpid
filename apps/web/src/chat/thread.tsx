@@ -438,7 +438,8 @@ export const Thread = ({
             </ThreadPrimitive.Empty>
             <EarlierHistory
               conversation={conversationKey(sessionId, undefined)}
-              before={view.before}
+              earlier={view.earlier}
+              oldest={view.messages[0]?.id}
             />
             <Messages />
             {view.retry !== null && (

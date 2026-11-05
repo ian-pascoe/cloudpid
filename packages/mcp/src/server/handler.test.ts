@@ -939,7 +939,6 @@ describe("session_wait", () => {
 
   it.each([
     ["owner_needed", "cloudpid", /you cannot/],
-    ["stalled", "parked", /parked .* until the owner stops the Run/],
     ["timeout", "keep waiting", /session_wait again/],
     ["import_ended", "session_get", /session_get/],
   ] as const)(
@@ -953,7 +952,7 @@ describe("session_wait", () => {
 
       expect(result.structuredContent.next).toMatch(pattern);
 
-      if (ended_by === "timeout" || ended_by === "owner_needed" || ended_by === "stalled") {
+      if (ended_by === "timeout" || ended_by === "owner_needed") {
         expect(result.structuredContent.next).toContain('after="cur-9"');
       }
     },

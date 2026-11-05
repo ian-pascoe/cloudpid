@@ -27,7 +27,6 @@ const withLookups = <A, E>(use: (lookups: WorkspaceLookups) => Effect.Effect<A, 
     return { answer, held: yield* listings.held };
   }).pipe(
     // The test is the lookups' entry point, as the main Worker is.
-    // @effect-diagnostics-next-line strictEffectProvide:off
     Effect.provide(fileListingsLayer()),
     Effect.runPromise,
   );

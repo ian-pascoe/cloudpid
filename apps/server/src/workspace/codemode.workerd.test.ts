@@ -1,7 +1,8 @@
 // A Session's `codemode` tool over the real Workspace and sandbox Durable Objects.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off globalJsonInEffect:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
+import { ConversationMirror } from "@cloudpid/protocol/mirror";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
@@ -158,10 +159,15 @@ describe("the codemode tool", () => {
       await instance.holding.promise;
 
       // A client that watches sees the calls under the `codemode` call that is running them.
-      const { nestedTools, tools } = await instance.snapshot();
-      const parent = tools.find((slot) => slot.name === "codemode");
+      const mirror = new ConversationMirror(() => Promise.reject(new Error("No pages here")));
 
-      expect(parent?.status).toBe("running");
+      mirror.receive({ type: "view", view: await instance.view() });
+
+      const { nestedTools, tools } = mirror.view();
+      // The view's `tools` are the running calls only, so finding it there is finding it running.
+      const parent = tools.find((tool) => tool.name === "codemode");
+
+      expect(parent).toBeDefined();
       expect(
         nestedTools.map(({ name, status, parentCallId }) => ({ name, status, parentCallId })),
       ).toEqual([

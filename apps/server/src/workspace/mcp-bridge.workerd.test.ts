@@ -2,7 +2,7 @@
 // D5.1): a request the MCP engine made, handed to `mcpBridge(request, { start, use })` as the Workspaces Worker's
 // `WorkspaceMcpBridge` entrypoint hands it, and answered from a fake bridge on the fake Container
 // (`TestWorkspace.fakeBridge`), with the bridge token the launch record holds as its bearer.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off newPromise:off globalTimers:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off newPromise:off globalTimers:off
 import { env, exports } from "cloudflare:workers";
 import { MCP_BRIDGE_CONFIG_HEADER } from "@cloudpid/sandbox-image/mcp-bridge";
 import { describe, expect, it, vi } from "vitest";

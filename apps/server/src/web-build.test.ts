@@ -84,11 +84,7 @@ const checkout = () => {
 
 type Props = ReturnType<typeof checkout>["props"];
 
-const session: ScopedPlanStatusSession = {
-  emit: () => Effect.void,
-  done: () => Effect.void,
-  note: () => Effect.void,
-};
+const session: ScopedPlanStatusSession = { note: () => Effect.void };
 
 const run = <A, E>(effect: Effect.Effect<A, E, Provider.Provider<Build>>) =>
   Effect.runPromise(

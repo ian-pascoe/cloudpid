@@ -12,14 +12,14 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@alchemy.run/cloudflare": "2.0.0-beta.84",
+    "@alchemy.run/cloudflare": "2.0.0-beta.85",
     "@cloudpid/server": "workspace:*",
     "@cloudpid/telemetry": "workspace:*",
-    "alchemy": "2.0.0-beta.84",
-    "effect": "^4.0.6"
+    "alchemy": "2.0.0-beta.85",
+    "effect": "^4.1.2"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.8",
+    "@cloudflare/vitest-plugin": "^1.5.1",
     "@cloudpid/config": "workspace:*"
   }
 }

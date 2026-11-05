@@ -133,7 +133,7 @@ describe("the Session's Slash commands", () => {
     expect(order).toEqual(order.toSorted((a, b) => a - b));
   });
 
-  it("answer history with what a snapshot leaves out after a compaction", async () => {
+  it("keep what a compaction summarized in the view, and page it with entries", async () => {
     const stub = await compacting();
 
     await runInDurableObject(stub, async (instance: TestSession) => {
@@ -153,29 +153,35 @@ describe("the Session's Slash commands", () => {
     const answer = await runInDurableObject(stub, async (instance: TestSession) => {
       await instance.prompt({ requestId: "two", text: "Later" });
 
-      const snapshot = await instance.snapshot();
-      const marker = snapshot.entries[0];
+      const { entries } = await instance.snapshot();
+      const marker = entries.find((entry) => entry.kind === "pi.compaction");
 
-      if (marker?.head === undefined) throw new Error("The snapshot has no head marker");
+      const head = marker?.head;
 
-      const shown = new Set<number>(Arr.map(snapshot.entries, (entry) => entry.id));
-      const page = await instance.history(marker.head);
+      if (marker === undefined || head === undefined) throw new Error("The view has no compaction");
+
+      // The transcript's page before the marker's head, as a client's "Show earlier messages" asks for it.
+      const page = await instance.entryPage({ maxEntryId: head, order: "descending" }, 50);
 
       return {
-        marker: marker.kind,
-        kinds: Arr.map(page.entries, (entry) => entry.kind),
-        overlaps: Arr.some(page.entries, (entry) => shown.has(entry.id)),
-        first: page.entries[0]?.model?.[0],
-        before: page.before,
+        users: entries.flatMap((entry) => {
+          const message = entry.model?.[0];
+
+          return message?.role === "user" && entry.kind === "pi.user" ? [message.content] : [];
+        }),
+        summarized: entries.findIndex((entry) => entry.id === marker.id) > 0,
+        paged: Arr.map(page.items, (entry) => entry.id),
+        before: entries.filter((entry) => entry.id <= head).map((entry) => entry.id),
+        more: page.next !== undefined,
       };
     });
 
-    expect(answer.marker).toBe("pi.compaction");
-    // Everything before the window, oldest first, none of it in the snapshot, and nothing left before it.
-    expect(answer.first).toMatchObject({ role: "user", content: "First" });
-    expect(answer.overlaps).toBe(false);
-    expect(answer.kinds).not.toContain("pi.system");
-    expect(answer.before).toBeNull();
+    // The view holds the transcript with the marker where it was written, the messages it summarized before it.
+    expect(answer.users).toEqual(["First", "Later"]);
+    expect(answer.summarized).toBe(true);
+    // The page is the same entries, newest first, and nothing is left before them.
+    expect(answer.paged).toEqual(answer.before.toReversed());
+    expect(answer.more).toBe(false);
   });
 
   it("export the whole History as Markdown with /export", async () => {

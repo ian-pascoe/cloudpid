@@ -5,7 +5,7 @@
 // round resumes. An owner who refuses the Sampling request ends the call: the form beside it is withdrawn and the agent
 // reads `sampling_refused`.
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off globalTimers:off globalJsonInEffect:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { ASK_TOOL, modernServer, rpcMethods } from "@cloudpid/mcp/testing";

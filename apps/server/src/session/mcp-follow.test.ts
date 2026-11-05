@@ -10,7 +10,6 @@ const state = (extra: Partial<FollowState> = {}): FollowState => ({
   idle: true,
   following: false,
   unsettled: false,
-  stalled: false,
   newestEntry: 10,
   agents: {},
   ...extra,
@@ -84,10 +83,9 @@ describe("endedBy with a cursor", () => {
     ).toBe("run_ended");
   });
 
-  it("returns when an import that was going has ended, and when a task is parked", () => {
+  it("returns when an import that was going has ended", () => {
     expect(endedBy(snapshot(), cursor({ i: true }))).toBe("import_ended");
     expect(endedBy(snapshot({ copying: true }), cursor({ i: true }))).toBeUndefined();
-    expect(endedBy(snapshot({ stalled: true, idle: false }), cursor())).toBe("stalled");
   });
 
   it("keeps waiting on an idle Session with nothing new", () => {
@@ -110,7 +108,6 @@ describe("endedBy without a cursor", () => {
       "run_ended",
     );
     expect(endedBy(snapshot(), undefined)).toBe("timeout");
-    expect(endedBy(snapshot({ stalled: true, idle: false }), undefined)).toBe("stalled");
   });
 
   it("returns at once for an import that is going, which is no Run, and its cursor ends with the import", () => {
@@ -120,9 +117,5 @@ describe("endedBy without a cursor", () => {
     expect(cursorOf(importing).i).toBe(true);
     expect(endedBy(importing, cursorOf(importing))).toBeUndefined();
     expect(endedBy(snapshot(), cursorOf(importing))).toBe("import_ended");
-    // A parked task or a request the import's end finds does not hide that it ended: a Run comes first, then the rest.
-    expect(endedBy(snapshot({ stalled: true, idle: false }), cursorOf(importing))).toBe(
-      "import_ended",
-    );
   });
 });

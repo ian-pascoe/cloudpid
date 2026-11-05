@@ -136,7 +136,11 @@ const LiveChildThread = ({
                   <ThreadPrimitive.Empty>
                     <p className="py-4 text-center text-sm text-muted-foreground">Nothing yet.</p>
                   </ThreadPrimitive.Empty>
-                  <EarlierHistory conversation={key} before={thread.view.before} />
+                  <EarlierHistory
+                    conversation={key}
+                    earlier={thread.view.earlier}
+                    oldest={thread.view.messages[0]?.id}
+                  />
                   {messages}
                 </div>
               </ThreadPrimitive.Viewport>

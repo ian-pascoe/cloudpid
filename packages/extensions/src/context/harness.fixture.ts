@@ -12,7 +12,6 @@ import {
   fauxToolCall,
   type Message,
   type ToolCall,
-  Type,
 } from "@earendil-works/pi-ai";
 import {
   type ConversationId,
@@ -28,6 +27,7 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import { ContextManagement } from "../context.ts";
 import { defaultSubagentSettings, Subagents } from "../subagents.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 export const context = BACKGROUND_CONTEXT;
 
@@ -50,13 +50,13 @@ const Tools = defineExtension({
     defineTool({
       name: "big",
       description: "Return a large output",
-      parameters: Type.Object({}),
+      parameters: obj({}),
       execute: async () => ({ output: [{ type: "text", text: "x".repeat(BIG_OUTPUT) }] }),
     }),
     defineTool({
       name: "noop",
       description: "Do nothing",
-      parameters: Type.Object({}),
+      parameters: obj({}),
       execute: async () => ({ output: [{ type: "text", text: "noop ran" }] }),
     }),
   ],

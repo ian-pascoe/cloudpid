@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferSchemaOverJson:off strictEffectProvide:off missingPipeableSignature:off -- a fake browser over native arrays, speaking CDP's plain JSON, given to each test's Live View.
+// @effect-diagnostics preferEffectArray:off globalJsonInEffect:off strictEffectProvide:off missingPipeableSignature:off -- a fake browser over native arrays, speaking CDP's plain JSON, given to each test's Live View.
 
 // A fake Browser Run and link source for the Live View's tests: page sockets that answer CDP commands, and the links
 // that open them.

@@ -9,7 +9,7 @@
 //
 // `environment.ts` imports this module through `./environment-skills.ts`, so what it takes from `environment.ts` is used
 // inside functions only: its exports are not there yet when this module loads.
-// @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off asyncFunction:off globalJsonInEffect:off
 import { SkillInstallPin, skillField, skillSourceText } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";

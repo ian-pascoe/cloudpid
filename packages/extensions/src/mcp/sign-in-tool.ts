@@ -10,7 +10,6 @@ import { ChordContext, reachedWait } from "@cloudpid/effect-durable";
 import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
 import { MAX_SIGN_IN_REASON } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
-import type { TSchema } from "@earendil-works/pi-ai";
 import type {
   ToolExecutionApi,
   ToolExecutionResult,
@@ -46,7 +45,6 @@ export const signsIn = (entry: JsonObject): boolean => {
   );
 };
 
-// SAFETY: an object JSON Schema, which pi-ai's `TSchema` describes (TypeBox's are JSON Schema too).
 const PARAMETERS = {
   type: "object",
   properties: {
@@ -63,7 +61,7 @@ const PARAMETERS = {
   },
   required: ["server", "reason"],
   additionalProperties: false,
-} as TSchema;
+};
 
 const DESCRIPTION = Arr.join(
   [

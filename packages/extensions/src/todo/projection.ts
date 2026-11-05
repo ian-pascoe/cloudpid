@@ -10,7 +10,7 @@
 //   first message, as it stood when the window's first request was made, and records that text in the document, so every
 //   later request of the window sends the same bytes. A recorded text is never rewritten, and a window that holds a
 //   `todo` result gets none.
-// - The list changed and no result shows it: a Stop during a script after its nested call, an interrupted call, parallel
+// - The list changed and no result shows it: a call whose end skipped the hooks (past the restart limit), parallel
 //   scripts whose results finish out of order, a fork. Rare, so it gets a note at the end of the request, which lasts
 //   until the model calls `todo` and its result shows the list.
 //

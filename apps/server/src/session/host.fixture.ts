@@ -64,8 +64,8 @@ import type {
   Comparison,
   ConfigureRequest,
   ConversationId,
+  EntriesPage,
   FileMatches,
-  HistoryPage,
   LastRun,
   McpPromptRef,
   McpResourceMenu,
@@ -113,9 +113,13 @@ import {
   type Extension,
   type HarnessOptions,
   LiveDoc,
+  type ConversationView,
+  type EntryQuery,
+  type LiveState,
+  type NestedToolSlot,
   ROOT_CONVERSATION_ID,
-  type SnapshotEvent,
   type TaskId,
+  type ToolSlot,
   ToolResultEntry,
 } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -1926,22 +1930,36 @@ export class TestSession extends DurableObject {
     this.#gate.resolve();
   }
 
-  /** The snapshot a client's watch of the root conversation starts with, as the Session sends it. */
-  snapshot(): Promise<SnapshotEvent> {
+  /** The view a client's watch of the root conversation starts with, as the Session sends it. */
+  view(): Promise<ConversationView> {
     const host = this.#host;
 
     return Effect.runPromise(
-      Effect.flatMap(host.root, (root) => Stream.runHead(host.events(root))).pipe(
+      Effect.flatMap(host.root, (root) => Stream.runHead(host.conversationView(root))).pipe(
         Effect.flatMap(
-          Option.match({ onNone: () => Effect.die("No snapshot"), onSome: Effect.succeed }),
+          Option.match({ onNone: () => Effect.die("No view"), onSome: Effect.succeed }),
         ),
-        Effect.flatMap((batch) => {
-          const [first] = batch;
-
-          return first?.type === "snapshot" ? Effect.succeed(first) : Effect.die("Not a snapshot");
-        }),
+        Effect.flatMap((frame) =>
+          frame.type === "view" ? Effect.succeed(frame.view) : Effect.die("Not a view"),
+        ),
       ),
     );
+  }
+
+  /**
+   * What the view a client's watch of the root conversation starts with shows: its window's entries, and the running
+   * round's tool calls and their nested calls.
+   */
+  async snapshot(): Promise<{
+    readonly entries: ConversationView["entries"];
+    readonly tools: readonly ToolSlot[];
+    readonly nestedTools: readonly NestedToolSlot[];
+  }> {
+    const view = await this.view();
+    // SAFETY: `pi.live` is pi's live document, with its shape.
+    const live = (view.docs["pi.live"] ?? {}) as LiveState;
+
+    return { entries: view.entries, tools: live.tools ?? [], nestedTools: live.nestedTools ?? [] };
   }
 
   /** What the Session has spent, in US dollars: every conversation's requests and the title calls'. */
@@ -2153,9 +2171,9 @@ export class TestSession extends DurableObject {
     return this.#runtime.runPromise(this.#host.files({ query }));
   }
 
-  /** A page of the root conversation's History before entry `before`, as a client's `history` gets it. */
-  history(before: number): Promise<HistoryPage> {
-    return this.#runtime.runPromise(this.#host.history({ before }));
+  /** A page of the root conversation's entries, as a client's `entries` gets it. */
+  entryPage(query: Omit<EntryQuery, "conversationId">, limit: number): Promise<EntriesPage> {
+    return this.#runtime.runPromise(this.#host.entryPage({ query, limit }));
   }
 
   /** The Session tree, as a client's `tree` gets it. */

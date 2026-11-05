@@ -19,7 +19,7 @@
 //   messages are not uses, so a stdio server never keeps the Container awake between requests.
 // - A bridge that does not answer (it exited, and nothing restarts it; the Container has none; or it refuses the launch's
 //   token) answers 502 `bridge_unreachable`, which says that `container_restart` starts a new one.
-// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off preferSchemaOverJson:off preferEffectRecord:off missingPipeableSignature:off
+// @effect-diagnostics asyncFunction:off globalTimers:off newPromise:off globalJsonInEffect:off preferEffectRecord:off missingPipeableSignature:off
 import {
   MCP_BRIDGE_CONTAINER_HEADER,
   MCP_BRIDGE_HEALTH_PATH,

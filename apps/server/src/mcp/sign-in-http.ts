@@ -8,7 +8,7 @@
 // page whose Continue is a `POST` (the owner's own click), and a `POST` needs an `Origin` equal to the origin the start was
 // made on and the same-origin header. Nothing here logs a URL, a query or a body: a callback's address holds a single-use
 // code.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off globalJsonInEffect:off
 import { mcpClientNameFor } from "@cloudpid/config";
 import { boundedText } from "@cloudpid/mcp/oauth";
 import {

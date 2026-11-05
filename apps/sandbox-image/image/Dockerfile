@@ -6,19 +6,19 @@
 
 # Keep in step with the version of @cloudflare/computer the Workspace DO runs (apps/sandbox-image/src/index.test.ts
 # fails when they differ): the Workspace and computerd speak a sync protocol that is not stable across releases.
-ARG COMPUTERD_VERSION=0.8.0
-ARG MISE_VERSION=v2026.10.17
-ARG MISE_SHA256=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a
+ARG COMPUTERD_VERSION=0.9.0
+ARG MISE_VERSION=v2026.11.2
+ARG MISE_SHA256=62cad463c1413f05398ca339168a8f655120b6f0b0b8adce3bc6758bafaf0602
 
 # Every base image is pinned by digest as well as by tag, so a rebuild cannot move to another computerd build or Ubuntu
 # point release. Refresh a digest together with its tag: computerd's is the manifest of
 # `ghcr.io/cloudflare/computer-computerd-linux-x64:<COMPUTERD_VERSION>`, Ubuntu's the index of `ubuntu:26.04`.
 
 # A single layer over scratch whose only content is the computerd binary at /usr/local/bin/computerd.
-FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:de6f3727a12c8adb2f8ece853105ccc461fef02f90e368fac4e0578eacc461aa AS computerd
+FROM --platform=linux/amd64 ghcr.io/cloudflare/computer-computerd-linux-x64:${COMPUTERD_VERSION}@sha256:fd6a0bcd033345a34f9106f916898c2a63619d51c91c56f1044960a49714d17c AS computerd
 
 # mise is fetched and checked against its digest in a stage of its own, so the final image holds only the binary.
-FROM --platform=linux/amd64 ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd AS mise
+FROM --platform=linux/amd64 ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c AS mise
 ARG MISE_VERSION
 ARG MISE_SHA256
 RUN apt-get update \
@@ -27,7 +27,7 @@ RUN apt-get update \
  && echo "${MISE_SHA256}  /mise" | sha256sum -c - \
  && chmod 755 /mise
 
-FROM --platform=linux/amd64 ubuntu:26.04@sha256:0e73b71479e7bc5f006bca872e25c3cd680dc052a0116f90d63ae363537db0dd
+FROM --platform=linux/amd64 ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 
 # The everyday tools agents and scripts expect (#169; some from exe.dev's exeuntu list), build-essential and the
 # headers native npm and pip packages build against, Docker for Start Scripts' services, and earlyoom, the memory guard

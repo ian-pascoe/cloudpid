@@ -1,6 +1,6 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { getOrThrow, type WatchChange } from "@earendil-works/pi-durable/env";
+import { getOrThrow, type FileChange } from "@earendil-works/pi-durable/env";
 import { describe, expect, it } from "vitest";
 import { caller } from "./client.ts";
 import { PollingWatcher } from "./watch.ts";
@@ -25,7 +25,7 @@ const scripted = (steps: ReadonlyArray<Snapshot | "unreachable">) => {
 };
 
 const changes = async (steps: ReadonlyArray<Snapshot | "unreachable">) => {
-  const seen: WatchChange[] = [];
+  const seen: FileChange[] = [];
 
   const watcher = getOrThrow(
     await PollingWatcher.open(
@@ -38,7 +38,7 @@ const changes = async (steps: ReadonlyArray<Snapshot | "unreachable">) => {
   );
 
   await new Promise((resolve) => setTimeout(resolve, 100));
-  await watcher.close(BACKGROUND_CONTEXT);
+  await watcher.stop(BACKGROUND_CONTEXT);
 
   return seen;
 };
@@ -48,14 +48,14 @@ describe("PollingWatcher", () => {
     const before: Snapshot = [["/workspace/a", "1"]];
     const after: Snapshot = [["/workspace/a", "2"]];
 
-    expect(await changes([before, after])).toEqual([{ paths: ["/workspace/a"] }]);
+    expect(await changes([before, after])).toEqual([{ kind: "paths", paths: ["/workspace/a"] }]);
   });
 
   it("keeps polling through an unreachable Workspace DO and reports overflow once it answers", async () => {
     const snapshot: Snapshot = [["/workspace/a", "1"]];
 
     expect(await changes([snapshot, "unreachable", "unreachable", snapshot])).toEqual([
-      { overflow: true },
+      { kind: "overflow" },
     ]);
   });
 });

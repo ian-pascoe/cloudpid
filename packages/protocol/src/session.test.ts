@@ -21,22 +21,64 @@ const readClient = (text: string) =>
   decodeClientMessage(text).pipe(Effect.option, Effect.runPromise);
 
 describe("the Session socket messages", () => {
-  it("carry pi's agent events unchanged", async () => {
-    const events = [
-      { type: "run_start", inputs: [1] },
-      {
-        type: "message_update",
-        usage: { input: 1 },
-        changes: [{ type: "text_delta", contentIndex: 0, delta: "Hi" }],
-      },
+  it("carry pi's conversation view and its operations unchanged", async () => {
+    const view = {
+      conversation: { id: 1 },
+      entries: [{ id: 1, conversationId: 1, kind: "pi.user", model: [] }],
+      docs: { "pi.live": { run: { taskId: 2, inputs: [1], turns: 0 } } },
+    };
+
+    const ops = [
+      ["a", ["docs", "pi.live", "generation", "message", "content", 0, "text"], "Hi"],
+      ["p", ["entries"], 1, 0, [{ id: 2, conversationId: 1, kind: "pi.assistant" }]],
     ];
 
-    const text = JSON.stringify({ type: "events", conversationId: 1, events });
+    for (const message of [
+      { type: "view", conversationId: 1, view },
+      { type: "ops", conversationId: 1, ops },
+    ]) {
+      const text = JSON.stringify(message);
+      const decoded = await readServer(text);
 
-    const decoded = await readServer(text);
+      expect(decoded).toEqual(message);
+      expect(await Effect.runPromise(Schema.encodeEffect(ServerMessageJson)(decoded))).toBe(text);
+    }
+  });
 
-    expect(decoded).toEqual({ type: "events", conversationId: 1, events });
-    expect(await Effect.runPromise(Schema.encodeEffect(ServerMessageJson)(decoded))).toBe(text);
+  it("refuse operations Chord's applier would refuse", async () => {
+    for (const ops of [[["x", ["a"]]], [["s", ["__proto__", "polluted"], true]], [["a", "text"]]]) {
+      await expect(
+        readServer(JSON.stringify({ type: "ops", conversationId: 1, ops })),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("read a watch that resumes after an entry, and a page of entries", async () => {
+    expect(await readClient('{"type":"watch","id":"1","conversationId":2,"from":7}')).toEqual(
+      Option.some({ type: "watch", id: "1", conversationId: 2, from: 7 }),
+    );
+    expect(
+      await readClient(
+        '{"type":"entries","id":"2","query":{"maxEntryId":6,"order":"descending"},"limit":50}',
+      ),
+    ).toEqual(
+      Option.some({
+        type: "entries",
+        id: "2",
+        query: { maxEntryId: 6, order: "descending" },
+        limit: 50,
+      }),
+    );
+
+    for (const text of [
+      '{"type":"watch","conversationId":2,"from":0}',
+      '{"type":"entries","query":{},"limit":0}',
+      '{"type":"entries","query":{},"limit":201}',
+      '{"type":"entries","query":{"order":"sideways"},"limit":5}',
+      '{"type":"entries","query":{"conversationId":3},"limit":5}',
+    ]) {
+      expect(await readClient(text)).toEqual(Option.none());
+    }
   });
 
   it("carry which of the model and thinking level the Session picked", async () => {

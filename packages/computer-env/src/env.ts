@@ -22,7 +22,7 @@ import {
   type ShellExecOptions,
   type ShellExecResult,
   type TextLineReader,
-  type WatchChange,
+  type FileChange,
   type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 import { abortedResult, type Call, caller, type ComputerEnvHost } from "./client.ts";
@@ -283,7 +283,7 @@ export class ComputerExecutionEnv implements ExecutionEnv {
 
   async watch(
     targets: readonly WatchTarget[],
-    onChange: (change: WatchChange) => void,
+    onChange: (change: FileChange) => void,
     context: Context,
   ): Promise<Result<FileWatcher, FileError>> {
     const resolved = targets.map((target) => ({
@@ -300,7 +300,7 @@ export class ComputerExecutionEnv implements ExecutionEnv {
     const aborted = abortedResult<FileWatcher>(context);
 
     if (aborted === undefined) return watcher;
-    await watcher.value.close(context);
+    await watcher.value.stop(context);
 
     return aborted;
   }

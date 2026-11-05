@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off preferSchemaOverJson:off globalDate:off globalDateInEffect:off -- in-memory fakes of the Registry over native arrays, provided to each test, and fixtures written as JSON text.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off globalJsonInEffect:off globalDate:off globalDateInEffect:off -- in-memory fakes of the Registry over native arrays, provided to each test, and fixtures written as JSON text.
 
 // The MCP servers section of the Settings page at a Scope, rendered with `react-dom/server` over the fake Registry: the
 // queries a page reads are settled first, so the markup shows what they answered. The changes the owner's actions make

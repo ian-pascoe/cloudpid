@@ -196,7 +196,6 @@ const ENDED_BY = {
   run_ended: "the Run ended",
   owner_needed: "a request is waiting for the owner",
   import_ended: "the import ended",
-  stalled: "the Run is stalled: a task is parked",
   timeout: "the wait ended with nothing new",
 } as const;
 

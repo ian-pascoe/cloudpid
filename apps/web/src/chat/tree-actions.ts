@@ -76,9 +76,7 @@ export const useBranchMove = (
     const apps = appEntries(registry.get(mcpAppsAtom(sessionId)));
 
     const dropped =
-      tree === null
-        ? new Set<string>()
-        : callsDroppedBy([...view.earlier, ...view.messages], apps, keep(tree));
+      tree === null ? new Set<string>() : callsDroppedBy(view.messages, apps, keep(tree));
 
     afterBranchTeardown(dropped, () =>
       move().then((exit) => {

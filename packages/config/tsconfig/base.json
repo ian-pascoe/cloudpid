@@ -106,7 +106,7 @@
           "preferEffectArray": "warning",
           "preferEffectRecord": "warning",
           "preferNamespaceImport": "warning",
-          "preferSchemaOverJson": "warning",
+          "globalJsonInEffect": "warning",
           "preferSchemaTaggedError": "warning",
           "preferSchemaTypeProperty": "warning",
           "preferSucceedSomeOrNone": "error",

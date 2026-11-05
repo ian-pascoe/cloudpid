@@ -14,20 +14,20 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@alchemy.run/cloudflare": "2.0.0-beta.84",
+    "@alchemy.run/cloudflare": "2.0.0-beta.85",
     "@cloudpid/mcp": "workspace:*",
     "@cloudpid/sandbox-image": "workspace:*",
     "@cloudpid/telemetry": "workspace:*",
-    "alchemy": "2.0.0-beta.84",
-    "effect": "^4.0.6",
-    "typebox": "1.3.27"
+    "alchemy": "2.0.0-beta.85",
+    "effect": "^4.1.2",
+    "typebox": "1.4.4"
   },
   "devDependencies": {
-    "@alchemy.run/cloudflare-runtime": "2.0.0-beta.84",
-    "@cloudflare/vitest-plugin": "^1.4.8",
+    "@alchemy.run/cloudflare-runtime": "2.0.0-beta.85",
+    "@cloudflare/vitest-plugin": "^1.5.1",
     "@cloudpid/config": "workspace:*",
     "@cloudpid/protocol": "workspace:*",
-    "@earendil-works/pi-mcp": "1.4.0",
-    "rolldown": "1.2.13"
+    "@earendil-works/pi-mcp": "1.5.0",
+    "rolldown": "1.2.16"
   }
 }

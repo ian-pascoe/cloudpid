@@ -2,7 +2,7 @@
  * What the engine scrubs (`scrub.ts`; `docs/architecture/mcp-connections.md` → Telemetry): the string values of what a
  * server says, never a key, a number or the engine's own fields, and never a name, which is left out instead.
  */
-// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off strictEffectProvide:off schemaSync:off preferSchemaOverJson:off globalDate:off
+// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off strictEffectProvide:off schemaSync:off globalJsonInEffect:off globalDate:off
 import {
   type FakeServer,
   fetchTo,

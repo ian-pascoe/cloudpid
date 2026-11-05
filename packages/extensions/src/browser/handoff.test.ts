@@ -1,6 +1,6 @@
 // A Browser Handoff's request (`./handoff.ts`): shown to the owner and pushed, waited on until the owner finishes or it
 // times out, withdrawn when its call ends, and found again after an eviction (a second store over the same storage).
-// @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics strictEffectProvide:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";

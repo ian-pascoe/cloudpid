@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off preferSchemaOverJson:off globalDate:off globalDateInEffect:off -- in-memory fakes of the Registry over native arrays, and fixtures written as JSON text.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off globalJsonInEffect:off globalDate:off globalDateInEffect:off -- in-memory fakes of the Registry over native arrays, and fixtures written as JSON text.
 
 // What the MCP servers section shows and does of the owner's MCP sign-ins (docs/architecture/mcp-sign-in.md → Settings,
 // Sign-out): the chips, the Sign in and Sign out controls, the "Signs in on its own" row, the Sign-ins list at Global, the

@@ -1,13 +1,16 @@
 // @effect-diagnostics preferEffectArray:off -- plain arrays of pi's messages.
-// Bounding the screenshots a request and a snapshot carry.
+// Bounding the screenshots a request and what a conversation's watch sends carry.
+import type { Op } from "@earendil-works/chord/delta";
 import type { Message } from "@earendil-works/pi-ai";
+import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
-import type { AgentEvent } from "@earendil-works/pi-durable";
-import { limitEntryImages, limitEventImages, limitImages, OMITTED_IMAGE } from "./images.ts";
-
-// SAFETY: a fixture holds only the fields the limit reads; the other fields of pi's event are never looked at.
-const asEvent = (event: { readonly type: string; readonly entries?: unknown }): AgentEvent =>
-  event as AgentEvent;
+import {
+  limitEntryImages,
+  limitImages,
+  limitOpsImages,
+  limitViewImages,
+  OMITTED_IMAGE,
+} from "./images.ts";
 
 const shot = (data: string) => ({ type: "image" as const, data, mimeType: "image/jpeg" });
 
@@ -29,23 +32,82 @@ const imagesOf = (messages: readonly Message[]) =>
       : [],
   );
 
+// SAFETY: a fixture holds only the fields the limit reads; the other fields of pi's entry are never looked at.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+const entry = (id: number, ...model: Message[]) => ({ id, model }) as unknown as EntryRecord;
+
+const view = (...entries: EntryRecord[]) =>
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: as above, for pi's conversation view.
+  ({ conversation: { id: 1 }, entries, docs: {} }) as unknown as ConversationView;
+
+/** The JSON values an operation puts into a view: a whole view, entries, or an entry. */
+const carried = (op: Op): readonly unknown[] => {
+  switch (op[0]) {
+    case "r":
+      return [op[1]];
+    case "p":
+      return op[4];
+    case "s":
+      return [op[2]];
+    default:
+      return [];
+  }
+};
+
+/** The screenshots, and what stands in for them, of the entries `ops` add. */
+const addedImages = (ops: readonly Op[]) =>
+  ops.flatMap((op) => {
+    // SAFETY: the fixtures' operations carry entries or views of them.
+    const carries = carried(op) as readonly (EntryRecord | ConversationView)[];
+    const entries = carries.flatMap((each) => ("docs" in each ? each.entries : [each]));
+
+    return imagesOf(entries.flatMap((each) => each.model ?? []));
+  });
+
 describe("limiting screenshots", () => {
-  it("limits a snapshot in a batch of events, and leaves the other events alone", () => {
-    const snapshot = asEvent({
-      type: "snapshot",
-      entries: [
-        { id: "e1", model: [result("a", "1")] },
-        { id: "e2", model: [result("b", "2")] },
-      ],
-    });
+  it("limits a view's entries, and leaves a view within the limit as it is", () => {
+    const shown = view(entry(1, result("a", "1")), entry(2, result("b", "2")));
 
-    const other = asEvent({ type: "turn_start" });
-    const [limited, same] = limitEventImages([snapshot, other], 1);
+    expect(imagesOf(limitViewImages(shown, 1).entries.flatMap((each) => each.model ?? []))).toEqual(
+      ["result a", OMITTED_IMAGE, "result b", "2"],
+    );
+    expect(limitViewImages(shown, 2)).toBe(shown);
+  });
 
-    expect(same).toBe(other);
-    expect(
-      limited?.type === "snapshot" ? imagesOf(limited.entries.flatMap((e) => e.model ?? [])) : [],
-    ).toEqual(["result a", OMITTED_IMAGE, "result b", "2"]);
+  it("limits the entries a call's operations add together, and leaves the other operations alone", () => {
+    const text: Op = [
+      "a",
+      ["docs", "pi.live", "generation", "message", "content", 0, "text"],
+      "hi",
+    ];
+
+    const ops: Op[] = [
+      // SAFETY: an entry is JSON.
+      ["p", ["entries"], 0, 0, [entry(1, result("a", "1")) as never]],
+      text,
+      // SAFETY: as above.
+      ["s", ["entries", 1], entry(2, result("b", "2", "3")) as never],
+    ];
+
+    const limited = limitOpsImages(ops, 2);
+
+    expect(addedImages(limited)).toEqual(["result a", OMITTED_IMAGE, "result b", "2", "3"]);
+    expect(limited[1]).toBe(text);
+    expect(limitOpsImages(ops, 3)).toBe(ops);
+  });
+
+  it("limits a root replacement as the view it is", () => {
+    // SAFETY: a view is JSON.
+    const ops: Op[] = [
+      ["r", view(entry(1, result("a", "1")), entry(2, result("b", "2"))) as never],
+    ];
+
+    expect(addedImages(limitOpsImages(ops, 1))).toEqual([
+      "result a",
+      OMITTED_IMAGE,
+      "result b",
+      "2",
+    ]);
   });
 
   it("returns the messages themselves while they carry no more than the limit", () => {
@@ -84,7 +146,7 @@ describe("limiting screenshots", () => {
     expect(imagesOf(messages)).toEqual(["result a", "1", "result b", "2"]);
   });
 
-  it("limits the entries of a snapshot as the messages they carry", () => {
+  it("limits entries as the messages they carry", () => {
     const entry = (id: string, model: readonly Message[] = []) => ({ id, model });
 
     const entries = [

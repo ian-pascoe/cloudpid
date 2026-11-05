@@ -25,7 +25,7 @@
 // - **A switch of kind drops the old row.** An entry that turns from a code sign-in to a client grant has its owner
 //   tokens revoked (RFC 7009, best effort: the refresh token, then the access token) and the row deleted before the first
 //   token is fetched; the other way round, `mcpAccessToken` deletes the client grant's row (→ `mcp-sign-in-registry.ts`).
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off globalJsonInEffect:off
 import {
   byteLength,
   discoverOAuthServerInfo,

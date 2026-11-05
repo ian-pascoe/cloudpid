@@ -1,6 +1,6 @@
 // The browser's end of a Session socket (`docs/architecture/client-and-protocol.md`, ADR-0009), as an Effect program: it
-// connects, watches the root conversation the Session names in `hello`, folds the events into a `SessionView` kept in a
-// `SubscriptionRef`, sends the owner's commands, and keeps the connection alive: a heartbeat, and a reconnect with a
+// connects, watches the root conversation the Session names in `hello`, merges each conversation's `view` and `ops` into
+// its transcript (`ConversationMirror`) and projects it into a `SessionView` kept in a `SubscriptionRef`, sends the owner's commands, and keeps the connection alive: a heartbeat, and a reconnect with a
 // fresh watch after any close. It lives in a scope: closing it closes the socket and stops its fibers.
 //
 // What a socket's messages change is decided in synchronous steps over the bookkeeping below, each published to the
@@ -18,8 +18,8 @@ import {
   ComparisonSources,
   EMPTY_VIEW,
   FileMatches,
+  EntriesPage,
   HEARTBEAT,
-  HistoryPage,
   McpResourceMenu,
   Navigated,
   RunDiff,
@@ -43,8 +43,6 @@ import {
   type AppMessageRef,
   type ResourceRef,
   type PageRef,
-  reduceEvents,
-  withEarlier,
   SESSION_DELETED_CLOSE_CODE,
   ServerMessageJson,
   type AnnotationDraft,
@@ -66,10 +64,12 @@ import {
   type UserInput,
   type WhenBusy,
 } from "@cloudpid/protocol";
+import { ConversationMirror } from "@cloudpid/protocol/mirror";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FiberSet from "effect/FiberSet";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -426,14 +426,11 @@ export interface SessionClient {
     conversationId?: number,
   ) => Effect.Effect<CommandOutcome, SessionCommandError>;
   /**
-   * Load the page of History before entry `before` of the root conversation, or of watched subagent conversation
-   * `conversationId`, into its view's `earlier` messages: done once it is there, or once a snapshot made it moot. Fails
-   * as `catalog` does.
+   * Load the page of the transcript before the oldest message the root conversation's view holds, or watched subagent
+   * conversation `conversationId`'s, into its view (`entries`): done once it is there, or at once when the view holds
+   * the transcript's start. Fails as `catalog` does.
    */
-  readonly loadEarlier: (
-    before: number,
-    conversationId?: number,
-  ) => Effect.Effect<void, SessionCommandError>;
+  readonly loadEarlier: (conversationId?: number) => Effect.Effect<void, SessionCommandError>;
   /** The Session tree (GLOSSARY.md → Session tree), as it is now. Fails as `catalog` does. */
   readonly tree: Effect.Effect<SessionTree, SessionCommandError>;
   /**
@@ -577,8 +574,10 @@ const conversation = (id: number): ConversationId =>
 interface ThreadWatch {
   /** The `watch` command being answered, or null when none is out. */
   commandId: string | null;
-  /** Whether the Session answered the watch, so a submit to it cannot land before its snapshot. */
+  /** Whether the Session answered the watch, so a submit to it cannot land before its view. */
   watched: boolean;
+  /** The transcript the conversation's frames are merged into, which `view` projects. */
+  readonly mirror: ConversationMirror;
   status: ThreadState["status"];
   view: SessionView;
   failure: string | null;
@@ -617,7 +616,7 @@ interface PendingSubmit {
 type ResultValue = Extract<ServerMessage, { type: "result" }>["result"];
 
 /**
- * A request whose answer an Effect waits for: `catalog`, `files`, `command`, `history`, `live_view`,
+ * A request whose answer an Effect waits for: `catalog`, `files`, `command`, `entries`, `live_view`,
  * `owner_tab_view` and the `owner_tab_*` commands.
  */
 interface PendingRequest {
@@ -648,7 +647,7 @@ const decodeResourceMenu = Schema.decodeUnknownOption(McpResourceMenu);
 
 const decodeOutcome = Schema.decodeUnknownOption(CommandOutcome);
 
-const decodeHistoryPage = Schema.decodeUnknownOption(HistoryPage);
+const decodeEntriesPage = Schema.decodeUnknownOption(EntriesPage);
 
 const decodeSessionTree = Schema.decodeUnknownOption(SessionTree);
 
@@ -730,6 +729,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   const probe = yield* SessionProbe;
   const makeWebSocket = yield* Socket.WebSocketConstructor;
   const state = yield* SubscriptionRef.make(INITIAL_SESSION_STATE);
+  // The loads of the conversations' transcripts, which run until the client's scope closes.
+  const runFork = yield* FiberSet.makeRuntime<never>();
+  const runPromise = yield* FiberSet.makeRuntimePromise<never>();
 
   const texts = new Map<string, string>();
   const pending: PendingSubmit[] = [];
@@ -998,7 +1000,19 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
     watch.watched = false;
     watch.commandId = nextCommandId();
-    send({ type: "watch", id: watch.commandId, conversationId: conversation(conversationId) });
+
+    const from = watch.mirror.from;
+
+    send(
+      from === undefined
+        ? { type: "watch", id: watch.commandId, conversationId: conversation(conversationId) }
+        : {
+            type: "watch",
+            id: watch.commandId,
+            conversationId: conversation(conversationId),
+            from,
+          },
+    );
   };
 
   const threadWatchOf = (
@@ -1075,7 +1089,15 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
     watched = false;
     watchId = nextCommandId();
-    send({ type: "watch", id: watchId, conversationId: root });
+
+    // A transcript the client has goes on from its newest entry: the Session sends only what it missed.
+    const from = rootMirror.from;
+
+    send(
+      from === undefined
+        ? { type: "watch", id: watchId, conversationId: root }
+        : { type: "watch", id: watchId, conversationId: root, from },
+    );
   };
 
   const flush = (): void => {
@@ -1230,6 +1252,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       case "hello": {
         const moved = root !== null && root !== message.root;
 
+        if (message.root !== root) rootMirror = mirrorOf(undefined);
+
         root = message.root;
         appViews = message.appViews === true;
         mcpTasks = message.mcpTasks === true;
@@ -1263,11 +1287,13 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
       }
 
       case "active_branch":
-        // The root view follows the active branch: the branch left is unwatched, and the new one watched from a snapshot.
+        // The root view follows the active branch: the branch left is unwatched, and the new one watched, its transcript
+        // new; the branch left shows until the new one's first view.
         if (message.conversationId !== root) {
           if (root !== null) send({ type: "unwatch", id: nextCommandId(), conversationId: root });
 
           root = message.conversationId;
+          rootMirror = mirrorOf(undefined);
           watch();
         }
 
@@ -1390,32 +1416,58 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
         return;
       // The App tools and a conversation's App calls (`docs/architecture/mcp-apps.md` → Socket messages), each whole.
-      case "mcp_app_tools":
+      case "mcp_app_tools": {
         update({ mcpAppTools: message.tools });
 
+        // The live messages keep the streamed arguments of the App tools they now know.
+        const streamedTools = streamedToolsOf(current);
+
+        for (const thread of threadWatches.values()) {
+          if (thread.mirror.started) thread.view = thread.mirror.view(streamedTools);
+        }
+
+        update(rootMirror.started ? { view: rootMirror.view(streamedTools) } : {});
+
         return;
+      }
+
       case "mcp_apps":
         update({ mcpApps: { ...current.mcpApps, [String(message.conversationId)]: message.apps } });
 
         return;
-      case "events": {
+      case "view":
+      case "ops": {
         const thread = threadWatches.get(message.conversationId);
 
         if (message.conversationId !== root) {
-          if (thread !== undefined) {
-            thread.view = reduceEvents(thread.view, message.events, streamedToolsOf(current));
-            thread.status = "live";
-            thread.failure = null;
-            update({}, message.conversationId);
+          if (thread === undefined) return;
+
+          // Operations that do not apply to the view held: a new watch sends a new view.
+          if (!thread.mirror.receive(message)) {
+            startThreadWatch(message.conversationId);
+
+            return;
           }
+
+          thread.view = thread.mirror.view(streamedToolsOf(current));
+          thread.status = "live";
+          thread.failure = null;
+          update({}, message.conversationId);
+          fillGaps(thread.mirror, message.conversationId);
 
           return;
         }
 
-        const view = reduceEvents(current.view, message.events, streamedToolsOf(current));
+        if (!rootMirror.receive(message)) {
+          watch();
 
-        if (message.events.some((event) => event.type === "snapshot")) {
-          // What the snapshot's inbox no longer holds has been placed, or was withdrawn.
+          return;
+        }
+
+        const view = rootMirror.view(streamedToolsOf(current));
+
+        if (message.type === "view") {
+          // What the view's inbox no longer holds has been placed, or was withdrawn.
           const queued = new Set(view.inbox.map((item) => String(item.id)));
 
           for (const id of texts.keys()) {
@@ -1426,9 +1478,10 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
           }
         }
 
-        // A snapshot or event shows the watch works, so the next failure starts the backoff over.
+        // A frame shows the watch works, so the next failure starts the backoff over.
         attempts = 0;
         update({ view, status: "live" });
+        fillGaps(rootMirror, undefined);
 
         return;
       }
@@ -1627,6 +1680,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     threadWatches.set(conversationId, {
       commandId: null,
       watched: false,
+      mirror: mirrorOf(conversationId),
       status: "loading",
       view: EMPTY_VIEW,
       failure: null,
@@ -1701,6 +1755,87 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         ),
       );
     });
+
+  /**
+   * A new transcript of conversation `conversationId` (the root's when absent, which follows the active branch): its
+   * pages are read with `entries`, on the connection open when it asks.
+   */
+  const mirrorOf = (conversationId: number | undefined): ConversationMirror =>
+    new ConversationMirror((query, limit) =>
+      runPromise(
+        request((id) => {
+          const message: Types.Mutable<Extract<ClientMessage, { type: "entries" }>> = {
+            type: "entries",
+            id,
+            query,
+            limit,
+          };
+
+          addressTo(message, conversationId);
+
+          return message;
+        }, decodeEntriesPage),
+      ),
+    );
+
+  /** The root conversation's transcript: a new one whenever the root moves to another branch. */
+  let rootMirror = mirrorOf(undefined);
+
+  /** The transcript of the root conversation, or of watched subagent conversation `conversationId`. */
+  const mirrorFor = (conversationId: number | undefined): ConversationMirror | undefined =>
+    isRoot(conversationId) || conversationId === undefined
+      ? rootMirror
+      : threadWatches.get(conversationId)?.mirror;
+
+  /** Show what `mirror`, conversation `conversationId`'s, holds now, unless it is no longer that conversation's. */
+  const refresh = (mirror: ConversationMirror, conversationId: number | undefined): void => {
+    if (mirror === rootMirror) {
+      update({ view: mirror.view(streamedToolsOf(current)) });
+
+      return;
+    }
+
+    const thread = conversationId === undefined ? undefined : threadWatches.get(conversationId);
+
+    if (thread === undefined || thread.mirror !== mirror) return;
+
+    thread.view = mirror.view(streamedToolsOf(current));
+    update({}, conversationId);
+  };
+
+  /** A load of a transcript's pages, failing as the `entries` request that failed it did. */
+  const loading = (load: () => Promise<void>): Effect.Effect<void, SessionCommandError> =>
+    Effect.tryPromise({
+      try: load,
+      catch: (error) =>
+        Schema.is(SessionCommandError)(error)
+          ? error
+          : SessionCommandError.make({ message: String(error) }),
+    });
+
+  /** The transcripts whose gaps are being filled. */
+  const filling = new WeakSet<ConversationMirror>();
+
+  /**
+   * Load what `mirror` misses between two entries it has (a reconnect that missed more than a window), a page at a
+   * time, in the background. A page that fails ends it: the next frame that leaves a gap starts it again.
+   */
+  const fillGaps = (mirror: ConversationMirror, conversationId: number | undefined): void => {
+    if (!mirror.gapped || filling.has(mirror)) return;
+
+    filling.add(mirror);
+
+    const fill: Effect.Effect<void, SessionCommandError> = Effect.suspend(() =>
+      mirror.gapped
+        ? loading(() => mirror.fillGap()).pipe(
+            Effect.andThen(step(() => refresh(mirror, conversationId))),
+            Effect.andThen(fill),
+          )
+        : Effect.void,
+    );
+
+    runFork(fill.pipe(Effect.ignore, Effect.ensuring(Effect.sync(() => filling.delete(mirror)))));
+  };
 
   /** A request answered with the Owner tabs, which are then the Session's as this client knows them. */
   const ownerTabsRequest = (
@@ -2221,34 +2356,16 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         decodeOutcome,
         true,
       ),
-    loadEarlier: (before, conversationId) =>
-      request((id) => {
-        const message: Types.Mutable<Extract<ClientMessage, { type: "history" }>> = {
-          type: "history",
-          id,
-          before,
-        };
+    loadEarlier: (conversationId) =>
+      Effect.suspend(() => {
+        const mirror = mirrorFor(conversationId);
 
-        addressTo(message, conversationId);
+        if (mirror === undefined) return Effect.void;
 
-        return message;
-      }, decodeHistoryPage).pipe(
-        Effect.map((page) => {
-          // A view whose snapshot moved on since it asked keeps what it has: `withEarlier` checks `before`.
-          if (isRoot(conversationId) || conversationId === undefined) {
-            update({ view: withEarlier(current.view, before, page) });
-
-            return;
-          }
-
-          const thread = threadWatches.get(conversationId);
-
-          if (thread === undefined) return;
-
-          thread.view = withEarlier(thread.view, before, page);
-          update({}, conversationId);
-        }),
-      ),
+        return loading(() => mirror.loadEarlier()).pipe(
+          Effect.andThen(step(() => refresh(mirror, conversationId))),
+        );
+      }),
     tree: request((id) => ({ type: "tree", id }), decodeSessionTree),
     navigate: ({ entryId, position }, summary) =>
       request(

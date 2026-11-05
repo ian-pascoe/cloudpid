@@ -2,8 +2,12 @@
 // nothing, programs get the structured output, every conversation keeps its own list, and the list is put back in front
 // of the model after a Handoff or a nested change. pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
-import { defineExtension, defineTool, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import {
+  defineExtension,
+  defineTool,
+  type JsonObject,
+  ROOT_CONVERSATION_ID,
+} from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import {
@@ -21,6 +25,7 @@ import {
   SNAPSHOT_HEADER,
   STALE_NOTE,
 } from "./todo/projection.ts";
+import { map, num, obj, opt, unknown } from "@earendil-works/pi-schema";
 
 /** Resolves when `run_todo_and_wait` has made its nested call. */
 let waiting = Promise.withResolvers<void>();
@@ -32,9 +37,10 @@ const Scripts = defineExtension({
     defineTool({
       name: "run_todo",
       description: "Call todo as a script would and return its structured output",
-      parameters: Type.Object({ args: Type.Any(), pad: Type.Optional(Type.Number()) }),
+      parameters: obj({ args: map(unknown()), pad: opt(num()) }),
       execute: async (params, api, ctx) => {
-        const nested = await api.executeTool("todo", params.args, ctx);
+        // SAFETY: the scripted model sends `args` as a JSON object.
+        const nested = await api.executeTool("todo", params.args as JsonObject, ctx);
         const text = JSON.stringify(nested.structuredOutput);
 
         return { output: [{ type: "text", text: `${text}${"x".repeat(params.pad ?? 0)}` }] };
@@ -43,9 +49,10 @@ const Scripts = defineExtension({
     defineTool({
       name: "run_todo_and_wait",
       description: "Call todo as a script would, then wait to be stopped",
-      parameters: Type.Object({ args: Type.Any() }),
+      parameters: obj({ args: map(unknown()) }),
       execute: async (params, api, ctx) => {
-        await api.executeTool("todo", params.args, ctx);
+        // SAFETY: as in `run_todo`.
+        await api.executeTool("todo", params.args as JsonObject, ctx);
         waiting.resolve();
 
         const aborted = Promise.withResolvers<void>();
@@ -482,7 +489,7 @@ describe("todo", () => {
       expect(session.requests[before]!.transcript.slice(0, 3)).toEqual(last.transcript.slice(0, 3));
     });
 
-    it("tells the agent, at the end of the request, when a Stop left a script's change without a result", async () => {
+    it("shows the list in the result of a call a Stop ended after its script changed it", async () => {
       waiting = Promise.withResolvers<void>();
 
       const session = await open((request) => {
@@ -494,12 +501,8 @@ describe("todo", () => {
               "run_todo_and_wait",
               { args: { action: "update", id: 1, status: "completed" } },
             ]);
-          case "Next":
-            return call(["noop", {}]);
           default:
-            return request.text.includes(STALE_NOTE)
-              ? call(["todo", { action: "list" }])
-              : answer("Done.");
+            return answer("Done.");
         }
       });
 
@@ -516,20 +519,17 @@ describe("todo", () => {
 
       await session.prompt("Next");
 
-      const asked = session.requests.slice(before);
+      const [asked] = session.requests.slice(before);
       const earlier = session.requests[0]!;
 
-      // The stopped call's nested change never got a result, so the list the context shows is behind. The agent is told
-      // so at the end of the request, and nothing earlier changed: the first message is as it was.
-      expect(asked[0]!.text).toContain("Next");
-      expect(asked.at(-1)!.text).not.toContain(STALE_NOTE);
-      expect(asked.some((request) => request.text.includes(STALE_NOTE))).toBe(true);
-      expect(asked.every((request) => request.transcript[0] === earlier.transcript[0])).toBe(true);
-      expect(asked.flatMap((request) => request.transcript)).not.toContain(
-        expect.stringContaining(SNAPSHOT_HEADER),
+      // The stopped call's result ran the hooks too, so it shows the list its script changed, and the request needs no
+      // note; nothing earlier changed: the first message is as it was.
+      expect(asked!.text).toContain("Next");
+      expect(asked!.transcript).toContainEqual(
+        expect.stringContaining(`${CHANGED_HEADER}\n[x] #1 A\n[ ] #2 B`),
       );
-      // Calling `todo` shows the list, which ends the note.
-      expect(asked.at(-1)!.text).toBe("[x] #1 A\n[ ] #2 B");
+      expect(asked!.text).not.toContain(STALE_NOTE);
+      expect(asked!.transcript[0]).toBe(earlier.transcript[0]);
     });
 
     it("does not claim a list a result is too long to show whole", async () => {

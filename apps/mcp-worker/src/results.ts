@@ -5,7 +5,7 @@
  * stream produced on pull, which RPC neither clones nor counts and the host returns unread (#409 answer 3). A failed
  * call's error is scrubbed of the same tokens.
  */
-// @effect-diagnostics preferSchemaOverJson:off -- a server's answer, already decoded by the SDK, serialized to bytes once.
+// @effect-diagnostics globalJsonInEffect:off -- a server's answer, already decoded by the SDK, serialized to bytes once.
 // @effect-diagnostics globalTimers:off -- a stream's expiry timer, in the invocation that made it.
 // @effect-diagnostics missingPipeableSignature:off -- `byteStream` is a plain function over bytes, not a combinator.
 import type { ListItems, ListKind, McpConnection } from "@cloudpid/mcp";

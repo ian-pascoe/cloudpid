@@ -3,7 +3,7 @@
 // and a Legacy `-32042`, which ends the call, so it is kept for the owner like a Modern round and the call is sent again
 // once they are done ("Done, try again"). The addresses cloudpid declines unseen, and what the agent and `details` read.
 // A scripted model on a Harness, and an in-memory host. pi-durable's Harness is Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import {
   MCP_HOST_FEATURES,
   McpHostCompleted,

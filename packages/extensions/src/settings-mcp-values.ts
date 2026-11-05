@@ -3,7 +3,7 @@
 // Registry's view (`SettingsMcpView`, `SettingsMcpReload`) and the host's inventory. Nothing here holds a resolved `${NAME}`
 // value, a hash or a token. Every list that can grow is cut by the bytes it weighs stored, with a `<field>_truncated`
 // flag, so that a value stays under 1 MiB (`docs/architecture/agent-capabilities.md` → Bounds).
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off globalDate:off -- builders over plain values.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off globalDate:off -- builders over plain values.
 import {
   matchesToolPattern,
   type McpResolvedServer,

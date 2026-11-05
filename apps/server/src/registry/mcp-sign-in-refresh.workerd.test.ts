@@ -3,7 +3,7 @@
 // authorization server comes to (per kind of client), the retry and the backoff, the step-up count, and that no token reaches a
 // span or a log. A sign-in is made by the real start and callback, so the row is what a refresh finds in production.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off schemaSync:off preferEffectRecord:off
 import { type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type { OAuthFetch } from "@cloudpid/mcp/oauth";
 import type {

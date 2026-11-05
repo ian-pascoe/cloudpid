@@ -7,7 +7,6 @@ import {
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
-  Type,
 } from "@earendil-works/pi-ai";
 import {
   createRegistry,
@@ -19,6 +18,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { boundImages, MAX_RESULT_IMAGE_CHARACTERS, ResultImages } from "./images.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 const image = (characters: number) => ({
   type: "image" as const,
@@ -64,7 +64,7 @@ describe("ResultImages", () => {
     const shots = defineTool({
       name: "shots",
       description: "Three screenshots",
-      parameters: Type.Object({}),
+      parameters: obj({}),
       execute: async () => ({ output: [image(600_000), image(600_000), image(600_000)] }),
     });
 

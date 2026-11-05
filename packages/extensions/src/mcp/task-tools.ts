@@ -9,7 +9,6 @@
 import type { JsonObject } from "@cloudpid/mcp/types";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { TSchema } from "@earendil-works/pi-ai";
 import type {
   ToolExecutionApi,
   ToolExecutionResult,
@@ -45,7 +44,7 @@ const mcpTasksName = "mcp_tasks";
 const waitName = "mcp_task_wait";
 const cancelName = "mcp_task_cancel";
 
-// SAFETY: object JSON Schemas, which pi-ai's `TSchema` describes (TypeBox's are JSON Schema too).
+// The tools' parameters, as JSON Schema.
 const LIST_PARAMETERS = {
   type: "object",
   properties: {
@@ -56,9 +55,8 @@ const LIST_PARAMETERS = {
     },
   },
   additionalProperties: false,
-} as TSchema;
+};
 
-// SAFETY: as `LIST_PARAMETERS`, an object JSON Schema.
 const WAIT_PARAMETERS = {
   type: "object",
   properties: {
@@ -72,15 +70,14 @@ const WAIT_PARAMETERS = {
   },
   required: ["task"],
   additionalProperties: false,
-} as TSchema;
+};
 
-// SAFETY: as `LIST_PARAMETERS`, an object JSON Schema.
 const CANCEL_PARAMETERS = {
   type: "object",
   properties: { task: { type: "string", description: 'The handle, such as "mcp-task-3".' } },
   required: ["task"],
   additionalProperties: false,
-} as TSchema;
+};
 
 const LIST_OUTPUT = {
   type: "object",

@@ -7,7 +7,7 @@
 // to 300 ms for a Session named `mcp-short-wait-*` (`host.fixture.ts`): nothing else is changed. (The paused timeout is
 // in `packages/extensions/src/mcp-elicitation.test.ts`, over a test clock.)
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalJsonInEffect:off preferEffectArray:off globalDate:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {

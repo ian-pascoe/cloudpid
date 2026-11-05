@@ -1,7 +1,7 @@
 // A Session's Secrets used by real tools on a Workspace: the Worker Shell gets them in its environment and placeholders
 // resolve in file writes, also in calls a code mode script makes, while every result shows the reference.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off cryptoRandomUUID:off preferEffectArray:off globalJsonInEffect:off
 import { ComputerExecutionEnv } from "@cloudpid/computer-env";
 import { secretEnvName, secretReference } from "@cloudpid/extensions/secrets";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

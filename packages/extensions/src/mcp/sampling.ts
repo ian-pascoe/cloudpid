@@ -546,7 +546,7 @@ export const createMcpSampling = (options: McpSamplingOptions): McpSamplingServi
             Arr.map(offered, (tool) => ({
               name: tool.name,
               description: tool.description ?? tool.title ?? tool.name,
-              // SAFETY: the server's JSON Schema, which pi-ai's `TSchema` describes.
+              // SAFETY: the server's JSON Schema, an object, as `Tool["parameters"]` is.
               parameters: tool.inputSchema as Tool["parameters"],
             })),
           );

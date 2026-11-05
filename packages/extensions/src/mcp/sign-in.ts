@@ -402,10 +402,12 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
         keep([...held(), { request, calls: [ask.callId] }]);
         yield* tell;
 
-        // In the background: the push may take seconds, and the request must not wait on it.
+        // In the background: the push may take seconds, and the request must not wait on it. It starts at once, before
+        // anything that follows the request (a fork left to the scheduler waits for the event loop's next timer tick).
         if (answer.first && options.notify !== undefined) {
           yield* Effect.forkDetach(
             options.notify({ server: ask.server, reason: shown.reason, key: answer.key }),
+            { startImmediately: true },
           );
         }
 

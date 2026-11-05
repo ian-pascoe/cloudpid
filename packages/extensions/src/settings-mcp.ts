@@ -17,7 +17,7 @@
 // A reload reads the Repos' files again, under the throttle the scheduled looks share, then pushes the set the Registry now
 // computes to the Environment's host, since the Registry never calls out, and has the host drop its eras and Legacy sessions
 // and rediscover its HTTP servers at once. It is no Agent change.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off globalDate:off -- builders over plain values.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off globalDate:off -- builders over plain values.
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";

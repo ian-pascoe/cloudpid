@@ -1,10 +1,11 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off -- pi-durable commit callbacks and plain string functions.
 // Rollover (`docs/architecture/agent-capabilities.md` → Context management): the agent writes its own Handoff instead of the generated summary of
 // a compaction. `context_rollover` returns `control: { handoff }`, which pi-durable applies once the whole tool round is
-// done: it appends a `pi.reset` entry carrying the Handoff and ends the run, and a follow-up the tool queued continues
-// the task in the new context. The `beforeCompact` hook turns a background threshold compaction into a Rollover request;
-// a compaction that cannot wait for the agent (a blocking threshold one, or an overflow one) is the Emergency Rollover,
-// whose summary is the last saved Handoff.
+// done: it appends a `pi.reset` entry carrying the Handoff and the same run goes on in the new context, where a steer the
+// tool queued, placed right after the Handoff, tells the agent to continue the task. A Rollover requested after the task
+// was answered also returns `terminate`, so its run ends at the Handoff. The `beforeCompact` hook turns a background
+// threshold compaction into a Rollover request; a compaction that cannot wait for the agent (a blocking threshold one, or
+// an overflow one) is the Emergency Rollover, whose summary is the last saved Handoff.
 import { callDurable, defineEffectTool, effectHook, Harness } from "@cloudpid/effect-durable";
 import {
   type CompactionHooks,
@@ -176,19 +177,22 @@ export const ContextRollover = defineEffectTool({
         }, context),
       );
 
-      // Queued behind the Handoff, so the task goes on in the new context once pi-durable ends this run. A Rollover
-      // requested after the task was answered has no task to go on with: it stops at the Handoff.
+      // pi-durable goes on with this run in the new context, and places a steer queued now right after the Handoff, so
+      // the next request asks the agent to continue the task. A Rollover requested after the task was answered has no
+      // task to go on with: it ends the run at the Handoff instead, with no request in the new context.
       const conversation = yield* durable("conversation", (context) =>
         api.conversation(api.conversationId, context),
       );
 
-      if (conversation !== undefined && !(yield* requestedAfterAnswer(api))) {
+      const stop = yield* requestedAfterAnswer(api);
+
+      if (conversation !== undefined && !stop) {
         yield* durable("continue", (context) =>
           conversation.submit(
             {
               type: "input",
               content: CONTINUE_PROMPT,
-              whenBusy: "followUp",
+              whenBusy: "steer",
               requestId: `context-continue:${api.taskId}`,
               entry: CONTINUE_ENTRY,
             },
@@ -204,7 +208,8 @@ export const ContextRollover = defineEffectTool({
             text: "Handoff saved. The new context starts from it after this tool round.",
           },
         ],
-        control: { handoff: handoffText(api.conversationId, args.handoff, notes) },
+        // `terminate: false` is no request: the run goes on.
+        control: { handoff: handoffText(api.conversationId, args.handoff, notes), terminate: stop },
       };
     }),
 });

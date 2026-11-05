@@ -10,7 +10,6 @@ import { type McpExposure, normalizeMcpName } from "@cloudpid/config";
 import type { JsonObject } from "@cloudpid/mcp/types";
 import { utf8ByteLength } from "@earendil-works/chord/output";
 import type { JsonValue } from "@earendil-works/chord";
-import { Type } from "@earendil-works/pi-ai";
 import type { ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import { bytesFromBase64 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -37,6 +36,7 @@ import { type Spill, spillTo } from "./spill.ts";
 import type { McpBuildServer } from "./tools.ts";
 import { SCRIPT_VALUE_BUDGET } from "./value.ts";
 import { cutStored, storedBytes } from "../stored-bytes.ts";
+import { bool, obj, opt, str } from "@earendil-works/pi-schema";
 
 /** What a script's text ends with when it is cut to fit the value. */
 const CUT_MARKER = "\n[cut to fit]";
@@ -228,10 +228,10 @@ const modelPieces = async (
 /** The parameters of the read: `watch` only when the host has Resource watches. */
 const parametersOf = (watches: boolean) => {
   const fields = {
-    server: Type.String({
+    server: str({
       description: "The server the resource is of, as the mcp_servers section names it",
     }),
-    uri: Type.String({
+    uri: str({
       description: "The resource's URI, expanded: a template is filled in first",
     }),
   };
@@ -239,8 +239,8 @@ const parametersOf = (watches: boolean) => {
   return watches
     ? {
         ...fields,
-        watch: Type.Optional(
-          Type.Boolean({
+        watch: opt(
+          bool({
             description:
               "true to also watch the resource: you are told at your next request when it changes or the watch ends, and read it again to see how. false stops watching it, and still reads. At most 20 watches per conversation.",
           }),
@@ -371,7 +371,7 @@ export const readTool = (
   name: tool.name,
   description:
     "Read a resource of an MCP server by its URI: a `uri` from list_mcp_resources, a filled-in resource template, or a resource link a tool result named. It need not be listed. `server` is the name the mcp_servers section gives (mcp__ left off). The text comes back as it is, images are shown, and any other binary data is saved to a file whose path is given; a long text is cut and saved whole.",
-  parameters: Type.Object(parametersOf(tool.watches === true)),
+  parameters: obj(parametersOf(tool.watches === true)),
   structuredOutputSchema: READ_SCHEMA,
   replay: "safe",
   ...flagsOf(exposure),

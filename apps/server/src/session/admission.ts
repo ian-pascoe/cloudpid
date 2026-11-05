@@ -137,7 +137,7 @@ export const admissionLines = (options: {
           Effect.flatMap(({ key, line }) => {
             const { member } = line;
 
-            const withdrawnFail = Effect.suspend(() => Effect.fail(withdrawnFailure()));
+            const withdrawnFail = Effect.failSync(withdrawnFailure);
 
             const cancelled = Deferred.await(member.cancel).pipe(Effect.andThen(withdrawnFail));
 

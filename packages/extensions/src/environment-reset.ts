@@ -8,7 +8,7 @@
 // (`docs/architecture/agent-capabilities.md` → Values for programs; `environment-outputs.ts`) is the outcome of the
 // change (`EnvironmentChangeOutput`), with the owner's answer for a reset of the size limit, approved or declined with
 // their reason.
-// @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off
 import {
   compareInstances,
   CONTAINER_SETTING_NAMES,

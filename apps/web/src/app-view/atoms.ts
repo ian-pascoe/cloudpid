@@ -118,11 +118,7 @@ export const appGenerationAtom = Atom.family((key: ConversationKey) =>
 
     if (view === undefined) return NO_LIVE_CALLS;
 
-    const messages = [
-      ...view.earlier,
-      ...view.messages,
-      ...(view.live !== null ? [view.live] : []),
-    ];
+    const messages = [...view.messages, ...(view.live !== null ? [view.live] : [])];
 
     // The calls still streaming or running have no entry yet, and are the newest generation all the same.
     const running = runningAppCalls(messages, tools, apps, view.running);

@@ -1,7 +1,7 @@
 // A pi-durable Harness over memory storage with the secrets extension, the coding tools over a fake environment, and
 // stand-in tools, driven by a scripted model whose requests are recorded. Time is a `TestClock`, so a test can pass a
 // Secret's lifetime at once. pi-durable's Harness and the faux provider are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off globalRandom:off preferSchemaOverJson:off strictEffectProvide:off
+// @effect-diagnostics asyncFunction:off missingPipeableSignature:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off globalRandom:off globalJsonInEffect:off strictEffectProvide:off
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -12,7 +12,6 @@ import {
   fauxToolCall,
   type Message,
   type ToolCall,
-  Type,
 } from "@earendil-works/pi-ai";
 import {
   createRegistry,
@@ -50,6 +49,7 @@ import {
   type SecretStorage,
 } from "./store.ts";
 import { openVault } from "./vault.ts";
+import { obj, str } from "@earendil-works/pi-schema";
 
 export const context = BACKGROUND_CONTEXT;
 
@@ -104,7 +104,7 @@ const usingSecrets = (recorded: JsonObject[]) =>
       defineTool({
         name: "record",
         description: "Record text",
-        parameters: Type.Object({ text: Type.String() }),
+        parameters: obj({ text: str() }),
         execute: async (args) => {
           recorded.push(args);
 
@@ -114,7 +114,7 @@ const usingSecrets = (recorded: JsonObject[]) =>
       defineTool({
         name: "stream",
         description: "Stream text",
-        parameters: Type.Object({ text: Type.String() }),
+        parameters: obj({ text: str() }),
         execute: async (args, api) => {
           const half = Math.floor(args.text.length / 2);
 

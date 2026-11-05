@@ -7,7 +7,7 @@
 // ignores `tasks/cancel` is `stopped`; and the server's task id reaches nothing the model, a client, a log or the Session's
 // storage holds. The times are shortened with `mcpTaskTiming` (`host.fixture.ts`): nothing else is changed.
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalJsonInEffect:off preferEffectArray:off globalDate:off
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { modernTaskServer, rpcMethods, type TaskServer } from "@cloudpid/mcp/testing";

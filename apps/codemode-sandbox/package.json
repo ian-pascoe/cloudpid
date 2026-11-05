@@ -13,13 +13,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@alchemy.run/cloudflare": "2.0.0-beta.84",
+    "@alchemy.run/cloudflare": "2.0.0-beta.85",
     "@cloudpid/telemetry": "workspace:*",
-    "@earendil-works/pi-codemode": "^1.4.0",
-    "alchemy": "2.0.0-beta.84"
+    "@earendil-works/pi-codemode": "^1.5.0",
+    "alchemy": "2.0.0-beta.85"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.8",
+    "@cloudflare/vitest-plugin": "^1.5.1",
     "@cloudpid/config": "workspace:*"
   }
 }

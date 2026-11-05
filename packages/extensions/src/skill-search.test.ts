@@ -1,6 +1,6 @@
 // skills.sh's search, over a fake network: the request it makes, how its answer is read, and how a failure is reported
 // (the `skill_search` tool through a real Harness).
-// @effect-diagnostics asyncFunction:off preferEffectArray:off strictEffectProvide:off schemaSync:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off strictEffectProvide:off schemaSync:off globalJsonInEffect:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, fauxProvider } from "@earendil-works/pi-ai";
 import {

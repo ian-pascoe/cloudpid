@@ -3,7 +3,7 @@
 // browser and fences what the pages supplied as page content apart from the owner's words, the transcript shows a chip
 // for each instead of the block, and a page that is gone fails the send.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalJsonInEffect:off preferEffectArray:off
 import { ATTACHED_PAGE_GONE } from "@cloudpid/extensions/browser";
 import { secretReference } from "@cloudpid/extensions/secrets";
 import {

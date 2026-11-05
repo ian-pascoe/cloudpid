@@ -2,7 +2,7 @@
 // Questions, Elicitation requests): the form waits on a card, the call's clock stands still, and nothing the owner
 // enters is ever kept. A scripted model on a Harness, and an in-memory host that asks through the call's hooks.
 // pi-durable's Harness is Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import {
   Cut,
   type JsonObject,

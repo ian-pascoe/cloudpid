@@ -87,11 +87,12 @@ export {
 export {
   imageLimitedModels,
   limitEntryImages,
-  limitEventImages,
   limitImages,
+  limitOpsImages,
+  limitViewImages,
   MODEL_IMAGES,
   OMITTED_IMAGE,
-  SNAPSHOT_IMAGES,
+  WATCH_IMAGES,
 } from "./browser/images.ts";
 
 export { describeBrowser, describeOutcome, NO_OWNER_TABS } from "./browser/tool.ts";

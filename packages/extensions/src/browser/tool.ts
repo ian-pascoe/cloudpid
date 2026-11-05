@@ -36,7 +36,7 @@ const IMAGE_TYPES: ReadonlySet<string> = new Set(["image/png", "image/jpeg", "im
 
 /** Used when the host cannot say how to drive its browser. */
 export const FALLBACK_DESCRIPTION =
-  "Run JavaScript that drives a persistent Chrome browser over the Chrome DevTools Protocol (CDP). Write an async arrow function, `async () => { ... }`, and return a small JSON value. Use the `cdp` global: `cdp.send({ method, params?, sessionId?: 'active' })` sends a CDP command and returns its result, and `cdp.attachToTarget({ targetId })` switches tab.";
+  "Run JavaScript that drives a persistent Chrome browser over the Chrome DevTools Protocol (CDP). Write an async arrow function, `async () => { ... }`, and return a small JSON value. Use the `browser` global: `browser.cdp({ method, params?, sessionId?: 'active' })` sends a CDP command and returns its result, and `browser.attachToTarget({ targetId })` switches tab.";
 
 /** What the host's description cannot know: how this Session uses the browser. */
 const SESSION_NOTES = Arr.join(
@@ -94,7 +94,7 @@ export const toToolResult = (run: BrowserRun): ToolExecutionResult => {
 
 const Parameters = Schema.Struct({
   code: Schema.String.annotate({
-    description: "An async arrow function that drives the browser with `cdp`",
+    description: "An async arrow function that drives the browser with `browser`",
   }),
   tab: Schema.optionalKey(
     Schema.String.annotate({

@@ -33,8 +33,6 @@ export type FollowState = {
   readonly following: boolean;
   /** Whether an input of the conversation is queued or being answered. */
   readonly unsettled: boolean;
-  /** Whether a task is parked (pi-durable's restart limit): nothing moves until the owner stops the Run. */
-  readonly stalled: boolean;
   /** The conversation's newest entry, or 0. */
   readonly newestEntry: number;
   /** The conversation's newest input that has settled. */

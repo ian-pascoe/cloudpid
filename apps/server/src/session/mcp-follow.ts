@@ -53,7 +53,7 @@ export const cursorOf = ({ state, waiting }: Snapshot): CursorState => {
 
 /**
  * What ends a wait now, if anything. With a cursor: a Run that ended after it, then a waiting request newer than its
- * mark, then an import that ended (`import_ended`: its cursor says it was importing), then a parked task. Without one
+ * mark, then an import that ended (`import_ended`: its cursor says it was importing). Without one
  * it returns at once unless a Run is going and nothing waits; an import going is not a Run, so it returns at once too,
  * as `timeout` with the status `importing` and a cursor that ends with the import. A request the caller has seen does not
  * end a wait.
@@ -70,8 +70,6 @@ export const endedBy = (
 
     if (waiting.length > 0) return "owner_needed";
 
-    if (state.stalled) return "stalled";
-
     if (state.unsettled) return undefined;
 
     return state.newestSettled === undefined ? "timeout" : "run_ended";
@@ -82,8 +80,6 @@ export const endedBy = (
   if (Arr.some(waiting, (request) => request.since > cursor.w)) return "owner_needed";
 
   if (cursor.i === true && !state.copying) return "import_ended";
-
-  if (state.stalled) return "stalled";
 
   return undefined;
 };

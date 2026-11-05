@@ -2,15 +2,19 @@
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import type { AgentEvent } from "@earendil-works/pi-durable";
+import { applyImmutable } from "@earendil-works/chord/delta";
+import type { AgentState, ConversationView, LiveState } from "@earendil-works/pi-durable";
 import {
   type ClientMessage,
   ConversationId,
+  EMPTY_VIEW,
   HEARTBEAT,
   SESSION_DELETED_CLOSE_CODE,
   ServerMessageJson,
   type ServerMessage,
+  type SessionView,
 } from "@cloudpid/protocol";
+import { ConversationMirror } from "@cloudpid/protocol/mirror";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -40,7 +44,7 @@ declare global {
 
 const decode = Schema.decodeUnknownEffect(ServerMessageJson);
 
-type Events = Extract<ServerMessage, { type: "events" }>;
+type Frame = Extract<ServerMessage, { type: "view" | "ops" }>;
 
 /** A client of a Session's socket that keeps every message the Session sent it. */
 const connect = async (stub: DurableObjectStub<TestSession>) => {
@@ -107,39 +111,105 @@ const connect = async (stub: DurableObjectStub<TestSession>) => {
 
 type Client = Awaited<ReturnType<typeof connect>>;
 
-/** The event batches among `messages`, in order. */
-const batches = (messages: readonly ServerMessage[]): Events[] =>
-  Arr.filter(messages, (message): message is Events => message.type === "events");
-
-/** Every event of conversation `conversationId` among `messages`, in order. */
-const eventsOf = (
-  messages: readonly ServerMessage[],
-  conversationId: ConversationId,
-): readonly AgentEvent[] =>
-  Arr.flatMap(batches(messages), (message) =>
-    message.conversationId === conversationId ? message.events : [],
+/** The frames of conversation watches among `messages`, in order. */
+const frames = (messages: readonly ServerMessage[]): Frame[] =>
+  Arr.filter(
+    messages,
+    (message): message is Frame => message.type === "view" || message.type === "ops",
   );
 
-/** The text of each assistant message the events ended, in order. */
-const answers = (events: readonly AgentEvent[]): string[] =>
-  Arr.flatMap(events, (event) => {
-    const message = event.type === "message_end" ? event.entry.model?.[0] : undefined;
+/** The frames of conversation `conversationId`'s watch among `messages`, in order. */
+const framesOf = (messages: readonly ServerMessage[], conversationId: ConversationId) =>
+  Arr.filter(frames(messages), (frame) => frame.conversationId === conversationId);
 
-    return message?.role === "assistant"
+/** pi's view of conversation `conversationId` after each of its frames among `messages`, as a client applies them. */
+const viewsOf = (
+  messages: readonly ServerMessage[],
+  conversationId: ConversationId,
+): readonly ConversationView[] => {
+  let view: ConversationView | undefined;
+
+  return Arr.flatMap(framesOf(messages, conversationId), (frame) => {
+    if (frame.type === "view") view = frame.view;
+    else if (view !== undefined) view = applyImmutable(view, frame.ops);
+
+    return view === undefined ? [] : [view];
+  });
+};
+
+// SAFETY: `pi.live` is pi's live document, with its shape.
+const liveOf = (view: ConversationView) => (view.docs["pi.live"] ?? {}) as LiveState;
+
+/** The agent of a conversation that has made no choices of its own. */
+const NO_AGENT: AgentState = {};
+
+// SAFETY: `pi.agent` is pi's agent document, with its shape.
+const agentOf = (view: ConversationView) =>
+  (view.docs["pi.agent"] as AgentState | undefined) ?? NO_AGENT;
+
+/** What a client shows of conversation `conversationId` once it got `messages`: its frames merged into a transcript. */
+const shownOf = (
+  messages: readonly ServerMessage[],
+  conversationId: ConversationId,
+): SessionView => {
+  const mirror = new ConversationMirror(() => Promise.reject(new Error("No pages in these tests")));
+
+  for (const frame of framesOf(messages, conversationId)) mirror.receive(frame);
+
+  return mirror.started ? mirror.view() : EMPTY_VIEW;
+};
+
+/** The text of each assistant message a view shows, in order. */
+const answers = (view: SessionView): string[] =>
+  Arr.flatMap(view.messages, (message) =>
+    message.role === "assistant"
       ? [
           Arr.join(
-            Arr.flatMap(message.content, (block) => (block.type === "text" ? [block.text] : [])),
+            Arr.flatMap(message.parts, (part) => (part.type === "text" ? [part.text] : [])),
             "",
           ),
         ]
-      : [];
-  });
+      : [],
+  );
 
-/** The type of each event, in order. */
-const types = (events: readonly AgentEvent[]) => Arr.map(events, (event) => event.type);
+/**
+ * The Runs conversation `conversationId`'s views among `messages` show, in order: the inputs each started with, the
+ * inputs it settles (`pi.live.run.inputs`, steers placed in it included), and whether it ended. A Run is told from the
+ * next by its first input, as one can follow another in the same commit.
+ */
+const runsOf = (messages: readonly ServerMessage[], conversationId: ConversationId) => {
+  const runs: { started: readonly number[]; inputs: readonly number[]; ended: boolean }[] = [];
+
+  for (const view of viewsOf(messages, conversationId)) {
+    const run = liveOf(view).run;
+    const last = runs.at(-1);
+    const open = last !== undefined && !last.ended ? last : undefined;
+
+    if (run === undefined) {
+      if (open !== undefined) open.ended = true;
+
+      continue;
+    }
+
+    const first = run.inputs[0];
+
+    if (open !== undefined && (first === undefined || first === open.started[0])) {
+      // A Run that answered keeps no inputs while its `afterRun` tasks run.
+      if (run.inputs.length > 0) open.inputs = run.inputs;
+
+      continue;
+    }
+
+    if (open !== undefined) open.ended = true;
+
+    runs.push({ started: run.inputs, inputs: run.inputs, ended: false });
+  }
+
+  return runs;
+};
 
 const runEnds = (conversationId: ConversationId) => (messages: readonly ServerMessage[]) =>
-  Arr.filter(eventsOf(messages, conversationId), (event) => event.type === "run_end").length;
+  Arr.filter(runsOf(messages, conversationId), (run) => run.ended).length;
 
 /** A submit's answer. */
 const Submitted = Schema.Struct({
@@ -161,7 +231,7 @@ const submitted = async (client: Client, id: string) =>
 const fresh = () => env.SESSIONS.get(env.SESSIONS.newUniqueId());
 
 describe("a Session's socket", () => {
-  it("streams a submitted prompt's agent events, after a snapshot, through to the final answer", async () => {
+  it("streams a submitted prompt's conversation view, then its changes, through to the final answer", async () => {
     const stub = fresh();
 
     await runInDurableObject(stub, (instance: TestSession) => instance.script(["Hello there"]));
@@ -172,9 +242,9 @@ describe("a Session's socket", () => {
     client.send({ type: "watch", id: "watch", conversationId: root });
     expect(await client.answer("watch")).toEqual({ type: "result", id: "watch", result: null });
 
-    const [first] = batches(client.received);
+    const [first] = frames(client.received);
 
-    expect(types(first?.events ?? [])).toEqual(["snapshot"]);
+    expect(first?.type).toBe("view");
 
     client.send({ type: "submit", id: "submit", input: "hi", requestId: "turn-1" });
     expect(await client.answer("submit")).toMatchObject({
@@ -182,12 +252,13 @@ describe("a Session's socket", () => {
       result: { submissionId: expect.any(Number) },
     });
 
-    const events = eventsOf(await client.until((messages) => runEnds(root)(messages) === 1), root);
+    const messages = await client.until((received) => runEnds(root)(received) === 1);
 
-    expect(types(events)).toEqual(
-      expect.arrayContaining(["run_start", "turn_start", "message_end", "turn_end", "run_end"]),
-    );
-    expect(answers(events)).toEqual(["Hello there"]);
+    // After the view, only its changes: a Run that starts, streams and ends.
+    expect(Arr.map(frames(messages).slice(1), (frame) => frame.type)).not.toContain("view");
+    expect(runsOf(messages, root)).toHaveLength(1);
+    expect(answers(shownOf(messages, root))).toEqual(["Hello there"]);
+    expect(shownOf(messages, root)).toMatchObject({ running: false, live: null, error: null });
   });
 });
 
@@ -233,19 +304,19 @@ const registryOf = async (stub: DurableObjectStub<TestSession>) => {
   return env.REGISTRIES.getByName(name);
 };
 
-/** The agent a fresh watch of the root opens with: its snapshot's. */
+/** The agent a fresh watch of the root opens with: its view's. */
 const watchedAgent = async (client: Client) => {
   const root = await client.root();
   const from = client.received.length;
 
   client.send({ type: "watch", id: `watch-${from}`, conversationId: root });
 
-  const [snapshot] = eventsOf(
-    await client.until((messages) => eventsOf(messages, root).length > 0, from),
+  const [view] = viewsOf(
+    await client.until((messages) => viewsOf(messages, root).length > 0, from),
     root,
   );
 
-  return snapshot?.type === "snapshot" ? snapshot.agent : undefined;
+  return view === undefined ? undefined : agentOf(view);
 };
 
 describe("what a client first sees of a Session's agent", () => {
@@ -342,11 +413,12 @@ describe("which of its agent a Session says it picked", () => {
 });
 
 describe("a Session's configure command", () => {
-  /** The agent each `agent_changed` event among `messages` reports, in order. */
-  const agents = (messages: readonly ServerMessage[], conversationId: ConversationId) =>
-    Arr.flatMap(eventsOf(messages, conversationId), (event) =>
-      event.type === "agent_changed" ? [event.agent] : [],
-    );
+  /** The agent each change of `pi.agent` in the views among `messages` shows, in order, after the first view's. */
+  const agents = (messages: readonly ServerMessage[], conversationId: ConversationId) => {
+    const shown = Arr.map(viewsOf(messages, conversationId), agentOf);
+
+    return Arr.filter(shown, (agent, index) => index > 0 && agent !== shown[index - 1]);
+  };
 
   it("picks the model and thinking level of the next request and tells every watching client", async () => {
     const stub = fresh();
@@ -391,7 +463,9 @@ describe("a Session's configure command", () => {
     client.send({ type: "configure", id: "clear", model: null });
     expect(await client.answer("clear")).toEqual({ type: "result", id: "clear", result: null });
 
-    const messages = await client.until((received) => agents(received, root).length > 1);
+    const messages = await client.until(
+      (received) => agents(received, root).at(-1)?.model?.modelId === "claude-opus-5-5",
+    );
 
     expect(agents(messages, root).at(-1)?.model).toEqual({
       provider: "anthropic",
@@ -440,20 +514,14 @@ describe("input submitted while a Run is in progress", () => {
 
     await runInDurableObject(stub, (instance: TestSession) => instance.open());
 
-    const events = eventsOf(await client.until((messages) => runEnds(root)(messages) === 2), root);
+    const messages = await client.until((received) => runEnds(root)(received) === 2);
 
-    const runs = Arr.flatMap(events, (event) =>
-      event.type === "run_start" || event.type === "run_end" ? [[event.type, event.inputs]] : [],
-    );
-
-    expect(runs).toEqual([
-      ["run_start", [a]],
-      ["run_end", [a, b]],
-      ["run_start", [c]],
-      ["run_end", [c]],
+    expect(runsOf(messages, root)).toEqual([
+      { started: [a], inputs: [a, b], ended: true },
+      { started: [c], inputs: [c], ended: true },
     ]);
     // The steer reached the model in the first Run, after the tool call it was submitted during.
-    expect(answers(events)).toEqual(["", "steered", "followed up"]);
+    expect(answers(shownOf(messages, root))).toEqual(["", "steered", "followed up"]);
   });
 });
 
@@ -500,9 +568,9 @@ describe("a submit the Session cannot store", () => {
     client.send({ type: "submit", id: "ok", input: "hi", requestId: "ok" });
     await submitted(client, "ok");
 
-    const events = eventsOf(await client.until((messages) => runEnds(root)(messages) === 1), root);
+    const messages = await client.until((received) => runEnds(root)(received) === 1);
 
-    expect(answers(events)).toEqual(["Still here"]);
+    expect(answers(shownOf(messages, root))).toEqual(["Still here"]);
     expect(constructions.get(stub.id.toString())).toBe(instances);
   });
 
@@ -537,14 +605,14 @@ describe("a submit the Session cannot store", () => {
 
     await runInDurableObject(stub, (instance: TestSession) => instance.open());
 
-    const events = eventsOf(await client.until((messages) => runEnds(root)(messages) === 2), root);
+    const messages = await client.until((received) => runEnds(root)(received) === 2);
 
-    expect(answers(events)).toEqual(["first", "queued"]);
+    expect(answers(shownOf(messages, root))).toEqual(["first", "queued"]);
   });
 });
 
 describe("an abort", () => {
-  it("ends the running Run and leaves the submission unanswered", async () => {
+  it("ends the running Run without an answer, and shows no error for it", async () => {
     const stub = fresh();
 
     await runInDurableObject(stub, (instance: TestSession) => instance.script(["hang"]));
@@ -560,13 +628,11 @@ describe("an abort", () => {
 
     expect(await client.answer("abort")).toEqual({ type: "result", id: "abort", result: null });
 
-    const events = eventsOf(await client.until((messages) => runEnds(root)(messages) === 1), root);
+    const messages = await client.until((received) => runEnds(root)(received) === 1);
+    const last = viewsOf(messages, root).at(-1);
 
-    const settled = Arr.flatMap(events, (event) =>
-      event.type === "submission" ? [event.record.status] : [],
-    );
-
-    expect(settled.at(-1)).toBe("unanswered");
+    expect(last === undefined ? undefined : liveOf(last).runFailure?.reason).toBe("aborted");
+    expect(shownOf(messages, root)).toMatchObject({ running: false, error: null });
     expect(await runInDurableObject(stub, (instance: TestSession) => instance.idle())).toBe(true);
   });
 });
@@ -604,7 +670,7 @@ describe("a watch", () => {
     await client.answer("submit");
     await idle(stub);
 
-    expect(batches(client.received.slice(before))).toEqual([]);
+    expect(frames(client.received.slice(before))).toEqual([]);
     expect(await recordedWatches(stub)).toEqual([{ watches: [] }]);
   });
 
@@ -621,10 +687,10 @@ describe("a watch", () => {
 
     const before = client.received.length;
 
-    // Waking it would restart a recorded watch, and send its snapshot.
+    // Waking it would restart a recorded watch, and send its view.
     expect(await recordedWatches(stub)).toEqual([{ watches: [] }]);
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(batches(client.received.slice(before))).toEqual([]);
+    expect(frames(client.received.slice(before))).toEqual([]);
   });
 
   it("that cannot restart on wake is dropped, and the client told which", async () => {
@@ -644,13 +710,13 @@ describe("a watch", () => {
 
     const before = client.received.length;
 
-    // Waking restarts the watches: the root's with a snapshot, the other's not at all.
+    // Waking restarts the watches: the root's with a view, the other's not at all.
     expect(await recordedWatches(stub)).toEqual([{ watches: [root] }]);
 
-    // The root's snapshot and the error, not any two messages: the root's Todo List and App calls may come first.
+    // The root's view and the error, not any two messages: the root's Todo List and App calls may come first.
     const woken = await client.until(
       (messages) =>
-        eventsOf(messages, root).length > 0 &&
+        framesOf(messages, root).length > 0 &&
         Arr.some(messages, (message) => message.type === "error"),
       before,
     );
@@ -660,9 +726,9 @@ describe("a watch", () => {
       conversationId: gone,
       message: expect.any(String),
     });
-    expect(types(eventsOf(woken, root))).toEqual(["snapshot"]);
+    expect(Arr.map(framesOf(woken, root), (frame) => frame.type)).toEqual(["view"]);
 
-    // The next wake does not retry it. The root's snapshot says the wake restarted the watches, and the answer to a
+    // The next wake does not retry it. The root's view says the wake restarted the watches, and the answer to a
     // command sent after the wake comes after all it sent, an error included.
     await evictDurableObject(stub);
 
@@ -673,7 +739,7 @@ describe("a watch", () => {
 
     const rewoken = await client.until(
       (messages) =>
-        eventsOf(messages, root).length > 0 &&
+        framesOf(messages, root).length > 0 &&
         Arr.some(messages, (message) => "id" in message && message.id === "after"),
       again,
     );
@@ -700,7 +766,7 @@ describe("a watch", () => {
     expect(constructions.get(stub.id.toString())).toBe(instances);
   });
 
-  it("survives hibernation: the woken Session sends a fresh snapshot and keeps streaming on the same socket", async () => {
+  it("survives hibernation: the woken Session sends a new view and keeps streaming on the same socket", async () => {
     const stub = fresh();
 
     await runInDurableObject(stub, (instance: TestSession) =>
@@ -724,13 +790,14 @@ describe("a watch", () => {
     client.send({ type: "submit", id: "second", input: "again", requestId: "turn-2" });
 
     const after = await client.until((messages) => runEnds(root)(messages) === 1, before);
-    const [first, ...rest] = batches(after);
+    const [first] = frames(after);
 
-    expect(types(first?.events ?? [])).toEqual(["snapshot"]);
-    expect(answers(eventsOf(rest, root))).toEqual(["After the nap"]);
+    expect(first?.type).toBe("view");
+    // Merged into what the client had, the transcript goes on from where it was.
+    expect(answers(shownOf(client.received, root))).toEqual(["Before the nap", "After the nap"]);
   });
 
-  it("restarts for a client that reconnects after an eviction closed its socket, with the resumed Run's events", async () => {
+  it("restarts for a client that reconnects after an eviction closed its socket, with the resumed Run's changes", async () => {
     const stub = fresh();
 
     await runInDurableObject(stub, (instance: TestSession) =>
@@ -756,12 +823,11 @@ describe("a watch", () => {
     await runInDurableObject(stub, (instance: TestSession) => instance.open());
 
     const messages = await again.until((received) => runEnds(root)(received) === 1);
-    const [first] = batches(messages);
-    const snapshot = first?.events[0];
+    const [first] = frames(messages);
 
-    // The snapshot holds the transcript so far, then the resumed Run streams to its answer.
-    expect(snapshot?.type === "snapshot" ? snapshot.entries.length : 0).toBeGreaterThan(0);
-    expect(answers(eventsOf(messages, root))).toEqual(["recovered"]);
+    // The view holds the transcript so far, then the resumed Run streams to its answer.
+    expect(first?.type === "view" ? first.view.entries.length : 0).toBeGreaterThan(0);
+    expect(answers(shownOf(messages, root)).at(-1)).toBe("recovered");
     expect(
       await Promise.race([
         client.closed.then(() => "closed"),
@@ -1271,7 +1337,7 @@ const ADD_TASKS = `call:todo:${JSON.stringify({
 })}`;
 
 describe("a Todo List watch", () => {
-  it("sends the list after the snapshot, and again each time the agent changes it", async () => {
+  it("sends the list after the view, and again each time the agent changes it", async () => {
     const stub = fresh();
 
     await runInDurableObject(stub, (instance: TestSession) =>
@@ -1288,12 +1354,12 @@ describe("a Todo List watch", () => {
     client.send({ type: "watch", id: "watch", conversationId: root });
     await client.answer("watch");
 
-    // Empty until the agent first uses the tool, and sent after the conversation's snapshot.
+    // Empty until the agent first uses the tool, and sent after the conversation's view.
     await client.until((messages) => todoLists(messages, root).length === 1);
     expect(todoLists(client.received, root)).toEqual([[]]);
     const order = Arr.map(client.received, (message) => message.type);
 
-    expect(order.indexOf("todos")).toBeGreaterThan(order.indexOf("events"));
+    expect(order.indexOf("todos")).toBeGreaterThan(order.indexOf("view"));
 
     client.send({ type: "submit", id: "submit", input: "plan it", requestId: "turn-1" });
 
@@ -1342,7 +1408,7 @@ describe("a Todo List watch", () => {
     expect(lists[0]).toHaveLength(2);
   });
 
-  it("does not outlive an unwatch that comes while the snapshot is being made", async () => {
+  it("does not outlive an unwatch that comes while the view is being made", async () => {
     const stub = fresh();
 
     await runInDurableObject(stub, (instance: TestSession) =>
@@ -1352,7 +1418,7 @@ describe("a Todo List watch", () => {
     const client = await connect(stub);
     const root = await client.root();
 
-    // Both commands are on the socket before the first snapshot is sent.
+    // Both commands are on the socket before the first view is sent.
     client.send({ type: "watch", id: "watch", conversationId: root });
     client.send({ type: "unwatch", id: "unwatch", conversationId: root });
     await client.answer("unwatch");
@@ -1401,31 +1467,55 @@ describe("owner commands addressed to a conversation", () => {
 
     client.send({ type: "submit", id: "submit", conversationId: stranger, input: "hi" });
     client.send({ type: "abort", id: "abort", conversationId: stranger });
-    client.send({ type: "history", id: "history", conversationId: stranger, before: 10 });
+    client.send({ type: "entries", id: "entries", conversationId: stranger, query: {}, limit: 10 });
 
     expect(await client.answer("submit")).toMatchObject({ type: "error", id: "submit" });
     expect(await client.answer("abort")).toMatchObject({ type: "error", id: "abort" });
-    expect(await client.answer("history")).toMatchObject({ type: "error", id: "history" });
+    expect(await client.answer("entries")).toMatchObject({ type: "error", id: "entries" });
   });
 });
 
-describe("history", () => {
-  it("answers the root's entries before the one asked for, oldest first", async () => {
+describe("entries", () => {
+  it("answers a page of the root's transcript within the bounds, in the order asked for", async () => {
     const stub = fresh();
     const client = await connect(stub);
+    const root = await client.root();
 
-    await client.root();
     client.send({ type: "submit", id: "submit", input: "hi", requestId: "turn-1" });
     await submitted(client, "submit");
     await idle(stub);
-    client.send({ type: "history", id: "history", before: 1_000_000 });
+    client.send({ type: "watch", id: "watch", conversationId: root });
+    await client.answer("watch");
 
-    const answer = await client.answer("history");
+    const entries = viewsOf(client.received, root)[0]?.entries ?? [];
+    const newest = entries.at(-1)?.id;
 
-    expect(answer).toMatchObject({
+    if (newest === undefined) throw new Error("The view has no entries");
+
+    client.send({ type: "entries", id: "all", query: { order: "ascending" }, limit: 200 });
+    client.send({
+      type: "entries",
+      id: "two",
+      query: { maxEntryId: newest, order: "descending" },
+      limit: 2,
+    });
+
+    const ids = Arr.map(entries, (entry) => entry.id);
+
+    // The whole transcript fits one page, as the view's window holds it, and nothing is left.
+    expect(await client.answer("all")).toEqual({
       type: "result",
-      id: "history",
-      result: { before: null, entries: [{ kind: "pi.user" }, { kind: "pi.assistant" }] },
+      id: "all",
+      result: { items: entries },
+    });
+    // The newest two, newest first, and a continuation, as more are left.
+    expect(await client.answer("two")).toEqual({
+      type: "result",
+      id: "two",
+      result: {
+        items: Arr.map(Arr.reverse(ids.slice(-2)), (id) => expect.objectContaining({ id })),
+        next: expect.any(Object),
+      },
     });
   });
 });

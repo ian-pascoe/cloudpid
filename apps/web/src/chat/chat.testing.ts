@@ -15,7 +15,7 @@ import { PushManagerLive } from "../push.ts";
 import { fakeRegistryLayer } from "../registry.testing.ts";
 import { appRuntime } from "../runtime.ts";
 import { SessionProbe } from "../session/client.ts";
-import { FakeSocket, settle, type Value } from "../session/client.testing.ts";
+import { FakeSocket, settle, type Value, viewFrame } from "../session/client.testing.ts";
 import { ImageEncoder, ImageError } from "./image-encode.ts";
 import { UploadError, Uploads } from "./uploads.ts";
 
@@ -159,22 +159,7 @@ export const live = (socket: FakeSocket, hello: { readonly [key: string]: Value 
     const watch = socket.commands().find((command) => command.type === "watch");
 
     yield* socket.say({ type: "result", id: watch?.id, result: null });
-    yield* socket.say({
-      type: "events",
-      conversationId: 1,
-      events: [
-        {
-          type: "snapshot",
-          entries: [],
-          tools: [],
-          nestedTools: [],
-          compactions: [],
-          inbox: [],
-          agent: {},
-          usage: {},
-        },
-      ],
-    });
+    yield* socket.say(viewFrame());
   });
 
 /** The commands of `type` the client sent on `socket`. */

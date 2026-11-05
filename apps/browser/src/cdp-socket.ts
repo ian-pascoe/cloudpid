@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off globalConsole:off missingPipeableSignature:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalJsonInEffect:off globalConsole:off missingPipeableSignature:off
 // A CDP connection to a Browser Run session over its binding, the transport a Browser Handoff needs. `agents/browser`'s
 // own `CdpConnection` answers commands but hands no events to its caller, and the end of a handoff
 // (`Cloudflare.handoffComplete`) is one.

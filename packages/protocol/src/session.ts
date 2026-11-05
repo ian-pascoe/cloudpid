@@ -1,9 +1,16 @@
 // The Session socket: one WebSocket per client to one Session DO (`docs/architecture/client-and-protocol.md`, ADR-0009).
 // The shapes follow the socket protocol of Cloudflare's `agents` pi example (`examples/next/harnesses/pi`, MIT), in
 // Effect `Schema`: commands carry an optional `id` that a `result` or `error` answers, and every watched conversation
-// streams `events` batches whose first batch is a `snapshot`.
+// streams pi's conversation view (`view`) and then its operations (`ops`), which a client merges into its transcript
+// (`mirror.ts`) and pages with `entries`.
 import { InstanceType, ModelId, ThinkingLevel } from "@cloudpid/config";
-import type { AgentEvent, EntryRecord } from "@earendil-works/pi-durable";
+import { assertValidOp, type Op } from "@earendil-works/chord/delta";
+import type {
+  ConversationView,
+  Cursor,
+  EntryId as PiEntryId,
+  EntryRecord,
+} from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -169,15 +176,27 @@ export const Abort = Schema.Struct({
   subagents: Schema.optionalKey(Schema.Boolean),
 });
 
+/** An entry's ID within its conversation: pi-durable's positive integer. */
+export const EntryId = Schema.declare(
+  (input): input is PiEntryId =>
+    Predicate.isNumber(input) && Number.isSafeInteger(input) && input > 0,
+  { identifier: "EntryId" },
+);
+
+export type EntryId = typeof EntryId.Type;
+
 /**
- * Stream conversation `conversationId`'s events on this socket: a `snapshot`, then pi's `AgentEvent` batches. Watching
- * a conversation already watched restarts it with a fresh snapshot. The watch outlives hibernation: a woken Session
- * restarts it, with a fresh snapshot. Answered with `null`.
+ * Stream conversation `conversationId`'s conversation view on this socket: a `view`, then pi's `ops` for each change.
+ * The view's window holds the newest entries (pi's default, 50 to 100); `from` starts it at that entry instead when
+ * few enough follow it, as `ConversationTranscript.resume` says after a reconnect, so a client gets only what it missed.
+ * Watching a conversation already watched restarts it with a new `view`. The watch outlives hibernation: a woken
+ * Session restarts it, with a new `view` of the newest entries. Answered with `null`.
  */
 export const Watch = Schema.Struct({
   type: Schema.Literal("watch"),
   id: CommandId,
   conversationId: ConversationId,
+  from: Schema.optionalKey(EntryId),
 });
 
 /** Stop streaming conversation `conversationId`. Answered with `null`. */
@@ -191,7 +210,7 @@ export const Unwatch = Schema.Struct({
  * Pick the model and thinking level the root conversation runs with, from its next request on. A field left out stays
  * as it is; `null` clears it, so the Session follows the default in the settings again (and a changed default applies
  * to its next request). A Session that was never configured follows the default. Answered with `null`; the new
- * choice reaches clients as an `agent_changed` event.
+ * choice reaches clients in the conversation view's `pi.agent`.
  */
 export const Configure = Schema.Struct({
   type: Schema.Literal("configure"),
@@ -568,16 +587,25 @@ export const RunCommand = Schema.Struct({
   args: Schema.String,
 });
 
+/** The most entries an `entries` page holds. */
+export const MAX_ENTRIES_PAGE = 200;
+
 /**
- * Ask for the History of the root conversation, or of the subagent conversation `conversationId` names, before entry
- * `before`: what its snapshot no longer holds once a Rollover or a compaction started a new Context Window. Answered with
- * a `HistoryPage`.
+ * Ask for a page of the transcript (pi's fork-aware history) of the root conversation, or of the subagent conversation
+ * `conversationId` names: at most `limit` entries within `query`'s inclusive ID bounds, in its `order` (`descending`
+ * when absent), as `Conversation.entries()` reads them. A client's `ConversationTranscript` asks for them to load the
+ * entries before the oldest it holds and those a gap is missing. Answered with an `EntriesPage`.
  */
-export const HistoryRequest = Schema.Struct({
-  type: Schema.Literal("history"),
+export const EntriesRequest = Schema.Struct({
+  type: Schema.Literal("entries"),
   id: CommandId,
   conversationId: Schema.optionalKey(ConversationId),
-  before: Schema.Int.check(Schema.isGreaterThan(0)),
+  query: Schema.Struct({
+    minEntryId: Schema.optionalKey(EntryId),
+    maxEntryId: Schema.optionalKey(EntryId),
+    order: Schema.optionalKey(Schema.Literals(["ascending", "descending"])),
+  }),
+  limit: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_ENTRIES_PAGE })),
 });
 
 /**
@@ -917,7 +945,7 @@ export const ClientMessage = Schema.Union([
   FilesRequest,
   McpResourceMenuRequest,
   RunCommand,
-  HistoryRequest,
+  EntriesRequest,
   Watch,
   Unwatch,
   Configure,
@@ -1448,7 +1476,7 @@ export const TodoTask = Schema.Struct({
 export type TodoTask = typeof TodoTask.Type;
 
 /**
- * A watched conversation's Todo List, whole. The Session sends one after the snapshot of each conversation a client
+ * A watched conversation's Todo List, whole. The Session sends one after the first `view` of each conversation a client
  * `watch`es, the root's and a subagent's alike, and another each time the list changes; each replaces the last one of
  * that conversation. A conversation that never used the tool has an empty list.
  */
@@ -1458,23 +1486,55 @@ export const TodosMessage = Schema.Struct({
   tasks: Schema.Array(TodoTask),
 });
 
-/** One of pi's agent events, passed through unchanged; only its `type` is checked. */
-export const AgentEventSchema = Schema.declare(
-  (input): input is AgentEvent =>
+/** pi's conversation view, passed through unchanged; only its outline is checked. */
+export const ConversationViewSchema = Schema.declare(
+  (input): input is ConversationView =>
     Predicate.isObject(input) &&
-    Predicate.hasProperty(input, "type") &&
-    Predicate.isString(input.type),
-  { identifier: "AgentEvent" },
+    Predicate.hasProperty(input, "conversation") &&
+    Predicate.isObject(input.conversation) &&
+    Predicate.hasProperty(input, "entries") &&
+    Arr.isArray(input.entries) &&
+    Predicate.hasProperty(input, "docs") &&
+    Predicate.isObject(input.docs),
+  { identifier: "ConversationView" },
 );
 
 /**
- * A batch of a watched conversation's events, one per commit. The first batch of a watch, and the first after the
- * Session restarted it, is a lone `snapshot` that replaces the client's state.
+ * A watched conversation's view, whole (`ConversationView`: a window over its transcript, and its documents `pi.live`,
+ * `pi.inbox`, `pi.agent` and `pi.usage`): sent when a watch starts, when the Session restarts it, and when pi folds
+ * more changes than it keeps operations for. The client merges its entries into its transcript, and the `ops` after it
+ * apply to it. Its entries' screenshots are bounded, as it is one socket message.
  */
-export const Events = Schema.Struct({
-  type: Schema.Literal("events"),
+export const ViewMessage = Schema.Struct({
+  type: Schema.Literal("view"),
   conversationId: ConversationId,
-  events: Schema.Array(AgentEventSchema),
+  view: ConversationViewSchema,
+});
+
+/** One of Chord's decoded operations, checked as Chord's applier checks one (verb, arity, payload). */
+export const OpSchema = Schema.declare(
+  (input): input is Op => {
+    try {
+      assertValidOp(input);
+
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  { identifier: "Op" },
+);
+
+/**
+ * pi's operations for the changes of a watched conversation's view since the last `view` or `ops`, one commit's or
+ * several folded: streamed text and tool-call arguments appended, running tools' output trimmed and appended, entries
+ * appended and the window's oldest spliced out. The client applies them to the view it holds (`applyImmutable`). The
+ * screenshots of the entries they add are bounded as a `view`'s are.
+ */
+export const OpsMessage = Schema.Struct({
+  type: Schema.Literal("ops"),
+  conversationId: ConversationId,
+  ops: Schema.Array(OpSchema),
 });
 
 /** A value a Slash command's argument can take. */
@@ -1694,32 +1754,35 @@ export const EntryRecordSchema = Schema.declare(
   { identifier: "EntryRecord" },
 );
 
+/** A scan's continuation, which a client never sends back: only whether a page has one counts. */
+const CursorSchema = Schema.declare(
+  (input): input is Cursor => Predicate.isObject(input) && !Arr.isArray(input),
+  { identifier: "Cursor" },
+);
+
 /**
- * The answer to `history`: the conversation's entries just before the ones asked for, oldest first, at most
- * `MAX_HISTORY_ENTRIES` and about `MAX_HISTORY_BYTES` of them (always one, however large), without the entries a
- * transcript does not show (system prompts, bookkeeping). `before` is what to ask for next, or null when nothing is left.
+ * The answer to `entries`: the entries read, in the order asked for, as pi's `Page`. `next` is there when the range
+ * may hold more than the page: it reached its `limit`, or about `MAX_ENTRIES_PAGE_BYTES` of entries (always one,
+ * however large). Its screenshots are bounded as a `view`'s are.
  */
-export const HistoryPage = Schema.Struct({
-  entries: Schema.Array(EntryRecordSchema),
-  before: Schema.NullOr(Schema.Int),
+export const EntriesPage = Schema.Struct({
+  items: Schema.Array(EntryRecordSchema),
+  next: Schema.optionalKey(CursorSchema),
 });
 
-export type HistoryPage = typeof HistoryPage.Type;
-
-/** The most entries a `history` page reads. */
-export const MAX_HISTORY_ENTRIES = 200;
+export type EntriesPage = typeof EntriesPage.Type;
 
 /**
- * About the most a `history` page holds, in UTF-16 code units of its entries' JSON: well under the 32 MiB a socket message
- * may be, and small enough for the Session to build beside its other work.
+ * About the most an `entries` page holds, in UTF-16 code units of its entries' JSON: well under the 32 MiB a socket
+ * message may be, and small enough for the Session to build beside its other work.
  */
-export const MAX_HISTORY_BYTES = 4 * 1024 * 1024;
+export const MAX_ENTRIES_PAGE_BYTES = 4 * 1024 * 1024;
 
-/** A command's answer: JSON, or a `HistoryPage`, whose pi entries are JSON that TypeScript cannot tell is. */
+/** A command's answer: JSON, or an `EntriesPage`, whose pi entries are JSON that TypeScript cannot tell is. */
 export const Result = Schema.Struct({
   type: Schema.Literal("result"),
   id: Schema.String,
-  result: Schema.Union([Schema.Json, HistoryPage]),
+  result: Schema.Union([Schema.Json, EntriesPage]),
 });
 
 /**
@@ -1752,7 +1815,8 @@ export const ServerMessage = Schema.Union([
   Hello,
   ActiveBranch,
   Picked,
-  Events,
+  ViewMessage,
+  OpsMessage,
   Result,
   ErrorMessage,
   SecretRequests,

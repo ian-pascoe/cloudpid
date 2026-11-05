@@ -2,7 +2,7 @@
 // masked-form request, the owner's answer lets a tool use the value, and a pending request survives evictions (more of
 // them than pi-durable's restart limit: #647).
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalJsonInEffect:off preferEffectArray:off globalDate:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { secretReference } from "@cloudpid/extensions/secrets";

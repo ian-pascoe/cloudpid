@@ -432,7 +432,7 @@ export type AnswerText = typeof AnswerText.Type;
 // A wait ended by a reason this version does not know reads as `timeout`: a deliberately generic reading, "the wait
 // ended; look again", not an alias of the real `timeout`.
 export const EndedBy = openLiterals(
-  Schema.Literals(["run_ended", "owner_needed", "import_ended", "stalled", "timeout"]),
+  Schema.Literals(["run_ended", "owner_needed", "import_ended", "timeout"]),
   "timeout",
 );
 

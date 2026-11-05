@@ -12,7 +12,6 @@ import {
   fauxToolCall,
   type Message,
   type ToolCall,
-  Type,
 } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, MemoryStorage } from "@earendil-works/pi-durable";
 import * as Context from "effect/Context";
@@ -29,6 +28,7 @@ import {
   SECTION_KEY,
 } from "./instructions.ts";
 import { answer, call as subagentCall, openSubagentHarness } from "./subagents/harness.fixture.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -69,7 +69,7 @@ const Noop = defineExtension({
     defineTool({
       name: "noop",
       description: "Do nothing",
-      parameters: Type.Object({}),
+      parameters: obj({}),
       execute: async () => ({ output: [{ type: "text", text: "done" }] }),
     }),
   ],

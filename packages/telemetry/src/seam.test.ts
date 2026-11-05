@@ -5,7 +5,6 @@ import {
   fauxAssistantMessage,
   fauxProvider,
   fauxToolCall,
-  Type,
 } from "@earendil-works/pi-ai";
 import {
   createRegistry,
@@ -19,6 +18,7 @@ import { InMemoryTelemetryContext } from "@earendil-works/pi-telemetry";
 import { describe, expect, it, vi } from "vitest";
 import { tracingModels } from "./models.ts";
 import { tracingTools } from "./tools.ts";
+import { obj, str } from "@earendil-works/pi-schema";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -115,7 +115,7 @@ describe("tracingTools", () => {
     const roll = defineTool({
       name: "roll_die",
       description: "Roll a die",
-      parameters: Type.Object({ secret: Type.String() }),
+      parameters: obj({ secret: str() }),
       execute: () => Promise.resolve({ output: [{ type: "text", text: "the die shows 4" }] }),
     });
 

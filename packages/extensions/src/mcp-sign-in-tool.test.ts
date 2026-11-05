@@ -1,7 +1,7 @@
 // `mcp_sign_in_ask` and the fail-fast error that points at it (`docs/architecture/mcp-sign-in.md` → Sign-in requests):
 // registered only when the set has an OAuth-capable HTTP entry, deferred, the model's and the root's alone, and a call that
 // waits on the owner's sign-in with no deadline. pi-durable's Harness is Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off preferEffectRecord:off strictEffectProvide:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off globalJsonInEffect:off preferEffectRecord:off strictEffectProvide:off
 import type { McpSignInKnownAskAnswer } from "@cloudpid/mcp/types";
 import {
   McpHostCallFailed,

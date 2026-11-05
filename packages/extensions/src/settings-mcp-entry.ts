@@ -2,7 +2,7 @@
 // → Approval, Values before asking; The tools; Copying a Repo's server): the texts an entry keeps (for the plain-value check),
 // the credential-shaped literals it is refused for, the `${NAME}`s it reads, the entry an `update`'s `set` makes, and the
 // entry a Repo's copy makes. Pure over JSON, so every refusal can name a key and never echo a value.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off preferEffectRecord:off -- builders over plain values.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off preferEffectRecord:off -- builders over plain values.
 import {
   isJsonObject,
   MCP_DEFINITION_KEYS,

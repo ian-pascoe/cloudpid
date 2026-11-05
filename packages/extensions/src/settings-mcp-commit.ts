@@ -10,7 +10,7 @@
 // for the same request or takes its answer, and applies the `after` it holds without reading the state again, so a change
 // that went through before the eviction is reported as approved and done. The result carries the server's status after an
 // `add`, `update` or `enable` that reaches this Session's Environment (`./settings-mcp-status.ts`).
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off -- builders over plain values.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off -- builders over plain values.
 import {
   isMcpToolName,
   type McpWidening,

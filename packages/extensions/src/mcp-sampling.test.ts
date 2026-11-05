@@ -1,6 +1,6 @@
 // The Session's sampler (`docs/architecture/mcp-server-requests.md` → Sampling requests): a Legacy server's request run
 // through the Session's `Models`, with its cap, its pace, its refusals, its Usage and its redacted record.
-// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off asyncFunction:off anyUnknownInErrorContext:off runEffectInsideEffect:off missedPipeableOpportunity:off preferSchemaOverJson:off
+// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off asyncFunction:off anyUnknownInErrorContext:off runEffectInsideEffect:off missedPipeableOpportunity:off globalJsonInEffect:off
 import type { JsonObject } from "@cloudpid/mcp/types";
 import {
   type AssistantMessage,

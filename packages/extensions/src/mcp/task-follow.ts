@@ -562,7 +562,9 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
     },
 
     // Aborted with its conversation's background work (Stop all, Archive, a deleted conversation): the task is
-    // cancelled on the server, the held result is dropped, and the agent is told in a notice that starts no Run.
+    // cancelled on the server, the held result is dropped, and the agent is told in a notice that starts no Run. The
+    // notice is left before the commit that ends the follower: Stop all, Archive and Delete wait for that end, not for
+    // what runs after it, and an abort that runs again writes the notice once, by its request ID.
     abort: noting(async (task, runtime, context) => {
       const { handle } = task.input;
       const record = (await runtime.snapshot(McpTasksDoc, context))?.tasks[handle];
@@ -584,6 +586,8 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
         const ended = endedRecord(record, closed, {});
         const note = pool.put(handle, endedResult(ended, true), now);
 
+        await leaveNotice(ended, now, "ended: it was cancelled by the owner.");
+
         await runtime.commit(async (tx): Promise<Next> => {
           endInDoc(await tx.doc(McpTasksDoc), handle, closed, { note, delivery: "none" });
 
@@ -592,7 +596,6 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
         await taskSpan(ended);
         await closeQuestions(asking, handle);
-        await leaveNotice(ended, now, "ended: it was cancelled by the owner.");
 
         return;
       }
@@ -601,7 +604,15 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
       // and the agent is told so; a result already claimed or posted is the agent's and stays.
       const held = record.delivery === "pending";
 
-      if (held) pool.drop(handle);
+      if (held) {
+        pool.drop(handle);
+
+        await leaveNotice(
+          record,
+          now,
+          `ended (${record.end.status}), and its result was dropped when the owner stopped everything.`,
+        );
+      }
 
       await runtime.commit(async (tx): Promise<Next> => {
         const current = (await tx.doc(McpTasksDoc)).tasks[handle];
@@ -613,14 +624,6 @@ export const taskFollower = (deps: FollowerDeps): McpTaskFollower => {
 
         return aborted;
       }, context);
-
-      if (held) {
-        await leaveNotice(
-          record,
-          now,
-          `ended (${record.end.status}), and its result was dropped when the owner stopped everything.`,
-        );
-      }
     }),
   });
 

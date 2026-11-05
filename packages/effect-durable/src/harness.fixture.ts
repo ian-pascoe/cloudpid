@@ -161,6 +161,15 @@ export const openRestartingHarness = async (
 
   return {
     harness: () => current,
+    /** The newest tool result of the root conversation, as the current instance reads it. */
+    lastToolResult: async (): Promise<ToolResultMessage | undefined> => {
+      const conversation = await current.conversation(root.id, context);
+      const page = await conversation?.entries({}, 50, undefined, context);
+      const entry = Arr.findFirst(page?.items ?? [], (item) => ToolResultEntry.is(item));
+      const message = Option.getOrUndefined(entry)?.model?.[0];
+
+      return message?.role === "toolResult" ? message : undefined;
+    },
     restart: async () => {
       cut();
       current = await open();

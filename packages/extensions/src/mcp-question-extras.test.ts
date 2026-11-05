@@ -1,7 +1,7 @@
 // What the Session does with the questions it recorded (`docs/architecture/mcp-server-requests.md` → Elicitation requests,
 // Records; Telemetry and testing): a span for each question that ended, a `warning` log once per server for the ones
 // cloudpid ended unseen, the lines `/export` writes, and the records a Fork or Clone copies. Never a value.
-// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import type { ElicitationForm } from "@cloudpid/protocol";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";

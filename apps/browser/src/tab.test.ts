@@ -2,7 +2,7 @@
 // private to `agents` (0.28.1), so this fails when an upgrade changes how they are stored. And opening an Owner tab
 // through that `Browser`, which starts a browser only when none runs.
 // workerd's WebSocketPair and the stores' Promise API are not Effect.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalDate:off globalJsonInEffect:off
 import {
   Browser,
   type BrowserBinding,

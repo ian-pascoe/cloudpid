@@ -68,7 +68,6 @@ const followState = (changed: Partial<FollowState> = {}): FollowState => ({
   idle: true,
   following: false,
   unsettled: false,
-  stalled: false,
   newestEntry: 30,
   agents: {},
   ...changed,

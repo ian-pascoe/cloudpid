@@ -245,12 +245,10 @@ export const fileListingsLayer = (options: FileListingsOptions = {}): Layer.Laye
           if (held.get(directory) === listing) held.delete(directory);
         });
 
-      const timedOut = Effect.suspend(() =>
-        Effect.fail(
-          FileListingError.make({
-            message: `Listing the files took longer than ${Duration.format(Duration.fromInputUnsafe(timeout))}`,
-          }),
-        ),
+      const timedOut = Effect.failSync(() =>
+        FileListingError.make({
+          message: `Listing the files took longer than ${Duration.format(Duration.fromInputUnsafe(timeout))}`,
+        }),
       );
 
       const get = (directory: string, list: Effect.Effect<FileIndex, FileListingError>) =>

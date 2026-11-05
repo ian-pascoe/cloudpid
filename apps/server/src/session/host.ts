@@ -52,8 +52,8 @@ import {
 import {
   type Catalog,
   type CommandOutcome,
+  type EntriesPage,
   type FileMatches,
-  type HistoryPage,
   type Navigated,
   type SessionTree,
   type SessionUsage,
@@ -103,18 +103,19 @@ import {
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { isBase, type Op } from "@earendil-works/chord/delta";
 import type { Models, Usage } from "@earendil-works/pi-ai";
-import { limitEventImages, SNAPSHOT_IMAGES } from "@cloudpid/extensions/browser";
+import { limitOpsImages, limitViewImages, WATCH_IMAGES } from "@cloudpid/extensions/browser";
 import {
   type Agent,
   type AgentChange,
   type DocumentWatch,
   type EntryRecord,
-  type AgentEvent,
   AssistantEntry,
   type Conversation,
   type ConversationId,
   type Cursor,
+  DEFAULT_RESTART_LIMIT,
   type EntryId,
   type EnvTarget,
   type Extension,
@@ -131,7 +132,9 @@ import {
   ToolTask,
   type UserInput,
   type WatchEnd,
-  watchEvents,
+  type ConversationView,
+  type ConversationWindow,
+  type EntryQuery,
 } from "@earendil-works/pi-durable";
 import {
   type DurableObjectSqliteStorage,
@@ -211,7 +214,7 @@ import {
 import { linkSkillReferences } from "./skill-references.ts";
 import { contentText } from "./text.ts";
 import { expandMessage, mayExpand } from "./expand.ts";
-import { historyPage } from "./history.ts";
+import { entriesPage } from "./entries-page.ts";
 import type { EntriesRequest, FollowState, SettledInput } from "./mcp-reads.ts";
 import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file-search.ts";
 import { cropParts, fitCrops } from "./crops.ts";
@@ -619,8 +622,8 @@ export type SessionHostOptions<R = never> = {
   readonly onIdle?: Effect.Effect<void, never, R>;
   /**
    * Withdraws the owner requests (an Approval, a Secret request, a Sign-in request, an MCP server's questions) of a tool
-   * call the Session ends for good without it running again: one the restart limit parked, or a call it made
-   * (`endParkedCalls`). Run before the call is aborted.
+   * call pi-durable ended for good without it running again: one cut off `settings.restartLimit` times, and the calls it
+   * made, which its end aborts. Run when pi-durable reports the end (`task_interrupted`), not once the Session is idle.
    */
   readonly withdrawCall?: (call: EndedCall) => Effect.Effect<void, never, R>;
   /**
@@ -739,13 +742,23 @@ export type FileSearch = {
   readonly conversationId?: ConversationId;
 };
 
-/** What the transcript asks of a conversation's earlier History. */
-export type HistoryRequest = {
-  /** The entry the page ends before. */
-  readonly before: number;
+/** A page of a conversation's transcript a client's `ConversationTranscript` asks for (`entries`). */
+export type EntryPageRequest = {
+  /** The entries' inclusive ID bounds, and their order. */
+  readonly query: Omit<EntryQuery, "conversationId">;
+  /** The most entries the page holds. */
+  readonly limit: number;
   /** The conversation: the active branch's by default, or a live subagent's. */
   readonly conversationId?: ConversationId;
 };
+
+/**
+ * One frame of a conversation's watch: its view whole (the first, and one that replaces it), or the operations that
+ * change the last one.
+ */
+export type ConversationFrame =
+  | { readonly type: "view"; readonly view: ConversationView }
+  | { readonly type: "ops"; readonly ops: readonly Op[] };
 
 /** What an abort reaches. */
 export type AbortOptions = {
@@ -946,12 +959,15 @@ export type SessionHostService = {
    */
   readonly usage: Stream.Stream<SessionUsage, SessionError>;
   /**
-   * Conversation `conversationId`'s agent events, unchanged: a batch holding its `snapshot`, then a batch per commit.
-   * Fails when the conversation cannot be watched, and when the Harness ends the watch.
+   * Conversation `conversationId`'s conversation view: a `view` frame, its window as `window` says (pi's default, the
+   * newest entries), then an `ops` frame per call of pi's watch, each the commits made since the last folded; a call
+   * that replaces the whole view is a `view` frame. Screenshots are bounded per frame (`WATCH_IMAGES`). Fails when the
+   * conversation cannot be watched, and when the Harness ends the watch.
    */
-  readonly events: (
+  readonly conversationView: (
     conversationId: ConversationId,
-  ) => Stream.Stream<ReadonlyArray<AgentEvent>, SessionError>;
+    window?: ConversationWindow,
+  ) => Stream.Stream<ConversationFrame, SessionError>;
   /**
    * Conversation `conversationId`'s Todo List: how it stands, then each change that alters it. Fails when the
    * conversation cannot be watched, and when the Harness ends the watch.
@@ -1022,10 +1038,10 @@ export type SessionHostService = {
     hold: (bytes: number) => HoldSlot,
   ) => Effect.Effect<SpillRead, SessionError>;
   /**
-   * A page of the History of the active branch, or of the conversation `conversationId` names, before entry
-   * `before`, oldest first (`historyPage`): what a transcript shows of the Context Windows its snapshot left out.
+   * A page of the transcript of the active branch, or of the conversation `conversationId` names (`entriesPage`): what
+   * a client's transcript loads before its oldest entry or into a gap.
    */
-  readonly history: (request: HistoryRequest) => Effect.Effect<HistoryPage, SessionError>;
+  readonly entryPage: (request: EntryPageRequest) => Effect.Effect<EntriesPage, SessionError>;
 };
 
 /** What the Session DO answers with: its Harness, prompted and woken. */
@@ -1037,11 +1053,9 @@ const fromHarness = Effect.mapError((error: HarnessError) =>
   SessionError.make({ operation: error.operation, message: error.message }),
 );
 
-/** Why a watch of agent events ended. */
+/** Why a watch ended. */
 const watchEnded = (end: WatchEnd): string =>
-  "error" in end
-    ? `Watch ended (${end.reason}): ${String(end.error)}`
-    : `Watch ended (${end.reason})`;
+  "error" in end ? `Watch ended (${end.kind}): ${String(end.error)}` : `Watch ended (${end.kind})`;
 
 /** Which of the root conversation's model and thinking level the Session picked, rather than follows the default. */
 export type Picks = { readonly model: boolean; readonly thinkingLevel: boolean };
@@ -1082,6 +1096,7 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
 ) {
   const { storage } = options;
   const settings = yield* SessionSettings;
+  const services = yield* Effect.context<R>();
 
   // A fallback before anything can fail: an object whose open or recovery fails is started again.
   const fallback = yield* heartbeat;
@@ -1119,11 +1134,22 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
     }),
   );
 
-  // What the Harness reports without failing a call (a task that faulted, one the restart limit parked, a hook or
-  // listener that threw) is otherwise dropped. `info` names the task, never content. A tool call it parks is ended at
-  // each wake (`endParkedCalls`), read from the Harness rather than from this report, which comes once.
-  const onReport: HarnessOptions["onReport"] = (error, info) => {
-    run(Effect.logWarning(`pi-durable reported ${info.type}`, info, error));
+  /** Withdraws the owner requests of a tool call pi-durable ended at the restart limit, once the Harness is open. */
+  let endedAtLimit: ((id: TaskId) => void) | undefined;
+
+  // What the Harness reports without failing a call (a task that faulted, one the restart limit ended, a hook or
+  // listener that threw) is otherwise dropped. `info` names the task, never content. A tool call the limit ends has the
+  // owner requests it and the calls it made left withdrawn (`withdrawCall`), as the Run goes on.
+  const onReport: HarnessOptions["onReport"] = ({ error, ...info }) => {
+    run(Effect.logWarning(`pi-durable reported ${info.kind}`, info, error));
+
+    if (
+      info.kind === "task_interrupted" &&
+      info.reason === "restart_limit" &&
+      info.task.kind === ToolTask.definition.name
+    ) {
+      endedAtLimit?.(info.task.id);
+    }
   };
 
   const harnessOptions = { models: limited, settings: harnessSettings(settings), onReport };
@@ -1135,11 +1161,79 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
 
   opened = harness.harness;
 
+  const withdrawCall = options.withdrawCall;
+
+  if (withdrawCall !== undefined) {
+    const restartLimit = harnessOptions.settings.restartLimit ?? DEFAULT_RESTART_LIMIT;
+
+    // pi-durable ends a tool call at the limit when it next reserves it, before the call runs again (so it makes no new
+    // calls), and only after it aborted the calls it made and they ended: none is live when the end is reported. A
+    // restart is counted only as the Harness opens, so the calls it will end are the ones at the limit now, before
+    // anything runs, and the tool calls below each are read now. Read failing, they are left to `onIdle`.
+    const { tasks } = yield* harness.inspect.pipe(
+      fromHarness,
+      Effect.catchCause((cause) =>
+        Effect.logWarning("The tool calls at the restart limit were not read", cause).pipe(
+          Effect.as({ tasks: [] }),
+        ),
+      ),
+    );
+
+    const owners = new Map<number, number | undefined>(
+      Arr.map(tasks, ({ record }) => [record.id, record.owner]),
+    );
+
+    /** Whether task `task` is the call `id`, or below it. */
+    const below = (task: number | undefined, id: number): boolean =>
+      task !== undefined && (task === id || below(owners.get(task), id));
+
+    const calls = Arr.filter(tasks, ({ record }) => record.kind === ToolTask.definition.name);
+
+    /** The tool calls below each call at the restart limit, by the call's task, until its end is reported. */
+    const callsBelow = new Map<number, ReadonlyArray<EndedCall>>(
+      Arr.map(
+        Arr.filter(calls, ({ record }) => (record.restarts ?? 0) >= restartLimit),
+        ({ record: { id } }) => [
+          id,
+          Arr.map(
+            Arr.filter(calls, ({ record }) => below(record.owner, id)),
+            ({ record }) => endedCallOf(record),
+          ),
+        ],
+      ),
+    );
+
+    /** The call `id`, read from the Harness as it reports the end, and the tool calls below it, read as it opened. */
+    const withdrawEnded = (id: TaskId) =>
+      attempt("getTask", () => harness.harness.getTask(id, context)).pipe(
+        Effect.flatMap((call) => {
+          const ended = callsBelow.get(id) ?? [];
+
+          callsBelow.delete(id);
+
+          return Effect.forEach(
+            call === undefined ? ended : [endedCallOf(call), ...ended],
+            (ended) => withdrawCall(ended),
+            { discard: true },
+          );
+        }),
+        Effect.provideContext(services),
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            "The requests of a call the restart limit ended were not withdrawn",
+            cause,
+          ),
+        ),
+      );
+
+    endedAtLimit = (id) => void run(withdrawEnded(id));
+  }
+
   // A storage error closes the Harness for good; reset the object so the next event reopens it.
   yield* Effect.sync(
     () =>
       void harness.harness.closed.then((end) => {
-        if (end.reason === "failed") options.reset(`Harness failed: ${String(end.error)}`);
+        if (end.kind === "failed") options.reset(`Harness failed: ${String(end.error)}`);
       }),
   );
 
@@ -1167,70 +1261,6 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const onIdle =
     options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
-
-  /** Withdraw the owner requests of a tool call ended for good. */
-  const withdrawCall = (call: EndedCall) =>
-    options.withdrawCall === undefined
-      ? Effect.void
-      : Effect.provideContext(options.withdrawCall(call), services);
-
-  /**
-   * End each tool call the restart limit parked: one cut off that many times before it reached a wait (a call that
-   * waits marks it as progress: `reachedWait`), which nothing in cloudpid would run again (no `retryTask`), so its Run
-   * would stay busy until stopped. It is aborted, as pi-durable 1.5 ends such a call itself: the abort settles it with an
-   * error result the agent reads, and the Run goes on. The owner requests it left, and those of the calls it made (which
-   * its abort ends without running them again), are withdrawn first (`withdrawCall`): an answer given meanwhile would
-   * be taken and then dropped, and a Run that goes on and asks again would show a dead card beside it.
-   *
-   * Read from `tasks` (the Harness's at this wake), not from pi-durable's `task_parked` report, which comes once, at the
-   * open that parks the call: a call an earlier instance parked and could not end (an abort that failed, an instance
-   * stopped first, a build before this one) is ended at the next wake. Says whether there was one to end, and whether
-   * one could not be.
-   */
-  const endParkedCalls = (tasks: ReadonlyArray<TaskInspection>) => {
-    const parked = Arr.filter(
-      tasks,
-      ({ record, state }) =>
-        record.kind === ToolTask.definition.name &&
-        state.kind === "blocked" &&
-        state.reason === "restart_limit",
-    );
-
-    if (parked.length === 0) return Effect.succeed({ ended: false, failed: false });
-
-    const ending = new Set<number>(Arr.map(parked, ({ record }) => record.id));
-
-    const owners = new Map<number, number | undefined>(
-      Arr.map(tasks, ({ record }) => [record.id, record.owner]),
-    );
-
-    /** Whether task `id` is a parked call, or below one. */
-    const ended = (id: number | undefined): boolean =>
-      id !== undefined && (ending.has(id) || ended(owners.get(id)));
-
-    const calls = Arr.filter(
-      tasks,
-      ({ record }) => record.kind === ToolTask.definition.name && ended(record.id),
-    );
-
-    return Effect.forEach(calls, ({ record }) => withdrawCall(endedCallOf(record)), {
-      discard: true,
-    }).pipe(
-      Effect.andThen(
-        Effect.forEach(parked, ({ record }) =>
-          attempt("abortTask", () => harness.harness.abortTask(record.id, context)).pipe(
-            Effect.as(true),
-            Effect.catchCause((cause) =>
-              Effect.logWarning("A tool call the restart limit parked was not ended", cause).pipe(
-                Effect.as(false),
-              ),
-            ),
-          ),
-        ),
-      ),
-      Effect.map((aborted) => ({ ended: true, failed: !Arr.every(aborted, (done) => done) })),
-    );
-  };
 
   /** The newest entry of a conversation, 0 when it has none. */
   const newestEntry = async (conversationId: ConversationId): Promise<number> => {
@@ -1627,8 +1657,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /**
    * Live work keeps the heartbeat, as pi-durable's `wake()` counts it, and a sleeping task too (see `Wake`): a task no
-   * installed definition can run, or one the restart limit parked, never becomes runnable by waking, and a waiting task
-   * counts through the live tasks it waits on.
+   * installed definition can run never becomes runnable by waking, and a waiting task counts through the live tasks it
+   * waits on.
    */
   const wakeOf = (tasks: ReadonlyArray<TaskInspection>): Wake => {
     const runnable = (task: (typeof tasks)[number]) =>
@@ -1742,15 +1772,18 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
    */
   const agentsReport = new AgentsReport({
     read: async () => {
-      const graph = await harness.harness.taskGraph(context);
+      const observation = await harness.harness.observeTaskGraph(
+        { advance: () => undefined, end: () => undefined },
+        context,
+      );
 
-      try {
-        const state = await harness.harness.snapshot(SubagentsDoc, context);
+      const graph = observation.value;
 
-        return sessionAgentsOf(summarizeTaskGraph(graph.value, state ?? EMPTY_STATE).agents);
-      } finally {
-        graph.dispose();
-      }
+      observation.detach();
+
+      const state = await harness.harness.snapshot(SubagentsDoc, context);
+
+      return sessionAgentsOf(summarizeTaskGraph(graph, state ?? EMPTY_STATE).agents);
     },
     write: (agents) =>
       writeAgents(
@@ -1939,21 +1972,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   });
 
   // Armed before `resume()` runs anything, as for any call that can start work. The work it resumes runs under its span.
-  //
-  // The tool calls the restart limit parked are ended before the wake is read: a parked call is no live work, but the Run
-  // it held goes on once it is ended, so the wake counts it, as a heartbeat and a `running` report. An abort that
-  // failed keeps the heartbeat, so the next beat tries again rather than the next wake from another cause.
   const wakeAndResume = inspect.pipe(
-    Effect.flatMap(({ tasks }) =>
-      endParkedCalls(tasks).pipe(
-        Effect.flatMap(({ ended, failed }) =>
-          (ended ? wake : Effect.succeed(wakeOf(tasks))).pipe(
-            Effect.flatMap(arm),
-            Effect.andThen(failed ? armHeartbeat : Effect.void),
-          ),
-        ),
-      ),
-    ),
+    Effect.flatMap(({ tasks }) => arm(wakeOf(tasks))),
     Effect.andThen(harness.resume.pipe(Effect.withSpan("session.resume"))),
     Effect.andThen(settleWhenIdle),
     serially,
@@ -3655,8 +3675,9 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
           await followDoc();
           publish();
-          graph.start(async (value) => {
-            latest = value;
+          graph.start(async (call) => {
+            if (call.kind !== "value") return;
+            latest = call.value;
             await followDoc();
             publish();
           });
@@ -3850,22 +3871,38 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
   );
 
-  const events = (conversationId: ConversationId) =>
-    Stream.callback<ReadonlyArray<AgentEvent>, SessionError>((queue) =>
+  const conversationView = (conversationId: ConversationId, window?: ConversationWindow) =>
+    Stream.callback<ConversationFrame, SessionError>((queue) =>
       Effect.acquireRelease(
-        attempt("watch", () =>
-          // pi-durable fails the watch of a conversation it does not have.
-          watchEvents(harness.harness, conversationId, context),
-        ),
+        attempt("watch", async () => {
+          const conversation = await harness.harness.conversation(conversationId, context);
+
+          if (conversation === undefined) {
+            throw new Error(`Conversation ${conversationId} does not exist`);
+          }
+
+          return conversation.watch(context, window);
+        }),
         (watch) => Effect.promise(() => watch.stop()),
       ).pipe(
         Effect.andThen((watch) =>
           Effect.sync(() => {
-            // The screenshots a snapshot carries are bounded: it is one socket message, whose size is capped. A snapshot
-            // that comes later in a batch, to a client that fell behind, is bounded the same.
-            Queue.offerUnsafe(queue, limitEventImages([watch.snapshot], SNAPSHOT_IMAGES));
-            watch.start((batch) => {
-              Queue.offerUnsafe(queue, limitEventImages(batch, SNAPSHOT_IMAGES));
+            // The screenshots each frame carries are bounded: it is one socket message, whose size is capped.
+            Queue.offerUnsafe(queue, {
+              type: "view",
+              view: limitViewImages(watch.value, WATCH_IMAGES),
+            });
+            watch.start((call) => {
+              // pi ends a watch on failure rather than sending a `failed` call.
+              if (call.kind !== "value" || call.ops.length === 0) return Promise.resolve();
+
+              // A call that replaces the whole view (more changes folded than pi keeps operations for) is sent whole.
+              Queue.offerUnsafe(
+                queue,
+                isBase(call.ops)
+                  ? { type: "view", view: limitViewImages(call.value, WATCH_IMAGES) }
+                  : { type: "ops", ops: limitOpsImages(call.ops, WATCH_IMAGES) },
+              );
 
               return Promise.resolve();
             });
@@ -3902,8 +3939,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           };
 
           publish(watch?.value);
-          watch?.start((state) => {
-            publish(state);
+          watch?.start((call) => {
+            if (call.kind === "value") publish(call.value);
 
             return Promise.resolve();
           });
@@ -3952,8 +3989,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           if (watch === undefined) throw new Error("the Todo List document is missing");
 
           Queue.offerUnsafe(queue, tasksOf(watch.value));
-          watch.start((state) => {
-            Queue.offerUnsafe(queue, tasksOf(state));
+          watch.start((call) => {
+            if (call.kind === "value") Queue.offerUnsafe(queue, tasksOf(call.value));
 
             return Promise.resolve();
           });
@@ -3991,8 +4028,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         if (watch === undefined) throw new Error("the MCP tasks document is missing");
 
         Queue.offerUnsafe(queue, viewOfTasks(watch.value));
-        watch.start((state) => {
-          Queue.offerUnsafe(queue, viewOfTasks(state));
+        watch.start((call) => {
+          if (call.kind === "value") Queue.offerUnsafe(queue, viewOfTasks(call.value));
 
           return Promise.resolve();
         });
@@ -4182,11 +4219,6 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           (record) => record.type === "input" && record.conversationId === conversation.id,
         );
 
-      const stalled = Arr.some(
-        tasks,
-        (task) => task.state.kind === "blocked" && task.state.reason === "restart_limit",
-      );
-
       const followed: Types.Mutable<FollowState> = {
         conversationId: conversation.id,
         activeBranch: current.id,
@@ -4202,7 +4234,6 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
               String(task.record.conversationId) in (state?.conversations ?? {})),
         ),
         unsettled,
-        stalled,
         newestEntry: read.newestEntry,
         agents: state?.conversations ?? {},
       };
@@ -4391,7 +4422,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     workspaces,
     taskGraph: taskGraphSummaries,
     usage: usageUpdates,
-    events,
+    conversationView,
     todos,
     mcpTasks: options.mcp === undefined ? Stream.empty : mcpTasks,
     mcpTaskList: options.mcp === undefined ? Effect.succeed([]) : mcpTaskList,
@@ -4433,17 +4464,13 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
             // The Workspace that cannot answer in time has no file to show: the card reads the resource instead.
             Effect.catchTag("TimeoutError", () => Effect.succeed<SpillRead>({ kind: "missing" })),
           ),
-    history: ({ before, conversationId }) =>
+    entryPage: ({ query, limit, conversationId }) =>
       addressed(conversationId).pipe(
         Effect.flatMap((conversation) =>
-          historyPage(
-            (maxEntryId, limit, cursor) =>
-              attempt("entries", () =>
-                conversation.entries({ order: "descending", maxEntryId }, limit, cursor, context),
-              ),
-            before,
-          ),
+          attempt("entries", () => conversation.entries(query, limit, undefined, context)),
         ),
+        // pi reads `descending` when a query names no order.
+        Effect.map((page) => entriesPage(page, query.order ?? "descending")),
       ),
   } satisfies SessionHostService;
 });

@@ -4,7 +4,7 @@
 // a Legacy one does (its question asked live, and the call held open), as `mcpEra` says. A Modern server may ask a
 // Sampling request in the same round (`mcpSampling`), which the Session runs on its models as the round resumes. What the
 // fake was sent is counted in the object's storage, so the counts outlive an eviction.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off
 import type { Harness } from "@cloudpid/effect-durable";
 import type { Approvals } from "@cloudpid/extensions/approvals";
 import type { BrowserHandoffs, OwnerTabDrivers } from "@cloudpid/extensions/browser";

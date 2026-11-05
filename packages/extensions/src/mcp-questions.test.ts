@@ -1,6 +1,6 @@
 // The Session's MCP questions (`docs/architecture/mcp-server-requests.md` → Questions, The waiting-question record,
 // Elicitation requests): asked by a call, answered by the owner, and never kept as a value.
-// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import type { ElicitationForm, McpElicitationRequest } from "@cloudpid/protocol";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";

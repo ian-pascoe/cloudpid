@@ -7,7 +7,6 @@ import {
   fauxProvider,
   fauxToolCall,
   type Models,
-  Type,
 } from "@earendil-works/pi-ai";
 import { isContextOverflow } from "@earendil-works/pi-ai/utils/overflow";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
@@ -34,6 +33,7 @@ import {
   totalsOf,
   usageMessage,
 } from "./spend.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -378,7 +378,7 @@ describe("a Session over its limit", () => {
     const look = defineTool({
       name: "look",
       description: "Look around",
-      parameters: Type.Object({}),
+      parameters: obj({}),
       execute: () => Promise.resolve({ output: [{ type: "text", text: "nothing" }] }),
     });
 
