@@ -7,6 +7,7 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { ContainerPatch, ContainerSettings } from "@cloudpid/config";
+import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import type {
   McpPending,
   McpServerSetAnswer,
@@ -208,7 +209,7 @@ import {
   type McpSignInStartAnswer,
   type McpSignInStartInput,
 } from "@cloudpid/mcp/types";
-import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
+import { guardedOAuthFetch, type PublicReader, signInNetwork } from "../mcp/oauth-fetch.ts";
 import { mcpAccessToken, reportMcpAuth, type SignInDeps } from "./mcp-sign-in-registry.ts";
 import { mcpClientGrant } from "./mcp-sign-in-client-grant.ts";
 import { askMcpSignIn, withdrawMcpSignIn } from "./mcp-sign-in-ask.ts";
@@ -1089,8 +1090,9 @@ export const RegistryLive = Registry.make(
     push: PushConfig,
     secrets: SecretsConfig,
     github: GitHubAppConfig,
+    worker: Cloudflare.WorkerEnvironment,
   }).pipe(
-    Effect.map(({ state, push, secrets, github }) =>
+    Effect.map(({ state, push, secrets, github, worker }) =>
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
         const changes = openAgentChanges(state.raw.storage);
@@ -1196,13 +1198,18 @@ export const RegistryLive = Registry.make(
         // The MCP sign-ins': a malformed key makes token requests answer `unavailable` and leaves the rows unopened.
         const mcpVault = yield* cachedVault(MCP_OAUTH_PURPOSE);
 
-        // What a start and a callback read: every OAuth request goes through `guardedFetch`, and an entry's `${NAME}` client
-        // secret is read from the Secrets and Variables of the Environment the sign-in started in (Global's for `all`).
+        // What a start and a callback read: every OAuth request goes through `guardedFetch` (a hop to one of cloudpid's own
+        // hosts read from `McpWorker`, `signInNetwork`), and an entry's `${NAME}` client secret is read from the Secrets and
+        // Variables of the Environment the sign-in started in (Global's for `all`).
         const signInFlow: FlowDeps = {
           store,
           signIns: mcpSignIns,
           vault: mcpVault,
-          fetch: guardedOAuthFetch(),
+          // SAFETY: the Server Worker binds `McpWorker`'s `McpEngine` entrypoint as `MCP_ENGINE` (`worker.ts`), whose stub
+          // answers `fetchPublic` (or fails as a method it does not have, on an older `McpWorker`); absent in tests.
+          fetch: guardedOAuthFetch(
+            signInNetwork(worker[MCP_ENGINE_BINDING] as PublicReader | undefined),
+          ),
           sources: (environment, resolvesSecrets) =>
             Effect.gen(function* () {
               const global = environment === MCP_SIGN_IN_GLOBAL;

@@ -7,7 +7,8 @@
  * What is here so far: the core's tagged `McpError`, `McpErrorWire` (with its fallback `OtherMcpError`, and
  * `mayHaveRun`) for the engine edge, the call context, the `prior` rows the host keeps for the engine
  * (`docs/architecture/mcp-connections.md` → Storage), `McpEngine`'s RPC, `McpEngineMethods`
- * (`docs/architecture/mcp-connections.md` → The engine), and the host's own RPC (`./host.ts`).
+ * (`docs/architecture/mcp-connections.md` → The engine) with the Schemas of its sign-in read (`./public-fetch.ts`), and the
+ * host's own RPC (`./host.ts`).
  */
 import * as Arr from "effect/Array";
 import * as Match from "effect/Match";
@@ -18,6 +19,7 @@ import { McpInputAnswer, McpInputRequest } from "./elicitation.ts";
 import { hostAnswerReader, McpHostFailure } from "./host.ts";
 import { isJsonObject, JsonObject } from "./json.ts";
 import { McpLogEntry } from "./log.ts";
+import type { McpPublicFetchRequest, McpPublicFetchResult } from "./public-fetch.ts";
 import { McpAuthChallenge } from "./sign-in.ts";
 
 export * from "./deadline.ts";
@@ -27,6 +29,12 @@ export * from "./elicitation.ts";
 export * from "./host.ts";
 
 export * from "./log.ts";
+
+export {
+  McpPublicFetchRequest,
+  McpPublicFetchResult,
+  PUBLIC_FETCH_HEADERS,
+} from "./public-fetch.ts";
 
 export { isJsonObject, JsonObject, jsonListOf, present } from "./json.ts";
 
@@ -1166,6 +1174,15 @@ export interface McpEngineMethods {
     hooks: McpEngineHooks,
     stop?: ReadableStream<Uint8Array>,
   ) => Promise<typeof McpEngineListenResult.Encoded>;
+  /**
+   * A public read for the Registry's MCP sign-in on one of cloudpid's own hosts, from this Worker, which has
+   * `global_fetch_strictly_public` (`./public-fetch.ts`; `docs/architecture/mcp-sign-in.md` → Code). Not part of a
+   * connection. Optional: an engine from before it has no such method, and its stub's call fails as one it does not
+   * implement, which the caller reads as "read it yourself".
+   */
+  readonly fetchPublic?: (
+    request: typeof McpPublicFetchRequest.Encoded,
+  ) => Promise<typeof McpPublicFetchResult.Encoded>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

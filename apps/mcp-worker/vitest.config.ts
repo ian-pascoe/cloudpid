@@ -5,8 +5,9 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import config, { testTimeout } from "@cloudpid/config/vitest";
 import { rolldown } from "rolldown";
 import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest/config";
+import { MCP_WORKER_COMPATIBILITY } from "./src/compatibility.ts";
 
-const COMPATIBILITY_DATE = "2026-08-31";
+const COMPATIBILITY_DATE = MCP_WORKER_COMPATIBILITY.date;
 
 const workerd = "src/**/*.workerd.test.ts";
 
@@ -41,7 +42,9 @@ const bundle = async (entry: string, out: string, flags: ReadonlyArray<string>) 
  * `src/*.test.ts` run in the `node` project on the shared base.
  */
 export default defineConfig(async () => {
-  const engine = await bundle("./src/worker.ts", "./node_modules/.cache/workerd/mcp-worker.js", []);
+  const engine = await bundle("./src/worker.ts", "./node_modules/.cache/workerd/mcp-worker.js", [
+    ...MCP_WORKER_COMPATIBILITY.flags,
+  ]);
 
   const fakes = await bundle("./src/fakes.fixture.ts", "./node_modules/.cache/workerd/fakes.js", [
     "nodejs_compat",
@@ -81,6 +84,7 @@ export default defineConfig(async () => {
                     modules: true,
                     scriptPath: engine,
                     compatibilityDate: COMPATIBILITY_DATE,
+                    compatibilityFlags: [...MCP_WORKER_COMPATIBILITY.flags],
                     outboundService: "fakes",
                     // The Workspaces Worker's `WorkspaceMcpBridge`, which the engine reaches stdio servers through.
                     serviceBindings: {

@@ -204,6 +204,27 @@ describe("McpWorker", () => {
   });
 });
 
+describe("fetchPublic", () => {
+  it("reads a URL for the Registry's sign-in as a GET with no credential, and refuses one that is not https", async () => {
+    const read = await env.MCP_ENGINE.fetchPublic?.({
+      url: "https://metadata.test/.well-known/cloudflare-access-protected-resource/mcp",
+      headers: { Accept: "application/json", Authorization: "Bearer secret" },
+    });
+
+    expect(read).toMatchObject({ status: "fetched", code: 200 });
+    expect(read?.status === "fetched" && JSON.parse(read.body)).toMatchObject({
+      method: "GET",
+      headers: { accept: "application/json" },
+    });
+    expect(read?.status === "fetched" && read.body).not.toContain("secret");
+
+    expect(await env.MCP_ENGINE.fetchPublic?.({ url: "http://metadata.test/x" })).toEqual({
+      status: "refused",
+      message: "The URL is not https",
+    });
+  });
+});
+
 describe("discover", () => {
   it("discovers a Modern server: its era, tools and prompts, and keeps its era row", async () => {
     const discovered = Schema.decodeSync(McpEngineDiscoverResult)(
