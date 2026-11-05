@@ -2,6 +2,8 @@
 // (Code), Bounds): every one goes through `guardedFetch` (the SSRF guard of `web_fetch`: the URL and every redirect hop are
 // checked before anything is sent) with a 15 s timeout, and no response is read past 64 KiB. `OAuthFetch` is the shape
 // pi-mcp's discovery, registration and token functions take, so they run over this unchanged.
+// The Registry runs it over `signInNetwork` (`own-host-transport.ts`), which reads a hop to one of cloudpid's own hosts
+// from `McpWorker`.
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off globalFetch:off strictEffectProvide:off
 import {
   boundedText,
@@ -9,6 +11,7 @@ import {
   OAUTH_FETCH_TIMEOUT_MS,
   type OAuthFetch,
 } from "@cloudpid/mcp/oauth";
+import { BODYLESS_STATUSES } from "@cloudpid/mcp/types";
 import {
   guardedFetch,
   type WebRequest,
@@ -99,7 +102,7 @@ const bounded = async (response: Response, limit: number): Promise<Response> => 
   }
 
   // A body is not allowed on these.
-  const bodyless = [101, 204, 205, 304].includes(response.status);
+  const bodyless = BODYLESS_STATUSES.includes(response.status);
 
   return new Response(bodyless ? null : text, {
     status: response.status,

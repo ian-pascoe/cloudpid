@@ -1,6 +1,6 @@
 // What a start puts in an authorization request, and what cloudpid calls itself there (`docs/architecture/mcp-sign-in.md` →
 // Client registration, The client document and the callback outside Access, Starting and completing a sign-in; ADR-0035):
-// the stage's client name, the client document, the DCR redirect URI, the 256-bit `state`, the PKCE pair and the
+// the stage's client name, the client document, the 256-bit `state`, the PKCE pair and the
 // authorization URL. Pure but for the random bytes, so it is tested without a Worker.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over values.
 import { sha256Hex } from "@cloudpid/config";
@@ -22,22 +22,6 @@ export const clientDocument = (input: {
   token_endpoint_auth_method: "none",
   application_type: "web",
 });
-
-/** The 12 characters of an issuer's hash in the redirect URI of an authorization server that does not advertise `iss`. */
-const issuerHash = (issuer: string): string => sha256Hex(issuer).slice(0, 12);
-
-/**
- * The redirect URI a DCR client registers: the callback, and below it the issuer's hash when the authorization server
- * does not advertise `authorization_response_iss_parameter_supported`, so the callback knows which server answered.
- */
-export const dcrRedirectUri = (input: {
-  readonly origin: string;
-  readonly issuer: string;
-  readonly advertisesIss: boolean;
-}): string =>
-  input.advertisesIss
-    ? callbackUrl(input.origin)
-    : `${callbackUrl(input.origin)}/${issuerHash(input.issuer)}`;
 
 const base64Url = (bytes: Uint8Array): string =>
   btoa(String.fromCharCode(...bytes))

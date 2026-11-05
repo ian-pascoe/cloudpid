@@ -5,6 +5,12 @@
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off
 const encoder = new TextEncoder();
 
+/** Each OAuth fetch gets this long (`docs/architecture/mcp-sign-in.md` → Code). */
+export const OAUTH_FETCH_TIMEOUT_MS = 15_000;
+
+/** The authorization server metadata and discovery a sign-in records, each at most this many bytes. */
+export const MAX_METADATA_BYTES = 64 * 1024;
+
 /** An error kept on a row, or an owner-facing reason, is cut to this many characters. */
 export const MAX_SIGN_IN_ERROR_LENGTH = 300;
 

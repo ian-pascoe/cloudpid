@@ -17,7 +17,14 @@ import * as Schema from "effect/Schema";
 import type { AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";
 import { basicAuthorization, boundedText, type OAuthFetch } from "./oauth-http.ts";
 
-export { boundedText, MAX_SIGN_IN_ERROR_LENGTH, type OAuthFetch, scrubbed } from "./oauth-http.ts";
+export {
+  boundedText,
+  MAX_METADATA_BYTES,
+  MAX_SIGN_IN_ERROR_LENGTH,
+  OAUTH_FETCH_TIMEOUT_MS,
+  type OAuthFetch,
+  scrubbed,
+} from "./oauth-http.ts";
 
 export * from "./client-assertion.ts";
 
@@ -62,14 +69,8 @@ export type {
   TokenRequestOptions,
 } from "@earendil-works/pi-mcp/oauth";
 
-/** Each OAuth fetch gets this long (`docs/architecture/mcp-sign-in.md` → Code). */
-export const OAUTH_FETCH_TIMEOUT_MS = 15_000;
-
 /** An access or refresh token is held to this many bytes (→ Bounds). */
 export const MAX_TOKEN_BYTES = 16 * 1024;
-
-/** The authorization server metadata and discovery a sign-in records, each at most this many bytes. */
-export const MAX_METADATA_BYTES = 64 * 1024;
 
 const encoder = new TextEncoder();
 

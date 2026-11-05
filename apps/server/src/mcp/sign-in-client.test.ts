@@ -7,12 +7,12 @@ import { describe, expect, it } from "vitest";
 import {
   authorizationUrl,
   clientDocument,
-  dcrRedirectUri,
   pkceChallenge,
   randomToken,
   safeReturnPath,
   WELL_FORMED_STATE,
 } from "./sign-in-client.ts";
+import { dcrRedirectUri } from "./sign-in-origin.ts";
 
 const ORIGIN = "https://cloudpid-server-pr-450.ian-g-pascoe.workers.dev";
 

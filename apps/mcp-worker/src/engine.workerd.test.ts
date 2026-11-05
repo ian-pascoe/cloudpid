@@ -9,6 +9,7 @@ import {
   McpEngineListenResult,
   type McpListenEvent,
   McpEngineRequestResult,
+  McpPublicFetched,
   SignInRequired,
   StepUpRequired,
   TimedOut,
@@ -201,6 +202,29 @@ describe("McpWorker", () => {
     const response = await env.MCP_WORKER.fetch("https://mcp-worker.example/");
 
     expect(response.status).toBe(404);
+  });
+});
+
+describe("fetchPublic", () => {
+  it("reads a URL for the Registry's sign-in as a GET with no credential, and refuses one that is not https", async () => {
+    const read = await env.MCP_ENGINE.fetchPublic?.({
+      url: "https://metadata.test/.well-known/cloudflare-access-protected-resource/mcp",
+      headers: { Accept: "application/json", Authorization: "Bearer secret" },
+    });
+
+    const fetched = Schema.decodeUnknownSync(McpPublicFetched)(read);
+
+    expect(fetched.code).toBe(200);
+    expect(JSON.parse(fetched.body)).toMatchObject({
+      method: "GET",
+      headers: { accept: "application/json" },
+    });
+    expect(fetched.body).not.toContain("secret");
+
+    expect(await env.MCP_ENGINE.fetchPublic?.({ url: "http://metadata.test/x" })).toEqual({
+      status: "refused",
+      message: "The URL is not https",
+    });
   });
 });
 

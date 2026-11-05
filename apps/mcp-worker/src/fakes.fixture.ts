@@ -1,7 +1,8 @@
 // The fake MCP servers as an auxiliary Worker for the engine's workerd tests (`docs/architecture/mcp.md` → Testing):
 // the engine's outbound `fetch`es all come here (`vitest.config.ts`). A server is picked by host and made fresh per
 // key, the URL's first path segment, so each test has its own: `https://<kind>.test/<key>/mcp`. `GET
-// https://<kind>.test/<key>/_seen` answers what that server received and which of its calls were cancelled.
+// https://<kind>.test/<key>/_seen` answers what that server received and which of its calls were cancelled, and
+// `https://metadata.test/…` what a public read sent.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off -- a fetch handler, Promise-based at its seam.
 import {
   APP_MIME_TYPE,
@@ -273,6 +274,18 @@ const fakeFor = (host: string, key: string) => {
 export default {
   fetch: async (request: Request) => {
     const url = new URL(request.url);
+
+    // `https://metadata.test/…` answers what it was sent, for `McpEngine.fetchPublic`'s test: the method and the headers.
+    if (url.host === "metadata.test") {
+      const headers: Record<string, string> = {};
+
+      request.headers.forEach((value, name) => {
+        headers[name] = value;
+      });
+
+      return Response.json({ method: request.method, headers });
+    }
+
     const [, key = "", path = ""] = url.pathname.split("/");
     const fake = fakeFor(url.host, key);
 

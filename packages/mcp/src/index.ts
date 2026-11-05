@@ -33,3 +33,5 @@ export {
   LEGACY_PROTOCOL_VERSIONS,
   SUPPORTED_PROTOCOL_VERSIONS,
 } from "./protocol.ts";
+
+export { fetchPublic } from "./public-fetch.ts";

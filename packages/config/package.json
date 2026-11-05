@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./sha256": "./src/sha256.ts",
     "./vitest": "./src/vitest.ts",
     "./tsconfig/base.json": "./tsconfig/base.json"
   },

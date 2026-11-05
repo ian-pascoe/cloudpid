@@ -6,8 +6,10 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off preferEffectRecord:off
 import { sha256Hex } from "@cloudpid/config";
 import { type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
+import { DnsResolver, WebTransport } from "@cloudpid/extensions/web";
 import type { OAuthFetch } from "@cloudpid/mcp/oauth";
 import {
+  type McpAuthChallenge,
   McpSignInConfirmation,
   type McpSignInCompleteAnswer,
   type McpSignInCompleteInput,
@@ -18,9 +20,13 @@ import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
+import { ACCESS_ISSUER, mcpApplicationProps } from "../mcp-access.ts";
+import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
+import { ownHostRouted } from "../mcp/own-host-transport.ts";
 import { pkceChallenge } from "../mcp/sign-in-client.ts";
 import {
   completeMcpSignIn,
@@ -185,6 +191,54 @@ const sentry = (
   ...over,
 });
 
+/**
+ * `fetch` (the table) behind the Registry's sign-in network: `guardedOAuthFetch` over `ownHostRouted`, whose reader is a
+ * fake `MCP_ENGINE.fetchPublic` that records the URL in `engineAsked` and reads the table too, and whose direct transport
+ * is the table; every host resolves to a public address.
+ */
+const routedFetch = (
+  fetch: OAuthFetch,
+  engineAsked: Array<string>,
+  engineFails: (url: string) => boolean = () => false,
+): OAuthFetch => {
+  const direct = Layer.succeed(WebTransport, {
+    fetch: (request) =>
+      Effect.promise(() => {
+        const init: RequestInit = { method: request.method ?? "GET", headers: request.headers };
+
+        if (request.body !== undefined) init.body = request.body;
+
+        return fetch(request.url, init);
+      }),
+  });
+
+  const resolver = Layer.succeed(DnsResolver, { resolve: () => Effect.succeed(["93.184.216.34"]) });
+
+  const engine = {
+    fetchPublic: async (request: {
+      readonly url: string;
+      readonly headers?: Record<string, string>;
+    }) => {
+      engineAsked.push(request.url);
+
+      if (engineFails(request.url)) throw new Error("Network connection lost.");
+
+      const response = await fetch(request.url, { headers: request.headers ?? {} });
+      const headers: Record<string, string> = {};
+
+      response.headers.forEach((value, name) => {
+        headers[name] = value;
+      });
+
+      return { status: "fetched", code: response.status, headers, body: await response.text() };
+    },
+  };
+
+  return guardedOAuthFetch(
+    ownHostRouted(engine).pipe(Layer.provideMerge(Layer.mergeAll(direct, resolver))),
+  );
+};
+
 type Flow = {
   readonly signIns: McpSignIns;
   readonly vault: KeptVault;
@@ -192,6 +246,10 @@ type Flow = {
   /** Every span the start, the confirmation and the callback made, with its attributes. */
   readonly spans: Array<Tracer.NativeSpan>;
   readonly setGlobal: (value: Schema.Json) => void;
+  /** Record `challenge` for `name`'s sign-in, as `McpHost` reports a 401's. */
+  readonly noteChallenge: (name: string, challenge: McpAuthChallenge) => void;
+  /** The URLs read from `McpWorker` (`MCP_ENGINE.fetchPublic`), under `{ routed: true }`. */
+  readonly engineAsked: Array<string>;
   readonly keyHash: (name: string) => string;
   readonly start: (
     over?: Partial<McpSignInStartInput>,
@@ -214,7 +272,16 @@ type Flow = {
 const run = <A>(
   routes: Record<string, Handler>,
   body: (flow: Flow) => Promise<A>,
-  options: { readonly secrets?: Record<string, string> } = {},
+  options: {
+    readonly secrets?: Record<string, string>;
+    /**
+     * Send the flow's requests through the Registry's sign-in network (`ownHostRouted` under `guardedOAuthFetch`): a hop
+     * to one of cloudpid's own hosts goes to a fake `MCP_ENGINE.fetchPublic`, every other to the table directly.
+     */
+    readonly routed?: boolean;
+    /** Under `routed`, the URLs whose `fetchPublic` call fails, as an `McpWorker` that cannot be reached. */
+    readonly engineFails?: (url: string) => boolean;
+  } = {},
 ) =>
   runInDurableObject(
     env.REGISTRIES.get(env.REGISTRIES.newUniqueId()),
@@ -223,6 +290,7 @@ const run = <A>(
       const signIns = openMcpSignIns(state.storage, store);
       const vault = await Effect.runPromise(openKeptVault(MASTER, MCP_OAUTH_PURPOSE));
       const net = network(routes);
+      const engineAsked: Array<string> = [];
       const spans: Array<Tracer.NativeSpan> = [];
 
       const tracer = Tracer.make({
@@ -242,7 +310,10 @@ const run = <A>(
         store,
         signIns,
         vault: Effect.succeed(vault),
-        fetch: net.fetch,
+        fetch:
+          options.routed === true
+            ? routedFetch(net.fetch, engineAsked, options.engineFails)
+            : net.fetch,
         sources: () => Effect.succeed({ secrets: options.secrets ?? {}, variables: {} }),
       };
 
@@ -303,6 +374,14 @@ const run = <A>(
         setGlobal: (value) => {
           writeSettings(store, servers(value), 5);
         },
+        noteChallenge: (name, challenge) => {
+          const target = signInTarget(store, DEFAULT_ENVIRONMENT, name);
+
+          if (target.status !== "target") throw new Error(`No sign-in for ${name}`);
+
+          signIns.noteChallenge(target.key, challenge, NOW);
+        },
+        engineAsked,
         keyHash,
         start,
         confirm,
@@ -566,6 +645,166 @@ describe("the client ladder", () => {
         expect(Array.from(message).length).toBeLessThanOrEqual(300);
       },
     ));
+});
+
+describe("Self-use: a sign-in to the stage's own MCP endpoint", () => {
+  const endpoint = `${ORIGIN}/mcp`;
+  const resourceMetadata = `${ORIGIN}/.well-known/cloudflare-access-protected-resource/mcp`;
+  const registrationEndpoint = `${ACCESS_ISSUER}/cdn-cgi/access/oauth/registration`;
+
+  /** The stage's host and Access, as they answer (2026-11-05). */
+  const access = {
+    // The 401 of a request with no token, which names where Access serves the resource metadata.
+    [`GET ${endpoint}`]: () =>
+      new Response(JSON.stringify({ error: "invalid_token" }), {
+        status: 401,
+        headers: {
+          "content-type": "application/json",
+          "www-authenticate": `Bearer realm="OAuth", error="invalid_token", error_description="Missing or invalid access token", resource_metadata="${resourceMetadata}"`,
+        },
+      }),
+    [`GET ${resourceMetadata}`]: () => ({
+      resource: endpoint,
+      protected: true,
+      authorization_servers: [ACCESS_ISSUER],
+    }),
+    // The well-known paths at the root are behind the main application: Access's login.
+    [`GET ${ORIGIN}/.well-known/oauth-protected-resource/mcp`]: () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: `${ACCESS_ISSUER}/cdn-cgi/access/login/host` },
+      }),
+    [`GET ${ORIGIN}/.well-known/oauth-protected-resource`]: () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: `${ACCESS_ISSUER}/cdn-cgi/access/login/host` },
+      }),
+    // Access's metadata: no client document, no `iss`, and `none` among the methods.
+    [`GET ${ACCESS_ISSUER}/.well-known/oauth-authorization-server`]: () => ({
+      issuer: ACCESS_ISSUER,
+      authorization_endpoint: `${ACCESS_ISSUER}/cdn-cgi/access/oauth/authorization`,
+      token_endpoint: `${ACCESS_ISSUER}/cdn-cgi/access/oauth/token`,
+      registration_endpoint: registrationEndpoint,
+      revocation_endpoint: `${ACCESS_ISSUER}/cdn-cgi/access/oauth/revoke`,
+      response_types_supported: ["code"],
+      response_modes_supported: ["query"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+      token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post", "none"],
+      code_challenge_methods_supported: ["S256"],
+    }),
+    [`POST ${registrationEndpoint}`]: (call: Call) =>
+      new Response(
+        JSON.stringify({ client_id: "access-client-1", redirect_uris: [redirectUriOf(call)] }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      ),
+  };
+
+  /** What a Self-use sign-in must have done, whatever led it to the resource metadata. */
+  const expectRegisteredAtAccess = (url: URL, calls: ReadonlyArray<Call>) => {
+    const registration = calls.find(({ url: called }) => called === registrationEndpoint);
+
+    expect(registration?.json).toMatchObject({
+      redirect_uris: mcpApplicationProps(STAGE.label).oauthConfiguration.dynamicClientRegistration
+        .allowedUris,
+      token_endpoint_auth_method: "none",
+    });
+    expect(url.searchParams.get("client_id")).toBe("access-client-1");
+    expect(url.searchParams.get("redirect_uri")).toBe(redirectUriOf(registration));
+    expect(url.searchParams.get("resource")).toBe(endpoint);
+  };
+
+  it("reads the resource metadata the recorded 401 names from McpWorker, and registers over DCR at the URI the stage's Access application allows", () =>
+    run(
+      access,
+      async ({ setGlobal, noteChallenge, signIn, calls, engineAsked }) => {
+        setGlobal({ cloudpid: { url: endpoint } });
+        noteChallenge("cloudpid", {
+          resourceMetadataUrl: resourceMetadata,
+          error: "invalid_token",
+        });
+
+        const url = await signIn({ server: "cloudpid" });
+
+        // The only hop on the stage's host is read from McpWorker; Access's own host is reached from here.
+        expect(engineAsked).toEqual([resourceMetadata]);
+        expect(calls.map(({ url: called }) => called)).not.toContain(
+          `${ORIGIN}/.well-known/oauth-protected-resource/mcp`,
+        );
+        expectRegisteredAtAccess(url, calls);
+      },
+      { routed: true },
+    ));
+
+  it("asks the endpoint for its 401 first when no challenge is recorded, and never reads the root paths Access's login answers", () =>
+    run(
+      access,
+      async ({ setGlobal, signIn, calls, engineAsked }) => {
+        setGlobal({ cloudpid: { url: endpoint } });
+
+        const url = await signIn({ server: "cloudpid" });
+
+        expect(engineAsked).toEqual([endpoint, resourceMetadata]);
+        expect(calls.map(({ url: called }) => called)).not.toContain(
+          `${ORIGIN}/.well-known/oauth-protected-resource/mcp`,
+        );
+        expectRegisteredAtAccess(url, calls);
+      },
+      { routed: true },
+    ));
+
+  /** A 401 of the endpoint whose `WWW-Authenticate` is `header`. */
+  const unauthorized = (header: string) => () =>
+    new Response(JSON.stringify({ error: "invalid_token" }), {
+      status: 401,
+      headers: { "content-type": "application/json", "www-authenticate": header },
+    });
+
+  it.each([
+    ["answers 200", { [`GET ${endpoint}`]: () => ({ ok: true }) }, undefined],
+    [
+      "answers a 401 that names no resource metadata",
+      { [`GET ${endpoint}`]: unauthorized('Bearer realm="OAuth", error="invalid_token"') },
+      undefined,
+    ],
+    [
+      "answers a 401 that names http resource metadata",
+      {
+        [`GET ${endpoint}`]: unauthorized(
+          `Bearer realm="OAuth", resource_metadata="http://${new URL(ORIGIN).host}/.well-known/cloudflare-access-protected-resource/mcp"`,
+        ),
+      },
+      undefined,
+    ],
+    ["cannot be asked (McpWorker is not reached)", {}, (url: string) => url === endpoint],
+  ])(
+    "runs the well-known discovery as before when the endpoint %s",
+    (_, over: Record<string, Handler>, engineFails) =>
+      run(
+        { ...access, ...over },
+        async ({ setGlobal, start, engineAsked }) => {
+          setGlobal({ cloudpid: { url: endpoint } });
+
+          const answer = await start({ server: "cloudpid" });
+
+          // The probe came first; then the root paths, which answer Access's login, and no resource metadata is found.
+          expect(engineAsked[0]).toBe(endpoint);
+          expect(engineAsked).toContain(`${ORIGIN}/.well-known/oauth-protected-resource/mcp`);
+          expect(engineAsked).not.toContain(resourceMetadata);
+          expect(answer.status).toBe("problem");
+          expect(messageOf(answer)).toContain("published no metadata");
+        },
+        engineFails === undefined ? { routed: true } : { routed: true, engineFails },
+      ),
+  );
+
+  it("asks nothing first of a server that is not on one of cloudpid's own hosts", () =>
+    run(sentry(), async ({ setGlobal, signIn, calls }) => {
+      setGlobal({ sentry: { url: SERVER_URL } });
+
+      await signIn();
+
+      expect(calls.map(({ url }) => url)).not.toContain(SERVER_URL);
+    }));
 });
 
 describe("the issuer pin and binding", () => {

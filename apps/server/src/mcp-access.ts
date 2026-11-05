@@ -5,7 +5,8 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions of the stack's props.
 
 import * as Effect from "effect/Effect";
-import { OWNER_EMAIL, appOrigin } from "./deployment.ts";
+import { ACCESS_TEAM_DOMAIN, OWNER_EMAIL, appOrigin } from "./deployment.ts";
+import { dcrRedirectUri } from "./mcp/sign-in-origin.ts";
 
 /** The path of the MCP endpoint, which its Access application covers with its sub-paths. */
 const MCP_PATH = "/mcp";
@@ -16,16 +17,35 @@ const MCP_PATH = "/mcp";
  */
 export const MCP_AUDIENCE_VAR = "CLOUDPID_MCP_ACCESS_AUD";
 
+/** The issuer of the team's managed OAuth, as its authorization server metadata names it (no trailing `/`). */
+export const ACCESS_ISSUER = `https://${ACCESS_TEAM_DOMAIN}`;
+
+/**
+ * The redirect URI cloudpid's own MCP sign-in registers at Access for the stage's MCP endpoint (`mcp-endpoint.md` →
+ * Self-use): Access advertises no client document and no `iss` in authorization responses, so the sign-in registers
+ * over DCR with the callback below the issuer's hash (`mcp-sign-in.md` → Client registration). Built by the sign-in's
+ * own function, so the two cannot drift.
+ */
+export const selfUseRedirectUri = (stage: string): string =>
+  dcrRedirectUri({ origin: appOrigin(stage), issuer: ACCESS_ISSUER, advertisesIss: false });
+
 /**
  * Managed OAuth (docs/architecture/mcp-endpoint.md → Access and identity): Access is the authorization server. Access
  * tokens last 5 minutes and the grant 14 days (both clients refresh on their own), and dynamic client registration
- * accepts the loopback and localhost redirects pi and Claude Code use.
+ * accepts the loopback and localhost redirects pi and Claude Code use, and the stage's own Self-use redirect, listed
+ * exactly (Access matches an allowed URI exactly unless it ends in `/*`).
  */
-export const MCP_OAUTH_CONFIGURATION = {
-  enabled: true,
-  grant: { accessTokenLifetime: "5m", sessionDuration: "336h" },
-  dynamicClientRegistration: { enabled: true, allowAnyOnLocalhost: true, allowAnyOnLoopback: true },
-} as const;
+export const mcpOauthConfiguration = (stage: string) =>
+  ({
+    enabled: true,
+    grant: { accessTokenLifetime: "5m", sessionDuration: "336h" },
+    dynamicClientRegistration: {
+      enabled: true,
+      allowAnyOnLocalhost: true,
+      allowAnyOnLoopback: true,
+      allowedUris: [selfUseRedirectUri(stage)],
+    },
+  }) as const;
 
 /**
  * The host the stage's main Worker is served on: `pi.ianpascoe.dev` on `prod`, `cloudpid-server-<label>.<account
@@ -37,14 +57,15 @@ export const appHost = (stage: string): string => new URL(appOrigin(stage)).host
 /**
  * The MCP endpoint's Access application, `self_hosted` with `public` destination `<host>/mcp` (which also covers its
  * sub-paths), managed OAuth, and one policy: the owner-email Allow (a browser, or a client signed in through managed
- * OAuth). There is no Service Auth policy: the Local agent signs in through managed OAuth like any client (#635).
+ * OAuth, cloudpid's own Self-use sign-in included). There is no Service Auth policy: the Local agent signs in through
+ * managed OAuth like any client (#635).
  */
 export const mcpApplicationProps = (stage: string) =>
   ({
     type: "self_hosted",
     destinations: [{ type: "public", uri: `${appHost(stage)}${MCP_PATH}` }],
     policies: [{ decision: "allow", include: [{ email: OWNER_EMAIL }] }],
-    oauthConfiguration: MCP_OAUTH_CONFIGURATION,
+    oauthConfiguration: mcpOauthConfiguration(stage),
   }) as const;
 
 /**

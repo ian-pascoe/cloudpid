@@ -26,6 +26,7 @@ import {
   type OAuthFetch,
   OAuthError,
   OAuthRegistrationError,
+  parseWwwAuthenticate,
   registerClient,
   sameIssuer,
   selectResource,
@@ -49,13 +50,9 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import {
-  authorizationUrl,
-  dcrRedirectUri,
-  pkceChallenge,
-  randomToken,
-} from "../mcp/sign-in-client.ts";
-import { callbackUrl, clientDocumentUrl } from "../mcp/sign-in-origin.ts";
+import { authorizationUrl, pkceChallenge, randomToken } from "../mcp/sign-in-client.ts";
+import { isOwnHost } from "../mcp/own-hosts.ts";
+import { callbackUrl, clientDocumentUrl, dcrRedirectUri } from "../mcp/sign-in-origin.ts";
 import {
   clip,
   MAX_SIGN_IN_ERROR_LENGTH,
@@ -329,6 +326,36 @@ const httpsUrl = (text: string | undefined): URL | undefined =>
     ? new URL(text)
     : undefined;
 
+/**
+ * The resource metadata URL an unauthenticated GET of `serverUrl` names in its 401's `WWW-Authenticate`, or undefined
+ * (→ A hop to one of cloudpid's own hosts). A start asks it only for a server on one of cloudpid's own hosts (Self-use)
+ * with no challenge recorded: Access serves the metadata at `/.well-known/cloudflare-access-protected-resource/…`, which
+ * the well-known discovery does not try, and the root paths it does try answer Access's login there (a 302). Any other
+ * answer, or a failure, leaves the well-known discovery to run as before.
+ */
+const probedResourceMetadataUrl = (
+  fetch: OAuthFetch,
+  serverUrl: URL,
+): Effect.Effect<URL | undefined> =>
+  Effect.tryPromise({
+    try: async () => {
+      const response = await fetch(serverUrl.toString(), {
+        headers: { accept: "application/json, text/event-stream" },
+      });
+
+      await response.body?.cancel();
+
+      if (response.status !== 401) return undefined;
+
+      return httpsUrl(
+        parseWwwAuthenticate(
+          response.headers.get("www-authenticate"),
+        ).resourceMetadataUrl?.toString(),
+      );
+    },
+    catch: () => undefined,
+  }).pipe(Effect.orElseSucceed(() => undefined));
+
 /** The client a start chose, with what the authorization request and the interstitial need. */
 type Chosen = {
   readonly client: McpSignInClient;
@@ -591,8 +618,14 @@ export const startMcpSignIn = (
       });
     }
 
-    const resourceMetadataUrl = httpsUrl(challenge?.resourceMetadataUrl);
     const serverUrl = new URL(entry.url);
+
+    // A Self-use start with no challenge asks the server for one first (`probedResourceMetadataUrl`).
+    const resourceMetadataUrl =
+      httpsUrl(challenge?.resourceMetadataUrl) ??
+      (isOwnHost(serverUrl.hostname.toLowerCase())
+        ? yield* probedResourceMetadataUrl(deps.fetch, serverUrl)
+        : undefined);
 
     const discovery: DiscoverOptions = { fetch: deps.fetch };
 

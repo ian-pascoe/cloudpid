@@ -1,5 +1,7 @@
-// The origin a MCP sign-in starts on, and the client document and callback URLs under it (`docs/architecture/mcp-sign-in.md`
-// → The client document and the callback outside Access; ADR-0035). Pure, so it is tested without a Worker.
+// The origin a MCP sign-in starts on, and the client document, callback and DCR redirect URLs under it
+// (`docs/architecture/mcp-sign-in.md` → Client registration, The client document and the callback outside Access;
+// ADR-0035). Pure, so it is tested without a Worker, and light, so the main Worker's props import it (`mcp-access.ts`
+// lists the Self-use redirect URI; `docs/development/workers.md` → Startup).
 //
 // A live stage has one origin, a deploy-time var (`APP_ORIGIN_VAR`), and a request's `Host` is never read there. `alchemy dev`
 // has two, `http://localhost:1337` (workerd) and `http://localhost:5173` (Vite), and the redirect URI follows the one the
@@ -7,6 +9,7 @@
 // does, to the Worker's own; the `/oauth/mcp/` proxy of `apps/web/vite.config.ts` sets `changeOrigin: false`, which keeps the
 // browser's `Host`, so the Worker reads `Host` and no forwarded header (a client could set one).
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values.
+import { sha256Hex } from "@cloudpid/config/sha256";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 
@@ -27,6 +30,22 @@ export const clientDocumentUrl = (origin: string): string => `${origin}${CLIENT_
 
 /** The redirect URI of a sign-in that does not use an issuer hash: the callback itself. */
 export const callbackUrl = (origin: string): string => `${origin}${CALLBACK_PATH}`;
+
+/** The 12 characters of an issuer's hash in the redirect URI of an authorization server that does not advertise `iss`. */
+const issuerHash = (issuer: string): string => sha256Hex(issuer).slice(0, 12);
+
+/**
+ * The redirect URI a DCR client registers: the callback, and below it the issuer's hash when the authorization server
+ * does not advertise `authorization_response_iss_parameter_supported`, so the callback knows which server answered.
+ */
+export const dcrRedirectUri = (input: {
+  readonly origin: string;
+  readonly issuer: string;
+  readonly advertisesIss: boolean;
+}): string =>
+  input.advertisesIss
+    ? callbackUrl(input.origin)
+    : `${callbackUrl(input.origin)}/${issuerHash(input.issuer)}`;
 
 /** What reads the origin from: the Worker's vars and the request's `Host`. */
 export type OriginSources = {
