@@ -418,8 +418,8 @@ describe("the MCP endpoint's classification", () => {
     });
   });
 
-  // Access lists every application of the hostname the owner's session has signed in to: once the owner has signed in
-  // to the MCP endpoint's application (managed OAuth) as well as the main one, its assertions on both carry both.
+  // Seen on prod once the owner had signed in to the MCP endpoint's application (managed OAuth) as well as the main one:
+  // the owner's assertions on both routes listed both audiences (#419 had seen one `aud` on `/mcp`).
   it("admits the owner's assertion that lists both audiences, on a main route and on /mcp alike", async () => {
     const both = { aud: [MAIN_AUDIENCE, MCP_AUDIENCE] };
 
@@ -428,8 +428,17 @@ describe("the MCP endpoint's classification", () => {
       guard({ mcp: { audience: MCP_AUDIENCE, serviceToken: TOKEN_CLIENT_ID } }),
     );
 
-    expect(main.admitted).toBe(true);
-    expect((await classifyMcp(await sign(team, { ...mcpClaims(), ...both }))).admitted).toBe(true);
+    expect(main).toEqual(OWNER);
+    expect(await classifyMcp(await sign(team, { ...mcpClaims(), ...both }))).toEqual(OWNER);
+    expect(
+      await classifyMcp(
+        await sign(team, { ...mcpClaims(), ...both, oauth: { client_id: "dcr-1" } }),
+      ),
+    ).toEqual({ admitted: true, caller: { kind: "owner", clientId: "dcr-1" } });
+    expect(await classifyMcp(await sign(team, { ...tokenClaims(), ...both }))).toEqual({
+      admitted: true,
+      caller: { kind: "service_token", clientId: TOKEN_CLIENT_ID },
+    });
   });
 
   it("still refuses a service token on a main route when its assertion lists both audiences", async () => {

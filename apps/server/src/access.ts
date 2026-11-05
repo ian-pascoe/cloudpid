@@ -3,7 +3,7 @@
 // front of it: it verifies `Cf-Access-Jwt-Assertion` itself, on every route, and fails closed. On `/mcp` it checks the
 // MCP endpoint application's audience and tells the owner from the Local agent's service token; everywhere else a
 // `common_name`, or an assertion without the main application's audience, is refused, so neither credential opens the
-// app. An assertion may list both audiences: Access lists every application of the host the owner has signed in to.
+// app. An assertion may list both audiences: prod's did once the owner had signed in to both applications.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off globalDate:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
 
 import * as Arr from "effect/Array";
@@ -223,8 +223,8 @@ export const classifyAssertion = async (
 
   const audiences = aud === undefined ? [] : Arr.ensure(aud);
 
-  // The other application's audience may be listed too (Access lists every application of the host the session has
-  // signed in to), so it is not refused: Access itself only lets a request through either application's policy.
+  // The other application's audience may be listed too (prod's assertions did once the owner had signed in to both
+  // applications), so it is not refused: Access only lets a request through the policy of the route's application.
   if (!audiences.includes(expected.audience)) return refuse("wrong_audience");
 
   // Before the email: a service token has neither an email nor the owner's identity, and is told apart from a stranger.
