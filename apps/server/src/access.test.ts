@@ -124,11 +124,11 @@ const TOKEN_CLIENT_ID = "0123456789abcdef.access";
 const classify = (assertion: string | undefined) =>
   admit({ assertion, hosts: [HOST], now: NOW }, guard());
 
-/** The same, for a request to `/mcp`: its own audience, and the Local agent's service token. */
+/** The same, for a request to `/mcp`: its own audience. */
 const classifyMcp = (assertion: string | undefined, overrides: Partial<AccessGuard> = {}) =>
   admit(
     { assertion, hosts: [HOST], mcp: true, now: NOW },
-    guard({ mcp: { audience: MCP_AUDIENCE, serviceToken: TOKEN_CLIENT_ID }, ...overrides }),
+    guard({ mcp: { audience: MCP_AUDIENCE }, ...overrides }),
   );
 
 const OWNER = { admitted: true, caller: { kind: "owner" } };
@@ -362,11 +362,10 @@ describe("the MCP endpoint's classification", () => {
     ).toEqual({ admitted: true, caller: { kind: "owner", clientId: "dcr-1" } });
   });
 
-  it("admits the Local agent's service token, by its client id", async () => {
-    expect(await classifyMcp(await sign(team, tokenClaims()))).toEqual({
-      admitted: true,
-      caller: { kind: "service_token", clientId: TOKEN_CLIENT_ID },
-    });
+  it("refuses the Local agent's old service token on /mcp: no service_token caller is admitted", async () => {
+    const refused = { admitted: false, reason: "common_name" };
+
+    expect(await classifyMcp(await sign(team, tokenClaims()))).toEqual(refused);
     expect(
       await classifyMcp(
         await sign(team, {
@@ -377,33 +376,25 @@ describe("the MCP endpoint's classification", () => {
           exp: NOW + 3600,
         }),
       ),
-    ).toEqual({
-      admitted: true,
-      caller: { kind: "service_token", clientId: TOKEN_CLIENT_ID },
-    });
+    ).toEqual(refused);
   });
 
   it.each([
     ["another token's client id", { common_name: "other.access" }],
-    ["an email", { email: OWNER_EMAIL }],
+    ["the owner's email", { email: OWNER_EMAIL }],
     ["a user's id", { sub: "0190f0a8-1b2c-7d3e-8f40-123456789abc" }],
     ["a non-string common_name", { common_name: 7 }],
-  ])("refuses a service token's assertion with %s", async (_name, claims) => {
+    ["an empty common_name", { common_name: "" }],
+  ])("refuses an assertion on /mcp with a common_name and %s", async (_name, claims) => {
     expect(await classifyMcp(await sign(team, { ...tokenClaims(), ...claims }))).toEqual({
-      admitted: false,
-      reason: "not_service_token",
-    });
-  });
-
-  it("refuses a token when the Worker was not given the token's client id", async () => {
-    const mcp = { audience: MCP_AUDIENCE, serviceToken: undefined };
-
-    expect(await classifyMcp(await sign(team, tokenClaims()), { mcp })).toEqual({
       admitted: false,
       reason: "common_name",
     });
+  });
+
+  it("refuses the owner's assertion on /mcp once it carries a common_name", async () => {
     expect(
-      await classifyMcp(await sign(team, tokenClaims()), { mcp: { ...mcp, serviceToken: "" } }),
+      await classifyMcp(await sign(team, { ...mcpClaims(), common_name: "x.access" })),
     ).toEqual({ admitted: false, reason: "common_name" });
   });
 
@@ -425,7 +416,7 @@ describe("the MCP endpoint's classification", () => {
 
     const main = await admit(
       { assertion: await sign(team, { ...ownerClaims(), ...both }), hosts: [HOST], now: NOW },
-      guard({ mcp: { audience: MCP_AUDIENCE, serviceToken: TOKEN_CLIENT_ID } }),
+      guard({ mcp: { audience: MCP_AUDIENCE } }),
     );
 
     expect(main).toEqual(OWNER);
@@ -435,24 +426,24 @@ describe("the MCP endpoint's classification", () => {
         await sign(team, { ...mcpClaims(), ...both, oauth: { client_id: "dcr-1" } }),
       ),
     ).toEqual({ admitted: true, caller: { kind: "owner", clientId: "dcr-1" } });
-    expect(await classifyMcp(await sign(team, { ...tokenClaims(), ...both }))).toEqual({
-      admitted: true,
-      caller: { kind: "service_token", clientId: TOKEN_CLIENT_ID },
-    });
   });
 
-  it("still refuses a service token on a main route when its assertion lists both audiences", async () => {
+  it("refuses a service token's assertion that lists both audiences, on /mcp and on a main route alike", async () => {
     const both = { aud: [MAIN_AUDIENCE, MCP_AUDIENCE] };
 
     const main = await admit(
       { assertion: await sign(team, { ...tokenClaims(), ...both }), hosts: [HOST], now: NOW },
-      guard({ mcp: { audience: MCP_AUDIENCE, serviceToken: TOKEN_CLIENT_ID } }),
+      guard({ mcp: { audience: MCP_AUDIENCE } }),
     );
 
     expect(main).toEqual({ admitted: false, reason: "common_name" });
+    expect(await classifyMcp(await sign(team, { ...tokenClaims(), ...both }))).toEqual({
+      admitted: false,
+      reason: "common_name",
+    });
   });
 
-  it("refuses a service token on any route but the MCP endpoint's", async () => {
+  it("refuses a service token on a main route", async () => {
     expect(await classify(await sign(team, { ...tokenClaims(), aud: [MAIN_AUDIENCE] }))).toEqual({
       admitted: false,
       reason: "common_name",
@@ -467,7 +458,7 @@ describe("the MCP endpoint's classification", () => {
     });
     expect(
       await classifyMcp(await sign(team, mcpClaims()), {
-        mcp: { audience: undefined, serviceToken: TOKEN_CLIENT_ID },
+        mcp: { audience: undefined },
       }),
     ).toEqual({ admitted: false, reason: "not_configured" });
     expect(
@@ -494,6 +485,12 @@ describe("local mode (alchemy dev)", () => {
       });
     },
   );
+
+  it("admits the owner on /mcp too, as local", async () => {
+    expect(
+      await admit({ assertion: undefined, hosts: ["localhost:1337"], mcp: true, now: NOW }, local),
+    ).toEqual({ admitted: true, caller: { kind: "local" } });
+  });
 
   it.each([
     ["a LAN address", ["192.168.1.5:1337"]],
@@ -533,12 +530,9 @@ describe("the guard's vars", () => {
       audience: undefined,
       localMode: true,
     });
-    expect(
-      guardFromEnv({
-        CLOUDPID_MCP_ACCESS_AUD: "mcp-aud",
-        MCP_SERVICE_TOKEN_CLIENT_ID: "id.access",
-      }).mcp,
-    ).toEqual({ audience: "mcp-aud", serviceToken: "id.access" });
+    expect(guardFromEnv({ CLOUDPID_MCP_ACCESS_AUD: "mcp-aud" }).mcp).toEqual({
+      audience: "mcp-aud",
+    });
   });
 
   it.each(["false", "1", "True", "", "yes"])(
@@ -679,7 +673,7 @@ describe("the guard on a request", () => {
     const seen = vi.fn();
 
     const response = await Effect.runPromise(
-      guardAccess(guard({ mcp: { audience: MCP_AUDIENCE, serviceToken: TOKEN_CLIENT_ID } }))(
+      guardAccess(guard({ mcp: { audience: MCP_AUDIENCE } }))(
         Effect.gen(function* () {
           seen(yield* AccessCaller);
 
@@ -710,7 +704,7 @@ describe("the guard on a request", () => {
   it("refuses the main audience on /mcp, and the MCP audience elsewhere", async () => {
     inner.mockClear();
 
-    const mcp = { audience: MCP_AUDIENCE, serviceToken: TOKEN_CLIENT_ID };
+    const mcp = { audience: MCP_AUDIENCE };
     const main = await sign(team, ownerClaims());
     const other = await sign(team, { ...ownerClaims(), aud: [MCP_AUDIENCE] });
 

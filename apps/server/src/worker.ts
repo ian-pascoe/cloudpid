@@ -27,7 +27,6 @@ import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import type { Workspace } from "./workspace/Workspace.ts";
 import { Workspaces } from "./workspace/resource.ts";
 import {
-  LOCAL_AGENT_TOKEN_ID,
   MCP_CALLS_BINDING,
   MCP_CALLS_LIMIT,
   MCP_CALLS_PERIOD_S,
@@ -135,10 +134,9 @@ const mcpBindings = Effect.gen(function* () {
 /**
  * Deploy-time props, resolved from the stage: the Worker's name, where it is served, its Access application and the
  * guard's vars (`accessProps`) and, off `prod`, the label var (`deployment.ts`), with the stage's `MCP_CLIENT_DOCUMENT`
- * var (on, except under `alchemy dev`). A deployed stage also declares the MCP endpoint's own Access application and
- * the Local agent's service token (`mcpAccessProps`), whose `aud` and client ID are the Worker's vars
- * `CLOUDPID_MCP_ACCESS_AUD` and `MCP_SERVICE_TOKEN_CLIENT_ID`, and the Bypass application of the two public sign-in paths
- * (`bypassAccessProps`), which the Worker takes no var from. The stage is absent once the Worker
+ * var (on, except under `alchemy dev`). A deployed stage also declares the MCP endpoint's own Access application
+ * (`mcpAccessProps`), whose `aud` is the Worker's var `CLOUDPID_MCP_ACCESS_AUD`, and the Bypass application of the two
+ * public sign-in paths (`bypassAccessProps`), which the Worker takes no var from. The stage is absent once the Worker
  * runs (the props only matter at deploy time), so that case falls back to a non-prod stage.
  */
 const props = Effect.gen(function* () {
@@ -164,17 +162,13 @@ const props = Effect.gen(function* () {
   // suffix. Never taken from a request's `Host`.
   const stageLabelVar = label === undefined ? {} : { [STAGE_LABEL_VAR]: label };
 
-  // The MCP endpoint's own Access application and the Local agent's service token (mcp-access.ts), whose `aud` and client
-  // id are vars of the Worker. Declared under `Server/` like the Worker's own application.
+  // The MCP endpoint's own Access application (mcp-access.ts), whose `aud` is a var of the Worker. Declared under
+  // `Server/` like the Worker's own application.
   const mcpAccess = yield* mcpAccessProps({
     stage,
     runtime,
     dev,
     declare: {
-      serviceToken: (tokenProps) =>
-        Cloudflare.Access.ServiceToken(LOCAL_AGENT_TOKEN_ID, tokenProps).pipe(
-          Namespace.push("Server"),
-        ),
       application: (applicationProps) =>
         Cloudflare.Access.Application("McpAccess", applicationProps).pipe(Namespace.push("Server")),
     },

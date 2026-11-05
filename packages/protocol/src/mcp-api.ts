@@ -81,8 +81,10 @@ export type McpToolName = (typeof MCP_TOOL_NAMES)[number];
 export const PI_SESSION_FORMAT = "pi-session-jsonl";
 
 /**
- * How the caller got in: an Access OAuth grant (the owner), the Local agent's service token, or `local` (a stage under
- * `alchemy dev`, which has no Access: the loopback rule). A member this version does not know reads as `unknown`.
+ * How the caller got in: an Access OAuth grant (the owner), or `local` (a stage under `alchemy dev`, which has no
+ * Access: the loopback rule). `service_token` is the Local agent's old Access service token, which the server no longer
+ * produces (#636) but records written before it still hold, so it stays here to decode and display. A member this version
+ * does not know reads as `unknown`.
  */
 export const McpAuth = openLiterals(
   Schema.Literals(["oauth", "service_token", "local", "unknown"]),
@@ -129,7 +131,7 @@ export const SessionVia = Schema.Struct({
   /**
    * The owner's Access OAuth registration (the assertion's `oauth.client_id`, an opaque id Access gave the client when it
    * registered): which of the owner's grants sent the input, so a Session's inputs can be told apart by grant. Absent
-   * for a service token, for local dev, and for a version that predates it. Kept in the input's entry; never displayed.
+   * for the old service token, for local dev, and for a version that predates it. Kept in the input's entry; never displayed.
    */
   clientId: Schema.optionalKey(Schema.String),
 });

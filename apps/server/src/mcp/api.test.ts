@@ -275,7 +275,7 @@ describe("sessions", () => {
     expect(result).toMatchObject({ ok: false, error: { code: "invalid_cursor" } });
   });
 
-  it("shows where a Session came from, the marks first", async () => {
+  it("shows where a Session came from, the marks first (one written under the old service token still reads)", async () => {
     const result = await run(
       service({
         sessions: () =>
@@ -430,16 +430,9 @@ describe("start", () => {
     expect(JSON.stringify(createSession.mock.calls)).not.toContain("@");
   });
 
-  it("marks a service token's and local dev's Sessions as such, and keeps no client id for them", async () => {
+  it("marks local dev's Sessions as such, and keeps no client id for them", async () => {
     const createSession = vi.fn(backend().createSession);
     const submit = vi.fn(backend().submit);
-
-    await run(
-      service(
-        { createSession, submit },
-        { caller: { kind: "service_token", clientId: "id.access" } },
-      ).start({ text: "go", via: { era: "legacy" } }),
-    );
 
     await run(
       service({ createSession, submit }, { caller: { kind: "local" } }).start({
@@ -449,11 +442,9 @@ describe("start", () => {
     );
 
     expect(createSession.mock.calls.map(([input]) => input.marks)).toEqual([
-      { kind: "mcp", auth: "service_token" },
       { kind: "mcp", auth: "local" },
     ]);
     expect(submit.mock.calls.map(([, input]) => input.via)).toEqual([
-      { auth: "service_token", era: "legacy" },
       { auth: "local", era: "legacy" },
     ]);
   });
@@ -866,7 +857,7 @@ describe("send", () => {
 describe("stop", () => {
   it("stops with the caller's mark, and subagents only when asked", async () => {
     const stop = vi.fn(backend().stop);
-    const api = service({ stop }, { caller: { kind: "service_token", clientId: "id.access" } });
+    const api = service({ stop }, { caller: { kind: "local" } });
 
     const plain = await run(api.stop({ session_id: ID, via: VIA }));
 
@@ -874,8 +865,8 @@ describe("stop", () => {
 
     expect(plain).toEqual({ ok: true, value: { status: "idle" } });
     expect(stop.mock.calls).toEqual([
-      [ID, { via: { client: VIA.client, auth: "service_token", era: "modern" } }],
-      [ID, { subagents: true, via: { client: VIA.client, auth: "service_token", era: "modern" } }],
+      [ID, { via: { client: VIA.client, auth: "local", era: "modern" } }],
+      [ID, { subagents: true, via: { client: VIA.client, auth: "local", era: "modern" } }],
     ]);
   });
 
@@ -1172,9 +1163,9 @@ describe("wait", () => {
 describe("the caller", () => {
   it("is marked as it got in, and rate-limited by an identity that is never the email", () => {
     expect(identityOf({ kind: "owner" })).toEqual({ auth: "oauth", rateKey: "owner" });
-    expect(identityOf({ kind: "service_token", clientId: "id.access" })).toEqual({
-      auth: "service_token",
-      rateKey: "token:id.access",
+    expect(identityOf({ kind: "owner", clientId: "dcr-1" })).toEqual({
+      auth: "oauth",
+      rateKey: "owner",
     });
     expect(identityOf({ kind: "local" })).toEqual({ auth: "local", rateKey: "local" });
   });
@@ -1182,14 +1173,11 @@ describe("the caller", () => {
   it("counts a call against its key, and says to wait a period when over", async () => {
     const withinRate = vi.fn(() => Effect.succeed(false));
 
-    const api = service(
-      {},
-      { caller: { kind: "service_token", clientId: "id.access" }, withinRate },
-    );
+    const api = service({}, { caller: { kind: "owner" }, withinRate });
 
     expect(await run(api.limited)).toEqual({ retryAfterS: MCP_CALLS_PERIOD_S });
-    expect(withinRate).toHaveBeenCalledWith("token:id.access");
-    expect(api.auth).toBe("service_token");
+    expect(withinRate).toHaveBeenCalledWith("owner");
+    expect(api.auth).toBe("oauth");
   });
 
   it("is within the rate, and fails open when the limiter cannot answer", async () => {

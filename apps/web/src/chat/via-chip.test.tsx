@@ -13,6 +13,15 @@ describe("the input's via chip", () => {
     expect(markup).not.toContain("2.1");
   });
 
+  it("still renders a message written under the Local agent's old service token (#636)", () => {
+    const markup = renderToStaticMarkup(
+      <ViaChip via={{ auth: "service_token", client: { name: "pi" } }} />,
+    );
+
+    expect(markup).toContain("via pi (MCP)");
+    expect(markup).not.toContain("service_token");
+  });
+
   it("says via MCP when the caller gave no name, and never shows how it got in", () => {
     const markup = renderToStaticMarkup(
       <ViaChip via={{ auth: "service_token", clientId: "dcr-1" }} />,

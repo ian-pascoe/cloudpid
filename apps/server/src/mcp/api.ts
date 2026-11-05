@@ -224,14 +224,13 @@ export interface Identity {
 
 /**
  * How the caller got in, as the audit mark says it (the owner comes through managed OAuth), and the key its calls are
- * counted under: `owner`, `token:<client id>` or `local`, never the email.
+ * counted under: `owner` or `local`, never the email. `auth: "service_token"` is no longer produced: only old
+ * records hold it.
  */
 export const identityOf = (caller: Caller): Identity => {
   switch (caller.kind) {
     case "owner":
       return { auth: "oauth", rateKey: "owner" };
-    case "service_token":
-      return { auth: "service_token", rateKey: `token:${caller.clientId}` };
     case "local":
       return { auth: "local", rateKey: "local" };
   }

@@ -111,10 +111,10 @@ describe("the request McpServer gets", () => {
         return Promise.resolve(new Response(null, { status: 202 }));
       }),
       mcpRequest(),
-      { kind: "service_token", clientId: "id.access" },
+      { kind: "local" },
     );
 
-    expect(readTarget(targets[0])?.auth).toBe("service_token");
+    expect(readTarget(targets[0])?.auth).toBe("local");
     expect(readTarget(targets[0])?.describe()).toMatchObject({
       operations: [
         "environments",

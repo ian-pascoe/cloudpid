@@ -1,9 +1,10 @@
 // docs/architecture/mcp-sign-in.md → The client document and the callback outside Access (The Access guard), and
 // docs/architecture/mcp-endpoint.md → Access and identity (The guard). The main Worker does not trust that Access ran in
 // front of it: it verifies `Cf-Access-Jwt-Assertion` itself, on every route, and fails closed. On `/mcp` it checks the
-// MCP endpoint application's audience and tells the owner from the Local agent's service token; everywhere else a
-// `common_name`, or an assertion without the main application's audience, is refused, so neither credential opens the
-// app. An assertion may list both audiences: prod's did once the owner had signed in to both applications.
+// MCP endpoint application's audience; everywhere else an assertion without the main application's audience is refused,
+// so neither credential opens the other's routes. An assertion may list both audiences: prod's did once the owner had
+// signed in to both applications. Only the owner is admitted: an assertion with a `common_name` (a service token's) is
+// refused on every route, `/mcp` included.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off globalDate:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
 
 import * as Arr from "effect/Array";
@@ -20,7 +21,7 @@ import {
   LOCAL_MODE_VAR,
   OWNER_EMAIL,
 } from "./deployment.ts";
-import { MCP_AUDIENCE_VAR, MCP_SERVICE_TOKEN_CLIENT_ID_VAR } from "./mcp-access.ts";
+import { MCP_AUDIENCE_VAR } from "./mcp-access.ts";
 import { isMcpRoute } from "./routes.ts";
 
 /** The header Access adds to every request it admits, and a request that skipped Access lacks. */
@@ -40,21 +41,18 @@ export type Refusal =
   | "not_yet_valid"
   | "wrong_audience"
   | "not_owner"
+  /** An assertion with a `common_name`, which is a service token's: none is admitted on any route. */
   | "common_name"
-  /** On `/mcp`: a `common_name` that is not the Local agent's token's, or a token assertion that is not shaped like one. */
-  | "not_service_token"
   | "not_local"
   /** The check itself failed (a lookup or a verification threw): the request is refused, never a 500. */
   | "error";
 
 /**
- * Who an admitted request is, from the assertion and never `ctx.access.getIdentity()` (which answers `undefined` for a
- * service token). The email is never kept: `clientId` is the owner's OAuth registration's opaque id (the assertion's
+ * Who an admitted request is, from the assertion and never `ctx.access.getIdentity()`. The email is never kept: `clientId` is the owner's OAuth registration's opaque id (the assertion's
  * `oauth.client_id`), the audit mark of which client got in.
  */
 export type Caller =
   | { readonly kind: "owner"; readonly clientId?: string }
-  | { readonly kind: "service_token"; readonly clientId: string }
   /** Under `alchemy dev` (no Access), where a loopback host counts as the owner. */
   | { readonly kind: "local" };
 
@@ -86,9 +84,7 @@ const Claims = Schema.Struct({
   exp: Schema.optionalKey(Schema.Finite),
   nbf: Schema.optionalKey(Schema.Finite),
   email: Schema.optionalKey(Schema.String),
-  /** A service token's assertion has `""`; the owner's has the user's id. */
-  sub: Schema.optionalKey(Schema.String),
-  // Present on a service token's assertion and on none of the owner's.
+  // Present on a service token's assertion and on none of the owner's: refused.
   common_name: Schema.optionalKey(Schema.Unknown),
   // Present on an assertion minted by managed OAuth: the DCR registration's id is read, nothing else.
   oauth: Schema.optionalKey(Schema.Unknown),
@@ -148,11 +144,6 @@ export type AssertionExpectations = {
   readonly keys: TeamKeyLookup;
   /** Unix seconds. */
   readonly now: number;
-  /**
-   * The Local agent's service token's client id, where one is admitted (on `/mcp`). Without it a `common_name` is always
-   * refused.
-   */
-  readonly serviceToken?: string | undefined;
 };
 
 const OauthClaim = Schema.Struct({ client_id: Schema.NonEmptyString });
@@ -161,10 +152,9 @@ const decodeOauthClaim = Schema.decodeUnknownOption(OauthClaim);
 
 /**
  * Classifies `assertion`, a `Cf-Access-Jwt-Assertion` value: the owner (an assertion of the team's, unexpired, for the
- * application's audience, whose `email` is {@link OWNER_EMAIL} and that has no `common_name`), or, where
- * `expected.serviceToken` is set, the Local agent's service token (no `email`, `sub` empty, and a `common_name` that is
- * the token's client id), or why not. Never trusts the claims before the signature has been checked, and reads no
- * identity from anywhere else (`ctx.access.getIdentity()` answers `undefined` for a service token).
+ * application's audience, whose `email` is {@link OWNER_EMAIL} and that has no `common_name`), or why not. A
+ * `common_name` is a service token's and is refused whatever else the assertion says. Never trusts the claims before the
+ * signature has been checked, and reads no identity from anywhere else.
  */
 export const classifyAssertion = async (
   assertion: string | undefined,
@@ -211,7 +201,7 @@ export const classifyAssertion = async (
 
   if (Option.isNone(claims)) return refuse("malformed");
 
-  const { iss, aud, exp, nbf, email, sub, common_name, oauth } = claims.value;
+  const { iss, aud, exp, nbf, email, common_name, oauth } = claims.value;
 
   if (iss !== `https://${ACCESS_TEAM_DOMAIN}`) return refuse("wrong_issuer");
 
@@ -227,19 +217,8 @@ export const classifyAssertion = async (
   // applications), so it is not refused: Access only lets a request through the policy of the route's application.
   if (!audiences.includes(expected.audience)) return refuse("wrong_audience");
 
-  // Before the email: a service token has neither an email nor the owner's identity, and is told apart from a stranger.
-  if (common_name !== undefined) {
-    if (expected.serviceToken === undefined) return refuse("common_name");
-
-    const isToken =
-      common_name === expected.serviceToken &&
-      email === undefined &&
-      (sub === undefined || sub === "");
-
-    return isToken
-      ? admitted({ kind: "service_token", clientId: expected.serviceToken })
-      : refuse("not_service_token");
-  }
+  // Before the email: a service token has no email, and none is admitted, so it is told apart from a stranger.
+  if (common_name !== undefined) return refuse("common_name");
 
   if (email !== OWNER_EMAIL) return refuse("not_owner");
 
@@ -358,7 +337,7 @@ const isLoopbackHost = (host: string): boolean => LOOPBACK_HOST.test(host);
 /** What the guard reads of a request. */
 export type GuardedRequest = {
   readonly assertion: string | undefined;
-  /** Whether the request is for the MCP endpoint (`isMcpRoute`): its audience, and the service token, apply. */
+  /** Whether the request is for the MCP endpoint (`isMcpRoute`): its audience applies. */
   readonly mcp?: boolean;
   /** Every host the request names: its `Host` header and the host of its URL, where it has one. */
   readonly hosts: ReadonlyArray<string>;
@@ -370,21 +349,15 @@ export type GuardedRequest = {
 export type AccessGuard = {
   /** The main application's audience; undefined on `alchemy dev`, and on a deployed Worker that was not given it. */
   readonly audience: string | undefined;
-  /**
-   * The MCP endpoint's application: its audience, and the Local agent's service token's client id. Either missing
-   * refuses what depends on it: no audience refuses `/mcp` altogether, no client id refuses the token only.
-   */
-  readonly mcp?: {
-    readonly audience: string | undefined;
-    readonly serviceToken: string | undefined;
-  };
+  /** The MCP endpoint's application: its audience. Without it `/mcp` is refused altogether. */
+  readonly mcp?: { readonly audience: string | undefined };
   /** The Worker was built by `alchemy dev` ({@link LOCAL_MODE_VAR}), where there is no Access. */
   readonly localMode: boolean;
   readonly keys: TeamKeyLookup;
 };
 
 /**
- * Whether `request` is the owner's, or on `/mcp` the Local agent's. Under `alchemy dev` (local mode) a request counts as
+ * Whether `request` is the owner's. Under `alchemy dev` (local mode) a request counts as
  * the owner only when every host it names is loopback; anywhere else the assertion decides, against the audience of the
  * application the route is behind, and a Worker without that audience admits nothing.
  */
@@ -399,14 +372,12 @@ export const admit = async (request: GuardedRequest, guard: AccessGuard): Promis
 
   if (audience === undefined || audience === "") return refuse("not_configured");
 
-  const serviceToken = request.mcp === true ? guard.mcp?.serviceToken : undefined;
 
   try {
     return await classifyAssertion(request.assertion, {
       audience,
       keys: guard.keys,
       now: request.now,
-      serviceToken: serviceToken === "" ? undefined : serviceToken,
     });
   } catch {
     // A lookup or a verification that throws (a signature of the wrong length, say) is a refusal, not a 500.
@@ -419,7 +390,6 @@ export type GuardEnv = {
   readonly [ACCESS_AUDIENCE_VAR]?: string;
   readonly [LOCAL_MODE_VAR]?: string;
   readonly [MCP_AUDIENCE_VAR]?: string;
-  readonly [MCP_SERVICE_TOKEN_CLIENT_ID_VAR]?: string;
 };
 
 /**
@@ -433,10 +403,7 @@ export const guardFromEnv = (
 ): Pick<AccessGuard, "audience" | "localMode" | "mcp"> => ({
   audience: env[ACCESS_AUDIENCE_VAR],
   localMode: env[LOCAL_MODE_VAR] === "true",
-  mcp: {
-    audience: env[MCP_AUDIENCE_VAR],
-    serviceToken: env[MCP_SERVICE_TOKEN_CLIENT_ID_VAR],
-  },
+  mcp: { audience: env[MCP_AUDIENCE_VAR] },
 });
 
 const forbidden = HttpServerResponse.text("Forbidden", {
@@ -457,7 +424,7 @@ const hostsOf = (request: HttpServerRequest.HttpServerRequest): ReadonlyArray<st
 };
 
 /**
- * Runs `handler` for the owner's requests (and on `/mcp` the Local agent's) only, with who they are as {@link AccessCaller};
+ * Runs `handler` for the owner's requests only, with who they are as {@link AccessCaller};
  * every other request gets a bare 403 and `handler` never sees it. A `fetch` through a service binding carries no
  * assertion, so it is refused here (internal callers use RPC entrypoints).
  */

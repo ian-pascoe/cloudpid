@@ -23,7 +23,7 @@ export const MCP_ROUTE = "/mcp";
 /**
  * Whether `request` is for the MCP endpoint: its path, normalised as the router reads every path, is exactly `/mcp`. The
  * guard asks the same, so the audience it checks and the route that serves can never disagree; any other form (`/mcp/`,
- * `/MCP`, a sub-path) is a main route, where the endpoint's audience and the service token are refused.
+ * `/MCP`, a sub-path) is a main route, where the endpoint's audience is refused.
  */
 export const isMcpRoute = (request: HttpServerRequest.HttpServerRequest): boolean =>
   pathOf(request) === MCP_ROUTE;
