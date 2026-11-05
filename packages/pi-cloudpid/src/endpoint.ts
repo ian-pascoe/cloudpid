@@ -41,8 +41,6 @@ import {
   isRedirect,
 } from "./oauth.ts";
 
-export { NOT_SIGNED_IN, SIGN_IN_REJECTED };
-
 export const ENDPOINT_OLDER = "the endpoint is older than this extension";
 
 /** An Environment as `environments_list` gives it. */

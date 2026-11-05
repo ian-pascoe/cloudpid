@@ -7,6 +7,7 @@
  * between runs. A rotated refresh token is stored before the access token that came with it is used. Tokens are never
  * logged.
  */
+import * as Predicate from "effect/Predicate";
 import { randomBytes } from "node:crypto";
 import {
   auth,
@@ -118,19 +119,26 @@ export class CloudpidOAuthProvider implements OAuthClientProvider {
     return this.#options.state ?? randomBytes(32).toString("base64url");
   }
 
-  clientInformation(): StoredOAuthClientInformation | undefined {
-    return this.#entry.client;
-  }
+  clientInformation(
+    context?: OAuthClientInformationContext,
+  ): StoredOAuthClientInformation | undefined {
+    const { client } = this.#entry;
 
-  saveClientInformation(client: StoredOAuthClientInformation): void {
-    // The SDK also saves a held client again with the issuer stamped; a client that is not the one held is a registration.
+    // `auth()` registers a client when this gives none it can use: no client, or one stamped by another authorization
+    // server. Registering is the owner's to agree to, so it is refused here, before the registration request is sent.
     if (
       this.#options.signInRequired !== undefined &&
-      client.client_id !== this.#entry.client?.client_id
+      context !== undefined &&
+      (client === undefined ||
+        (client.issuer !== undefined && !sameIssuer(client.issuer, context.issuer)))
     ) {
       throw this.#options.signInRequired();
     }
 
+    return client;
+  }
+
+  saveClientInformation(client: StoredOAuthClientInformation): void {
     this.#entry = { ...this.#entry, client };
   }
 
@@ -331,6 +339,35 @@ export const singleFlightRefresh = (
 
 const SDK_WARNING = "[mcp-sdk] ";
 
+/** The SDK's issuer comparison: one trailing `/` does not make another authorization server. */
+const sameIssuer = (left: string, right: string): boolean =>
+  left.replace(/\/$/, "") === right.replace(/\/$/, "");
+
+const INVALIDATING =
+  /^OAuth ("[^"]*") — invalidating the stored [a-z ]+ and retrying authorization\. Cause: (".*")$/;
+
+/**
+ * What of an SDK warning is said to the owner. The SDK says it is invalidating credentials before it asks the provider to,
+ * and this provider declines to (a new sign-in is the owner's to agree to), so that sentence would be untrue.
+ */
+const warningText = (message: string): string => {
+  const match = INVALIDATING.exec(message);
+
+  if (match === null) return message;
+
+  let cause = match[2] ?? "";
+
+  try {
+    const parsed: unknown = JSON.parse(cause);
+
+    cause = Predicate.isString(parsed) ? parsed : cause;
+  } catch {
+    // Kept as the SDK wrote it.
+  }
+
+  return `the authorization server refused the stored sign-in (${(match[1] ?? "").replaceAll('"', "")}): ${cause}`;
+};
+
 const sinks = new Set<(message: string) => void>();
 let consoleWarn: typeof console.warn | undefined;
 
@@ -354,7 +391,7 @@ export const captureSdkWarnings = (sink: (message: string) => void): (() => void
         return;
       }
 
-      for (const each of sinks) each(first.slice(SDK_WARNING.length));
+      for (const each of sinks) each(warningText(first.slice(SDK_WARNING.length)));
     };
   }
 

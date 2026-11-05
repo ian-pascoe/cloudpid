@@ -8,8 +8,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthEntry, AuthStore } from "./auth-store.ts";
 import { type Config, endpointKey } from "./config.ts";
-import { connectEndpoint, NOT_SIGNED_IN, SIGN_IN_REJECTED } from "./endpoint.ts";
-import { SignInRequired } from "./errors.ts";
+import { connectEndpoint } from "./endpoint.ts";
+import { NOT_SIGNED_IN, SIGN_IN_REJECTED, SignInRequired } from "./errors.ts";
 import { CloudpidOAuthProvider } from "./oauth.ts";
 import { LOGIN_URL, oauthServer, type OAuthStub } from "./oauth.fixture.ts";
 import { ENDPOINT_URL, stubEndpoint, tempAuthStore } from "./stub.fixture.ts";
@@ -367,6 +367,36 @@ describe("a sign-in the endpoint's authorization server no longer knows", () => 
   );
 });
 
+describe("tokens held without a client this authorization server knows", () => {
+  it.each([
+    ["no client at all", (entry: AuthEntry): AuthEntry => ({ ...entry, client: undefined })],
+    [
+      "a client of another authorization server",
+      (entry: AuthEntry): AuthEntry =>
+        entry.client === undefined
+          ? entry
+          : { ...entry, client: { ...entry.client, issuer: "https://other-auth.example.test" } },
+    ],
+  ])("asks for a sign-in, and registers nothing, for %s", async (_name, change) => {
+    const seeded = change(oauth.signedIn());
+
+    await auth.store.write(KEY, seeded);
+    oauth.expireAccessTokens();
+
+    const failure = await attempt(() => connect({ seeded: true }));
+
+    expect(failure).toBeInstanceOf(SignInRequired);
+    expect(oauth.registrations).toEqual([]);
+    expect(oauth.authorizations).toEqual([]);
+    expect(oauth.tokenRequests).toEqual([]);
+    // Nothing was dropped or replaced on the way (discovery may be refreshed).
+    const stored = await auth.store.read(KEY);
+
+    expect(stored?.tokens).toEqual(seeded.tokens);
+    expect(stored?.client).toEqual(seeded.client);
+  });
+});
+
 describe("the SDK's console warnings", () => {
   it("are kept off the console while connected, handed to the caller, and the console is restored", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -383,6 +413,8 @@ describe("the SDK's console warnings", () => {
 
       expect(failure).toBeInstanceOf(SignInRequired);
       expect(messages.some((message) => message.includes("invalid_grant"))).toBe(true);
+      // The SDK says it is invalidating credentials; this provider does not (the owner decides), so that is not passed on.
+      expect(messages.some((message) => message.includes("invalidating"))).toBe(false);
       expect(warn.mock.calls.filter(([text]) => String(text).includes("[mcp-sdk]"))).toEqual([]);
       expect(console.warn).toBe(warn);
 

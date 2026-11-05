@@ -5,7 +5,7 @@
  * `S256` (the stub's token endpoint verifies the verifier), the code arriving at the loopback server (exactly one request
  * with the matching `state`) or pasted, and the entry stored. A fake browser stands where `open` stands in production.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Config, endpointKey } from "./config.ts";
 import { Refusal } from "./errors.ts";
 import {
@@ -353,6 +353,26 @@ describe("signing in", () => {
 
     expect(body).not.toContain("<script>");
     expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
+  it("lets go of the SDK's warnings when it is done, whether it signed in or not", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    try {
+      await signIn(config, scriptedUi({}), deps());
+      expect(console.warn).toBe(warn);
+
+      await expect(
+        signIn(
+          config,
+          scriptedUi({}),
+          deps({ openBrowser: () => Promise.resolve(), timeoutMs: 40 }),
+        ),
+      ).rejects.toThrow(/no sign-in arrived/);
+      expect(console.warn).toBe(warn);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("is cancelled by dismissing the paste prompt", async () => {

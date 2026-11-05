@@ -10,8 +10,8 @@ import { join } from "node:path";
 import * as Predicate from "effect/Predicate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Config } from "./config.ts";
-import { ENDPOINT_OLDER, NOT_SIGNED_IN, SIGN_IN_REJECTED } from "./endpoint.ts";
-import { Refusal, SignInRequired } from "./errors.ts";
+import { ENDPOINT_OLDER } from "./endpoint.ts";
+import { NOT_SIGNED_IN, Refusal, SIGN_IN_REJECTED, SignInRequired } from "./errors.ts";
 import {
   type Deps,
   type Host,
