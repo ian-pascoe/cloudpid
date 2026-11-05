@@ -3,7 +3,7 @@
 // `state` and the PKCE pair, and every outcome of the callback. The authorization server is a table of responses; nothing
 // reaches the network.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off schemaSync:off preferEffectRecord:off
 import { sha256Hex } from "@cloudpid/config";
 import { type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import { DnsResolver, WebTransport } from "@cloudpid/extensions/web";

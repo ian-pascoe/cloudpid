@@ -15,7 +15,6 @@ it("mints UUIDv7 session ids that begin with the millisecond time", () =>
 
     expect(id).toMatch(V7);
     expect(id.startsWith("019a2b3c-4d5e-7")).toBe(true);
-    // @effect-diagnostics-next-line strictEffectProvide:off
   }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise));
 
 it("mints a different id each time, later ones sorting later", () =>
@@ -28,7 +27,6 @@ it("mints a different id each time, later ones sorting later", () =>
 
     expect(second).not.toBe(first);
     expect(second > first).toBe(true);
-    // @effect-diagnostics-next-line strictEffectProvide:off
   }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise));
 
 it("mints Workspace ids of eight lowercase hex digits, a different one each time", () =>

@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off globalFetch:off preferSchemaOverJson:off preferEffectArray:off preferEffectRecord:off
+// @effect-diagnostics asyncFunction:off globalFetch:off globalJsonInEffect:off preferEffectArray:off preferEffectRecord:off
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { pushNotifier } from "./notify.ts";

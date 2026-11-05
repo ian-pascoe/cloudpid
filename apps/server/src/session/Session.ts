@@ -225,7 +225,7 @@ export type SessionMethods = {
   readonly status: (request?: {
     readonly after?: string;
   }) => Effect.Effect<ApiResult<SessionStatusReport>>;
-  /** Wait until the Run ends, the owner is needed, an import ends, a task is parked, or `deadline` (epoch ms). */
+  /** Wait until the Run ends, the owner is needed, an import ends, or `deadline` (epoch ms). */
   readonly waitForChange: (request: WaitRequest) => Effect.Effect<ApiResult<WaitOutcome>>;
   /** A page of the transcript, rendered and redacted here so no tool result crosses the RPC whole. */
   readonly transcriptPage: (request: TranscriptRequest) => Effect.Effect<ApiResult<TranscriptPage>>;

@@ -4,7 +4,7 @@
 // No token or secret reaches an answer, a span or a log line. workerd's Durable Object and `cloudflare:test` APIs are
 // Promise-based, so this file is too.
 /* oxlint-disable anti-slop-effect/no-manual-tagged-construction -- expected answers are matched by their tag */
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off preferEffectRecord:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off schemaSync:off preferEffectRecord:off globalDate:off
 import { type KeptVault, openKeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import type { OAuthFetch } from "@cloudpid/mcp/oauth";
 import { DEFAULT_ENVIRONMENT, type McpSignInView } from "@cloudpid/protocol";

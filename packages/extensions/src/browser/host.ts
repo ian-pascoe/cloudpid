@@ -52,7 +52,7 @@ export type BrowserHostService = {
   /** The `browser` tool's description, which tells the model how to drive the browser (written by `agents/browser`). */
   readonly describe: Effect.Effect<string, BrowserError>;
   /**
-   * Run `code`, an async arrow function over the `cdp` global, in the tab of conversation `conversationId`: each
+   * Run `code`, an async arrow function over the `browser` global, in the tab of conversation `conversationId`: each
    * conversation has an active tab of its own in the Session's one browser, while cookies and logins are shared. Given
    * `ownerTabId`, it runs in that Owner tab instead, leaving the conversation's tab and the Owner tab's size as they are;
    * an Owner tab that is not open, or closes during the call, makes the result an error that says so.

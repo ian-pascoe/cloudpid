@@ -10,7 +10,6 @@
 import { type McpExposure, normalizeMcpName } from "@cloudpid/config";
 import { type JsonObject, MCP_APP_PROFILE } from "@cloudpid/mcp/types";
 import type { JsonValue } from "@earendil-works/chord";
-import { Type } from "@earendil-works/pi-ai";
 import type { ToolExecutionResult, ToolRegistration } from "@earendil-works/pi-durable";
 import { isAppResourceUri } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -34,6 +33,7 @@ import { failedWith, modelResultOf, scriptResultOf } from "./result.ts";
 import { spillTo } from "./spill.ts";
 import type { McpBuildServer } from "./tools.ts";
 import { storedBytes } from "../stored-bytes.ts";
+import { obj, opt, str } from "@earendil-works/pi-schema";
 
 /** The most items one listing holds, across servers. */
 export const MAX_LISTED_ITEMS = 1000;
@@ -433,14 +433,14 @@ export const listTool = (
 ): ToolRegistration => ({
   name: tool.name,
   description: describe(tool.what),
-  parameters: Type.Object({
-    server: Type.Optional(
-      Type.String({
+  parameters: obj({
+    server: opt(
+      str({
         description: "The server to list, as the mcp_servers section names it; all when absent",
       }),
     ),
-    cursor: Type.Optional(
-      Type.String({
+    cursor: opt(
+      str({
         description: "A page's `next_cursor`, to continue that server's listing; needs `server`",
       }),
     ),

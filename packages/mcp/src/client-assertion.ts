@@ -3,7 +3,7 @@
  * claims, the PKCS#8 key import (RSA of at least 2048 bits signs RS256, P-256 signs ES256) and the compact JWS. Re-exported
  * by `./oauth`; no SDK import. Nothing here returns, logs or throws a key: a problem says what to fix and never quotes it.
  */
-// @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off globalJsonInEffect:off
 import * as Predicate from "effect/Predicate";
 
 /** RFC 7523 §2.2's `client_assertion_type`. */

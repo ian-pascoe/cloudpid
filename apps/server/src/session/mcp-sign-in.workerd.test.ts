@@ -5,7 +5,7 @@
 // ends every open request; Stop withdraws it; and an eviction loses nothing: the call that asked reruns, finds its request
 // again and asks the Registry once more. Over a scripted engine for the Environment's `McpHost`.
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off globalTimers:off globalJsonInEffect:off preferEffectArray:off globalDate:off
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type {

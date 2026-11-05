@@ -320,7 +320,7 @@ const sessionWait = defineTool({
   name: "session_wait",
   title: "Wait for a Session's Run",
   description:
-    "Wait for a Session's Run: returns when the Run ends (with its outcome and answer), when a request that waits for the owner appears, when an import ends, when a task is parked, or at the timeout. Pass the cursor from session_start, session_send, session_get or the last session_wait as after, and call it in a loop. A request waiting for the owner is the owner's to answer in cloudpid at its url, never yours, and one you have been told of does not end later waits. Waiting never ends the Run; if the connection drops, call again with the same cursor. At most 8 waits per Session at once.",
+    "Wait for a Session's Run: returns when the Run ends (with its outcome and answer), when a request that waits for the owner appears, when an import ends, or at the timeout. Pass the cursor from session_start, session_send, session_get or the last session_wait as after, and call it in a loop. A request waiting for the owner is the owner's to answer in cloudpid at its url, never yours, and one you have been told of does not end later waits. Waiting never ends the Run; if the connection drops, call again with the same cursor. At most 8 waits per Session at once.",
   input: SessionWaitInput,
   output: SessionWaitResult,
   progress: (elapsedS) => `Waiting for the Run · ${elapsedText(elapsedS)}`,
@@ -346,8 +346,6 @@ const sessionWait = defineTool({
           enabled.has("session_get") ? "session_get for its state" : undefined,
           enabled.has("session_send") ? "session_send to give it work" : undefined,
         );
-      case "stalled":
-        return `A task is parked after being cut off by too many restarts, and nothing moves until the owner stops the Run in cloudpid. ${again} once they have.`;
       case "timeout":
         return `${again} to keep waiting${result.interrupted === true ? ` ${INTERRUPTED_NOTE}` : ""}.`;
     }

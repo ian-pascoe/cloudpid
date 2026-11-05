@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferSchemaOverJson:off strictEffectProvide:off -- a fake browser over native arrays, speaking CDP's plain JSON, given to each test's Browser Pane.
+// @effect-diagnostics preferEffectArray:off globalJsonInEffect:off strictEffectProvide:off -- a fake browser over native arrays, speaking CDP's plain JSON, given to each test's Browser Pane.
 
 import { OWNER_TAB_GONE, type OwnerTabLinks } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";

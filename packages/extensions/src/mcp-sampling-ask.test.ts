@@ -2,7 +2,7 @@
 // (`docs/architecture/mcp-server-requests.md` → Sampling requests, The card, Waiting): the sampler checks the request, asks
 // through the Session's questions, and runs it on the Role the owner picked, or refuses it. The grants of *Allow for this
 // call* and *Allow in this Session* skip the card; *Always allow* and *Never* write the definition.
-// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import type { JsonObject } from "@cloudpid/mcp/types";
 import type {
   McpElicitationSource,

@@ -2,7 +2,7 @@
 // references, while the value never reaches the transcript, tool output, or the model. pi-durable's Harness is
 // Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off schemaSync:off
-import { getCurrentSystemPrompt, getCurrentTools, Type } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type JsonObject } from "@earendil-works/pi-durable";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
@@ -21,6 +21,7 @@ import {
 import { call, openSecretsHarness } from "./secrets/harness.fixture.ts";
 import { AskOutput, ForgetOutput, ListOutput } from "./secrets/outputs.ts";
 import { toolSearchExtension } from "./tool-search.ts";
+import { arr, obj, str } from "@earendil-works/pi-schema";
 
 const VALUE = "ghp_live0123456789abcdef";
 const ref = secretReference;
@@ -235,7 +236,7 @@ describe("secrets", () => {
           defineTool({
             name: "environment_variable_set",
             description: "Save a variable",
-            parameters: Type.Object({ value: Type.String() }),
+            parameters: obj({ value: str() }),
             execute: async ({ value }) => {
               saved.push(value);
 
@@ -263,7 +264,7 @@ describe("secrets", () => {
           defineTool({
             name: "mcp__docs__search",
             description: "Search the docs",
-            parameters: Type.Object({ query: Type.String() }),
+            parameters: obj({ query: str() }),
             execute: async ({ query }) => {
               sent.push(query);
 
@@ -308,7 +309,7 @@ describe("secrets", () => {
           defineTool({
             name: "read_mcp_resource",
             description: "Read a resource",
-            parameters: Type.Object({ server: Type.String(), uri: Type.String() }),
+            parameters: obj({ server: str(), uri: str() }),
             execute: async ({ uri }) => {
               sent.push(uri);
 
@@ -747,10 +748,10 @@ describe("secrets", () => {
           defineTool({
             name: "leaky",
             description: "Return a Secret's value in its structured output",
-            parameters: Type.Object({}),
-            structuredOutputSchema: Type.Object({
-              token: Type.String(),
-              nested: Type.Array(Type.Object({ line: Type.String() })),
+            parameters: obj({}),
+            structuredOutputSchema: obj({
+              token: str(),
+              nested: arr(obj({ line: str() })),
             }),
             execute: async () => ({
               output: [{ type: "text", text: "leaked" }],
@@ -763,7 +764,7 @@ describe("secrets", () => {
           defineTool({
             name: "relay",
             description: "Call a tool and keep what the program got of it",
-            parameters: Type.Object({ tool: Type.String() }),
+            parameters: obj({ tool: str() }),
             execute: async ({ tool }, api, context) => {
               relayed.push(await api.executeTool(tool, {}, context));
 

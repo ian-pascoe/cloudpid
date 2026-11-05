@@ -487,15 +487,15 @@ describe("reachedWait across restarts", () => {
     ]);
   });
 
-  it("leaves a caller the restart limit parked as it is", async () => {
-    // The caller is cut off twice before it makes its call, and once more after: parked at the third restart, when
-    // the waiter, cut off once, reruns and marks its wait.
+  it("ends a caller cut off at the restart limit, though the call it waits for marks its wait", async () => {
+    // The caller is cut off twice before it makes its call, and once more after: at the third restart it has reached
+    // the limit, and the waiter's mark, which starts the count over only for calls below the limit, does not save it.
     const { extension, reached } = nesting({
       callerHangs: (attempt) => attempt <= 2,
       waiterMarks: (attempt) => attempt > 1,
     });
 
-    const { harness, restart } = await openRestartingHarness(
+    const { harness, restart, lastToolResult } = await openRestartingHarness(
       [extension],
       [callTool("caller", {}), answer("done")],
       { restartLimit: 3 },
@@ -507,12 +507,12 @@ describe("reachedWait across restarts", () => {
     await restart();
     await reached("waiter 1");
     await restart();
-    await reached("waiter 2");
 
-    expect(await toolCalls(harness())).toEqual([
-      { call: "model", restarts: 3, state: { kind: "blocked", reason: "restart_limit" } },
-      { call: "nested", restarts: undefined, state: { kind: "running" } },
-    ]);
+    // pi-durable ends the caller with an error result, aborting the waiter, and the Run goes on to its answer.
+    await harness().waitForIdle(context);
+
+    expect(await toolCalls(harness())).toEqual([]);
+    expect(resultText(await lastToolResult())).toContain("Tool caller was interrupted 3 times");
   });
 });
 

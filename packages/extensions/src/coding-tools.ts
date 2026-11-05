@@ -19,7 +19,6 @@
 // scripts, and to leave the Container to the commands that need it.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type { Context } from "@earendil-works/chord";
-import { Type } from "@earendil-works/pi-ai";
 import {
   defineExtension,
   defineTool,
@@ -59,6 +58,7 @@ import {
 import { capturedDiffs, oldFile, writeDetails } from "./call-diff.ts";
 import { byteLength } from "./stored-bytes.ts";
 import { Images, type ImagesService, readTool } from "./images.ts";
+import { num, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 
 /** Where a `bash` command can run: the Worker Shell (`worker`) or the Container (`container`). */
 export type BashBackend = "worker" | "container";
@@ -113,6 +113,10 @@ const throughContainer = <T extends { readonly description: string }>(tool: T): 
 });
 
 const base = createBashTool();
+
+// `bash` declares no `prepareArguments`; its type only restates the parameters, with `timeout` as `number | undefined`.
+// oxlint-disable-next-line typescript/unbound-method -- dropped, never called
+const { prepareArguments: _prepareArguments, ...bashBase } = base;
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
@@ -173,13 +177,11 @@ const backendDescription = [
   'Without `backend`, a command runs on the worker when the worker has every program in it and names no path only the container has, and on the container otherwise (also for a script path or `$CMD`); a command that writes no file is rerun on the container by itself when the worker rejects a program or option, or cannot find a path only the container has. So never set `backend` for reading, searching or listing (and to view a file, use `read` rather than `cat`). Override it with `"container"` only when the worker ran a command and its output was wrong; `"worker"` forces the fast shell.',
 ].join("\n");
 
-const parameters = Type.Object({
-  command: Type.String({ description: "Bash command to execute" }),
-  timeout: Type.Optional(
-    Type.Number({ description: "Timeout in seconds (optional, no default timeout)" }),
-  ),
-  backend: Type.Optional(
-    Type.Union([Type.Literal("worker"), Type.Literal("container")], {
+const parameters = obj({
+  command: str({ description: "Bash command to execute" }),
+  timeout: opt(num({ description: "Timeout in seconds (optional, no default timeout)" })),
+  backend: opt(
+    oneOf(["worker", "container"], {
       description:
         "Where to run the command (default: chosen from the command); see the tool description",
     }),
@@ -295,7 +297,7 @@ const attemptOn = (worker: ExecutionEnv, rerun: Rerun | undefined): ExecutionEnv
 /** `bash`, whose routing remembers which programs its environments' Worker Shell has in `known`. */
 const bashTool = (known: Map<string, boolean>): ToolRegistration<typeof parameters> =>
   defineTool({
-    ...base,
+    ...bashBase,
     description: `${base.description}\n\n${backendDescription}`,
     parameters,
     async execute({ backend, ...args }, api, context) {

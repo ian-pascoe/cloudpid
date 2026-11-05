@@ -24,7 +24,7 @@ export interface ShownIn {
 /** Whether `view`'s History, as loaded, holds the model's tool call `call`. */
 const holds = (view: SessionView, call: string): boolean =>
   Arr.some(
-    [...view.earlier, ...view.messages, ...(view.live === null ? [] : [view.live])],
+    [...view.messages, ...(view.live === null ? [] : [view.live])],
     (message) =>
       message.role === "assistant" &&
       Arr.some(message.parts, (part) => part.type === "tool-call" && part.id === call),

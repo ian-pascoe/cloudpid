@@ -3,7 +3,7 @@
 // gives the model and a script, the blob that goes to a Result Spill without the Container being woken, and the
 // references `details` keeps. A scripted model on a Harness, and an in-memory host.
 // pi-durable's Harness is Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off preferEffectRecord:off nodeBuiltinImport:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off preferEffectRecord:off nodeBuiltinImport:off globalJsonInEffect:off
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

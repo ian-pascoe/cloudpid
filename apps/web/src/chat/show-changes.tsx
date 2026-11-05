@@ -30,7 +30,7 @@ const runAnswerAtom = Atom.family((sessionId: string) =>
 
     const view = get(sessionViewAtom(sessionId));
 
-    return runAnswerId(run, [...view.earlier, ...view.messages]);
+    return runAnswerId(run, view.messages);
   }),
 );
 

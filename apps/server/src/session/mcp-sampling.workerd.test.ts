@@ -5,7 +5,7 @@
 // refused with `-1` once the Session is at its Spend limit. A server that says `ask` (the default) has each request shown
 // to the owner on a card over the Session socket, which the owner allows or refuses; `off` is declared nothing.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off globalTimers:off globalJsonInEffect:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { legacyStatefulServer, SAMPLE_TOOL } from "@cloudpid/mcp/testing";

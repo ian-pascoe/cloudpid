@@ -1,5 +1,5 @@
 diff --git a/dist/codemode/codemode.d.ts b/dist/codemode/codemode.d.ts
-index 6a26e43076d86829ae1b54f201d69788f6e646fb..c998acf93a312b2ff0f9817ee1fab6ad78dc3136 100644
+index 429bfd1e491008edca6b9ff146ab25a50baa1d9e..fdbc3c1e245a226eb6eb02d0b1f8b353b022a06d 100644
 --- a/dist/codemode/codemode.d.ts
 +++ b/dist/codemode/codemode.d.ts
 @@ -138,6 +138,11 @@ export type CodemodeNestedCall = {
@@ -15,10 +15,10 @@ index 6a26e43076d86829ae1b54f201d69788f6e646fb..c998acf93a312b2ff0f9817ee1fab6ad
      fullOutputPath?: string;
  };
 diff --git a/dist/codemode/codemode.js b/dist/codemode/codemode.js
-index 774212f45368f90fcaf23d5948f2fa4e59d059a6..476c0d9ea8a714532918c355e181b35023e5d785 100644
+index 9ef1da0d2b59fd84ee03aae503c308cf73f6d641..8b28888619e37c70f6be4659f2083c40ce5e2ba0 100644
 --- a/dist/codemode/codemode.js
 +++ b/dist/codemode/codemode.js
-@@ -83,6 +83,11 @@ export const CodemodeStoreDoc = defineDoc({
+@@ -84,6 +84,11 @@ export const CodemodeStoreDoc = defineDoc({
  });
  const ARGS_PREVIEW_CHARS = 200;
  const ERROR_PREVIEW_CHARS = 500;
@@ -28,9 +28,9 @@ index 774212f45368f90fcaf23d5948f2fa4e59d059a6..476c0d9ea8a714532918c355e181b350
 +const MAX_DETAILS_CALLS_BYTES = 64 * 1024;
 +const detailsEncoder = new TextEncoder();
  function cut(text, max) {
-     return text.length > max ? `${text.slice(0, max - 3)}...` : text;
- }
-@@ -387,7 +392,8 @@ class CodemodeCall {
+     // A copy: the row outlives the arguments or error text it previews.
+     return text.length > max ? `${ownedSlice(text, 0, max - 3)}...` : text;
+@@ -389,7 +394,8 @@ class CodemodeCall {
              generatedImages: this.generatedImages,
              wallMs: this.api.now() - this.start.startedAt,
              maxOutputTokens: this.start.maxOutputTokens,
@@ -40,7 +40,7 @@ index 774212f45368f90fcaf23d5948f2fa4e59d059a6..476c0d9ea8a714532918c355e181b350
              limits: OUTPUT_LIMITS,
              write: this.outputFiles(),
          });
-@@ -718,11 +724,33 @@ class CodemodeCall {
+@@ -720,11 +726,33 @@ class CodemodeCall {
              row.error = cut(error, ERROR_PREVIEW_CHARS);
      }
      /** The rows in call order; calls still running when the script ended were cancelled. */
@@ -78,24 +78,23 @@ index 774212f45368f90fcaf23d5948f2fa4e59d059a6..476c0d9ea8a714532918c355e181b350
      async callGlobal(call) {
          const discovery = DISCOVERY_GLOBALS.includes(call.name);
 diff --git a/dist/harness/scheduler.js b/dist/harness/scheduler.js
-index ba7a0169b9bc54cd3123a4cc770d8d7a5c61b63d..ee0038c394f5e7183aff8c231867dce5fbc1d509 100644
+index 365ea3ab42dd4406ab11a03d6702b238dfd0776b..b0d0c581df0904bbd5fe957bfe7706dee023d0d8 100644
 --- a/dist/harness/scheduler.js
 +++ b/dist/harness/scheduler.js
-@@ -2015,6 +2015,26 @@ export class TaskScheduler {
+@@ -2537,6 +2537,25 @@ export class TaskScheduler {
                      return candidate;
                  }, rest[1]);
              }),
 +            // cloudpid patch (#647): a durable wait the task reached (an owner's answer kept in storage, which a rerun waits
 +            // for again) is progress: its restart count starts over, as after a new state. So does its owners', which wait
-+            // for it in memory (a code mode call waiting for its nested call), up to the first that is parked or being
-+            // aborted: that one stays parked until `retry()` resumes it, and its abort handler keeps its own limit. Gated
-+            // like a memo write.
++            // for it in memory (a code mode call waiting for its nested call), up to the first that is being aborted: its
++            // abort handler keeps its own limit. Gated like a memo write.
 +            progressed: (context) => this.#gated(invocation, async (tx, current) => {
 +                // Every read before the first write, as a transaction requires.
 +                const chain = [current];
 +                for (let owner = current.owner; owner !== undefined;) {
 +                    const record = await tx.task(owner);
-+                    if (record === undefined || record.abortRequested || this.#parked(record))
++                    if (record === undefined || record.abortRequested)
 +                        break;
 +                    chain.push(record);
 +                    owner = record.owner;
@@ -109,10 +108,10 @@ index ba7a0169b9bc54cd3123a4cc770d8d7a5c61b63d..ee0038c394f5e7183aff8c231867dce5
              watchDoc: ((...args) => this.#watchDoc(invocation, args)),
              snapshot: ((...args) => this.#read(invocation, () => sessionMethod(this.#session, "snapshot")(...args))),
 diff --git a/dist/harness/tool.js b/dist/harness/tool.js
-index 63f2b88a8d177ad134533fd3132f80aea4c83561..69d14e546736100d9e01f790a7dff1e161157975 100644
+index 225b96f1174dfb71a8efe4a589041ee377bf78c7..cc81a79f1bb16d3058180bd7e028a0666109e2d7 100644
 --- a/dist/harness/tool.js
 +++ b/dist/harness/tool.js
-@@ -264,6 +264,11 @@ async function run(runtime, input, call, tool, args, context) {
+@@ -343,6 +343,11 @@ async function run(runtime, input, call, tool, args, context) {
              return result;
          },
          memo: runtime.memo,
@@ -125,19 +124,19 @@ index 63f2b88a8d177ad134533fd3132f80aea4c83561..69d14e546736100d9e01f790a7dff1e1
              const child = options.ownership.kind === "task" && !resumes ? { abandonOnRestart: true, ...options } : options;
              let id;
 diff --git a/dist/harness/types.d.ts b/dist/harness/types.d.ts
-index 192a9cce35ad4729009d2e3f75f475c8dffa16c8..46412fba0d88e6918d9b85de3ada99e621aa8dac 100644
+index eb64e474162b158a43563e6c68d8ffea8c18b74a..05e2d9155b051c57fcb992204112d4b4d2d34d77 100644
 --- a/dist/harness/types.d.ts
 +++ b/dist/harness/types.d.ts
-@@ -192,6 +192,15 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
-     commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T>;
+@@ -226,6 +226,15 @@ export interface ToolExecutionApi<TDetails extends JsonValue = JsonValue> extend
+     commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context, options?: CommitOptions): Promise<T>;
      memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
      memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
 +    /**
 +     * cloudpid patch (#647): commit that this call reached a durable wait, such as an owner's answer kept in storage that
 +     * a rerun waits for again. The call's restart count starts over, as after a new state, and so do the counts of the
-+     * calls that wait for it in memory (a code mode call, for its nested call) up to the first that is parked or being
-+     * aborted, so the restarts that cut them off while it waits do not reach `settings.restartLimit`; an attempt cut off
-+     * before it calls this still counts. Call it once the wait is stored and the attempt is about to await. Rejects once
++     * calls that wait for it in memory (a code mode call, for its nested call) up to the first that is being aborted, so
++     * the restarts that cut them off while it waits do not reach `settings.restartLimit`; an attempt cut off before it
++     * calls this still counts. Call it once the wait is stored and the attempt is about to await. Rejects once
 +     * the call has settled.
 +     */
 +    progressed(context: Context): Promise<void>;
@@ -145,17 +144,17 @@ index 192a9cce35ad4729009d2e3f75f475c8dffa16c8..46412fba0d88e6918d9b85de3ada99e6
       * Create a task in one commit. A child task of a tool that is not replay-safe defaults to `abandonOnRestart`: the
       * tool never resumes after a restart, so nothing awaits the child then.
 diff --git a/dist/types.d.ts b/dist/types.d.ts
-index 746fd257ea8bd36fa0968b0ef6a61a98d656b31b..61ff8cb0da9b294fbfa6d25d6e1da0e14d7581d6 100644
+index b43143c5e7998b36034ffe9577f74f3d88ab932b..24aa8b21188229bca19acba8758e762d94239a2f 100644
 --- a/dist/types.d.ts
 +++ b/dist/types.d.ts
-@@ -240,6 +240,12 @@ export interface TaskRuntime<I, S, R, H extends object> extends DocumentObserver
+@@ -255,6 +255,12 @@ export interface TaskRuntime<I, S, R, H extends object> extends DocumentObserver
      memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
      /** Store `candidate` unless a memo already exists; return the durable winner. */
      memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
 +    /**
 +     * cloudpid patch (#647): commit that the task reached a durable wait, so its restart count starts over, as after a new
-+     * state, and so do its owners', which wait for it in memory, up to the first that is parked or being aborted. Gated
-+     * like a memo write: it rejects once the invocation has ended.
++     * state, and so do its owners', which wait for it in memory, up to the first that is being aborted. Gated like a
++     * memo write: it rejects once the invocation has ended.
 +     */
 +    progressed(context: Context): Promise<void>;
      /** Committed task record. */

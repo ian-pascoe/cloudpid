@@ -1,4 +1,4 @@
-// @effect-diagnostics preferSchemaOverJson:off newSchemaClass:off missingPipeableSignature:off -- CDP's own wire format, written as plain JSON; the Live View's error class; and a plain constructor of a page's connection.
+// @effect-diagnostics globalJsonInEffect:off newSchemaClass:off missingPipeableSignature:off -- CDP's own wire format, written as plain JSON; the Live View's error class; and a plain constructor of a page's connection.
 
 // One page's CDP connection (#154): a WebSocket to a Live View link (Browser Run's `webSocketDebuggerUrl`, opened as it
 // is), its commands and their answers, and its events. Calls time out; a call out when the socket closes fails.

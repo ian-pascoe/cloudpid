@@ -193,8 +193,12 @@ export const makeApprovals = ({
         if (!requests().some((pending) => pending.id === request.id)) {
           yield* putRequests([...requests(), request]);
 
-          // In the background: the owner's notification may take seconds, and the request must not wait on it.
-          if (asked !== undefined) yield* Effect.forkDetach(asked(request));
+          // In the background: the owner's notification may take seconds, and the request must not wait on it. It
+          // starts at once, before anything that follows the request (a fork left to the scheduler waits for the event
+          // loop's next timer tick, which a busy Session may reach only after the answer).
+          if (asked !== undefined) {
+            yield* Effect.forkDetach(asked(request), { startImmediately: true });
+          }
         }
 
         yield* Effect.andThen(waiting, Deferred.await(waiter)).pipe(

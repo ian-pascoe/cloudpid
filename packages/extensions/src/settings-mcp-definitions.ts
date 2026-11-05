@@ -10,7 +10,7 @@
 // "already so"; an unknown `${NAME}` at an Environment; and then widening decides whether to ask. The card's notes say what
 // the server runs or connects to, what it sends and where, whom it reaches, what it replaces, its sign-in, its prompt and
 // its model use. The change is one field, `mcp.servers.<name>`, with `expected` the entry in force and `after` the entry kept.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off
 import {
   decodeMcpServerValue,
   isJsonObject,

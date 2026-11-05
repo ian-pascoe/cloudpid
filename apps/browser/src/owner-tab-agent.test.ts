@@ -3,7 +3,7 @@
 // what it is sent and in which page (`./host.testing.ts`). The host is built over a Durable Object's own state, with the
 // fake as its binding, and called as the Session calls it.
 // workerd's WebSocketPair, Durable Object state and RPC are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off preferSchemaOverJson:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalJsonInEffect:off globalDate:off
 import type { BrowserSource } from "agents/browser/pi";
 import { describe, expect, it, vi } from "vitest";
 import { type SessionHost, textOf, WHERE, withSessionHost as withHost } from "./host.testing.ts";
@@ -69,16 +69,16 @@ describe("a call in an Owner tab", () => {
       ];
 
       for (const code of [
-        'async () => cdp.send({ method: "Emulation.setDeviceMetricsOverride", params: { width: 1, height: 1, deviceScaleFactor: 1, mobile: false }, sessionId: "active" })',
-        'async () => cdp.send({ method: "Emulation.clearDeviceMetricsOverride", sessionId: "active" })',
-        'async () => cdp.send({ method: "Page.captureScreenshot", params: { captureBeyondViewport: true }, sessionId: "active" })',
+        'async () => browser.cdp({ method: "Emulation.setDeviceMetricsOverride", params: { width: 1, height: 1, deviceScaleFactor: 1, mobile: false }, sessionId: "active" })',
+        'async () => browser.cdp({ method: "Emulation.clearDeviceMetricsOverride", sessionId: "active" })',
+        'async () => browser.cdp({ method: "Page.captureScreenshot", params: { captureBeyondViewport: true }, sessionId: "active" })',
         // A stray field of another type hides nothing.
-        'async () => cdp.send({ method: "Page.captureScreenshot", params: { captureBeyondViewport: true, targetId: 1 }, sessionId: "active" })',
-        'async () => cdp.send({ method: "Target.createTarget", params: { url: "about:blank" } })',
-        'async () => cdp.attachToTarget({ targetId: "page-1" })',
-        'async () => cdp.send({ method: "Target.closeTarget", params: { targetId: "page-1" } })',
-        'async () => cdp.send({ method: "Target.activateTarget", params: { targetId: "page-1" } })',
-        'async () => cdp.send({ method: "Target.setAutoAttach", params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true } })',
+        'async () => browser.cdp({ method: "Page.captureScreenshot", params: { captureBeyondViewport: true, targetId: 1 }, sessionId: "active" })',
+        'async () => browser.cdp({ method: "Target.createTarget", params: { url: "about:blank" } })',
+        'async () => browser.attachToTarget({ targetId: "page-1" })',
+        'async () => browser.cdp({ method: "Target.closeTarget", params: { targetId: "page-1" } })',
+        'async () => browser.cdp({ method: "Target.activateTarget", params: { targetId: "page-1" } })',
+        'async () => browser.cdp({ method: "Target.setAutoAttach", params: { autoAttach: true, waitForDebuggerOnStart: false, flatten: true } })',
       ]) {
         const refused = await host.run(code, 1, owner.id);
 
@@ -108,7 +108,7 @@ describe("a call in an Owner tab", () => {
       const before = run.state.sent.length;
 
       const mine = await host.run(
-        'async () => { await cdp.send({ method: "Emulation.setDeviceMetricsOverride", params: { width: 800, height: 600, deviceScaleFactor: 1, mobile: false }, sessionId: "active" }); return (await cdp.send({ method: "Target.createTarget", params: { url: "about:blank" } })).targetId; }',
+        'async () => { await browser.cdp({ method: "Emulation.setDeviceMetricsOverride", params: { width: 800, height: 600, deviceScaleFactor: 1, mobile: false }, sessionId: "active" }); return (await browser.cdp({ method: "Target.createTarget", params: { url: "about:blank" } })).targetId; }',
         1,
       );
 
@@ -131,7 +131,7 @@ describe("a call in an Owner tab", () => {
       const owner = await openOwnerTab(host);
 
       const slow = host.run(
-        'async () => { await cdp.send({ method: "Runtime.evaluate", params: { expression: "1" }, sessionId: "active" }); await new Promise((done) => setTimeout(done, 500)); return "slow"; }',
+        'async () => { await browser.cdp({ method: "Runtime.evaluate", params: { expression: "1" }, sessionId: "active" }); await new Promise((done) => setTimeout(done, 500)); return "slow"; }',
         1,
         owner.id,
       );
@@ -193,7 +193,7 @@ describe("a call in an Owner tab", () => {
       const owner = await openOwnerTab(host);
 
       const ended = await host.run(
-        'async () => cdp.send({ method: "Runtime.evaluate", params: { expression: "close" }, sessionId: "active" })',
+        'async () => browser.cdp({ method: "Runtime.evaluate", params: { expression: "close" }, sessionId: "active" })',
         1,
         owner.id,
       );

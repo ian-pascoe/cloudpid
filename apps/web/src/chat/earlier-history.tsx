@@ -1,5 +1,5 @@
-// The History a conversation's snapshot leaves out: the Context Windows before a Rollover or a compaction. The top of a
-// thread offers it, a page at a time (`history`), and the thread shows it before the active window.
+// The transcript before what a conversation's view holds: its watch's window has the newest entries, and the top of a
+// thread offers the earlier ones, a page at a time (`entries`), in front of them.
 
 import { useAtom } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
@@ -12,26 +12,29 @@ import { sessionClientAtom } from "../session/atoms.ts";
 import type { ConversationKey } from "./conversation.ts";
 import { scrollerOf } from "./scroller.ts";
 
-/** Load the page of the conversation's History before entry `before` into its view; fails with why it could not. */
+/** Load the page of the conversation's transcript before its oldest message into its view; fails with why it could not. */
 export const loadEarlierAtom = Atom.family((key: ConversationKey) =>
-  appRuntime.fn((before: number, get) =>
+  appRuntime.fn((_: void, get) =>
     get
       .result(sessionClientAtom(key.sessionId))
-      .pipe(Effect.flatMap((client) => client.loadEarlier(before, key.conversationId))),
+      .pipe(Effect.flatMap((client) => client.loadEarlier(key.conversationId))),
   ),
 );
 
 /**
- * "Show earlier messages" at the top of a thread whose History goes back before what it shows (`before`, the view's).
- * A page loaded above keeps the messages the owner was reading where they were on the screen.
+ * "Show earlier messages" at the top of a thread whose transcript goes back before what it shows (`earlier`, the
+ * view's). A page loaded above keeps the messages the owner was reading where they were on the screen.
  */
 export const EarlierHistory = ({
   conversation,
-  before,
+  earlier,
+  oldest,
 }: {
   conversation: ConversationKey;
-  /** The entry the History the thread does not hold ends before, or null when it holds all of it. */
-  before: number | null;
+  /** Whether the transcript goes back before the oldest message the thread holds. */
+  earlier: boolean;
+  /** The ID of the oldest message the thread holds, which a loaded page changes. */
+  oldest: string | undefined;
 }) => {
   const [result, load] = useAtom(loadEarlierAtom(conversation));
   const anchor = useRef<HTMLDivElement>(null);
@@ -40,7 +43,7 @@ export const EarlierHistory = ({
   const loading = result.waiting;
   const failure = settledFailureOf(result);
 
-  // A loaded page moves `before`: put back what was on the screen, now further down.
+  // A loaded page moves the oldest message: put back what was on the screen, now further down.
   useLayoutEffect(() => {
     const scroller = scrollerOf(anchor.current);
     const distance = fromBottom.current;
@@ -50,25 +53,25 @@ export const EarlierHistory = ({
     if (scroller !== null && distance !== null) {
       scroller.scrollTop = scroller.scrollHeight - distance;
     }
-  }, [before]);
+  }, [oldest]);
 
   return (
     <div
       ref={anchor}
-      hidden={before === null}
+      hidden={!earlier}
       className="flex flex-col items-center gap-1 text-xs text-muted-foreground"
     >
       <button
         type="button"
-        disabled={loading || before === null}
+        disabled={loading || !earlier}
         onClick={() => {
-          if (before === null) return;
+          if (!earlier) return;
 
           const scroller = scrollerOf(anchor.current);
 
           fromBottom.current =
             scroller === null ? null : scroller.scrollHeight - scroller.scrollTop;
-          load(before);
+          load();
         }}
         className="flex items-center gap-1.5 rounded-md px-2 py-1 hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-60"
       >

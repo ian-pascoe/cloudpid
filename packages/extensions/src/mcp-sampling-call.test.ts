@@ -3,7 +3,7 @@
 // Session's models; and told to the model and `details` without what was asked or answered. A scripted model on a Harness,
 // and an in-memory host that asks through the call's hooks.
 // pi-durable's Harness is Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import { type JsonObject, McpHostCompleted, type McpInputAnswer } from "@cloudpid/mcp/types";
 import {
   createModels,

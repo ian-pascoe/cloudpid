@@ -10,7 +10,7 @@
 // socket's real socket to the Container, which counts as a running command (`hold`) while it is open, and closes
 // it when the page's stream goes away (cancelled, a write fails) or stops being read. Neither is the owner's or the
 // agent's activity: an open page keeps the Container only until the hold cap passes without any (`IdleStop`).
-// @effect-diagnostics asyncFunction:off globalTimers:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off globalTimers:off preferEffectArray:off globalJsonInEffect:off
 import {
   CONTAINER_PREVIEW_PORTS,
   containerPreviewHost,

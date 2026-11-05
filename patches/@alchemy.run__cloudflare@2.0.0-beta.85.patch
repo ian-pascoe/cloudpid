@@ -1,5 +1,5 @@
 diff --git a/lib/Containers/DurableObjectApplication.d.ts b/lib/Containers/DurableObjectApplication.d.ts
-index 352a40fede7ff865dd63114c03b865df2686004f..bdc0ffb2282746891bf743fa78237e7c23d20c76 100644
+index 2df91cb52ee9763562b723b3333106805ed38c7b..fc3b7f00f16fbb59a237b6d336f66a2d61002ea5 100644
 --- a/lib/Containers/DurableObjectApplication.d.ts
 +++ b/lib/Containers/DurableObjectApplication.d.ts
 @@ -74,6 +74,15 @@ export declare const declareDurableObjectApplication: (worker: {
@@ -15,14 +15,14 @@ index 352a40fede7ff865dd63114c03b865df2686004f..bdc0ffb2282746891bf743fa78237e7c
 +    readonly _tag: string;
 +    readonly message?: unknown;
 +}, R>(effect: Effect.Effect<A, E, R>, onWait: Effect.Effect<void>) => Effect.Effect<A, E, R>;
- export declare const LiveDurableObjectApplicationProvider: () => import("effect/Layer").Layer<Provider.Provider<DurableObjectApplication>, never, CloudflareEnvironment | import("alchemy/Stack").Stack | import("alchemy/Stage").Stage | Containers.CloudflareOpContext>;
+ export declare const LiveDurableObjectApplicationProvider: () => import("effect/Layer").Layer<Provider.Provider<DurableObjectApplication>, never, CloudflareEnvironment | import("alchemy").Stack | import("alchemy").Stage | Containers.CloudflareOpContext>;
  /**
   * Local (dev) provider: `alchemy dev` runs every image through workerd and
 diff --git a/lib/Containers/DurableObjectApplication.js b/lib/Containers/DurableObjectApplication.js
-index ea56e7fbac97fd71e6ac23d20264460347d5ffda..cc791029d1c79c0272df4ebc298595d83f112cf9 100644
+index 776d8b751d189973d50d50850c44bbf66ed6d428..d677ffbecbfbbb32f7cf742f135e53148cd1479b 100644
 --- a/lib/Containers/DurableObjectApplication.js
 +++ b/lib/Containers/DurableObjectApplication.js
-@@ -32,6 +32,31 @@ export const retryNamespacePropagation = (effect) => effect.pipe(Effect.tapError
+@@ -35,6 +35,31 @@ export const retryNamespacePropagation = (effect) => effect.pipe(Effect.tapError
      schedule: Schedule.spaced("2 seconds"),
      times: 15,
  }));
@@ -54,7 +54,7 @@ index ea56e7fbac97fd71e6ac23d20264460347d5ffda..cc791029d1c79c0272df4ebc298595d8
  /** Whether an application id names a created, live application (not a placeholder). */
  const isLiveApplication = (id) => !!id && isLiveId(id);
  /** The one namespace every bound Container attaches the application to. */
-@@ -153,7 +178,14 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
+@@ -170,7 +195,14 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
          // 2. Ensure
          if (!application) {
              yield* session.note(`Creating container application ${name}...`);
@@ -70,7 +70,7 @@ index ea56e7fbac97fd71e6ac23d20264460347d5ffda..cc791029d1c79c0272df4ebc298595d8
                  accountId,
                  name,
                  schedulingPolicy: "durable_object",
-@@ -165,7 +197,7 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
+@@ -182,7 +214,7 @@ export const LiveDurableObjectApplicationProvider = () => Provider.succeed(Durab
                          : {}),
                  },
                  observability: settings.observability,
@@ -80,12 +80,12 @@ index ea56e7fbac97fd71e6ac23d20264460347d5ffda..cc791029d1c79c0272df4ebc298595d8
          yield* assertServesNamespace(application);
          // 3. Sync declared settings and reset settings no Container declares anymore.
 diff --git a/lib/Workers/WorkerProvider.d.ts b/lib/Workers/WorkerProvider.d.ts
-index 0f9709698dc6b23e5b5252c524ab9a2eafb2f4ee..9abb045e2e61aeb335ff4e7843847d7b6f299803 100644
+index 52242eaa539ecbf77a7b6211103d875b56eaf4b5..e7b1fe9ab90acf14f1c96449989a30e4b56e89d2 100644
 --- a/lib/Workers/WorkerProvider.d.ts
 +++ b/lib/Workers/WorkerProvider.d.ts
-@@ -275,6 +275,18 @@ export declare class WorkerIdNotFound extends WorkerIdNotFound_base<{
-     message: string;
- }> {
+@@ -208,6 +208,18 @@ export interface ResolvedWorkersDev {
+     enabled: boolean;
+     previewsEnabled: boolean;
  }
 +/**
 + * Retry a read of a Worker script's deployments right after its PUT while
@@ -100,13 +100,13 @@ index 0f9709698dc6b23e5b5252c524ab9a2eafb2f4ee..9abb045e2e61aeb335ff4e7843847d7b
 +    readonly _tag: string;
 +}, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
  /**
-  * Normalize a Worker's persisted *legacy* `domains` state to bare
-  * hostnames. Alchemy <= beta.44 stored each custom domain as a
+  * Resolve the `workersDev` prop to its full shape. `true` / omitted means
+  * "default workers.dev behavior" (stable URL + version previews), `false`
 diff --git a/lib/Workers/WorkerProvider.js b/lib/Workers/WorkerProvider.js
-index 901fb9b7ee492909150bffe96d43c3c2f1d6ad7d..131d57d8370803957e0417307a4d5d81179d8c6e 100644
+index dfb1556eb8940a581533238bb7518ebd11cc3abc..8a30114df4d61cd7ad83f7dd758a04ad96871ded 100644
 --- a/lib/Workers/WorkerProvider.js
 +++ b/lib/Workers/WorkerProvider.js
-@@ -571,6 +571,20 @@ const bindingTargetNotFoundRetrySchedule = () => Schedule.max([Schedule.fixed("2
+@@ -591,6 +591,20 @@ const bindingTargetNotFoundRetrySchedule = () => Schedule.max([Schedule.fixed("2
   */
  const isScriptPutTransportError = (e) => isHttpClientError(e) && e.reason._tag === "TransportError";
  const retryableScriptPut = (e) => isBindingTargetNotFound(e) || isScriptPutTransportError(e);
@@ -127,7 +127,7 @@ index 901fb9b7ee492909150bffe96d43c3c2f1d6ad7d..131d57d8370803957e0417307a4d5d81
  /**
   * Upsert a Worker script, routing to the dispatch-namespace endpoint when
   * `dispatchNamespace` is set. The metadata/files contract is identical, and
-@@ -3233,10 +3247,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+@@ -3339,10 +3353,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
              ? yield* reconcileCrons(name, desiredCrons, previousCrons, session)
              : [];
          if (!dispatchNamespace && versionId === undefined) {
@@ -140,10 +140,10 @@ index 901fb9b7ee492909150bffe96d43c3c2f1d6ad7d..131d57d8370803957e0417307a4d5d81
              deploymentId = active?.id;
              versionId = active?.versions.find((version) => version.percentage === 100)?.versionId;
 diff --git a/src/Containers/DurableObjectApplication.ts b/src/Containers/DurableObjectApplication.ts
-index 9385fb28b76d455ee9d99563ecaf6589c80d47a3..10176f69ce6945fa5266d4b2b928f405c8db8ca6 100644
+index 3174998ff84a2db3602fb4f52b7a7cc6435f9393..5bed56779dd61fbf2c0d17ae5319a49268ac402e 100644
 --- a/src/Containers/DurableObjectApplication.ts
 +++ b/src/Containers/DurableObjectApplication.ts
-@@ -109,6 +109,45 @@ export const retryNamespacePropagation = <A, E extends { readonly _tag: string }
+@@ -113,6 +113,45 @@ export const retryNamespacePropagation = <A, E extends { readonly _tag: string }
      }),
    );
  
@@ -189,7 +189,7 @@ index 9385fb28b76d455ee9d99563ecaf6589c80d47a3..10176f69ce6945fa5266d4b2b928f405
  /** Whether an application id names a created, live application (not a placeholder). */
  const isLiveApplication = (id: string | undefined): id is string => !!id && isLiveId(id);
  
-@@ -274,20 +313,31 @@ export const LiveDurableObjectApplicationProvider = () =>
+@@ -292,20 +331,31 @@ export const LiveDurableObjectApplicationProvider = () =>
        // 2. Ensure
        if (!application) {
          yield* session.note(`Creating container application ${name}...`);
@@ -236,10 +236,10 @@ index 9385fb28b76d455ee9d99563ecaf6589c80d47a3..10176f69ce6945fa5266d4b2b928f405
        }
        yield* assertServesNamespace(application);
 diff --git a/src/Workers/WorkerProvider.ts b/src/Workers/WorkerProvider.ts
-index 9aeff2a30fe5cc881553f8c83f3126b72fc133dd..71b67b88947c47c6b5702d64ebbc9278b6f173ff 100644
+index 90aabe32b61600c3a9f5c8855f2f1b7dc9607009..a18fdf069e54a6852da09d5fff2282621a139028 100644
 --- a/src/Workers/WorkerProvider.ts
 +++ b/src/Workers/WorkerProvider.ts
-@@ -745,6 +745,26 @@ const isScriptPutTransportError = (e: { _tag?: string }): boolean =>
+@@ -787,6 +787,26 @@ const isScriptPutTransportError = (e: { _tag?: string }): boolean =>
  const retryableScriptPut = (e: Parameters<typeof isBindingTargetNotFound>[0]): boolean =>
    isBindingTargetNotFound(e) || isScriptPutTransportError(e);
  
@@ -266,7 +266,7 @@ index 9aeff2a30fe5cc881553f8c83f3126b72fc133dd..71b67b88947c47c6b5702d64ebbc9278
  /**
   * Upsert a Worker script, routing to the dispatch-namespace endpoint when
   * `dispatchNamespace` is set. The metadata/files contract is identical, and
-@@ -4182,10 +4202,9 @@ export const LiveWorkerProvider = () =>
+@@ -4328,10 +4348,9 @@ export const LiveWorkerProvider = () =>
              ? yield* reconcileCrons(name, desiredCrons, previousCrons, session)
              : [];
          if (!dispatchNamespace && versionId === undefined) {

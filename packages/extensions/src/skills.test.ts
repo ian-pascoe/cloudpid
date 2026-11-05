@@ -19,7 +19,6 @@ import {
   type ExecutionEnv,
   type FileListEntry,
 } from "@earendil-works/pi-durable/env";
-import { Type } from "@earendil-works/pi-ai";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
@@ -33,6 +32,7 @@ import {
   skillDirectories,
   type Skill,
 } from "./skills.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 /** A skill's `SKILL.md`. */
 const skillFile = (name: string, description: string, extra = "") =>
@@ -133,7 +133,7 @@ const withOwn = (env: ExecutionEnv, own: () => Promise<ReadonlyArray<Skill>>): E
 const noop = defineTool({
   name: "read",
   description: "Read a file",
-  parameters: Type.Object({}),
+  parameters: obj({}),
   execute: async () => ({ output: [{ type: "text", text: "" }] }),
 });
 

@@ -13,7 +13,7 @@
  *   problem says what is wrong with the setup, an outcome names the OAuth error code and the status, and the one
  *   message an authorization server wrote is cut and scrubbed of the values this request sent.
  */
-// @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off asyncFunction:off preferEffectArray:off globalJsonInEffect:off
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type { AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";

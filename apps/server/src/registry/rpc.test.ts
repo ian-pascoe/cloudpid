@@ -1861,7 +1861,6 @@ const withClient = <A, E>(
   );
 
   // The test is the client's entry point.
-  // @effect-diagnostics-next-line strictEffectProvide:off
   return Effect.runPromise(program.pipe(Effect.provide(client)));
 };
 

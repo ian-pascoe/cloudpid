@@ -1,7 +1,6 @@
 // The parts of one tool result that are not its text or images, held to caps that keep the result within its one SQLite
 // row: the diagnostics a tool reports, a nested call's structured output, and the details.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
-import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { MAX_ADDED_BYTES } from "./agents-md.ts";
@@ -18,6 +17,7 @@ import {
 import { ResultBounds } from "./result-bounds.ts";
 import { call, openSecretsHarness } from "./secrets/harness.fixture.ts";
 import { storedBytes } from "./stored-bytes.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 const model = { tool: "bash", nested: false } as const;
 
@@ -176,7 +176,7 @@ describe("ResultBounds", () => {
       defineTool({
         name: "lint",
         description: "Lint",
-        parameters: Type.Object({}),
+        parameters: obj({}),
         execute: async () => ({
           output: [{ type: "text", text: "linted" }],
           diagnostics: [

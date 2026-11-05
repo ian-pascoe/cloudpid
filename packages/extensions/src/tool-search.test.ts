@@ -3,12 +3,12 @@
 // pi-durable's Harness is Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { answer, call, context, openSubagentHarness } from "./subagents/harness.fixture.ts";
 import { COORDINATOR_TOOLS } from "./subagents.ts";
 import { fixedToolSearchSettings, isOffered, reloadToolSearch, ToolSearch } from "./tool-search.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 /** The deferred tools the latest request's prompt names (the system sections it carried are joined, oldest first). */
 const deferredIn = (system: string | undefined) =>
@@ -27,7 +27,7 @@ const Extras = defineExtension({
     defineTool({
       name,
       description,
-      parameters: Type.Object({}),
+      parameters: obj({}),
       execute: async () => ({ output: [{ type: "text", text: `${name} ran` }] }),
     }),
   ),
@@ -160,7 +160,7 @@ describe("deferred tools", () => {
         defineTool({
           name,
           description: `The ${name} tool`,
-          parameters: Type.Object({}),
+          parameters: obj({}),
           execute: async () => ({ output: [{ type: "text", text: `${name} ran` }] }),
         }),
       ),

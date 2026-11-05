@@ -15,7 +15,6 @@ import {
   fauxToolCall,
   type Message,
   type ToolCall,
-  Type,
 } from "@earendil-works/pi-ai";
 import {
   defineExtension,
@@ -40,6 +39,7 @@ import {
   SHOWN_DETAILS_KEY,
 } from "./agents-md.ts";
 import { ContextManagement } from "./context.ts";
+import { obj, str } from "@earendil-works/pi-schema";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -74,7 +74,7 @@ const Scripts = defineExtension({
     defineTool({
       name: "script_read",
       description: "Read a file as a script would",
-      parameters: Type.Object({ path: Type.String() }),
+      parameters: obj({ path: str() }),
       execute: async (params, api, ctx) => {
         const nested = await api.executeTool("read", { path: params.path }, ctx);
 

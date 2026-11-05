@@ -1,6 +1,6 @@
 // The Session's Sign-in requests (`docs/architecture/mcp-sign-in.md` → Sign-in requests): asked by a call, answered by the
 // owner's sign-in or decline, durable across an eviction, and one request however many calls ask.
-// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics strictEffectProvide:off preferEffectArray:off preferEffectRecord:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import type { McpSignInKnownAskAnswer } from "@cloudpid/mcp/types";
 import type { McpSignInRequest } from "@cloudpid/protocol";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";

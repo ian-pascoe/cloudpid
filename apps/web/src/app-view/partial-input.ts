@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → Lifecycle (Mounting), App Views in the transcript. The arguments of a call that is still
 // streaming, handed to its View as `tool-input-partial`: the latest at most every 250 ms, only when they changed, and
 // never past 1 MiB of them (a View that wants more waits for `tool-input`). The arguments are parsed already: the Session's
-// streaming JSON parser (pi-ai's) made them, and the transcript keeps them as the call streams (`reduceView`'s streamed
+// streaming JSON parser (pi-ai's) made them, and the view keeps them as the call streams (`projectView`'s streamed
 // tools), so this only paces what it is given. Pure over its clock, which a test supplies.
 // @effect-diagnostics missingPipeableSignature:off globalTimers:off globalDate:off -- a small throttle over an injected clock.
 import type { McpAppRecord } from "@cloudpid/protocol";

@@ -67,12 +67,14 @@ type BrowserExports = {
  * `browserTool` as the host calls it: the one thing it reads of a call is the scope the code runs in (`scopeOf`): a
  * conversation's tab (`conversation:<id>`) or an Owner tab (`owner-tab:<id>`). Its result is plain data: text and image
  * parts and JSON details. It holds them as `output` from agents 0.29, which follows pi-durable 1.3, and as `content`
- * before.
+ * before. From agents 0.33 it reads the call's `abortSignal` from its third argument; a host call has none, since the
+ * Session cannot cancel an RPC call.
  */
 type ScopedTool = {
   execute(
     args: { code: string },
     api: { conversationId: number; scope: string },
+    context: { abortSignal?: AbortSignal },
   ): Promise<
     Omit<BrowserRun, "output"> & Partial<Record<"output" | "content", BrowserRun["output"]>>
   >;
@@ -199,10 +201,14 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   }
 
   async #runIn(code: string, conversationId: number, scope: string): Promise<BrowserRun> {
-    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: `browserTool` takes no Chord context and reads only `api.conversationId` and the `scope` `scopeOf` reads; see `ScopedTool`.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: `browserTool` takes no Chord context and reads only `api.conversationId`, the `scope` `scopeOf` reads, and `context.abortSignal`; see `ScopedTool`.
     const tool = this.#tool as unknown as ScopedTool;
 
-    const { output, content, ...rest } = await tool.execute({ code }, { conversationId, scope });
+    const { output, content, ...rest } = await tool.execute(
+      { code },
+      { conversationId, scope },
+      {},
+    );
 
     return { ...rest, output: output ?? content ?? [] };
   }

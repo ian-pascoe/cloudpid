@@ -6,7 +6,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { afterEach, beforeEach, vi } from "vitest";
 import { sessionStatusAtom } from "../session/atoms.ts";
-import { settle } from "../session/client.testing.ts";
+import { opsFrame, RUN, settle } from "../session/client.testing.ts";
 import { chatRegistry, live, sent } from "./chat.testing.ts";
 import { conversationKey } from "./conversation.ts";
 import { threadMessagesAtom, threadQueueAtom } from "./thread-state.ts";
@@ -50,11 +50,7 @@ describe("a conversation's runtime atoms", () => {
 
       expect(registry.get(threadMessagesAtom(ROOT))).toBe(before);
 
-      yield* chat.latest().say({
-        type: "events",
-        conversationId: 1,
-        events: [{ type: "run_start", inputs: [1] }],
-      });
+      yield* chat.latest().say(opsFrame({}, { live: { run: RUN } }));
 
       expect(registry.get(threadMessagesAtom(ROOT))).not.toBe(before);
     }),

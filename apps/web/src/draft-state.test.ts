@@ -36,7 +36,7 @@ import { fakeRegistryLayer, settled } from "./registry.testing.ts";
 import { pathAtom } from "./router.ts";
 import { appRuntime } from "./runtime.ts";
 import { SessionProbe } from "./session/client.ts";
-import { FakeSocket, settle } from "./session/client.testing.ts";
+import { FakeSocket, settle, viewFrame } from "./session/client.testing.ts";
 import { keyValueStoreLayer } from "./storage.ts";
 
 const memoryStorage = (): Storage => {
@@ -541,22 +541,7 @@ describe("the first message of a Session", () => {
       const watch = socket.commands().find((command) => command.type === "watch");
 
       yield* socket.say({ type: "result", id: watch?.id, result: null });
-      yield* socket.say({
-        type: "events",
-        conversationId: 1,
-        events: [
-          {
-            type: "snapshot",
-            entries: [],
-            tools: [],
-            nestedTools: [],
-            compactions: [],
-            inbox: [],
-            agent: {},
-            usage: {},
-          },
-        ],
-      });
+      yield* socket.say(viewFrame());
     });
 
   /** The submits the client sent on `socket`. */

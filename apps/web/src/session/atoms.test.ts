@@ -23,7 +23,7 @@ import {
   threadAtom,
 } from "./atoms.ts";
 import { SessionProbe } from "./client.ts";
-import { FakeSocket, settle } from "./client.testing.ts";
+import { FakeSocket, opsFrame, RUN, settle, viewFrame } from "./client.testing.ts";
 
 /** An atom registry whose runtime dials fake sockets, recorded in `sockets`. */
 const setup = () => {
@@ -61,22 +61,7 @@ const live = (socket: FakeSocket) =>
     const watch = socket.commands().find((command) => command.type === "watch");
 
     yield* socket.say({ type: "result", id: watch?.id, result: null });
-    yield* socket.say({
-      type: "events",
-      conversationId: 1,
-      events: [
-        {
-          type: "snapshot",
-          entries: [],
-          tools: [],
-          nestedTools: [],
-          compactions: [],
-          inbox: [],
-          agent: {},
-          usage: {},
-        },
-      ],
-    });
+    yield* socket.say(viewFrame());
   });
 
 beforeEach(() => {
@@ -106,11 +91,7 @@ describe("a Session's atoms", () => {
       expect(registry.get(sessionStateAtom("s1")).status).toBe("live");
       expect(registry.get(sessionViewAtom("s1")).running).toBe(false);
 
-      yield* latest().say({
-        type: "events",
-        conversationId: 1,
-        events: [{ type: "run_start", inputs: [1] }],
-      });
+      yield* latest().say(opsFrame({}, { live: { run: RUN } }));
 
       expect(registry.get(sessionViewAtom("s1")).running).toBe(true);
     }),
@@ -130,11 +111,7 @@ describe("a Session's atoms", () => {
 
       expect(picked).not.toHaveBeenCalled();
 
-      yield* latest().say({
-        type: "events",
-        conversationId: 1,
-        events: [{ type: "run_start", inputs: [1] }],
-      });
+      yield* latest().say(opsFrame({}, { live: { run: RUN } }));
 
       expect(picked).not.toHaveBeenCalled();
 

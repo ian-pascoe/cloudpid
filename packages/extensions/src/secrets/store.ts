@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off globalJsonInEffect:off
 // The Session's Secrets (`docs/architecture/agent-capabilities.md` → Secrets): values the owner enters in a masked form on the client, kept
 // encrypted in the Session DO's storage for their lifetime, and the redaction of every value held in this instance.
 //
@@ -397,8 +397,12 @@ const makeSecrets = ({
           yield* putAsks([...asks(), request]);
 
           // In the background: the owner's notification may take seconds, and the ask must not wait on it, nor
-          // outlive an abort that lands meanwhile (the wait below withdraws it).
-          if (asked !== undefined) yield* Effect.forkDetach(asked(request));
+          // outlive an abort that lands meanwhile (the wait below withdraws it). It starts at once: a fork left to the
+          // scheduler waits for the event loop's next timer tick, which a busy Session may reach only after the answer,
+          // or the Run's end, has gone out.
+          if (asked !== undefined) {
+            yield* Effect.forkDetach(asked(request), { startImmediately: true });
+          }
         }
 
         yield* Effect.andThen(waiting, Deferred.await(waiter)).pipe(

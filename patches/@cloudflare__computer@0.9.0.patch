@@ -1,5 +1,5 @@
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index d2e37f9..1b243ad 100644
+index edd7efaecc34288f82a91803287c609a947e4dd6..b05ff25ad868490e9866d4637309c275b764ddeb 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -171,6 +171,11 @@ export declare class Workspace {
@@ -15,7 +15,7 @@ index d2e37f9..1b243ad 100644
    get db(): Database;
    get observer(): WorkspaceObserver;
 diff --git a/dist/index.js b/dist/index.js
-index f9aca8a..170aaef 100644
+index 1e55628dc546daf6850f8770f3ddba5a22785e9c..a6d2b381774b6afbed82b7739ad534305710b0a8 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -5236,6 +5236,13 @@ var MountIndex = class {

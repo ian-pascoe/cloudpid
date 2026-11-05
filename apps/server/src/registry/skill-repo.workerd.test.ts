@@ -428,7 +428,7 @@ describe("a private repo", () => {
     const github = privateGithub({ "skills/ours/SKILL.md": skillMd("ours") });
 
     const listing = await run(
-      Effect.promise(() => listingAs(["acme"], github)).pipe(Effect.flatMap((effect) => effect)),
+      Effect.promise(() => listingAs(["acme"], github)).pipe(Effect.flatten),
     );
 
     expect(listing.skills.map(({ name }) => name)).toEqual(["ours"]);
@@ -440,9 +440,7 @@ describe("a private repo", () => {
   it("is not found, as a repo that does not exist is, when the app cannot read it: GitHub answers both with a 404", async () => {
     const github = privateGithub({ "skills/ours/SKILL.md": skillMd("ours") });
 
-    const error = await failure(
-      Effect.promise(() => listingAs([], github)).pipe(Effect.flatMap((effect) => effect)),
-    );
+    const error = await failure(Effect.promise(() => listingAs([], github)).pipe(Effect.flatten));
 
     expect(error.kind).toBe("not_found");
     expect(error.message).toContain("private and the GitHub App is not installed on acme");

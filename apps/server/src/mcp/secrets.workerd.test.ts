@@ -1,5 +1,5 @@
 // workerd's Durable Object APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off strictEffectProvide:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off strictEffectProvide:off
 // No resolved Secret reaches the host (`docs/architecture/mcp-configuration.md` → From the Registry to the host): a set
 // built from a server whose header is `${TOKEN}`, while the Secret `TOKEN` is kept, holds the name only. Through the
 // Registry's own storage and the main Worker's push, the set and its hash are the same with the Secret and without it,

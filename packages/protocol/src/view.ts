@@ -1,5 +1,5 @@
-// Adapted from Cloudflare's `agents` repository, `examples/next/harnesses/pi/src/view.ts` as of commit df9c0ef
-// https://github.com/cloudflare/agents/blob/df9c0ef6c4541c5552b5ce4d6ba292162dbd0908/examples/next/harnesses/pi/src/view.ts
+// Adapted from Cloudflare's `agents` repository, `examples/next/harnesses/pi/src/view.ts` as of commit 9e88bbf
+// https://github.com/cloudflare/agents/blob/9e88bbf502fc3590790e575b4ab1b5ccb33c9495/examples/next/harnesses/pi/src/view.ts
 //
 // MIT License
 //
@@ -19,32 +19,31 @@
 // OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 // Changes: types renamed (`PiSessionView` → `SessionView`, `PiRunningTool` → `RunningTool`), functions written as
-// `const` arrow functions, imports end in `.ts`, `blockPart` guards an undefined first part (`noUncheckedIndexedAccess`),
-// the view keeps the inbox's items (`inbox`) instead of their count (`queued`), tool events of nested calls are left
-// out of the running tools and kept in `nestedTools` instead, with their output and how they ended (the example lists
-// them among the running tools like any other call), the view also follows the agent's thinking level (`thinkingLevel`),
-// and it keeps the messages of earlier Context Windows (`earlier`, `before`, `withEarlier`) where the example's dropped
-// them at a reset. Formatted for this repository.
+// `const` arrow functions, imports end in `.ts`. The view keeps the inbox's items (`inbox`) instead of their count
+// (`queued`); nested calls (`pi.live.nestedTools`) are kept in `nestedTools`, with their output and how they ended; it
+// follows the agent's thinking level (`thinkingLevel`); it shows the whole transcript the client holds, the Context
+// Windows before the newest reset included, where the example's starts at that reset; gaps are left out (the client's
+// mirror fills them, `mirror.ts`) rather than shown as `gap` messages; and the live message's tool calls keep their
+// arguments only for the tools that stream them (`StreamedTools`). Every derived part keeps its identity while what it
+// is derived from does. Formatted for this repository.
 
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off preferEffectRecord:off -- plain TypeScript over pi's arrays, as the example is.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain TypeScript over pi's arrays, as the example is.
 
-import type { AssistantMessage, JsonValue, ModelThinkingLevel } from "@earendil-works/pi-ai";
-import * as Predicate from "effect/Predicate";
-import type * as Types from "effect/Types";
+import type { AssistantMessage, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type {
-  AgentEvent,
-  EntryRecord,
+  AgentState,
+  InboxItem,
+  InboxState,
   JsonObject,
-  MessageChange,
-  SnapshotEvent,
+  LiveState,
+  NestedToolSlot,
+  RunFailure,
+  ToolSlot,
+  TranscriptItem,
+  TranscriptView,
 } from "@earendil-works/pi-durable";
-import {
-  projectEntries,
-  projectEntry,
-  projectMessage,
-  type TranscriptMessage,
-  type TranscriptPart,
-} from "./transcript.ts";
+import type * as Types from "effect/Types";
+import { projectEntry, projectMessage, type TranscriptMessage } from "./transcript.ts";
 
 /** A tool call running now, with its streamed output. */
 export type RunningTool = {
@@ -72,23 +71,21 @@ export type NestedTool = {
   readonly error?: string;
 };
 
-/** A submission waiting in the conversation's inbox behind the running work. */
-export type QueuedInput = SnapshotEvent["inbox"][number];
+/** A submission waiting in the conversation's inbox behind the running work: a steer, a follow-up, or a write. */
+export type QueuedInput = Pick<InboxItem, "id" | "mode">;
 
-/** Everything a UI shows for one conversation, derived from pi's agent events by `reduceView`. */
+/**
+ * Everything a UI shows for one conversation, projected from pi's conversation view by `projectView`: pi's view is the
+ * state, and the projection is the only code that interprets it.
+ */
 export type SessionView = {
-  /** The messages of the active Context Window, as a snapshot holds them. */
+  /**
+   * The messages of the transcript the client holds, oldest first: every Context Window's, with the head markers that
+   * began them (a Handoff's reset, a compaction summary) where they were written.
+   */
   readonly messages: readonly TranscriptMessage[];
-  /**
-   * Messages of earlier Context Windows, oldest first, all before `messages`: those the view saw before a Rollover or a
-   * compaction moved them out of the context, and the History loaded with `withEarlier`.
-   */
-  readonly earlier: readonly TranscriptMessage[];
-  /**
-   * The entry the History that is not in `earlier` or `messages` ends before: what to ask `history` for next. Null when
-   * the view holds the whole History.
-   */
-  readonly before: number | null;
+  /** Whether the transcript goes back before the oldest message: the thread offers to load the page before it. */
+  readonly earlier: boolean;
   /** The assistant message being streamed, or null. */
   readonly live: TranscriptMessage | null;
   readonly running: boolean;
@@ -102,14 +99,14 @@ export type SessionView = {
   readonly model: { readonly provider: string; readonly modelId: string } | null;
   /** The agent's thinking level; null before the agent has one. */
   readonly thinkingLevel: ModelThinkingLevel | null;
+  /** Why the newest run ended without an answer (`pi.live.runFailure`), unless the owner stopped it. */
   readonly error: string | null;
 };
 
-/** The view before any event. */
+/** The view before the first `view` of a conversation. */
 export const EMPTY_VIEW: SessionView = {
   messages: [],
-  earlier: [],
-  before: null,
+  earlier: false,
   live: null,
   running: false,
   tools: [],
@@ -123,212 +120,109 @@ export const EMPTY_VIEW: SessionView = {
 
 const LIVE_ID = "live";
 
-/** The entry ID of a committed message: every message but the live one is named by its entry's. */
-const entryIdOf = (message: TranscriptMessage): number => Number(message.id);
+const NONE: readonly never[] = [];
 
-const append = (view: SessionView, entry: EntryRecord): SessionView => {
-  const message = projectEntry(entry);
-  const known = view.messages.some((shown) => shown.id === String(entry.id));
-
-  if (known) return view;
-
-  // A head marker (a Handoff's reset, a compaction) starts a new Context Window at its head, as a snapshot then shows
-  // it: the marker, then what it keeps. What came before moves to `earlier`, still shown.
-  const head = entry.head;
-
-  if (head !== undefined) {
-    return {
-      ...view,
-      earlier: [...view.earlier, ...view.messages.filter((shown) => entryIdOf(shown) < head)],
-      messages: [
-        ...(message === undefined ? [] : [message]),
-        ...view.messages.filter((shown) => entryIdOf(shown) >= head),
-      ],
-    };
-  }
-
-  return message === undefined ? view : { ...view, messages: [...view.messages, message] };
-};
+/** The arguments a streaming call shows when its tool does not stream them. */
+const NO_ARGUMENTS: JsonObject = {};
 
 /**
- * What a snapshot whose first entry is `first` keeps of `view`'s earlier messages. A snapshot starts with its Context
- * Window's head marker, if it has one, and the History before the marker's head is not in it. When `view` saw that
- * marker, it holds that History from `view.before` on, without a gap, and keeps it; otherwise none is loaded. Without a
- * marker the snapshot is the whole History.
- */
-const earlierFor = (
-  view: SessionView,
-  first: EntryRecord | undefined,
-): Pick<SessionView, "earlier" | "before"> => {
-  const head = first?.head;
-
-  if (first === undefined || head === undefined) return { earlier: [], before: null };
-
-  const marker = String(first.id);
-  const seen = [...view.earlier, ...view.messages];
-
-  if (!seen.some((message) => message.id === marker)) return { earlier: [], before: head };
-
-  return { earlier: seen.filter((message) => entryIdOf(message) < head), before: view.before };
-};
-
-/**
- * `view` with `page`, the answer to `history` for the entries before `before`, in front of its earlier messages. A page
- * for another `before` than the view's (a snapshot replaced it meanwhile, or the page was already added) changes
- * nothing.
- */
-export const withEarlier = (
-  view: SessionView,
-  before: number,
-  page: { readonly entries: readonly EntryRecord[]; readonly before: number | null },
-): SessionView => {
-  if (view.before !== before) return view;
-
-  const loaded = projectEntries(page.entries).filter((message) => entryIdOf(message) < before);
-  const next = page.before !== null && page.before < before ? page.before : null;
-
-  return { ...view, earlier: [...loaded, ...view.earlier], before: next };
-};
-
-const blockPart = (block: AssistantMessage["content"][number]): TranscriptPart | undefined =>
-  projectMessage(
-    {
-      role: "assistant",
-      content: [block],
-      api: "",
-      provider: "",
-      model: "",
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
-      stopReason: "stop",
-      timestamp: 0,
-    },
-    LIVE_ID,
-  ).parts[0];
-
-type JsonPath = readonly (string | number)[];
-
-/**
- * `value` with `text` appended to the string `path` leads to, never changing `value` itself. A path that leads to no string
- * (the container is not there yet) returns `value` as it is: the whole block that comes with the next change that is not an
- * append carries what it was missing.
- */
-const appendedAt = (value: JsonValue, path: JsonPath, text: string): JsonValue => {
-  const [key, ...rest] = path;
-
-  if (key === undefined) return Predicate.isString(value) ? value + text : value;
-
-  if (Array.isArray(value)) {
-    if (!Predicate.isNumber(key)) return value;
-
-    const slot = value[key];
-
-    if (slot === undefined) return value;
-
-    const next = appendedAt(slot, rest, text);
-
-    return next === slot ? value : value.with(key, next);
-  }
-
-  if (Predicate.isObject(value)) {
-    const slot = Object.hasOwn(value, String(key)) ? value[String(key)] : undefined;
-
-    if (slot === undefined) return value;
-
-    const next = appendedAt(slot, rest, text);
-
-    return next === slot ? value : { ...value, [String(key)]: next };
-  }
-
-  return value;
-};
-
-/**
- * The names of the tools whose streamed arguments the view keeps (the Session's App tools,
- * `docs/architecture/mcp-apps.md` → Lifecycle): the other tools' `toolcall_delta` is dropped, since appending to a growing
- * argument for every token costs a transcript that no card draws until the call ends. `undefined` keeps none.
+ * The names of the tools whose streamed arguments the live message keeps (the Session's App tools,
+ * `docs/architecture/mcp-apps.md` → Lifecycle): every other tool's call in the live message shows no arguments until
+ * its message is committed, since a card that redrew a growing argument (a long `write`) at every change would cost
+ * the transcript per token, and no card draws one before the call ends. `undefined` keeps none.
  */
 export type StreamedTools = ReadonlySet<string> | undefined;
 
-const applyChanges = (
-  live: TranscriptMessage | null,
-  changes: readonly MessageChange[],
-  streamed: StreamedTools,
-): TranscriptMessage | null => {
-  let message = live;
+/** Why a run ended without an answer, unless the owner stopped it. */
+const failure = (failed: RunFailure | undefined): string | null => {
+  if (failed === undefined || failed.reason === "aborted") return null;
 
-  for (const change of changes) {
-    if (change.type === "message") {
-      message = projectMessage(change.message, LIVE_ID);
+  return failed.detail === undefined
+    ? `Not answered: ${failed.reason}`
+    : `Not answered: ${failed.reason}: ${failed.detail}`;
+};
 
-      continue;
-    }
+type ProjectedItems = Pick<SessionView, "messages" | "earlier">;
 
-    if (message === null) continue;
+/**
+ * The messages of a transcript's items. A merge that adds no entries keeps the same items array, so a streamed token
+ * does not project them again.
+ */
+const projectedItems = new WeakMap<readonly TranscriptItem[], ProjectedItems>();
 
-    const parts = [...message.parts];
-    const previous = parts[change.contentIndex];
+const projectItems = (items: readonly TranscriptItem[]): ProjectedItems => {
+  const cached = projectedItems.get(items);
 
-    switch (change.type) {
-      case "text_start":
-      case "thinking_start":
-      case "toolcall_start":
-      case "block": {
-        const part = blockPart(change.block);
+  if (cached !== undefined) return cached;
 
-        if (part !== undefined) parts[change.contentIndex] = part;
+  const messages = items.flatMap((item): TranscriptMessage[] => {
+    if (item.kind !== "entry") return [];
 
-        break;
-      }
+    const message = projectEntry(item.entry);
 
-      case "text_delta":
-        parts[change.contentIndex] = {
-          type: "text",
-          text: (previous?.type === "text" ? previous.text : "") + change.delta,
-        };
+    return message === undefined ? [] : [message];
+  });
 
-        break;
-      case "thinking_delta":
-        parts[change.contentIndex] = {
-          type: "thinking",
-          text: (previous?.type === "thinking" ? previous.text : "") + change.delta,
-        };
+  const result = { messages, earlier: items[0]?.kind === "earlier" };
 
-        break;
-      case "toolcall_delta":
-        // The arguments of the call as they stream, for the calls whose card draws them (an App's View is sent them); the
-        // others render once their block completes.
-        if (previous?.type === "tool-call" && streamed?.has(previous.name) === true) {
-          const args = appendedAt(previous.arguments, change.path, change.delta);
+  projectedItems.set(items, result);
 
-          if (args !== previous.arguments) {
-            parts[change.contentIndex] = { ...previous, arguments: args };
-          }
-        }
+  return result;
+};
 
-        break;
-    }
+/** The live message as `streamed` shows it, by the partial it is projected from. */
+const projectedLive = new WeakMap<
+  object,
+  { readonly streamed: StreamedTools; readonly message: TranscriptMessage }
+>();
 
-    message = { ...message, parts };
-  }
+const projectLive = (partial: AssistantMessage, streamed: StreamedTools): TranscriptMessage => {
+  const cached = projectedLive.get(partial);
+
+  if (cached !== undefined && cached.streamed === streamed) return cached.message;
+
+  const projected = projectMessage(partial, LIVE_ID);
+
+  const parts = projected.parts.map((part) =>
+    part.type === "tool-call" && streamed?.has(part.name) !== true
+      ? { ...part, arguments: NO_ARGUMENTS }
+      : part,
+  );
+
+  const message = { ...projected, parts };
+
+  projectedLive.set(partial, { streamed, message });
 
   return message;
 };
 
-/** A nested call as a snapshot lists it. */
-const snapshotNestedTool = (slot: SnapshotEvent["nestedTools"][number]): NestedTool => {
+/** The running tools of a round, by its slots. */
+const projectedTools = new WeakMap<readonly ToolSlot[], readonly RunningTool[]>();
+
+const projectTools = (slots: readonly ToolSlot[] | undefined): readonly RunningTool[] => {
+  if (slots === undefined) return NONE;
+
+  const cached = projectedTools.get(slots);
+
+  if (cached !== undefined) return cached;
+
+  const tools = slots
+    .filter((slot) => slot.status === "running")
+    .map((slot) => ({ callId: slot.callId, name: slot.name, output: slot.output ?? "" }));
+
+  projectedTools.set(slots, tools);
+
+  return tools;
+};
+
+/** A nested call as its slot shows it. */
+const nestedTool = (slot: NestedToolSlot): NestedTool => {
   const nested: Types.Mutable<NestedTool> = {
     callId: slot.callId,
     parentCallId: slot.parentCallId,
     name: slot.name,
     args: slot.arguments,
-    output: slot.output ?? "",
+    output: slot.status === "done" ? "" : (slot.output ?? ""),
     status: slot.status === "done" ? "done" : "running",
     // A call that faulted or was orphaned is done without a summary: it did not succeed.
     isError: slot.summary?.isError ?? slot.status === "done",
@@ -343,218 +237,51 @@ const snapshotNestedTool = (slot: SnapshotEvent["nestedTools"][number]): NestedT
   return nested;
 };
 
-/** The most error text a nested call's summary keeps, as pi-durable cuts it. */
-const MAX_ERROR_CHARS = 500;
+/** The nested calls of the running tools, by their slots. */
+const projectedNested = new WeakMap<readonly NestedToolSlot[], readonly NestedTool[]>();
 
-/** The error messages of a nested call's result joined with newlines, cut as pi-durable cuts a summary's. */
-const errorText = (
-  result:
-    | {
-        readonly isError: boolean;
-        readonly diagnostics: readonly { readonly severity: string; readonly message: string }[];
-      }
-    | undefined,
-): string =>
-  result?.isError === true
-    ? result.diagnostics
-        .flatMap((diagnostic) => (diagnostic.severity === "error" ? [diagnostic.message] : []))
-        .join("\n")
-        .slice(0, MAX_ERROR_CHARS)
-    : "";
+const projectNested = (slots: readonly NestedToolSlot[] | undefined): readonly NestedTool[] => {
+  if (slots === undefined) return NONE;
 
-/** A running tool's output after an update: its window trimmed at the front and appended to, or replaced. */
-const nextOutput = (
-  current: string,
-  update: { readonly trimStart?: number; readonly append?: string } | { readonly set: string },
-): string =>
-  "set" in update ? update.set : current.slice(update.trimStart ?? 0) + (update.append ?? "");
+  const cached = projectedNested.get(slots);
 
-/** `nested` without the calls below call `callId`, which settled, however deep. */
-const withoutDescendants = (
-  nested: readonly NestedTool[],
-  callId: string,
-): readonly NestedTool[] => {
-  const gone = new Set([callId]);
+  if (cached !== undefined) return cached;
 
-  // A parent starts before its children, so one pass in order finds them all.
-  return nested.filter((tool) => {
-    if (!gone.has(tool.parentCallId)) return true;
+  // A call not started yet is not shown: it has done nothing to show.
+  const nested = slots.flatMap((slot) => (slot.status === "pending" ? [] : [nestedTool(slot)]));
 
-    gone.add(tool.callId);
+  projectedNested.set(slots, nested);
 
-    return false;
-  });
+  return nested;
 };
 
 /**
- * Fold one of pi's agent events into the view. Pure: pi's events are the wire format, and this reducer is the only
- * code that interprets them.
+ * What a UI shows for a conversation: pi's conversation view, with the client's whole transcript
+ * (`ConversationTranscript.merge()`) in place of the window. `streamed` names the tools whose calls in the live message
+ * keep their arguments. Pure, so the browser and the tests run the same code.
  */
-export const reduceView = (
-  view: SessionView,
-  event: AgentEvent,
-  streamed?: StreamedTools,
-): SessionView => {
-  switch (event.type) {
-    case "snapshot": {
-      const partial = event.generation?.message;
+export const projectView = (view: TranscriptView, streamed?: StreamedTools): SessionView => {
+  // SAFETY: pi's built-in documents, keyed by their kind, have pi's shapes.
+  const live = (view.docs["pi.live"] ?? {}) as LiveState;
+  // SAFETY: as above.
+  const inbox = view.docs["pi.inbox"] as InboxState | undefined;
+  // SAFETY: as above.
+  const agent = view.docs["pi.agent"] as AgentState | undefined;
+  // SAFETY: the partial is the JSON of pi-ai's assistant message, which has no values JSON cannot hold.
+  const partial = live.generation?.message as AssistantMessage | undefined;
+  const { messages, earlier } = projectItems(view.items);
 
-      return {
-        messages: projectEntries(event.entries),
-        ...earlierFor(view, event.entries[0]),
-        live: partial === undefined ? null : projectMessage(partial, LIVE_ID),
-        running: event.run !== undefined,
-        tools: event.tools
-          .filter((slot) => slot.status === "running")
-          .map((slot) => ({ callId: slot.callId, name: slot.name, output: slot.output ?? "" })),
-        // A call not started yet is not shown, as live shows nothing before its `tool_execution_start`.
-        nestedTools: event.nestedTools.flatMap((slot) =>
-          slot.status === "pending" ? [] : [snapshotNestedTool(slot)],
-        ),
-        inbox: event.inbox,
-        retry: event.generation?.retry ?? null,
-        model: event.agent.model ?? null,
-        thinkingLevel: event.agent.thinkingLevel ?? null,
-        error: null,
-      };
-    }
-
-    case "run_start":
-      return { ...view, running: true, error: null };
-    case "run_end":
-      return { ...view, running: false, live: null, tools: [], nestedTools: [], retry: null };
-    case "message_start":
-      return event.message.role === "assistant"
-        ? { ...view, live: projectMessage(event.message, LIVE_ID) }
-        : view;
-    case "message_update":
-      return { ...view, live: applyChanges(view.live, event.changes, streamed) };
-    case "message_end": {
-      const next = append(view, event.entry);
-
-      return event.entry.model?.[0]?.role === "assistant" ? { ...next, live: null } : next;
-    }
-
-    case "entry_appended":
-      return append(view, event.entry);
-    case "tool_execution_start":
-      // A nested call belongs to the tool call that made it, which shows it.
-      if (event.parentToolCallId !== undefined) {
-        return {
-          ...view,
-          nestedTools: [
-            ...view.nestedTools.filter((tool) => tool.callId !== event.toolCallId),
-            {
-              callId: event.toolCallId,
-              parentCallId: event.parentToolCallId,
-              name: event.toolName,
-              args: event.args,
-              output: "",
-              status: "running",
-              isError: false,
-            },
-          ],
-        };
-      }
-
-      return {
-        ...view,
-        tools: [
-          ...view.tools.filter((tool) => tool.callId !== event.toolCallId),
-          { callId: event.toolCallId, name: event.toolName, output: "" },
-        ],
-      };
-    case "tool_execution_update": {
-      const output = event.output;
-
-      if (output === undefined) return view;
-
-      if (event.parentToolCallId !== undefined) {
-        return {
-          ...view,
-          nestedTools: view.nestedTools.map((tool) =>
-            tool.callId === event.toolCallId
-              ? { ...tool, output: nextOutput(tool.output, output) }
-              : tool,
-          ),
-        };
-      }
-
-      return {
-        ...view,
-        tools: view.tools.map((tool) =>
-          tool.callId === event.toolCallId
-            ? { ...tool, output: nextOutput(tool.output, output) }
-            : tool,
-        ),
-      };
-    }
-
-    case "tool_execution_end": {
-      if (event.parentToolCallId !== undefined) {
-        const { result } = event;
-
-        return {
-          ...view,
-          nestedTools: view.nestedTools.map((tool): NestedTool => {
-            if (tool.callId !== event.toolCallId) return tool;
-
-            // As a snapshot lists a done call: no output, and how it ended. A call with no result faulted or was
-            // orphaned: it did not succeed.
-            const done: Types.Mutable<NestedTool> = {
-              ...tool,
-              output: "",
-              status: "done",
-              isError: result?.isError ?? true,
-            };
-
-            if (result?.durationMs !== undefined) done.durationMs = result.durationMs;
-
-            const error = errorText(result);
-
-            if (error !== "") done.error = error;
-
-            return done;
-          }),
-        };
-      }
-
-      // What it made is listed by its result, which a transcript entry carries.
-      return {
-        ...view,
-        tools: view.tools.filter((tool) => tool.callId !== event.toolCallId),
-        nestedTools: withoutDescendants(view.nestedTools, event.toolCallId),
-      };
-    }
-
-    case "inbox_update":
-      return { ...view, inbox: event.items };
-    case "auto_retry_start":
-      return { ...view, retry: { at: event.at, error: event.errorMessage } };
-    case "auto_retry_end":
-      return { ...view, retry: null };
-    case "agent_changed":
-      return {
-        ...view,
-        model: event.agent.model ?? null,
-        thinkingLevel: event.agent.thinkingLevel ?? null,
-      };
-    case "task_failed":
-      return { ...view, error: event.message };
-    case "submission":
-      return event.record.status === "unanswered" &&
-        event.record.reason !== "aborted" &&
-        event.record.reason !== "withdrawn"
-        ? { ...view, error: `Not answered: ${event.record.reason}` }
-        : view;
-    default:
-      return view;
-  }
+  return {
+    messages,
+    earlier,
+    live: partial === undefined ? null : projectLive(partial, streamed),
+    running: live.run !== undefined,
+    tools: projectTools(live.tools),
+    nestedTools: projectNested(live.nestedTools),
+    inbox: inbox?.items ?? NONE,
+    retry: live.generation?.retry ?? null,
+    model: agent?.model ?? null,
+    thinkingLevel: agent?.thinkingLevel ?? null,
+    error: failure(live.runFailure),
+  };
 };
-
-/** Fold a batch of events, in order. `streamed` names the tools whose calls' streamed arguments are kept. */
-export const reduceEvents = (
-  view: SessionView,
-  events: readonly AgentEvent[],
-  streamed?: StreamedTools,
-): SessionView => events.reduce((folded, event) => reduceView(folded, event, streamed), view);

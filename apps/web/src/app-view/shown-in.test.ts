@@ -10,7 +10,7 @@ import { chatRegistry } from "../chat/chat.testing.ts";
 import { composerMountsAtom } from "../chat/composer-mounts.ts";
 import { conversationKey } from "../chat/conversation.ts";
 import { sessionStatusAtom } from "../session/atoms.ts";
-import { settle, type Value } from "../session/client.testing.ts";
+import { settle, type Value, viewFrame } from "../session/client.testing.ts";
 import { appKey } from "./atoms.ts";
 import { holdWhereShown, shownInAtom } from "./shown-in.ts";
 
@@ -50,22 +50,8 @@ const madeCall = (conversationId: number, call: string) => ({
   ],
 });
 
-const snapshot = (conversationId: number, entries: ReadonlyArray<Value>) => ({
-  type: "events",
-  conversationId,
-  events: [
-    {
-      type: "snapshot",
-      entries,
-      tools: [],
-      nestedTools: [],
-      compactions: [],
-      inbox: [],
-      agent: {},
-      usage: {},
-    },
-  ],
-});
+const snapshot = (conversationId: number, entries: ReadonlyArray<Value>) =>
+  viewFrame({ entries }, conversationId);
 
 const chip = { callId: "call-1", server: "docs", text: "Pick A" };
 

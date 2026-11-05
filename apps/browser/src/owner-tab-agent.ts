@@ -19,7 +19,7 @@
 //   goes while the call works.
 // - An Owner tab closed during the call makes the call an error that says so, whatever the code returned.
 import type { BrowserRun } from "@cloudpid/extensions/browser/contract";
-import type { BrowserConnection } from "agents/browser";
+import type { BrowserConnection, BrowserInternalHosts } from "agents/browser";
 import type { BrowserSource } from "agents/browser/pi";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -145,27 +145,36 @@ const confine = (connection: BrowserConnection, tab: string): void => {
  * gone; it fails with the closed-tab error instead.
  */
 export const confinedToOwnerTabs = (
-  browser: BrowserSource,
-  tabOf: (scope: string) => Promise<Tab | undefined>,
-): BrowserSource => ({
-  name: browser.name,
-  connect: async (options) => {
-    const scope = options?.scope;
-    const id = ownerTabOf(scope);
-
-    if (scope === undefined || id === undefined) return browser.connect(options);
-
-    const tab = await tabOf(scope);
-
-    if (tab === undefined) throw new Error(closedText(id));
-
-    const connection = await browser.connect(options);
-
-    confine(connection, tab.targetId);
-
-    return connection;
+  browser: Omit<BrowserSource, "internalHosts"> & {
+    // `Browser`'s getter, which may be undefined.
+    readonly internalHosts?: BrowserInternalHosts | undefined;
   },
-});
+  tabOf: (scope: string) => Promise<Tab | undefined>,
+): BrowserSource => {
+  const confined: BrowserSource = {
+    name: browser.name,
+    connect: async (options) => {
+      const scope = options?.scope;
+      const id = ownerTabOf(scope);
+
+      if (scope === undefined || id === undefined) return browser.connect(options);
+
+      const tab = await tabOf(scope);
+
+      if (tab === undefined) throw new Error(closedText(id));
+
+      const connection = await browser.connect(options);
+
+      confine(connection, tab.targetId);
+
+      return connection;
+    },
+  };
+
+  if (browser.internalHosts === undefined) return confined;
+
+  return { ...confined, internalHosts: browser.internalHosts };
+};
 
 /** What a call in an Owner tab reads of the host's Owner tabs and browser. */
 export type OwnerTabRunBrowser = {

@@ -12,7 +12,6 @@ import {
   getCurrentTools,
   type Message,
   type ToolCall,
-  Type,
 } from "@earendil-works/pi-ai";
 import {
   type ConversationId,
@@ -38,6 +37,7 @@ import {
 } from "../subagents.ts";
 import { type AgentWorkspace, EMPTY_STATE } from "./state.ts";
 import type { RepoWorkState, SubagentWorkspaceRequest } from "./workspaces.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 /**
  * Subagent Workspaces kept in memory: each made on `cloudpid/<id>` (or the branch asked for), with what each has not
@@ -129,7 +129,7 @@ const Coding = defineExtension({
     defineTool({
       name,
       description: `Stand-in ${name}`,
-      parameters: Type.Object({}),
+      parameters: obj({}),
       execute: async () => ({ output: [{ type: "text", text: `${name} ran` }] }),
     }),
   ),

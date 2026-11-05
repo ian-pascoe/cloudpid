@@ -19,7 +19,7 @@
  *   A listen's connection is `quiet`: none of its requests is a use or starts a Container, a POST included
  *   (`docs/architecture/mcp-in-a-session.md` → Resource watches, Stdio).
  */
-// @effect-diagnostics asyncFunction:off globalFetch:off newPromise:off preferSchemaOverJson:off missingPipeableSignature:off preferEffectArray:off globalTimers:off -- the bridge is reached with Promises, over Requests and Responses, and a status read is bounded by a timer.
+// @effect-diagnostics asyncFunction:off globalFetch:off newPromise:off globalJsonInEffect:off missingPipeableSignature:off preferEffectArray:off globalTimers:off -- the bridge is reached with Promises, over Requests and Responses, and a status read is bounded by a timer.
 import type { McpDeps } from "@cloudpid/mcp";
 import {
   Cut,

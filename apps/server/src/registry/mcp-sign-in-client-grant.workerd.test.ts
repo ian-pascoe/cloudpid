@@ -4,7 +4,7 @@
 // failure `failed`, never a status an owner could answer with a sign-in; and that no secret, key, assertion or token
 // reaches a span, a log, a row or an answer. workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so
 // this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off schemaSync:off preferEffectRecord:off newPromise:off globalTimers:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off schemaSync:off preferEffectRecord:off newPromise:off globalTimers:off globalDate:off
 import type { McpSignInKey } from "@cloudpid/config";
 import { type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import { type OAuthFetch } from "@cloudpid/mcp/oauth";

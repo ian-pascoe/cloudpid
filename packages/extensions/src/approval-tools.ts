@@ -1,4 +1,4 @@
-// @effect-diagnostics missingPipeableSignature:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off
 // The tools whose Agent changes wait for the owner's Approval (`docs/architecture/agent-changes.md` → Approval,
 // ADR-0019): those that change a Limit (`settings_spend_limit_set`, `settings_subagent_depth_set`,
 // `settings_subagent_workspaces_set`, `environment_container_size_limit_set`, and `settings_reset` of a Limit) and

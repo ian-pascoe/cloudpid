@@ -1,7 +1,7 @@
 // A pi-durable Harness over memory storage, with the web extension over a fake network and a scripted model, for
 // driving `web_search` and `web_fetch` through real tool calls. pi-durable's Harness and the faux provider are
 // Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off missingPipeableSignature:off strictEffectProvide:off preferEffectArray:off schemaSync:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off missingPipeableSignature:off strictEffectProvide:off preferEffectArray:off schemaSync:off globalJsonInEffect:off
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";

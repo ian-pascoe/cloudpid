@@ -10,7 +10,7 @@
 // token, code, verifier, `state`, secret or authorization URL: an answer's `message` is what the owner is told, cut to 300
 // characters, and a span says the OAuth error code and the status only. The Registry never calls a host: a completed
 // sign-in raises the sign-ins revision, which the hosts pull at `windowOpened`.
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off preferSchemaOverJson:off
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off asyncFunction:off globalJsonInEffect:off
 import { type McpResolvedServer, type McpSignInKey, mcpClientNameFor } from "@cloudpid/config";
 import type { KeptVault, SealedValue, SecretVaultError } from "@cloudpid/extensions/secrets/core";
 import {

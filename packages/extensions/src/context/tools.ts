@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off -- pi-durable commit callbacks are Promise code; History reads and searches stored entries' JSON text.
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off -- pi-durable commit callbacks are Promise code; History reads and searches stored entries' JSON text.
 // `context_notes` and `context_history`, with pi-context-management's parameters and limits. Notes live in the
 // conversation's Notes document (`./notes.ts`); History reads stored entries (`./history.ts`). The `lineage` scope also
 // covers the conversations of the agents that spawned this one and that it spawned, read-only.

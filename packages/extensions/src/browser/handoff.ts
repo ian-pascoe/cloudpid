@@ -271,13 +271,15 @@ export const makeBrowserHandoffs = (
           yield* put([...stored(), created]);
 
           // In the background: the push may take seconds, and the wait must neither wait on it nor outlive an abort.
-          // A tap opens the handoff's Live View Pane, which asks for its own links.
+          // A tap opens the handoff's Live View Pane, which asks for its own links. Started at once, before anything
+          // that follows the handoff (`secrets/store.ts` says why).
           yield* Effect.forkDetach(
             notifications.notify({
               kind: "notice",
               body: pushBody(instructions),
               url: liveViewPaneQuery(id),
             }),
+            { startImmediately: true },
           );
         }
       }

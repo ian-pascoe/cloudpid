@@ -1,6 +1,6 @@
 // The App tools of the inventory, as `mcp_app_tools` lists them (`docs/architecture/mcp-apps.md` → Declaring and reading
 // Apps, Socket messages).
-// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferSchemaOverJson:off -- builders over plain values; a schema's size is its JSON text's length.
+// @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off -- builders over plain values; a schema's size is its JSON text's length.
 import { mcpToolNames } from "@cloudpid/config";
 import { appUriOfMeta, isJsonObject, visibilityOfMeta } from "@cloudpid/mcp/types";
 import {

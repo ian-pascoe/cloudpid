@@ -454,7 +454,7 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
       // An MCP task's round has no call to wake: the Session sends its answers itself, in the background, once all are in.
       return sends === undefined
         ? woken
-        : Effect.andThen(woken, Effect.forkDetach(Effect.ignore(sends(callId))));
+        : Effect.andThen(woken, sends(callId).pipe(Effect.ignore, Effect.forkDetach));
     });
 
   /**

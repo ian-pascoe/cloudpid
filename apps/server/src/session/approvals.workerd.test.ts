@@ -3,7 +3,7 @@
 // records it as approved, a Decline gives the agent the owner's reason, a waiting request survives evictions (more of
 // them than pi-durable's restart limit: #647), and Stop withdraws it.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalJsonInEffect:off preferEffectArray:off
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
@@ -452,7 +452,7 @@ describe("Approval over the Session socket", () => {
     await runDurableObjectAlarm(stub);
     await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
 
-    expect((await toolResults(stub)).at(-1)).toContain("Tool hang was aborted");
+    expect((await toolResults(stub)).at(-1)).toContain("Tool hang was interrupted");
     // The Run goes on as any does: its heartbeat is armed, and the Registry has it running.
     expect(
       await runInDurableObject(stub, (_instance: TestSession, state) => state.storage.getAlarm()),
@@ -468,7 +468,7 @@ describe("Approval over the Session socket", () => {
     await idle(stub);
   });
 
-  it("ends a call an earlier instance left parked, which no open reports again", async () => {
+  it("ends a call an earlier instance left at the restart limit, and withdraws its request", async () => {
     const stub = env.SESSIONS.getByName(`hang-${(counter += 1)}`);
 
     await script(stub, "call:hang:{}", "Gave up.");
@@ -479,8 +479,8 @@ describe("Approval over the Session socket", () => {
     only(await before.next(isPending));
     before.close();
 
-    // As an instance that parked the call and stopped before it ended it, or a build before this one, left it: pending at
-    // the restart limit. The next open counts no restart of it, so pi-durable reports nothing.
+    // As an instance that was cut off for the last time left it, or a build that parked it: pending at the restart limit.
+    // The next open counts no restart of it, and pi-durable ends it when it is next reserved.
     await runInDurableObject(stub, (_instance: TestSession, state) => {
       state.storage.sql.exec(
         "UPDATE pi_tasks SET status = 'pending', record = json_set(record, '$.state.status', 'pending', '$.restarts', ?) WHERE record ->> '$.kind' = 'pi.tool'",
@@ -491,14 +491,14 @@ describe("Approval over the Session socket", () => {
     await runDurableObjectAlarm(stub);
     await idle(stub);
 
-    expect((await toolResults(stub)).at(-1)).toContain("Tool hang was aborted");
+    expect((await toolResults(stub)).at(-1)).toContain("Tool hang was interrupted");
 
     const after = await connect(stub);
 
     expect(await after.next(isRequests)).toEqual({ type: "approval_requests", requests: [] });
   });
 
-  it("withdraws the requests of the calls a parked call made, as it ends it", async () => {
+  it("withdraws the requests of the calls a call the restart limit ends made", async () => {
     const { stub } = await registered("settings-nest");
     const [, tool, raise] = /^call:([^:]+):(.*)$/u.exec(RAISE) ?? [];
 
@@ -510,7 +510,7 @@ describe("Approval over the Session socket", () => {
     only(await before.next(isPending));
     before.close();
 
-    // The script's call parked, as an earlier instance left it, while the call it made waits for the owner.
+    // The script's call is at the restart limit, as an earlier instance left it, while the call it made waits for the owner.
     await runInDurableObject(stub, (_instance: TestSession, state) => {
       state.storage.sql.exec(
         "UPDATE pi_tasks SET status = 'pending', record = json_set(record, '$.state.status', 'pending', '$.restarts', ?) WHERE record ->> '$.kind' = 'pi.tool' AND record ->> '$.input.kind' = 'model'",
@@ -521,7 +521,7 @@ describe("Approval over the Session socket", () => {
     await runDurableObjectAlarm(stub);
     await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
 
-    expect((await toolResults(stub)).at(-1)).toContain("Tool nest was aborted");
+    expect((await toolResults(stub)).at(-1)).toContain("Tool nest was interrupted");
 
     // The nested call's request went with the script's call, though its abort never ran it again.
     const after = await connect(stub);

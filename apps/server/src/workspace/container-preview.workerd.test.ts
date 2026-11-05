@@ -2,7 +2,7 @@
 // `http://<port>.cloudpid.internal/`, handed to `containerPreview(request, port)` as the Workspaces Worker's
 // `WorkspaceContainerPreviews` entrypoint hands it, and answered from a fake dev server on the fake Container
 // (`TestWorkspace.fakeDevServer`).
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off newPromise:off globalTimers:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off newPromise:off globalTimers:off
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import type { WorkspaceContainerPreviews } from "./worker.ts";

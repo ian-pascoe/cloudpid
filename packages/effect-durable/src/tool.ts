@@ -2,7 +2,6 @@
 // typed failures as error results.
 import type { JsonValue } from "@earendil-works/chord";
 import type * as Chord from "@earendil-works/chord/context";
-import type { TSchema } from "@earendil-works/pi-ai";
 import type {
   ToolExecutionApi,
   ToolExecutionResult,
@@ -32,7 +31,7 @@ export type EffectToolDefinition<
   TDetails extends JsonValue,
   E extends ToolFailure,
   R,
-> = Omit<ToolRegistration<TSchema, TDetails>, "parameters" | "execute" | "prepareArguments"> & {
+> = Omit<ToolRegistration<object, TDetails>, "parameters" | "execute" | "prepareArguments"> & {
   readonly parameters: Schema.Struct<Fields>;
   readonly execute: (
     args: Schema.Struct<Fields>["Type"],
@@ -43,7 +42,7 @@ export type EffectToolDefinition<
 /**
  * The call `api` runs has reached a durable wait: what it waits for, such as the owner's answer, is in storage, and a
  * rerun after a restart waits for it again. pi-durable then starts the restart count over for the call and its owners
- * (a `codemode` call waiting for it as a nested call), up to the first that is parked or being aborted
+ * (a `codemode` call waiting for it as a nested call), up to the first that is being aborted
  * (`ToolExecutionApi.progressed`, a cloudpid patch: `docs/development/dependencies.md`), so the restarts that cut them
  * off while it waits (a Session that hibernates is started again by each heartbeat) never reach the restart limit
  * (`docs/architecture/overview.md` → Session host). Run it once the wait is stored and the attempt is about to await:
@@ -85,7 +84,7 @@ const STRICT = { onExcessProperty: "error" } as const;
 const jsonSchema = <Fields extends Schema.Struct.Fields>(
   name: string,
   parameters: Schema.Struct<Fields>,
-): Effect.Effect<TSchema> => {
+): Effect.Effect<object> => {
   // Effect describes an empty Struct as any non-null value.
   if (Record.isEmptyRecord(parameters.fields)) {
     return Effect.succeed({ type: "object", properties: {}, additionalProperties: false });
@@ -133,7 +132,7 @@ export const defineEffectTool = <
 >(
   tool: EffectToolDefinition<Fields, TDetails, E, R>,
 ): Effect.Effect<
-  ToolRegistration<TSchema, TDetails>,
+  ToolRegistration<object, TDetails>,
   never,
   R | Schema.Struct<Fields>["DecodingServices"]
 > =>
@@ -156,5 +155,5 @@ export const defineEffectTool = <
           Effect.flatMap(decode(args), (decoded) => execute(decoded, api)),
           context,
         ).then(toResult(context)),
-    } satisfies ToolRegistration<TSchema, TDetails>;
+    } satisfies ToolRegistration<object, TDetails>;
   });

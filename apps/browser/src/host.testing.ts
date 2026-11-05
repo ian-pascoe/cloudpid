@@ -3,7 +3,7 @@
 // (`./container-preview.test.ts`). The model's code runs in a Worker Loader isolate and drives the fake over CDP, which records
 // what it is sent and in which page.
 // workerd's WebSocketPair, Durable Object state and RPC are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off preferSchemaOverJson:off missingPipeableSignature:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off globalJsonInEffect:off missingPipeableSignature:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type {
@@ -172,7 +172,7 @@ export type FakeBrowserRun = ReturnType<typeof fakeBrowserRun>;
 
 /** Code that reads which page its active tab is. */
 export const WHERE =
-  'async () => (await cdp.send({ method: "Runtime.evaluate", params: { expression: "1", returnByValue: true }, sessionId: "active" })).result.value';
+  'async () => (await browser.cdp({ method: "Runtime.evaluate", params: { expression: "1", returnByValue: true }, sessionId: "active" })).result.value';
 
 export const textOf = (run: BrowserRun) =>
   run.output.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");

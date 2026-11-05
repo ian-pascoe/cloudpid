@@ -82,14 +82,12 @@ describe("the thread messages of a view", () => {
     ]);
   });
 
-  it("shows the earlier Context Windows first, a turn split across them made whole", () => {
+  it("shows a turn split across a Context Window's start made whole", () => {
     const messages = toThreadMessages(
       view({
-        earlier: [
+        messages: [
           user("1", "roll"),
           assistant("2", [{ type: "tool-call", id: "c1", name: "roll_dice", arguments: {} }]),
-        ],
-        messages: [
           result("c1", "4"),
           { id: "4", role: "notice", title: "Handoff", parts: [], timestamp: 4 },
           user("5", "again"),

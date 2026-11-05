@@ -1,7 +1,8 @@
 // The Session socket (`docs/architecture/client-and-protocol.md`, ADR-0009): clients' hibernatable WebSockets to the Session
 // DO, carrying `@cloudpid/protocol`'s Session messages. As in the socket glue of Cloudflare's `agents` pi example,
 // watches live in memory and each socket's attachment names the conversations it watches, so an instance woken from
-// hibernation restarts them, each with a fresh snapshot, on sockets that never closed.
+// hibernation restarts them, each with a new view of the newest entries, on sockets that never closed; the client
+// merges it into the transcript it holds.
 import {
   type Annotation,
   type ApprovalRequest,
@@ -15,7 +16,7 @@ import {
   decodeClientMessage,
   type FileMatches,
   type McpResourceMenu,
-  type HistoryPage,
+  type EntriesPage,
   type Navigated,
   type SessionTree,
   type ViewedFile,
@@ -66,7 +67,7 @@ import {
   type OwnerTabDriver,
   OwnerTabDrivers,
 } from "@cloudpid/extensions/browser";
-import type { AgentChange } from "@earendil-works/pi-durable";
+import type { AgentChange, EntryId } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -546,22 +547,23 @@ export const sessionSocketsLayer = (
         });
 
       /**
-       * Stream `conversationId`'s events to `socket`, replacing a watch it already has, and resolve once its snapshot
-       * is sent, or once a newer watch or the socket's close replaces it. The socket's attachment records the watch
-       * before it starts, and a watch that fails drops it, so the attachment never names a watch no fiber runs. One
-       * that fails after its snapshot tells the client, by `conversationId`.
+       * Stream `conversationId`'s conversation view to `socket` (a `view`, then `ops`), its first window starting at
+       * `from` when given, replacing a watch it already has, and resolve once its view is sent, or once a newer watch or
+       * the socket's close replaces it. The socket's attachment records the watch before it starts, and a watch that
+       * fails drops it, so the attachment never names a watch no fiber runs. One that fails after its view tells the
+       * client, by `conversationId`.
        */
-      const watch = (socket: WebSocket, conversationId: ConversationId) =>
+      const watch = (socket: WebSocket, conversationId: ConversationId, from?: EntryId) =>
         Effect.gen(function* () {
           const fibers = yield* watchesOf(socket);
           const started = yield* Deferred.make<void, SessionError>();
           let listsStarted = false;
 
           yield* setWatched(socket, conversationId, true);
-          yield* host.events(conversationId).pipe(
-            Stream.runForEach((events) =>
-              send(socket, { type: "events", conversationId, events }).pipe(
-                // After the first batch, the snapshot, so the client has the conversation before its list.
+          yield* host.conversationView(conversationId, from === undefined ? {} : { from }).pipe(
+            Stream.runForEach((frame) =>
+              send(socket, { ...frame, conversationId }).pipe(
+                // After the first frame, the view, so the client has the conversation before its list.
                 Effect.andThen(
                   Effect.suspend(() => {
                     if (listsStarted) return Effect.void;
@@ -783,7 +785,7 @@ export const sessionSocketsLayer = (
         | RunDiff
         | FileMatches
         | McpResourceMenu
-        | HistoryPage
+        | EntriesPage
         | SessionTree
         | Navigated
         | LiveViewLinks
@@ -986,10 +988,12 @@ export const sessionSocketsLayer = (
             return host.command(command);
           }
 
-          case "history": {
-            const { type: _type, id: _id, ...request } = message;
+          case "entries": {
+            const { query, limit, conversationId } = message;
 
-            return host.history(request);
+            return host.entryPage(
+              conversationId === undefined ? { query, limit } : { query, limit, conversationId },
+            );
           }
 
           case "configure":
@@ -997,7 +1001,7 @@ export const sessionSocketsLayer = (
               .configure(agentChange(message))
               .pipe(Effect.andThen(announcePicks), Effect.as(null));
           case "watch":
-            return watch(socket, message.conversationId).pipe(Effect.as(null));
+            return watch(socket, message.conversationId, message.from).pipe(Effect.as(null));
           case "unwatch":
             return unwatch(socket, message.conversationId).pipe(
               Effect.andThen(setWatched(socket, message.conversationId, false)),
@@ -1497,7 +1501,7 @@ export const sessionSocketsLayer = (
         return client;
       });
 
-      // Sockets that outlived the last instance keep their watches, each from a fresh snapshot.
+      // Sockets that outlived the last instance keep their watches, each from a new view of the newest entries.
       if (state.getWebSockets().length > 0) yield* followMcpTasks;
 
       for (const socket of state.getWebSockets()) {

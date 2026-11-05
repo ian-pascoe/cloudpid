@@ -4,7 +4,7 @@
 // with the answer, which was sealed while it waited and never kept in the clear. Stop, a replaced Session's storage,
 // and a round an earlier instance left behind. A scripted model on a Harness, and an in-memory host.
 // pi-durable's Harness is Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off newPromise:off globalTimers:off globalDate:off anyUnknownInErrorContext:off globalJsonInEffect:off
 import {
   type JsonObject,
   McpHostCallFailed,

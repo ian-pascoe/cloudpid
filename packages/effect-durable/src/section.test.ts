@@ -1,6 +1,5 @@
 // pi-durable's Harness is Promise-based, so these tests are too.
 // @effect-diagnostics asyncFunction:off
-import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -8,6 +7,7 @@ import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { answer, callTool, openFauxHarness } from "./harness.fixture.ts";
 import { effectSection, frozenSection } from "./section.ts";
+import { obj } from "@earendil-works/pi-schema";
 
 /** The name the section greets: a service it reads. */
 class Greeted extends Context.Service<Greeted, string>()(
@@ -43,7 +43,7 @@ describe("frozenSection", () => {
       defineTool({
         name: "noop",
         description: "Does nothing",
-        parameters: Type.Object({}),
+        parameters: obj({}),
         execute: async () => ({ output: [{ type: "text", text: "" }] }),
       }),
     ],

@@ -5,7 +5,7 @@
  * scrubbed of the call's access tokens and of the secrets of its target (`secretsOf`; a server may echo what it
  * was sent, and all are in the call's `tokens`), and their data is cut to 2 KiB, after the scrub so no token is left cut in half. Nothing here reaches a model.
  */
-// @effect-diagnostics preferSchemaOverJson:off -- a server's log data, already decoded by the SDK, serialized once.
+// @effect-diagnostics globalJsonInEffect:off -- a server's log data, already decoded by the SDK, serialized once.
 import { type McpLog } from "@cloudpid/mcp";
 import {
   MCP_LOG_DATA_MAX,

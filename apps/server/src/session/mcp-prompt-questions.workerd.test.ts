@@ -6,7 +6,7 @@
 // shortened to 300 ms for a Session named `mcp-short-wait-*` (`host.fixture.ts`). (The paused clock is in
 // `packages/extensions/src/mcp-prompt-asking.test.ts` and `packages/mcp/src/prompt-questions.test.ts`.)
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferSchemaOverJson:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off globalJsonInEffect:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {

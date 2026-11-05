@@ -28,7 +28,6 @@ const follow = (extra: Partial<FollowState>): FollowState => ({
   idle: true,
   following: false,
   unsettled: false,
-  stalled: false,
   newestEntry: 3,
   agents: {},
   ...extra,

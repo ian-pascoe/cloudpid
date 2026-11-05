@@ -3,7 +3,7 @@
 // found by, tokens sealed under the `mcp-oauth` purpose and bound to their row, `mcpAccessToken`, `reportMcpAuth`, the bounds
 // with their eviction and refusals, and statuses that carry no token.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off preferSchemaOverJson:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalJsonInEffect:off
 import { type McpSignInKey, sha256Hex } from "@cloudpid/config";
 import {
   type KeptVault,

@@ -729,8 +729,11 @@ export const questionBasics = (options: McpQuestionBasicsOptions) => {
       state.waiting += count;
       state.notified = true;
 
+      // Started at once, before anything that follows the question (`secrets/store.ts` says why).
       return notifies && options.notify !== undefined
-        ? Effect.forkDetach(options.notify(whoOf(server, kind))).pipe(Effect.asVoid)
+        ? Effect.forkDetach(options.notify(whoOf(server, kind)), { startImmediately: true }).pipe(
+            Effect.asVoid,
+          )
         : Effect.void;
     });
 

@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferSchemaOverJson:off strictEffectProvide:off -- a fake browser over native arrays, speaking CDP's plain JSON, given to each test's Live View.
+// @effect-diagnostics preferEffectArray:off globalJsonInEffect:off strictEffectProvide:off -- a fake browser over native arrays, speaking CDP's plain JSON, given to each test's Live View.
 
 import type { LiveViewLinks } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
