@@ -1,68 +1,120 @@
-// @effect-diagnostics preferEffectArray:off processEnv:off -- native array methods over plain values (the bundle carries no Effect runtime); reads the owner's environment.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off processEnv:off missingPipeableSignature:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain functions over values, called directly; reads the build's commit.
 /**
- * Where the endpoint is and how `/cloudpid` gets in (docs/architecture/mcp-endpoint.md → The `/cloudpid` command →
- * Configuration): `CLOUDPID_URL` and the Local agent's service token, from the environment pi runs in. Never `mcp.json`.
+ * Where the endpoint is (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Configuration): the
+ * `cloudpid.baseUrl` pi setting, read with `defineLayeredSettings` (`@ian-pascoe/pi-utils`): `~/.pi/agent/settings.json`,
+ * then `.pi/settings.json` of a trusted project. No default and no environment variable; an unset or invalid block is a
+ * {@link Refusal}. Read on every run, so a change needs no `/reload`. How the command gets in is `oauth.ts`.
  */
+import { defineLayeredSettings } from "@ian-pascoe/pi-utils/layered-settings";
+import type { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { Refusal } from "./errors.ts";
 
-/** The environment a command reads. */
-export type Env = typeof process.env;
-
+/** The endpoint `/cloudpid` talks to. */
 export interface Config {
   /** The MCP endpoint, `https://<host>/mcp`. */
   readonly url: URL;
-  /** `CF-Access-Client-Id`. */
-  readonly clientId: string;
-  /** `CF-Access-Client-Secret`. */
-  readonly clientSecret: string;
+}
+
+/** The key an endpoint's sign-in is stored under: its URL as a string. */
+export const endpointKey = (config: Config): string => config.url.href;
+
+const schema = Type.Object(
+  { baseUrl: Type.Optional(Type.String({ minLength: 1 })) },
+  { additionalProperties: false },
+);
+
+interface Defaults {
+  baseUrl?: string;
+}
+
+const defaults: Defaults = {};
+
+const layered = defineLayeredSettings({
+  namespace: "cloudpid",
+  label: "cloudpid",
+  schema,
+  defaults,
+});
+
+/** What of pi `/cloudpid` reads its settings from, and where the two files are (for the sentences that name one). */
+export interface SettingsSource {
+  readonly settingsManager: SettingsManager;
+  /** Only because `readSettings`' signature asks for one: cloudpid has no session layer, so its branch is never read. */
+  readonly sessionManager: Pick<SessionManager, "getBranch">;
+  readonly files: { readonly global: string; readonly project: string };
 }
 
 export const SETUP_STEPS = [
-  "Set these in the environment pi runs in (fill the token from Keychain or 1Password, not a dotfile):",
-  "  CLOUDPID_URL=https://<your cloudpid host>/mcp",
-  "  CLOUDPID_ACCESS_CLIENT_ID=<the Local agent's client ID>",
-  "  CLOUDPID_ACCESS_CLIENT_SECRET=<its secret>",
-  "From a cloudpid checkout, `bun run --cwd infra local-agent-token --stage <stage>` prints the last two. The extension's README has the rest.",
+  "Set `cloudpid.baseUrl` in pi's settings (`~/.pi/agent/settings.json`, or `.pi/settings.json` in a trusted project):",
+  '  { "cloudpid": { "baseUrl": "https://<your cloudpid host>" } }',
+  "Then run `/cloudpid login` to sign in. The extension's README has the rest.",
 ].join("\n");
 
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-/** The endpoint's URL: https (http only on loopback, for `alchemy dev`), and `/mcp` when the URL names a host alone. */
-const endpointUrl = (raw: string): URL => {
+/** `/mcp`, added to the path once: a path that already ends in it is taken as is. */
+const mcpPath = (path: string): string => {
+  const trimmed = path.replace(/\/+$/, "");
+
+  return trimmed.endsWith("/mcp") ? trimmed : `${trimmed}/mcp`;
+};
+
+/** The endpoint's URL: https (http only on loopback, for `alchemy dev`), with `/mcp` once; `where` names the setting for a refusal. */
+const endpointUrl = (raw: string, where: string): URL => {
   let url: URL;
 
   try {
     url = new URL(raw);
   } catch {
-    throw new Refusal(`CLOUDPID_URL is not a URL: ${raw}\n${SETUP_STEPS}`);
+    throw new Refusal(`${where} is not a URL: ${raw}\n${SETUP_STEPS}`);
   }
 
   if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) {
-    throw new Refusal(`CLOUDPID_URL must be an https URL (${raw}).\n${SETUP_STEPS}`);
+    throw new Refusal(
+      `${where} must be an https URL (${raw}); http is for localhost only.\n${SETUP_STEPS}`,
+    );
   }
 
-  if (url.pathname === "/" || url.pathname === "") url.pathname = "/mcp";
+  url.pathname = mcpPath(url.pathname);
+  url.search = "";
+  url.hash = "";
 
   return url;
 };
 
-/** The settings, or a {@link Refusal} that says which are missing and how to set them. */
-export const readConfig = (env: Env): Config => {
-  const url = env["CLOUDPID_URL"]?.trim() ?? "";
-  const clientId = env["CLOUDPID_ACCESS_CLIENT_ID"]?.trim() ?? "";
-  const clientSecret = env["CLOUDPID_ACCESS_CLIENT_SECRET"]?.trim() ?? "";
+/** The endpoint from pi's settings, or a {@link Refusal} that says what is missing or wrong, and where. */
+export const readConfig = (source: SettingsSource): Config => {
+  const { settingsManager, files } = source;
 
-  const missing = [
-    ["CLOUDPID_URL", url],
-    ["CLOUDPID_ACCESS_CLIENT_ID", clientId],
-    ["CLOUDPID_ACCESS_CLIENT_SECRET", clientSecret],
-  ].flatMap(([name = "", value = ""]) => (value === "" ? [name] : []));
-
-  if (missing.length > 0) {
-    throw new Refusal(`/cloudpid is not set up: ${missing.join(", ")} not set.\n${SETUP_STEPS}`);
+  for (const problem of settingsManager.drainErrors()) {
+    throw new Refusal(
+      `${problem.path ?? files[problem.scope]} cannot be read, so \`cloudpid.baseUrl\` is not known: ${problem.error.message}`,
+    );
   }
 
-  return { url: endpointUrl(url), clientId, clientSecret };
+  const layers = layered.readLayers(settingsManager);
+
+  for (const scope of ["global", "project"] as const) {
+    const layer = layers[scope];
+
+    if (layer instanceof Error) {
+      throw new Refusal(
+        `The \`cloudpid\` settings in ${files[scope]} are invalid (${layer.message}). Only \`baseUrl\` (a URL) is known.\n${SETUP_STEPS}`,
+      );
+    }
+  }
+
+  const { settings, sources } = layered.readSettings(source, layers);
+
+  if (settings.baseUrl === undefined) {
+    throw new Refusal(`/cloudpid is not set up: \`cloudpid.baseUrl\` is not set.\n${SETUP_STEPS}`);
+  }
+
+  const scope = sources["baseUrl"];
+  const file = scope === "project" ? files.project : files.global;
+
+  return { url: endpointUrl(settings.baseUrl, `\`cloudpid.baseUrl\` in ${file}`) };
 };
 
 /**

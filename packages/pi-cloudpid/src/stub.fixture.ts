@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off processEnv:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as `fetch` gives them; runs on node, on the owner's machine; reads the owner's environment.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off processEnv:off newPromise:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain Promises, as `fetch` gives them; runs on node, on the owner's machine; reads the owner's environment.
 /**
  * The test fixtures of `/cloudpid`: a stub endpoint (cloudpid's own handler, `serveMcp`, over a fake `api` that keeps
  * an import in memory), a checkout with a bare remote to import from, and a scripted pi UI.
@@ -14,6 +14,8 @@ import { serveMcp, toolGate, unobserved, type McpServerApi } from "@cloudpid/mcp
 import { apiFailure, apiOk, MAX_MCP_SLICE_BYTES, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
 import { MCP_TOOL_OPERATIONS } from "@cloudpid/protocol/mcp-tools";
 import type { Config } from "./config.ts";
+import { type AuthStore, fileAuthStore } from "./auth-store.ts";
+import type { OAuthStub } from "./oauth.fixture.ts";
 import { isJson, type Json, type JsonObject, objectField, toObject } from "./json.ts";
 import { connectEndpoint, type Endpoint } from "./endpoint.ts";
 import type { Ui } from "./flow.ts";
@@ -41,6 +43,13 @@ export interface StubImport {
 }
 
 export interface StubOptions {
+  /**
+   * Puts the endpoint behind an OAuth authorization server (`oauth.fixture.ts`), as Access is: a request needs a bearer
+   * token it issued. Left out, the endpoint wants no sign-in (`alchemy dev`).
+   */
+  readonly oauth?: OAuthStub;
+  /** Where the connection keeps its sign-in; a fresh temporary directory's by default. */
+  readonly store?: AuthStore;
   /** `max_slice_bytes` begin answers; small, to make the file several slices. */
   readonly maxSliceBytes?: number;
   /** Branch names another Workspace holds (`branch_taken`). */
@@ -74,9 +83,37 @@ export interface Stub {
   readonly headers: Array<Headers>;
   /** The arguments of every `session_import_finish` call, as the endpoint received them. */
   readonly finishArguments: Array<JsonObject>;
+  /** What the connection reaches the endpoint with: the OAuth gate over the handler. */
   readonly fetch: (url: string | URL, init?: RequestInit) => Promise<Response>;
   readonly endpoint: (config: Config) => Promise<Endpoint>;
+  readonly store: AuthStore;
 }
+
+/** A sign-in store in a temporary directory (a real file, mode 0600), removed with `cleanup`. */
+export const tempAuthStore = () => {
+  const directory = mkdtempSync(join(tmpdir(), "pi-cloudpid-auth-"));
+
+  return {
+    directory,
+    store: fileAuthStore(directory),
+    cleanup: () => rmSync(directory, { recursive: true, force: true }),
+  };
+};
+
+/** A sign-in store that keeps its entries in memory. */
+const memoryAuthStore = (): AuthStore => {
+  const entries = new Map<string, Parameters<AuthStore["write"]>[1]>();
+
+  return {
+    read: (endpoint) => Promise.resolve(entries.get(endpoint)),
+    write: (endpoint, entry) => {
+      entries.set(endpoint, entry);
+
+      return Promise.resolve();
+    },
+    remove: (endpoint) => Promise.resolve(entries.delete(endpoint)),
+  };
+};
 
 const textOf = (chunks: ReadonlyArray<Buffer>): string => Buffer.concat(chunks).toString("utf8");
 
@@ -295,7 +332,7 @@ export const stubEndpoint = (options: StubOptions = {}): Stub => {
 
   const gate = toolGate();
 
-  const fetch = async (url: string | URL, init?: RequestInit): Promise<Response> => {
+  const handler = async (url: string | URL, init?: RequestInit): Promise<Response> => {
     const request = new Request(url, init);
 
     headers.push(request.headers);
@@ -328,12 +365,22 @@ export const stubEndpoint = (options: StubOptions = {}): Stub => {
     });
   };
 
+  const fetch = options.oauth === undefined ? handler : options.oauth.gate(handler);
+  const store = options.store ?? memoryAuthStore();
+
   return {
     imports,
     headers,
     finishArguments,
     fetch,
-    endpoint: (config) => connectEndpoint(config, { fetch, sleep: () => Promise.resolve() }),
+    store,
+    endpoint: (config) =>
+      connectEndpoint(config, {
+        fetch,
+        store,
+        sleep: () => Promise.resolve(),
+        now: options.oauth?.now,
+      }),
   };
 };
 
@@ -406,9 +453,12 @@ export const scriptedUi = (answers: {
   readonly select?: ReadonlyArray<
     string | ((options: ReadonlyArray<string>) => string) | undefined
   >;
+  /** Answers of `input`; once they are used up, an `input` waits until its signal aborts. */
+  readonly input?: ReadonlyArray<string | undefined>;
 }): ScriptedUi => {
   const confirms = [...(answers.confirm ?? [])];
   const editors = [...(answers.editor ?? [])];
+  const inputs = [...(answers.input ?? [])];
 
   const selects = (answers.select ?? []).map((answer) =>
     Predicate.isFunction(answer) ? answer : () => answer,
@@ -429,6 +479,15 @@ export const scriptedUi = (answers: {
       asked.push({ kind: "editor", title, message: prefill ?? "" });
 
       return Promise.resolve(editors.shift());
+    },
+    input: (title, placeholder, options) => {
+      asked.push({ kind: "input", title, message: placeholder ?? "" });
+
+      if (inputs.length > 0) return Promise.resolve(inputs.shift());
+
+      return new Promise((resolve) => {
+        options?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+      });
     },
     select: (title, options) => {
       asked.push({ kind: "select", title, message: options.join("\n") });

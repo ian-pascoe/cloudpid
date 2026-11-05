@@ -10,11 +10,20 @@ import { join } from "node:path";
 import * as Predicate from "effect/Predicate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Config } from "./config.ts";
-import { ENDPOINT_OLDER, TOKEN_REJECTED } from "./endpoint.ts";
-import { Refusal } from "./errors.ts";
-import { type Deps, type Host, type ImportRecord, importSession, type Outcome } from "./flow.ts";
+import { ENDPOINT_OLDER } from "./endpoint.ts";
+import { NOT_SIGNED_IN, Refusal, SIGN_IN_REJECTED, SignInRequired } from "./errors.ts";
+import {
+  type Deps,
+  type Host,
+  type ImportRecord,
+  importSession,
+  type Outcome,
+  type SignInResult,
+} from "./flow.ts";
 import { type Git, GitMissing, gitIn } from "./git.ts";
+import { LOGIN_URL, type OAuthStub, oauthServer } from "./oauth.fixture.ts";
 import { snapshotOf } from "./session.ts";
+import { signIn } from "./signin.ts";
 import { sha256Hex, fileBytes } from "./slices.ts";
 import {
   type Checkout,
@@ -29,13 +38,14 @@ import {
   type Stub,
   stubEndpoint,
   type StubOptions,
+  tempAuthStore,
 } from "./stub.fixture.ts";
 
-const ENV = {
-  CLOUDPID_URL: ENDPOINT_URL,
-  CLOUDPID_ACCESS_CLIENT_ID: "abc.access",
-  CLOUDPID_ACCESS_CLIENT_SECRET: "s3cret",
-};
+/** The configured endpoint (`readConfig` is `config.test.ts`'s). */
+const configured = (): Config => ({ url: new URL(ENDPOINT_URL) });
+
+/** An endpoint that wants no sign-in, so a flow that is asked for one has none to run. */
+const noSignIn = (): Promise<SignInResult> => Promise.resolve("not-required");
 
 let checkout: Checkout;
 let cleanups: Array<() => void> = [];
@@ -64,7 +74,12 @@ interface Setup {
   readonly instruction?: string;
   readonly idle?: boolean;
   readonly saved?: boolean;
-  readonly env?: { readonly [name: string]: string | undefined };
+  /** Whether a sign-in is stored (as `/cloudpid login` leaves it); true by default. */
+  readonly signedIn?: boolean;
+  /** Changes the authorization server after it is set up (`expiredAnswer`, `refreshFails`). */
+  readonly oauth?: (oauth: OAuthStub) => void;
+  /** `config()` throws (the setting is unset). */
+  readonly unconfigured?: boolean;
   readonly marker?: boolean;
   /** Wraps the real git of each directory. */
   readonly git?: (real: Git) => Git;
@@ -74,10 +89,16 @@ interface Setup {
 
 /** One `/cloudpid` run. */
 const run = async (setup: Setup = {}) => {
-  const stub: Stub = stubEndpoint(setup.stub);
+  const oauth = oauthServer();
+  const auth = tempAuthStore();
+  const stub: Stub = stubEndpoint({ ...setup.stub, oauth, store: auth.store });
   const session = makeSession();
 
-  cleanups.push(session.cleanup);
+  cleanups.push(session.cleanup, auth.cleanup);
+
+  if (setup.signedIn !== false) await auth.store.write(ENDPOINT_URL, oauth.signedIn());
+
+  setup.oauth?.(oauth);
 
   if (setup.marker === true) {
     session.manager.appendCustomEntry("cloudpid-import", {
@@ -109,9 +130,22 @@ const run = async (setup: Setup = {}) => {
   const wrap = setup.git;
 
   const deps: Deps = {
-    env: setup.env ?? ENV,
+    config: () => {
+      if (setup.unconfigured === true) throw new Refusal("/cloudpid is not set up");
+
+      return configured();
+    },
     git: wrap === undefined ? gitIn : (cwd) => wrap(gitIn(cwd)),
     endpoint: (config: Config) => stub.endpoint(config),
+    // The real sign-in, against the stub's authorization server, with its browser.
+    signIn: (config: Config) =>
+      signIn(config, ui, {
+        store: auth.store,
+        fetch: stub.fetch,
+        openBrowser: oauth.browse,
+        client: "pi-cloudpid/test",
+        now: oauth.now,
+      }),
     exists: (file) => (setup.saved ?? true) && existsSync(file),
   };
 
@@ -126,7 +160,7 @@ const run = async (setup: Setup = {}) => {
     failure = error instanceof Error ? error : new Error("not an error");
   }
 
-  return { stub, ui, entries, outcome, failure, text: snapshot.text };
+  return { stub, ui, entries, outcome, failure, text: snapshot.text, oauth, auth: auth.store };
 };
 
 const remoteRef = (ref: string) =>
@@ -212,10 +246,13 @@ describe("an import from a checkout on its own branch", () => {
     expect(held?.finished?.sha256).toBe(sha256Hex(fileBytes(result.text)));
     expect(held?.cancelled).toBe(false);
 
-    // The token went as Access reads it, and the client as the endpoint shows it.
+    // The OAuth access token went as a bearer and no Access service-token header, and the client as the endpoint shows it.
+    expect(result.stub.headers.length).toBeGreaterThan(0);
+
     for (const headers of result.stub.headers) {
-      expect(headers.get("cf-access-client-id")).toBe("abc.access");
-      expect(headers.get("cf-access-client-secret")).toBe("s3cret");
+      expect(headers.get("authorization")).toMatch(/^Bearer access-\d+$/);
+      expect(headers.get("cf-access-client-id")).toBeNull();
+      expect(headers.get("cf-access-client-secret")).toBeNull();
       expect(headers.get("x-cloudpid-client")).toMatch(/^pi-cloudpid\/\S+$/);
     }
 
@@ -682,11 +719,13 @@ describe("a failed import", () => {
     const ui = scriptedUi({ confirm: [true, false] });
 
     const deps: Deps = {
-      env: ENV,
+      config: configured,
       git: gitIn,
+      signIn: noSignIn,
       endpoint: async (config) =>
         (await import("./endpoint.ts")).connectEndpoint(config, {
           fetch: corrupting,
+          store: stub.store,
           sleep: () => Promise.resolve(),
         }),
       exists: existsSync,
@@ -711,6 +750,111 @@ describe("a failed import", () => {
   });
 });
 
+describe("signing in during an import", () => {
+  beforeEach(() => {
+    git(checkout.work, "switch", "--quiet", "-c", "feature");
+    commitFile("a.txt", "add a");
+  });
+
+  it("signs in when nothing is stored, then imports with the new bearer token", async () => {
+    const result = await run({ signedIn: false, ui: { confirm: [true, true] } });
+
+    expect(result.failure).toBeUndefined();
+    expect(result.outcome).toMatchObject({ kind: "imported", branch: "feature" });
+
+    // The first question was the sign-in; the import's own confirm came after it.
+    expect(
+      result.ui.asked.filter((asked) => asked.kind === "confirm").map((asked) => asked.title),
+    ).toEqual(["Sign in to cloudpid?", "Import this pi session into cloudpid?"]);
+
+    expect(result.oauth.registrations).toHaveLength(1);
+    expect(result.oauth.tokenRequests.map((request) => request.grantType)).toEqual([
+      "authorization_code",
+    ]);
+
+    const stored = await result.auth.read(ENDPOINT_URL);
+
+    expect(stored?.tokens?.access_token).toBe(
+      result.stub.headers.at(-1)?.get("authorization")?.slice("Bearer ".length),
+    );
+  });
+
+  it("refreshes an access token that has expired, and keeps the rotated refresh token", async () => {
+    const result = await run({
+      oauth: (oauth) => oauth.advance(6 * 60_000),
+      ui: { confirm: [true] },
+    });
+
+    expect(result.outcome).toMatchObject({ kind: "imported" });
+    expect(result.ui.asked.map((asked) => asked.title)).toEqual([
+      "Import this pi session into cloudpid?",
+    ]);
+    expect(result.oauth.tokenRequests.map((request) => request.grantType)).toEqual([
+      "refresh_token",
+    ]);
+
+    const stored = await result.auth.read(ENDPOINT_URL);
+
+    expect(stored?.tokens?.refresh_token).toBe("refresh-2");
+  });
+
+  it("asks to sign in again when the grant has ended, then imports", async () => {
+    const result = await run({
+      oauth: (oauth) => {
+        oauth.advance(6 * 60_000);
+        oauth.refreshFails = true;
+      },
+      ui: { confirm: [true, true] },
+    });
+
+    // The refresh failed, so the sign-in is asked for (the endpoint's fresh authorization takes the token that works).
+    expect(result.ui.asked[0]).toMatchObject({ title: "Sign in to cloudpid?" });
+    expect(result.ui.asked[0]?.message).toContain(SIGN_IN_REJECTED);
+    expect(result.oauth.registrations).toHaveLength(1);
+    expect(result.outcome).toMatchObject({ kind: "imported" });
+  });
+});
+
+describe("the grant ending in the middle of an import", () => {
+  beforeEach(() => {
+    git(checkout.work, "switch", "--quiet", "-c", "feature");
+    commitFile("a.txt", "add a");
+  });
+
+  it("leaves the import open, says so, and neither asks to sign in nor follows the login redirect", async () => {
+    const result = await run({
+      oauth: (oauth) => {
+        oauth.expiredAnswer = 302;
+        oauth.onMcpRequest = (body) => {
+          if (!body.includes("session_import_append")) return;
+
+          // The upload's first chunk finds the grant gone: the token expired, and the refresh is refused.
+          oauth.expireAccessTokens();
+          oauth.refreshFails = true;
+        };
+      },
+      ui: { confirm: [true] },
+    });
+
+    const [held] = result.stub.imports;
+
+    expect(result.failure).toBeInstanceOf(SignInRequired);
+    // Cancelling needs a sign-in too: it is told, not asked, and the import is left to expire.
+    expect(held?.cancelled).toBe(false);
+    expect(held?.finished).toBeUndefined();
+    expect(result.ui.asked.map((asked) => asked.title)).toEqual([
+      "Import this pi session into cloudpid?",
+    ]);
+    expect(result.ui.notices).toContainEqual({
+      type: "warning",
+      message: expect.stringMatching(
+        /the sign-in ended, so the import could not be cancelled: it stays open and expires in an hour \(.+\); run \/cloudpid login, then \/cloudpid import\./,
+      ),
+    });
+    expect(result.oauth.requests.filter((url) => url.startsWith(LOGIN_URL))).toEqual([]);
+  });
+});
+
 describe("refusals", () => {
   beforeEach(() => {
     git(checkout.work, "switch", "--quiet", "-c", "feature");
@@ -728,29 +872,48 @@ describe("refusals", () => {
     expect(unsaved.stub.imports).toEqual([]);
   });
 
-  it("refuses with setup steps when the service token or the URL is not set", async () => {
-    const result = await run({ env: { CLOUDPID_URL: ENDPOINT_URL } });
+  it("refuses, with the setup steps, when the endpoint is not configured", async () => {
+    const result = await run({ unconfigured: true });
 
     expect(result.failure).toBeInstanceOf(Refusal);
-    expect(result.failure?.message).toContain(
-      "CLOUDPID_ACCESS_CLIENT_ID, CLOUDPID_ACCESS_CLIENT_SECRET not set",
-    );
-    expect(result.failure?.message).toContain("local-agent-token");
+    expect(result.failure?.message).toBe("/cloudpid is not set up");
     expect(result.stub.headers).toEqual([]);
   });
 
   it.each([401, 403, 302])(
-    "says the service token was rejected or expired for a %i",
+    "asks to sign in again when the endpoint rejects the sign-in with a %i",
     async (httpStatus) => {
-      const result = await run({ stub: { httpStatus } });
+      const result = await run({ stub: { httpStatus }, ui: { confirm: [false] } });
 
-      expect(result.failure).toBeInstanceOf(Refusal);
-      expect(result.failure?.message).toBe(TOKEN_REJECTED);
-      expect(result.failure?.message).toMatch(
-        /^service token rejected or expired: run `local-agent-token`/,
-      );
+      // Declined: nothing is imported, and the question said why.
+      expect(result.failure).toBeUndefined();
+      expect(result.outcome).toEqual({ kind: "cancelled" });
+      expect(result.ui.asked[0]).toMatchObject({ kind: "confirm", title: "Sign in to cloudpid?" });
+      expect(result.ui.asked[0]?.message).toContain(SIGN_IN_REJECTED);
+      expect(result.stub.imports).toEqual([]);
     },
   );
+
+  it("asks to sign in when nothing is stored, and does not register a client before the owner agrees", async () => {
+    const result = await run({ signedIn: false, ui: { confirm: [false] } });
+
+    expect(result.outcome).toEqual({ kind: "cancelled" });
+    expect(result.ui.asked[0]?.message).toContain(NOT_SIGNED_IN);
+    expect(result.oauth.registrations).toEqual([]);
+    expect(await result.auth.read(ENDPOINT_URL)).toBeUndefined();
+  });
+
+  it("refuses, as a sign-in rejected, when the endpoint rejects the sign-in again after the owner signed in", async () => {
+    const result = await run({
+      stub: { httpStatus: 401 },
+      signedIn: false,
+      ui: { confirm: [true] },
+    });
+
+    expect(result.failure).toBeInstanceOf(Refusal);
+    expect(result.failure?.message).toBe(SIGN_IN_REJECTED);
+    expect(result.stub.imports).toEqual([]);
+  });
 
   it("refuses an endpoint that lacks the import tools", async () => {
     const result = await run({ stub: { operations: ["environments"] } });
@@ -802,7 +965,13 @@ describe("refusals", () => {
           appendEntry: () => undefined,
         },
         "",
-        { env: ENV, git: gitIn, endpoint: stub.endpoint, exists: existsSync },
+        {
+          config: configured,
+          git: gitIn,
+          endpoint: stub.endpoint,
+          signIn: noSignIn,
+          exists: existsSync,
+        },
       ),
     ).rejects.toThrow(/not in a git repository: .*add this Repo to an Environment first/);
   });
@@ -870,7 +1039,13 @@ describe("refusals", () => {
           appendEntry: () => undefined,
         },
         "",
-        { env: ENV, git: gitIn, endpoint: stub.endpoint, exists: existsSync },
+        {
+          config: configured,
+          git: gitIn,
+          endpoint: stub.endpoint,
+          signIn: noSignIn,
+          exists: existsSync,
+        },
       ),
     ).rejects.toThrow(/no commit yet/);
   });

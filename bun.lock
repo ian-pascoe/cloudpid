@@ -267,6 +267,7 @@
       "name": "@cloudpid/pi-cloudpid",
       "version": "0.0.0",
       "dependencies": {
+        "@ian-pascoe/pi-utils": "^0.13.0",
         "@modelcontextprotocol/client": "2.4.0",
         "effect": "^4.0.6",
       },
@@ -276,6 +277,7 @@
         "@cloudpid/protocol": "workspace:*",
         "@earendil-works/pi-coding-agent": "^1.4.0",
         "@types/node": "^26.6.5",
+        "typebox": "1.3.27",
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
@@ -666,6 +668,8 @@
     "@google/genai": ["@google/genai@2.21.0", "", { "dependencies": { "google-auth-library": "10.9.1", "p-retry": "4.6.2", "protobufjs": "7.6.6", "ws": "8.22.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.2" }, "optionalPeers": ["@modelcontextprotocol/sdk"], "hasInstallScript": true }, "sha512-+PDtco2/Z0ONdzCGekCoCT+O1VJS9xJQNN4XzQpXG/t3El/SWWMkCWlFRO1KmivOHPa4Q0VjUYu1HBKCZ/v33Q=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.5", "", { "peerDependencies": { "hono": "^4 || ^5.0.0-0" } }, "sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q=="],
+
+    "@ian-pascoe/pi-utils": ["@ian-pascoe/pi-utils@0.13.0", "", { "dependencies": { "proper-lockfile": "^4.1.2" }, "peerDependencies": { "@earendil-works/pi-ai": ">=1.1.0", "@earendil-works/pi-coding-agent": ">=1.1.0", "@earendil-works/pi-tui": ">=1.1.0", "typebox": ">=1" }, "optionalPeers": ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "typebox"] }, "sha512-JDbQ8jPCrziZ+bvmmDJBIdq24fh3U+2AkPeKxYCFi7tnX7yEMdHyZ4kgUZz69Nb+tixyMNsylQm73snI/JSwLg=="],
 
     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
 
