@@ -1,6 +1,8 @@
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- claims and the guard are cut down to what a case sets. */
-// @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off strictEffectProvide:off
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -8,6 +10,7 @@ import {
   ACCESS_ASSERTION_HEADER,
   AccessCaller,
   admit,
+  claimProfile,
   guardAccess,
   guardFromEnv,
   teamKeys,
@@ -750,6 +753,187 @@ describe("the guard on a request", () => {
 
     expect(response.status).toBe(403);
     expect(inner).not.toHaveBeenCalled();
+  });
+
+  describe("the claim profile it logs", () => {
+    const runLogged = async (
+      requests: ReadonlyArray<Request>,
+      overrides: Partial<AccessGuard> = {},
+    ) => {
+      const logs: Array<object> = [];
+
+      const logger = Logger.make<unknown, void>(({ fiber, logLevel }) => {
+        if (logLevel === "Info") logs.push({ ...fiber.getRef(References.CurrentLogAnnotations) });
+      });
+
+      const options = {
+        mcp: { audience: MCP_AUDIENCE },
+        loggedProfiles: new Set<string>(),
+        ...overrides,
+      };
+
+      const statuses: Array<number> = [];
+
+      for (const request of requests) {
+        const response = await Effect.runPromise(
+          guardAccess(guard(options))(Effect.suspend(inner)).pipe(
+            Effect.provideService(
+              HttpServerRequest.HttpServerRequest,
+              HttpServerRequest.fromWeb(request),
+            ),
+            Effect.provide(Logger.layer([logger])),
+          ),
+        );
+
+        statuses.push(response.status);
+      }
+
+      return { logs, statuses };
+    };
+
+    const requestFor = async (path: string, claims: Claims) =>
+      new Request(`https://x.workers.dev${path}`, {
+        headers: { [ACCESS_ASSERTION_HEADER]: await sign(team, claims) },
+      });
+
+    const SUB = ownerClaims().sub;
+    const CLIENT = "0123456789abcdef.access";
+
+    const PROFILE = {
+      route: "main",
+      audienceCount: 1,
+      audiences: ["main"],
+      oauth: false,
+      oauthClientId: false,
+      type: "app",
+      sub: true,
+      claims: ["aud", "email", "exp", "iat", "iss", "nbf", "sub", "type"],
+    };
+
+    const BOTH = [MAIN_AUDIENCE, MCP_AUDIENCE];
+    const WITH_OAUTH = { oauth: { client_id: CLIENT } };
+    const OAUTH_PROFILE = { oauth: true, oauthClientId: true };
+    const NAMES_WITH_OAUTH = [...PROFILE.claims, "oauth"].toSorted();
+
+    it("logs an owner on a main route with one audience, with and without oauth", async () => {
+      const { logs, statuses } = await runLogged([
+        await requestFor("/rpc", ownerClaims()),
+        await requestFor("/rpc", { ...ownerClaims(), ...WITH_OAUTH }),
+      ]);
+
+      expect(statuses).toEqual([200, 200]);
+      expect(logs).toEqual([PROFILE, { ...PROFILE, ...OAUTH_PROFILE, claims: NAMES_WITH_OAUTH }]);
+    });
+
+    it("logs an owner on a main route with both audiences, with and without oauth", async () => {
+      const { logs } = await runLogged([
+        await requestFor("/rpc", { ...ownerClaims(), aud: BOTH }),
+        await requestFor("/rpc", { ...ownerClaims(), aud: BOTH, ...WITH_OAUTH }),
+      ]);
+
+      const both = { ...PROFILE, audienceCount: 2, audiences: ["main", "mcp"] };
+
+      expect(logs).toEqual([both, { ...both, ...OAUTH_PROFILE, claims: NAMES_WITH_OAUTH }]);
+    });
+
+    it("logs an owner on /mcp with one audience, with and without oauth", async () => {
+      const aud = [MCP_AUDIENCE];
+
+      const { logs } = await runLogged([
+        await requestFor("/mcp", { ...ownerClaims(), aud }),
+        await requestFor("/mcp", { ...ownerClaims(), aud, ...WITH_OAUTH }),
+      ]);
+
+      const mcp = { ...PROFILE, route: "mcp", audiences: ["mcp"] };
+
+      expect(logs).toEqual([mcp, { ...mcp, ...OAUTH_PROFILE, claims: NAMES_WITH_OAUTH }]);
+    });
+
+    it("logs an owner on /mcp with both audiences, with and without oauth", async () => {
+      const { logs } = await runLogged([
+        await requestFor("/mcp", { ...ownerClaims(), aud: BOTH }),
+        await requestFor("/mcp", { ...ownerClaims(), aud: BOTH, ...WITH_OAUTH }),
+      ]);
+
+      const mcp = { ...PROFILE, route: "mcp", audienceCount: 2, audiences: ["main", "mcp"] };
+
+      expect(logs).toEqual([mcp, { ...mcp, ...OAUTH_PROFILE, claims: NAMES_WITH_OAUTH }]);
+    });
+
+    it("logs one line per distinct profile, however many requests share it", async () => {
+      const mcpOnly = { ...ownerClaims(), aud: [MCP_AUDIENCE] };
+
+      const { logs, statuses } = await runLogged([
+        await requestFor("/rpc", ownerClaims()),
+        await requestFor("/rpc", ownerClaims()),
+        await requestFor("/", ownerClaims()),
+        await requestFor("/mcp", mcpOnly),
+        await requestFor("/mcp", mcpOnly),
+        await requestFor("/rpc", { ...ownerClaims(), ...WITH_OAUTH }),
+      ]);
+
+      expect(statuses).toEqual([200, 200, 200, 200, 200, 200]);
+      expect(logs).toEqual([
+        PROFILE,
+        { ...PROFILE, route: "mcp", audiences: ["mcp"] },
+        { ...PROFILE, ...OAUTH_PROFILE, claims: NAMES_WITH_OAUTH },
+      ]);
+    });
+
+    it("logs nothing for a refused request", async () => {
+      const { logs, statuses } = await runLogged([
+        await requestFor("/rpc", { ...ownerClaims(), email: "someone@else.test" }),
+        await requestFor("/rpc", { ...ownerClaims(), common_name: "token" }),
+      ]);
+
+      expect(statuses).toEqual([403, 403]);
+      expect(logs).toEqual([]);
+    });
+
+    it("holds no email, sub, client id or token in anything it logs", async () => {
+      const assertion = await sign(team, {
+        ...ownerClaims(),
+        oauth: { client_id: CLIENT },
+      });
+
+      const { logs } = await runLogged([
+        new Request("https://x.workers.dev/rpc", {
+          headers: { [ACCESS_ASSERTION_HEADER]: assertion },
+        }),
+      ]);
+
+      const everything = JSON.stringify(logs);
+
+      expect(logs).toHaveLength(1);
+
+      for (const secret of [OWNER_EMAIL, SUB, CLIENT, assertion, assertion.split(".")[1] ?? ""]) {
+        expect(everything).not.toContain(secret);
+      }
+    });
+
+    it("names a claim profile from the payload alone", () => {
+      const audiences = { main: MAIN_AUDIENCE, mcp: MCP_AUDIENCE };
+
+      const payload = JSON.stringify({
+        aud: "other-aud",
+        type: "weird type!",
+        common_name: "secret-name",
+        oauth: {},
+      });
+
+      expect(claimProfile(payload, { route: "main", audiences })).toEqual({
+        route: "main",
+        audienceCount: 1,
+        audiences: ["other"],
+        oauth: true,
+        oauthClientId: false,
+        type: "unusual",
+        sub: false,
+        claims: ["aud", "common_name", "oauth", "type"],
+      });
+      expect(claimProfile("nope", { route: "mcp", audiences }).claims).toEqual([]);
+      expect(claimProfile(undefined, { route: "mcp", audiences }).type).toBe("none");
+    });
   });
 
   it("answers a refusal with a bare 403 that gives no reason", async () => {
