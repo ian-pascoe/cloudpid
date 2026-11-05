@@ -196,7 +196,11 @@ const sentry = (
  * fake `MCP_ENGINE.fetchPublic` that records the URL in `engineAsked` and reads the table too, and whose direct transport
  * is the table; every host resolves to a public address.
  */
-const routedFetch = (fetch: OAuthFetch, engineAsked: Array<string>): OAuthFetch => {
+const routedFetch = (
+  fetch: OAuthFetch,
+  engineAsked: Array<string>,
+  engineFails: (url: string) => boolean = () => false,
+): OAuthFetch => {
   const direct = Layer.succeed(WebTransport, {
     fetch: (request) =>
       Effect.promise(() => {
@@ -216,6 +220,8 @@ const routedFetch = (fetch: OAuthFetch, engineAsked: Array<string>): OAuthFetch 
       readonly headers?: Record<string, string>;
     }) => {
       engineAsked.push(request.url);
+
+      if (engineFails(request.url)) throw new Error("Network connection lost.");
 
       const response = await fetch(request.url, { headers: request.headers ?? {} });
       const headers: Record<string, string> = {};
@@ -273,6 +279,8 @@ const run = <A>(
      * to one of cloudpid's own hosts goes to a fake `MCP_ENGINE.fetchPublic`, every other to the table directly.
      */
     readonly routed?: boolean;
+    /** Under `routed`, the URLs whose `fetchPublic` call fails, as an `McpWorker` that cannot be reached. */
+    readonly engineFails?: (url: string) => boolean;
   } = {},
 ) =>
   runInDurableObject(
@@ -302,7 +310,10 @@ const run = <A>(
         store,
         signIns,
         vault: Effect.succeed(vault),
-        fetch: options.routed === true ? routedFetch(net.fetch, engineAsked) : net.fetch,
+        fetch:
+          options.routed === true
+            ? routedFetch(net.fetch, engineAsked, options.engineFails)
+            : net.fetch,
         sources: () => Effect.succeed({ secrets: options.secrets ?? {}, variables: {} }),
       };
 
@@ -740,6 +751,51 @@ describe("Self-use: a sign-in to the stage's own MCP endpoint", () => {
       },
       { routed: true },
     ));
+
+  /** A 401 of the endpoint whose `WWW-Authenticate` is `header`. */
+  const unauthorized = (header: string) => () =>
+    new Response(JSON.stringify({ error: "invalid_token" }), {
+      status: 401,
+      headers: { "content-type": "application/json", "www-authenticate": header },
+    });
+
+  it.each([
+    ["answers 200", { [`GET ${endpoint}`]: () => ({ ok: true }) }, undefined],
+    [
+      "answers a 401 that names no resource metadata",
+      { [`GET ${endpoint}`]: unauthorized('Bearer realm="OAuth", error="invalid_token"') },
+      undefined,
+    ],
+    [
+      "answers a 401 that names http resource metadata",
+      {
+        [`GET ${endpoint}`]: unauthorized(
+          `Bearer realm="OAuth", resource_metadata="http://${new URL(ORIGIN).host}/.well-known/cloudflare-access-protected-resource/mcp"`,
+        ),
+      },
+      undefined,
+    ],
+    ["cannot be asked (McpWorker is not reached)", {}, (url: string) => url === endpoint],
+  ])(
+    "runs the well-known discovery as before when the endpoint %s",
+    (_, over: Record<string, Handler>, engineFails) =>
+      run(
+        { ...access, ...over },
+        async ({ setGlobal, start, engineAsked }) => {
+          setGlobal({ cloudpid: { url: endpoint } });
+
+          const answer = await start({ server: "cloudpid" });
+
+          // The probe came first; then the root paths, which answer Access's login, and no resource metadata is found.
+          expect(engineAsked[0]).toBe(endpoint);
+          expect(engineAsked).toContain(`${ORIGIN}/.well-known/oauth-protected-resource/mcp`);
+          expect(engineAsked).not.toContain(resourceMetadata);
+          expect(answer.status).toBe("problem");
+          expect(messageOf(answer)).toContain("published no metadata");
+        },
+        engineFails === undefined ? { routed: true } : { routed: true, engineFails },
+      ),
+  );
 
   it("asks nothing first of a server that is not on one of cloudpid's own hosts", () =>
     run(sentry(), async ({ setGlobal, signIn, calls }) => {
