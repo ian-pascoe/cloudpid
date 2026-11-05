@@ -107,7 +107,7 @@ describe("signing in", () => {
       }),
     );
 
-    expect(signedIn).toBe(true);
+    expect(signedIn).toBe("signed-in");
 
     // Dynamic Client Registration: a public client, redirecting to an ephemeral loopback port.
     const [registration] = oauth.registrations;
@@ -241,7 +241,7 @@ describe("signing in", () => {
       }),
     );
 
-    expect(signedIn).toBe(true);
+    expect(signedIn).toBe("signed-in");
     expect(asked).toEqual(["Sign in to cloudpid"]);
     expect((await auth.store.read(KEY))?.tokens?.access_token).toBe("access-1");
   });
@@ -325,6 +325,36 @@ describe("signing in", () => {
     expect(await auth.store.read(KEY)).toBeUndefined();
   });
 
+  it("shows what the authorization server reported as text, never as markup", async () => {
+    let page: Promise<string> = Promise.resolve("");
+
+    await expect(
+      signIn(
+        config,
+        scriptedUi({}),
+        deps({
+          openBrowser: (url) => {
+            const redirect = paramsOf(url).get("redirect_uri") ?? "";
+            const state = paramsOf(url).get("state") ?? "";
+
+            const description = encodeURIComponent("<script>alert(1)</script>");
+
+            page = fetch(
+              `${redirect}?error=access_denied&error_description=${description}&state=${state}`,
+            ).then((response) => response.text());
+
+            return Promise.resolve();
+          },
+        }),
+      ),
+    ).rejects.toThrow(/access_denied/);
+
+    const body = await page;
+
+    expect(body).not.toContain("<script>");
+    expect(body).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
   it("is cancelled by dismissing the paste prompt", async () => {
     const ui = scriptedUi({ input: [undefined] });
 
@@ -363,7 +393,7 @@ describe("signing in", () => {
 
     const signedIn = await signIn(config, scriptedUi({}), deps({ fetch: open.fetch }));
 
-    expect(signedIn).toBe(false);
+    expect(signedIn).toBe("not-required");
     expect(oauth.registrations).toEqual([]);
     expect(await auth.store.read(KEY)).toBeUndefined();
   });

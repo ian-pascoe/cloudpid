@@ -8,6 +8,7 @@
  */
 import {
   Client,
+  createFetchWithInit,
   type FetchLike,
   type JsonSchemaValidator,
   SdkHttpError,
@@ -19,7 +20,7 @@ import type { SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";
 import type { AuthStore } from "./auth-store.ts";
 import { type Config, clientName, endpointKey } from "./config.ts";
 import { REQUIRED_TOOLS } from "./constants.ts";
-import { ApiFailure, Refusal, SignInRequired } from "./errors.ts";
+import { ApiFailure, NOT_SIGNED_IN, Refusal, SIGN_IN_REJECTED, SignInRequired } from "./errors.ts";
 import {
   integerField,
   isJson,
@@ -36,12 +37,11 @@ import {
   CloudpidOAuthProvider,
   probeSignIn,
   singleFlightRefresh,
-  withInit,
+  captureSdkWarnings,
+  isRedirect,
 } from "./oauth.ts";
 
-export const SIGN_IN_REJECTED = "sign-in rejected or expired: run `/cloudpid login`.";
-
-export const NOT_SIGNED_IN = "not signed in to cloudpid: run `/cloudpid login`.";
+export { NOT_SIGNED_IN, SIGN_IN_REJECTED };
 
 export const ENDPOINT_OLDER = "the endpoint is older than this extension";
 
@@ -116,6 +116,8 @@ export interface EndpointOptions {
   readonly client?: string;
   /** Waits `ms` before a retry. */
   readonly sleep?: (ms: number) => Promise<void>;
+  /** Where the SDK's own warnings about OAuth (a refresh that fell back, credentials dropped) go; they never reach the console. */
+  readonly onWarning?: ((message: string) => void) | undefined;
   /** The time, for when the access token expires. */
   readonly now?: (() => number) | undefined;
 }
@@ -135,7 +137,7 @@ const statusOf = (error: Error): number | undefined => {
 
 /** A caller Access did not let in: a 401 or 403, or the redirect to its login page (never followed). */
 const isRejected = (status: number | undefined): boolean =>
-  status === 401 || status === 403 || (status !== undefined && status >= 300 && status < 400);
+  status === 401 || status === 403 || (status !== undefined && isRedirect(status));
 
 const sleepFor = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -235,7 +237,7 @@ export const connectEndpoint = async (
     redirect: "manual",
   };
 
-  const fetchFn = withInit(raw, requestInit);
+  const fetchFn = createFetchWithInit(raw, requestInit);
 
   const provider = new CloudpidOAuthProvider({
     store: options.store,
@@ -244,6 +246,7 @@ export const connectEndpoint = async (
     // A new sign-in is the owner's to agree to (`SignInRequired`), never started here.
     onRedirect: () => undefined,
     refresh: singleFlightRefresh(config.url, fetchFn),
+    signInRequired: () => new SignInRequired(SIGN_IN_REJECTED),
     now: options.now,
   });
 
@@ -284,6 +287,9 @@ export const connectEndpoint = async (
 
   let finishTakesChangesCarried = false;
 
+  // The SDK's warnings stay off pi's screen for as long as the connection lives.
+  const releaseWarnings = captureSdkWarnings(options.onWarning ?? (() => undefined));
+
   try {
     await client.connect(transport);
 
@@ -313,6 +319,7 @@ export const connectEndpoint = async (
     }
   } catch (error) {
     await client.close().catch(() => undefined);
+    releaseWarnings();
 
     if (error instanceof Refusal) throw error;
 
@@ -434,7 +441,7 @@ export const connectEndpoint = async (
       await call("session_import_cancel", { import_id: importId });
     },
 
-    close: () => client.close(),
+    close: () => client.close().finally(releaseWarnings),
   };
 };
 

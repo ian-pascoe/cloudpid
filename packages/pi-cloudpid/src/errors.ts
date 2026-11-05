@@ -28,3 +28,7 @@ export class ApiFailure extends Error {
 export class SignInRequired extends Refusal {
   override readonly name: string = "SignInRequired";
 }
+
+export const SIGN_IN_REJECTED = "sign-in rejected or expired: run `/cloudpid login`.";
+
+export const NOT_SIGNED_IN = "not signed in to cloudpid: run `/cloudpid login`.";

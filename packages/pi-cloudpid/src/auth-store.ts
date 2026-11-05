@@ -6,7 +6,7 @@
  * own sign-in. Written atomically (a temp file in the same directory, then a rename), so a crash leaves the old file or
  * the new one. A seam: tests give a temporary directory's.
  */
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
   OAuthDiscoveryState,
@@ -120,6 +120,11 @@ export const fileAuthStore = (agentDir: string): AuthStore => {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") return new Map();
 
       throw error;
+    }
+
+    // Tokens are in it: a file that others can read (copied in, or made before this module) is tightened, not trusted.
+    if (process.platform !== "win32" && ((await stat(path)).mode & 0o077) !== 0) {
+      await chmod(path, 0o600);
     }
 
     return parseFile(path, text);

@@ -40,6 +40,7 @@ const layered = defineLayeredSettings({
 /** What of pi `/cloudpid` reads its settings from, and where the two files are (for the sentences that name one). */
 export interface SettingsSource {
   readonly settingsManager: SettingsManager;
+  /** Only because `readSettings`' signature asks for one: cloudpid has no session layer, so its branch is never read. */
   readonly sessionManager: Pick<SessionManager, "getBranch">;
   readonly files: { readonly global: string; readonly project: string };
 }

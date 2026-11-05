@@ -52,6 +52,12 @@ export interface OAuthStub {
   expiredAnswer: 401 | 302;
   /** The token endpoint answers `invalid_grant` to a refresh: the grant has ended. */
   refreshFails: boolean;
+  /** The OAuth error a failing refresh answers with: `invalid_grant` (the grant ended) or `invalid_client` (the client is gone). */
+  refreshError: "invalid_grant" | "invalid_client";
+  /** Called with the body of each request that reaches `/mcp`'s gate, before the gate looks at the token. */
+  onMcpRequest: ((body: string) => void) | undefined;
+  /** Every URL the gate was asked for, in order. */
+  readonly requests: Array<string>;
   /** Dynamic Client Registrations, as received. */
   readonly registrations: Array<{ readonly [field: string]: string | ReadonlyArray<string> }>;
   /** Authorization requests the "browser" made. */
@@ -82,6 +88,7 @@ export const oauthServer = (options: OAuthOptions = {}): OAuthStub => {
   const authorizations: OAuthStub["authorizations"] = [];
   const tokenRequests: Array<TokenRequest> = [];
   const bearers: Array<string | null> = [];
+  const requests: Array<string> = [];
 
   const stub: OAuthStub = {
     now: () => clock,
@@ -90,6 +97,9 @@ export const oauthServer = (options: OAuthOptions = {}): OAuthStub => {
     },
     expiredAnswer: 401,
     refreshFails: false,
+    refreshError: "invalid_grant",
+    onMcpRequest: undefined,
+    requests,
     registrations,
     authorizations,
     tokenRequests,
@@ -97,6 +107,8 @@ export const oauthServer = (options: OAuthOptions = {}): OAuthStub => {
     gate: (inner) => async (url, init) => {
       const request = new Request(url, init);
       const { host, pathname } = new URL(request.url);
+
+      requests.push(request.url);
 
       if (
         host === "cloudpid.test" &&
@@ -112,6 +124,8 @@ export const oauthServer = (options: OAuthOptions = {}): OAuthStub => {
       if (host === "auth.cloudpid.test") return authorizationServer(request);
 
       if (host !== "cloudpid.test") return inner(url, init);
+
+      if (stub.onMcpRequest !== undefined) stub.onMcpRequest(await request.clone().text());
 
       const header = request.headers.get("authorization");
 
@@ -271,7 +285,9 @@ export const oauthServer = (options: OAuthOptions = {}): OAuthStub => {
       }
 
       if (grantType === "refresh_token") {
-        if (stub.refreshFails || !refreshTokens.has(form.get("refresh_token") ?? "")) {
+        if (stub.refreshFails) return json(400, { error: stub.refreshError });
+
+        if (!refreshTokens.has(form.get("refresh_token") ?? "")) {
           return json(400, { error: "invalid_grant" });
         }
 

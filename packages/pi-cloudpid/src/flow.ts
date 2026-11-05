@@ -83,14 +83,17 @@ export interface Host {
   readonly appendEntry: (customType: string, data: ImportRecord) => void;
 }
 
+/** What a sign-in came to: the sign-in is stored, or the endpoint wants none (`alchemy dev` has no Access). */
+export type SignInResult = "signed-in" | "not-required";
+
 /** What the command reaches outside pi: the settings, git, the endpoint and signing in, the disk. */
 export interface Deps {
   /** The endpoint from pi's settings, or a {@link Refusal} that says how to set it. */
   readonly config: () => Config;
   readonly git: (cwd: string) => Git;
   readonly endpoint: (config: Config) => Promise<Endpoint>;
-  /** Signs in to the endpoint (`signin.ts`), after the owner agreed to; false when the endpoint wants no sign-in. */
-  readonly signIn: (config: Config) => Promise<boolean>;
+  /** Signs in to the endpoint (`signin.ts`), after the owner agreed to. */
+  readonly signIn: (config: Config) => Promise<SignInResult>;
   readonly exists: (file: string) => boolean;
 }
 
@@ -412,8 +415,11 @@ const abandon = async (
   try {
     await endpoint.cancel(begun.importId);
   } catch (error) {
+    // The grant ended mid-import: signing in again is the owner's to agree to, so it is told, not asked.
     problems.push(
-      `could not cancel the import (${error instanceof Error ? error.message : "unknown error"}); it expires in an hour (${begun.url})`,
+      error instanceof SignInRequired
+        ? `the sign-in ended, so the import could not be cancelled: it stays open and expires in an hour (${begun.url}); run /cloudpid login, then /cloudpid import`
+        : `could not cancel the import (${error instanceof Error ? error.message : "unknown error"}); it expires in an hour (${begun.url})`,
     );
   }
 
@@ -460,7 +466,7 @@ export const importSession = async (
 
   if (!host.hasUI) {
     throw new Refusal(
-      "/cloudpid import asks before it imports (and may ask you to sign in): run it in pi's interactive mode; `/cloudpid login` signs in there too.",
+      "/cloudpid import needs pi's interactive mode: it asks before it imports, and it may ask you to sign in. Run it in interactive pi (`/cloudpid login` needs that too).",
     );
   }
 

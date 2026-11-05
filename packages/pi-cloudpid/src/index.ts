@@ -62,7 +62,11 @@ const depsOf = (ctx: ExtensionCommandContext): RunDeps => {
     config: () => readConfig(settingsOf(ctx)),
     git: gitIn,
     store,
-    endpoint: (config) => connectEndpoint(config, { store }),
+    endpoint: (config) =>
+      connectEndpoint(config, {
+        store,
+        onWarning: (message) => ctx.ui.notify(`cloudpid: ${message}`, "warning"),
+      }),
     signIn: (config) =>
       signIn(config, ctx.ui, { store, openBrowser: openInBrowser, client: clientName() }),
     exists: existsSync,

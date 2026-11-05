@@ -11,10 +11,17 @@ import * as Predicate from "effect/Predicate";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Config } from "./config.ts";
 import { ENDPOINT_OLDER, NOT_SIGNED_IN, SIGN_IN_REJECTED } from "./endpoint.ts";
-import { Refusal } from "./errors.ts";
-import { type Deps, type Host, type ImportRecord, importSession, type Outcome } from "./flow.ts";
+import { Refusal, SignInRequired } from "./errors.ts";
+import {
+  type Deps,
+  type Host,
+  type ImportRecord,
+  importSession,
+  type Outcome,
+  type SignInResult,
+} from "./flow.ts";
 import { type Git, GitMissing, gitIn } from "./git.ts";
-import { type OAuthStub, oauthServer } from "./oauth.fixture.ts";
+import { LOGIN_URL, type OAuthStub, oauthServer } from "./oauth.fixture.ts";
 import { snapshotOf } from "./session.ts";
 import { signIn } from "./signin.ts";
 import { sha256Hex, fileBytes } from "./slices.ts";
@@ -38,7 +45,7 @@ import {
 const configured = (): Config => ({ url: new URL(ENDPOINT_URL) });
 
 /** An endpoint that wants no sign-in, so a flow that is asked for one has none to run. */
-const noSignIn = () => Promise.resolve(false);
+const noSignIn = (): Promise<SignInResult> => Promise.resolve("not-required");
 
 let checkout: Checkout;
 let cleanups: Array<() => void> = [];
@@ -805,6 +812,46 @@ describe("signing in during an import", () => {
     expect(result.ui.asked[0]?.message).toContain(SIGN_IN_REJECTED);
     expect(result.oauth.registrations).toHaveLength(1);
     expect(result.outcome).toMatchObject({ kind: "imported" });
+  });
+});
+
+describe("the grant ending in the middle of an import", () => {
+  beforeEach(() => {
+    git(checkout.work, "switch", "--quiet", "-c", "feature");
+    commitFile("a.txt", "add a");
+  });
+
+  it("leaves the import open, says so, and neither asks to sign in nor follows the login redirect", async () => {
+    const result = await run({
+      oauth: (oauth) => {
+        oauth.expiredAnswer = 302;
+        oauth.onMcpRequest = (body) => {
+          if (!body.includes("session_import_append")) return;
+
+          // The upload's first chunk finds the grant gone: the token expired, and the refresh is refused.
+          oauth.expireAccessTokens();
+          oauth.refreshFails = true;
+        };
+      },
+      ui: { confirm: [true] },
+    });
+
+    const [held] = result.stub.imports;
+
+    expect(result.failure).toBeInstanceOf(SignInRequired);
+    // Cancelling needs a sign-in too: it is told, not asked, and the import is left to expire.
+    expect(held?.cancelled).toBe(false);
+    expect(held?.finished).toBeUndefined();
+    expect(result.ui.asked.map((asked) => asked.title)).toEqual([
+      "Import this pi session into cloudpid?",
+    ]);
+    expect(result.ui.notices).toContainEqual({
+      type: "warning",
+      message: expect.stringMatching(
+        /the sign-in ended, so the import could not be cancelled: it stays open and expires in an hour \(.+\); run \/cloudpid login, then \/cloudpid import\./,
+      ),
+    });
+    expect(result.oauth.requests.filter((url) => url.startsWith(LOGIN_URL))).toEqual([]);
   });
 });
 

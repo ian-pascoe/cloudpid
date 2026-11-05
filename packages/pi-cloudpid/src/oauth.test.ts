@@ -1,11 +1,11 @@
-// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as `fetch` gives them; runs on node, on the owner's machine.
+// @effect-diagnostics preferEffectArray:off asyncFunction:off nodeBuiltinImport:off globalConsole:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as `fetch` gives them; runs on node, on the owner's machine; replaces `console.warn` to check what the SDK writes there.
 /**
  * `/cloudpid`'s OAuth client against a stub authorization server and protected resource (docs/architecture/mcp-endpoint.md
  * → Access and identity; The `/cloudpid` command → The connection): a 401 refreshes and retries, a rotated refresh token
  * is stored before the new access token is used, a refresh that fails asks for a sign-in, and a redirect on a bearer
  * request is read as an expired token, never followed.
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthEntry, AuthStore } from "./auth-store.ts";
 import { type Config, endpointKey } from "./config.ts";
 import { connectEndpoint, NOT_SIGNED_IN, SIGN_IN_REJECTED } from "./endpoint.ts";
@@ -52,6 +52,7 @@ const connect = async (
   options: {
     readonly signedIn?: boolean;
     /** The test stored its own entry. */ readonly seeded?: boolean;
+    readonly onWarning?: (message: string) => void;
   } = {},
 ) => {
   const stub = stubEndpoint({ oauth });
@@ -67,6 +68,7 @@ const connect = async (
     store: loggingStore(),
     now: oauth.now,
     sleep: () => Promise.resolve(),
+    onWarning: options.onWarning,
     fetch: (url, init) => {
       const bearer = new Headers(init?.headers).get("authorization");
       const host = new URL(String(url)).host;
@@ -334,5 +336,62 @@ describe("the provider", () => {
 
     expect(provider.expiresWithin(60_000, 1_000_000 + 239_000)).toBe(false);
     expect(provider.expiresWithin(60_000, 1_000_000 + 240_000)).toBe(true);
+  });
+});
+
+describe("a sign-in the endpoint's authorization server no longer knows", () => {
+  it.each(["invalid_client", "invalid_grant"] as const)(
+    "asks for a sign-in on %s, and registers no client before the owner agrees",
+    async (error) => {
+      await auth.store.write(KEY, oauth.signedIn());
+      oauth.expireAccessTokens();
+      oauth.refreshFails = true;
+      oauth.refreshError = error;
+
+      const before = await auth.store.read(KEY);
+      const failure = await attempt(() => connect({ seeded: true }));
+
+      expect(failure).toBeInstanceOf(SignInRequired);
+      expect(oauth.registrations).toEqual([]);
+      expect(oauth.authorizations).toEqual([]);
+
+      // What discovery found, and the client, stay (a new sign-in is the owner's to start); only dead tokens go.
+      const stored = await auth.store.read(KEY);
+
+      expect(stored?.discovery).toMatchObject(before?.discovery ?? {});
+      expect(stored?.client).toEqual(before?.client);
+
+      if (error === "invalid_client") expect(stored?.tokens).toEqual(before?.tokens);
+      else expect(stored?.tokens).toBeUndefined();
+    },
+  );
+});
+
+describe("the SDK's console warnings", () => {
+  it("are kept off the console while connected, handed to the caller, and the console is restored", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const messages: Array<string> = [];
+
+    try {
+      await auth.store.write(KEY, oauth.signedIn());
+      oauth.expireAccessTokens();
+      oauth.refreshFails = true;
+
+      const failure = await attempt(() =>
+        connect({ seeded: true, onWarning: (message) => messages.push(message) }),
+      );
+
+      expect(failure).toBeInstanceOf(SignInRequired);
+      expect(messages.some((message) => message.includes("invalid_grant"))).toBe(true);
+      expect(warn.mock.calls.filter(([text]) => String(text).includes("[mcp-sdk]"))).toEqual([]);
+      expect(console.warn).toBe(warn);
+
+      // Not the SDK's: it still reaches the console.
+      console.warn("something else");
+
+      expect(warn).toHaveBeenCalledWith("something else");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

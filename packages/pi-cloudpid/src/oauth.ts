@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off asyncFunction:off nodeBuiltinImport:off globalDate:off newPromise:off cryptoRandomUUID:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain functions over values, called directly; plain Promises, as the SDK's provider interface gives them; runs on node, on the owner's machine; the time the tokens were obtained; wraps a callback API.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off asyncFunction:off nodeBuiltinImport:off globalDate:off newPromise:off cryptoRandomUUID:off globalConsole:off -- native array methods over plain values (the bundle carries no Effect runtime); native object methods over plain values; plain functions over values, called directly; plain Promises, as the SDK's provider interface gives them; runs on node, on the owner's machine; the time the tokens were obtained; wraps a callback API; the MCP SDK reports a failed refresh through `console.warn`, which is filtered to the owner's notice.
 /**
  * `/cloudpid`'s OAuth client (docs/architecture/mcp-endpoint.md → Access and identity; The `/cloudpid` command → The
  * connection): an `OAuthClientProvider` of the bundled SDK over the sign-in store, and the `fetch` that goes with it.
@@ -10,7 +10,6 @@
 import { randomBytes } from "node:crypto";
 import {
   auth,
-  createFetchWithInit,
   extractWWWAuthenticateParams,
   type FetchLike,
   type OAuthClientInformationContext,
@@ -48,6 +47,12 @@ export interface ProviderOptions {
   readonly now?: (() => number) | undefined;
   /** Refreshes the tokens; called when the access token in use is about to expire. */
   readonly refresh?: (provider: CloudpidOAuthProvider) => Promise<void>;
+  /**
+   * What a connection that is not a sign-in raises instead of starting one: the SDK registers a new client (and drops
+   * the stored one) when the authorization server no longer knows the client, which is for the owner to agree to, and
+   * to do through `/cloudpid login`, not behind a request. A sign-in leaves this out.
+   */
+  readonly signInRequired?: (() => Error) | undefined;
 }
 
 /** The SDK's `OAuthClientProvider` over an {@link AuthStore}'s entry for one endpoint. */
@@ -118,6 +123,14 @@ export class CloudpidOAuthProvider implements OAuthClientProvider {
   }
 
   saveClientInformation(client: StoredOAuthClientInformation): void {
+    // The SDK also saves a held client again with the issuer stamped; a client that is not the one held is a registration.
+    if (
+      this.#options.signInRequired !== undefined &&
+      client.client_id !== this.#entry.client?.client_id
+    ) {
+      throw this.#options.signInRequired();
+    }
+
     this.#entry = { ...this.#entry, client };
   }
 
@@ -180,6 +193,11 @@ export class CloudpidOAuthProvider implements OAuthClientProvider {
   async invalidateCredentials(
     scope: "all" | "client" | "tokens" | "verifier" | "discovery",
   ): Promise<void> {
+    if (this.#options.signInRequired !== undefined && (scope === "client" || scope === "all")) {
+      // Before anything is dropped: the stored client and discovery stay for the sign-in to find.
+      throw this.#options.signInRequired();
+    }
+
     switch (scope) {
       case "all":
         this.#entry = {};
@@ -214,6 +232,9 @@ export class CloudpidOAuthProvider implements OAuthClientProvider {
     }
   }
 }
+
+/** Whether `status` is a redirect, which is never followed. */
+export const isRedirect = (status: number): boolean => status >= 300 && status < 400;
 
 /** What a request to the endpoint without a credential tells of the sign-in it wants. */
 export type SignInProbe =
@@ -253,7 +274,7 @@ export const probeSignIn = async (
     return { needed: true, resourceMetadataUrl, scope };
   }
 
-  if (response.status >= 300 && response.status < 400) {
+  if (isRedirect(response.status)) {
     return { needed: true, resourceMetadataUrl: undefined, scope: undefined };
   }
 
@@ -271,7 +292,7 @@ export const bearerFetch =
     const response = await raw(url, init);
     const bearer = new Headers(init?.headers).get("authorization")?.startsWith("Bearer ") === true;
 
-    if (!bearer || response.status < 300 || response.status >= 400) return response;
+    if (!bearer || !isRedirect(response.status)) return response;
 
     await response.body?.cancel().catch(() => undefined);
 
@@ -308,6 +329,46 @@ export const singleFlightRefresh = (
   };
 };
 
-/** `raw` with the connection's `requestInit` applied, for the SDK's own requests (discovery, the token endpoint). */
-export const withInit = (raw: FetchLike, init: RequestInit): FetchLike =>
-  createFetchWithInit(raw, init);
+const SDK_WARNING = "[mcp-sdk] ";
+
+const sinks = new Set<(message: string) => void>();
+let consoleWarn: typeof console.warn | undefined;
+
+/**
+ * The SDK `console.warn`s (`[mcp-sdk] …`) when a refresh falls back to a new authorization or credentials are dropped,
+ * which is ordinary once a grant has ended, and would be written over pi's screen. While any caller holds this, those
+ * lines go to the caller's `sink` (the message, without its prefix) and everything else still reaches the console.
+ * Returns the release. A sink is called with text the SDK composes from OAuth errors, never with a token.
+ */
+export const captureSdkWarnings = (sink: (message: string) => void): (() => void) => {
+  if (sinks.size === 0) {
+    const original = console.warn;
+
+    consoleWarn = original;
+    console.warn = (...args: Parameters<typeof console.warn>) => {
+      const first = String(args[0]);
+
+      if (!first.startsWith(SDK_WARNING)) {
+        original(...args);
+
+        return;
+      }
+
+      for (const each of sinks) each(first.slice(SDK_WARNING.length));
+    };
+  }
+
+  // A function of its own, so that two callers handing over the same `sink` release one each.
+  const held = (message: string) => sink(message);
+
+  sinks.add(held);
+
+  return () => {
+    sinks.delete(held);
+
+    if (sinks.size === 0 && consoleWarn !== undefined) {
+      console.warn = consoleWarn;
+      consoleWarn = undefined;
+    }
+  };
+};

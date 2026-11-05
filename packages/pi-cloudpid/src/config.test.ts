@@ -149,23 +149,38 @@ describe("global and project settings", () => {
 
 describe("an invalid block", () => {
   it.each([
-    ["an empty baseUrl", { cloudpid: { baseUrl: "" } }, "baseUrl"],
-    ["a baseUrl that is not a string", { cloudpid: { baseUrl: 5 } }, "baseUrl"],
+    [
+      "an empty baseUrl",
+      { cloudpid: { baseUrl: "" } },
+      "cloudpid settings/baseUrl: must not have fewer than 1 characters",
+    ],
+    [
+      "a baseUrl that is not a string",
+      { cloudpid: { baseUrl: 5 } },
+      "cloudpid settings/baseUrl: must be string",
+    ],
     [
       "an unknown field",
       { cloudpid: { baseUrl: "https://a.example.test", clientId: "x" } },
-      "cloudpid",
+      "cloudpid settings/clientId:",
     ],
-    ["a block that is not an object", { cloudpid: "https://a.example.test" }, "cloudpid"],
-  ])("refuses %s, naming the file and the field, and never falls back", (_name, content, field) => {
-    write(globalFile(), content);
+    [
+      "a block that is not an object",
+      { cloudpid: "https://a.example.test" },
+      "cloudpid settings: must be object",
+    ],
+  ])(
+    "refuses %s, naming the file and the field path, and never falls back",
+    (_name, content, field) => {
+      write(globalFile(), content);
 
-    const message = refusal();
+      const message = refusal();
 
-    expect(message).toContain(globalFile());
-    expect(message).toContain(field);
-    expect(message).toContain("invalid");
-  });
+      expect(message).toContain(globalFile());
+      expect(message).toContain(field);
+      expect(message).toContain("invalid");
+    },
+  );
 
   it("refuses an invalid block in a trusted project's file, and ignores it in an untrusted one", () => {
     write(globalFile(), { cloudpid: { baseUrl: "https://global.example.test" } });

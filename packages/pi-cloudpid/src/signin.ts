@@ -9,22 +9,21 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
-import { auth, type AuthOptions, type FetchLike } from "@modelcontextprotocol/client";
+import {
+  auth,
+  type AuthOptions,
+  createFetchWithInit,
+  type FetchLike,
+} from "@modelcontextprotocol/client";
 import * as Predicate from "effect/Predicate";
 import { type Config, endpointKey } from "./config.ts";
 import type { AuthStore } from "./auth-store.ts";
 import { Refusal } from "./errors.ts";
-import { CloudpidOAuthProvider, probeSignIn, withInit } from "./oauth.ts";
+import type { SignInResult, Ui } from "./flow.ts";
+import { captureSdkWarnings, CloudpidOAuthProvider, probeSignIn } from "./oauth.ts";
 
 /** What of pi's UI signing in uses. */
-export interface SignInUi {
-  readonly notify: (message: string, type?: "info" | "warning" | "error") => void;
-  readonly input: (
-    title: string,
-    placeholder?: string,
-    options?: { readonly signal?: AbortSignal; readonly timeout?: number },
-  ) => Promise<string | undefined>;
-}
+export type SignInUi = Pick<Ui, "notify" | "input">;
 
 export interface SignInDeps {
   readonly store: AuthStore;
@@ -91,8 +90,17 @@ export interface CallbackServer {
   readonly close: () => void;
 }
 
+/** `text` as HTML text: the page echoes what the authorization server sent (`error_description`), which is not ours. */
+export const escapeHtml = (text: string): string =>
+  text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+
 const PAGE = (message: string): string =>
-  `<!doctype html><meta charset="utf-8"><title>cloudpid</title><p>${message}</p>`;
+  `<!doctype html><meta charset="utf-8"><title>cloudpid</title><p>${escapeHtml(message)}</p>`;
 
 /** The loopback server of one sign-in: a request with another `state` is refused and the wait goes on. */
 export const startCallbackServer = async (
@@ -237,21 +245,29 @@ export const openInBrowser = (url: string): Promise<void> =>
 /**
  * Signs in to the endpoint: discovery from the 401's `resource_metadata`, a fresh Dynamic Client Registration, the
  * browser (or a pasted redirect URL), the code exchange, and the entry stored for the endpoint, replacing the old one
- * only once the new tokens are in. `false` when the endpoint wants no sign-in.
+ * only once the new tokens are in. The SDK's own warnings go to `ui` as warnings, not to the console.
  */
-export const signIn = async (config: Config, ui: SignInUi, deps: SignInDeps): Promise<boolean> => {
+export const signIn = async (
+  config: Config,
+  ui: SignInUi,
+  deps: SignInDeps,
+): Promise<SignInResult> => {
   const raw = deps.fetch ?? fetch;
   const headers = { "X-Cloudpid-Client": deps.client };
-  const fetchFn = withInit(raw, { headers, redirect: "manual" });
+  const fetchFn = createFetchWithInit(raw, { headers, redirect: "manual" });
   const timeoutMs = deps.timeoutMs ?? SIGN_IN_TIMEOUT_MS;
 
   const probe = await probeSignIn(config.url, raw, headers);
 
-  if (!probe.needed) return false;
+  if (!probe.needed) return "not-required";
 
   const state = randomBytes(32).toString("base64url");
   const callback = await startCallbackServer(state, timeoutMs);
   const waiting = new AbortController();
+
+  const releaseWarnings = captureSdkWarnings((message) =>
+    ui.notify(`cloudpid: ${message}`, "warning"),
+  );
 
   try {
     const provider = new CloudpidOAuthProvider({
@@ -301,7 +317,7 @@ export const signIn = async (config: Config, ui: SignInUi, deps: SignInDeps): Pr
 
     await auth(provider, exchange);
 
-    return true;
+    return "signed-in";
   } catch (error) {
     if (error instanceof Refusal) throw error;
 
@@ -309,6 +325,7 @@ export const signIn = async (config: Config, ui: SignInUi, deps: SignInDeps): Pr
       `sign-in failed: ${error instanceof Error ? error.message : "unknown error"}`,
     );
   } finally {
+    releaseWarnings();
     waiting.abort();
     callback.close();
   }

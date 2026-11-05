@@ -61,7 +61,7 @@ const deps = (extra: Partial<RunDeps> = {}): RunDeps => ({
   signIn: () => {
     calls.push("signIn");
 
-    return Promise.resolve(true);
+    return Promise.resolve("signed-in");
   },
   exists: () => false,
   ...extra,
@@ -139,7 +139,7 @@ describe("login", () => {
   it("says so when the endpoint wants no sign-in", async () => {
     const ui = scriptedUi({});
 
-    await run("login", ui, { signIn: () => Promise.resolve(false) });
+    await run("login", ui, { signIn: () => Promise.resolve("not-required") });
 
     expect(ui.notices[0]?.message).toContain("does not ask for a sign-in");
   });
@@ -204,7 +204,7 @@ describe("import", () => {
 
     // Headless, the flow's first refusal names itself: the verb reached `importSession`.
     await expect(run("import login and logout flows", ui, {}, false)).rejects.toThrow(
-      /\/cloudpid import asks before it imports/,
+      /\/cloudpid import needs pi's interactive mode/,
     );
     expect(calls).toEqual([]);
   });

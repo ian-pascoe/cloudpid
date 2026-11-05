@@ -16,7 +16,22 @@ export interface RunDeps extends Deps {
   readonly store: AuthStore;
 }
 
-/** Runs `command`; `config` is not read for `usage` more than to show it. */
+/** The configured endpoint's URL, or why there is none (the refusal with the setup steps). */
+const endpointText = (deps: Deps): string => {
+  let config: Config;
+
+  try {
+    config = deps.config();
+  } catch (error) {
+    if (error instanceof Refusal) return `not set up.\n${error.message}`;
+
+    throw error;
+  }
+
+  return config.url.href;
+};
+
+/** Runs `command`. `usage` reads the configuration only to show the endpoint, and survives an unset one. */
 export const runCommand = async (command: Command, host: Host, deps: RunDeps): Promise<void> => {
   const { ui } = host;
 
@@ -36,7 +51,7 @@ export const runCommand = async (command: Command, host: Host, deps: RunDeps): P
       const config = deps.config();
 
       ui.notify(
-        (await deps.signIn(config))
+        (await deps.signIn(config)) === "signed-in"
           ? `cloudpid: signed in to ${config.url.href}.`
           : `cloudpid: ${config.url.href} does not ask for a sign-in (nothing in front of it wants one).`,
         "info",
@@ -68,19 +83,4 @@ export const runCommand = async (command: Command, host: Host, deps: RunDeps): P
       );
     }
   }
-};
-
-/** The configured endpoint's URL, or why there is none (the refusal with the setup steps). */
-const endpointText = (deps: Deps): string => {
-  let config: Config;
-
-  try {
-    config = deps.config();
-  } catch (error) {
-    if (error instanceof Refusal) return `not set up.\n${error.message}`;
-
-    throw error;
-  }
-
-  return config.url.href;
 };

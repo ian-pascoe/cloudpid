@@ -3,7 +3,15 @@
  * Where the sign-in is kept (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → The connection):
  * `cloudpid-auth.json` in pi's agent directory, mode 0600, written atomically, one entry per endpoint URL.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -54,6 +62,16 @@ describe("the sign-in file", () => {
     expect(statSync(file()).mode & 0o777).toBe(0o600);
 
     await store.write("https://a.example.test/mcp", entry("b"));
+    expect(statSync(file()).mode & 0o777).toBe(0o600);
+  });
+
+  it("tightens a file that others can read when it reads it", async () => {
+    const store = fileAuthStore(directory);
+
+    await store.write("https://a.example.test/mcp", entry("a"));
+    chmodSync(file(), 0o644);
+
+    expect(await store.read("https://a.example.test/mcp")).toEqual(entry("a"));
     expect(statSync(file()).mode & 0o777).toBe(0o600);
   });
 
