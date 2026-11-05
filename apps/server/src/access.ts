@@ -2,7 +2,8 @@
 // docs/architecture/mcp-endpoint.md → Access and identity (The guard). The main Worker does not trust that Access ran in
 // front of it: it verifies `Cf-Access-Jwt-Assertion` itself, on every route, and fails closed. On `/mcp` it checks the
 // MCP endpoint application's audience and tells the owner from the Local agent's service token; everywhere else a
-// `common_name`, or `/mcp`'s audience, is refused, so neither credential opens the app.
+// `common_name`, or an assertion without the main application's audience, is refused, so neither credential opens the
+// app. An assertion may list both audiences: Access lists every application of the host the owner has signed in to.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off globalDate:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
 
 import * as Arr from "effect/Array";
@@ -152,11 +153,6 @@ export type AssertionExpectations = {
    * refused.
    */
   readonly serviceToken?: string | undefined;
-  /**
-   * The audience of the application this route is not behind (the main one on `/mcp`, the endpoint's elsewhere): a token
-   * that lists it too is refused, so a credential minted for one application opens only that application's routes.
-   */
-  readonly otherAudience?: string | undefined;
 };
 
 const OauthClaim = Schema.Struct({ client_id: Schema.NonEmptyString });
@@ -227,11 +223,9 @@ export const classifyAssertion = async (
 
   const audiences = aud === undefined ? [] : Arr.ensure(aud);
 
+  // The other application's audience may be listed too (Access lists every application of the host the session has
+  // signed in to), so it is not refused: Access itself only lets a request through either application's policy.
   if (!audiences.includes(expected.audience)) return refuse("wrong_audience");
-
-  if (expected.otherAudience !== undefined && audiences.includes(expected.otherAudience)) {
-    return refuse("wrong_audience");
-  }
 
   // Before the email: a service token has neither an email nor the owner's identity, and is told apart from a stranger.
   if (common_name !== undefined) {
@@ -406,7 +400,6 @@ export const admit = async (request: GuardedRequest, guard: AccessGuard): Promis
   if (audience === undefined || audience === "") return refuse("not_configured");
 
   const serviceToken = request.mcp === true ? guard.mcp?.serviceToken : undefined;
-  const other = request.mcp === true ? guard.audience : guard.mcp?.audience;
 
   try {
     return await classifyAssertion(request.assertion, {
@@ -414,7 +407,6 @@ export const admit = async (request: GuardedRequest, guard: AccessGuard): Promis
       keys: guard.keys,
       now: request.now,
       serviceToken: serviceToken === "" ? undefined : serviceToken,
-      otherAudience: other === "" ? undefined : other,
     });
   } catch {
     // A lookup or a verification that throws (a signature of the wrong length, say) is a refusal, not a 500.
