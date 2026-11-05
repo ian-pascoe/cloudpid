@@ -88,7 +88,28 @@ export class WorkspaceMcpBridge extends WorkerEntrypoint<{
   }
 }
 
-/** Workspaces are reached over RPC only. */
+/** Workspaces are reached over RPC only (and, for now, the throwaway #143 probe's token-guarded route). */
 export default {
-  fetch: () => new Response("Not found", { status: 404 }),
+  fetch: async (
+    request: Request,
+    env: { readonly [WORKSPACE_BINDING]: DurableObjectNamespace<Workspace>; readonly PROBE_143_TOKEN?: string },
+  ) => {
+    const url = new URL(request.url);
+    const token = env.PROBE_143_TOKEN ?? "";
+    if (
+      url.pathname.startsWith("/probe-143/") &&
+      token.length >= 32 &&
+      request.headers.get("x-probe-token") === token
+    ) {
+      const op = url.pathname.slice("/probe-143/".length);
+      const name = `ws:probe143-${url.searchParams.get("ws") ?? "a"}`;
+      try {
+        const text = await env[WORKSPACE_BINDING].getByName(name).probe143(op);
+        return new Response(text, { headers: { "content-type": "application/json" } });
+      } catch (cause) {
+        return new Response(String((cause as Error)?.stack ?? cause), { status: 500 });
+      }
+    }
+    return new Response("Not found", { status: 404 });
+  },
 };

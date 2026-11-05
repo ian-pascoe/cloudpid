@@ -142,6 +142,8 @@ import { ToolchainBackend } from "./toolchains.ts";
 import { changeLog } from "./change-log.ts";
 import { FileNotifier, inSignalPush, runNotify, withNoSignalStart } from "./notify.ts";
 import { TrackedWorkspaceStub } from "./tracked.ts";
+import { runProbe } from "./probe-143.ts";
+import { ensureDirectory as probeEnsureDirectory } from "@cloudpid/computer-env";
 import { SKILLS_MOUNT, WORKSPACE_CONTAINER, WORKSPACE_BINDING, WORKSPACE_ROOT } from "./binding.ts";
 
 export type WorkspaceEnv = {
@@ -1381,6 +1383,32 @@ export class Workspace extends ContainerHost {
   /** The Container's egress: computerd dials back here, and `WorkspaceProxy` forwards its WebSocket upgrade. */
   override fetch(request: Request): Promise<Response> {
     return this.#container.handleFetch(request);
+  }
+
+  /** Throwaway probe for #143 (never merged). */
+  async probe143(op: string): Promise<string> {
+    await this.#ready();
+    const fs = this.#workspace.fs;
+    const result = await runProbe(op, {
+      container: () => this.ctx.container,
+      fs: fs as never,
+      ensureDirectory: (path) => probeEnsureDirectory(fs as never, path),
+      push: async () => {
+        for await (const progress of this.#workspace.push(CONTAINER_BACKEND_ID)) {
+          if (progress.complete) break;
+        }
+      },
+      pull: async () => {
+        for await (const progress of this.#workspace.pull(CONTAINER_BACKEND_ID)) {
+          if (progress.complete) break;
+        }
+      },
+      signal: () => this.#notifier.changed(),
+      runOnContainer: (script) => this.#runOnContainer(script, {}, { writes: true }),
+      kv: this.ctx.storage.kv,
+      abort: () => this.ctx.abort("probe-143"),
+    });
+    return JSON.stringify(result, null, 2);
   }
 
   /**

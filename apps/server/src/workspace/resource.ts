@@ -61,7 +61,9 @@ export const Workspaces = Effect.gen(function* () {
   return yield* Cloudflare.Worker("Workspaces", {
     main: new URL("./worker.ts", import.meta.url).href,
     compatibility: { date: "2026-08-31" },
-    workersDev: false,
+    // Throwaway #143 probe: a token-guarded route on workers.dev (and a local port under `alchemy dev`).
+    workersDev: true,
+    dev: { port: 1339, strictPort: true },
     observability: WORKER_OBSERVABILITY,
     env: {
       [WORKSPACE_BINDING]: Cloudflare.DurableObject<Workspace>("Workspace", {
@@ -76,6 +78,7 @@ export const Workspaces = Effect.gen(function* () {
       ),
       CLOUDPID_GIT_EMAIL: Config.String("CLOUDPID_GIT_EMAIL").pipe(Config.withDefault(OWNER_EMAIL)),
       CONTAINER_FUSE: dev ? "false" : "true",
+      PROBE_143_TOKEN: Config.Redacted("PROBE_143_TOKEN"),
       ...analytics,
     },
   });
