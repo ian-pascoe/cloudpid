@@ -164,6 +164,7 @@ describe("the codemode tool", () => {
       mirror.receive({ type: "view", view: await instance.view() });
 
       const { nestedTools, tools } = mirror.view();
+      // The view's `tools` are the running calls only, so finding it there is finding it running.
       const parent = tools.find((tool) => tool.name === "codemode");
 
       expect(parent).toBeDefined();
