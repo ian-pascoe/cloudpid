@@ -148,7 +148,7 @@ interface McpApi {
 
 ## Self-use
 
-No guard stops a cloudpid Session from using its own MCP endpoint. It takes the owner's Approval for the MCP server definition (see [_Approval_](mcp-configuration.md#approval)) and the owner's MCP sign-in, as any server behind managed OAuth does (no service token opens the endpoint any more, [#636](https://github.com/ian-pascoe/cloudpid/issues/636)). It is bounded by the running cap and the rate limit, but not by subagent depth or a shared Spend limit.
+No guard stops a cloudpid Session from using its own MCP endpoint. It takes the owner's Approval for the MCP server definition (see [_Approval_](mcp-configuration.md#approval)), but since [#636](https://github.com/ian-pascoe/cloudpid/issues/636) it has no supported credential: the service token is gone, and managed OAuth on `/mcp` takes only loopback and localhost redirects (`MCP_OAUTH_CONFIGURATION`), so cloudpid's own sign-in (redirect `https://<origin>/oauth/mcp/callback`) is expected to be refused (unverified). Where it could connect, it is bounded by the running cap and the rate limit, but not by subagent depth or a shared Spend limit.
 
 ## Telemetry and testing
 
