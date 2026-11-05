@@ -14,6 +14,8 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import {
   ACCESS_AUDIENCE_VAR,
@@ -334,6 +336,94 @@ const LOOPBACK_HOST = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i;
 
 const isLoopbackHost = (host: string): boolean => LOOPBACK_HOST.test(host);
 
+/** The claim profile of an admitted assertion: what Access really sends, with no value that identifies anyone. */
+export const ClaimProfile = Schema.Struct({
+  route: Schema.Literals(["main", "mcp"]),
+  audienceCount: Schema.Finite,
+  /** Which of the two applications' audiences (and any other) the assertion lists. */
+  audiences: Schema.Array(Schema.Literals(["main", "mcp", "other"])),
+  oauth: Schema.Boolean,
+  oauthClientId: Schema.Boolean,
+  /** The `type` claim (`app`, `org`, ...); `none` when absent, `unusual` when it is not a short plain word. */
+  type: Schema.String,
+  sub: Schema.Boolean,
+  /** The claim names present, sorted. */
+  claims: Schema.Array(Schema.String),
+});
+
+/** Never holds the email, `sub`, `oauth.client_id`, `common_name`'s value, the token or the assertion: only whether they are set. */
+export type ClaimProfile = typeof ClaimProfile.Type;
+
+const MAX_CLAIM_NAME_LENGTH = 40;
+
+const ProfileClaims = Schema.Struct({
+  aud: Schema.optionalKey(Schema.Union([Schema.Array(Schema.String), Schema.String])),
+  type: Schema.optionalKey(Schema.Unknown),
+  sub: Schema.optionalKey(Schema.Unknown),
+  oauth: Schema.optionalKey(Schema.Unknown),
+});
+
+const TypeName = Schema.String.check(Schema.isPattern(/^[A-Za-z_-]{1,16}$/));
+
+const decodePayload = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+
+const decodeProfileClaims = Schema.decodeUnknownOption(ProfileClaims);
+const decodeTypeName = Schema.decodeUnknownOption(TypeName);
+const encodeProfile = Schema.encodeOption(Schema.fromJsonString(ClaimProfile));
+
+/** The claim profile of `payloadText`, an assertion's payload as JSON, for a request on `route`. Reads no value out. */
+export const claimProfile = (
+  payloadText: string | undefined,
+  context: {
+    readonly route: "main" | "mcp";
+    readonly audiences: { readonly main: string | undefined; readonly mcp: string | undefined };
+  },
+): ClaimProfile => {
+  const payload = Option.fromNullishOr(payloadText).pipe(Option.flatMap(decodePayload));
+  const names = Option.match(payload, { onNone: () => [], onSome: Record.keys });
+  const claims = payload.pipe(Option.flatMap(decodeProfileClaims));
+  const listed = claims.pipe(Option.map(({ aud }) => (aud === undefined ? [] : Arr.ensure(aud))));
+  const audiences = Option.getOrElse(listed, () => []);
+  const kinds = new Set<"main" | "mcp" | "other">();
+
+  for (const audience of audiences) {
+    if (audience === context.audiences.main) kinds.add("main");
+    else if (audience === context.audiences.mcp) kinds.add("mcp");
+    else kinds.add("other");
+  }
+
+  const type = Option.flatMapNullishOr(claims, ({ type }) => type);
+  const oauth = Option.flatMapNullishOr(claims, ({ oauth }) => oauth);
+
+  return {
+    route: context.route,
+    audienceCount: audiences.length,
+    audiences: Arr.sort(kinds, Order.String),
+    oauth: Option.isSome(oauth),
+    oauthClientId: Option.isSome(Option.flatMap(oauth, decodeOauthClaim)),
+    type: Option.isNone(type)
+      ? "none"
+      : Option.getOrElse(decodeTypeName(type.value), () => "unusual"),
+    sub: Option.isSome(Option.flatMapNullishOr(claims, ({ sub }) => sub)),
+    claims: Arr.sort(
+      names.map((name) => name.slice(0, MAX_CLAIM_NAME_LENGTH)),
+      Order.String,
+    ),
+  };
+};
+
+/** The payload text of an assertion that has already been verified. */
+const payloadTextOf = (assertion: string | undefined): string | undefined => {
+  const segment = assertion?.split(".")[1];
+
+  return segment === undefined ? undefined : base64UrlText(segment);
+};
+
+/** The profiles this isolate has logged, so each distinct one is logged once. */
+const loggedProfiles = new Set<string>();
+
 /** What the guard reads of a request. */
 export type GuardedRequest = {
   readonly assertion: string | undefined;
@@ -354,6 +444,8 @@ export type AccessGuard = {
   /** The Worker was built by `alchemy dev` ({@link LOCAL_MODE_VAR}), where there is no Access. */
   readonly localMode: boolean;
   readonly keys: TeamKeyLookup;
+  /** The claim profiles already logged, as their JSON; this isolate's own set when absent. For tests. */
+  readonly loggedProfiles?: Set<string>;
 };
 
 /**
@@ -458,6 +550,23 @@ export const guardAccess =
         );
 
         return forbidden;
+      }
+
+      if (verdict.caller.kind === "owner") {
+        const profile = claimProfile(payloadTextOf(request.headers[ACCESS_ASSERTION_HEADER]), {
+          route: isMcpRoute(request) ? "mcp" : "main",
+          audiences: { main: guard.audience, mcp: guard.mcp?.audience },
+        });
+
+        const seen = guard.loggedProfiles ?? loggedProfiles;
+        const key = Option.getOrElse(encodeProfile(profile), () => "");
+
+        if (!seen.has(key)) {
+          seen.add(key);
+          yield* Effect.logInfo("Access guard admitted a new claim profile").pipe(
+            Effect.annotateLogs(profile),
+          );
+        }
       }
 
       return yield* Effect.provideService(handler, AccessCaller, verdict.caller);
