@@ -1,6 +1,6 @@
 // Throwaway probe for #143 (never merged): does computer's sync hold for a process started with the platform's
 // `ctx.container.exec`, outside computerd? Reached through a token-guarded temporary route on the Workspaces Worker.
-// @effect-diagnostics asyncFunction:off globalTimers:off globalDate:off preferEffectArray:off missingPipeableSignature:off newPromise:off globalConsole:off
+// @effect-diagnostics globalRandom:off cryptoRandomUUID:off asyncFunction:off globalTimers:off globalDate:off preferEffectArray:off missingPipeableSignature:off newPromise:off globalConsole:off
 /* oxlint-disable */
 
 export interface ProbeFs {
