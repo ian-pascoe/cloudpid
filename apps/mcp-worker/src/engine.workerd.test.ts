@@ -9,6 +9,7 @@ import {
   McpEngineListenResult,
   type McpListenEvent,
   McpEngineRequestResult,
+  McpPublicFetched,
   SignInRequired,
   StepUpRequired,
   TimedOut,
@@ -211,12 +212,14 @@ describe("fetchPublic", () => {
       headers: { Accept: "application/json", Authorization: "Bearer secret" },
     });
 
-    expect(read).toMatchObject({ status: "fetched", code: 200 });
-    expect(read?.status === "fetched" && JSON.parse(read.body)).toMatchObject({
+    const fetched = Schema.decodeUnknownSync(McpPublicFetched)(read);
+
+    expect(fetched.code).toBe(200);
+    expect(JSON.parse(fetched.body)).toMatchObject({
       method: "GET",
       headers: { accept: "application/json" },
     });
-    expect(read?.status === "fetched" && read.body).not.toContain("secret");
+    expect(fetched.body).not.toContain("secret");
 
     expect(await env.MCP_ENGINE.fetchPublic?.({ url: "http://metadata.test/x" })).toEqual({
       status: "refused",

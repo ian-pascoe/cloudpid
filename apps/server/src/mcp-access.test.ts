@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
 import { ACCESS_TEAM_DOMAIN, OWNER_EMAIL, appOrigin } from "./deployment.ts";
@@ -12,7 +12,6 @@ import {
   appHost,
   selfUseRedirectUri,
 } from "./mcp-access.ts";
-import { dcrRedirectUri } from "./mcp/sign-in-origin.ts";
 
 const application = { aud: "the-mcp-aud" };
 
@@ -103,11 +102,20 @@ describe("the Self-use redirect URI", () => {
   });
 
   it.each(["prod", "pr-438", "dev_ian"])(
-    "on %s is the one the sign-in registers at Access, which sends no `iss`, from the stage's origin",
-    (stage) => {
+    "on %s is the stage's callback below the first 12 hex digits of the SHA-256 of Access's issuer",
+    async (stage) => {
+      const digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(`https://${ACCESS_TEAM_DOMAIN}`),
+      );
+
+      const hash = Array.from(new Uint8Array(digest), (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
+
       expect(ACCESS_ISSUER).toBe(`https://${ACCESS_TEAM_DOMAIN}`);
       expect(selfUseRedirectUri(stage)).toBe(
-        dcrRedirectUri({ origin: appOrigin(stage), issuer: ACCESS_ISSUER, advertisesIss: false }),
+        `${appOrigin(stage)}/oauth/mcp/callback/${hash.slice(0, 12)}`,
       );
     },
   );

@@ -24,25 +24,38 @@ export const McpPublicFetchRequest = Schema.Struct({
 
 export type McpPublicFetchRequest = typeof McpPublicFetchRequest.Type;
 
+/** A read's response: its `code`, its headers and the whole body as text, which is a 3xx's too. */
+export const McpPublicFetched = Schema.Struct({
+  status: Schema.Literal("fetched"),
+  code: Schema.Finite,
+  headers: Schema.Record(Schema.String, Schema.String),
+  body: Schema.String,
+});
+
+/** Why a read was not made, or failed. */
+export const McpPublicRefused = Schema.Struct({
+  status: Schema.Literal("refused"),
+  message: Schema.String,
+});
+
 /**
- * Its answer: the response (`code`, its headers and the whole body as text, which is a 3xx's too), or why it was not
- * read. The edge only gains: a caller reads an answer it cannot decode as a refusal.
+ * The answer of `McpEngine.fetchPublic`. The edge only gains (`docs/architecture/mcp.md` → Deploys): its last member is
+ * the fallback, any other `status` a later `McpWorker` may answer, which the caller reads as a failure of the hop.
  */
 export const McpPublicFetchResult = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literal("fetched"),
-    code: Schema.Finite,
-    headers: Schema.Record(Schema.String, Schema.String),
-    body: Schema.String,
-  }),
-  Schema.Struct({ status: Schema.Literal("refused"), message: Schema.String }),
+  McpPublicFetched,
+  McpPublicRefused,
+  Schema.Struct({ status: Schema.String }),
 ]);
 
 export type McpPublicFetchResult = typeof McpPublicFetchResult.Type;
 
 const isRequest = Schema.is(McpPublicFetchRequest);
 
-const refused = (message: string): McpPublicFetchResult => ({ status: "refused", message });
+const refused = (message: string): typeof McpPublicRefused.Type => ({
+  status: "refused",
+  message,
+});
 
 /** Why `url` is not read: not a URL, not `https`, or carrying credentials; undefined when it may be. */
 export const publicFetchRefusal = (url: string): string | undefined => {
@@ -57,8 +70,8 @@ export const publicFetchRefusal = (url: string): string | undefined => {
   return undefined;
 };
 
-/** `headers` with only {@link PUBLIC_FETCH_HEADERS}, by lowercase name. */
-const passedOn = (
+/** `headers` with only {@link PUBLIC_FETCH_HEADERS}, by lowercase name: what a read passes on, on both sides of the RPC. */
+export const publicFetchHeaders = (
   headers: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> => {
   const kept: Record<string, string> = {};
@@ -72,8 +85,8 @@ const passedOn = (
   return kept;
 };
 
-/** A status whose response may carry no body. */
-const BODYLESS: ReadonlyArray<number> = [101, 204, 205, 304];
+/** The statuses whose response carries no body: read as empty here, and rebuilt with none by the caller. */
+export const BODYLESS_STATUSES: ReadonlyArray<number> = [101, 204, 205, 304];
 
 /**
  * Reads `input` with `fetch`, under the guards above. It came over RPC, so its shape is checked again. Never throws: a
@@ -83,7 +96,7 @@ export const fetchPublic = async (
   input: McpPublicFetchRequest,
   fetch: typeof globalThis.fetch,
   timeoutMs: number = OAUTH_FETCH_TIMEOUT_MS,
-): Promise<McpPublicFetchResult> => {
+): Promise<typeof McpPublicFetched.Type | typeof McpPublicRefused.Type> => {
   if (!isRequest(input)) return refused("The request is malformed");
 
   const refusal = publicFetchRefusal(input.url);
@@ -95,12 +108,12 @@ export const fetchPublic = async (
   try {
     const response = await fetch(input.url, {
       method: "GET",
-      headers: passedOn(input.headers),
+      headers: publicFetchHeaders(input.headers),
       redirect: "manual",
       signal,
     });
 
-    const body = BODYLESS.includes(response.status)
+    const body = BODYLESS_STATUSES.includes(response.status)
       ? ""
       : await boundedText(response, MAX_METADATA_BYTES);
 

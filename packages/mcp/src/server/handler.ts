@@ -30,6 +30,7 @@ import * as Exit from "effect/Exit";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { type Caller, clientOf, readBody, type RequestBody, sessionOf } from "./caller.ts";
+import { isMissingMethod } from "../missing-method.ts";
 import { MAX_TEXT_CHARS } from "./render.ts";
 import { type Enabled, type McpServerApi, TOOLS, type Tool, type Wire } from "./tools.ts";
 
@@ -280,15 +281,9 @@ const failure = (error: ApiError): CallToolResult => ({
 });
 
 /**
- * Whether an RPC failed because the deployed `Server` has no such method (it is a deploy behind). The runtime gives no typed
- * marker for it: workerd throws a plain `TypeError` whose only distinguishing mark is its text (`The RPC receiver does not
- * implement the method "x"`, or `... is not a function` on a plain object, as in the conformance run). So the text is
- * matched here, in this one place, and a failure it does not recognise reads as one that may heal.
+ * An RPC that failed: a method the deployed `Server` does not have (`isMissingMethod`, which reads the runtime's text) is
+ * `unsupported`, anything else may heal.
  */
-const isMissingMethod = (message: string): boolean =>
-  /does not implement|is not a function/i.test(message);
-
-/** An RPC that failed: a method the deployed `Server` does not have is `unsupported`, anything else may heal. */
 const rpcFailure = (message: string): ApiError =>
   isMissingMethod(message)
     ? errorOf("unsupported", "The server does not support this yet: try again shortly.")

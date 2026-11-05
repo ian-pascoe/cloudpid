@@ -209,7 +209,8 @@ import {
   type McpSignInStartAnswer,
   type McpSignInStartInput,
 } from "@cloudpid/mcp/types";
-import { guardedOAuthFetch, type PublicReader, signInNetwork } from "../mcp/oauth-fetch.ts";
+import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
+import { type PublicReader, signInNetwork } from "../mcp/own-host-transport.ts";
 import { mcpAccessToken, reportMcpAuth, type SignInDeps } from "./mcp-sign-in-registry.ts";
 import { mcpClientGrant } from "./mcp-sign-in-client-grant.ts";
 import { askMcpSignIn, withdrawMcpSignIn } from "./mcp-sign-in-ask.ts";

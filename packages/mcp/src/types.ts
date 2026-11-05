@@ -30,10 +30,16 @@ export * from "./host.ts";
 
 export * from "./log.ts";
 
+export { isMissingMethod } from "./missing-method.ts";
+
 export {
+  BODYLESS_STATUSES,
+  McpPublicFetched,
   McpPublicFetchRequest,
   McpPublicFetchResult,
+  McpPublicRefused,
   PUBLIC_FETCH_HEADERS,
+  publicFetchHeaders,
 } from "./public-fetch.ts";
 
 export { isJsonObject, JsonObject, jsonListOf, present } from "./json.ts";

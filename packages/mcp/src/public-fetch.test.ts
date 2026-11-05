@@ -1,7 +1,15 @@
-// @effect-diagnostics asyncFunction:off globalFetch:off newPromise:off
+// @effect-diagnostics asyncFunction:off globalFetch:off newPromise:off schemaSync:off
 import { describe, expect, it, vi } from "vitest";
 import { MAX_METADATA_BYTES } from "./oauth-http.ts";
-import { fetchPublic, publicFetchRefusal } from "./public-fetch.ts";
+import * as Schema from "effect/Schema";
+import {
+  fetchPublic,
+  McpPublicFetched,
+  McpPublicFetchResult,
+  McpPublicRefused,
+  publicFetchHeaders,
+  publicFetchRefusal,
+} from "./public-fetch.ts";
 
 const URL_OF = "https://pi.ianpascoe.dev/.well-known/cloudflare-access-protected-resource/mcp";
 
@@ -131,5 +139,29 @@ describe("fetchPublic", () => {
       status: "refused",
       message: "The request timed out",
     });
+  });
+});
+
+describe("a public read's answer", () => {
+  it("decodes a status a later McpWorker may answer as the fallback member, which is neither a response nor a refusal", () => {
+    const answer = Schema.decodeUnknownSync(McpPublicFetchResult)({ status: "later", detail: 1 });
+
+    expect(answer.status).toBe("later");
+    expect(Schema.is(McpPublicFetched)(answer)).toBe(false);
+    expect(Schema.is(McpPublicRefused)(answer)).toBe(false);
+  });
+});
+
+describe("the headers a public read passes on", () => {
+  it("are the content-negotiation ones alone, by lowercase name", () => {
+    expect(
+      publicFetchHeaders({
+        Accept: "application/json",
+        "MCP-Protocol-Version": "2025-11-25",
+        Authorization: "Bearer secret",
+        Cookie: "a=b",
+      }),
+    ).toEqual({ accept: "application/json", "mcp-protocol-version": "2025-11-25" });
+    expect(publicFetchHeaders(undefined)).toEqual({});
   });
 });
