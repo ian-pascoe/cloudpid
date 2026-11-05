@@ -132,9 +132,14 @@ export type SecretsService = {
   readonly nextExpiry: Effect.Effect<number | undefined>;
   /**
    * Ask the owner for `ask.names` and wait for the answer. Asking again with the same `id` waits for the same ask, or
-   * returns its answer when it came while no call waited. Cancelling the wait withdraws the ask.
+   * returns its answer when it came while no call waited. Cancelling the wait withdraws the ask. `waiting` runs once the
+   * ask is stored, just before the wait (not when the answer is kept already): the call's `reachedWait`, so restarts
+   * that cut the waiting call off do not end it (#647).
    */
-  readonly ask: (ask: SecretAsk) => Effect.Effect<ReadonlyArray<AskOutcome>, SecretsError>;
+  readonly ask: (
+    ask: SecretAsk,
+    waiting?: Effect.Effect<void>,
+  ) => Effect.Effect<ReadonlyArray<AskOutcome>, SecretsError>;
   /** The asks waiting for the owner, oldest first. */
   readonly pending: Effect.Effect<ReadonlyArray<SecretAsk>>;
   /**
@@ -373,7 +378,7 @@ const makeSecrets = ({
         return remaining.length === asks().length ? Effect.void : putAsks(remaining);
       });
 
-    const ask = (request: SecretAsk) =>
+    const ask = (request: SecretAsk, waiting: Effect.Effect<void> = Effect.void) =>
       Effect.gen(function* () {
         const ready = takeAnswer(request.id);
 
@@ -391,7 +396,9 @@ const makeSecrets = ({
           if (asked !== undefined) yield* Effect.forkDetach(asked(request));
         }
 
-        yield* Deferred.await(waiter).pipe(Effect.onInterrupt(() => withdraw(request.id)));
+        yield* Effect.andThen(waiting, Deferred.await(waiter)).pipe(
+          Effect.onInterrupt(() => withdraw(request.id)),
+        );
         waiters.delete(request.id);
 
         const outcomes = takeAnswer(request.id);

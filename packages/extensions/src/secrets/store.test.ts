@@ -16,6 +16,7 @@ import {
   type SecretAsk,
   Secrets,
   secretsLayer,
+  type SecretsService,
   type SecretStorage,
 } from "./store.ts";
 import { openVault } from "./vault.ts";
@@ -182,6 +183,39 @@ describe("Secrets", () => {
 
       expect(yield* secrets.pending).toEqual([]);
       expect(announced.at(-1)).toEqual([]);
+    }));
+
+  test("marks the call's wait once its ask is stored, at each rerun, and not for an answer kept", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const marks: (readonly string[])[] = [];
+
+      /** The wait mark of a call over `secrets`: the asks stored when it was made. */
+      const marking = (secrets: SecretsService) =>
+        Effect.flatMap(secrets.pending, (pending) =>
+          Effect.sync(() => void marks.push(pending.map((ask) => ask.id))),
+        );
+
+      const first = yield* open(storage);
+
+      yield* Effect.forkChild(first.secrets.ask(ASK, marking(first.secrets)));
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      // An eviction leaves the ask stored, and the rerun of its call waits for it again.
+      const second = yield* open(storage);
+
+      yield* Effect.forkChild(second.secrets.ask(ASK, marking(second.secrets)));
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      // Answered while no call waited: the next rerun takes the answer, and has no wait to mark.
+      const third = yield* open(storage);
+
+      yield* third.secrets.answer("7", { API_KEY: VALUE });
+      yield* third.secrets.ask(ASK, marking(third.secrets));
+
+      expect(marks).toEqual([["7"], ["7"]]);
     }));
 
   test("keeps a pending ask across an eviction, and answers the call that asks again", () =>

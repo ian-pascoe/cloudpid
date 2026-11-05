@@ -9,6 +9,7 @@ import type {
   McpHostResourceRequest,
   McpTaskInputResponses,
 } from "@cloudpid/mcp/types";
+import { ChordContext, reachedWait } from "@cloudpid/effect-durable";
 import type { Context } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -181,7 +182,10 @@ export const resumeOf = async (
   const { questions, api, context } = rounds;
 
   const answered = await Effect.runPromise(
-    questions.awaitRound(api.callId),
+    questions.awaitRound(
+      api.callId,
+      reachedWait(api).pipe(Effect.provideService(ChordContext, context)),
+    ),
     context.abortSignal === undefined ? undefined : { signal: context.abortSignal },
   ).catch(() => "stopped" as const);
 

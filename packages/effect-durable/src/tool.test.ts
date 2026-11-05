@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { answer, callTool, context, openFauxHarness, resultText } from "./harness.fixture.ts";
 import { ChordContext } from "./chord.ts";
 import { mcpToolName, mcpToolNames } from "@cloudpid/config";
-import { defineEffectTool, isToolName } from "./tool.ts";
+import { defineEffectTool, isToolName, reachedWait } from "./tool.ts";
 
 const Sides = Schema.Int.check(Schema.isBetween({ minimum: 2, maximum: 20 }));
 
@@ -332,6 +332,39 @@ describe("defineEffectTool", () => {
     await prompt("trace");
 
     expect(spans).toEqual(["none"]);
+  });
+});
+
+describe("reachedWait", () => {
+  it("marks a running call's wait, and never fails once the call has ended", async () => {
+    let lateMark: Effect.Effect<void> = Effect.die(new Error("The call never ran"));
+
+    const waitOnce = defineEffectTool({
+      name: "wait_once",
+      description: "Reach a wait",
+      parameters: Schema.Struct({}),
+      execute: (_args, callApi) =>
+        Effect.gen(function* () {
+          lateMark = reachedWait(callApi);
+          yield* reachedWait(callApi);
+
+          return { output: [{ type: "text", text: "waited" }] };
+        }),
+    });
+
+    const { prompt, lastToolResult } = await openFauxHarness(
+      [defineExtension({ name: "wait_once", tools: [Effect.runSync(waitOnce)] })],
+      [callTool("wait_once", {}), answer("done")],
+    );
+
+    await prompt("wait");
+
+    expect(resultText(await lastToolResult())).toBe("waited");
+
+    // pi-durable refuses a mark from a call that has ended; the mark is only logged.
+    await expect(
+      Effect.runPromise(lateMark.pipe(Effect.provideService(ChordContext, context))),
+    ).resolves.toBeUndefined();
   });
 });
 

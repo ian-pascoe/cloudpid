@@ -126,6 +126,8 @@ import {
   type SubmissionId,
   type SubmissionRecord,
   type TaskGraph,
+  type TaskId,
+  ToolTask,
   type UserInput,
   type WatchEnd,
   watchEvents,
@@ -1089,10 +1091,17 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
     }),
   );
 
-  // What the Harness reports without failing a call (a task that faulted, one the restart limit parked, whose Run stays
-  // busy until it is stopped, a hook or listener that threw) is otherwise dropped. `info` names the task, never content.
+  /** The tool calls the restart limit parked as the Harness opened, which the Session ends (below). */
+  const parkedCalls: Array<TaskId> = [];
+
+  // What the Harness reports without failing a call (a task that faulted, one the restart limit parked, a hook or
+  // listener that threw) is otherwise dropped. `info` names the task, never content.
   const onReport: HarnessOptions["onReport"] = (error, info) => {
     run(Effect.logWarning(`pi-durable reported ${info.type}`, info, error));
+
+    if (info.type === "task_parked" && info.task.kind === ToolTask.definition.name) {
+      parkedCalls.push(info.task.id);
+    }
   };
 
   const harnessOptions = { models: limited, settings: harnessSettings(settings), onReport };
@@ -1103,6 +1112,21 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
   ).pipe(fromHarness);
 
   opened = harness.harness;
+
+  // A tool call the restart limit parks was cut off that many times before it reached a wait (a call that waits marks
+  // it as progress: `reachedWait`), and nothing in cloudpid would run it again: its Run would stay busy until stopped.
+  // It is aborted instead, as pi-durable 1.5 ends such a call: its abort settles it with an error result the agent
+  // reads, and the Run goes on. An owner request it left is withdrawn once the Session is idle (`onIdle`).
+  yield* Effect.forEach(
+    parkedCalls,
+    (id) =>
+      attempt("abortTask", () => harness.harness.abortTask(id, context)).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("A tool call the restart limit parked was not ended", cause),
+        ),
+      ),
+    { discard: true },
+  );
 
   // A storage error closes the Harness for good; reset the object so the next event reopens it.
   yield* Effect.sync(

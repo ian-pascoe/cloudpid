@@ -1,10 +1,10 @@
 // Approval over the Session socket (docs/architecture/agent-changes.md → Approval), against real Durable Object storage and a test Registry:
 // a change that needs the owner's yes reaches every client as a card's request, the owner's Approve applies it and
-// records it as approved, a Decline gives the agent the owner's reason, a waiting request survives an eviction, and
-// Stop withdraws it.
+// records it as approved, a Decline gives the agent the owner's reason, a waiting request survives evictions (more of
+// them than pi-durable's restart limit: #647), and Stop withdraws it.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferSchemaOverJson:off preferEffectArray:off
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   type ApprovalRequest,
@@ -16,7 +16,12 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import { idle } from "../durable-waits.fixture.ts";
+import {
+  idle,
+  PAST_THE_RESTART_LIMIT,
+  RESTART_LIMIT,
+  restartRepeatedly,
+} from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
@@ -46,9 +51,12 @@ const NEW_IN_DEFAULT = {
 
 let counter = 0;
 
-/** A Session whose name gives it the `settings_*` tools, registered in a fresh Registry it reports to. */
-const registered = async () => {
-  const sessionId = `settings-approval-${(counter += 1)}`;
+/**
+ * A Session whose name gives it the `settings_*` tools (and `nest` too, for `settings-nest`), registered in a fresh
+ * Registry it reports to.
+ */
+const registered = async (prefix: "settings-approval" | "settings-nest" = "settings-approval") => {
+  const sessionId = `${prefix}-${(counter += 1)}`;
   const registryName = `approval-registry-${counter}`;
   const registry = env.REGISTRIES.getByName(registryName);
   const stub = env.SESSIONS.getByName(sessionId);
@@ -345,6 +353,113 @@ describe("Approval over the Session socket", () => {
     await idle(stub);
 
     expect((await registry.getSettings()).settings.spendLimit.perSession).toBe(25);
+  });
+
+  it("keeps a waiting request through more restarts than pi-durable's limit, and applies the answer", async () => {
+    const { stub, registry } = await registered();
+
+    await script(stub, RAISE, "Raised.");
+
+    const before = await connect(stub);
+
+    before.send({ type: "submit", id: "go", input: "Raise the limit" });
+
+    const asked = only(await before.next(isPending));
+
+    before.close();
+
+    // Each rerun waits for the same request again, and its wait is progress: no restart is left counting toward the limit.
+    await restartRepeatedly(
+      stub,
+      PAST_THE_RESTART_LIMIT,
+      (calls) => calls.length === 1 && calls.every((call) => call.restarts === 0),
+    );
+
+    const after = await connect(stub);
+    const shown = only(await after.next(isPending));
+
+    expect(shown).toEqual(asked);
+
+    after.send({ type: "approval_answer", id: "yes", request: shown.id, approve: true });
+    expect(await after.next(isAnswer("yes"))).toMatchObject({ type: "result" });
+    await idle(stub);
+
+    expect((await registry.getSettings()).settings.spendLimit.perSession).toBe(25);
+    expect((await toolResults(stub)).at(-1)).toContain("The user approved");
+  });
+
+  it("keeps the request of a nested call, as a `codemode` script makes, through more restarts than the limit", async () => {
+    const { stub, registry } = await registered("settings-nest");
+    const [, tool, raise] = /^call:([^:]+):(.*)$/u.exec(RAISE) ?? [];
+
+    await script(stub, `call:nest:${JSON.stringify({ tool, arguments: raise })}`, "Raised.");
+
+    const before = await connect(stub);
+
+    before.send({ type: "submit", id: "go", input: "Raise the limit from a script" });
+
+    const asked = only(await before.next(isPending));
+
+    before.close();
+
+    // The script's call waits in memory for its nested call, which waits for the owner: neither counts toward the limit.
+    await restartRepeatedly(
+      stub,
+      PAST_THE_RESTART_LIMIT,
+      (calls) => calls.length === 2 && calls.every((call) => call.restarts === 0),
+    );
+
+    const after = await connect(stub);
+    const shown = only(await after.next(isPending));
+
+    expect(shown).toEqual(asked);
+
+    after.send({ type: "approval_answer", id: "yes", request: shown.id, approve: true });
+    expect(await after.next(isAnswer("yes"))).toMatchObject({ type: "result" });
+    await idle(stub);
+
+    expect((await registry.getSettings()).settings.spendLimit.perSession).toBe(25);
+    // The script's call got the nested call's value.
+    expect(JSON.parse((await toolResults(stub)).at(-1) ?? "null")).toMatchObject({
+      approval: { approved: true },
+    });
+  });
+
+  it("ends a call cut off before its wait at every restart with an error, goes on with the Run, and withdraws its request", async () => {
+    const stub = env.SESSIONS.getByName(`hang-${(counter += 1)}`);
+
+    await script(stub, "call:hang:{}", "Gave up.");
+
+    const before = await connect(stub);
+
+    before.send({ type: "submit", id: "go", input: "Hang" });
+    only(await before.next(isPending));
+    before.close();
+
+    // Each rerun runs again, and never gets as far as its wait: every restart counts.
+    await restartRepeatedly(
+      stub,
+      RESTART_LIMIT - 1,
+      (calls, restart) =>
+        calls.length === 1 && calls.every((call) => call.running && call.restarts === restart),
+    );
+
+    // The restart that reaches the limit ends the call instead of parking it.
+    await evictDurableObject(stub);
+    await runDurableObjectAlarm(stub);
+    await idle(stub);
+
+    expect((await toolResults(stub)).at(-1)).toContain("Tool hang was aborted");
+    // The Run went on: the model was asked again, with the call's error result.
+    expect(
+      await runInDurableObject(stub, (_instance: TestSession, state) =>
+        state.storage.kv.get<{ readonly next: number }>("script"),
+      ),
+    ).toMatchObject({ next: 2 });
+
+    const after = await connect(stub);
+
+    expect(await after.next(isRequests)).toEqual({ type: "approval_requests", requests: [] });
   });
 
   it("withdraws the request when the owner stops the Run, and refuses a late answer", async () => {

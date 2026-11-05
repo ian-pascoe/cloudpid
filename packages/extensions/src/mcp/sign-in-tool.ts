@@ -6,6 +6,7 @@
 // (`isParentOnly`). It never starts, completes or signs out of anything, and shows the model no URL, code or token: the
 // owner signs in from the card (`./sign-in.ts` keeps the request, durably).
 import { mcpServerNamespace, signsInOnItsOwn } from "@cloudpid/config";
+import { ChordContext, reachedWait } from "@cloudpid/effect-durable";
 import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
 import { MAX_SIGN_IN_REASON } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
@@ -206,13 +207,16 @@ export const signInTool = (
       const details: McpDetails = { server: name, tool: MCP_SIGN_IN_TOOL };
 
       const outcome = await Effect.runPromise(
-        signIns.ask({
-          callId: String(api.taskId),
-          conversationId: api.conversationId,
-          environment,
-          server: name,
-          reason: (input.reason ?? "").slice(0, MAX_SIGN_IN_REASON),
-        }),
+        signIns.ask(
+          {
+            callId: String(api.taskId),
+            conversationId: api.conversationId,
+            environment,
+            server: name,
+            reason: (input.reason ?? "").slice(0, MAX_SIGN_IN_REASON),
+          },
+          reachedWait(api).pipe(Effect.provideService(ChordContext, context)),
+        ),
         { signal: context.abortSignal },
       );
 

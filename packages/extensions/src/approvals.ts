@@ -9,10 +9,14 @@
 //   that reads other values waits for the same request, and applies only what was shown (`expected`).
 // - The wait has no deadline of its own. Cancelling it (Stop) withdraws the request, and a request whose call is gone
 //   is withdrawn once the Session is idle (`dropAbandoned`).
+// - Each attempt that reaches the wait marks it as progress (`reachedWait`), so the restarts that cut a waiting call off
+//   (the Session hibernates while nobody looks, and each heartbeat starts it again) never end the call (#647).
 //
 // `withApproval` is the way a tool waits: one request per call (its task's id), settled when the call ends however it
 // ends. It is shared by the tools that change a Limit or delete, by those that change the Skills kept Global, and meant for the Guardian (#38) too.
+import { reachedWait } from "@cloudpid/effect-durable";
 import type { JsonValue } from "@earendil-works/chord";
+import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -82,9 +86,13 @@ export type ApprovalsService = {
   /**
    * Ask the owner to approve `request`, and wait for the answer. Asking again with the same `id` waits for the request
    * already made (the one the owner sees), or returns the answer given while no call waited. Cancelling the wait
-   * withdraws the request. The answer is kept until `settle`, so a call cut off after it rerun finds it.
+   * withdraws the request. The answer is kept until `settle`, so a call cut off after it rerun finds it. `waiting` runs
+   * once the request is stored, just before the wait (not when the answer is kept already): the call's `reachedWait`.
    */
-  readonly ask: (request: ApprovalAsk) => Effect.Effect<ApprovalAnswer, ApprovalsError>;
+  readonly ask: (
+    request: ApprovalAsk,
+    waiting?: Effect.Effect<void>,
+  ) => Effect.Effect<ApprovalAnswer, ApprovalsError>;
   /** The call that asked `id` is done: withdraw its request if it still waits, and forget its answer. */
   readonly settle: (id: string) => Effect.Effect<void>;
   /** Whether a request `id` waits or its answer is kept: the call that asked it is a rerun. */
@@ -171,7 +179,7 @@ export const makeApprovals = ({
         : { approved: false, reason: stored.reason, expected: stored.expected };
     };
 
-    const ask = (request: ApprovalAsk) =>
+    const ask = (request: ApprovalAsk, waiting: Effect.Effect<void> = Effect.void) =>
       Effect.gen(function* () {
         const ready = answerOf(request.id);
 
@@ -189,7 +197,7 @@ export const makeApprovals = ({
           if (asked !== undefined) yield* Effect.forkDetach(asked(request));
         }
 
-        yield* Deferred.await(waiter).pipe(
+        yield* Effect.andThen(waiting, Deferred.await(waiter)).pipe(
           Effect.onInterrupt(() =>
             Effect.suspend(() => {
               waiters.delete(request.id);
@@ -278,8 +286,12 @@ export const makeApprovals = ({
 export const approvalsLayer = (options: ApprovalsOptions): Layer.Layer<Approvals> =>
   Layer.effect(Approvals, makeApprovals(options));
 
-/** The call that asks, as its tool's `ToolExecutionApi` gives it: its task and its conversation. */
-export type ApprovalCall = { readonly taskId: number; readonly conversationId: number };
+/** The call that asks, as its tool's `ToolExecutionApi` gives it: its task, its conversation, and its progress mark. */
+export type ApprovalCall = {
+  readonly taskId: number;
+  readonly conversationId: number;
+  readonly progressed: ToolExecutionApi["progressed"];
+};
 
 /** What a change shown on an Approval card is: everything but who asks, which the call says. */
 export type ApprovalChange = Omit<ApprovalAsk, "id" | "conversationId">;
@@ -309,7 +321,7 @@ export const withApproval = <A, E, R>(
   const id = String(api.taskId);
 
   return approvals
-    .ask({ ...change, id, conversationId: api.conversationId })
+    .ask({ ...change, id, conversationId: api.conversationId }, reachedWait(api))
     .pipe(Effect.flatMap(then), Effect.ensuring(approvals.settle(id)));
 };
 

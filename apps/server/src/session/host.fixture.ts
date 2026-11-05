@@ -142,6 +142,7 @@ import { viewOrigin } from "../view-host.ts";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { type McpHostAnswers, type McpHostStub, mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
+import type { ToolCallTask } from "../durable-waits.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
@@ -294,6 +295,62 @@ const Echo = defineEffectTool({
   description: "Echo text back",
   parameters: Schema.Struct({ text: Schema.String }),
   execute: ({ text }) => Effect.succeed({ output: [{ type: "text", text: `echo: ${text}` }] }),
+});
+
+/**
+ * A call cut off before it reaches its wait at every attempt (#647), for the Sessions named `hang-…`: it asks the owner's
+ * Approval as an approval tool does, but never marks its wait as progress, so its restarts count toward the limit.
+ */
+const Hang = Effect.gen(function* () {
+  const approvals = yield* Approvals;
+
+  return yield* defineEffectTool({
+    name: "hang",
+    description: "Ask for an Approval, and hang before waiting for it",
+    parameters: Schema.Struct({}),
+    replay: "safe",
+    execute: (_args, api) =>
+      Effect.andThen(
+        Effect.forkDetach(
+          approvals.ask({
+            id: String(api.taskId),
+            conversationId: api.conversationId,
+            tool: "hang",
+            target: "the Settings",
+            change: "Spend limit",
+            before: "no limit",
+            after: "$25 per Session",
+            reason: "To hang",
+            expected: null,
+          }),
+        ),
+        Effect.never,
+      ),
+  });
+});
+
+/**
+ * A call that makes one nested call and waits for it in memory, as a `codemode` script does (#647), for the Sessions
+ * named `settings-nest-…`: its result is the nested call's value, or its diagnostics.
+ */
+const Nest = defineEffectTool({
+  name: "nest",
+  description: "Call a tool from inside this call",
+  parameters: Schema.Struct({ tool: Schema.String, arguments: Schema.String }),
+  replay: "safe",
+  execute: ({ tool, arguments: json }, api) =>
+    callDurable("executeTool", (context) =>
+      api.executeTool(tool, JSON.parse(json), context, { key: "c1" }),
+    ).pipe(
+      Effect.map((nested) => ({
+        output: [
+          {
+            type: "text",
+            text: JSON.stringify(nested.structuredOutput ?? nested.diagnostics),
+          },
+        ],
+      })),
+    ),
 });
 
 /** A tool that writes (`WRITING_TOOLS`), for the Sessions named `runs-…`: it changes nothing, but a Run opens at its call. */
@@ -634,13 +691,17 @@ export class TestSession extends DurableObject {
     const changing = this.ctx.id.name?.startsWith("environment-") === true;
     const configuring = this.ctx.id.name?.startsWith("settings-") === true;
     const instructing = this.ctx.id.name?.startsWith("instructions-") === true;
+    const hanging = this.ctx.id.name?.startsWith("hang-") === true;
+    const nesting = this.ctx.id.name?.startsWith("settings-nest-") === true;
     const mcp = this.#hasMcpTools();
     const settingsRegistry = this.#settingsRegistry();
     const session = this.ctx.id.name;
 
     return Effect.gen(function* () {
       const tool = yield* Echo;
-      const echo = defineExtension({ name: "echo", tools: [tool] });
+      const hang = hanging ? [yield* Hang] : [];
+      const nest = nesting ? [yield* Nest] : [];
+      const echo = defineExtension({ name: "echo", tools: [tool, ...hang, ...nest] });
       const host = testBrowserHost(kv);
 
       const browser = yield* Browser.pipe(
@@ -2370,6 +2431,32 @@ export class TestSession extends DurableObject {
         );
 
         return Arr.map(state?.tasks ?? [], (task) => task.title);
+      }),
+    );
+  }
+
+  /**
+   * The live tool calls, each with the restarts pi-durable counts toward its restart limit (0 for none), whether it runs
+   * now, and whether that limit parked it.
+   */
+  toolCalls(): Promise<ReadonlyArray<ToolCallTask>> {
+    return this.#runtime.runPromise(
+      Effect.gen(function* () {
+        const harness = yield* Harness;
+        const { tasks } = yield* harness.inspect;
+
+        return Arr.flatMap(tasks, ({ record, state }) =>
+          record.kind === "pi.tool"
+            ? [
+                {
+                  id: record.id,
+                  restarts: record.restarts ?? 0,
+                  running: state.kind === "running",
+                  parked: state.kind === "blocked" && state.reason === "restart_limit",
+                },
+              ]
+            : [],
+        );
       }),
     );
   }

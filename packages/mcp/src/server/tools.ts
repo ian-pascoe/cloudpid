@@ -347,7 +347,7 @@ const sessionWait = defineTool({
           enabled.has("session_send") ? "session_send to give it work" : undefined,
         );
       case "stalled":
-        return `A task is parked and nothing moves until the owner retries it in cloudpid. ${again} once they have.`;
+        return `A task is parked after being cut off by too many restarts, and nothing moves until the owner stops the Run in cloudpid. ${again} once they have.`;
       case "timeout":
         return `${again} to keep waiting${result.interrupted === true ? ` ${INTERRUPTED_NOTE}` : ""}.`;
     }

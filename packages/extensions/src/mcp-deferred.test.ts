@@ -760,6 +760,34 @@ describe("a deferred round in the Session's storage", () => {
     expect(told).toEqual(["Docs-Site"]);
   });
 
+  it("marks the call's wait once, after its round is stored, and not for a round answered already", async () => {
+    const { questions } = await service();
+    const marks: (readonly string[])[] = [];
+
+    /** The call's wait mark: the questions waiting when it was made. */
+    const marking = Effect.flatMap(questions.pending, (pending) =>
+      Effect.sync(() => void marks.push(pending.map((question) => question.id))),
+    );
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.defer({ ...ASK, key: "8", message: "And your team?" }));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    const waiting = Effect.runPromise(questions.awaitRound(ASK.callId, marking));
+
+    await until(async () => marks.length > 0);
+    // The round's first answer leaves the call waiting for the other: still one mark.
+    await Effect.runPromise(questions.answer("call-9:1", { action: "decline" }));
+    await Effect.runPromise(questions.answer("call-9:2", { action: "decline" }));
+    await waiting;
+
+    // A rerun that finds every answer takes them, and has no wait to mark.
+    await Effect.runPromise(questions.awaitRound(ASK.callId, marking));
+
+    expect(marks).toEqual([["call-9:1", "call-9:2"]]);
+  });
+
   it("leaves a round whose state is a later build's alone: it is not resumed as a call's", async () => {
     const { questions, memory } = await service();
 

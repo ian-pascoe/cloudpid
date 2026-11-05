@@ -14,6 +14,7 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { type Failure, invoker, settleTyped } from "./chord.ts";
+import { callDurable } from "./Harness.ts";
 
 /** What an Effect tool may fail with: its message becomes the error result the model sees. */
 export type ToolFailure = Failure;
@@ -38,6 +39,20 @@ export type EffectToolDefinition<
     api: ToolExecutionApi<TDetails>,
   ) => Effect.Effect<ToolExecutionResult<TDetails>, E, R>;
 };
+
+/**
+ * The call `api` runs has reached a durable wait: what it waits for, such as the owner's answer, is in storage, and a
+ * rerun after a restart waits for it again. pi-durable then starts the restart count over for the call and its owners
+ * (a `codemode` call waiting for it as a nested call) (`ToolExecutionApi.progressed`, a cloudpid patch:
+ * `docs/development/dependencies.md`), so the restarts that cut them off while it waits (a Session that hibernates is
+ * started again by each heartbeat) never reach the restart limit (`docs/architecture/overview.md` → Session host). Run it once the wait is stored and the attempt is about to await:
+ * an attempt cut off before then still counts, so a call that keeps crashing before its wait still ends. Never fails:
+ * a mark that is not stored (the call is being stopped, or the instance was replaced) leaves the count as it was.
+ */
+export const reachedWait = (api: Pick<ToolExecutionApi, "progressed">): Effect.Effect<void> =>
+  callDurable("progressed", (context) => api.progressed(context)).pipe(
+    Effect.catch((error) => Effect.logWarning("A call's wait was not marked as progress", error)),
+  );
 
 const SNAKE_CASE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 

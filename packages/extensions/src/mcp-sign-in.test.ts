@@ -207,6 +207,37 @@ describe("Sign-in requests", () => {
       expect(yield* Fiber.join(rerun)).toEqual({ kind: "signed_in" });
     }));
 
+  test("mark the call's wait once its request is stored, at each rerun, and not for an outcome kept", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const marks: (readonly string[])[] = [];
+
+      /** The wait mark of a call over `signIns`: the requests stored when it was made. */
+      const marking = (signIns: ReturnType<typeof open>["signIns"]) =>
+        Effect.flatMap(signIns.pending, (pending) =>
+          Effect.sync(() => void marks.push(pending.map((request) => request.id))),
+        );
+
+      const before = open(storage);
+
+      yield* Effect.forkChild(before.signIns.ask(ASK, marking(before.signIns)));
+      yield* settle;
+
+      // An eviction leaves the request stored, and the rerun of its call waits for it again.
+      const again = open(storage);
+
+      yield* Effect.forkChild(again.signIns.ask(ASK, marking(again.signIns)));
+      yield* settle;
+
+      // Signed in while no call waited: the next rerun takes the outcome, and has no wait to mark.
+      const after = open(storage);
+
+      yield* after.signIns.resolve(["signin-1"]);
+      expect(yield* after.signIns.ask(ASK, marking(after.signIns))).toEqual({ kind: "signed_in" });
+
+      expect(marks).toEqual([["signin-1"], ["signin-1"]]);
+    }));
+
   test("survive an eviction with the sign-in completed meanwhile: the rerun call learns it at once", () =>
     Effect.gen(function* () {
       const { storage } = memoryStorage();

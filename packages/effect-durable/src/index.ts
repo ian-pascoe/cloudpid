@@ -15,5 +15,6 @@ export {
   defineEffectTool,
   type EffectToolDefinition,
   isToolName,
+  reachedWait,
   type ToolFailure,
 } from "./tool.ts";
