@@ -100,7 +100,7 @@ export const messageOf = (error: Error): string => {
 };
 
 /** The endpoint from pi's settings, or none when they do not give one: unset and invalid both mean no server. */
-const configOf = (ctx: ExtensionContext): Config | undefined => {
+const configOrNone = (ctx: ExtensionContext): Config | undefined => {
   try {
     return readConfig(settingsOf(ctx));
   } catch (error) {
@@ -111,11 +111,11 @@ const configOf = (ctx: ExtensionContext): Config | undefined => {
 };
 
 export default function (pi: ExtensionAPI): void {
-  const syncServer = mcpRegistration(pi);
+  const syncMcpServer = mcpRegistration(pi);
 
-  // Registrations are not saved, and a session switch or `/reload` runs this again, with the settings of its cwd.
+  // pi keeps no registration: every session start (a switch or `/reload` too) registers again, from the settings of its cwd.
   pi.on("session_start", (_event, ctx) => {
-    syncServer(configOf(ctx), (message) => ctx.ui.notify(message, "warning"));
+    syncMcpServer(configOrNone(ctx), (message) => ctx.ui.notify(message, "warning"));
   });
 
   pi.registerCommand("cloudpid", {

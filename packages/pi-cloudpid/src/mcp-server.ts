@@ -19,30 +19,33 @@ export const MCP_SERVER_DESCRIPTION =
  * The server's config: the endpoint's URL, `exposure` left at pi's default, and the import tools hidden, since they are
  * for `/cloudpid import` and never for a model.
  */
-export const serverConfigOf = (config: Config): McpServerConfig => ({
+const serverConfigOf = (config: Config): McpServerConfig => ({
   url: config.url.href,
   toolExposure: { "session_import_*": "hidden" },
   description: MCP_SERVER_DESCRIPTION,
 });
 
 /** The two calls of pi's API this uses. */
-export type McpRegistry = Pick<ExtensionAPI, "registerMcpServer" | "unregisterMcpServer">;
+type McpRegistry = Pick<ExtensionAPI, "registerMcpServer" | "unregisterMcpServer">;
 
 /**
  * Keeps pi's registration of `cloudpid` in step with the settings. Called with what the settings give now: the
  * endpoint registers it (the same URL again does nothing; another URL replaces the registration), none unregisters one
- * this made earlier, so a session of another project that sets nothing does not keep the last one's server. A
- * registration pi refuses (another extension owns the name, a config it rejects) is passed to `warn`, once per distinct
- * reason, and never thrown.
+ * this made earlier (pi builds a new runtime at each session start, so this only matters to a `session_start` that
+ * fires again on the same load). A registration pi refuses (another extension owns the name, a config it rejects) is
+ * passed to `warn`, once per distinct reason, and never thrown.
  */
 export const mcpRegistration = (pi: McpRegistry) => {
   let registered: string | undefined;
   let warned: string | undefined;
 
   return (config: Config | undefined, warn: (message: string) => void): void => {
-    if (config === undefined) {
-      warned = undefined;
+    // A refusal is remembered only until the next call that does not repeat it.
+    const lastWarning = warned;
 
+    warned = undefined;
+
+    if (config === undefined) {
       if (registered === undefined) return;
 
       registered = undefined;
@@ -61,14 +64,14 @@ export const mcpRegistration = (pi: McpRegistry) => {
     try {
       pi.registerMcpServer(MCP_SERVER_NAME, serverConfigOf(config));
       registered = config.url.href;
-      warned = undefined;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
 
-      if (reason === warned) return;
-
       warned = reason;
-      warn(`cloudpid: pi did not take the "${MCP_SERVER_NAME}" MCP server: ${reason}`);
+
+      if (reason !== lastWarning) {
+        warn(`cloudpid: pi did not take the "${MCP_SERVER_NAME}" MCP server: ${reason}`);
+      }
     }
   };
 };
