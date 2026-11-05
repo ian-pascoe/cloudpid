@@ -327,7 +327,7 @@ export const stubEndpoint = (options: StubOptions = {}): Stub => {
 
       return Promise.resolve(apiOk({ cancelled: true as const }));
     },
-    auth: "service_token",
+    auth: "oauth",
   };
 
   const gate = toolGate();
