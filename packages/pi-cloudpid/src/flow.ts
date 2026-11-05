@@ -1,12 +1,11 @@
 // @effect-diagnostics preferEffectArray:off asyncFunction:off missingPipeableSignature:off cryptoRandomUUID:off -- native array methods over plain values (the bundle carries no Effect runtime); plain Promises, as pi's extension API and child processes give them; plain functions over values, called directly; the request_id of begin.
 /**
- * `/cloudpid [instruction]` (docs/architecture/mcp-endpoint.md → Session import → The `/cloudpid` command, The working
- * tree): refuse unless idle and saved, match the checkout to an Environment, say what will go and ask, then begin, push
- * (the branch, and the uncommitted Changes to `carry_ref`), send the file in slices, and finish. It never follows the
- * Run the instruction starts.
+ * `/cloudpid import [instruction]` (docs/architecture/mcp-endpoint.md → Session import → The `/cloudpid` command, The
+ * working tree): refuse unless idle and saved, match the checkout to an Environment, say what will go and ask, then
+ * begin, push (the branch, and the uncommitted Changes to `carry_ref`), send the file in slices, and finish. With no
+ * sign-in (or one that is no longer accepted) it asks to sign in first. It never follows the Run the instruction starts.
  */
-import type { Config, Env } from "./config.ts";
-import { readConfig } from "./config.ts";
+import type { Config } from "./config.ts";
 import {
   IMPORT_MARKER,
   MAX_IMPORT_BYTES,
@@ -24,7 +23,7 @@ import {
   type FinishResult,
   receivedOf,
 } from "./endpoint.ts";
-import { ApiFailure, Refusal } from "./errors.ts";
+import { ApiFailure, Refusal, SignInRequired } from "./errors.ts";
 import {
   branchNameProblem,
   type Carry,
@@ -53,6 +52,11 @@ import { fileBytes, sha256Hex, sliceAt } from "./slices.ts";
 export interface Ui {
   readonly select: (title: string, options: string[]) => Promise<string | undefined>;
   readonly confirm: (title: string, message: string) => Promise<boolean>;
+  readonly input: (
+    title: string,
+    placeholder?: string,
+    options?: { readonly signal?: AbortSignal; readonly timeout?: number },
+  ) => Promise<string | undefined>;
   readonly editor: (title: string, prefill?: string) => Promise<string | undefined>;
   readonly notify: (message: string, type?: "info" | "warning" | "error") => void;
   readonly setStatus: (key: string, text: string | undefined) => void;
@@ -79,11 +83,14 @@ export interface Host {
   readonly appendEntry: (customType: string, data: ImportRecord) => void;
 }
 
-/** What the command reaches outside pi: the environment, git, the endpoint, the disk. */
+/** What the command reaches outside pi: the settings, git, the endpoint and signing in, the disk. */
 export interface Deps {
-  readonly env: Env;
+  /** The endpoint from pi's settings, or a {@link Refusal} that says how to set it. */
+  readonly config: () => Config;
   readonly git: (cwd: string) => Git;
   readonly endpoint: (config: Config) => Promise<Endpoint>;
+  /** Signs in to the endpoint (`signin.ts`), after the owner agreed to; false when the endpoint wants no sign-in. */
+  readonly signIn: (config: Config) => Promise<boolean>;
   readonly exists: (file: string) => boolean;
 }
 
@@ -158,7 +165,7 @@ const chooseEnvironment = async (
 
   if (only === undefined) {
     throw new Refusal(
-      `No Environment has this Repo (${normalizeRepoUrl(origin) ?? origin}): add this Repo to an Environment first, in cloudpid's settings, then run /cloudpid again.`,
+      `No Environment has this Repo (${normalizeRepoUrl(origin) ?? origin}): add this Repo to an Environment first, in cloudpid's settings, then run /cloudpid import again.`,
     );
   }
 
@@ -419,7 +426,30 @@ const abandon = async (
   return problems;
 };
 
-/** `/cloudpid [instruction]`: see the module's comment. Failures the owner can act on are {@link Refusal}s. */
+/**
+ * The endpoint, connected. A sign-in that is missing or no longer accepted ({@link SignInRequired}) is offered once:
+ * the owner agrees, signs in, and the connection is tried again; none when the owner declines.
+ */
+const connect = async (host: Host, config: Config, deps: Deps): Promise<Endpoint | undefined> => {
+  try {
+    return await deps.endpoint(config);
+  } catch (error) {
+    if (!(error instanceof SignInRequired)) throw error;
+
+    const wants = await host.ui.confirm(
+      "Sign in to cloudpid?",
+      `${error.message}\nSign in to ${config.url.origin} now? Your browser opens (or you paste the redirect URL).`,
+    );
+
+    if (!wants) return undefined;
+
+    await deps.signIn(config);
+
+    return await deps.endpoint(config);
+  }
+};
+
+/** `/cloudpid import [instruction]`: see the module's comment. Failures the owner can act on are {@link Refusal}s. */
 export const importSession = async (
   host: Host,
   instruction: string,
@@ -428,18 +458,23 @@ export const importSession = async (
   const { ui } = host;
   const cancelled: Outcome = { kind: "cancelled" };
 
-  if (!host.hasUI)
-    throw new Refusal("/cloudpid asks before it imports: run it in pi's interactive mode.");
+  if (!host.hasUI) {
+    throw new Refusal(
+      "/cloudpid import asks before it imports (and may ask you to sign in): run it in pi's interactive mode; `/cloudpid login` signs in there too.",
+    );
+  }
 
   if (!host.isIdle()) {
-    throw new Refusal("pi is still working: let it finish (or stop it), then run /cloudpid again.");
+    throw new Refusal(
+      "pi is still working: let it finish (or stop it), then run /cloudpid import again.",
+    );
   }
 
   const session = host.session();
 
   if (session.file === undefined || !deps.exists(session.file)) {
     throw new Refusal(
-      "This pi session is not saved yet (pi writes its file with the first message): send a message, then run /cloudpid again.",
+      "This pi session is not saved yet (pi writes its file with the first message): send a message, then run /cloudpid import again.",
     );
   }
 
@@ -447,11 +482,11 @@ export const importSession = async (
 
   if (bytes.length > MAX_IMPORT_BYTES) {
     throw new Refusal(
-      `This session is ${formatSize(bytes.length)}, over cloudpid's limit of ${formatSize(MAX_IMPORT_BYTES)}: /compact it, or /tree to a shorter branch, then run /cloudpid again.`,
+      `This session is ${formatSize(bytes.length)}, over cloudpid's limit of ${formatSize(MAX_IMPORT_BYTES)}: /compact it, or /tree to a shorter branch, then run /cloudpid import again.`,
     );
   }
 
-  const config = readConfig(deps.env);
+  const config = deps.config();
 
   if (
     session.marker !== undefined &&
@@ -480,7 +515,7 @@ export const importSession = async (
 
   if (checkout === undefined) {
     throw new Refusal(
-      `${host.cwd} is not in a git repository: run /cloudpid from the Repo's checkout, and add this Repo to an Environment first.`,
+      `${host.cwd} is not in a git repository: run /cloudpid import from the Repo's checkout, and add this Repo to an Environment first.`,
     );
   }
 
@@ -491,7 +526,9 @@ export const importSession = async (
   }
 
   const git = deps.git(checkout.root);
-  const endpoint = await deps.endpoint(config);
+  const endpoint = await connect(host, config, deps);
+
+  if (endpoint === undefined) return cancelled;
 
   try {
     const environments = await endpoint.environments();
@@ -513,7 +550,7 @@ export const importSession = async (
     const head = await headOf(git);
 
     if (head.commit === undefined) {
-      throw new Refusal("This repo has no commit yet: commit, then run /cloudpid again.");
+      throw new Refusal("This repo has no commit yet: commit, then run /cloudpid import again.");
     }
 
     const { commit } = head;
@@ -546,7 +583,7 @@ export const importSession = async (
 
     if (plan.behind) {
       throw new Refusal(
-        `origin's ${target.name} has commits this checkout lacks: pull first, then run /cloudpid again.`,
+        `origin's ${target.name} has commits this checkout lacks: pull first, then run /cloudpid import again.`,
       );
     }
 
@@ -601,7 +638,7 @@ export const importSession = async (
 
           if (plan.behind) {
             throw new Refusal(
-              `origin's ${name} has commits this checkout lacks: pull first, then run /cloudpid again.`,
+              `origin's ${name} has commits this checkout lacks: pull first, then run /cloudpid import again.`,
             );
           }
         }

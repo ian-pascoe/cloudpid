@@ -246,7 +246,7 @@ export const pushBranch = async (git: Git, head: string, branch: string): Promis
 
   throw new GitError(
     /non-fast-forward|fetch first/.test(said)
-      ? `origin's ${branch} has commits this checkout lacks: pull first, then run /cloudpid again.`
+      ? `origin's ${branch} has commits this checkout lacks: pull first, then run /cloudpid import again.`
       : `git push failed: ${said}`,
   );
 };

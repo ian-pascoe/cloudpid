@@ -44,6 +44,12 @@ describe("the bundle check", () => {
     expect(problems.join("\n")).toContain(name);
   });
 
+  it("passes typebox, and a subpath of it, once it is a declared peer", () => {
+    expect(
+      bundleProblems(metafile([], ["typebox", "typebox/value"]), [...PEERS, "typebox"]),
+    ).toEqual([]);
+  });
+
   it("fails an external import that is no Node module and no declared peer", () => {
     expect(bundleProblems(metafile([], ["typebox", "left-pad"]), PEERS)).toEqual([
       expect.stringContaining("typebox"),
