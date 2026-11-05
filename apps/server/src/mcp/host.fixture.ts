@@ -55,6 +55,7 @@ import * as Tracer from "effect/Tracer";
 import type { Mutable } from "effect/Types";
 import { mcpEngineClient } from "./engine.ts";
 import { mcpHostLayer, mcpHostMethods, McpRegistryUnavailable } from "./host.ts";
+import type { KeepAliveAlarm } from "./keep-alive.ts";
 import { environmentOfMcpHost } from "./name.ts";
 import { type McpHostStoreService, openMcpHostStore, type StoredSet } from "./store.ts";
 import type { WatchRow } from "./watch-store.ts";
@@ -222,6 +223,12 @@ const unscripted = (url: string): typeof McpEngineDiscoverResult.Encoded => ({
   state: {},
 });
 
+/** An alarm that is never set, for a runtime over storage of its own. */
+const NO_ALARM: KeepAliveAlarm = {
+  setAlarm: () => Promise.resolve(),
+  deleteAlarm: () => Promise.resolve(),
+};
+
 /**
  * The host's services over `store` alone, for a test that runs a method in the object over storage of its own (one
  * that refuses): a Registry that cannot be reached and an engine with nothing scripted.
@@ -240,6 +247,7 @@ export const hostServicesOver = (store: McpHostStoreService) =>
       request: () => Promise.reject(new Error("Nothing scripted")),
       listen: () => Promise.reject(new Error("Nothing scripted")),
     }),
+    alarm: NO_ALARM,
   });
 
 /** `store` whose members throw while `refused(member)`. */
@@ -581,6 +589,8 @@ export class TestMcpHost extends DurableObject {
           }),
       },
       engine: mcpEngineClient(this.#engine),
+      // The object's own alarm, refused as the rest of its storage is once `replace()` ran.
+      alarm: this.#gate.storage,
       processEnded: (conn, workspace, spawn) =>
         Effect.sync(() => {
           this.#ended.push({ conn, workspace, spawn });
@@ -815,6 +825,11 @@ export class TestMcpHost extends DurableObject {
 
   apply(input: McpApply): Promise<McpApplyResult> {
     return Effect.runPromise(this.#methods.apply(input));
+  }
+
+  /** The object's alarm, as the McpHost DO answers it. */
+  async alarm(): Promise<void> {
+    await Effect.runPromise(this.#methods.alarm());
   }
 
   async requestStart(request: McpRequestStart): Promise<McpRequestStartAnswer> {

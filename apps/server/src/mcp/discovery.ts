@@ -4,8 +4,9 @@
 //
 // Discoveries run as fibers in the host's runtime, kept in its scope (`McpDiscovery`), so they outlive the call that
 // started them: single-flight per `conn`, at most 3 at once, each one request in flight on its server and one
-// background engine call (`McpLoadCaps`). Nothing arms an alarm: a server is retried only on demand (`requestStart`,
-// `servers`, a set change, a reload), once its backoff is over. A stdio server is discovered only on a live caller's
+// background engine call (`McpLoadCaps`). Each one in flight holds the object's keep-alive alarm (`McpKeepAlive`), and
+// nothing else arms it: a server is retried only on demand (`requestStart`, `servers`, a set change, a reload), once its
+// backoff is over. A stdio server is discovered only on a live caller's
 // demand that names the caller's Workspace, in that Workspace's Container, which the discovery may start. A storage operation that fails stops new discoveries
 // (a replaced instance, whose writes are refused; `docs/architecture/mcp-connections.md` → Deploys).
 //
@@ -47,6 +48,7 @@ import { deprecationHook } from "./deprecation-notes.ts";
 import { authorizedDiscovery, type DiscoveryAccess } from "./discovery-auth.ts";
 import { DISCOVER_TIMEOUT_MS, McpEngineClient } from "./engine.ts";
 import { inventoryRows } from "./inventory.ts";
+import { McpKeepAlive } from "./keep-alive.ts";
 import { McpListCache } from "./list-cache.ts";
 import { McpLoadCaps } from "./limits.ts";
 import { recordLogs } from "./logs.ts";
@@ -118,6 +120,7 @@ export type McpDiscoveryServices =
   | McpEngineClient
   | McpRegistryPort
   | McpDiscovery
+  | McpKeepAlive
   | McpLoadCaps
   | McpListCache
   | McpProcessEnded
@@ -655,6 +658,7 @@ export const startDue = (
   Effect.gen(function* () {
     const store = yield* McpHostStore;
     const discovery = yield* McpDiscovery;
+    const keepAlive = yield* McpKeepAlive;
     const now = yield* Clock.currentTimeMillis;
 
     if (discovery.halted.value) return;
@@ -678,19 +682,22 @@ export const startDue = (
           }),
         );
 
-        // A stdio discovery takes its Workspace's slot first, so one waiting for it holds none of the host's 3.
+        // A stdio discovery takes its Workspace's slot first, so one waiting for it holds none of the host's 3. From its
+        // start to its end, however it ends (waiting for a slot included), it holds the object in memory.
         yield* FiberMap.run(
           discovery.fibers,
           conn,
-          inWorkspaceSlot(
-            discovery,
-            view.reach === "stdio" ? workspace : undefined,
-            discovery.slots.withPermits(1)(
-              Effect.andThen(started, discoverOne(environment, view, cause, workspace)),
+          keepAlive.hold(
+            inWorkspaceSlot(
+              discovery,
+              view.reach === "stdio" ? workspace : undefined,
+              discovery.slots.withPermits(1)(
+                Effect.andThen(started, discoverOne(environment, view, cause, workspace)),
+              ),
+            ).pipe(
+              Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : halt)),
+              Effect.ensuring(Effect.sync(() => discovery.startedAt.delete(conn))),
             ),
-          ).pipe(
-            Effect.catchCause((cause) => (Cause.hasInterruptsOnly(cause) ? Effect.void : halt)),
-            Effect.ensuring(Effect.sync(() => discovery.startedAt.delete(conn))),
           ),
         );
       }

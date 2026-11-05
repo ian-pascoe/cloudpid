@@ -69,6 +69,7 @@ import {
 } from "./discovery.ts";
 import { McpEngineClient, type McpEngineClientService } from "./engine.ts";
 import { serverHashes } from "./inventory.ts";
+import { type KeepAliveAlarm, McpKeepAlive } from "./keep-alive.ts";
 import { McpAppReads } from "./app-reads.ts";
 import { McpListCache } from "./list-cache.ts";
 import { McpLoadCaps } from "./limits.ts";
@@ -100,13 +101,15 @@ export {
 export type McpHostServices = McpDiscoveryServices | McpAppReads;
 
 /**
- * The host's services over `store`, `registry` and `engine`, with a fresh set of discoveries; `references` sets the
- * runtime's own `Clock` and `Tracer` (the object's `Telemetry`, a test's clock).
+ * The host's services over `store`, `registry` and `engine`, with a fresh set of discoveries and the keep-alive over
+ * `alarm`; `references` sets the runtime's own `Clock` and `Tracer` (the object's `Telemetry`, a test's clock).
  */
 export const mcpHostLayer = (deps: {
   readonly store: McpHostStoreService;
   readonly registry: McpRegistryPortService;
   readonly engine: McpEngineClientService;
+  /** The object's alarm, which `McpKeepAlive` owns. */
+  readonly alarm: KeepAliveAlarm;
   /** What is done besides ending the Resource watches on it when a stdio server's child ended. */
   readonly processEnded?: McpProcessEndedHandler;
   readonly references?: Layer.Layer<never>;
@@ -117,6 +120,7 @@ export const mcpHostLayer = (deps: {
     Layer.succeed(McpEngineClient, deps.engine),
     McpTokens.layer.pipe(Layer.provide(Layer.succeed(McpRegistryPort, deps.registry))),
     McpDiscovery.layer,
+    McpKeepAlive.layer(deps.alarm),
     McpLoadCaps.layer,
     McpListCache.layer,
     McpAppReads.layer,
@@ -794,6 +798,14 @@ export type McpHostMethods = {
 };
 
 /**
+ * The host object's handlers: its RPC methods and its `alarm` (`McpKeepAlive`), kept out of `McpHostMethods`, which
+ * the callers' stubs are typed by, since no caller calls it. A refused re-arm dies, so the platform retries the alarm.
+ */
+export type McpHostHandlers = McpHostMethods & {
+  readonly alarm: () => Effect.Effect<void>;
+};
+
+/**
  * The methods of the host of `environment` over `runtime`, the object's one long-lived runtime: each runs with its
  * services, and the discoveries it starts stay in its scope after the call returns. A host whose name is no
  * `mcp:<environment>` has no Environment, and refuses with a failure.
@@ -801,7 +813,7 @@ export type McpHostMethods = {
 export const mcpHostMethods = (
   environment: string | undefined,
   runtime: ManagedRuntime.ManagedRuntime<McpHostServices, never>,
-): McpHostMethods => {
+): McpHostHandlers => {
   const provided = <A>(effect: Effect.Effect<A, never, McpHostServices>): Effect.Effect<A> =>
     Effect.flatMap(runtime.contextEffect, (context) => Effect.provideContext(effect, context));
 
@@ -814,5 +826,13 @@ export const mcpHostMethods = (
       environment === undefined
         ? Effect.succeed(HostFailed.make({ message: "The MCP host's name is unknown" }))
         : provided(apply(input, environment)),
+    alarm: () =>
+      provided(
+        Effect.gen(function* () {
+          const keepAlive = yield* McpKeepAlive;
+
+          yield* keepAlive.alarm;
+        }).pipe(Effect.orDie, Effect.withSpan("mcp.alarm")),
+      ),
   };
 };

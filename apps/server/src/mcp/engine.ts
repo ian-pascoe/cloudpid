@@ -6,11 +6,9 @@
 // A discovery passes the engine one hook only, `onDeprecated`, so a server's Sampling request is noted on any path, a
 // discovery's included; a note lost to a dead stub fails nothing. It passes no other: it runs as a fiber in the host's
 // runtime, often past the invocation that started it, and a function stub lives only as long as the invocation that
-// made it (#409 answer 2), so an `untilAborted()` would cut it about 72 s later. The RPC itself is the object's own pending I/O, which keeps the object
-// in memory for up to 15 minutes (Cloudflare's Durable Object lifecycle, "Pending operations prevent eviction"), and
-// the engine runs the discovery to its own bounds. That keep-alive is the documented behaviour, not yet verified on a
-// deployed stage: #409's 72 s also falls inside the 70-140 s idle eviction, so a deployed test still has to hold one
-// background discovery past 150 s with no request reaching the host and see it stored.
+// made it (#409 answer 2), so an `untilAborted()` would cut it about 72 s later. The engine runs the discovery to its own
+// bounds, and the host's keep-alive alarm holds the host in memory meanwhile (`docs/architecture/mcp-connections.md` →
+// The host object).
 //
 // A discovery the host interrupts (a set change, a reload, a destroy) is dropped here, unread: it runs nothing on the
 // server, so the engine finishing it costs only its own time, except that an interrupted Legacy discovery leaves the
