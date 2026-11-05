@@ -442,7 +442,7 @@ ${SETUP_STEPS}`);
   const file = scope === "project" ? files.project : files.global;
   return { url: endpointUrl(settings.baseUrl, `\`cloudpid.baseUrl\` in ${file}`) };
 };
-var BUILD_SHA = "7d48245a704bbfbed38f3af924b734ac01bae959";
+var BUILD_SHA = "1d549a27716afbc959a8c98200c8ae06f7b101e4";
 var clientName = (sha = BUILD_SHA) => `pi-cloudpid/${sha.slice(0, 12)}`;
 
 // ../../node_modules/.bun/@modelcontextprotocol+client@2.4.0/node_modules/@modelcontextprotocol/client/dist/chunk-DYPzFuB5.mjs
