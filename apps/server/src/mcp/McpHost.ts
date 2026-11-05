@@ -8,8 +8,8 @@
 // `tools/call` (`request`), and the host's access tokens (`ask` of the Registry, kept in memory, and the reports of what
 // a server answered: `McpRegistryPort`'s `accessToken` and `reportAuth` below), over one `ManagedRuntime` kept for the
 // object's life. The other `request` ops and the rest of `apply` come with their slices; an `apply` kind or `op` this
-// build does not know fails as `HostUnsupported`. Its `alarm` only holds it in memory while a discovery is in flight
-// (`keep-alive.ts`): it is armed by nothing else, and starts nothing.
+// build does not know fails as `HostUnsupported`. Its `alarm` is the keep-alive's (`docs/architecture/mcp-connections.md`
+// → The host object).
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { MCP_ENGINE_BINDING } from "@cloudpid/mcp-worker/binding";
 import {
@@ -30,7 +30,7 @@ import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
 import { workersTracing } from "../tracing.ts";
 import { mcpEngineClient } from "./engine.ts";
 import {
-  type McpHostObject,
+  type McpHostHandlers,
   mcpHostLayer,
   mcpHostMethods,
   type McpRegistryPortService,
@@ -40,7 +40,7 @@ import { environmentOfMcpHost } from "./name.ts";
 import { openMcpHostStore } from "./store.ts";
 
 /** One Environment's MCP host. The class name is the Durable Object class name in every stage's migrations. */
-export class McpHost extends Cloudflare.DurableObject<McpHost, McpHostObject>()("McpHost") {}
+export class McpHost extends Cloudflare.DurableObject<McpHost, McpHostHandlers>()("McpHost") {}
 
 const decodeAnswer = Schema.decodeUnknownEffect(McpServerSetAnswer);
 
@@ -130,7 +130,7 @@ export const McpHostLive = McpHost.make(
           }),
         );
 
-        return mcpHostMethods(environment, runtime) satisfies McpHostObject;
+        return mcpHostMethods(environment, runtime) satisfies McpHostHandlers;
       }),
     ),
   ),

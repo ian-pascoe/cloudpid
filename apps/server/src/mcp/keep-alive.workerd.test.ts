@@ -1,7 +1,7 @@
 // `McpHost`'s keep-alive (`docs/architecture/mcp-connections.md` → The host object, Discovery and the MCP inventory): the
 // object holds an alarm about 30 s ahead while a discovery is in flight, armed again at each firing while one still is,
 // and none once the last ends, however it ends. An alarm with nothing in flight, a fresh instance's after an eviction
-// included, arms nothing and starts nothing.
+// included, arms nothing and starts nothing. A re-arm the storage refuses fails the alarm, so the platform retries it.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
 // The engine's answers are written as they cross the edge, encoded, so their failures are plain `_tag` objects.
@@ -9,7 +9,8 @@
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import type { McpApplySet, McpEngineDiscoverResult, McpSetEntry } from "@cloudpid/mcp/types";
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { poll } from "../poll.fixture.ts";
 import { DISCOVERY_DEADLINE_MS } from "./discovery.ts";
 import type { EngineScript, TestMcpHost } from "./host.fixture.ts";
 import { KEEP_ALIVE_MS } from "./keep-alive.ts";
@@ -102,6 +103,20 @@ const expectArmedSince = async (host: Host, before: number) => {
   expect(at).toBeLessThanOrEqual(Date.now() + KEEP_ALIVE_MS);
 };
 
+/** Wait until `host` has asked the engine for `count` discoveries. */
+const discovering = (host: Host, count: number) =>
+  poll(
+    async () => (await calls(host)) >= count,
+    () => `The engine never had ${count} discoveries`,
+  );
+
+/** Wait until `host`'s alarm is cleared. */
+const cleared = (host: Host) =>
+  poll(
+    async () => (await alarmOf(host)) === null,
+    () => "The keep-alive alarm was never cleared",
+  );
+
 /** A host with `name`'s discovery started and held at the engine, its alarm armed. */
 const inFlight = async (name: string, script: EngineScript) => {
   const host = freshHost();
@@ -112,7 +127,7 @@ const inFlight = async (name: string, script: EngineScript) => {
   const before = Date.now();
 
   await restart(host);
-  await vi.waitFor(async () => expect(await calls(host)).toBe(1));
+  await discovering(host, 1);
   await expectArmedSince(host, before);
 
   return host;
@@ -146,7 +161,7 @@ describe("the keep-alive alarm", () => {
 
     await host.apply(setOf());
 
-    await vi.waitFor(async () => expect(await alarmOf(host)).toBeNull());
+    await cleared(host);
     await host.release(urlOf("gone"));
   });
 
@@ -159,7 +174,7 @@ describe("the keep-alive alarm", () => {
     expect((await host.servers({ parts: [] })).servers[0]?.error).toBe(
       "The discovery did not end in time",
     );
-    await vi.waitFor(async () => expect(await alarmOf(host)).toBeNull());
+    await cleared(host);
     await host.release(urlOf("slow"));
   });
 
@@ -170,11 +185,12 @@ describe("the keep-alive alarm", () => {
     await host.scriptEngine(urlOf("one"), [heldFound(["a"])]);
     await host.scriptEngine(urlOf("two"), [heldFound(["b"])]);
     await restart(host);
-    await vi.waitFor(async () => expect(await calls(host)).toBe(2));
+    await discovering(host, 2);
 
     await host.release(urlOf("one"));
-    await vi.waitFor(async () =>
-      expect((await restart(host)).servers.one?.state).toBe("connected"),
+    await poll(
+      async () => (await restart(host)).servers.one?.state === "connected",
+      () => "The first discovery never ended",
     );
     expect(await alarmOf(host)).not.toBeNull();
 
@@ -196,6 +212,17 @@ describe("the keep-alive alarm", () => {
     await host.release(urlOf("slow"));
     await settled(host);
     expect(await alarmOf(host)).toBeNull();
+  });
+
+  it("fails at a firing whose re-arm the storage refuses while a discovery is in flight, so it is retried", async () => {
+    const host = await inFlight("slow", heldFound(["a"]));
+
+    // A code update reaches the instance: its storage refuses the re-arm.
+    await host.replace();
+
+    await expect(runDurableObjectAlarm(host)).rejects.toThrow();
+
+    await host.release(urlOf("slow"));
   });
 
   it("arms nothing and starts nothing when it fires with nothing in flight", async () => {

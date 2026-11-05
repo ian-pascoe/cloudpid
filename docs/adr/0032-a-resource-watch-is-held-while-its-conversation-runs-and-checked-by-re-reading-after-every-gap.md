@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (a pending outbound fetch does not keep a Durable Object in memory: amended by #555 and #648)
 ---
 
 # A Resource watch belongs to a conversation, is held only while it runs, is checked by re-reading after every gap, and never starts a Run
@@ -9,7 +9,7 @@ An agent watches an MCP resource by reading it with `read_mcp_resource { watch: 
 ## Considered options
 
 - **The host calling Sessions with updates**: wakes idle Sessions and needs delivery that survives eviction, while the model sees a notice only at a request anyway.
-- **Streams held around the clock, reopened by alarms**: a pending outbound fetch keeps a Durable Object in memory and is billed as duration, and a deploy or runtime update still cuts the stream, so the gap check is needed either way.
+- **Streams held around the clock, reopened by alarms**: a pending outbound fetch keeps a Durable Object in memory and is billed as duration (as documented; checked on prod it does not, #555, so the host holds an alarm instead while a discovery runs, #648), and a deploy or runtime update still cuts the stream, so the gap check is needed either way.
 - **A "may have changed" notice after every gap**: a notice every time work resumes, true or not.
 - **Polling every watched resource at each request**: one read per watch per round.
 - **The owner pinning resources in the UI**: more surface for what asking the agent to watch already does.

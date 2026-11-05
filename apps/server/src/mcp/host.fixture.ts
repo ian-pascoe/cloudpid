@@ -55,7 +55,7 @@ import * as Tracer from "effect/Tracer";
 import type { Mutable } from "effect/Types";
 import { mcpEngineClient } from "./engine.ts";
 import { mcpHostLayer, mcpHostMethods, McpRegistryUnavailable } from "./host.ts";
-import { NO_ALARM } from "./keep-alive.ts";
+import type { KeepAliveAlarm } from "./keep-alive.ts";
 import { environmentOfMcpHost } from "./name.ts";
 import { type McpHostStoreService, openMcpHostStore, type StoredSet } from "./store.ts";
 import type { WatchRow } from "./watch-store.ts";
@@ -222,6 +222,12 @@ const unscripted = (url: string): typeof McpEngineDiscoverResult.Encoded => ({
   error: { _tag: "Unreachable", message: `Nothing scripted for ${url}` },
   state: {},
 });
+
+/** An alarm that is never set, for a runtime over storage of its own. */
+const NO_ALARM: KeepAliveAlarm = {
+  setAlarm: () => Promise.resolve(),
+  deleteAlarm: () => Promise.resolve(),
+};
 
 /**
  * The host's services over `store` alone, for a test that runs a method in the object over storage of its own (one

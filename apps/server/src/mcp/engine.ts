@@ -7,9 +7,8 @@
 // discovery's included; a note lost to a dead stub fails nothing. It passes no other: it runs as a fiber in the host's
 // runtime, often past the invocation that started it, and a function stub lives only as long as the invocation that
 // made it (#409 answer 2), so an `untilAborted()` would cut it about 72 s later. The engine runs the discovery to its own
-// bounds. The pending RPC does not keep the object in memory, though Cloudflare's lifecycle says pending operations
-// prevent eviction: on prod, idle eviction cut one 107-125 s after the host's last request (#555). The host's
-// keep-alive alarm holds it instead while a discovery is in flight (`keep-alive.ts`).
+// bounds, and the host's keep-alive alarm holds the host in memory meanwhile (`docs/architecture/mcp-connections.md` →
+// The host object).
 //
 // A discovery the host interrupts (a set change, a reload, a destroy) is dropped here, unread: it runs nothing on the
 // server, so the engine finishing it costs only its own time, except that an interrupted Legacy discovery leaves the

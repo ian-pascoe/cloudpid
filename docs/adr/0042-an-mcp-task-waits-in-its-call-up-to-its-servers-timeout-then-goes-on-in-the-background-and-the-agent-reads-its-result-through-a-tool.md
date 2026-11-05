@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (the host's alarm, which holds it in memory while a discovery is in flight: amended by #648)
 ---
 
 # An MCP task waits in its call up to its server's timeout, then goes on in the background, and the agent is told when it ends and reads its result through a tool
@@ -13,7 +13,7 @@ A Modern MCP server may answer a `tools/call` with an MCP task (the `io.modelcon
 - **The agent choosing per call**: an argument on every MCP tool pollutes the server's schemas and can collide with its own.
 - **The result's content in the posted entry**: that entry is a user message that starts a Run with nobody watching, the strongest place an injected instruction can get. A tool result keeps the server's text in the role models treat as data. A Resource watch's notice is URI-only for the same reason (ADR-0032).
 - **Subagents and scripts waiting to the end**: a subagent can be given a new turn, as `agent_message` and subagent reports already do, so nothing needs to wait.
-- **Polling from the MCP host object**: it has no alarm and never calls a Session (ADR-0038).
+- **Polling from the MCP host object**: it has no alarm that schedules work (its alarm only holds it in memory while a discovery is in flight, #648) and never calls a Session (ADR-0038).
 - **Push through `subscriptions/listen`**: the host can't pass a notification on to a Session, and a dropped stream loses notifications for good.
 - **Steering a result into a busy Run**: it would interrupt the agent's work, which subagent reports don't.
 - **Showing the server's task id**: the spec lets a task id act as a bearer token, so a leaked id may be all that protects the task.

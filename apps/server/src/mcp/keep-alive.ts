@@ -7,6 +7,7 @@
 //
 // It owns the object's one alarm: nothing else of `McpHost`'s arms it. Only discoveries hold it for now.
 // @effect-diagnostics missingPipeableSignature:off -- the service's operations, not combinators.
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -22,35 +23,36 @@ export type KeepAliveAlarm = {
   readonly deleteAlarm: () => Promise<void>;
 };
 
-/** An alarm that is never set, for a host with no object of its own (a test's runtime over storage of its own). */
-export const NO_ALARM: KeepAliveAlarm = {
-  setAlarm: () => Promise.resolve(),
-  deleteAlarm: () => Promise.resolve(),
-};
-
 export type McpKeepAliveService = {
   /** `work`, with the object held in memory while it runs, however it ends. */
   readonly hold: <A, E, R>(work: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
-  /** What the object's alarm does: arm itself again while any work is held, and nothing otherwise. */
-  readonly alarm: Effect.Effect<void>;
+  /**
+   * What the object's alarm does: arm itself again while any work is held, and nothing otherwise. A re-arm the storage
+   * refuses fails it, so the platform retries the alarm rather than let the chain end while work is held.
+   */
+  readonly alarm: Effect.Effect<void, Cause.UnknownError>;
 };
 
 /** The host's keep-alive, over its object's alarm. Internal to the host. */
 export class McpKeepAlive extends Context.Service<McpKeepAlive, McpKeepAliveService>()(
   "@cloudpid/server/mcp/keep-alive/McpKeepAlive",
 ) {
-  /** The keep-alive over `alarm`, armed `intervalMs` ahead. */
-  static readonly layer = (alarm: KeepAliveAlarm, intervalMs = KEEP_ALIVE_MS) =>
+  /** The keep-alive over `alarm`, armed `KEEP_ALIVE_MS` ahead. */
+  static readonly layer = (alarm: KeepAliveAlarm) =>
     Layer.sync(McpKeepAlive, () => {
       let held = 0;
 
-      // The storage is asked at once, so its calls keep the order the count moved in, and the work does not wait for the
-      // answer: a discovery's first steps stay where they were. A refused alarm (a replaced instance's storage) costs only
-      // the keep-alive: the work goes on, and fails nothing.
-      const attempt = (what: string, operation: () => Promise<void>) =>
+      const setAlarm = Effect.flatMap(Clock.currentTimeMillis, (now) =>
+        Effect.tryPromise(() => alarm.setAlarm(now + KEEP_ALIVE_MS)),
+      );
+
+      // At a hold or a release the storage is asked at once, so its calls keep the order the count moved in, and the
+      // work does not wait for the answer: a discovery's first steps stay where they were. A refusal (a replaced
+      // instance's storage) costs only the keep-alive: the work goes on, and fails nothing.
+      const inBackground = (what: string, operation: Effect.Effect<void, Cause.UnknownError>) =>
         Effect.asVoid(
           Effect.forkDetach(
-            Effect.tryPromise(operation).pipe(
+            operation.pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning(`The MCP host's keep-alive alarm was not ${what}`, cause),
               ),
@@ -59,11 +61,12 @@ export class McpKeepAlive extends Context.Service<McpKeepAlive, McpKeepAliveServ
           ),
         );
 
-      const arm = Effect.flatMap(Clock.currentTimeMillis, (now) =>
-        attempt("armed", () => alarm.setAlarm(now + intervalMs)),
-      );
+      const arm = inBackground("armed", setAlarm);
 
-      const disarm = attempt("cleared", () => alarm.deleteAlarm());
+      const disarm = inBackground(
+        "cleared",
+        Effect.tryPromise(() => alarm.deleteAlarm()),
+      );
 
       return {
         hold: (work) =>
@@ -81,7 +84,7 @@ export class McpKeepAlive extends Context.Service<McpKeepAlive, McpKeepAliveServ
                 return held === 0 ? disarm : Effect.void;
               }),
           ),
-        alarm: Effect.suspend(() => (held > 0 ? arm : Effect.void)),
+        alarm: Effect.suspend(() => (held > 0 ? setAlarm : Effect.void)),
       };
     });
 }

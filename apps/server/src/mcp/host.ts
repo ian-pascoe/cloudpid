@@ -101,9 +101,8 @@ export {
 export type McpHostServices = McpDiscoveryServices | McpAppReads;
 
 /**
- * The host's services over `store`, `registry` and `engine`, with a fresh set of discoveries, held in memory through
- * `alarm` while any runs; `references` sets the runtime's own `Clock` and `Tracer` (the object's `Telemetry`, a test's
- * clock).
+ * The host's services over `store`, `registry` and `engine`, with a fresh set of discoveries and the keep-alive over
+ * `alarm`; `references` sets the runtime's own `Clock` and `Tracer` (the object's `Telemetry`, a test's clock).
  */
 export const mcpHostLayer = (deps: {
   readonly store: McpHostStoreService;
@@ -799,10 +798,10 @@ export type McpHostMethods = {
 };
 
 /**
- * What the host object answers: its RPC methods, and its alarm, which only keeps it in memory while background work
- * runs (`McpKeepAlive`): it starts nothing.
+ * The host object's handlers: its RPC methods and its `alarm` (`McpKeepAlive`), kept out of `McpHostMethods`, which
+ * the callers' stubs are typed by, since no caller calls it. A refused re-arm dies, so the platform retries the alarm.
  */
-export type McpHostObject = McpHostMethods & {
+export type McpHostHandlers = McpHostMethods & {
   readonly alarm: () => Effect.Effect<void>;
 };
 
@@ -814,7 +813,7 @@ export type McpHostObject = McpHostMethods & {
 export const mcpHostMethods = (
   environment: string | undefined,
   runtime: ManagedRuntime.ManagedRuntime<McpHostServices, never>,
-): McpHostObject => {
+): McpHostHandlers => {
   const provided = <A>(effect: Effect.Effect<A, never, McpHostServices>): Effect.Effect<A> =>
     Effect.flatMap(runtime.contextEffect, (context) => Effect.provideContext(effect, context));
 
@@ -833,7 +832,7 @@ export const mcpHostMethods = (
           const keepAlive = yield* McpKeepAlive;
 
           yield* keepAlive.alarm;
-        }).pipe(Effect.withSpan("mcp.alarm")),
+        }).pipe(Effect.orDie, Effect.withSpan("mcp.alarm")),
       ),
   };
 };

@@ -10,8 +10,7 @@
 // demand that names the caller's Workspace, in that Workspace's Container, which the discovery may start. A storage operation that fails stops new discoveries
 // (a replaced instance, whose writes are refused; `docs/architecture/mcp-connections.md` → Deploys).
 //
-// A discovery passes the engine no callback (`engine.ts`), so the invocation that started it ending cuts nothing; the
-// pending RPC does not keep the object in memory, so the keep-alive does, against idle eviction (#555). A
+// A discovery passes the engine no callback (`engine.ts`), so the invocation that started it ending cuts nothing. A
 // failure on the host's side (the engine out of reach or silent) is not the server's: it leaves its state as it was,
 // held back for 30 s. No discovery holds its slot past `DISCOVERY_DEADLINE_MS`: it is then given up the same way.
 // @effect-diagnostics missingPipeableSignature:off -- the scheduler's operations, not combinators.
