@@ -3,7 +3,8 @@
  * Where the endpoint is (docs/architecture/mcp-endpoint.md → The `/cloudpid` command → Configuration): the
  * `cloudpid.baseUrl` pi setting, read with `defineLayeredSettings` (`@ian-pascoe/pi-utils`): `~/.pi/agent/settings.json`,
  * then `.pi/settings.json` of a trusted project. No default and no environment variable; an unset or invalid block is a
- * {@link Refusal}. Read on every run, so a change needs no `/reload`. How the command gets in is `oauth.ts`.
+ * {@link Refusal}. Read on every run and at every `session_start` (`index.ts`), so a change needs no `/reload` for the
+ * command. How the command gets in is `oauth.ts`.
  */
 import { defineLayeredSettings } from "@ian-pascoe/pi-utils/layered-settings";
 import type { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";

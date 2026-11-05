@@ -37,12 +37,13 @@ afterEach(() => {
 const registered = () => {
   const commands = new Map<string, Command>();
 
-  // SAFETY: the extension calls `registerCommand` and nothing else of pi's API at load.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: the extension calls `registerCommand` and `on` and nothing else of pi's API at load.
   const pi = {
+    on: () => () => {},
     registerCommand: (name: string, options: Command) => {
       commands.set(name, options);
     },
-  } as ExtensionAPI;
+  } as unknown as ExtensionAPI;
 
   register(pi);
 
