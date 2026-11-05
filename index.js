@@ -1,5 +1,449 @@
 // src/index.ts
 import { existsSync } from "node:fs";
+import { join as join3 } from "node:path";
+import {
+  CONFIG_DIR_NAME,
+  getAgentDir,
+  SettingsManager
+} from "@earendil-works/pi-coding-agent";
+
+// src/auth-store.ts
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+
+// ../../../../../.bun/install/cache/links/effect@4.0.6-af8bd1bb894346aa/node_modules/effect/dist/Predicate.js
+function isString(input) {
+  return typeof input === "string";
+}
+function isNumber(input) {
+  return typeof input === "number";
+}
+function isBoolean(input) {
+  return typeof input === "boolean";
+}
+function isObject(input) {
+  return typeof input === "object" && input !== null && !Array.isArray(input);
+}
+
+// src/errors.ts
+class Refusal extends Error {
+  name = "Refusal";
+}
+
+class ApiFailure extends Error {
+  name = "ApiFailure";
+  code;
+  retryable;
+  details;
+  constructor(code, message, retryable, details) {
+    super(message);
+    this.code = code;
+    this.retryable = retryable;
+    this.details = details;
+  }
+}
+
+class SignInRequired extends Refusal {
+  name = "SignInRequired";
+}
+var SIGN_IN_REJECTED = "sign-in rejected or expired: run `/cloudpid login`.";
+var NOT_SIGNED_IN = "not signed in to cloudpid: run `/cloudpid login`.";
+
+// src/json.ts
+var isJson = (value) => value === null || isString(value) || isNumber(value) || isBoolean(value) || Array.isArray(value) && value.every(isJson) || isObject(value) && Object.values(value).every(isJson);
+var isJsonObject = (value) => value !== undefined && value !== null && isObject(value);
+var toObject = (value) => isJsonObject(value) ? value : undefined;
+var stringField = (fields, key) => {
+  const value = fields[key];
+  return isString(value) ? value : undefined;
+};
+var integerField = (fields, key) => {
+  const value = fields[key];
+  return isNumber(value) && Number.isInteger(value) ? value : undefined;
+};
+var objectField = (fields, key) => toObject(fields[key]);
+var objectsField = (fields, key) => {
+  const value = fields[key];
+  const found = [];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const object = toObject(item);
+      if (object !== undefined)
+        found.push(object);
+    }
+  }
+  return found;
+};
+var stringsField = (fields, key) => {
+  const value = fields[key];
+  return Array.isArray(value) ? value.filter(isString) : [];
+};
+
+// src/auth-store.ts
+var AUTH_FILE = "cloudpid-auth.json";
+var FILE_VERSION = 1;
+var entryOf = (raw) => {
+  const client = objectField(raw, "client");
+  const tokens = objectField(raw, "tokens");
+  const discovery = objectField(raw, "discovery");
+  const authorizationServerUrl = discovery === undefined ? undefined : stringField(discovery, "authorizationServerUrl");
+  const obtainedAt = isNumber(raw["obtainedAt"]) ? raw["obtainedAt"] : undefined;
+  const entry = {};
+  if (client !== undefined && stringField(client, "client_id") !== undefined) {
+    entry.client = client;
+  }
+  if (tokens !== undefined && stringField(tokens, "access_token") !== undefined) {
+    entry.tokens = tokens;
+  }
+  if (obtainedAt !== undefined)
+    entry.obtainedAt = obtainedAt;
+  if (discovery !== undefined && authorizationServerUrl !== undefined) {
+    entry.discovery = { ...discovery, authorizationServerUrl };
+  }
+  return entry;
+};
+var parseFile = (path, text) => {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Refusal(`${path} is not valid JSON: fix or delete it (it holds your cloudpid sign-ins).`);
+  }
+  const root = isJson(parsed) ? toObject(parsed) : undefined;
+  const endpoints = root === undefined ? undefined : objectField(root, "endpoints");
+  if (endpoints === undefined) {
+    throw new Refusal(`${path} is not a cloudpid sign-in file: fix or delete it.`);
+  }
+  const entries = new Map;
+  for (const [endpoint, value] of Object.entries(endpoints)) {
+    const entry = toObject(value);
+    if (entry !== undefined)
+      entries.set(endpoint, entry);
+  }
+  return entries;
+};
+var fileAuthStore = (agentDir) => {
+  const path = join(agentDir, AUTH_FILE);
+  let queue = Promise.resolve();
+  const load = async () => {
+    let text;
+    try {
+      text = await readFile(path, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return new Map;
+      throw error;
+    }
+    if (process.platform !== "win32" && ((await stat(path)).mode & 63) !== 0) {
+      await chmod(path, 384);
+    }
+    return parseFile(path, text);
+  };
+  const save = async (entries) => {
+    await mkdir(dirname(path), { recursive: true });
+    const temp = `${path}.${String(process.pid)}.${String(Date.now())}.tmp`;
+    const body = `${JSON.stringify({ version: FILE_VERSION, endpoints: Object.fromEntries(entries) }, null, 2)}
+`;
+    try {
+      await writeFile(temp, body, { mode: 384 });
+      await rename(temp, path);
+    } catch (error) {
+      await rm(temp, { force: true });
+      throw error;
+    }
+  };
+  const serial = (work) => {
+    const next = queue.then(work, work);
+    queue = next.catch(() => {
+      return;
+    });
+    return next;
+  };
+  return {
+    read: async (endpoint) => {
+      const entry = (await load()).get(endpoint);
+      return entry === undefined ? undefined : entryOf(entry);
+    },
+    write: (endpoint, entry) => serial(async () => {
+      const entries = await load();
+      const copy = JSON.parse(JSON.stringify(entry));
+      const written = isJson(copy) ? toObject(copy) : undefined;
+      if (written === undefined)
+        throw new Refusal("the sign-in could not be stored.");
+      entries.set(endpoint, written);
+      await save(entries);
+    }),
+    remove: (endpoint) => serial(async () => {
+      const entries = await load();
+      if (!entries.delete(endpoint))
+        return false;
+      await save(entries);
+      return true;
+    })
+  };
+};
+
+// src/command.ts
+var SUBCOMMANDS = [
+  { name: "import", description: "Import this pi session into cloudpid: import [instruction]" },
+  { name: "login", description: "Sign in to cloudpid (opens your browser)" },
+  { name: "logout", description: "Forget the stored sign-in for the configured endpoint" }
+];
+var USAGE = [
+  "Usage:",
+  "  /cloudpid import [instruction]   import this pi session into cloudpid; everything after `import` is the instruction it starts with",
+  "  /cloudpid login                  sign in to cloudpid",
+  "  /cloudpid logout                 forget the stored sign-in"
+].join(`
+`);
+var parseCommand = (args) => {
+  const line = args.trim();
+  if (line === "")
+    return { kind: "usage", problem: undefined };
+  const space = line.search(/\s/);
+  const verb = space === -1 ? line : line.slice(0, space);
+  const rest = space === -1 ? "" : line.slice(space).trim();
+  if (verb === "import")
+    return { kind: "import", instruction: rest };
+  if (verb === "login" || verb === "logout") {
+    return rest === "" ? { kind: verb } : { kind: "usage", problem: `\`${verb}\` takes no arguments (got: ${rest}).` };
+  }
+  return { kind: "usage", problem: `Unknown subcommand: ${verb}.` };
+};
+var completionsFor = (prefix) => {
+  if (/\s/.test(prefix))
+    return null;
+  const matches = SUBCOMMANDS.flatMap((subcommand) => subcommand.name.startsWith(prefix) ? [{ value: subcommand.name, label: subcommand.name, description: subcommand.description }] : []);
+  return matches.length === 0 ? null : matches;
+};
+
+// ../../node_modules/.bun/@ian-pascoe+pi-utils@0.13.0+36e02baeb1169e47/node_modules/@ian-pascoe/pi-utils/dist/layered-settings.js
+import { Type } from "typebox";
+import { Value } from "typebox/value";
+function resolveLayeredOptions(input) {
+  const settings = structuredClone(input.defaults);
+  const sources = {};
+  const apply = (key, layer, source) => {
+    const next = layer[key];
+    const hook = input.merge?.[key];
+    settings[key] = hook ? hook(settings[key], next, source) : next;
+  };
+  for (const key of input.optionKeys) {
+    sources[String(key)] = "default";
+    for (const [source, layer] of input.layers) {
+      if (!Object.hasOwn(layer, key) || layer[key] === undefined)
+        continue;
+      apply(key, layer, source);
+      sources[String(key)] = source;
+    }
+  }
+  return { settings, sources };
+}
+function isJsonObject2(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function rewriteNamespaceDocument(input) {
+  let parsed;
+  try {
+    parsed = JSON.parse((input.current ?? "{}").replace(/^\uFEFF/, ""));
+  } catch (cause) {
+    throw input.invalid("malformed", cause instanceof Error ? cause : undefined);
+  }
+  if (!isJsonObject2(parsed))
+    throw input.invalid("root", undefined);
+  const stored = parsed[input.namespace];
+  if (stored !== undefined && !isJsonObject2(stored))
+    throw input.invalid("namespace", undefined);
+  const updated = input.update({ ...stored });
+  if (Object.keys(updated).length === 0)
+    delete parsed[input.namespace];
+  else
+    parsed[input.namespace] = updated;
+  return `${JSON.stringify(parsed, null, 2)}
+`;
+}
+var optionalText = Type.Union([Type.String(), Type.Undefined()]);
+var storageSchema = Type.Object({
+  withLock: Type.Function([
+    Type.Union([Type.Literal("global"), Type.Literal("project")]),
+    Type.Function([optionalText], optionalText)
+  ], Type.Void())
+});
+function defineLayeredSettings(definition) {
+  const { namespace, label, schema, defaults, sessionEntryType, merge } = definition;
+  if (!Value.Check(schema, {}))
+    throw new Error(`${label} settings schema must make every option optional`);
+  const keySchema = Type.KeyOf(schema);
+  const sessionSchema = Type.Object({ version: Type.Literal(1), overrides: schema }, { additionalProperties: false });
+  function isOptionKey(input) {
+    return Value.Check(keySchema, input);
+  }
+  function isOptions(value) {
+    return Value.Check(schema, value);
+  }
+  function isSessionData(value) {
+    return Value.Check(sessionSchema, value);
+  }
+  function optionKey(input) {
+    if (!isOptionKey(input))
+      throw new Error(`Unknown ${label} option: ${input}`);
+    return input;
+  }
+  const optionKeys = Object.keys(schema.properties).map(optionKey);
+  function noOptions() {
+    return {};
+  }
+  function parseOptions(value, source) {
+    if (value === undefined)
+      return noOptions();
+    if (!isOptions(value)) {
+      const issue = Value.Errors(schema, value)[0];
+      throw new Error(`Invalid ${source} ${label} settings${issue?.instancePath ?? ""}: ${issue?.message ?? "invalid options"}`);
+    }
+    return structuredClone(value);
+  }
+  function readOverrides(manager) {
+    const entry = manager.getBranch().findLast((item) => item.type === "custom" && item.customType === sessionEntryType);
+    if (!entry || entry.type !== "custom")
+      return noOptions();
+    if (!isSessionData(entry.data))
+      throw new Error(`Invalid ${label} session settings`);
+    return structuredClone(entry.data.overrides);
+  }
+  function readLayers(manager) {
+    const layers = { global: noOptions(), project: noOptions() };
+    for (const scope of ["global", "project"]) {
+      try {
+        if (scope === "project" && !manager.isProjectTrusted())
+          continue;
+        const document = scope === "global" ? manager.getGlobalSettings() : manager.getProjectSettings();
+        layers[scope] = parseOptions(namespace in document ? Object.getOwnPropertyDescriptor(document, namespace)?.value : undefined, scope);
+      } catch (cause) {
+        layers[scope] = cause instanceof Error ? cause : new Error(String(cause));
+      }
+    }
+    return layers;
+  }
+  function readSettings(session, authored = readLayers(session.settingsManager)) {
+    if (authored.global instanceof Error)
+      throw authored.global;
+    const trusted = session.settingsManager.isProjectTrusted();
+    if (trusted && authored.project instanceof Error)
+      throw authored.project;
+    const layers = [
+      ["global", authored.global],
+      ["project", trusted && !(authored.project instanceof Error) ? authored.project : noOptions()]
+    ];
+    if (sessionEntryType !== undefined)
+      layers.push(["session", readOverrides(session.sessionManager)]);
+    const keys = optionKeys;
+    return resolveLayeredOptions({ defaults, optionKeys: keys, layers, merge });
+  }
+  async function writeSettings(manager, scope, change, isCurrent) {
+    const untrusted = () => new Error(`${label} project settings require a trusted project`);
+    if (scope === "project" && !manager.isProjectTrusted())
+      throw untrusted();
+    const candidate = Object.getOwnPropertyDescriptor(manager, "storage")?.value;
+    if (!Value.Check(storageSchema, candidate)) {
+      throw new Error(`Unsupported Pi settings backend: ${label} cannot safely write scoped settings`);
+    }
+    const storage = candidate;
+    await manager.flush();
+    if (!isCurrent())
+      return;
+    if (scope === "project" && !manager.isProjectTrusted())
+      throw untrusted();
+    let updated;
+    storage.withLock(scope, (current) => rewriteNamespaceDocument({
+      current,
+      namespace,
+      invalid: (reason, cause) => reason === "malformed" && cause ? cause : new Error(`Invalid ${scope} settings document; refusing to overwrite it`),
+      update: (stored) => {
+        const next = { ...stored };
+        if (change.action === "inherit")
+          Reflect.deleteProperty(next, change.key);
+        else
+          Object.assign(next, change.patch);
+        updated = parseOptions(next, scope);
+        return next;
+      }
+    }));
+    return updated;
+  }
+  const settings = {
+    optionKey,
+    optionKeys,
+    parseOptions,
+    readLayers,
+    readSettings,
+    writeSettings
+  };
+  return sessionEntryType === undefined ? settings : { ...settings, readOverrides };
+}
+
+// src/config.ts
+import { Type as Type2 } from "typebox";
+var endpointKey = (config) => config.url.href;
+var schema = Type2.Object({ baseUrl: Type2.Optional(Type2.String({ minLength: 1 })) }, { additionalProperties: false });
+var defaults = {};
+var layered = defineLayeredSettings({
+  namespace: "cloudpid",
+  label: "cloudpid",
+  schema,
+  defaults
+});
+var SETUP_STEPS = [
+  "Set `cloudpid.baseUrl` in pi's settings (`~/.pi/agent/settings.json`, or `.pi/settings.json` in a trusted project):",
+  '  { "cloudpid": { "baseUrl": "https://<your cloudpid host>" } }',
+  "Then run `/cloudpid login` to sign in. The extension's README has the rest."
+].join(`
+`);
+var LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+var mcpPath = (path) => {
+  const trimmed = path.replace(/\/+$/, "");
+  return trimmed.endsWith("/mcp") ? trimmed : `${trimmed}/mcp`;
+};
+var endpointUrl = (raw, where) => {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Refusal(`${where} is not a URL: ${raw}
+${SETUP_STEPS}`);
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) {
+    throw new Refusal(`${where} must be an https URL (${raw}); http is for localhost only.
+${SETUP_STEPS}`);
+  }
+  url.pathname = mcpPath(url.pathname);
+  url.search = "";
+  url.hash = "";
+  return url;
+};
+var readConfig = (source) => {
+  const { settingsManager, files } = source;
+  for (const problem of settingsManager.drainErrors()) {
+    throw new Refusal(`${problem.path ?? files[problem.scope]} cannot be read, so \`cloudpid.baseUrl\` is not known: ${problem.error.message}`);
+  }
+  const layers = layered.readLayers(settingsManager);
+  for (const scope of ["global", "project"]) {
+    const layer = layers[scope];
+    if (layer instanceof Error) {
+      throw new Refusal(`The \`cloudpid\` settings in ${files[scope]} are invalid (${layer.message}). Only \`baseUrl\` (a URL) is known.
+${SETUP_STEPS}`);
+    }
+  }
+  const { settings, sources } = layered.readSettings(source, layers);
+  if (settings.baseUrl === undefined) {
+    throw new Refusal(`/cloudpid is not set up: \`cloudpid.baseUrl\` is not set.
+${SETUP_STEPS}`);
+  }
+  const scope = sources["baseUrl"];
+  const file = scope === "project" ? files.project : files.global;
+  return { url: endpointUrl(settings.baseUrl, `\`cloudpid.baseUrl\` in ${file}`) };
+};
+var BUILD_SHA = "a23226513c3f82333101adcae098dd016abac10f";
+var clientName = (sha = BUILD_SHA) => `pi-cloudpid/${sha.slice(0, 12)}`;
 
 // ../../node_modules/.bun/@modelcontextprotocol+client@2.4.0/node_modules/@modelcontextprotocol/client/dist/chunk-DYPzFuB5.mjs
 var __create = Object.create;
@@ -205,7 +649,7 @@ function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 var captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {};
-function isObject(data) {
+function isObject2(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 var allowsEval = /* @__PURE__ */ cached(() => {
@@ -224,7 +668,7 @@ var allowsEval = /* @__PURE__ */ cached(() => {
   }
 });
 function isPlainObject(o) {
-  if (isObject(o) === false)
+  if (isObject2(o) === false)
     return false;
   const ctor = o.constructor;
   if (ctor === undefined)
@@ -232,7 +676,7 @@ function isPlainObject(o) {
   if (typeof ctor !== "function")
     return true;
   const prot = ctor.prototype;
-  if (isObject(prot) === false)
+  if (isObject2(prot) === false)
     return false;
   if (Object.prototype.hasOwnProperty.call(prot, "isPrototypeOf") === false) {
     return false;
@@ -2215,7 +2659,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     }
     return propValues;
   });
-  const isObject2 = isObject;
+  const isObject = isObject2;
   const catchall = def.catchall;
   let value;
   const memo = globalConfig.memoizer;
@@ -2223,7 +2667,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -2359,7 +2803,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     return doc.compile();
   };
   let fastpass;
-  const isObject2 = isObject;
+  const isObject = isObject2;
   const jit = !globalConfig.jitless;
   const allowsEval2 = allowsEval;
   const fastEnabled = jit && allowsEval2.value;
@@ -2368,7 +2812,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
   inst._zod.parse = (payload, ctx) => {
     value ?? (value = _normalized.value);
     const input = payload.value;
-    if (!isObject2(input)) {
+    if (!isObject(input)) {
       payload.issues.push({
         expected: "object",
         code: "invalid_type",
@@ -2506,7 +2950,7 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
   const disc = cached(() => discriminatorMap(def));
   inst._zod.parse = (payload, ctx) => {
     const input = payload.value;
-    if (!isObject(input)) {
+    if (!isObject2(input)) {
       payload.issues.push({
         code: "invalid_type",
         expected: "object",
@@ -10606,7 +11050,7 @@ function isLibraryFormatPattern(format, pattern, vendor) {
     return true;
   return referencePatternsForFormat(format, pattern).has(pattern);
 }
-function isJsonObject(value) {
+function isJsonObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function convertStandardElicitationSchema(schema) {
@@ -10644,7 +11088,7 @@ var PROPERTY_KEYS_BY_TYPE = {
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
 function walkProperty(node, path, vendor, unsupported) {
-  if (!isJsonObject(node))
+  if (!isJsonObject3(node))
     return node;
   const allowedKeys = typeof node.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node.type) ? PROPERTY_KEYS_BY_TYPE[node.type] : undefined;
   if (allowedKeys === undefined)
@@ -10666,7 +11110,7 @@ function walkRequestedSchema(converted, vendor) {
   const pruned = {};
   const unsupported = [];
   for (const [key, value] of Object.entries(converted))
-    if (key === "properties" && isJsonObject(value))
+    if (key === "properties" && isJsonObject3(value))
       pruned[key] = Object.fromEntries(Object.entries(value).map(([name, node]) => [name, walkProperty(node, `properties.${name}`, vendor, unsupported)]));
     else if (ROOT_KEYS.has(key))
       pruned[key] = value;
@@ -10677,7 +11121,7 @@ function walkRequestedSchema(converted, vendor) {
   return pruned;
 }
 function describeUnsupportedProperties(pruned, fallback) {
-  if (!isJsonObject(pruned.properties))
+  if (!isJsonObject3(pruned.properties))
     return fallback;
   const offenders = Object.entries(pruned.properties).filter(([, node]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
@@ -10685,7 +11129,7 @@ function describeUnsupportedProperties(pruned, fallback) {
 function findDroppedConstraintPaths(original, parsed, path = "") {
   if (Array.isArray(original) && Array.isArray(parsed))
     return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path}[${index}]`));
-  if (!isJsonObject(original) || !isJsonObject(parsed))
+  if (!isJsonObject3(original) || !isJsonObject3(parsed))
     return [];
   return Object.entries(original).flatMap(([key, value]) => {
     const childPath = path ? `${path}.${key}` : key;
@@ -23558,68 +24002,6 @@ var StreamableHTTPClientTransport = class {
   }
 };
 
-// src/errors.ts
-class Refusal extends Error {
-  name = "Refusal";
-}
-
-class ApiFailure extends Error {
-  name = "ApiFailure";
-  code;
-  retryable;
-  details;
-  constructor(code, message, retryable, details) {
-    super(message);
-    this.code = code;
-    this.retryable = retryable;
-    this.details = details;
-  }
-}
-
-// src/config.ts
-var SETUP_STEPS = [
-  "Set these in the environment pi runs in (fill the token from Keychain or 1Password, not a dotfile):",
-  "  CLOUDPID_URL=https://<your cloudpid host>/mcp",
-  "  CLOUDPID_ACCESS_CLIENT_ID=<the Local agent's client ID>",
-  "  CLOUDPID_ACCESS_CLIENT_SECRET=<its secret>",
-  "From a cloudpid checkout, `bun run --cwd infra local-agent-token --stage <stage>` prints the last two. The extension's README has the rest."
-].join(`
-`);
-var LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
-var endpointUrl = (raw) => {
-  let url;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Refusal(`CLOUDPID_URL is not a URL: ${raw}
-${SETUP_STEPS}`);
-  }
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) {
-    throw new Refusal(`CLOUDPID_URL must be an https URL (${raw}).
-${SETUP_STEPS}`);
-  }
-  if (url.pathname === "/" || url.pathname === "")
-    url.pathname = "/mcp";
-  return url;
-};
-var readConfig = (env) => {
-  const url = env["CLOUDPID_URL"]?.trim() ?? "";
-  const clientId = env["CLOUDPID_ACCESS_CLIENT_ID"]?.trim() ?? "";
-  const clientSecret = env["CLOUDPID_ACCESS_CLIENT_SECRET"]?.trim() ?? "";
-  const missing = [
-    ["CLOUDPID_URL", url],
-    ["CLOUDPID_ACCESS_CLIENT_ID", clientId],
-    ["CLOUDPID_ACCESS_CLIENT_SECRET", clientSecret]
-  ].flatMap(([name = "", value = ""]) => value === "" ? [name] : []);
-  if (missing.length > 0) {
-    throw new Refusal(`/cloudpid is not set up: ${missing.join(", ")} not set.
-${SETUP_STEPS}`);
-  }
-  return { url: endpointUrl(url), clientId, clientSecret };
-};
-var BUILD_SHA = "450dfb0a8f5a93316fb50e19c2add4ba19659db6";
-var clientName = (sha = BUILD_SHA) => `pi-cloudpid/${sha.slice(0, 12)}`;
-
 // src/constants.ts
 var PI_SESSION_FORMAT = "pi-session-jsonl";
 var MAX_SLICE_BYTES = 2 * 1024 * 1024;
@@ -23635,52 +24017,230 @@ var REQUIRED_TOOLS = [
 ];
 var THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
-// ../../../../../.bun/install/cache/links/effect@4.0.6-af8bd1bb894346aa/node_modules/effect/dist/Predicate.js
-function isString(input) {
-  return typeof input === "string";
-}
-function isNumber(input) {
-  return typeof input === "number";
-}
-function isBoolean(input) {
-  return typeof input === "boolean";
-}
-function isObject2(input) {
-  return typeof input === "object" && input !== null && !Array.isArray(input);
-}
+// src/oauth.ts
+import { randomBytes } from "node:crypto";
+var OAUTH_CLIENT_NAME = "pi-cloudpid";
+var CONNECTION_REDIRECT = "http://127.0.0.1/callback";
+var REFRESH_MARGIN_MS = 60000;
 
-// src/json.ts
-var isJson = (value) => value === null || isString(value) || isNumber(value) || isBoolean(value) || Array.isArray(value) && value.every(isJson) || isObject2(value) && Object.values(value).every(isJson);
-var isJsonObject2 = (value) => value !== undefined && value !== null && isObject2(value);
-var toObject = (value) => isJsonObject2(value) ? value : undefined;
-var stringField = (fields, key) => {
-  const value = fields[key];
-  return isString(value) ? value : undefined;
-};
-var integerField = (fields, key) => {
-  const value = fields[key];
-  return isNumber(value) && Number.isInteger(value) ? value : undefined;
-};
-var objectField = (fields, key) => toObject(fields[key]);
-var objectsField = (fields, key) => {
-  const value = fields[key];
-  const found = [];
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const object = toObject(item);
-      if (object !== undefined)
-        found.push(object);
+class CloudpidOAuthProvider {
+  #options;
+  #entry = {};
+  #persistent;
+  #verifier;
+  constructor(options) {
+    this.#options = options;
+    this.#persistent = options.fresh !== true;
+  }
+  async load() {
+    if (this.#options.fresh === true)
+      return;
+    this.#entry = await this.#options.store.read(this.#options.endpoint) ?? {};
+  }
+  get entry() {
+    return this.#entry;
+  }
+  get signedIn() {
+    return this.#entry.tokens !== undefined;
+  }
+  expiresWithin(ms, now) {
+    const { tokens, obtainedAt } = this.#entry;
+    if (tokens?.expires_in === undefined || obtainedAt === undefined)
+      return false;
+    return now >= obtainedAt + tokens.expires_in * 1000 - ms;
+  }
+  get refreshable() {
+    return this.#entry.tokens?.refresh_token !== undefined;
+  }
+  get redirectUrl() {
+    return this.#options.redirectUrl;
+  }
+  get clientMetadata() {
+    return {
+      client_name: OAUTH_CLIENT_NAME,
+      redirect_uris: [this.#options.redirectUrl],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none"
+    };
+  }
+  state() {
+    return this.#options.state ?? randomBytes(32).toString("base64url");
+  }
+  clientInformation(context) {
+    const { client } = this.#entry;
+    if (this.#options.signInRequired !== undefined && context !== undefined && (client === undefined || client.issuer !== undefined && !sameIssuer(client.issuer, context.issuer))) {
+      throw this.#options.signInRequired();
+    }
+    return client;
+  }
+  saveClientInformation(client) {
+    this.#entry = { ...this.#entry, client };
+  }
+  async tokens(context) {
+    if (context === undefined && this.#options.refresh !== undefined && this.refreshable && this.expiresWithin(REFRESH_MARGIN_MS, (this.#options.now ?? Date.now)())) {
+      await this.#options.refresh(this);
+    }
+    return this.#entry.tokens;
+  }
+  async saveTokens(tokens) {
+    const kept = this.#entry.tokens?.refresh_token;
+    this.#entry = {
+      ...this.#entry,
+      tokens: tokens.refresh_token === undefined && kept !== undefined ? { ...tokens, refresh_token: kept } : tokens,
+      obtainedAt: (this.#options.now ?? Date.now)()
+    };
+    this.#persistent = true;
+    await this.#persist();
+  }
+  redirectToAuthorization(url) {
+    return this.#options.onRedirect(url);
+  }
+  saveCodeVerifier(verifier) {
+    this.#verifier = verifier;
+  }
+  codeVerifier() {
+    if (this.#verifier === undefined)
+      throw new Error("no PKCE code verifier is held");
+    return this.#verifier;
+  }
+  async saveDiscoveryState(discovery) {
+    this.#entry = { ...this.#entry, discovery };
+    if (this.signedIn)
+      await this.#persist();
+  }
+  discoveryState() {
+    return this.#entry.discovery;
+  }
+  async invalidateCredentials(scope) {
+    if (this.#options.signInRequired !== undefined && (scope === "client" || scope === "all")) {
+      throw this.#options.signInRequired();
+    }
+    switch (scope) {
+      case "all":
+        this.#entry = {};
+        break;
+      case "client":
+        this.#entry = { ...this.#entry, client: undefined };
+        break;
+      case "tokens":
+        this.#entry = { ...this.#entry, tokens: undefined, obtainedAt: undefined };
+        break;
+      case "discovery":
+        this.#entry = { ...this.#entry, discovery: undefined };
+        break;
+      case "verifier":
+        this.#verifier = undefined;
+        return;
+    }
+    await this.#persist();
+  }
+  async#persist() {
+    if (!this.#persistent)
+      return;
+    const { client, tokens } = this.#entry;
+    if (client === undefined && tokens === undefined) {
+      await this.#options.store.remove(this.#options.endpoint);
+    } else {
+      await this.#options.store.write(this.#options.endpoint, this.#entry);
     }
   }
-  return found;
+}
+var isRedirect = (status) => status >= 300 && status < 400;
+var probeSignIn = async (url, fetchFn, headers) => {
+  const response = await fetchFn(url, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream"
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "ping" }),
+    redirect: "manual"
+  });
+  await response.body?.cancel().catch(() => {
+    return;
+  });
+  if (response.status === 401) {
+    const { resourceMetadataUrl, scope } = extractWWWAuthenticateParams(response);
+    return { needed: true, resourceMetadataUrl, scope };
+  }
+  if (isRedirect(response.status)) {
+    return { needed: true, resourceMetadataUrl: undefined, scope: undefined };
+  }
+  return { needed: false };
 };
-var stringsField = (fields, key) => {
-  const value = fields[key];
-  return Array.isArray(value) ? value.filter(isString) : [];
+var bearerFetch = (raw, provider) => async (url, init) => {
+  const response = await raw(url, init);
+  const bearer = new Headers(init?.headers).get("authorization")?.startsWith("Bearer ") === true;
+  if (!bearer || !isRedirect(response.status))
+    return response;
+  await response.body?.cancel().catch(() => {
+    return;
+  });
+  const metadata = provider.entry.discovery?.resourceMetadataUrl;
+  return new Response(null, {
+    status: 401,
+    headers: {
+      "www-authenticate": metadata === undefined ? "Bearer" : `Bearer resource_metadata="${metadata}"`
+    }
+  });
+};
+var singleFlightRefresh = (serverUrl, fetchFn) => {
+  let running;
+  return (provider) => {
+    running ??= auth(provider, { serverUrl, fetchFn }).then(() => {
+      return;
+    }, () => {
+      return;
+    }).finally(() => {
+      running = undefined;
+    });
+    return running;
+  };
+};
+var SDK_WARNING = "[mcp-sdk] ";
+var sameIssuer = (left, right) => left.replace(/\/$/, "") === right.replace(/\/$/, "");
+var INVALIDATING = /^OAuth ("[^"]*") — invalidating the stored [a-z ]+ and retrying authorization\. Cause: (".*")$/;
+var warningText = (message) => {
+  const match = INVALIDATING.exec(message);
+  if (match === null)
+    return message;
+  let cause = match[2] ?? "";
+  try {
+    const parsed = JSON.parse(cause);
+    cause = isString(parsed) ? parsed : cause;
+  } catch {}
+  return `the authorization server refused the stored sign-in (${(match[1] ?? "").replaceAll('"', "")}): ${cause}`;
+};
+var sinks = new Set;
+var consoleWarn;
+var captureSdkWarnings = (sink) => {
+  if (sinks.size === 0) {
+    const original = console.warn;
+    consoleWarn = original;
+    console.warn = (...args) => {
+      const first = String(args[0]);
+      if (!first.startsWith(SDK_WARNING)) {
+        original(...args);
+        return;
+      }
+      for (const each of sinks)
+        each(warningText(first.slice(SDK_WARNING.length)));
+    };
+  }
+  const held = (message) => sink(message);
+  sinks.add(held);
+  return () => {
+    sinks.delete(held);
+    if (sinks.size === 0 && consoleWarn !== undefined) {
+      console.warn = consoleWarn;
+      consoleWarn = undefined;
+    }
+  };
 };
 
 // src/endpoint.ts
-var TOKEN_REJECTED = "service token rejected or expired: run `local-agent-token` (`bun run --cwd infra local-agent-token --stage <stage>` in a cloudpid checkout) and update CLOUDPID_ACCESS_CLIENT_ID and CLOUDPID_ACCESS_CLIENT_SECRET.";
 var ENDPOINT_OLDER = "the endpoint is older than this extension";
 var statusOf = (error) => {
   for (let at = error, depth = 0;at !== undefined && depth < 8; depth += 1) {
@@ -23692,7 +24252,7 @@ var statusOf = (error) => {
   }
   return;
 };
-var isRejected = (status) => status === 401 || status === 403 || status !== undefined && status >= 300 && status < 400;
+var isRejected = (status) => status === 401 || status === 403 || status !== undefined && isRedirect(status);
 var sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 var MAX_WAIT_MS = 60000;
 var MAX_RETRIES = 3;
@@ -23742,19 +24302,36 @@ var noValidation = {
     errorMessage: undefined
   })
 };
-var connectEndpoint = async (config, options = {}) => {
+var connectEndpoint = async (config, options) => {
   const sleep = options.sleep ?? sleepFor;
   const name = options.client ?? clientName();
+  const raw = options.fetch ?? fetch;
   const requestInit = {
-    headers: {
-      "CF-Access-Client-Id": config.clientId,
-      "CF-Access-Client-Secret": config.clientSecret,
-      "X-Cloudpid-Client": name
-    },
+    headers: { "X-Cloudpid-Client": name },
     redirect: "manual"
   };
+  const fetchFn = createFetchWithInit(raw, requestInit);
+  const provider = new CloudpidOAuthProvider({
+    store: options.store,
+    endpoint: endpointKey(config),
+    redirectUrl: CONNECTION_REDIRECT,
+    onRedirect: () => {
+      return;
+    },
+    refresh: singleFlightRefresh(config.url, fetchFn),
+    signInRequired: () => new SignInRequired(SIGN_IN_REJECTED),
+    now: options.now
+  });
+  await provider.load();
+  if (!provider.signedIn) {
+    const probe = await probeSignIn(config.url, raw, { "X-Cloudpid-Client": name });
+    if (probe.needed)
+      throw new SignInRequired(NOT_SIGNED_IN);
+  }
   const transportOptions = {
     requestInit,
+    authProvider: provider,
+    fetch: bearerFetch(raw, provider),
     reconnectionOptions: {
       maxRetries: 0,
       initialReconnectionDelay: 1000,
@@ -23762,14 +24339,15 @@ var connectEndpoint = async (config, options = {}) => {
       reconnectionDelayGrowFactor: 1
     }
   };
-  if (options.fetch !== undefined)
-    transportOptions.fetch = options.fetch;
   const transport = new StreamableHTTPClientTransport(config.url, transportOptions);
   const client = new Client({ name: "pi-cloudpid", version: name.slice("pi-cloudpid/".length) }, {
     jsonSchemaValidator: noValidation
   });
-  const transportFailure = (error) => isRejected(statusOf(error)) ? new Refusal(TOKEN_REJECTED) : error;
+  const transportFailure = (error) => isRejected(statusOf(error)) ? new SignInRequired(SIGN_IN_REJECTED) : error;
   let finishTakesChangesCarried = false;
+  const releaseWarnings = captureSdkWarnings(options.onWarning ?? (() => {
+    return;
+  }));
   try {
     await client.connect(transport);
     const names = new Set;
@@ -23792,6 +24370,7 @@ var connectEndpoint = async (config, options = {}) => {
     await client.close().catch(() => {
       return;
     });
+    releaseWarnings();
     if (error instanceof Refusal)
       throw error;
     throw error instanceof Error ? transportFailure(error) : error;
@@ -23883,16 +24462,16 @@ var connectEndpoint = async (config, options = {}) => {
     cancel: async (importId) => {
       await call("session_import_cancel", { import_id: importId });
     },
-    close: () => client.close()
+    close: () => client.close().finally(releaseWarnings)
   };
 };
 var isRetryable = (tool) => tool !== "session_import_begin";
 
 // src/git.ts
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm as rm2 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join as join2 } from "node:path";
 
 class GitError extends Error {
   name = "GitError";
@@ -24019,11 +24598,11 @@ var pushBranch = async (git, head, branch) => {
   if (result.code === 0)
     return;
   const said = result.stderr.trim();
-  throw new GitError(/non-fast-forward|fetch first/.test(said) ? `origin's ${branch} has commits this checkout lacks: pull first, then run /cloudpid again.` : `git push failed: ${said}`);
+  throw new GitError(/non-fast-forward|fetch first/.test(said) ? `origin's ${branch} has commits this checkout lacks: pull first, then run /cloudpid import again.` : `git push failed: ${said}`);
 };
 var readCarry = async (git, head) => {
-  const directory = await mkdtemp(join(tmpdir(), "pi-cloudpid-"));
-  const indexFile = join(directory, "index");
+  const directory = await mkdtemp(join2(tmpdir(), "pi-cloudpid-"));
+  const indexFile = join2(directory, "index");
   try {
     await read(git, ["read-tree", head], { indexFile });
     await read(git, ["add", "-A"], { indexFile });
@@ -24035,7 +24614,7 @@ var readCarry = async (git, head) => {
       throw new GitError(`git diff-tree failed: ${diff.stderr.trim()}`);
     return { tree, files: diff.stdout.split("\x00").filter((name) => name !== "") };
   } finally {
-    await rm(directory, { recursive: true, force: true });
+    await rm2(directory, { recursive: true, force: true });
   }
 };
 var commitCarry = async (git, carry, head, branch) => {
@@ -24159,7 +24738,7 @@ var chooseEnvironment = async (ui, environments, origin) => {
   const matches = matchEnvironments(environments, origin);
   const [only, ...others] = matches;
   if (only === undefined) {
-    throw new Refusal(`No Environment has this Repo (${normalizeRepoUrl(origin) ?? origin}): add this Repo to an Environment first, in cloudpid's settings, then run /cloudpid again.`);
+    throw new Refusal(`No Environment has this Repo (${normalizeRepoUrl(origin) ?? origin}): add this Repo to an Environment first, in cloudpid's settings, then run /cloudpid import again.`);
   }
   if (others.length === 0)
     return only;
@@ -24288,7 +24867,7 @@ var abandon = async (endpoint, git, begun) => {
   try {
     await endpoint.cancel(begun.importId);
   } catch (error) {
-    problems.push(`could not cancel the import (${error instanceof Error ? error.message : "unknown error"}); it expires in an hour (${begun.url})`);
+    problems.push(error instanceof SignInRequired ? `the sign-in ended, so the import could not be cancelled: it stays open and expires in an hour (${begun.url}); run /cloudpid login, then /cloudpid import` : `could not cancel the import (${error instanceof Error ? error.message : "unknown error"}); it expires in an hour (${begun.url})`);
   }
   try {
     await deleteRemoteRef(git, begun.carryRef);
@@ -24297,23 +24876,38 @@ var abandon = async (endpoint, git, begun) => {
   }
   return problems;
 };
+var connect = async (host, config, deps) => {
+  try {
+    return await deps.endpoint(config);
+  } catch (error) {
+    if (!(error instanceof SignInRequired))
+      throw error;
+    const wants = await host.ui.confirm("Sign in to cloudpid?", `${error.message}
+Sign in to ${config.url.origin} now? Your browser opens (or you paste the redirect URL).`);
+    if (!wants)
+      return;
+    await deps.signIn(config);
+    return await deps.endpoint(config);
+  }
+};
 var importSession = async (host, instruction, deps) => {
   const { ui } = host;
   const cancelled = { kind: "cancelled" };
-  if (!host.hasUI)
-    throw new Refusal("/cloudpid asks before it imports: run it in pi's interactive mode.");
+  if (!host.hasUI) {
+    throw new Refusal("/cloudpid import needs pi's interactive mode: it asks before it imports, and it may ask you to sign in. Run it in interactive pi (`/cloudpid login` needs that too).");
+  }
   if (!host.isIdle()) {
-    throw new Refusal("pi is still working: let it finish (or stop it), then run /cloudpid again.");
+    throw new Refusal("pi is still working: let it finish (or stop it), then run /cloudpid import again.");
   }
   const session = host.session();
   if (session.file === undefined || !deps.exists(session.file)) {
-    throw new Refusal("This pi session is not saved yet (pi writes its file with the first message): send a message, then run /cloudpid again.");
+    throw new Refusal("This pi session is not saved yet (pi writes its file with the first message): send a message, then run /cloudpid import again.");
   }
   const bytes = fileBytes(session.text);
   if (bytes.length > MAX_IMPORT_BYTES) {
-    throw new Refusal(`This session is ${formatSize(bytes.length)}, over cloudpid's limit of ${formatSize(MAX_IMPORT_BYTES)}: /compact it, or /tree to a shorter branch, then run /cloudpid again.`);
+    throw new Refusal(`This session is ${formatSize(bytes.length)}, over cloudpid's limit of ${formatSize(MAX_IMPORT_BYTES)}: /compact it, or /tree to a shorter branch, then run /cloudpid import again.`);
   }
-  const config = readConfig(deps.env);
+  const config = deps.config();
   if (session.marker !== undefined && !await ui.confirm("Import again?", `already imported as ${session.marker.url}; import again as a new Session?`)) {
     return cancelled;
   }
@@ -24328,13 +24922,15 @@ var importSession = async (host, instruction, deps) => {
     throw error;
   }
   if (checkout === undefined) {
-    throw new Refusal(`${host.cwd} is not in a git repository: run /cloudpid from the Repo's checkout, and add this Repo to an Environment first.`);
+    throw new Refusal(`${host.cwd} is not in a git repository: run /cloudpid import from the Repo's checkout, and add this Repo to an Environment first.`);
   }
   if (checkout.origin === undefined) {
     throw new Refusal(`${checkout.root} has no \`origin\` remote: push it to GitHub, then add this Repo to an Environment first.`);
   }
   const git = deps.git(checkout.root);
-  const endpoint = await deps.endpoint(config);
+  const endpoint = await connect(host, config, deps);
+  if (endpoint === undefined)
+    return cancelled;
   try {
     const environments = await endpoint.environments();
     let origin = checkout.origin;
@@ -24349,7 +24945,7 @@ var importSession = async (host, instruction, deps) => {
       return cancelled;
     const head = await headOf(git);
     if (head.commit === undefined) {
-      throw new Refusal("This repo has no commit yet: commit, then run /cloudpid again.");
+      throw new Refusal("This repo has no commit yet: commit, then run /cloudpid import again.");
     }
     const { commit } = head;
     const defaultBranch = await defaultBranchOf(git, head);
@@ -24366,7 +24962,7 @@ var importSession = async (host, instruction, deps) => {
     }
     let plan = await planPush(git, commit, target.name);
     if (plan.behind) {
-      throw new Refusal(`origin's ${target.name} has commits this checkout lacks: pull first, then run /cloudpid again.`);
+      throw new Refusal(`origin's ${target.name} has commits this checkout lacks: pull first, then run /cloudpid import again.`);
     }
     const carry = await readCarry(git, commit);
     const confirmed = await ui.confirm("Import this pi session into cloudpid?", confirmText(environment, target, plan, carry, bytes.length, session.entries, host.model, host.thinking, instruction));
@@ -24390,7 +24986,7 @@ var importSession = async (host, instruction, deps) => {
           target = { name, create: true };
           plan = await planPush(git, commit, name);
           if (plan.behind) {
-            throw new Refusal(`origin's ${name} has commits this checkout lacks: pull first, then run /cloudpid again.`);
+            throw new Refusal(`origin's ${name} has commits this checkout lacks: pull first, then run /cloudpid import again.`);
           }
         }
       }
@@ -24495,6 +25091,46 @@ var afterImport = async (host, git, finished, instruction, landed) => {
   };
 };
 
+// src/run.ts
+var endpointText = (deps) => {
+  let config;
+  try {
+    config = deps.config();
+  } catch (error) {
+    if (error instanceof Refusal)
+      return `not set up.
+${error.message}`;
+    throw error;
+  }
+  return config.url.href;
+};
+var runCommand = async (command, host, deps) => {
+  const { ui } = host;
+  switch (command.kind) {
+    case "import":
+      await importSession(host, command.instruction, deps);
+      return;
+    case "login": {
+      if (!host.hasUI) {
+        throw new Refusal("/cloudpid login needs pi's interactive mode: it opens your browser, or asks you to paste the redirect URL.");
+      }
+      const config = deps.config();
+      ui.notify(await deps.signIn(config) === "signed-in" ? `cloudpid: signed in to ${config.url.href}.` : `cloudpid: ${config.url.href} does not ask for a sign-in (nothing in front of it wants one).`, "info");
+      return;
+    }
+    case "logout": {
+      const config = deps.config();
+      const removed = await deps.store.remove(endpointKey(config));
+      ui.notify(removed ? `cloudpid: signed out of ${config.url.href}: its stored sign-in is deleted.` : `cloudpid: no stored sign-in for ${config.url.href}.`, "info");
+      return;
+    }
+    case "usage": {
+      ui.notify([command.problem, USAGE, `Endpoint: ${endpointText(deps)}`].filter((part) => part !== undefined).join(`
+`), command.problem === undefined ? "info" : "warning");
+    }
+  }
+};
+
 // src/session.ts
 var firstUserText = (entries) => {
   for (const entry of entries) {
@@ -24540,6 +25176,184 @@ var snapshotOf = (source) => {
   };
 };
 
+// src/signin.ts
+import { spawn as spawn2 } from "node:child_process";
+import { randomBytes as randomBytes2 } from "node:crypto";
+import { createServer } from "node:http";
+var SIGN_IN_TIMEOUT_MS = 5 * 60000;
+var parseRedirect = (raw, state) => {
+  const text = raw.trim();
+  const query = text.includes("?") ? text.slice(text.indexOf("?") + 1) : text;
+  const params = new URLSearchParams(query.replace(/#.*$/, ""));
+  const error = params.get("error");
+  if (error !== null && params.get("state") === state) {
+    const detail = params.get("error_description");
+    throw new Refusal(`sign-in was not completed: ${error}${detail === null ? "" : ` (${detail})`}.`);
+  }
+  if (params.get("state") !== state) {
+    throw new Refusal("that redirect is not for this sign-in (its state does not match): paste the URL your browser ended up at after signing in.");
+  }
+  const code = params.get("code");
+  if (code === null || code === "") {
+    throw new Refusal("that redirect has no authorization code: paste the whole URL.");
+  }
+  return { code, iss: params.get("iss") ?? undefined };
+};
+var escapeHtml = (text) => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+var PAGE = (message) => `<!doctype html><meta charset="utf-8"><title>cloudpid</title><p>${escapeHtml(message)}</p>`;
+var startCallbackServer = async (state, timeoutMs) => {
+  let finish = () => {
+    return;
+  };
+  const result = new Promise((resolve, reject) => {
+    finish = (outcome) => ("callback" in outcome) ? resolve(outcome.callback) : reject(outcome.failure);
+  });
+  result.catch(() => {
+    return;
+  });
+  let settled = false;
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const reply = (status, message) => {
+      response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+      response.end(PAGE(message));
+    };
+    if (url.pathname !== "/callback" || settled) {
+      reply(404, "Not found.");
+      return;
+    }
+    if (url.searchParams.get("state") !== state) {
+      reply(400, "This is not the sign-in cloudpid is waiting for.");
+      return;
+    }
+    settled = true;
+    try {
+      finish({ callback: parseRedirect(url.search, state) });
+      reply(200, "Signed in to cloudpid. You can close this tab and go back to pi.");
+    } catch (error) {
+      finish({ failure: error instanceof Error ? error : new Error("sign-in failed") });
+      reply(400, error instanceof Error ? error.message : "Sign-in failed.");
+    }
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!isObject(address)) {
+    server.close();
+    throw new Refusal("could not listen on the loopback interface for the sign-in redirect.");
+  }
+  const timer = setTimeout(() => {
+    settled = true;
+    finish({
+      failure: new Refusal(`no sign-in arrived in ${String(Math.round(timeoutMs / 60000))} minutes: run /cloudpid login again.`)
+    });
+  }, timeoutMs);
+  return {
+    redirectUrl: `http://127.0.0.1:${String(address.port)}/callback`,
+    result,
+    close: () => {
+      clearTimeout(timer);
+      settled = true;
+      server.close();
+      server.closeAllConnections();
+    }
+  };
+};
+var pasted = async (ui, state, signal, timeoutMs) => {
+  for (;; ) {
+    const text = await ui.input("Sign in to cloudpid", "Waiting for your browser. If it cannot reach this machine (SSH), paste the URL it ends up at, http://127.0.0.1:…/callback?code=…", { signal, timeout: timeoutMs });
+    if (text === undefined)
+      throw new Refusal("sign-in cancelled.");
+    try {
+      return parseRedirect(text, state);
+    } catch (error) {
+      if (signal.aborted)
+        throw error;
+      ui.notify(error instanceof Error ? error.message : "that is not a redirect URL.", "warning");
+    }
+  }
+};
+var opener = (url) => {
+  if (process.platform === "darwin")
+    return { command: "open", args: [url], verbatim: false };
+  if (process.platform === "win32") {
+    return { command: "cmd", args: ["/c", "start", '""', `"${url}"`], verbatim: true };
+  }
+  return { command: "xdg-open", args: [url], verbatim: false };
+};
+var openInBrowser = (url) => new Promise((resolve, reject) => {
+  const { command, args, verbatim } = opener(url);
+  const child = spawn2(command, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsVerbatimArguments: verbatim
+  });
+  child.once("error", reject);
+  child.once("spawn", () => {
+    child.unref();
+    resolve();
+  });
+});
+var signIn = async (config, ui, deps) => {
+  const raw = deps.fetch ?? fetch;
+  const headers = { "X-Cloudpid-Client": deps.client };
+  const fetchFn = createFetchWithInit(raw, { headers, redirect: "manual" });
+  const timeoutMs = deps.timeoutMs ?? SIGN_IN_TIMEOUT_MS;
+  const probe = await probeSignIn(config.url, raw, headers);
+  if (!probe.needed)
+    return "not-required";
+  const state = randomBytes2(32).toString("base64url");
+  const callback = await startCallbackServer(state, timeoutMs);
+  const waiting = new AbortController;
+  const releaseWarnings = captureSdkWarnings((message) => ui.notify(`cloudpid: ${message}`, "warning"));
+  try {
+    const provider = new CloudpidOAuthProvider({
+      store: deps.store,
+      endpoint: endpointKey(config),
+      redirectUrl: callback.redirectUrl,
+      state,
+      fresh: true,
+      now: deps.now,
+      onRedirect: (url) => {
+        ui.notify(`Opening your browser to sign in to cloudpid. If it does not open, visit:
+${url.href}`, "info");
+        deps.openBrowser(url.href).catch((error) => {
+          ui.notify(`could not open a browser (${error.message}): visit the URL above, or paste the redirect URL when asked.`, "warning");
+        });
+      }
+    });
+    const options = { serverUrl: config.url, fetchFn };
+    if (probe.resourceMetadataUrl !== undefined) {
+      options.resourceMetadataUrl = probe.resourceMetadataUrl;
+    }
+    if (probe.scope !== undefined)
+      options.scope = probe.scope;
+    if (await auth(provider, options) !== "REDIRECT") {
+      throw new Refusal("the sign-in server did not ask for a sign-in.");
+    }
+    const received = await Promise.race([
+      callback.result,
+      pasted(ui, state, waiting.signal, timeoutMs)
+    ]);
+    waiting.abort();
+    const exchange = { ...options, authorizationCode: received.code };
+    if (received.iss !== undefined)
+      exchange.iss = received.iss;
+    await auth(provider, exchange);
+    return "signed-in";
+  } catch (error) {
+    if (error instanceof Refusal)
+      throw error;
+    throw new Refusal(`sign-in failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  } finally {
+    releaseWarnings();
+    waiting.abort();
+    callback.close();
+  }
+};
+
 // src/index.ts
 var hostOf = (pi, ctx) => ({
   cwd: ctx.cwd,
@@ -24551,21 +25365,42 @@ var hostOf = (pi, ctx) => ({
   ui: ctx.ui,
   appendEntry: (customType, data) => pi.appendEntry(customType, data)
 });
-var deps = {
-  env: process.env,
-  git: gitIn,
-  endpoint: (config) => connectEndpoint(config),
-  exists: existsSync
+var settingsOf = (ctx) => {
+  const agentDir = getAgentDir();
+  return {
+    settingsManager: SettingsManager.create(ctx.cwd, agentDir, {
+      projectTrusted: ctx.isProjectTrusted()
+    }),
+    sessionManager: ctx.sessionManager,
+    files: {
+      global: join3(agentDir, "settings.json"),
+      project: join3(ctx.cwd, CONFIG_DIR_NAME, "settings.json")
+    }
+  };
+};
+var depsOf = (ctx) => {
+  const store = fileAuthStore(getAgentDir());
+  return {
+    config: () => readConfig(settingsOf(ctx)),
+    git: gitIn,
+    store,
+    endpoint: (config) => connectEndpoint(config, {
+      store,
+      onWarning: (message) => ctx.ui.notify(`cloudpid: ${message}`, "warning")
+    }),
+    signIn: (config) => signIn(config, ctx.ui, { store, openBrowser: openInBrowser, client: clientName() }),
+    exists: existsSync
+  };
 };
 var messageOf = (error) => {
   if (error instanceof Refusal)
     return error.message;
   if (error instanceof ApiFailure) {
     if (error.code === "import_expired") {
-      return "cloudpid: the import expired (an hour passed with nothing sent): run /cloudpid again.";
+      return "cloudpid: the import expired (an hour passed with nothing sent): run /cloudpid import again.";
     }
     if (error.code === "too_many_running") {
-      return `cloudpid: ${error.message} Finish or cancel the open import in cloudpid, then run /cloudpid again.`;
+      return `cloudpid: ${error.message} Finish or cancel the open import in cloudpid, then run /cloudpid import again.`;
     }
     return `cloudpid: ${error.message}`;
   }
@@ -24573,12 +25408,13 @@ var messageOf = (error) => {
 };
 function src_default(pi) {
   pi.registerCommand("cloudpid", {
-    description: "Import this pi session into cloudpid (everything after /cloudpid is the instruction it starts with)",
+    description: "cloudpid: import [instruction] imports this pi session into cloudpid; login and logout manage the sign-in",
+    getArgumentCompletions: (prefix) => completionsFor(prefix),
     handler: async (args, ctx) => {
       try {
-        await importSession(hostOf(pi, ctx), args.trim(), deps);
+        await runCommand(parseCommand(args), hostOf(pi, ctx), depsOf(ctx));
       } catch (error) {
-        ctx.ui.notify(error instanceof Error ? messageOf(error) : "cloudpid: the import failed.", "error");
+        ctx.ui.notify(error instanceof Error ? messageOf(error) : "cloudpid: the command failed.", "error");
       }
     }
   });
