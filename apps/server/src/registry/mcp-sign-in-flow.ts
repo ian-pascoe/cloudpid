@@ -49,13 +49,8 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import {
-  authorizationUrl,
-  dcrRedirectUri,
-  pkceChallenge,
-  randomToken,
-} from "../mcp/sign-in-client.ts";
-import { callbackUrl, clientDocumentUrl } from "../mcp/sign-in-origin.ts";
+import { authorizationUrl, pkceChallenge, randomToken } from "../mcp/sign-in-client.ts";
+import { callbackUrl, clientDocumentUrl, dcrRedirectUri } from "../mcp/sign-in-origin.ts";
 import {
   clip,
   MAX_SIGN_IN_ERROR_LENGTH,

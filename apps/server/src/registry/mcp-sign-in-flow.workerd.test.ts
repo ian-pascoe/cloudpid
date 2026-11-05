@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
+import { ACCESS_ISSUER, mcpApplicationProps } from "../mcp-access.ts";
 import { pkceChallenge } from "../mcp/sign-in-client.ts";
 import {
   completeMcpSignIn,
@@ -406,6 +407,56 @@ describe("the client ladder", () => {
         expect(hash).toMatch(/^[A-Za-z0-9_-]{12}$/);
       },
     ));
+
+  it("signs in to the stage's own MCP endpoint (Self-use) over DCR, at the redirect URI its Access application allows", () => {
+    const endpoint = `${ORIGIN}/mcp`;
+
+    return run(
+      {
+        [`GET ${ORIGIN}/.well-known/oauth-protected-resource/mcp`]: () => ({
+          resource: endpoint,
+          authorization_servers: [ACCESS_ISSUER],
+        }),
+        // Access's metadata as it is served (2026-11-05): no client document, no `iss`, and `none` among the methods.
+        [`GET ${ACCESS_ISSUER}/.well-known/oauth-authorization-server`]: () => ({
+          issuer: ACCESS_ISSUER,
+          authorization_endpoint: `${ACCESS_ISSUER}/cdn-cgi/access/oauth/authorization`,
+          token_endpoint: `${ACCESS_ISSUER}/cdn-cgi/access/oauth/token`,
+          registration_endpoint: `${ACCESS_ISSUER}/cdn-cgi/access/oauth/registration`,
+          revocation_endpoint: `${ACCESS_ISSUER}/cdn-cgi/access/oauth/revoke`,
+          response_types_supported: ["code"],
+          response_modes_supported: ["query"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          token_endpoint_auth_methods_supported: [
+            "client_secret_basic",
+            "client_secret_post",
+            "none",
+          ],
+          code_challenge_methods_supported: ["S256"],
+        }),
+        [`POST ${ACCESS_ISSUER}/cdn-cgi/access/oauth/registration`]: (call: Call) =>
+          new Response(
+            JSON.stringify({ client_id: "access-client-1", redirect_uris: [redirectUriOf(call)] }),
+            { status: 201, headers: { "content-type": "application/json" } },
+          ),
+      },
+      async ({ setGlobal, signIn, calls }) => {
+        setGlobal({ sentry: { url: endpoint } });
+
+        const url = await signIn();
+        const registration = calls.find(({ url: called }) => called.endsWith("/registration"));
+
+        expect(registration?.json).toMatchObject({
+          redirect_uris: mcpApplicationProps(STAGE.label).oauthConfiguration
+            .dynamicClientRegistration.allowedUris,
+          token_endpoint_auth_method: "none",
+        });
+        expect(url.searchParams.get("client_id")).toBe("access-client-1");
+        expect(url.searchParams.get("redirect_uri")).toBe(redirectUriOf(registration));
+        expect(url.searchParams.get("resource")).toBe(endpoint);
+      },
+    );
+  });
 
   it("registers `native` as the local stage's client, on the origin the sign-in started on", () =>
     run(
