@@ -9,6 +9,9 @@
 //   main Worker, which wakes it (`resolve`); the outcome is kept until the calls that waited take it.
 // - **No deadline.** Only the owner's answer, a sign-in, the server leaving the set or Stop ends one. Stop interrupts the
 //   waiting calls, and a request left with no call is withdrawn (its waiter row in the Registry goes too).
+// - **Waiting is progress.** Each attempt that reaches the wait marks it (`reachedWait`), so the restarts that cut a
+//   waiting call off (the Session hibernates while nobody looks, and each heartbeat starts it again) never end the call
+//   (#647). A call the Session ends for good leaves its requests (`settleCall`).
 // - **Parallel asks join.** A request is one per (conversation, server): a second call that asks while one is open waits on
 //   the same request, and one answer ends them all.
 // - **The Registry holds the waiter row** (`mcp_sign_in_waiters`), one per request, and says which request is the first open
@@ -129,6 +132,11 @@ export type McpSignInsService = {
    * that was not carried (an older deploy, a host's `working` report). A Registry that cannot be reached leaves them open.
    */
   readonly recheck: Effect.Effect<void>;
+  /**
+   * The call `callId` ended without coming back (the Session aborted it: #647): it leaves the requests it waits on, and
+   * a request left with no call is withdrawn, with the Registry's waiter.
+   */
+  readonly settleCall: (callId: string) => Effect.Effect<void>;
   /** Withdraw every request no call in this instance waits for. Run only while no work is live. */
   readonly dropAbandoned: Effect.Effect<void>;
 };
@@ -472,6 +480,12 @@ export const createMcpSignIns = (options: McpSignInsOptions): McpSignInsService 
         }
       }),
     recheck: Effect.suspend(() => Effect.forEach(open(), recheckOne, { discard: true })),
+    settleCall: (callId) =>
+      Effect.forEach(
+        Arr.filter(held(), (each) => each.calls.includes(callId)),
+        (each) => leave(callId, each.request.id),
+        { discard: true },
+      ),
     dropAbandoned: Effect.gen(function* () {
       let dropped = 0;
 

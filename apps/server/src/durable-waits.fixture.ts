@@ -16,15 +16,11 @@ export const eventually = <O extends Rpc.DurableObjectBranded>(
     () => failure,
   );
 
-/**
- * A live tool call of a Session, with the restarts pi-durable counts toward its restart limit, whether it runs now, and
- * whether it is parked.
- */
+/** A live tool call of a Session, with the restarts pi-durable counts toward its restart limit, and whether it runs now. */
 export type ToolCallTask = {
   readonly id: number;
   readonly restarts: number;
   readonly running: boolean;
-  readonly parked: boolean;
 };
 
 /** How many restarts in a row pi-durable lets a task make without progress (`settings.restartLimit`, left at its default). */

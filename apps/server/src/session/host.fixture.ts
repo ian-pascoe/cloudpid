@@ -185,7 +185,7 @@ import type { NavigateRequest } from "./branches.ts";
 import { fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
 import { type RemovalRegistry, removals } from "../registry/removal.ts";
-import { onIdle, wakeAt } from "./wake.ts";
+import { onIdle, wakeAt, withdrawCall } from "./wake.ts";
 import {
   annotationsMessage,
   send,
@@ -1276,6 +1276,18 @@ export class TestSession extends DurableObject {
                     this.#mcpQuestions().service,
                   ),
               ),
+              // And what it withdraws of a tool call it ended for good.
+              withdrawCall: (call) =>
+                Effect.flatMap(
+                  Effect.all([Effect.service(Secrets), Effect.service(Approvals)]),
+                  ([held, approvals]) =>
+                    withdrawCall(
+                      held,
+                      approvals,
+                      this.#mcpSignIns().service,
+                      this.#mcpQuestions().service,
+                    )(call),
+                ),
             }).pipe(
               Layer.provide(
                 Layer.mergeAll(
@@ -2435,10 +2447,7 @@ export class TestSession extends DurableObject {
     );
   }
 
-  /**
-   * The live tool calls, each with the restarts pi-durable counts toward its restart limit (0 for none), whether it runs
-   * now, and whether that limit parked it.
-   */
+  /** The live tool calls, each with the restarts pi-durable counts toward its restart limit (0 for none), and whether it runs now. */
   toolCalls(): Promise<ReadonlyArray<ToolCallTask>> {
     return this.#runtime.runPromise(
       Effect.gen(function* () {
@@ -2452,7 +2461,6 @@ export class TestSession extends DurableObject {
                   id: record.id,
                   restarts: record.restarts ?? 0,
                   running: state.kind === "running",
-                  parked: state.kind === "blocked" && state.reason === "restart_limit",
                 },
               ]
             : [],

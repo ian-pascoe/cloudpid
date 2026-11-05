@@ -1014,12 +1014,12 @@ export const createDeferredQuestions = (options: McpDeferredQuestionsOptions) =>
           );
         }
 
-        if (!marked) {
-          marked = true;
-          yield* waiting;
-        }
+        // Marked once, before the first wait, and guarded as the wait is: a Stop while it marks withdraws the round too.
+        const mark = marked ? Effect.void : waiting;
 
-        yield* Deferred.await(signal).pipe(
+        marked = true;
+
+        yield* Effect.andThen(mark, Deferred.await(signal)).pipe(
           Effect.onInterrupt(() =>
             Effect.andThen(
               Effect.sync(() => rounds.delete(callId)),

@@ -1,12 +1,22 @@
 // pi-durable's Harness is Promise-based, so these tests are too.
 // @effect-diagnostics asyncFunction:off
-import { defineExtension } from "@earendil-works/pi-durable";
+import { defineExtension, type Harness, ToolTask } from "@earendil-works/pi-durable";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
-import { answer, callTool, context, openFauxHarness, resultText } from "./harness.fixture.ts";
+import {
+  answer,
+  callTool,
+  context,
+  openFauxHarness,
+  openRestartingHarness,
+  resultText,
+  until,
+} from "./harness.fixture.ts";
+import { callDurable } from "./Harness.ts";
 import { ChordContext } from "./chord.ts";
 import { mcpToolName, mcpToolNames } from "@cloudpid/config";
 import { defineEffectTool, isToolName, reachedWait } from "./tool.ts";
@@ -365,6 +375,144 @@ describe("reachedWait", () => {
     await expect(
       Effect.runPromise(lateMark.pipe(Effect.provideService(ChordContext, context))),
     ).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * A call (`caller`) that makes one nested call (`waiter`) and waits for it in memory, as a `codemode` call does. `seen`
+ * records each attempt of either; `callerHangs` says whether the caller's attempt hangs before it makes its call, and
+ * `waiterMarks` whether the waiter's marks its wait (`reachedWait`) before it waits for good.
+ */
+const nesting = (behaviour: {
+  readonly callerHangs: (attempt: number) => boolean;
+  readonly waiterMarks: (attempt: number) => boolean;
+}) => {
+  const seen: string[] = [];
+  let callers = 0;
+  let waiters = 0;
+
+  const waiter = defineEffectTool({
+    name: "waiter",
+    description: "Wait for the owner",
+    parameters: Schema.Struct({}),
+    replay: "safe",
+    execute: (_args, api) =>
+      Effect.gen(function* () {
+        waiters += 1;
+
+        const attempt = waiters;
+
+        if (behaviour.waiterMarks(attempt)) yield* reachedWait(api);
+        seen.push(`waiter ${attempt}`);
+
+        return yield* Effect.never;
+      }),
+  });
+
+  const caller = defineEffectTool({
+    name: "caller",
+    description: "Call the waiter",
+    parameters: Schema.Struct({}),
+    replay: "safe",
+    execute: (_args, api) =>
+      Effect.gen(function* () {
+        callers += 1;
+
+        const attempt = callers;
+
+        seen.push(`caller ${attempt}`);
+
+        if (behaviour.callerHangs(attempt)) return yield* Effect.never;
+
+        yield* callDurable("executeTool", (callContext) =>
+          api.executeTool("waiter", {}, callContext, { key: "c1" }),
+        );
+
+        return {};
+      }),
+  });
+
+  const extension = defineExtension({
+    name: "nesting",
+    tools: [Effect.runSync(caller), Effect.runSync(waiter)],
+  });
+
+  /** Wait until `attempt` was seen. */
+  const reached = (attempt: string) =>
+    until(
+      () => seen.includes(attempt),
+      () => Arr.join(seen, ", "),
+    );
+
+  return { extension, reached };
+};
+
+/** What a tool call's task input says of the call: who made it, the model (`model`) or another call (`nested`). */
+const isCallInput = Schema.is(Schema.Struct({ kind: Schema.String }));
+
+/** Each live tool call: the caller's (`model`) and the waiter's (`nested`), its restart count and its state. */
+const toolCalls = async (harness: Harness) =>
+  Arr.flatMap((await harness.inspect(context)).tasks, ({ record, state }) =>
+    record.kind === ToolTask.definition.name
+      ? [
+          {
+            call: isCallInput(record.input) ? record.input.kind : undefined,
+            restarts: record.restarts,
+            state,
+          },
+        ]
+      : [],
+  );
+
+describe("reachedWait across restarts", () => {
+  it("starts the restart count over for the call and for the call that waits on it, past the restart limit", async () => {
+    const { extension, reached } = nesting({ callerHangs: () => false, waiterMarks: () => true });
+
+    const { harness, restart } = await openRestartingHarness(
+      [extension],
+      [callTool("caller", {}), answer("done")],
+      { restartLimit: 3 },
+    );
+
+    await reached("waiter 1");
+
+    for (let attempt = 2; attempt <= 5; attempt += 1) {
+      await restart();
+      await reached(`waiter ${attempt}`);
+    }
+
+    expect(await toolCalls(harness())).toEqual([
+      { call: "model", restarts: undefined, state: { kind: "running" } },
+      { call: "nested", restarts: undefined, state: { kind: "running" } },
+    ]);
+  });
+
+  it("leaves a caller the restart limit parked as it is", async () => {
+    // The caller is cut off twice before it makes its call, and once more after: parked at the third restart, when
+    // the waiter, cut off once, reruns and marks its wait.
+    const { extension, reached } = nesting({
+      callerHangs: (attempt) => attempt <= 2,
+      waiterMarks: (attempt) => attempt > 1,
+    });
+
+    const { harness, restart } = await openRestartingHarness(
+      [extension],
+      [callTool("caller", {}), answer("done")],
+      { restartLimit: 3 },
+    );
+
+    await reached("caller 1");
+    await restart();
+    await reached("caller 2");
+    await restart();
+    await reached("waiter 1");
+    await restart();
+    await reached("waiter 2");
+
+    expect(await toolCalls(harness())).toEqual([
+      { call: "model", restarts: 3, state: { kind: "blocked", reason: "restart_limit" } },
+      { call: "nested", restarts: undefined, state: { kind: "running" } },
+    ]);
   });
 });
 

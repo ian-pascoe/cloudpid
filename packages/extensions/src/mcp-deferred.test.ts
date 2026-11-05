@@ -15,6 +15,7 @@ import {
 import { ServerError } from "@cloudpid/mcp/types";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import { describe, expect, it } from "vitest";
 import { makeMcpTools, memoryMcpToolsStore } from "./mcp.ts";
 import { DOCS, detailsOf, startOf } from "./mcp.fixture.ts";
@@ -786,6 +787,29 @@ describe("a deferred round in the Session's storage", () => {
     await Effect.runPromise(questions.awaitRound(ASK.callId, marking));
 
     expect(marks).toEqual([["call-9:1", "call-9:2"]]);
+  });
+
+  it("withdraws the round when Stop comes while the call marks its wait", async () => {
+    const { questions, memory } = await service();
+    const marking = Promise.withResolvers<void>();
+
+    await Effect.runPromise(questions.defer(ASK));
+    await Effect.runPromise(questions.commitRound(ROUND));
+    await Effect.runPromise(questions.showRound(ASK.callId));
+
+    // A mark that never ends, as one the storage holds up.
+    const waiting = Effect.runFork(
+      questions.awaitRound(
+        ASK.callId,
+        Effect.sync(() => marking.resolve()).pipe(Effect.andThen(Effect.never)),
+      ),
+    );
+
+    await marking.promise;
+    await Effect.runPromise(waiting.pipe(Fiber.interrupt));
+
+    expect(await Effect.runPromise(questions.pending)).toEqual([]);
+    expect(memory.keys().filter((key) => /^mcp-question:[dq]/.test(key))).toEqual([]);
   });
 
   it("leaves a round whose state is a later build's alone: it is not resumed as a call's", async () => {

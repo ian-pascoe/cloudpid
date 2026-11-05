@@ -1,6 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over a few times and services.
-// What wakes a Session that has no work live, and what it does when it settles (`./host.ts`'s `wakeAt` and `onIdle`): one
-// alarm serves a held Secret's expiry and the browser's keep-alive, so neither needs an alarm of its own.
+// What wakes a Session that has no work live, what it does when it settles (`./host.ts`'s `wakeAt` and `onIdle`), and
+// what it withdraws of a call it ends (`withdrawCall`): one alarm serves a held Secret's expiry and the browser's
+// keep-alive, so neither needs an alarm of its own.
 import type { ApprovalsService } from "@cloudpid/extensions/approvals";
 import type { BrowserSessionService, BrowserHandoffsService } from "@cloudpid/extensions/browser";
 import type { McpQuestionsService, McpSignInsService } from "@cloudpid/extensions/mcp";
@@ -53,3 +54,30 @@ export const onIdle = (
     ],
     { discard: true },
   );
+
+/** A tool call the Session ended for good: its task, and its tool call's id, under which an MCP server's questions are kept. */
+export type EndedCall = { readonly taskId: number; readonly callId: string | undefined };
+
+/**
+ * What the object withdraws of a tool call it ended for good without the call running again (one the restart limit
+ * parked: `./host.ts`'s `endParkedCalls`): the owner requests the call left, at once rather than when the Session is
+ * idle (`onIdle`), so a Run that goes on and asks the owner again shows nothing dead beside it. Each request is keyed by
+ * the call's task, but an MCP server's questions, by its tool call.
+ */
+export const withdrawCall =
+  (
+    secrets: Pick<SecretsService, "settle">,
+    approvals: Pick<ApprovalsService, "settle">,
+    signIns: Pick<McpSignInsService, "settleCall">,
+    questions: Pick<McpQuestionsService, "settleCall">,
+  ) =>
+  ({ taskId, callId }: EndedCall): Effect.Effect<void> =>
+    Effect.all(
+      [
+        approvals.settle(String(taskId)),
+        secrets.settle(String(taskId)),
+        signIns.settleCall(String(taskId)),
+        callId === undefined ? Effect.void : questions.settleCall(callId),
+      ],
+      { discard: true },
+    );

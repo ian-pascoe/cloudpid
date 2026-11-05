@@ -143,6 +143,11 @@ export type SecretsService = {
   /** The asks waiting for the owner, oldest first. */
   readonly pending: Effect.Effect<ReadonlyArray<SecretAsk>>;
   /**
+   * The call that asked `id` ended without coming back for it (the Session aborted it: #647): withdraw its ask if it
+   * still waits, and drop an answer kept for it.
+   */
+  readonly settle: (id: string) => Effect.Effect<void>;
+  /**
    * Withdraw every ask no call in this instance waits for, and drop the answers no call took. Run only while no work is
    * live: then no call can still come back for them (one an eviction cut off has rerun by then), so they were
    * abandoned, such as a call aborted while the object was evicted.
@@ -636,6 +641,12 @@ const makeSecrets = ({
       }),
       ask,
       pending: Effect.sync(asks),
+      settle: (id) =>
+        Effect.suspend(() => {
+          takeAnswer(id);
+
+          return withdraw(id);
+        }),
       dropAbandoned: Effect.suspend(() => {
         if (Object.keys(answers()).length > 0) storage.put(ANSWERS_KEY, {});
 

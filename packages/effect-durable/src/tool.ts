@@ -43,11 +43,15 @@ export type EffectToolDefinition<
 /**
  * The call `api` runs has reached a durable wait: what it waits for, such as the owner's answer, is in storage, and a
  * rerun after a restart waits for it again. pi-durable then starts the restart count over for the call and its owners
- * (a `codemode` call waiting for it as a nested call) (`ToolExecutionApi.progressed`, a cloudpid patch:
- * `docs/development/dependencies.md`), so the restarts that cut them off while it waits (a Session that hibernates is
- * started again by each heartbeat) never reach the restart limit (`docs/architecture/overview.md` → Session host). Run it once the wait is stored and the attempt is about to await:
- * an attempt cut off before then still counts, so a call that keeps crashing before its wait still ends. Never fails:
- * a mark that is not stored (the call is being stopped, or the instance was replaced) leaves the count as it was.
+ * (a `codemode` call waiting for it as a nested call), up to the first that is parked or being aborted
+ * (`ToolExecutionApi.progressed`, a cloudpid patch: `docs/development/dependencies.md`), so the restarts that cut them
+ * off while it waits (a Session that hibernates is started again by each heartbeat) never reach the restart limit
+ * (`docs/architecture/overview.md` → Session host). Run it once the wait is stored and the attempt is about to await:
+ * an attempt cut off before then still counts, so a call that keeps crashing before its wait still ends; an owner that
+ * crashes the instance each time does not, and reruns about once a heartbeat until the wait ends. Never fails: a mark
+ * that is not stored (the call is being stopped, or the instance was replaced) leaves the count as it was.
+ *
+ * A tool whose `execute` is not an Effect provides its call's Context as `ChordContext`; an Effect tool's is there.
  */
 export const reachedWait = (api: Pick<ToolExecutionApi, "progressed">): Effect.Effect<void> =>
   callDurable("progressed", (context) => api.progressed(context)).pipe(

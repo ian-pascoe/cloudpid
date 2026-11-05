@@ -238,6 +238,27 @@ describe("Sign-in requests", () => {
       expect(marks).toEqual([["signin-1"], ["signin-1"]]);
     }));
 
+  test("let the Session settle a call that ended in another instance: a request it alone held is withdrawn", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const before = open(storage);
+
+      yield* Effect.forkChild(before.signIns.ask(ASK));
+      yield* Effect.forkChild(before.signIns.ask({ ...ASK, callId: "call-2" }));
+      yield* Effect.forkChild(before.signIns.ask({ ...ASK, callId: "call-3", server: "linear" }));
+      yield* settle;
+
+      // An eviction leaves the requests stored; the Session ends calls 1 and 3 before they rerun.
+      const after = open(storage);
+
+      yield* after.signIns.settleCall("call-1");
+      yield* after.signIns.settleCall("call-3");
+
+      // The request call 2 still holds stays; the one only call 3 held goes, with the Registry's waiter.
+      expect((yield* after.signIns.pending).map((request) => request.server)).toEqual([ASK.server]);
+      expect(after.script.withdrawn).toEqual(["signin-2"]);
+    }));
+
   test("survive an eviction with the sign-in completed meanwhile: the rerun call learns it at once", () =>
     Effect.gen(function* () {
       const { storage } = memoryStorage();

@@ -216,7 +216,7 @@ import { FileListings, fileListingsLayer, listedPaths, matchFiles } from "./file
 import { cropParts, fitCrops } from "./crops.ts";
 import { type InputProblem, inputProblemOf, storedBytes } from "./input-guard.ts";
 import { SessionRegistry, type SessionStatus } from "./status.ts";
-import { earliest } from "./wake.ts";
+import { earliest, type EndedCall } from "./wake.ts";
 import { summarizeTaskGraph } from "./task-graph.ts";
 import { AgentsReport, sessionAgentsOf } from "./agents-report.ts";
 import { EXCHANGE_ENTRIES, firstExchange, titleTask } from "./titles.ts";
@@ -616,6 +616,11 @@ export type SessionHostOptions<R = never> = {
    * request whose call was abandoned while the object was evicted.
    */
   readonly onIdle?: Effect.Effect<void, never, R>;
+  /**
+   * Withdraws the owner requests (an Approval, a Secret request, a Sign-in request, an MCP server's questions) of a tool
+   * call the Session ended for good without it running again: one the restart limit parked (`endParkedCalls`).
+   */
+  readonly withdrawCall?: (call: EndedCall) => Effect.Effect<void, never, R>;
   /**
    * Runs the moment the Session has gone idle after work, before anything else of its settling: closes the Last run and
    * ends it in the background (`runs.ts`), so it never delays the owner's notification. Given a way to read the newest
@@ -1048,6 +1053,24 @@ const sameAgent = (have: Agent, want: AgentChange): boolean =>
 /** The alarm heartbeat's next time. */
 const heartbeat = Clock.currentTimeMillis.pipe(Effect.map((now) => now + HEARTBEAT_MS));
 
+/** A tool call task's input, as far as its tool call's id goes: kept in a nested call's input, beside a model call's. */
+const ToolCallInput = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("model"), callId: Schema.String }),
+  Schema.Struct({ kind: Schema.Literal("nested"), call: Schema.Struct({ id: Schema.String }) }),
+]);
+
+const decodeToolCallInput = Schema.decodeUnknownOption(ToolCallInput);
+
+/** The tool call a tool call task runs: its task and, when its input says it, its tool call's id. */
+const endedCallOf = (task: { readonly id: TaskId; readonly input: unknown }): EndedCall => ({
+  taskId: task.id,
+  callId: Option.getOrUndefined(
+    Option.map(decodeToolCallInput(task.input), (input) =>
+      input.kind === "model" ? input.callId : input.call.id,
+    ),
+  ),
+});
+
 /** Open the Harness on the object's `storage`, under the `pi_` prefix, after arming a fallback alarm. */
 const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
   options: SessionHostOptions<R>,
@@ -1091,17 +1114,11 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
     }),
   );
 
-  /** The tool calls the restart limit parked as the Harness opened, which the Session ends (below). */
-  const parkedCalls: Array<TaskId> = [];
-
   // What the Harness reports without failing a call (a task that faulted, one the restart limit parked, a hook or
-  // listener that threw) is otherwise dropped. `info` names the task, never content.
+  // listener that threw) is otherwise dropped. `info` names the task, never content. A tool call it parks is ended at
+  // each wake (`endParkedCalls`), read from the Harness rather than from this report, which comes once.
   const onReport: HarnessOptions["onReport"] = (error, info) => {
     run(Effect.logWarning(`pi-durable reported ${info.type}`, info, error));
-
-    if (info.type === "task_parked" && info.task.kind === ToolTask.definition.name) {
-      parkedCalls.push(info.task.id);
-    }
   };
 
   const harnessOptions = { models: limited, settings: harnessSettings(settings), onReport };
@@ -1112,21 +1129,6 @@ const openSessionHarness = Effect.fn("openSessionHarness")(function* <R>(
   ).pipe(fromHarness);
 
   opened = harness.harness;
-
-  // A tool call the restart limit parks was cut off that many times before it reached a wait (a call that waits marks
-  // it as progress: `reachedWait`), and nothing in cloudpid would run it again: its Run would stay busy until stopped.
-  // It is aborted instead, as pi-durable 1.5 ends such a call: its abort settles it with an error result the agent
-  // reads, and the Run goes on. An owner request it left is withdrawn once the Session is idle (`onIdle`).
-  yield* Effect.forEach(
-    parkedCalls,
-    (id) =>
-      attempt("abortTask", () => harness.harness.abortTask(id, context)).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("A tool call the restart limit parked was not ended", cause),
-        ),
-      ),
-    { discard: true },
-  );
 
   // A storage error closes the Harness for good; reset the object so the next event reopens it.
   yield* Effect.sync(
@@ -1160,6 +1162,48 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   const onIdle =
     options.onIdle === undefined ? Effect.void : Effect.provideContext(options.onIdle, services);
+
+  /** Withdraw the owner requests of a tool call ended for good. */
+  const withdrawCall = (call: EndedCall) =>
+    options.withdrawCall === undefined
+      ? Effect.void
+      : Effect.provideContext(options.withdrawCall(call), services);
+
+  /**
+   * End each tool call the restart limit parked: one cut off that many times before it reached a wait (a call that
+   * waits marks it as progress: `reachedWait`), which nothing in cloudpid would run again (no `retryTask`), so its Run
+   * would stay busy until stopped. It is aborted, as pi-durable 1.5 ends such a call itself: the abort settles it with an
+   * error result the agent reads, and the Run goes on. The owner requests it left are withdrawn with it (`withdrawCall`),
+   * so the Run's next ask shows nothing dead beside it.
+   *
+   * Read from the Harness at every wake, not from pi-durable's `task_parked` report, which comes once, at the open that
+   * parks the call: a call an earlier instance parked and could not end (an abort that failed, an instance stopped
+   * first, a build before this one) is ended at the next wake.
+   */
+  const endParkedCalls = harness.inspect.pipe(
+    Effect.flatMap(({ tasks }) =>
+      Effect.forEach(
+        Arr.filter(
+          tasks,
+          ({ record, state }) =>
+            record.kind === ToolTask.definition.name &&
+            state.kind === "blocked" &&
+            state.reason === "restart_limit",
+        ),
+        ({ record }) =>
+          attempt("abortTask", () => harness.harness.abortTask(record.id, context)).pipe(
+            Effect.andThen(withdrawCall(endedCallOf(record))),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("A tool call the restart limit parked was not ended", cause),
+            ),
+          ),
+        { discard: true },
+      ),
+    ),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Reading the tool calls the restart limit parked failed", cause),
+    ),
+  );
 
   /** The newest entry of a conversation, 0 when it has none. */
   const newestEntry = async (conversationId: ConversationId): Promise<number> => {
@@ -1867,6 +1911,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   // Armed before `resume()` runs anything, as for any call that can start work. The work it resumes runs under its span.
   const wakeAndResume = wake.pipe(
     Effect.flatMap(arm),
+    Effect.andThen(endParkedCalls),
     Effect.andThen(harness.resume.pipe(Effect.withSpan("session.resume"))),
     Effect.andThen(settleWhenIdle),
     serially,

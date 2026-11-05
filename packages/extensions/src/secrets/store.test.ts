@@ -218,6 +218,33 @@ describe("Secrets", () => {
       expect(marks).toEqual([["7"], ["7"]]);
     }));
 
+  test("settles a call that ended in another instance: its ask is withdrawn, and an answer kept for it dropped", () =>
+    Effect.gen(function* () {
+      const { storage } = memoryStorage();
+      const first = yield* open(storage);
+
+      yield* Effect.forkChild(first.secrets.ask(ASK));
+      yield* Effect.forkChild(first.secrets.ask({ ...ASK, id: "8" }));
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      // An eviction leaves both asks stored; the Session ends call 7 before it reruns, and 8 is answered meanwhile.
+      const second = yield* open(storage);
+
+      yield* second.secrets.answer("8", { API_KEY: VALUE });
+      yield* second.secrets.settle("7");
+      yield* second.secrets.settle("8");
+
+      expect(yield* second.secrets.pending).toEqual([]);
+
+      // A rerun of call 8 asks again: its answer was dropped with it.
+      yield* Effect.forkChild(second.secrets.ask({ ...ASK, id: "8" }));
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      expect((yield* second.secrets.pending).map((ask) => ask.id)).toEqual(["8"]);
+    }));
+
   test("keeps a pending ask across an eviction, and answers the call that asks again", () =>
     Effect.gen(function* () {
       const { storage } = memoryStorage();

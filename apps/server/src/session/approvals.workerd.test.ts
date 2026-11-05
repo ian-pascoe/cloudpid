@@ -425,10 +425,10 @@ describe("Approval over the Session socket", () => {
     });
   });
 
-  it("ends a call cut off before its wait at every restart with an error, goes on with the Run, and withdraws its request", async () => {
+  it("ends a call cut off before its wait at every restart with an error, withdraws its request at once, and goes on with the Run", async () => {
     const stub = env.SESSIONS.getByName(`hang-${(counter += 1)}`);
 
-    await script(stub, "call:hang:{}", "Gave up.");
+    await script(stub, "call:hang:{}", "gate:Gave up.");
 
     const before = await connect(stub);
 
@@ -444,18 +444,47 @@ describe("Approval over the Session socket", () => {
         calls.length === 1 && calls.every((call) => call.running && call.restarts === restart),
     );
 
-    // The restart that reaches the limit ends the call instead of parking it.
+    // The restart that reaches the limit ends the call instead of parking it, and the Run goes on: the model is asked
+    // again, with the call's error result, and is held at the gate.
+    await evictDurableObject(stub);
+    await runDurableObjectAlarm(stub);
+    await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
+
+    expect((await toolResults(stub)).at(-1)).toContain("Tool hang was aborted");
+
+    // Withdrawn with the call, not once the Session is idle: the Run still goes.
+    const after = await connect(stub);
+
+    expect(await after.next(isRequests)).toEqual({ type: "approval_requests", requests: [] });
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.open());
+    await idle(stub);
+  });
+
+  it("ends a call an earlier instance left parked, which no open reports again", async () => {
+    const stub = env.SESSIONS.getByName(`hang-${(counter += 1)}`);
+
+    await script(stub, "call:hang:{}", "Gave up.");
+
+    const before = await connect(stub);
+
+    before.send({ type: "submit", id: "go", input: "Hang" });
+    only(await before.next(isPending));
+    before.close();
+
+    // As an instance that parked the call and stopped before it ended it, or a build before this one, left it: pending at
+    // the restart limit. The next open counts no restart of it, so pi-durable reports nothing.
+    await runInDurableObject(stub, (_instance: TestSession, state) => {
+      state.storage.sql.exec(
+        "UPDATE pi_tasks SET status = 'pending', record = json_set(record, '$.state.status', 'pending', '$.restarts', ?) WHERE record ->> '$.kind' = 'pi.tool'",
+        RESTART_LIMIT,
+      );
+    });
     await evictDurableObject(stub);
     await runDurableObjectAlarm(stub);
     await idle(stub);
 
     expect((await toolResults(stub)).at(-1)).toContain("Tool hang was aborted");
-    // The Run went on: the model was asked again, with the call's error result.
-    expect(
-      await runInDurableObject(stub, (_instance: TestSession, state) =>
-        state.storage.kv.get<{ readonly next: number }>("script"),
-      ),
-    ).toMatchObject({ next: 2 });
 
     const after = await connect(stub);
 
