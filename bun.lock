@@ -281,6 +281,7 @@
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "*",
+        "typebox": "*",
       },
     },
     "packages/protocol": {
