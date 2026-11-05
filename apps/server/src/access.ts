@@ -339,7 +339,7 @@ const isLoopbackHost = (host: string): boolean => LOOPBACK_HOST.test(host);
 /** The claim profile of an admitted assertion: what Access really sends, with no value that identifies anyone. */
 export const ClaimProfile = Schema.Struct({
   route: Schema.Literals(["main", "mcp"]),
-  audienceCount: Schema.Finite,
+  audienceCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   /** Which of the two applications' audiences (and any other) the assertion lists. */
   audiences: Schema.Array(Schema.Literals(["main", "mcp", "other"])),
   oauth: Schema.Boolean,
@@ -373,11 +373,15 @@ const decodeProfileClaims = Schema.decodeUnknownOption(ProfileClaims);
 const decodeTypeName = Schema.decodeUnknownOption(TypeName);
 const encodeProfile = Schema.encodeOption(Schema.fromJsonString(ClaimProfile));
 
+type Route = ClaimProfile["route"];
+
+type AudienceKind = ClaimProfile["audiences"][number];
+
 /** The claim profile of `payloadText`, an assertion's payload as JSON, for a request on `route`. Reads no value out. */
 export const claimProfile = (
   payloadText: string | undefined,
   context: {
-    readonly route: "main" | "mcp";
+    readonly route: Route;
     readonly audiences: { readonly main: string | undefined; readonly mcp: string | undefined };
   },
 ): ClaimProfile => {
@@ -386,7 +390,7 @@ export const claimProfile = (
   const claims = payload.pipe(Option.flatMap(decodeProfileClaims));
   const listed = claims.pipe(Option.map(({ aud }) => (aud === undefined ? [] : Arr.ensure(aud))));
   const audiences = Option.getOrElse(listed, () => []);
-  const kinds = new Set<"main" | "mcp" | "other">();
+  const kinds = new Set<AudienceKind>();
 
   for (const audience of audiences) {
     if (audience === context.audiences.main) kinds.add("main");
@@ -532,12 +536,14 @@ export const guardAccess =
       const request = yield* HttpServerRequest.HttpServerRequest;
       const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
 
+      const mcp = isMcpRoute(request);
+
       const verdict = yield* Effect.promise(() =>
         admit(
           {
             assertion: request.headers[ACCESS_ASSERTION_HEADER],
             hosts: hostsOf(request),
-            mcp: isMcpRoute(request),
+            mcp,
             now,
           },
           guard,
@@ -553,19 +559,25 @@ export const guardAccess =
       }
 
       if (verdict.caller.kind === "owner") {
-        const profile = claimProfile(payloadTextOf(request.headers[ACCESS_ASSERTION_HEADER]), {
-          route: isMcpRoute(request) ? "mcp" : "main",
-          audiences: { main: guard.audience, mcp: guard.mcp?.audience },
-        });
+        // Logging is never a reason to fail an admitted request: anything that throws here is "no log".
+        const fresh = Option.liftThrowable(() => {
+          const profile = claimProfile(payloadTextOf(request.headers[ACCESS_ASSERTION_HEADER]), {
+            route: mcp ? "mcp" : "main",
+            audiences: { main: guard.audience, mcp: guard.mcp?.audience },
+          });
 
-        const seen = guard.loggedProfiles ?? loggedProfiles;
-        const key = Option.getOrElse(encodeProfile(profile), () => "");
+          return { profile, key: encodeProfile(profile) };
+        })();
 
-        if (!seen.has(key)) {
-          seen.add(key);
-          yield* Effect.logInfo("Access guard admitted a new claim profile").pipe(
-            Effect.annotateLogs(profile),
-          );
+        if (Option.isSome(fresh) && Option.isSome(fresh.value.key)) {
+          const seen = guard.loggedProfiles ?? loggedProfiles;
+
+          if (!seen.has(fresh.value.key.value)) {
+            seen.add(fresh.value.key.value);
+            yield* Effect.logInfo("Access guard admitted a new claim profile").pipe(
+              Effect.annotateLogs(fresh.value.profile),
+            );
+          }
         }
       }
 
