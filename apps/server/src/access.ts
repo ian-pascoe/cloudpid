@@ -372,7 +372,6 @@ export const admit = async (request: GuardedRequest, guard: AccessGuard): Promis
 
   if (audience === undefined || audience === "") return refuse("not_configured");
 
-
   try {
     return await classifyAssertion(request.assertion, {
       audience,
