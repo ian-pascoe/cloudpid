@@ -1,5 +1,5 @@
 ---
-status: accepted (deploys under deferred Durable Object code updates, and two facts from the deployed verification: amended by #423)
+status: accepted (deploys under deferred Durable Object code updates, and two facts from the deployed verification: amended by #423; the Registry's sign-in read through the engine: #644)
 ---
 
 # The Environment's MCP host object lives beside the Registry and runs the MCP SDK through a stateless engine in a Worker of its own
@@ -22,4 +22,4 @@ We chose this because the host must call the Registry and Sessions must call the
 - The engine keeps nothing between calls. Each call rebuilds the SDK client from the host's stored era and Legacy session rows. An engine deploy cuts nothing: calls in flight finish on the version they started on. A call cut for another reason is a cut that may have run (never retried for `tools/call`), and loses no state.
 - A server's questions and progress reach a Session through callbacks passed down the call, Session → host → engine. Nothing ever calls a Session (ADR-0030, ADR-0032). RPC cannot carry an `AbortSignal`, so each call also carries a callback that stays pending until the caller aborts it and rejects if the caller dies. Either way, the engine aborts the server request. For this it holds each call under `ctx.waitUntil`: otherwise a dead host's call is cancelled silently, its fetches with it, and a Legacy server is never told.
 - Results over 1 MiB pass engine → host → Session as byte streams, which RPC neither clones nor counts against its 32 MiB limit. The engine bounds memory per isolate by producing each stream only as it is read, so backpressure reaches the server.
-- The Registry still never calls out. The main Worker and the Sessions carry its changes to the host, and the host calls the Registry in the same script for the MCP server set, `${NAME}` values and access tokens.
+- The Registry still never calls out to the host. The main Worker and the Sessions carry its changes to the host, and the host calls the Registry in the same script for the MCP server set, `${NAME}` values and access tokens. Its one call into `McpWorker` is a sign-in read on one of cloudpid's own hosts (`McpEngine.fetchPublic`, [#644](https://github.com/ian-pascoe/cloudpid/issues/644)), which runs no SDK and holds no state.
