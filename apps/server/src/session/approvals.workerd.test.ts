@@ -52,10 +52,12 @@ const NEW_IN_DEFAULT = {
 let counter = 0;
 
 /**
- * A Session whose name gives it the `settings_*` tools (and `nest` too, for `settings-nest`), registered in a fresh
- * Registry it reports to.
+ * A Session whose name gives it the `settings_*` tools (and `nest` too, for `settings-nest`; only `hang`, for `hang`),
+ * registered in a fresh Registry it reports to.
  */
-const registered = async (prefix: "settings-approval" | "settings-nest" = "settings-approval") => {
+const registered = async (
+  prefix: "settings-approval" | "settings-nest" | "hang" = "settings-approval",
+) => {
   const sessionId = `${prefix}-${(counter += 1)}`;
   const registryName = `approval-registry-${counter}`;
   const registry = env.REGISTRIES.getByName(registryName);
@@ -426,7 +428,7 @@ describe("Approval over the Session socket", () => {
   });
 
   it("ends a call cut off before its wait at every restart with an error, withdraws its request at once, and goes on with the Run", async () => {
-    const stub = env.SESSIONS.getByName(`hang-${(counter += 1)}`);
+    const { stub, registry } = await registered("hang");
 
     await script(stub, "call:hang:{}", "gate:Gave up.");
 
@@ -451,6 +453,11 @@ describe("Approval over the Session socket", () => {
     await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
 
     expect((await toolResults(stub)).at(-1)).toContain("Tool hang was aborted");
+    // The Run goes on as any does: its heartbeat is armed, and the Registry has it running.
+    expect(
+      await runInDurableObject(stub, (_instance: TestSession, state) => state.storage.getAlarm()),
+    ).not.toBeNull();
+    expect((await registry.listSessions())[0]?.status).toBe("running");
 
     // Withdrawn with the call, not once the Session is idle: the Run still goes.
     const after = await connect(stub);
@@ -489,6 +496,40 @@ describe("Approval over the Session socket", () => {
     const after = await connect(stub);
 
     expect(await after.next(isRequests)).toEqual({ type: "approval_requests", requests: [] });
+  });
+
+  it("withdraws the requests of the calls a parked call made, as it ends it", async () => {
+    const { stub } = await registered("settings-nest");
+    const [, tool, raise] = /^call:([^:]+):(.*)$/u.exec(RAISE) ?? [];
+
+    await script(stub, `call:nest:${JSON.stringify({ tool, arguments: raise })}`, "gate:Gave up.");
+
+    const before = await connect(stub);
+
+    before.send({ type: "submit", id: "go", input: "Raise the limit from a script" });
+    only(await before.next(isPending));
+    before.close();
+
+    // The script's call parked, as an earlier instance left it, while the call it made waits for the owner.
+    await runInDurableObject(stub, (_instance: TestSession, state) => {
+      state.storage.sql.exec(
+        "UPDATE pi_tasks SET status = 'pending', record = json_set(record, '$.state.status', 'pending', '$.restarts', ?) WHERE record ->> '$.kind' = 'pi.tool' AND record ->> '$.input.kind' = 'model'",
+        RESTART_LIMIT,
+      );
+    });
+    await evictDurableObject(stub);
+    await runDurableObjectAlarm(stub);
+    await runInDurableObject(stub, (instance: TestSession) => instance.gated.promise);
+
+    expect((await toolResults(stub)).at(-1)).toContain("Tool nest was aborted");
+
+    // The nested call's request went with the script's call, though its abort never ran it again.
+    const after = await connect(stub);
+
+    expect(await after.next(isRequests)).toEqual({ type: "approval_requests", requests: [] });
+
+    await runInDurableObject(stub, (instance: TestSession) => instance.open());
+    await idle(stub);
   });
 
   it("withdraws the request when the owner stops the Run, and refuses a late answer", async () => {

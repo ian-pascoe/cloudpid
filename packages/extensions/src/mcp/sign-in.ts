@@ -134,7 +134,8 @@ export type McpSignInsService = {
   readonly recheck: Effect.Effect<void>;
   /**
    * The call `callId` ended without coming back (the Session aborted it: #647): it leaves the requests it waits on, and
-   * a request left with no call is withdrawn, with the Registry's waiter.
+   * a request left with no call is withdrawn, with the Registry's waiter. `callId` is the call as `ask` names it: its
+   * task's id (`mcp_sign_in_ask` asks with `String(api.taskId)`), not its tool call's.
    */
   readonly settleCall: (callId: string) => Effect.Effect<void>;
   /** Withdraw every request no call in this instance waits for. Run only while no work is live. */

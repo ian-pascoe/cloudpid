@@ -59,10 +59,11 @@ export const onIdle = (
 export type EndedCall = { readonly taskId: number; readonly callId: string | undefined };
 
 /**
- * What the object withdraws of a tool call it ended for good without the call running again (one the restart limit
- * parked: `./host.ts`'s `endParkedCalls`): the owner requests the call left, at once rather than when the Session is
- * idle (`onIdle`), so a Run that goes on and asks the owner again shows nothing dead beside it. Each request is keyed by
- * the call's task, but an MCP server's questions, by its tool call.
+ * What the object withdraws of a tool call it ends for good without the call running again (one the restart limit
+ * parked, or a call it made: `./host.ts`'s `endParkedCalls`): the owner requests the call left, before it is aborted
+ * rather than when the Session is idle (`onIdle`), so no answer is taken and then dropped, and a Run that goes on and
+ * asks the owner again shows nothing dead beside it. Each request is keyed by the call's task, but an MCP server's
+ * questions, by its tool call.
  */
 export const withdrawCall =
   (
