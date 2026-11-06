@@ -40,7 +40,8 @@
     "./result-bounds": "./src/result-bounds.ts",
     "./bash-routing": "./src/bash-routing.ts",
     "./tool-search": "./src/tool-search.ts",
-    "./mcp": "./src/mcp.ts"
+    "./mcp": "./src/mcp.ts",
+    "./visuals": "./src/visuals.ts"
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs",
