@@ -10,9 +10,6 @@ import * as Record from "effect/Record";
 /** The Session's Visuals by conversation, as its state keeps them. */
 export type Visuals = Readonly<Record<string, ReadonlyArray<VisualEntry>>>;
 
-/** The tool that shows a Visual. */
-export const VISUAL_TOOL = "visual_show";
-
 /** Every conversation's Visuals in one list. */
 export const visualEntries = (visuals: Visuals): ReadonlyArray<VisualEntry> =>
   Arr.flatten(Record.values(visuals));

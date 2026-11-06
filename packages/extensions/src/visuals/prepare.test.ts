@@ -1,53 +1,73 @@
 // docs/architecture/visuals.md → Testing: the preparation of a show. A `path` or `html` page becomes a redacted, inlined, bounded
 // copy, failing only when nothing faithful can show (visuals.md → Tools: Fails) and warning of the rest (Warns).
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off -- fixtures over native maps; vitest awaits.
-import { MAX_VISUAL_BYTES } from "@cloudpid/protocol";
+import { MAX_VISUAL_ASSET_BYTES, MAX_VISUAL_BYTES } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import { describe, expect, it } from "vitest";
 import { secretReference } from "../secrets/references.ts";
-import { prepareVisual, type VisualFiles, type VisualShowInput } from "./prepare.ts";
+import { isSpecialPath, prepareVisual, type VisualFiles, type VisualShowInput } from "./prepare.ts";
 
 const SECRET = "hunter2-very-secret";
 
-/** A Workspace of `files` (a string is UTF-8 text), whose working directory is `/workspace/repo`. */
-const workspace = (files: Record<string, string | Uint8Array>): VisualFiles => ({
+const DIRECTORY = Symbol("directory");
+
+/** A Workspace's file: UTF-8 text, bytes, or something that is not a regular file. */
+type Fixture = string | Uint8Array | typeof DIRECTORY;
+
+/**
+ * A Workspace of `files`, whose working directory is `/workspace/repo`. It measures a file before reading it, as the tool's
+ * does, and records each path it read in `reads`.
+ */
+const workspace = (files: Record<string, Fixture>, reads: string[] = []): VisualFiles => ({
   absolute: (path) =>
     Effect.succeed(path.startsWith("/") ? path : `/workspace/repo/${path.replace(/^\.\//, "")}`),
-  read: (path) =>
+  read: (path, max) =>
     Effect.sync(() => {
+      if (isSpecialPath(path)) return { kind: "not_file" as const };
+
       const found = files[path];
 
       if (found === undefined) return { kind: "missing" as const };
 
-      return {
-        kind: "file" as const,
-        bytes: found instanceof Uint8Array ? found : new TextEncoder().encode(found),
-      };
+      if (found === DIRECTORY) return { kind: "not_file" as const };
+
+      const bytes = found instanceof Uint8Array ? found : new TextEncoder().encode(found);
+
+      if (bytes.length > max) return { kind: "too_large" as const, size: bytes.length };
+
+      reads.push(path);
+
+      return { kind: "file" as const, bytes };
     }),
 });
 
 const redact = (text: string) => text.replaceAll(SECRET, secretReference("TOKEN"));
 
-const show = (input: Partial<VisualShowInput>, files: Record<string, string | Uint8Array> = {}) =>
+const optionsOf = (files: Record<string, Fixture>, reads?: string[]) => ({
+  files: workspace(files, reads),
+  redact,
+  secretValues: [SECRET],
+});
+
+const show = (
+  input: Partial<VisualShowInput>,
+  files: Record<string, Fixture> = {},
+  reads?: string[],
+) =>
   Effect.runPromise(
-    prepareVisual(
-      { title: "Chart", summary: "Sales by month", ...input },
-      { files: workspace(files), redact },
-    ),
+    prepareVisual({ title: "Chart", summary: "Sales by month", ...input }, optionsOf(files, reads)),
   );
 
 const failure = async (
   input: Partial<VisualShowInput>,
-  files: Record<string, string | Uint8Array> = {},
+  files: Record<string, Fixture> = {},
+  reads?: string[],
 ) => {
   const exit = await Effect.runPromiseExit(
-    prepareVisual(
-      { title: "Chart", summary: "Sales by month", ...input },
-      { files: workspace(files), redact },
-    ),
+    prepareVisual({ title: "Chart", summary: "Sales by month", ...input }, optionsOf(files, reads)),
   );
 
   if (Exit.isSuccess(exit)) throw new Error("The show did not fail");
@@ -84,7 +104,10 @@ describe("what a show fails on", () => {
 
   it("fails on a path with no Workspace to read it from", async () => {
     const exit = await Effect.runPromiseExit(
-      prepareVisual({ path: "a.html", title: "t", summary: "s" }, { files: undefined, redact }),
+      prepareVisual(
+        { path: "a.html", title: "t", summary: "s" },
+        { files: undefined, redact, secretValues: [SECRET] },
+      ),
     );
 
     expect(Exit.isFailure(exit)).toBe(true);
@@ -114,6 +137,41 @@ describe("what a show fails on", () => {
     expect(await failure({ html: `<!doctype html><p>${half}</p><p>${half}</p>` })).toMatchObject({
       kind: "too_large",
     });
+  });
+
+  it("fails on a page file over 2 MiB without reading it", async () => {
+    const reads: string[] = [];
+
+    expect(
+      await failure(
+        { path: "big.html" },
+        { "/workspace/repo/big.html": new Uint8Array(MAX_VISUAL_BYTES + 1) },
+        reads,
+      ),
+    ).toMatchObject({ kind: "too_large", message: expect.stringContaining("over the 2 MiB") });
+    expect(reads).toEqual([]);
+  });
+
+  it("refuses a device, kernel file or directory as the page", async () => {
+    for (const path of ["/dev/zero", "/proc/self/environ", "/sys/kernel"]) {
+      expect(await failure({ path })).toMatchObject({
+        kind: "unreadable",
+        message: `${path} is not a regular file`,
+      });
+    }
+
+    expect(await failure({ path: "out" }, { "/workspace/repo/out": DIRECTORY })).toMatchObject({
+      kind: "unreadable",
+      message: "/workspace/repo/out is not a regular file",
+    });
+  });
+
+  it("does not take a data: URL's base64 for a viewport-height unit", async () => {
+    const shown = await show({
+      html: "<!doctype html><style>body { background: url(data:image/png;base64,iVB+12VH/A==) }</style>",
+    });
+
+    expect(shown.warnings).toEqual([]);
   });
 
   it("fails on a bad title or summary", async () => {
@@ -182,6 +240,64 @@ describe("the copy of a path", () => {
     expect(shown.html).toContain('<img src="gone.png">');
   });
 
+  it("leaves out a local asset over 1 MiB, or one that is no regular file, without reading it", async () => {
+    const reads: string[] = [];
+
+    const shown = await show(
+      { path: "page.html" },
+      {
+        "/workspace/repo/page.html":
+          '<!doctype html><img src="big.png"><img src="/dev/random.png"><img src="dir.png">',
+        "/workspace/repo/big.png": new Uint8Array(MAX_VISUAL_ASSET_BYTES + 1),
+        "/workspace/repo/dir.png": DIRECTORY,
+      },
+      reads,
+    );
+
+    expect(kinds(shown.warnings)).toEqual(["asset_too_large", "asset_missing", "asset_missing"]);
+    expect(shown.warnings[1]?.message).toContain("is not a regular file");
+    expect(reads).toEqual(["/workspace/repo/page.html"]);
+  });
+
+  it("redacts an SVG before inlining it", async () => {
+    const shown = await show(
+      { path: "page.html" },
+      {
+        "/workspace/repo/page.html": '<!doctype html><img src="chart.svg">',
+        "/workspace/repo/chart.svg": `<svg><text>${SECRET}</text></svg>`,
+      },
+    );
+
+    const data = /src="data:image\/svg\+xml;base64,([^"]*)"/.exec(shown.html)?.[1] ?? "";
+
+    expect(atob(data)).toBe(`<svg><text>${secretReference("TOKEN")}</text></svg>`);
+    expect(shown.counts).toMatchObject({ images: 1, secrets: 1 });
+    expect(kinds(shown.warnings)).toEqual(["secrets_replaced"]);
+  });
+
+  it("leaves out a binary image that holds a Secret's bytes, and says so", async () => {
+    const leaky = Uint8Array.of(0x89, 0x50, ...new TextEncoder().encode(SECRET), 0x00);
+
+    const shown = await show(
+      { path: "page.html" },
+      {
+        "/workspace/repo/page.html": '<!doctype html><img src="leak.png"><img src="ok.png">',
+        "/workspace/repo/leak.png": leaky,
+        "/workspace/repo/ok.png": PNG,
+      },
+    );
+
+    expect(shown.html).toContain('<img src="leak.png">');
+    expect(shown.html).toContain('<img src="data:image/png;base64,iVBORw==">');
+    expect(shown.counts).toMatchObject({ images: 1, secrets: 1 });
+    expect(shown.warnings).toEqual([
+      {
+        kind: "secrets_replaced",
+        message: expect.stringContaining("an image that held one was left out"),
+      },
+    ]);
+  });
+
   it("reports a module graph, not resolving it", async () => {
     const shown = await show(
       { path: "page.html" },
@@ -202,6 +318,19 @@ describe("what a show warns of", () => {
     expect(shown.html).not.toContain(SECRET);
     expect(shown.html).toContain(secretReference("TOKEN"));
     expect(shown.counts.secrets).toBe(1);
+    expect(kinds(shown.warnings)).toEqual(["secrets_replaced"]);
+  });
+
+  it("redacts the title and summary as it does the page", async () => {
+    const shown = await show({
+      html: PAGE,
+      title: `Key ${SECRET}`,
+      summary: `Uses ${SECRET}`,
+    });
+
+    expect(shown.title).toBe(`Key ${secretReference("TOKEN")}`);
+    expect(shown.summary).toBe(`Uses ${secretReference("TOKEN")}`);
+    expect(shown.counts.secrets).toBe(2);
     expect(kinds(shown.warnings)).toEqual(["secrets_replaced"]);
   });
 

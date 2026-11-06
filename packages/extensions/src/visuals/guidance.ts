@@ -5,6 +5,8 @@
 // @effect-diagnostics preferEffectArray:off -- static text over small constant tables.
 import {
   CONSTANTS,
+  MAX_VISUAL_ASSET_BYTES,
+  MAX_VISUAL_BYTES,
   MAX_VISUAL_SUMMARY,
   MAX_VISUAL_TITLE,
   TOKENS,
@@ -13,11 +15,12 @@ import {
   VISUAL_LIBRARIES,
   VISUAL_PHONE_WIDTH,
   VISUAL_SCRATCH_DIRECTORY,
+  VISUAL_SHOW,
   VISUAL_THREAD_WIDTH,
+  visualSizeText,
 } from "@cloudpid/protocol";
 
-/** The tool that shows a Visual. */
-export const VISUAL_SHOW = "visual_show";
+export { VISUAL_SHOW };
 
 /** The `visuals` section's lines: when to show a Visual, and how to reach the tool when it is deferred. Never changes. */
 export const VISUALS_SECTION = [
@@ -34,7 +37,7 @@ const libraryLine = (library: (typeof VISUAL_LIBRARIES)[number]): string =>
 export const VISUAL_SHOW_DESCRIPTION = [
   "Show the owner a Visual: a page you wrote (a chart, a diagram, an explainer, a mockup), rendered inline in this conversation where the call is, on desktop and phone, and kept as it was shown. It is display only: its scripts run, but it cannot call tools, reach cloudpid or tell you anything. Every call shows a new Visual; an earlier one of the same file then shows collapsed.",
   "",
-  `Give exactly one of path (an HTML file of this Workspace) or html (the page itself), a title of at most ${MAX_VISUAL_TITLE} characters, and a summary of at most ${MAX_VISUAL_SUMMARY} that stands for the page wherever it is not rendered (transcripts, exports, an evicted card). Prefer path for anything you will revise, written at ${VISUAL_SCRATCH_DIRECTORY}/<distinctive-name>.html (absolute): after a compaction an inline page is recoverable only through context_history. A path page's local images (PNG, JPEG, WebP, GIF, SVG; at most 1 MiB each), stylesheets and single-file scripts, relative to the file or absolute, are inlined; a module graph is not. The copy is at most 2 MiB after inlining, and is redacted of the Secrets you hold.`,
+  `Give exactly one of path (an HTML file of this Workspace) or html (the page itself), a title of at most ${MAX_VISUAL_TITLE} characters, and a summary of at most ${MAX_VISUAL_SUMMARY} that stands for the page wherever it is not rendered (transcripts, exports, an evicted card). Prefer path for anything you will revise, written at ${VISUAL_SCRATCH_DIRECTORY}/<distinctive-name>.html (absolute): after a compaction an inline page is recoverable only through context_history. A path page's local images (PNG, JPEG, WebP, GIF, SVG; at most ${visualSizeText(MAX_VISUAL_ASSET_BYTES)} each), stylesheets and single-file scripts, relative to the file or absolute, are inlined; a module graph is not. The copy is at most ${visualSizeText(MAX_VISUAL_BYTES)} after inlining, and is redacted of the Secrets you hold.`,
   "",
   "Page rules:",
   "- One HTML document; scripts and styles inline or from the list below. No network calls (fetch, XHR, WebSocket, EventSource), forms or frames: they are blocked.",

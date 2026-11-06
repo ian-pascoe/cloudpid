@@ -3,6 +3,7 @@ import {
   type ReasoningMessagePartComponent,
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
+import { VISUAL_SHOW } from "@cloudpid/protocol";
 import { useAtom } from "@effect/atom-react";
 import type { ReactNode } from "react";
 import * as Arr from "effect/Array";
@@ -30,7 +31,6 @@ import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { AppCall, AppStrip, type CallProgress } from "../app-view/app-call.tsx";
 import { useKeepsVisuals, VisualCall, VisualStrip } from "../visual/visual-call.tsx";
-import { VISUAL_TOOL } from "../visual/visuals.ts";
 import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
 import { ResourceChips } from "./mcp-resource-view.tsx";
 import { LiveResource } from "./mcp-resource-live.tsx";
@@ -552,7 +552,7 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       <AppStrip parentId={toolCallId} />
       {keepsVisuals && <VisualStrip parentId={toolCallId} />}
     </>
-  ) : toolName === VISUAL_TOOL && keepsVisuals ? (
+  ) : toolName === VISUAL_SHOW && keepsVisuals ? (
     <VisualCall
       callId={toolCallId}
       progress={

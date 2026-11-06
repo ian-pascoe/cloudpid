@@ -9,6 +9,8 @@
 // @effect-diagnostics missingPipeableSignature:off -- hooks over the Session's atoms, not combinators.
 import {
   isKeptVisual,
+  MAX_VISUAL_BYTES,
+  visualSizeText,
   sourcePathOf,
   VISUAL_MIN_HEIGHT,
   type VisualEntry,
@@ -169,7 +171,7 @@ const fileText = (answer: VisualFileAnswer): string | undefined => {
     case "missing":
       return "The file is no longer there.";
     case "too_large":
-      return "The file is now larger than the 2 MiB a Visual may be.";
+      return `The file is now larger than the ${visualSizeText(MAX_VISUAL_BYTES)} a Visual may be.`;
     case "not_text":
       return "The file is no longer UTF-8 text.";
     case "text":

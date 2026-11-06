@@ -11,6 +11,13 @@ import { ConversationId } from "./conversation-id.ts";
 
 const MiB = 1024 * 1024;
 
+/** The tool that shows a Visual: the one name the extension defines it by and the client knows its card by. */
+export const VISUAL_SHOW = "visual_show";
+
+/** A bound in bytes as messages say it: `2 MiB`, `1 MiB`, `512 KiB`. */
+export const visualSizeText = (bytes: number): string =>
+  bytes >= MiB ? `${Number((bytes / MiB).toFixed(1))} MiB` : `${Math.ceil(bytes / 1024)} KiB`;
+
 /** The most one Visual's page may weigh after inlining, in UTF-8 bytes (`docs/architecture/visuals.md` → The copy: Bounds). */
 export const MAX_VISUAL_BYTES = 2 * MiB;
 

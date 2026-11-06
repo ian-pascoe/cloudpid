@@ -29,6 +29,7 @@ import {
   VisualRecord,
   type VisualSource,
   type VisualStub,
+  visualSizeText,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -190,7 +191,9 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
     Effect.suspend(() => {
       if (draft.bytes > MAX_VISUAL_BYTES) {
         return Effect.fail(
-          VisualKeepError.make({ message: "The page is over the 2 MiB a Visual may be" }),
+          VisualKeepError.make({
+            message: `The page is over the ${visualSizeText(MAX_VISUAL_BYTES)} a Visual may be`,
+          }),
         );
       }
 

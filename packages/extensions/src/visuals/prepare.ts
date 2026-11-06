@@ -14,6 +14,7 @@ import {
   type VisualSource,
   type VisualWarning,
   type VisualWarningKind,
+  visualSizeText,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -23,14 +24,32 @@ import { secretReference } from "../secrets/references.ts";
 export type VisualFile =
   | { readonly kind: "file"; readonly bytes: Uint8Array }
   | { readonly kind: "missing" }
+  /** A directory, or a device or special file (`/dev`, `/proc`, `/sys`), which is never read. */
+  | { readonly kind: "not_file" }
+  /** Over the bound it was read with, by its size before reading: it was not read. */
+  | { readonly kind: "too_large"; readonly size: number }
   | { readonly kind: "unreadable"; readonly message: string };
 
 /** The calling conversation's Workspace, as the preparation reads it. */
 export type VisualFiles = {
   /** `path` as an absolute path of the Workspace (relative to the conversation's working directory); none when it is not one. */
   readonly absolute: (path: string) => Effect.Effect<string | undefined>;
-  readonly read: (path: string) => Effect.Effect<VisualFile>;
+  /**
+   * The regular file at `path`, read only once its size (a link's target's) is known to be at most `max` bytes: a larger
+   * one, or one that is not a regular file, is never read.
+   */
+  readonly read: (path: string, max: number) => Effect.Effect<VisualFile>;
 };
+
+/** Why an asset that was not read was left out, by what its read found. */
+const ASSET_UNREAD = {
+  missing: "does not exist",
+  not_file: "is not a regular file",
+  unreadable: "could not be read",
+} as const;
+
+/** Whether `path` is under a directory of devices or kernel files, whose "files" are never a page's (`/dev/zero` never ends). */
+export const isSpecialPath = (path: string): boolean => /^\/(?:dev|proc|sys)(?:\/|$)/.test(path);
 
 /** What `visual_show` was called with. */
 export type VisualShowInput = {
@@ -53,6 +72,7 @@ export const VISUAL_FAILURE_KINDS = [
   "viewport_units",
   "bad_title",
   "bad_summary",
+  "secrets_unavailable",
   "not_kept",
 ] as const;
 
@@ -89,10 +109,7 @@ export type PreparedVisual = {
 /** `text`'s UTF-8 bytes. */
 export const utf8Bytes = (text: string): number => new TextEncoder().encode(text).length;
 
-const MIB = 1024 * 1024;
-
-const sizeOf = (bytes: number): string =>
-  bytes >= MIB ? `${(bytes / MIB).toFixed(1)} MiB` : `${Math.ceil(bytes / 1024)} KiB`;
+const sizeOf = visualSizeText;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Paths
@@ -187,6 +204,15 @@ const base64 = (bytes: Uint8Array): string => {
 
 /** Viewport-height units in CSS: `100vh`, `50svh`, `.5dvh`, `-10lvh`. */
 const VIEWPORT_HEIGHT = /(?<![\w-])-?(?:\d+\.?\d*|\.\d+)(?:s|l|d)?vh\b/i;
+
+/**
+ * Whether the page's own CSS uses viewport-height units, `url()`s set aside: a `data:` URL's base64 (`+12VH/`) or a file
+ * name is no unit.
+ */
+const usesViewportHeight = (html: string): boolean =>
+  ownCss(html).some((css) =>
+    VIEWPORT_HEIGHT.test(css.replace(/url\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)/gi, "url()")),
+  );
 
 /** The page's own CSS: its `<style>` blocks and `style` attributes. */
 const ownCss = (html: string): ReadonlyArray<string> => [
@@ -291,6 +317,32 @@ export type PrepareOptions = {
   readonly files: VisualFiles | undefined;
   /** `text` with every Secret the Session holds replaced by its reference. */
   readonly redact: (text: string) => string;
+  /** The values of the Secrets the Session holds: a binary image that holds one's bytes is left out, never kept. */
+  readonly secretValues: ReadonlyArray<string>;
+};
+
+/** Whether `bytes` hold `needle` anywhere. */
+const holds = (bytes: Uint8Array, needle: Uint8Array): boolean => {
+  if (needle.length === 0 || needle.length > bytes.length) return false;
+
+  const first = needle[0];
+
+  for (let at = bytes.indexOf(first ?? 0); at !== -1; at = bytes.indexOf(first ?? 0, at + 1)) {
+    if (at + needle.length > bytes.length) return false;
+
+    let same = true;
+
+    for (let index = 1; index < needle.length; index++) {
+      if (bytes[at + index] !== needle[index]) {
+        same = false;
+        break;
+      }
+    }
+
+    if (same) return true;
+  }
+
+  return false;
 };
 
 /** How many Secret References `text` holds, by their opening. */
@@ -328,6 +380,7 @@ export const prepareVisual = (
     }
 
     const hasPath = input.path !== undefined && input.path.trim() !== "";
+
     const hasHtml = input.html !== undefined;
 
     if (hasPath && hasHtml)
@@ -342,6 +395,19 @@ export const prepareVisual = (
     };
 
     const counts = { images: 0, stylesheets: 0, scripts: 0, secrets: 0, hints: 0 };
+
+    /** `text` redacted, counting the Secrets it held. */
+    const redactCounting = (text: string): string => {
+      const redacted = options.redact(text);
+
+      counts.secrets += Math.max(0, referenceCount(redacted) - referenceCount(text));
+
+      return redacted;
+    };
+
+    // The title and summary are shown and exported wherever the page is not, so they are redacted as the page is.
+    const shownTitle = redactCounting(title);
+    const shownSummary = redactCounting(summary);
 
     let source: VisualSource = { kind: "inline" };
     let html = input.html ?? "";
@@ -362,9 +428,20 @@ export const prepareVisual = (
         return yield* fail("missing", `${input.path} is not a path in this Workspace`);
       }
 
-      const read = yield* files.read(absolute);
+      const read = yield* files.read(absolute, MAX_VISUAL_BYTES);
 
       if (read.kind === "missing") return yield* fail("missing", `${absolute} does not exist`);
+
+      if (read.kind === "not_file") {
+        return yield* fail("unreadable", `${absolute} is not a regular file`);
+      }
+
+      if (read.kind === "too_large") {
+        return yield* fail(
+          "too_large",
+          `${absolute} is ${sizeOf(read.size)}, over the ${sizeOf(MAX_VISUAL_BYTES)} a Visual may be`,
+        );
+      }
 
       if (read.kind === "unreadable") {
         return yield* fail("unreadable", `${absolute} could not be read: ${read.message}`);
@@ -395,21 +472,21 @@ export const prepareVisual = (
         if (file === undefined || files === undefined || !isLocal(reference)) return undefined;
 
         const path = resolveFrom(file, reference);
-        const read = yield* files.read(path);
+        const read = yield* files.read(path, MAX_VISUAL_ASSET_BYTES);
 
-        if (read.kind !== "file") {
+        if (read.kind === "too_large") {
           warn(
-            "asset_missing",
-            `${reference} (${path}) ${read.kind === "missing" ? "does not exist" : "could not be read"}: it was left out`,
+            "asset_too_large",
+            `${reference} is ${sizeOf(read.size)}, over the ${sizeOf(MAX_VISUAL_ASSET_BYTES)} an asset may be: it was left out`,
           );
 
           return undefined;
         }
 
-        if (read.bytes.length > MAX_VISUAL_ASSET_BYTES) {
+        if (read.kind !== "file") {
           warn(
-            "asset_too_large",
-            `${reference} is ${sizeOf(read.bytes.length)}, over the ${sizeOf(MAX_VISUAL_ASSET_BYTES)} an asset may be: it was left out`,
+            "asset_missing",
+            `${reference} (${path}) ${ASSET_UNREAD[read.kind]}: it was left out`,
           );
 
           return undefined;
@@ -488,18 +565,23 @@ export const prepareVisual = (
       );
     }
 
-    // Redacted before the images are inlined: a Secret is text, and a `data:` URL is not read for one.
-    const redacted = options.redact(html);
-
-    counts.secrets = Math.max(0, referenceCount(redacted) - referenceCount(html));
-
-    if (redacted !== html) {
-      html = redacted;
-      warn(
-        "secrets_replaced",
-        "The page held a Secret's value, replaced by its reference in the copy: never put Secrets in a Visual",
+    // Checked on the page's own CSS before images are inlined: a `data:` URL's base64 is no unit.
+    if (usesViewportHeight(html)) {
+      return yield* fail(
+        "viewport_units",
+        "The page's CSS uses viewport-height units (vh, svh, lvh, dvh): the frame fits its height to the content, so they would loop or mislead; use content height, or a fixed height in px",
       );
     }
+
+    // Redacted before the images are inlined: a Secret is text, and a `data:` URL is not read for one. An SVG is text, and
+    // is redacted before it is inlined; a binary image that holds a Secret's bytes is left out.
+    html = redactCounting(html);
+
+    const secretBytes = options.secretValues
+      .filter((value) => value !== "")
+      .map((value) => new TextEncoder().encode(value));
+
+    let imagesDropped = 0;
 
     if (file !== undefined) {
       const inlineImage = (reference: string) =>
@@ -514,9 +596,28 @@ export const prepareVisual = (
 
           if (found === undefined) return undefined;
 
+          let bytes = found.bytes;
+
+          if (mime === "image/svg+xml") {
+            const text = decodeUtf8(bytes);
+
+            if (text === undefined) {
+              warn("asset_missing", `${reference} is not an SVG in UTF-8: it was left out`);
+
+              return undefined;
+            }
+
+            bytes = new TextEncoder().encode(redactCounting(text));
+          } else if (secretBytes.some((secret) => holds(bytes, secret))) {
+            imagesDropped += 1;
+            counts.secrets += 1;
+
+            return undefined;
+          }
+
           counts.images += 1;
 
-          return `data:${mime};base64,${base64(found.bytes)}`;
+          return `data:${mime};base64,${base64(bytes)}`;
         });
 
       html = yield* replaceEach(html, /<img\b[^>]*>/gi, (match) =>
@@ -539,19 +640,21 @@ export const prepareVisual = (
       );
     }
 
+    if (counts.secrets > 0) {
+      warn(
+        "secrets_replaced",
+        imagesDropped > 0
+          ? `The page held a Secret's value, replaced by its reference in the copy, and ${imagesDropped === 1 ? "an image that held one was" : `${imagesDropped} images that held one were`} left out: never put Secrets in a Visual`
+          : "The page held a Secret's value, replaced by its reference in the copy: never put Secrets in a Visual",
+      );
+    }
+
     // A speed bump: a static hint reaches its host before any script runs, and the CSP does not govern it.
     html = html.replace(RESOURCE_HINT, () => {
       counts.hints += 1;
 
       return "";
     });
-
-    if (ownCss(html).some((css) => VIEWPORT_HEIGHT.test(css))) {
-      return yield* fail(
-        "viewport_units",
-        "The page's CSS uses viewport-height units (vh, svh, lvh, dvh): the frame fits its height to the content, so they would loop or mislead; use content height, or a fixed height in px",
-      );
-    }
 
     for (const host of unlistedHosts(html)) {
       warn(
@@ -599,5 +702,5 @@ export const prepareVisual = (
       );
     }
 
-    return { title, summary, source, html, bytes, warnings, counts };
+    return { title: shownTitle, summary: shownSummary, source, html, bytes, warnings, counts };
   });

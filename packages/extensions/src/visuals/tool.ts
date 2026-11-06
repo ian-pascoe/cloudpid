@@ -9,7 +9,7 @@ import {
   callDurable,
   ChordContext,
   defineEffectTool,
-  type ToolSpanValue,
+  type ToolSpanAttributes,
 } from "@cloudpid/effect-durable";
 import {
   MAX_VISUAL_SUMMARY,
@@ -25,13 +25,16 @@ import type { ToolTaskInput } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { Secrets } from "../secrets/store.ts";
 import { VISUAL_SHOW, VISUAL_SHOW_DESCRIPTION } from "./guidance.ts";
 import {
+  isSpecialPath,
+  type PreparedVisual,
   prepareVisual,
-  type VisualCounts,
   type VisualFile,
   type VisualFiles,
   VisualShowError,
@@ -58,7 +61,23 @@ const Parameters = Schema.Struct({
   }),
 });
 
-/** The calling conversation's Workspace, as the preparation reads it, through the call's environment. */
+/** What a Workspace's failed answer for a file means to the preparation. */
+const failedRead = (error: { readonly code: string; readonly message: string }): VisualFile => {
+  switch (error.code) {
+    case "not_found":
+      return { kind: "missing" };
+    case "is_directory":
+      return { kind: "not_file" };
+    default:
+      return { kind: "unreadable", message: error.message };
+  }
+};
+
+/**
+ * The calling conversation's Workspace, as the preparation reads it, through the call's environment. A file is measured
+ * before it is read, as `call-diff.ts` does: a link by its target, which is read in its place; anything but a regular file,
+ * a file under `/dev`, `/proc` or `/sys`, and a file over the bound are never read.
+ */
 const filesOf = (env: ExecutionEnv): VisualFiles => ({
   absolute: (path) =>
     Effect.gen(function* () {
@@ -67,33 +86,54 @@ const filesOf = (env: ExecutionEnv): VisualFiles => ({
 
       return result.ok ? result.value : undefined;
     }).pipe(Effect.orElseSucceed(() => undefined)),
-  read: (path) =>
+  read: (path, max) =>
     Effect.gen(function* () {
       const context = yield* ChordContext;
 
-      return yield* Effect.promise(() => env.readBinaryFile(path, context)).pipe(
-        Effect.map((result): VisualFile => {
-          if (result.ok) return { kind: "file", bytes: result.value };
+      if (isSpecialPath(path)) return { kind: "not_file" } satisfies VisualFile;
 
-          return result.error.code === "not_found" || result.error.code === "is_directory"
-            ? { kind: "missing" }
-            : { kind: "unreadable", message: result.error.message };
-        }),
-      );
+      let target = path;
+      let info = yield* Effect.promise(() => env.fileInfo(target, context));
+
+      if (info.ok && info.value.kind === "symlink") {
+        const canonical = yield* Effect.promise(() => env.canonicalPath(path, context));
+
+        if (!canonical.ok) return failedRead(canonical.error);
+
+        if (isSpecialPath(canonical.value)) return { kind: "not_file" } satisfies VisualFile;
+
+        target = canonical.value;
+        info = yield* Effect.promise(() => env.fileInfo(target, context));
+      }
+
+      if (!info.ok) return failedRead(info.error);
+
+      if (info.value.kind !== "file") return { kind: "not_file" } satisfies VisualFile;
+
+      if (info.value.size > max) {
+        return { kind: "too_large", size: info.value.size } satisfies VisualFile;
+      }
+
+      const read = yield* Effect.promise(() => env.readBinaryFile(target, context));
+
+      if (!read.ok) return failedRead(read.error);
+
+      // It may have grown since it was measured.
+      if (read.value.byteLength > max) {
+        return { kind: "too_large", size: read.value.byteLength } satisfies VisualFile;
+      }
+
+      return { kind: "file", bytes: read.value } satisfies VisualFile;
     }),
 });
 
 /** A show's counts as span attributes, under `visual.`: fixed values and counts only. */
-const spanOf = (
-  sourceKind: string,
-  bytes: number,
-  counts: VisualCounts,
-  evicted: number,
-  warnings: ReadonlyArray<{ readonly kind: string }>,
-) => {
-  const attributes: Mutable<Record<string, ToolSpanValue>> = {
-    "visual.source": sourceKind,
-    "visual.bytes": bytes,
+const spanOf = (prepared: PreparedVisual, evicted: number): ToolSpanAttributes => {
+  const { counts, warnings } = prepared;
+
+  return {
+    "visual.source": prepared.source.kind,
+    "visual.bytes": prepared.bytes,
     "visual.inlined.images": counts.images,
     "visual.inlined.stylesheets": counts.stylesheets,
     "visual.inlined.scripts": counts.scripts,
@@ -101,15 +141,16 @@ const spanOf = (
     "visual.hints_stripped": counts.hints,
     "visual.evicted": evicted,
     "visual.warnings": warnings.length,
+    ...Record.fromEntries(
+      Arr.filterMap(VISUAL_WARNING_KINDS, (kind) => {
+        const count = Arr.filter(warnings, (warning) => warning.kind === kind).length;
+
+        return count > 0
+          ? Result.succeed([`visual.warning.${kind}`, count] as const)
+          : Result.failVoid;
+      }),
+    ),
   };
-
-  for (const kind of VISUAL_WARNING_KINDS) {
-    const count = Arr.filter(warnings, (warning) => warning.kind === kind).length;
-
-    if (count > 0) attributes[`visual.warning.${kind}`] = count;
-  }
-
-  return attributes;
 };
 
 export const VisualShowTool = defineEffectTool({
@@ -127,11 +168,21 @@ export const VisualShowTool = defineEffectTool({
       // SAFETY: a tool call's task is a `pi.tool` task, whose input is a `ToolTaskInput`.
       const caller = task?.input as ToolTaskInput | undefined;
 
-      yield* secrets.refresh;
+      // A copy that cannot be told clean of the Session's Secrets is not kept: their values never enter durable state.
+      if (!(yield* secrets.readable)) {
+        return yield* VisualShowError.make({
+          kind: "secrets_unavailable",
+          message:
+            "The Session's Secrets could not be read, so the page could not be checked for them and nothing was shown: try again shortly",
+        });
+      }
+
+      const held = yield* secrets.environment;
 
       const prepared = yield* prepareVisual(args, {
         files: api.env === undefined ? undefined : filesOf(api.env),
         redact: (text) => secrets.redact(text),
+        secretValues: Record.values(held),
       });
 
       const draft: Mutable<VisualDraft> = {
@@ -155,16 +206,7 @@ export const VisualShowTool = defineEffectTool({
           ),
         );
 
-      yield* annotateToolSpan(
-        api.callId,
-        spanOf(
-          prepared.source.kind,
-          prepared.bytes,
-          prepared.counts,
-          kept.evicted,
-          prepared.warnings,
-        ),
-      );
+      yield* annotateToolSpan(api.callId, spanOf(prepared, kept.evicted));
 
       const shown = {
         id: api.callId,
