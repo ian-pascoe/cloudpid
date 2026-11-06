@@ -1,8 +1,9 @@
 // docs/architecture/visuals.md → The frame: Height. A Visual's frame fits its content from 160 px up to 20,000 px and then
 // scrolls inside; a page whose height grows after each of 3 consecutive host resizes (one that sizes itself by its frame, and
-// would climb to the cap) is frozen where it is: growth that answers a resize at once and by the same amount each time, which
-// is how such a page climbs, and not how a page that loads in stages (an image, then a chart) grows; and the height is remembered on this device, so a reload, a remount or a
-// lazy unmount keeps the transcript where it was. Pure: the reports and the clock go in.
+// would climb to the cap) is frozen where it is: growth that answers a resize within a second, by any amount (a page sized by
+// its frame may climb by a fixed step or in proportion), and not a page that loads in stages (an image, then a chart) apart
+// from its frame's resizes; and the height is remembered on this device, so a reload, a remount or a lazy unmount keeps the
+// transcript where it was. Pure: the reports and the clock go in.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain decisions over small native lists.
 import { VISUAL_GROWTH_RESIZES, VISUAL_MAX_HEIGHT, VISUAL_MIN_HEIGHT } from "@cloudpid/protocol";
 
@@ -13,18 +14,14 @@ export const fitHeight = (reported: number): number =>
 /** How soon after a host resize a page's growth counts as an answer to it, in ms. */
 export const GROWTH_WINDOW_MS = 1000;
 
-/** How far apart two growths may be and still be the same step, in px (rounding). */
-export const GROWTH_STEP_SLACK = 2;
-
 /**
- * What the guard knows of a frame: the height the host set last and when, how many resizes in a row the page grew after by
- * the same step (`step`, px), and whether it froze.
+ * What the guard knows of a frame: the height the host set last and when, how many resizes in a row the page grew after,
+ * and whether it froze.
  */
 export interface GrowthGuard {
   readonly applied: number | undefined;
   readonly appliedAt: number;
   readonly streak: number;
-  readonly step: number;
   readonly frozen: boolean;
 }
 
@@ -32,7 +29,6 @@ export const GUARD_START: GrowthGuard = {
   applied: undefined,
   appliedAt: 0,
   streak: 0,
-  step: 0,
   frozen: false,
 };
 
@@ -45,8 +41,7 @@ export interface GuardStep {
 /**
  * The guard after the page reports `reported` px at `now`: the height to set (the fit of the report; the same as before
  * once frozen), and the guard's next state. A report that grows past the height the host set within {@link GROWTH_WINDOW_MS}
- * of setting it, by the step the last one grew by, extends the streak; growth by another step starts one; anything else
- * ends it. The {@link VISUAL_GROWTH_RESIZES}th in a row freezes the frame at the height it has, which is never set again:
+ * of setting it, by any amount, extends the streak; anything else ends it. The {@link VISUAL_GROWTH_RESIZES}th in a row freezes the frame at the height it has, which is never set again:
  * the page scrolls inside.
  */
 export const guardReport = (guard: GrowthGuard, reported: number, now: number): GuardStep => {
@@ -60,19 +55,14 @@ export const guardReport = (guard: GrowthGuard, reported: number, now: number): 
 
   if (height === guard.applied) return { guard, height };
 
-  const step = height - guard.applied;
-  const answered = step > 0 && now - guard.appliedAt <= GROWTH_WINDOW_MS;
-  const same = guard.streak > 0 && Math.abs(step - guard.step) <= GROWTH_STEP_SLACK;
-  const streak = !answered ? 0 : same ? guard.streak + 1 : 1;
+  const answered = height > guard.applied && now - guard.appliedAt <= GROWTH_WINDOW_MS;
+  const streak = answered ? guard.streak + 1 : 0;
 
   if (streak >= VISUAL_GROWTH_RESIZES) {
-    return { guard: { ...guard, streak, step, frozen: true }, height: guard.applied };
+    return { guard: { ...guard, streak, frozen: true }, height: guard.applied };
   }
 
-  return {
-    guard: { applied: height, appliedAt: now, streak, step: answered ? step : 0, frozen: false },
-    height,
-  };
+  return { guard: { applied: height, appliedAt: now, streak, frozen: false }, height };
 };
 
 /** The most heights a device remembers: the Visuals shown last. */

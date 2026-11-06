@@ -5,7 +5,7 @@
 // Escape the page did not handle returns the focus to the card; a page that does not start says so with Retry; and a card
 // mounts its frame only near the viewport.
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type, anti-slop/require-safety-comment-for-type-assertion, anti-slop/no-chained-type-assertions -- the traffic of a fake frame: JSON-RPC as a case posts it, cut down to the shape a case reads */
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off -- a DOM and its timers, driven by hand.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off asyncFunction:off -- a DOM and its timers, driven by hand; vitest awaits.
 import {
   VISUAL_CSP,
   VISUAL_ESCAPE,
@@ -100,12 +100,30 @@ describe("a Visual's frame", () => {
 
     const resource = view.sent.find(
       (each) => each.data["method"] === "ui/notifications/sandbox-resource-ready",
-    )?.data["params"] as { html: string; csp: unknown };
+    )?.data["params"] as { html: string; csp: unknown; sandbox: unknown };
 
     expect(resource.html).toBe(
       `<!doctype html><html><head><script>${VISUAL_SHIM}</script></head><body>bars</body></html>`,
     );
     expect(resource.csp).toEqual({ resourceDomains: [...VISUAL_CSP.resourceDomains] });
+    expect(resource.sandbox).toBe("allow-scripts allow-same-origin");
+  });
+
+  it("tells the page only the theme and the style variables", async () => {
+    render();
+
+    const view = frameOf();
+
+    view.handshake();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    const answer = view.sent.find((each) => each.data["id"] === 1)?.data["result"] as {
+      hostContext: Record<string, unknown>;
+    };
+
+    expect(Object.keys(answer.hostContext).sort()).toEqual(["styles", "theme"]);
   });
 
   it("fits the page's height, and says it so the device remembers it", () => {
@@ -124,7 +142,7 @@ describe("a Visual's frame", () => {
     expect(heights).toEqual([1234, 160]);
   });
 
-  it("hands an Escape the page did not handle to the card", () => {
+  it("hands an Escape the page did not handle to the card, only while the frame has the focus", () => {
     const onEscape = vi.fn();
 
     render({ onEscape });
@@ -132,6 +150,10 @@ describe("a Visual's frame", () => {
     const view = frameOf();
 
     view.handshake();
+    view.say({ jsonrpc: "2.0", method: VISUAL_ESCAPE, params: {} });
+    expect(onEscape).not.toHaveBeenCalled();
+
+    view.element.focus();
     view.say({ jsonrpc: "2.0", method: VISUAL_ESCAPE, params: {} });
     expect(onEscape).toHaveBeenCalledOnce();
   });
@@ -249,6 +271,7 @@ describe("a Visual's card", () => {
     const view = frameOf();
 
     view.handshake();
+    view.element.focus();
     view.say({ jsonrpc: "2.0", method: VISUAL_ESCAPE, params: {} });
     expect(document.activeElement?.getAttribute("data-visual")).toBe("c1");
   });

@@ -104,16 +104,21 @@ describe("a Visual's height", () => {
     return { guard, set };
   };
 
-  it("freezes a page that grows by the same step after each of 3 host resizes in a row", () => {
-    const { guard, set } = reports([400, 420, 440, 460, 480]);
+  it("freezes a page that grows after each of 3 host resizes in a row, by any amount", () => {
+    const steady = reports([400, 420, 440, 460, 480]);
 
-    expect(guard.frozen).toBe(true);
-    expect(set).toEqual([400, 420, 440, 440, 440]);
+    expect(steady.guard.frozen).toBe(true);
+    expect(steady.set).toEqual([400, 420, 440, 440, 440]);
+
+    // A page sized by its frame in proportion (10% more each time) climbs as surely as one that adds a fixed step.
+    const proportional = reports([400, 440, 484, 533, 587]);
+
+    expect(proportional.guard.frozen).toBe(true);
+    expect(proportional.set).toEqual([400, 440, 484, 484, 484]);
   });
 
-  it("does not freeze a page that loads in stages, or grows slowly", () => {
-    expect(reports([300, 700, 760, 1500, 1520]).guard.frozen).toBe(false);
-    expect(reports([400, 420, 440, 460], GROWTH_WINDOW_MS + 1).guard.frozen).toBe(false);
+  it("does not freeze a page that loads in stages apart from its resizes, or that shrinks between them", () => {
+    expect(reports([300, 700, 760, 1500, 1520], GROWTH_WINDOW_MS + 1).guard.frozen).toBe(false);
     expect(reports([400, 420, 410, 430, 450]).guard.frozen).toBe(false);
   });
 

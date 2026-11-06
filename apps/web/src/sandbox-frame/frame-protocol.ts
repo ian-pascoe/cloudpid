@@ -124,12 +124,14 @@ export interface FrameOptions {
   readonly listen: (handler: (message: IncomingMessage) => void) => () => void;
   /**
    * What `sandbox-resource-ready` carries: the View's HTML, the CSP it declared (which the proxy's header already enforces)
-   * and the browser permissions it declared, which the proxy puts on its inner frame's `allow` (`apps/app-sandbox`).
+   * and the browser permissions it declared, which the proxy puts on its inner frame's `allow` (`apps/app-sandbox`); and
+   * the inner frame's `sandbox` flags, when the page names its own instead of the proxy's default.
    */
   readonly page: {
     readonly html: string;
     readonly csp?: McpUiResourceCsp;
     readonly permissions?: McpUiResourcePermissions;
+    readonly sandbox?: string;
   };
   /** The host's context as it is now, which `ui/initialize` is answered with. */
   readonly hostContext: () => McpUiHostContext;
@@ -396,7 +398,7 @@ export const createFrameProtocol = (options: FrameOptions): FrameProtocol => {
 
       proxyReady = true;
 
-      const { csp, permissions } = options.page;
+      const { csp, permissions, sandbox } = options.page;
 
       const resource: Types.Mutable<McpUiSandboxResourceReadyNotification["params"]> = {
         html: options.page.html,
@@ -405,6 +407,8 @@ export const createFrameProtocol = (options: FrameOptions): FrameProtocol => {
       if (csp !== undefined) resource.csp = csp;
 
       if (permissions !== undefined) resource.permissions = permissions;
+
+      if (sandbox !== undefined) resource.sandbox = sandbox;
 
       notify(RESOURCE_READY, resource);
 

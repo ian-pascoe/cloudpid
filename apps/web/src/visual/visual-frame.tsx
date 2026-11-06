@@ -3,13 +3,12 @@
 // no permission delegated; the page handed to it is the kept copy with the shim first in its `<head>`, injected here and
 // never stored. The frame protocol is the one App Views speak (`sandbox-frame/frame-protocol.ts`), with only what display
 // needs: the host context (the style variables and theme, live), the page's size, a link it opens (asked of the owner
-// first) and an Escape it did not handle, which returns the focus to the card. There is no teardown: a Visual is a fixed copy
+// first) and an Escape it did not handle while it had the focus, which returns the focus to the card. There is no teardown: a Visual is a fixed copy
 // with nothing to save, so the frame goes when its card says.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off globalTimers:off -- DOM effects: a native debounce timer and observers.
 import {
   VISUAL_CSP,
   VISUAL_ESCAPE,
-  VISUAL_MAX_HEIGHT,
   VISUAL_MIN_HEIGHT,
   withVisualShim,
   type VisualRecord,
@@ -27,52 +26,42 @@ import { GUARD_START, guardReport } from "./height.ts";
 /** The host's name and version, as `ui/initialize` answers them. */
 const HOST_INFO = { name: "cloudpid", version: "1" } as const;
 
-/** How long a change of the card's width or the page's theme settles before the page is told. */
+/** How long a change of the page's theme settles before the page is told. */
 const CONTEXT_DEBOUNCE_MS = 150;
 
 /** The policy as the proxy is sent it: the list of resource hosts, and nothing else. */
 const CSP = { resourceDomains: [...VISUAL_CSP.resourceDomains] };
 
-/** What the page tells a Visual's host context of itself and the card. */
+/**
+ * The inner frame's `sandbox` flags, sent with the page rather than left to the proxy's default (which adds `allow-forms`
+ * for App Views): scripts and the origin's own storage, and nothing else.
+ */
+export const VISUAL_SANDBOX = "allow-scripts allow-same-origin";
+
+/** What the page tells a Visual's host context of itself. */
 export interface VisualEnvironment {
   readonly dark: boolean;
   /** A custom property's value on the page's root element, or an empty string. */
   readonly readProperty: (property: string) => string;
-  readonly locale: string;
-  readonly timeZone: string;
-  /** Below `md`: a phone. */
-  readonly mobile: boolean;
-  /** The card's width in px. */
-  readonly width: number;
 }
 
 /**
- * A Visual's host context: the theme and style variables (the same table as App Views'), inline in a card whose width is
- * fixed and whose height is the page's own up to the cap, the locale, the time zone and the platform. Nothing of a tool: a
- * Visual is no tool's View.
+ * A Visual's host context: the theme and the style variables (the same table as App Views'), and nothing else. Nothing of a
+ * tool, since a Visual is no tool's View; nor the owner's locale, time zone, device or card size, which a page needs
+ * no more than it is told by its own window.
  */
 export const visualHostContext = (env: VisualEnvironment): McpUiHostContext => ({
   theme: env.dark ? "dark" : "light",
   styles: { variables: hostStyleVariables(env.readProperty) },
-  displayMode: "inline",
-  availableDisplayModes: ["inline"],
-  containerDimensions: { width: env.width, maxHeight: VISUAL_MAX_HEIGHT },
-  locale: env.locale,
-  timeZone: env.timeZone,
-  platform: env.mobile ? "mobile" : "web",
 });
 
-/** The page's environment for a card whose frame is `width` px wide. */
-const readEnvironment = (width: number): VisualEnvironment => {
+/** The page's environment: its theme and style variables, as they are now. */
+const readEnvironment = (): VisualEnvironment => {
   const root = getComputedStyle(document.documentElement);
 
   return {
     dark: window.matchMedia("(prefers-color-scheme: dark)").matches,
     readProperty: (property) => root.getPropertyValue(property),
-    locale: navigator.language,
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    mobile: !window.matchMedia("(min-width: 768px)").matches,
-    width,
   };
 };
 
@@ -94,7 +83,7 @@ export interface VisualFrameProps {
   readonly initialHeight?: number | undefined;
   /** The height the frame was given, to be remembered. */
   readonly onHeight?: (height: number) => void;
-  /** The page posted an Escape it did not handle: the card takes the focus back. */
+  /** The page posted an Escape it did not handle while its frame had the focus: the card takes the focus back. */
   readonly onEscape?: () => void;
   /** The frame has, or no longer has, the keyboard focus: a frame in use is not unmounted. */
   readonly onFocused?: (focused: boolean) => void;
@@ -132,7 +121,7 @@ export const VisualFrame = ({
 
     if (element === null || target === null || target === undefined) return;
 
-    const contextNow = () => visualHostContext(readEnvironment(element.clientWidth));
+    const contextNow = () => visualHostContext(readEnvironment());
 
     let sent = contextNow();
     let guard = GUARD_START;
@@ -151,7 +140,7 @@ export const VisualFrame = ({
           window.removeEventListener("message", onMessage);
         };
       },
-      page: { html: withVisualShim(record.html), csp: CSP },
+      page: { html: withVisualShim(record.html), csp: CSP, sandbox: VISUAL_SANDBOX },
       hostContext: () => {
         sent = contextNow();
 
@@ -173,8 +162,9 @@ export const VisualFrame = ({
         }),
       },
       notifications: {
+        // Only while the frame has the focus: a page cannot take the focus from wherever the owner is.
         [VISUAL_ESCAPE]: () => {
-          latest.current.onEscape?.();
+          if (document.activeElement === element) latest.current.onEscape?.();
         },
       },
       onEvent: (event) => {
@@ -195,7 +185,7 @@ export const VisualFrame = ({
 
     protocol.start();
 
-    // The theme, and the card's width, as they change: the page is told what differs, once they settle.
+    // The theme, as it changes: the page is told what differs, once it settles.
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     const changed = () => {
@@ -211,15 +201,12 @@ export const VisualFrame = ({
     };
 
     const scheme = window.matchMedia("(prefers-color-scheme: dark)");
-    const resize = new ResizeObserver(changed);
 
     scheme.addEventListener("change", changed);
-    resize.observe(element);
 
     return () => {
       clearTimeout(timer);
       scheme.removeEventListener("change", changed);
-      resize.disconnect();
       protocol.close();
     };
     // The protocol is the frame's: it is built again for another page, origin or Retry, never for a context change.

@@ -86,12 +86,12 @@ Additive; old tabs skip messages they do not know.
 
 - **The Visual Pane:** Pop out moves a Visual to a Visual Pane, one per Visual, at full size (a sheet on a phone), and the card says where it is shown, through the shared places.
 - **Links:** a link the page opens goes through the same confirmation as an App View's `ui/open-link` ([_The bridge_](mcp-apps.md#the-bridge)): nothing opens before the owner chooses.
-- **Accessibility:** the frame's `title` is "Visual: <title>", and the summary is its accessible description; a mount never takes focus, and Tab moves in and out natively. The shim posts an Escape the page did not handle, and focus returns to the card, which App Views cannot do. Full conformance is not the aim, since nobody would verify it; the description asks for `alt`, SVG titles, real text and `prefers-reduced-motion`.
+- **Accessibility:** the frame's `title` is "Visual: <title>", and the summary is its accessible description; a mount never takes focus, and Tab moves in and out natively. The shim posts an Escape the page did not handle, and focus returns to the card, which App Views cannot do; the card acts on it only while that frame has the focus, so a page cannot pull the focus from elsewhere. Full conformance is not the aim, since nobody would verify it; the description asks for `alt`, SVG titles, real text and `prefers-reduced-motion`.
 - **As built ([#658](https://github.com/ian-pascoe/cloudpid/issues/658); `apps/web/src/visual/`):**
   - Pop out, Show here and the Visual Pane come with [#660](https://github.com/ian-pascoe/cloudpid/issues/660); until then a card has Collapse, Copy HTML, Open file and Details, and the places (`visual:`) choose between a card and a Subagent Pane or page.
   - The Escape is the notification `cloudpid/notifications/escape` (`VISUAL_ESCAPE`): ext-apps has none. The frame protocol takes it through a `notifications` option, and names its subject in the 10 s failure ("The Visual did not start within 10 seconds").
   - Collapse and Reopen are kept on the device with the App Views' choices, by call.
-  - A frame mounts within 1,200 px of the viewport and unmounts past 3,600 px, so a card at the edge does not flicker; the height guard counts growth that answers a host resize within 1 s by the same step (±2 px), so a page that loads in stages is not frozen.
+  - A frame mounts within 1,200 px of the viewport and unmounts past 3,600 px, so a card at the edge does not flicker; the height guard counts any growth that answers a host resize within 1 s, whatever its amount (a page sized by its frame may climb in proportion as well as by a fixed step), so only a page that loads in stages apart from its frame's resizes is spared.
   - Copy HTML is offered once the page has loaded; Open file shows the file's text in a dialog (`visual_file`).
   - A link the page opens offers Open and Dismiss; the Browser Pane is an App View's choice.
 
