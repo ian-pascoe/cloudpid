@@ -14,7 +14,7 @@ import {
   type TranscriptEntry,
 } from "./mcp-api.ts";
 import type { TranscriptMessage, TranscriptPart } from "./transcript.ts";
-import { shownVisualOf, visualTranscriptLine } from "./visuals.ts";
+import { shownVisualOf, visualPaneQuery, visualTranscriptLine } from "./visuals.ts";
 
 /** The most characters one entry's text holds, by `detail`. */
 export const ENTRY_TEXT_CHARS: Readonly<Record<TranscriptDetail, number>> = {
@@ -104,10 +104,17 @@ const toolCall = (part: Extract<TranscriptPart, { type: "tool-call" }>, redact: 
   return shown === "" ? `→ ${part.name}` : `→ ${part.name}  ${shown}`;
 };
 
+/** ` · <link>` to a Visual's Pane on the Session's page (`/sessions/<id>?pane=visual:<callId>`), once both are known. */
+const paneLink = (callId: string | undefined, session: string | undefined): string =>
+  callId === undefined || session === undefined
+    ? ""
+    : ` · /sessions/${encodeURIComponent(session)}${visualPaneQuery(callId)}`;
+
 const toolResult = (
   part: Extract<TranscriptPart, { type: "tool-result" }>,
   detail: TranscriptDetail,
   redact: Redact,
+  session: string | undefined,
 ): string => {
   const body = redact(text(part.content));
   const pictures = images(part.content);
@@ -116,7 +123,13 @@ const toolResult = (
   const shown = part.error ? undefined : shownVisualOf(part.details);
 
   const visual =
-    shown === undefined ? [] : [oneLine(redact(visualTranscriptLine(shown.title, shown.summary)))];
+    shown === undefined
+      ? []
+      : [
+          oneLine(
+            redact(visualTranscriptLine(shown.title, shown.summary) + paneLink(shown.id, session)),
+          ),
+        ];
 
   if (detail === "full") {
     const lines = [middleCut(body, TOOL_RESULT_CHARS), ...pictures, ...visual].filter(
@@ -164,6 +177,7 @@ const block = (
   message: TranscriptMessage,
   detail: TranscriptDetail,
   redact: Redact,
+  session: string | undefined,
 ): string | undefined => {
   if (message.role === "notice") {
     const body = oneLine(redact(text(message.parts)));
@@ -177,7 +191,7 @@ const block = (
 
   if (message.role === "tool") {
     for (const part of message.parts) {
-      if (part.type === "tool-result") lines.push(toolResult(part, detail, redact));
+      if (part.type === "tool-result") lines.push(toolResult(part, detail, redact, session));
     }
   } else {
     if (body !== "") lines.push(middleCut(body, ENTRY_TEXT_CHARS[detail]));
@@ -202,13 +216,18 @@ const block = (
  */
 export const renderTranscript = (
   messages: readonly TranscriptMessage[],
-  options: { readonly detail?: TranscriptDetail; readonly redact?: (text: string) => string } = {},
+  options: {
+    readonly detail?: TranscriptDetail;
+    readonly redact?: (text: string) => string;
+    /** The Session's ID: a Visual's line links to its Pane on the Session's page. */
+    readonly session?: string | undefined;
+  } = {},
 ): TranscriptEntry[] => {
   const detail = options.detail ?? "summary";
   const redact = options.redact ?? redactGithubTokens;
 
   return messages.flatMap((message): TranscriptEntry[] => {
-    const rendered = block(message, detail, redact);
+    const rendered = block(message, detail, redact, options.session);
     const entryId = Number(message.id);
 
     if (rendered === undefined || !Number.isInteger(entryId)) return [];

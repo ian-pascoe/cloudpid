@@ -345,7 +345,8 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
         const messages = projectEntries(forward ? records : Arr.reverse(records));
         // The lines are text of the Session: with the Secrets unreadable they are left out, the counts stay.
-        const rendered = seam.readable ? renderTranscript(messages, { redact: seam.redact }) : [];
+        const lineOptions = { redact: seam.redact, session: options.session };
+        const rendered = seam.readable ? renderTranscript(messages, lineOptions) : [];
 
         const calls = Arr.reduce(
           messages,
@@ -615,7 +616,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
             const rendered = renderTranscript(
               projectEntries(forward ? records : Arr.reverse(records)),
-              { detail, redact },
+              { detail, redact, session: options.session },
             );
 
             for (const entry of forward ? rendered : Arr.reverse(rendered)) {

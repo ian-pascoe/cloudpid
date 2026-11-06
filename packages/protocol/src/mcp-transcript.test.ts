@@ -149,6 +149,33 @@ describe("renderTranscript", () => {
     );
   });
 
+  it("adds a link to the Visual's Pane when it knows the Session and the call", () => {
+    const shown: TranscriptMessage = {
+      id: "7",
+      role: "tool",
+      timestamp: at,
+      parts: [
+        {
+          type: "tool-result",
+          id: "v1",
+          name: "visual_show",
+          content: [{ type: "text", text: "Shown." }],
+          error: false,
+          details: { visual: { id: "call_1|fc:2", title: "Sales", summary: "Bars" } },
+        },
+      ],
+    };
+
+    const line = "Visual: Sales — Bars (not rendered) · /sessions/s1?pane=visual:call_1%7Cfc:2";
+
+    expect(renderTranscript([shown], { session: "s1" })[0]?.text).toContain(`\n${line}`);
+    expect(renderTranscript([shown], { session: "s1", detail: "full" })[0]?.text).toContain(
+      `\n${line}`,
+    );
+    // Without the Session's ID, or from a result that names no call, the line has none.
+    expect(renderTranscript([shown])[0]?.text).not.toContain("/sessions/");
+  });
+
   it("shows images by size and notices on one line, and skips what shows nothing", () => {
     const picture: TranscriptMessage = {
       id: "6",

@@ -349,11 +349,22 @@ export const VISUAL_DETAILS_KEY = "visual";
 export const visualTranscriptLine = (title: string, summary: string): string =>
   `Visual: ${title} — ${summary} (not rendered)`;
 
+/** The key of the Visual Pane that shows call `callId`'s Visual: `visual:<callId>`, as it is. */
+export const visualPaneKey = (callId: string): string => `visual:${callId}`;
+
 /**
- * What a result's `details.visual` says of the Visual its call showed: the title and summary, and, when it says them, the
- * file it was shown from (`source_path`, null for an inline page) and its size.
+ * The query of the Session's page that opens that Pane (`?pane=visual:call_1`), as the web app writes a Pane key: encoded
+ * but for the `:` after the type, so `URLSearchParams` reads back the key `visualPaneKey` gives.
+ */
+export const visualPaneQuery = (callId: string): string =>
+  `?pane=${encodeURIComponent(visualPaneKey(callId)).replaceAll("%3A", ":")}`;
+
+/**
+ * What a result's `details.visual` says of the Visual its call showed: the title and summary, and, when it says them, its id
+ * (the call's), the file it was shown from (`source_path`, null for an inline page) and its size.
  */
 export const ShownVisual = Schema.Struct({
+  id: Schema.String.pipe(Schema.optionalKey),
   title: Schema.String,
   summary: Schema.String,
   source_path: Schema.NullOr(Schema.String).pipe(Schema.optionalKey),
