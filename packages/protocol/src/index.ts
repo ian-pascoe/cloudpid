@@ -74,3 +74,5 @@ export * from "./uri-template.ts";
 export * from "./user-entry.ts";
 
 export * from "./view.ts";
+
+export * from "./visuals.ts";
