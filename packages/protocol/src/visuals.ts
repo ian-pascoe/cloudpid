@@ -5,6 +5,7 @@
 // fallback members and no format `v`, as App records are: a member a later build adds is a key an older reader passes over,
 // and a `state` or `status` this build does not know reads as the fallback it names.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over small values.
+import type { JsonValue } from "@earendil-works/pi-ai";
 import * as Schema from "effect/Schema";
 import { ConversationId } from "./conversation-id.ts";
 
@@ -309,6 +310,21 @@ export const VISUAL_DETAILS_KEY = "visual";
 /** What `/export` and `session_transcript` write for a Visual: never its page. */
 export const visualTranscriptLine = (title: string, summary: string): string =>
   `Visual: ${title} — ${summary} (not rendered)`;
+
+const ShownDetails = Schema.Struct({
+  [VISUAL_DETAILS_KEY]: Schema.Struct({ title: Schema.String, summary: Schema.String }),
+});
+
+const isShownDetails = Schema.is(ShownDetails);
+
+/**
+ * The Visual a tool result's `details` say it showed, by title and summary (`details.visual`), for `/export` and
+ * `session_transcript`; none for any other result.
+ */
+export const shownVisualOf = (
+  details: JsonValue | undefined,
+): { readonly title: string; readonly summary: string } | undefined =>
+  isShownDetails(details) ? details[VISUAL_DETAILS_KEY] : undefined;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The shim

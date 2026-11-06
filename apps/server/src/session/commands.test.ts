@@ -235,6 +235,36 @@ describe("exportMarkdown of an App", () => {
   });
 });
 
+describe("exportMarkdown of a Visual", () => {
+  const shown = (isError: boolean) =>
+    entry({
+      id: 1,
+      kind: "pi.tool",
+      model: [
+        {
+          role: "toolResult",
+          toolCallId: "v1",
+          toolName: "visual_show",
+          content: [{ type: "text", text: 'Shown "Sales". Don\'t restate it.' }],
+          details: {
+            visual: { id: "v1", title: "Sales", summary: "Sales by month, as bars", bytes: 10 },
+          },
+          isError,
+          timestamp: 1,
+        },
+      ],
+    });
+
+  it("writes it as its title and summary, not rendered, and nothing for a call that failed", () => {
+    const exportedAt = "2026-01-02T00:00:00.000Z";
+
+    expect(exportMarkdown(1, [shown(false)], exportedAt)).toContain(
+      "_Visual: Sales — Sales by month, as bars (not rendered)_",
+    );
+    expect(exportMarkdown(1, [shown(true)], exportedAt)).not.toContain("(not rendered)");
+  });
+});
+
 describe("exportMarkdown of the questions an MCP call asked", () => {
   it("puts a line for each under the result of its call, and none under another's", () => {
     const result = (id: number, callId: string) =>

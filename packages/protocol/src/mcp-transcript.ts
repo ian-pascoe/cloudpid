@@ -14,6 +14,7 @@ import {
   type TranscriptEntry,
 } from "./mcp-api.ts";
 import type { TranscriptMessage, TranscriptPart } from "./transcript.ts";
+import { shownVisualOf, visualTranscriptLine } from "./visuals.ts";
 
 /** The most characters one entry's text holds, by `detail`. */
 export const ENTRY_TEXT_CHARS: Readonly<Record<TranscriptDetail, number>> = {
@@ -111,10 +112,18 @@ const toolResult = (
   const body = redact(text(part.content));
   const pictures = images(part.content);
 
-  if (detail === "full") {
-    const shown = [middleCut(body, TOOL_RESULT_CHARS), ...pictures].filter((each) => each !== "");
+  // A Visual the call showed, which the transcript never renders (`docs/architecture/visuals.md` → Lifecycle).
+  const shown = part.error ? undefined : shownVisualOf(part.details);
 
-    return `${part.error ? "✗" : "✓"} ${shown.join("\n")}`.trimEnd();
+  const visual =
+    shown === undefined ? [] : [oneLine(redact(visualTranscriptLine(shown.title, shown.summary)))];
+
+  if (detail === "full") {
+    const lines = [middleCut(body, TOOL_RESULT_CHARS), ...pictures, ...visual].filter(
+      (each) => each !== "",
+    );
+
+    return `${part.error ? "✗" : "✓"} ${lines.join("\n")}`.trimEnd();
   }
 
   if (part.error) {
@@ -125,7 +134,10 @@ const toolResult = (
 
   const lines = body === "" ? 0 : body.split("\n").length;
 
-  return [`✓ ${String(lines)} ${lines === 1 ? "line" : "lines"}`, ...pictures].join(" ");
+  return [
+    [`✓ ${String(lines)} ${lines === 1 ? "line" : "lines"}`, ...pictures].join(" "),
+    ...visual,
+  ].join("\n");
 };
 
 /** `HH:MM` (UTC) of an epoch-millisecond time, or none for an entry with no time. */
