@@ -2,10 +2,11 @@
 // each completed call of an App tool, written by the `mcp` extension's tool (`McpAppRecorder.put`) into this object's
 // key-value storage, outside History, and read by the same path for a live mount and a replay (`mcp_app_mount`). The
 // extension hands over a draft; the record is redacted of the Secrets held, then bounded (`boundAppRecord`: 1 MiB), kept
-// in parts of at most `PART_LENGTH` characters under `cloudpid:mcp-app:<callId>:<n>`, with an index of every record and
-// stub, oldest first, under `cloudpid:mcp-apps`. Past 32 MiB, or `MAX_MCP_APP_RECORDS` records, the least recently
-// mounted record is evicted and leaves a stub (who the call was and nothing of its data); the oldest stubs are dropped
-// past `MAX_MCP_APP_STUBS`, and read as no record. The whole of a write is one synchronous run, so no reader sees half of it.
+// in parts under `cloudpid:mcp-app:<callId>:<n>`, with an index of every record and stub, oldest first, under
+// `cloudpid:mcp-apps`, by the chunked-record primitive (`./call-records.ts`, which Visuals' store will share). Past 32 MiB, or
+// `MAX_MCP_APP_RECORDS` records, the least recently mounted record is evicted and leaves a stub (who the call was and
+// nothing of its data); the oldest stubs are dropped past `MAX_MCP_APP_STUBS`, and read as no record. The whole of a write
+// is one synchronous run, so no reader sees half of it.
 // Fork and Clone copy the records of the calls they copy (`copiesFor`, `adopt`). Also the Session's App tools
 // (`mcp_app_tools`), which are not kept: the `mcp` extension tells them at each install. The tools that write are built
 // outside the Session's runtime (`./mcp-host.ts`), so the service is made synchronously, and the Secrets it redacts with
@@ -48,6 +49,7 @@ import { appContextsOver } from "./mcp-app-context.ts";
 import { appCallsOver } from "./mcp-app-calls.ts";
 import { McpApps, type McpAppsService } from "./mcp-apps.ts";
 import type { SessionKv } from "./session-kv.ts";
+import { callRecords, type CallRecordEntry } from "./call-records.ts";
 import { mcpAppToolsMessage, send, type SocketState } from "./sockets.ts";
 
 /** The object's synchronous key-value storage, as the records use it. */
@@ -55,9 +57,6 @@ export type McpAppsStorage = SessionKv;
 
 /** The index of every record and stub, oldest first. */
 const INDEX_KEY = "cloudpid:mcp-apps";
-
-/** The most characters one stored value holds: a record's JSON over it is kept in parts. */
-const PART_LENGTH = 256 * 1024;
 
 const partKey = (callId: string, part: number) => `cloudpid:mcp-app:${callId}:${part}`;
 
@@ -67,26 +66,20 @@ const partKey = (callId: string, part: number) => `cloudpid:mcp-app:${callId}:${
  */
 const auditKey = (callId: string) => `cloudpid:mcp-app-audit:${callId}`;
 
-/**
- * One call's entry of the index: a record's (`kept`, with its size and parts) or a stub's (`evicted`). `mountedAt` orders
- * the eviction.
- */
-type IndexEntry = {
-  readonly callId: string;
+/** What an App call's entry holds besides the primitive's fields (`./call-records.ts`). */
+type AppFields = {
   readonly server: string;
   readonly tool: string;
-  readonly conversation: string;
   readonly parentCall?: string;
-  readonly state: "kept" | "evicted";
   readonly htmlHash?: string;
   /** What named the origin of the server's Views when the call ran (`McpAppRecord.viewHash`). */
   readonly viewHash?: string;
   readonly truncated?: boolean;
-  readonly bytes: number;
-  readonly parts: number;
   readonly at: number;
-  readonly mountedAt: number;
 };
+
+/** One call's entry of the index: a record's (`kept`, with its size and parts) or a stub's (`evicted`). */
+type IndexEntry = CallRecordEntry<AppFields>;
 
 const decodeRecord = Schema.decodeUnknownOption(McpAppRecord);
 
@@ -153,26 +146,13 @@ const stubOf = (entry: IndexEntry): McpAppStub => {
   return stub;
 };
 
-/** The entry of a call that has no record: what an evicted record, and a copied stub, are left as. */
-const evictedOf = (
-  call: Pick<IndexEntry, "callId" | "server" | "tool" | "conversation" | "parentCall" | "at">,
-  mountedAt: number,
-): IndexEntry => {
-  const entry: Mutable<IndexEntry> = {
-    callId: call.callId,
-    server: call.server,
-    tool: call.tool,
-    conversation: call.conversation,
-    state: "evicted",
-    bytes: 0,
-    parts: 0,
-    at: call.at,
-    mountedAt,
-  };
+/** What a call that has no record keeps of its entry: what an evicted record, and a copied stub, are left as. */
+const stubFields = (call: Pick<AppFields, "server" | "tool" | "parentCall" | "at">): AppFields => {
+  const fields: Mutable<AppFields> = { server: call.server, tool: call.tool, at: call.at };
 
-  if (call.parentCall !== undefined) entry.parentCall = call.parentCall;
+  if (call.parentCall !== undefined) fields.parentCall = call.parentCall;
 
-  return entry;
+  return fields;
 };
 
 /** The entry of a call whose record, `count` parts long, was just kept. */
@@ -215,18 +195,21 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       : Effect.as(bound.refresh, bound),
   );
 
-  const index = (): ReadonlyArray<IndexEntry> =>
-    storage.get<ReadonlyArray<IndexEntry>>(INDEX_KEY) ?? [];
+  const records = callRecords<AppFields>({
+    storage,
+    indexKey: INDEX_KEY,
+    partKey,
+    // Everything kept of a record is its parts and its audit log.
+    alsoKeys: (callId) => [auditKey(callId)],
+    bounds: {
+      bytes: MAX_MCP_APP_RECORDS_BYTES,
+      records: MAX_MCP_APP_RECORDS,
+      stubs: MAX_MCP_APP_STUBS,
+    },
+    keeps: stubFields,
+  });
 
-  const parts = (entry: IndexEntry): ReadonlyArray<string> =>
-    Arr.makeBy(entry.parts, (part) => storage.get<string>(partKey(entry.callId, part)) ?? "");
-
-  /** Everything kept of the record: its parts and its audit log. */
-  const dropParts = (entry: IndexEntry) => {
-    for (let part = 0; part < entry.parts; part++) storage.delete(partKey(entry.callId, part));
-
-    storage.delete(auditKey(entry.callId));
-  };
+  const { index } = records;
 
   const readAudit = (callId: string): ReadonlyArray<McpAppAuditEntry> =>
     storage.get<ReadonlyArray<McpAppAuditEntry>>(auditKey(callId)) ?? [];
@@ -234,7 +217,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
   /** The record of a kept entry with its audit log, or none when its parts are gone or unreadable. */
   const readRecord = (entry: IndexEntry) => {
     try {
-      return Option.map(decodeRecord(JSON.parse(Arr.join(parts(entry), ""))), (record) => ({
+      return Option.map(decodeRecord(JSON.parse(records.read(entry))), (record) => ({
         ...record,
         audit: readAudit(entry.callId),
       }));
@@ -265,50 +248,6 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
     now,
   });
 
-  /**
-   * Write `entries` as the index after the bounds held: the least recently mounted record past the byte and count bounds
-   * is evicted (never `keep`, the one just written, so a lone record at its own bound stays), the oldest stubs past theirs
-   * dropped. The index is written last.
-   */
-  const settle = (entries: ReadonlyArray<IndexEntry>, keep: string | undefined) => {
-    const next = [...entries];
-    const touched = new Set<string>();
-    const kept = () => Arr.filter(next, (entry) => entry.state === "kept");
-    const bytes = () => Arr.reduce(kept(), 0, (sum, entry) => sum + entry.bytes);
-
-    while (bytes() > MAX_MCP_APP_RECORDS_BYTES || kept().length > MAX_MCP_APP_RECORDS) {
-      let oldest: IndexEntry | undefined;
-
-      for (const entry of kept()) {
-        if (entry.callId !== keep && (oldest === undefined || entry.mountedAt < oldest.mountedAt)) {
-          oldest = entry;
-        }
-      }
-
-      if (oldest === undefined) break;
-
-      dropParts(oldest);
-      touched.add(oldest.conversation);
-      next[next.indexOf(oldest)] = evictedOf(oldest, oldest.mountedAt);
-    }
-
-    let stubs = Arr.filter(next, (entry) => entry.state === "evicted").length;
-
-    for (let at = 0; stubs > MAX_MCP_APP_STUBS && at < next.length;) {
-      const entry = next[at];
-
-      if (entry?.state === "evicted") {
-        touched.add(entry.conversation);
-        next.splice(at, 1);
-        stubs -= 1;
-      } else at += 1;
-    }
-
-    storage.put(INDEX_KEY, next);
-
-    return touched;
-  };
-
   /** `entries` with `record` as call `record.callId`'s, replacing an earlier one, its parts written; its `mountedAt` is `mountedAt`. */
   const withRecord = (
     entries: ReadonlyArray<IndexEntry>,
@@ -317,34 +256,22 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
   ): ReadonlyArray<IndexEntry> => {
     // The audit log has a value of its own: the record's JSON, which is all the parts hold, carries none.
     const stored: McpAppRecord = { ...record, audit: [] };
-    const text = JSON.stringify(stored);
-    const old = Arr.findFirst(entries, (entry) => entry.callId === record.callId);
 
-    if (Option.isSome(old)) dropParts(old.value);
+    // The primitive drops an earlier record's parts, and its audit log, first.
+    const written = records.write(entries, record.callId, JSON.stringify(stored), (count) =>
+      keptOf(stored, count, mountedAt),
+    );
 
     if (record.audit.length > 0) {
       storage.put(auditKey(record.callId), Arr.takeRight(record.audit, MAX_MCP_APP_AUDIT));
     }
 
-    const count = Math.max(1, Math.ceil(text.length / PART_LENGTH));
-
-    for (let part = 0; part < count; part++) {
-      storage.put(
-        partKey(record.callId, part),
-        text.slice(part * PART_LENGTH, (part + 1) * PART_LENGTH),
-      );
-    }
-
-    const entry = keptOf(stored, count, mountedAt);
-
-    return Option.isSome(old)
-      ? Arr.map(entries, (each) => (each.callId === record.callId ? entry : each))
-      : [...entries, entry];
+    return written;
   };
 
   /** Keep `record` as call `record.callId`'s: the bounds then hold, the record just written never the one evicted. */
   const keepRecord = (record: McpAppRecord, mountedAt: number) => {
-    const touched = settle(withRecord(index(), record, mountedAt), record.callId);
+    const touched = records.settle(withRecord(index(), record, mountedAt), record.callId);
 
     touched.add(record.conversation);
 
@@ -392,12 +319,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
 
       if (Option.isNone(record)) {
         // Its parts are gone or unreadable: all that is left of it is a stub.
-        dropParts(entry);
-
-        const touched = settle(
-          Arr.map(entries, (each) => (each === entry ? evictedOf(entry, entry.mountedAt) : each)),
-          undefined,
-        );
+        const touched = records.settle(records.evict(entries, entry), undefined);
 
         touched.add(entry.conversation);
         changed(touched);
@@ -406,10 +328,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       }
 
       // The most recently mounted last to go.
-      storage.put(
-        INDEX_KEY,
-        Arr.map(entries, (each) => (each === entry ? { ...entry, mountedAt: now() } : each)),
-      );
+      records.touch(entries, entry, now());
 
       const context = contexts.contextOf(callId);
 
@@ -592,22 +511,20 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
         entries = withRecord(entries, boundAppRecord({ ...copy.record, conversation: root }), at);
       } else if (copy.kind === "stub" && "stub" in copy) {
         const { stub } = copy;
-        const old = Arr.findFirst(entries, (entry) => entry.callId === stub.callId);
-
         // A call that has a record here keeps no parts once it is a stub.
-        if (Option.isSome(old)) dropParts(old.value);
-
-        entries = [
-          ...Arr.filter(entries, (entry) => entry.callId !== stub.callId),
-          evictedOf({ ...stub, conversation: root, at: stub.at ?? at }, at),
-        ];
+        entries = records.stub(entries, {
+          ...stubFields({ ...stub, at: stub.at ?? at }),
+          callId: stub.callId,
+          conversation: root,
+          mountedAt: at,
+        });
       }
 
       // A kind a newer Session sends is skipped: the rest of the Fork is still made.
     }
 
     // The index is written once, after the bounds hold of every copy together.
-    const touched = settle(entries, undefined);
+    const touched = records.settle(entries, undefined);
 
     touched.add(root);
     changed(touched);
