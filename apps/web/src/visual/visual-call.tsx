@@ -1,7 +1,8 @@
-// docs/architecture/visuals.md → The frame (The card, Lazy mounting), The copy (Revisions, Bounds), Lifecycle. What a
+// docs/architecture/visuals.md → The frame (The card, Lazy mounting), The copy (Revisions, Bounds), Fork and Clone, Lifecycle. What a
 // `visual_show` call's card adds: its Visual, outside the card's disclosure, under the chrome "Visual · <title>", with
 // Collapse, Copy HTML, Open file (for a `path` source) and Details; a collapsed row with Reopen (and "A newer version is
-// below" for one a newer Visual of the same file supersedes); the evicted card; and, while the call streams, its progress.
+// below" for one a newer Visual of the same file supersedes); the evicted card, and the same card for a call whose Visual a Fork
+// could not copy (`VisualUnkept`); and, while the call streams, its progress.
 // A `codemode` script's Visuals show in a strip under its card (`VisualStrip`), and a subagent's in its thread.
 //
 // Which place mounts a frame is `sandbox-frame/places.ts`'s, keyed `visual:`; a Visual has no teardown, so a place told to let
@@ -239,21 +240,54 @@ const OpenFile = ({ sessionId, entry }: { sessionId: string; entry: VisualEntry 
   );
 };
 
-/** A Visual that was evicted: everything its card shows without the page, with Open file for a `path` source. */
-export const VisualEvicted = ({ sessionId, entry }: { sessionId: string; entry: VisualEntry }) => (
-  <div className="my-2 overflow-hidden rounded-md border border-dashed" data-visual={entry.callId}>
-    <Chrome title={entry.title}>
+/**
+ * The card of a Visual whose page is not kept: its title, "no longer kept" with whatever the state adds beside it (`actions`),
+ * and what the card shows without the page: the summary, the source, and the size and time when they are known.
+ */
+const UnkeptCard = ({
+  callId,
+  title,
+  summary,
+  source,
+  bytes,
+  at,
+  actions,
+}: {
+  callId: string;
+  title: string;
+  summary: string;
+  source: string;
+  bytes?: number | undefined;
+  at?: number | undefined;
+  actions?: ReactNode;
+}) => (
+  <div className="my-2 overflow-hidden rounded-md border border-dashed" data-visual={callId}>
+    <Chrome title={title}>
       <span>no longer kept</span>
-      <OpenFile sessionId={sessionId} entry={entry} />
+      {actions}
     </Chrome>
     <div className="space-y-0.5 px-3 pb-2 text-xs">
-      <div>{entry.summary}</div>
+      <div>{summary}</div>
       <div className="text-muted-foreground">
-        <span className="font-mono break-all">{sourceText(entry)}</span> · {formatSize(entry.bytes)}{" "}
-        · {timeOf(entry.at)}
+        <span className="font-mono break-all">{source}</span>
+        {bytes !== undefined && <> · {formatSize(bytes)}</>}
+        {at !== undefined && <> · {timeOf(at)}</>}
       </div>
     </div>
   </div>
+);
+
+/** A Visual that was evicted: everything its card shows without the page, with Open file for a `path` source. */
+export const VisualEvicted = ({ sessionId, entry }: { sessionId: string; entry: VisualEntry }) => (
+  <UnkeptCard
+    callId={entry.callId}
+    title={entry.title}
+    summary={entry.summary}
+    source={sourceText(entry)}
+    bytes={entry.bytes}
+    at={entry.at}
+    actions={<OpenFile sessionId={sessionId} entry={entry} />}
+  />
 );
 
 /**
@@ -262,20 +296,13 @@ export const VisualEvicted = ({ sessionId, entry }: { sessionId: string; entry: 
  * the card has: no page, no time and no Open file, which the Session answers from a record.
  */
 export const VisualUnkept = ({ callId, shown }: { callId: string; shown: ShownVisual }) => (
-  <div className="my-2 overflow-hidden rounded-md border border-dashed" data-visual={callId}>
-    <Chrome title={shown.title}>
-      <span>no longer kept</span>
-    </Chrome>
-    <div className="space-y-0.5 px-3 pb-2 text-xs">
-      <div>{shown.summary}</div>
-      <div className="text-muted-foreground">
-        <span className="font-mono break-all">
-          {shown.source_path ?? "Written inline by the call"}
-        </span>
-        {shown.bytes !== undefined && <> · {formatSize(shown.bytes)}</>}
-      </div>
-    </div>
-  </div>
+  <UnkeptCard
+    callId={callId}
+    title={shown.title}
+    summary={shown.summary}
+    source={shown.source_path ?? "Written inline by the call"}
+    bytes={shown.bytes}
+  />
 );
 
 /** A Visual that is collapsed: its title, why (a newer version of the same file is below), and Reopen. */
