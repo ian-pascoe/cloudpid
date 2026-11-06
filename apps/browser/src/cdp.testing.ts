@@ -40,7 +40,10 @@ export type Sent = {
 /** A reply: as it is, or made from the command's params and the session it was sent in. */
 export type Reply =
   | Schema.Json
-  | ((params: CdpParams | undefined, sessionId: string | undefined) => Schema.Json);
+  | ((
+      params: CdpParams | undefined,
+      sessionId: string | undefined,
+    ) => Schema.Json | Promise<Schema.Json>);
 
 /** A window's size when nothing has set one: a pop-up's, in the spike. */
 export const WINDOW_SIZE: Viewport = { width: 400, height: 565, deviceScaleFactor: 1 };

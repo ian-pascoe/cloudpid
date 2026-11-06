@@ -6,11 +6,7 @@
 // already stops a CSS percentage from looping, so what is left is a script's; and the height is remembered on this device, so a reload, a remount or a lazy unmount keeps the
 // transcript where it was. Pure: the reports and the clock go in.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain decisions over small native lists.
-import { VISUAL_GROWTH_RESIZES, VISUAL_MAX_HEIGHT, VISUAL_MIN_HEIGHT } from "@cloudpid/protocol";
-
-/** The height a frame gives a page that reports `reported` px: between 160 and 20,000 px. */
-export const fitHeight = (reported: number): number =>
-  Math.min(VISUAL_MAX_HEIGHT, Math.max(VISUAL_MIN_HEIGHT, Math.ceil(reported)));
+import { fitHeight, VISUAL_GROWTH_RESIZES } from "@cloudpid/protocol";
 
 /**
  * How soon after a host resize a page's growth counts as an answer to it, in ms: a frame or two, as a script that sizes the

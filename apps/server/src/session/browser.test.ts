@@ -30,6 +30,16 @@ describe("the Session's browser host", () => {
           describe: note("described"),
           run: note({ output: [] }),
           close: note(true),
+          checkVisual: note({
+            coldStart: false,
+            contentHeight: 1,
+            clipped: false,
+            growth: { grows: false, heights: [1] },
+            console: [],
+            violations: [],
+            failedLoads: [],
+            warnings: [],
+          }),
           startHandoff: note({ startedAt: 1 }),
           liveView: note({ tab: { targetId: "t", link: "wss://l" }, windows: [] }),
           ownerTabView: note({
@@ -53,12 +63,14 @@ describe("the Session's browser host", () => {
     );
 
     const input = { requestId: "1", conversationId: 1, instructions: "x", timeoutMs: 1 };
+    const page = { html: "<p>hi</p>", width: 736, theme: "light", top: 0 } as const;
 
     await Effect.runPromise(
       Effect.all([
         host.describe,
         host.run({ code: "async () => 1", conversationId: 1 }),
         host.close,
+        host.checkVisual(page),
         host.startHandoff(input),
         host.liveView("1"),
         host.ownerTabView(true),
@@ -76,6 +88,7 @@ describe("the Session's browser host", () => {
       [],
       ["async () => 1", 1, undefined, "ws:abc"],
       [],
+      [page, "ws:abc"],
       [input],
       ["1"],
       [true, "ws:abc"],
@@ -108,6 +121,7 @@ describe("the Session's browser host", () => {
             return Promise.resolve({ output: [{ type: "text", text: "ok" }] });
           },
           close: () => Promise.resolve(true),
+          checkVisual: () => Promise.reject(new Error("not here")),
           startHandoff: () => Promise.reject(new Error("not here")),
           liveView: () => Promise.reject(new Error("not here")),
           ownerTabView: () => Promise.reject(new Error("not here")),
@@ -143,6 +157,7 @@ describe("the Session's browser host", () => {
           describe: () => Promise.reject(new Error("overloaded")),
           run: () => Promise.reject(new Error("overloaded")),
           close: () => Promise.reject(new Error("overloaded")),
+          checkVisual: () => Promise.reject(new Error("overloaded")),
           startHandoff: () => Promise.reject(new Error("overloaded")),
           liveView: () => Promise.reject(new Error("overloaded")),
           ownerTabView: () => Promise.reject(new Error("overloaded")),
@@ -164,6 +179,98 @@ describe("the Session's browser host", () => {
     );
   });
 
+  it("fails a Visual check as unavailable when the Browsers Worker has no such method, and as the call that failed otherwise", async () => {
+    const page = { html: "<p>hi</p>", width: 736, theme: "light", top: 0 } as const;
+
+    const over = (failure: string) => {
+      const down = () => Promise.reject(new Error(failure));
+
+      return remoteBrowserHost(
+        {
+          getByName: () => ({
+            describe: down,
+            run: down,
+            close: down,
+            checkVisual: down,
+            startHandoff: down,
+            liveView: down,
+            ownerTabView: down,
+            ownerTabs: down,
+            openOwnerTab: down,
+            showOwnerTab: down,
+            closeOwnerTab: down,
+            readOwnerTabPages: down,
+            waitHandoff: down,
+            endHandoff: down,
+          }),
+        },
+        "session-1",
+        noWorkspace,
+      );
+    };
+
+    const old = await Effect.runPromise(
+      over('The RPC receiver does not implement the method "checkVisual".')
+        .checkVisual(page)
+        .pipe(Effect.flip),
+    );
+
+    expect(old.unavailable).toBe(true);
+
+    // A `TypeError` inside a current host's method, or a missing method of another name, is a failure of the check.
+    const typeError = await Effect.runPromise(
+      over("TypeError: page.measure is not a function").checkVisual(page).pipe(Effect.flip),
+    );
+
+    expect(typeError.unavailable).toBeUndefined();
+    expect(typeError.message).toContain("page.measure is not a function");
+
+    const other = await Effect.runPromise(
+      over('The RPC receiver does not implement the method "run".')
+        .checkVisual(page)
+        .pipe(Effect.flip),
+    );
+
+    expect(other.unavailable).toBeUndefined();
+
+    const down = await Effect.runPromise(over("overloaded").checkVisual(page).pipe(Effect.flip));
+
+    expect(down).toEqual(BrowserError.make({ message: "checkVisual: Error: overloaded" }));
+  });
+
+  it("fails a Visual check the host answered as busy, with its own flag", async () => {
+    const page = { html: "<p>hi</p>", width: 736, theme: "light", top: 0 } as const;
+    const down = () => Promise.reject(new Error("unused"));
+
+    const host = remoteBrowserHost(
+      {
+        getByName: () => ({
+          describe: down,
+          run: down,
+          close: down,
+          checkVisual: () => Promise.resolve({ busy: true, held: 4 }),
+          startHandoff: down,
+          liveView: down,
+          ownerTabView: down,
+          ownerTabs: down,
+          openOwnerTab: down,
+          showOwnerTab: down,
+          closeOwnerTab: down,
+          readOwnerTabPages: down,
+          waitHandoff: down,
+          endHandoff: down,
+        }),
+      },
+      "session-1",
+      noWorkspace,
+    );
+
+    const busy = await Effect.runPromise(host.checkVisual(page).pipe(Effect.flip));
+
+    expect(busy.busy).toBe(true);
+    expect(busy.unavailable).toBeUndefined();
+  });
+
   it("hands a conversation's tab to the owner, mints its links, waits on the handoff, and ends it, in the object named for the Session", async () => {
     const calls: unknown[] = [];
 
@@ -173,6 +280,7 @@ describe("the Session's browser host", () => {
           describe: () => Promise.resolve("described"),
           run: () => Promise.resolve({ output: [] }),
           close: () => Promise.resolve(true),
+          checkVisual: () => Promise.reject(new Error("not here")),
           startHandoff: (input) => {
             calls.push({ name, start: input });
 
@@ -237,6 +345,7 @@ describe("the Session's browser host", () => {
           describe: () => Promise.resolve(""),
           run: () => Promise.resolve({ output: [] }),
           close: () => Promise.resolve(true),
+          checkVisual: () => Promise.reject(new Error("not here")),
           startHandoff: () => Promise.reject(new Error("This conversation has no open tab")),
           liveView: () => Promise.reject(new Error("the handoff is over")),
           ownerTabView: () => Promise.reject(new Error("the Owner tab is gone")),
@@ -279,6 +388,7 @@ describe("the Session's browser host", () => {
           describe: () => Promise.resolve(""),
           run: () => Promise.resolve({ output: [] }),
           close: () => Promise.resolve(true),
+          checkVisual: () => Promise.reject(new Error("not here")),
           startHandoff: () => Promise.reject(new Error("not here")),
           liveView: () => Promise.reject(new Error("not here")),
           ownerTabView: (open) => {
@@ -321,6 +431,7 @@ describe("the Session's browser host", () => {
           describe: () => Promise.resolve(""),
           run: () => Promise.resolve({ output: [] }),
           close: () => Promise.resolve(true),
+          checkVisual: () => Promise.reject(new Error("not here")),
           startHandoff: () => Promise.reject(new Error("not here")),
           liveView: () => Promise.reject(new Error("not here")),
           ownerTabView: () => Promise.reject(new Error("not here")),

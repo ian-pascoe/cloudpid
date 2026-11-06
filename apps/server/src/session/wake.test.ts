@@ -31,6 +31,7 @@ const setup = (nextExpiry?: number) => {
   const host: BrowserHostService = {
     describe: Effect.succeed(""),
     run: () => Effect.succeed({ output: [] }),
+    checkVisual: () => Effect.die("no Visual check"),
     startHandoff: () => Effect.die("no handoff"),
     liveView: () => Effect.die("no handoff"),
     ownerTabView: () => Effect.die("no Browser Pane"),

@@ -1,4 +1,9 @@
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- assertions over native arrays and records.
+import {
+  VISUAL_CSP,
+  VISUAL_SANDBOX_DIRECTIVE,
+  visualCheckPolicy,
+} from "@cloudpid/protocol/visuals";
 import { describe, expect, it } from "vitest";
 import { buildCsp } from "./csp.ts";
 
@@ -231,5 +236,15 @@ describe("buildCsp", () => {
 
     expect(directive(policy, "frame-ancestors")).toEqual([stage]);
     expect(directive(policy, "frame-src")).toEqual(["'none'"]);
+  });
+});
+
+describe("the policy visual_check renders a page under", () => {
+  // docs/architecture/visuals.md → The check: the header is the sandbox's own, which the browser host builds with the same
+  // function but without the stage's own hosts; the fixed list names none of them, so the two agree.
+  it("is the policy the sandbox gives a Visual's frame, with the frame's flags added", () => {
+    expect(visualCheckPolicy()).toBe(
+      `${buildCsp(JSON.stringify(VISUAL_CSP), "'none'")}; ${VISUAL_SANDBOX_DIRECTIVE}`,
+    );
   });
 });

@@ -29,12 +29,11 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { Secrets } from "../secrets/store.ts";
 import { VISUAL_SHOW, VISUAL_SHOW_DESCRIPTION } from "./guidance.ts";
 import {
   isSpecialPath,
   type PreparedVisual,
-  prepareVisual,
+  prepareForCall,
   type VisualFile,
   type VisualFiles,
   VisualShowError,
@@ -127,6 +126,11 @@ export const visualFilesOf = (
     }),
 });
 
+/** The files of the call's Workspace the preparation reads from, when the call has an environment. */
+export const visualFilesOfCall = (
+  env: Parameters<typeof visualFilesOf>[0] | undefined,
+): VisualFiles | undefined => (env === undefined ? undefined : visualFilesOf(env));
+
 /** A show's counts as span attributes, under `visual.`: fixed values and counts only. */
 const spanOf = (prepared: PreparedVisual, evicted: number): ToolSpanAttributes => {
   const { counts, warnings } = prepared;
@@ -160,7 +164,6 @@ export const VisualShowTool = defineEffectTool({
   structuredOutputSchema: Schema.toJsonSchemaDocument(VisualShown).schema,
   execute: (args, api) =>
     Effect.gen(function* () {
-      const secrets = yield* Secrets;
       const recorder = yield* VisualRecorder;
 
       // Whether this is a nested call, and of which call: a script's Visuals show under its card.
@@ -169,21 +172,7 @@ export const VisualShowTool = defineEffectTool({
       const caller = task?.input as ToolTaskInput | undefined;
 
       // A copy that cannot be told clean of the Session's Secrets is not kept: their values never enter durable state.
-      if (!(yield* secrets.readable)) {
-        return yield* VisualShowError.make({
-          kind: "secrets_unavailable",
-          message:
-            "The Session's Secrets could not be read, so the page could not be checked for them and nothing was shown: try again shortly",
-        });
-      }
-
-      const held = yield* secrets.environment;
-
-      const prepared = yield* prepareVisual(args, {
-        files: api.env === undefined ? undefined : visualFilesOf(api.env),
-        redact: (text) => secrets.redact(text),
-        secretValues: Record.values(held),
-      });
+      const prepared = yield* prepareForCall(args, visualFilesOfCall(api.env), "shown");
 
       const draft: Mutable<VisualDraft> = {
         callId: api.callId,

@@ -31,6 +31,8 @@ import {
   type OwnerTabLinks,
   type OwnerTabListing,
   type OwnerTabPageRead,
+  type VisualCheckInput,
+  type VisualCheckResult,
 } from "@cloudpid/extensions/browser";
 import { readingOwnerTabPages } from "@cloudpid/extensions/browser/pages.testing";
 import {
@@ -436,6 +438,19 @@ const roundWaiters = new Map<string, () => void>();
 /** Whether the test browser host's reads of the Owner tabs are held for good (`holdOwnerTabReads`). */
 const OWNER_TAB_READS_HELD = "owner-tab-reads-held";
 
+/** What a Visual check answers unless a test says otherwise. */
+const CHECKED: VisualCheckResult = {
+  coldStart: false,
+  contentHeight: 420,
+  screenshot: { data: "AAAA", mimeType: "image/jpeg", top: 0, height: 420, quality: 80 },
+  clipped: false,
+  growth: { grows: false, heights: [420, 420] },
+  console: [],
+  violations: [],
+  failedLoads: [],
+  warnings: [],
+};
+
 /**
  * A browser host that hands a tab over at once and finishes the handoff when the test says (`completeHandoff`). Its
  * state is in the object's storage, as the real host's is in its own object: it outlives an instance of the Session.
@@ -453,6 +468,18 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
 
     return false;
   }),
+  checkVisual: (input) =>
+    Effect.suspend(() => {
+      kv.put("visual-checks", [...(kv.get<VisualCheckInput[]>("visual-checks") ?? []), input]);
+
+      const failure = kv.get<{ message: string; unavailable?: boolean; busy?: boolean }>(
+        "visual-check-failure",
+      );
+
+      return failure === undefined
+        ? Effect.succeed(kv.get<VisualCheckResult>("visual-check-result") ?? CHECKED)
+        : Effect.fail(BrowserError.make(failure));
+    }),
   startHandoff: (input) =>
     Effect.sync(() => {
       kv.put("handoff-starts", [...(kv.get<HandoffStartInput[]>("handoff-starts") ?? []), input]);
@@ -808,6 +835,8 @@ export class TestSession extends DurableObject {
         const shown = yield* Visuals.pipe(
           Effect.provideService(VisualRecorder, visuals),
           Effect.provideService(ToolSpans, spans),
+          Effect.provideService(BrowserHost, host),
+          Effect.provideService(BrowserSession, makeBrowserSession({ host, storage: kv })),
         );
 
         extensions.push(shown, tracingTools(effectTelemetry(tracer), shown.tools ?? [], spans));

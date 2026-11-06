@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalConsole:off newPromise:off globalTimers:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
+// @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off globalConsole:off newPromise:off globalTimers:off -- a plain Durable Object class, reached over Workers RPC, which is Promise-based.
 // The browser host: one Durable Object per Session (ADR-0007) with the Session's one Browser Run browser, driven by
 // `agents/browser`'s `browserTool`. The Session DO reaches it over RPC, because the tool needs this Worker's
 // `CodemodeRuntime` facet and the Loader that runs the model's CDP code (`docs/architecture/browser.md`).
@@ -22,6 +22,12 @@ import {
   type OwnerTabListing,
   type OwnerTabPageRead,
   type ContainerPreviewWorkspace,
+  VISUAL_CHECK_MAX_PENDING,
+  VISUAL_CHECK_MS,
+  VISUAL_CHECK_SETUP_MS,
+  type VisualCheckBusy,
+  type VisualCheckInput,
+  type VisualCheckResult,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -37,8 +43,11 @@ import { HandoffHost } from "./handoff.ts";
 import { confinedToOwnerTabs, OwnerTabCalls } from "./owner-tab-agent.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
 import { type ContainerPreviewProps, ContainerPreviewRoutes } from "./container-preview.ts";
+import { CheckQueue } from "./check-queue.ts";
+import { checkVisual, within } from "./visual-check.ts";
 import {
   adoptTab,
+  browserKey,
   conversationScope,
   forgetScope,
   openTab,
@@ -95,6 +104,8 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   readonly #ownerTabCalls: OwnerTabCalls;
   /** The Container previews' routes every browser is acquired with, to the Workspace the latest call named. */
   readonly #containerPreviews: ContainerPreviewRoutes;
+  /** The Session's checks, one at a time (`checkVisual`). */
+  readonly #checks = new CheckQueue(VISUAL_CHECK_MAX_PENDING);
 
   constructor(ctx: DurableObjectState, env: BrowserHostEnv) {
     super(ctx, env);
@@ -211,6 +222,54 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     );
 
     return { ...rest, output: output ?? content ?? [] };
+  }
+
+  /**
+   * Render a Visual's page in a throwaway context of the Session's browser, on a CDP connection of this host's own, and say
+   * what it measured and saw (`visual-check.ts`; `docs/architecture/visuals.md` → The check). It starts the browser when none
+   * runs, as a `run` does. One check runs at a time: a second waits for the first, and at most `VISUAL_CHECK_MAX_PENDING` are
+   * held (the one that runs and those behind it): one more is answered busy, without waiting. A check that runs takes
+   * `VISUAL_CHECK_MS` at most in all: the browser's start and connection (`VISUAL_CHECK_SETUP_MS` of it), the page and the
+   * dispose. A browser that cannot be reached fails the call.
+   */
+  checkVisual(
+    input: VisualCheckInput,
+    workspace?: ContainerPreviewWorkspace,
+  ): Promise<VisualCheckResult | VisualCheckBusy> {
+    this.#containerPreviews.given(workspace);
+
+    return this.#checks.run(
+      () => this.#checkVisual(input),
+      (held): VisualCheckBusy => ({ busy: true, held }),
+    );
+  }
+
+  async #checkVisual(input: VisualCheckInput): Promise<VisualCheckResult> {
+    const started = Date.now();
+
+    // The browser and its connection are in the check's time, up to `VISUAL_CHECK_SETUP_MS` of it: a connection that opens
+    // after that is closed. What is left is the check's, its dispose included.
+    const { transport, coldStart } = await within(
+      VISUAL_CHECK_SETUP_MS,
+      this.#openCheckSocket(),
+      "The browser",
+      ({ transport: late }) => late.close(),
+    );
+
+    return checkVisual(transport, input, {
+      coldStart,
+      timeoutMs: VISUAL_CHECK_MS - (Date.now() - started),
+    });
+  }
+
+  async #openCheckSocket() {
+    const before = await this.#store.get(browserKey(this.#browser.name));
+    const { sessionId, restarted } = await this.#browser.resolve();
+
+    return {
+      transport: await openCdpSocket(this.env.BROWSER, sessionId),
+      coldStart: restarted || before === undefined || before.closedAt !== undefined,
+    };
   }
 
   /** Hand conversation `input.conversationId`'s tab to the owner (`Cloudflare.handoff`), noting its viewport. */

@@ -1,5 +1,5 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { SELF } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -50,6 +50,27 @@ describe("the browser Worker", () => {
 
   it("closes nothing when no browser was started", async () => {
     expect(await env.BROWSER_HOST.getByName("idle").close()).toBe(false);
+  });
+
+  it("fails a Visual check when the browser cannot be reached, so the Session says it was not checked", async () => {
+    // The binding answers a 503 here: the check reaches it (to start the browser) and cannot go on.
+    const failure = await env.BROWSER_HOST.getByName("unavailable")
+      .checkVisual({ html: "<p>hi</p>", width: 736, theme: "light", top: 0 }, WORKSPACE)
+      .then(
+        () => undefined,
+        (error: Error) => error,
+      );
+
+    expect(failure).toBeInstanceOf(Error);
+  });
+
+  it("queues the checks of a Session, so a failed one does not stop the next", async () => {
+    const host = env.BROWSER_HOST.getByName("queued");
+    const page = { html: "<p>hi</p>", width: 736, theme: "light", top: 0 } as const;
+
+    const settled = await Promise.allSettled([host.checkVisual(page), host.checkVisual(page)]);
+
+    expect(settled.map((each) => each.status)).toEqual(["rejected", "rejected"]);
   });
 
   it("hands over no tab for a conversation that has none, without starting a browser for it", async () => {

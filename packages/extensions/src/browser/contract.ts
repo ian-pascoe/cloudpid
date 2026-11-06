@@ -1,7 +1,13 @@
 // What the Session and its browser host (`apps/browser`) agree on, in plain data a Durable Object RPC carries and
-// without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension, and of
-// `@cloudpid/protocol` only types and its import-free `live-view` module.
-import type { LiveViewLinks, OwnerTabLinks, OwnerTabListing } from "@cloudpid/protocol";
+// without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension, and this file
+// takes only types of `@cloudpid/protocol`. The Worker's own modules also take protocol modules by path
+// (`apps/browser/src/visual-check.ts`: `base64`, `visuals`), which import nothing but `effect` at runtime.
+import type {
+  LiveViewLinks,
+  OwnerTabLinks,
+  OwnerTabListing,
+  VisualTheme,
+} from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import * as Predicate from "effect/Predicate";
 
@@ -163,6 +169,97 @@ export type BrowserOutputPart =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "image"; readonly data: string; readonly mimeType: string };
 
+// ---------------------------------------------------------------------------------------------------------------------
+// The Visual check (`docs/architecture/visuals.md` → The check)
+
+/**
+ * The longest a check runs in all once it runs, from the first call to the browser to the end of its dispose: its setup
+ * (`VISUAL_CHECK_SETUP_MS`), the page's work and the dispose are all inside it. A check queued behind another starts its time
+ * when it starts; `VISUAL_CHECK_MAX_PENDING` bounds the wait.
+ */
+export const VISUAL_CHECK_MS = 20_000;
+
+/**
+ * The longest the host takes to resolve the browser and open its socket, which `VISUAL_CHECK_MS` includes: past it the check
+ * fails, so the page's work and the dispose (3 s) always have the rest of the 20 s, 9 s at the least. A start took about 1.8 s
+ * in the spike.
+ */
+export const VISUAL_CHECK_SETUP_MS = 8_000;
+
+/** The longest a check waits for the load, the fonts and two frames. */
+export const VISUAL_CHECK_LOAD_MS = 10_000;
+
+/** The tallest part of the page a screenshot shows, in CSS pixels, from `top`. */
+export const VISUAL_CHECK_CLIP_PX = 3_000;
+
+/**
+ * The most base64 characters of a screenshot a check returns: the bound the transcript holds images to
+ * (`MAX_IMAGE_CHARACTERS` in `../images/prepare.ts`, which a test holds this to).
+ */
+export const VISUAL_CHECK_IMAGE_CHARACTERS = 750_000;
+
+/** The most console messages, violations and failed loads a check reports of each, and the longest one's text. */
+export const VISUAL_CHECK_MAX_ITEMS = 50;
+export const VISUAL_CHECK_MAX_TEXT = 500;
+
+/** The most checks a host holds at once, the one that runs and those queued behind it; one more fails as busy. */
+export const VISUAL_CHECK_MAX_PENDING = 4;
+
+/** What the host answers a check it holds no room for: `held` checks are already held (`VISUAL_CHECK_MAX_PENDING`). */
+export type VisualCheckBusy = { readonly busy: true; readonly held: number };
+
+/** Whether the host's answer to a check is that it is busy. */
+export const isVisualCheckBusy = (
+  answer: VisualCheckResult | VisualCheckBusy,
+): answer is VisualCheckBusy => "busy" in answer;
+
+/** What `visual_check` asks the host to render: the page as prepared (never with the shim), at `width`, in `theme`, from `top`. */
+export type VisualCheckInput = {
+  readonly html: string;
+  readonly width: number;
+  readonly theme: VisualTheme;
+  readonly top: number;
+};
+
+/** A console message the page logged, or an error it threw (`type` is `uncaught`, which no console call's is). */
+export type VisualCheckMessage = { readonly type: string; readonly text: string };
+
+/** A resource that did not load: what the browser called the failure, a CSP block (`csp`) among them. */
+export type VisualCheckFailedLoad = { readonly url: string; readonly reason: string };
+
+/** The screenshot a check took: a JPEG of the page from `top` for `height` CSS pixels, at `quality`. */
+export type VisualCheckScreenshot = {
+  readonly data: string;
+  readonly mimeType: "image/jpeg";
+  readonly top: number;
+  readonly height: number;
+  readonly quality: number;
+};
+
+/**
+ * What a check saw and measured. A check cut off by its bound because the page stopped responding gives what it had, and
+ * says so in `warnings`: what it heard (the console, violations and failed loads) and whatever it had measured or shot. Each
+ * list is cut at `VISUAL_CHECK_MAX_ITEMS` and each entry at `VISUAL_CHECK_MAX_TEXT`; all of it is the page's own text.
+ */
+export type VisualCheckResult = {
+  /** Whether the check started the browser. */
+  readonly coldStart: boolean;
+  /** The page's height at `max-content`, as the frame measures it, in CSS pixels; none when the check was cut off before. */
+  readonly contentHeight?: number;
+  /** The screenshot, or none when it could not be taken or kept (`warnings` say why). */
+  readonly screenshot?: VisualCheckScreenshot;
+  /** Whether the screenshot shows less than the page: it starts below the top, or the clip ended before the content did. */
+  readonly clipped: boolean;
+  /** The growth probe: whether the page's height grew after each of the frame's resizes, and the heights it reported. */
+  readonly growth: { readonly grows: boolean; readonly heights: ReadonlyArray<number> };
+  readonly console: ReadonlyArray<VisualCheckMessage>;
+  /** Content-Security-Policy violations, one line each (the directive and what it blocked). */
+  readonly violations: ReadonlyArray<string>;
+  readonly failedLoads: ReadonlyArray<VisualCheckFailedLoad>;
+  /** What the check could not do or finish: a partial result says so. */
+  readonly warnings: ReadonlyArray<string>;
+};
+
 /** What one run of the model's code returned, as the tool result it becomes. */
 export type BrowserRun = {
   readonly output: ReadonlyArray<BrowserOutputPart>;
@@ -193,6 +290,16 @@ export type BrowserHostRpc = {
   ): Promise<BrowserRun>;
   /** Close the browser; false when there was none. */
   close(): Promise<boolean>;
+  /**
+   * Render a Visual's page in a throwaway browser context of the Session's browser, starting it when none runs, and say what
+   * it measured and saw (`docs/architecture/visuals.md` → The check). One runs at a time, and the host holds at most
+   * `VISUAL_CHECK_MAX_PENDING` (one more is answered `VisualCheckBusy`); it fails when the browser is unavailable. A host that
+   * predates it has no such method.
+   */
+  checkVisual(
+    input: VisualCheckInput,
+    workspace?: ContainerPreviewWorkspace,
+  ): Promise<VisualCheckResult | VisualCheckBusy>;
   /**
    * Hand the tab of conversation `input.conversationId` to the owner: note its viewport and send `Cloudflare.handoff`.
    * Idempotent by `requestId`: a handoff already started under it answers as it did. Fails when the conversation has no

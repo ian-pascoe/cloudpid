@@ -17,8 +17,11 @@ import {
   visualSizeText,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { secretReference } from "../secrets/references.ts";
+import { Secrets } from "../secrets/store.ts";
+import { quoted } from "./quote.ts";
 
 /** A file as the preparation reads it from the Workspace. */
 export type VisualFile =
@@ -48,15 +51,24 @@ const ASSET_UNREAD = {
   unreadable: "could not be read",
 } as const;
 
+/**
+ * A reference, path or host the page named, as it goes into a warning: quoted and cut (it is the page's own text, which can
+ * hold a newline or anything else, and warnings reach the model as lines of their own).
+ */
+const shown = (text: string): string => quoted(text, 200);
+
 /** Whether `path` is under a directory of devices or kernel files, whose "files" are never a page's (`/dev/zero` never ends). */
 export const isSpecialPath = (path: string): boolean => /^\/(?:dev|proc|sys)(?:\/|$)/.test(path);
 
-/** What `visual_show` was called with. */
+/**
+ * What `visual_show` was called with. A page that is only rendered (`visual_check`) has no title or summary: left out, they
+ * are not checked, and the prepared page has none (empty).
+ */
 export type VisualShowInput = {
   readonly path?: string | undefined;
   readonly html?: string | undefined;
-  readonly title: string;
-  readonly summary: string;
+  readonly title?: string | undefined;
+  readonly summary?: string | undefined;
 };
 
 /** Why a show failed, as telemetry counts it (never its text). */
@@ -97,6 +109,7 @@ export type VisualCounts = {
 };
 
 export type PreparedVisual = {
+  /** The title and summary as kept, redacted; empty when the input had none. */
   readonly title: string;
   readonly summary: string;
   readonly source: VisualSource;
@@ -381,23 +394,24 @@ export const prepareVisual = (
 
     // The title and summary are shown and exported wherever the page is not, so they are redacted as the page is, and
     // bounded as they are kept: a Secret's reference may be longer than its value.
-    const title = redactCounting(input.title.trim());
-    const summary = redactCounting(input.summary.trim());
+    const labelled = input.title !== undefined || input.summary !== undefined;
+    const title = redactCounting((input.title ?? "").trim());
+    const summary = redactCounting((input.summary ?? "").trim());
 
     const redactedNote = (text: string, original: string) =>
       text === original.trim() ? "" : " with its Secrets replaced by their references";
 
-    if (title === "" || title.length > MAX_VISUAL_TITLE) {
+    if (labelled && (title === "" || title.length > MAX_VISUAL_TITLE)) {
       return yield* fail(
         "bad_title",
-        `title must be 1 to ${MAX_VISUAL_TITLE} characters; it is ${title.length}${redactedNote(title, input.title)}`,
+        `title must be 1 to ${MAX_VISUAL_TITLE} characters; it is ${title.length}${redactedNote(title, input.title ?? "")}`,
       );
     }
 
-    if (summary === "" || summary.length > MAX_VISUAL_SUMMARY) {
+    if (labelled && (summary === "" || summary.length > MAX_VISUAL_SUMMARY)) {
       return yield* fail(
         "bad_summary",
-        `summary must be 1 to ${MAX_VISUAL_SUMMARY} characters; it is ${summary.length}${redactedNote(summary, input.summary)}: it stands for the page wherever it is not rendered`,
+        `summary must be 1 to ${MAX_VISUAL_SUMMARY} characters; it is ${summary.length}${redactedNote(summary, input.summary ?? "")}: it stands for the page wherever it is not rendered`,
       );
     }
 
@@ -485,7 +499,7 @@ export const prepareVisual = (
         if (read.kind === "too_large") {
           warn(
             "asset_too_large",
-            `${reference} is ${sizeOf(read.size)}, over the ${sizeOf(MAX_VISUAL_ASSET_BYTES)} an asset may be: it was left out`,
+            `${shown(reference)} is ${sizeOf(read.size)}, over the ${sizeOf(MAX_VISUAL_ASSET_BYTES)} an asset may be: it was left out`,
           );
 
           return undefined;
@@ -494,7 +508,7 @@ export const prepareVisual = (
         if (read.kind !== "file") {
           warn(
             "asset_missing",
-            `${reference} (${path}) ${ASSET_UNREAD[read.kind]}: it was left out`,
+            `${shown(reference)} (${shown(path)}) ${ASSET_UNREAD[read.kind]}: it was left out`,
           );
 
           return undefined;
@@ -541,7 +555,7 @@ export const prepareVisual = (
       const text = decodeUtf8(bytes);
 
       if (text === undefined)
-        warn("asset_missing", `${reference} is not UTF-8 text: it was left out`);
+        warn("asset_missing", `${shown(reference)} is not UTF-8 text: it was left out`);
 
       return text;
     };
@@ -675,7 +689,10 @@ export const prepareVisual = (
                 const text = decodeUtf8(bytes);
 
                 if (text === undefined) {
-                  warn("asset_missing", `${reference} is not an SVG in UTF-8: it was left out`);
+                  warn(
+                    "asset_missing",
+                    `${shown(reference)} is not an SVG in UTF-8: it was left out`,
+                  );
 
                   return undefined;
                 }
@@ -777,4 +794,34 @@ export const prepareVisual = (
     }
 
     return { title, summary, source, html, bytes, warnings, counts };
+  });
+
+/**
+ * A call's page prepared for what it does with it (`visual_show` shows it, `visual_check` renders it, and `done` is what
+ * neither did when this fails): read from the call's Workspace (`files`), redacted of the Session's Secrets, checked and
+ * bounded. A page that cannot be told clean of the Secrets (they could not be read) is not prepared: it is never kept or
+ * rendered.
+ */
+export const prepareForCall = (
+  input: VisualShowInput,
+  files: VisualFiles | undefined,
+  done: "shown" | "rendered",
+) =>
+  Effect.gen(function* () {
+    const secrets = yield* Secrets;
+
+    if (!(yield* secrets.readable)) {
+      return yield* VisualShowError.make({
+        kind: "secrets_unavailable",
+        message: `The Session's Secrets could not be read, so the page could not be checked for them and nothing was ${done}: try again shortly`,
+      });
+    }
+
+    const held = yield* secrets.environment;
+
+    return yield* prepareVisual(input, {
+      files,
+      redact: (text) => secrets.redact(text),
+      secretValues: Record.values(held),
+    });
   });
