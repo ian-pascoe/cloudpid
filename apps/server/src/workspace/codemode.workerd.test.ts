@@ -30,6 +30,13 @@ const session = () => {
   return { stub, workspace: `codemode-${sessions}` };
 };
 
+/**
+ * `vi.waitFor`, with room for a loaded CI runner: its 1 s default timed out there while the instance an alarm woke reran
+ * the script and answered, the work still running at the check.
+ */
+const settles = <A>(check: () => Promise<A>) =>
+  vi.waitFor(check, { timeout: 10_000, interval: 50 });
+
 /** The scripted model call of the `codemode` tool with `code`. */
 const script = (code: string) => `call:codemode:${JSON.stringify({ code })}`;
 
@@ -181,7 +188,7 @@ describe("the codemode tool", () => {
     await evictDurableObject(stub);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
 
-    await vi.waitFor(async () =>
+    await settles(async () =>
       expect(
         await runInDurableObject(stub, (instance: TestCodemodeSession) => instance.idle()),
       ).toBe(true),
