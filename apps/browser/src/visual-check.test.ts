@@ -483,9 +483,9 @@ describe("checkVisual: what it measures", () => {
     expect(result.console).toHaveLength(50);
     expect(result.console[0]?.text).toHaveLength(500);
     expect(result.console.some((message) => message.text === "elsewhere")).toBe(false);
-    expect(result.warnings.some((warning) => warning.includes("30 more console messages"))).toBe(
-      true,
-    );
+    expect(result.warnings).toEqual([
+      "There may be more console messages than the 50 shown: the check stopped collecting them at that cap.",
+    ]);
   });
 });
 
@@ -527,11 +527,17 @@ describe("checkVisual: what it keeps as it hears", () => {
     expect(result.console[0]?.text).toHaveLength(500);
     expect(result.console[1]?.text).toBe("line 0");
     expect(result.violations).toHaveLength(50);
-    expect(result.warnings).toContain("4951 more console messages are not shown.");
-    expect(result.warnings).toContain("2950 more CSP violations are not shown.");
+    // Past the cap the sources are off, so no count is told.
+    expect(result.warnings).toContain(
+      "There may be more console messages than the 50 shown: the check stopped collecting them at that cap.",
+    );
+    expect(result.warnings).toContain(
+      "There may be more CSP violations than the 50 shown: the check stopped collecting them at that cap.",
+    );
+    expect(result.warnings.join(" ")).not.toMatch(/\d+ more/);
   });
 
-  it("counts a violation dropped from both the audits and the log once, and no other kind of issue", async () => {
+  it("tells of violations left out once, and counts no other kind of issue", async () => {
     const both = Array.from({ length: 80 }, (_, index) => [
       inPage("Audits.issueAdded", {
         issue: {
@@ -560,7 +566,45 @@ describe("checkVisual: what it keeps as it hears", () => {
     const result = await run(scripted({ events: [...others, ...both] }));
 
     expect(result.violations).toHaveLength(50);
-    expect(result.warnings).toContain("30 more CSP violations are not shown.");
+    expect(result.warnings).toEqual([
+      "There may be more CSP violations than the 50 shown: the check stopped collecting them at that cap.",
+    ]);
+  });
+
+  it("lists no log line of a violation the audits left out, once the violations are full", async () => {
+    const audits = Array.from({ length: 80 }, (_, index) =>
+      inPage("Audits.issueAdded", {
+        issue: {
+          code: "ContentSecurityPolicyIssue",
+          details: {
+            contentSecurityPolicyIssueDetails: {
+              blockedURL: `https://evil.example/${index}.js`,
+              violatedDirective: "script-src-elem",
+            },
+          },
+        },
+      }),
+    );
+
+    // The log lines come after: those of the violations 50 to 79 have no issue to match.
+    const logs = Array.from({ length: 80 }, (_, index) =>
+      inPage("Log.entryAdded", {
+        entry: {
+          source: "security",
+          text: `Loading the script 'https://evil.example/${index}.js' violates the following Content Security Policy directive: "script-src 'self'".`,
+        },
+      }),
+    );
+
+    const fake = scripted({ events: [...audits, ...logs] });
+    const result = await run(fake);
+
+    expect(result.violations).toHaveLength(50);
+    expect(result.violations.every((line) => line.startsWith("script-src-elem blocked "))).toBe(
+      true,
+    );
+    expect(sentOf(fake, "Log.disable")).toHaveLength(1);
+    expect(sentOf(fake, "Audits.disable")).toHaveLength(1);
   });
 
   it("says nothing of other kinds of issue", async () => {
@@ -735,6 +779,14 @@ describe("checkVisual: a partial result", () => {
     expect(result.screenshot).toBeUndefined();
     expect(fake.methods().at(-1)).toBe("Target.disposeBrowserContext");
     expect(fake.state.closed).toBe(true);
+  });
+
+  it("says the page had not finished loading, not that it hung, when its load never fired by the bound", async () => {
+    const result = await run(scripted({ neverLoads: true }), { timeoutMs: 400, loadMs: 5_000 });
+
+    expect(result.warnings[0]).toMatch(/had not finished loading within the check's/);
+    expect(result.warnings[0]).not.toMatch(/hung/);
+    expect(result.contentHeight).toBeUndefined();
   });
 
   it("gives the measurement it already had when the page stops responding after it", async () => {

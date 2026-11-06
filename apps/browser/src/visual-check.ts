@@ -299,21 +299,57 @@ class Heard {
   readonly #urls = new Map<string, string>();
   readonly #stop: (source: Source) => void;
   readonly #stopped = new Set<Source>();
+  /** Whether the violations are full: a list of them has reached the cap, so neither is taken any more. */
+  #violationsFull = false;
 
   constructor(stop: (source: Source) => void) {
     this.#stop = stop;
+  }
+
+  /** Turn `source` off, once. */
+  #turnOff(source: Source): void {
+    if (this.#stopped.has(source)) return;
+
+    this.#stopped.add(source);
+    this.#stop(source);
   }
 
   /** Room in `list` for one more (see `Capped.take`); once it is full, its `source` is turned off. */
   #take<A>(list: Capped<A>, source: Source): boolean {
     if (list.take()) return true;
 
-    if (!this.#stopped.has(source)) {
-      this.#stopped.add(source);
-      this.#stop(source);
-    }
+    this.#turnOff(source);
 
     return false;
+  }
+
+  /**
+   * Room for one more violation in `list`. A violation is an issue and a log line (`violations`), so the two lists are full
+   * together: once either has reached the cap, no more of either is taken and both sources are turned off, or the log lines
+   * of the violations the issues left out would be listed as violations of their own.
+   */
+  #takeViolation(list: Capped<Violation>, source: "Log" | "Audits"): boolean {
+    if (this.#violationsFull) {
+      list.dropped += 1;
+
+      return false;
+    }
+
+    return this.#take(list, source);
+  }
+
+  /** Whether a violation list has reached the cap; if so, both sources are turned off. */
+  #settleViolations(): void {
+    if (
+      this.audited.items.length < VISUAL_CHECK_MAX_ITEMS &&
+      this.logged.items.length < VISUAL_CHECK_MAX_ITEMS
+    ) {
+      return;
+    }
+
+    this.#violationsFull = true;
+    this.#turnOff("Audits");
+    this.#turnOff("Log");
   }
 
   onPage(method: string, params: Schema.Json | undefined): void {
@@ -359,13 +395,15 @@ class Heard {
 
         const text = log.value.entry.text.slice(0, MATCH_CHARACTERS);
 
-        if (SANDBOX_WARNING.test(text) || !this.#take(this.logged, "Log")) return;
+        if (SANDBOX_WARNING.test(text) || !this.#takeViolation(this.logged, "Log")) return;
 
         this.logged.items.push({
           directive: LOGGED_DIRECTIVE.exec(text)?.[1],
           blocked: LOGGED_BLOCKED.exec(text)?.[1],
           text: cut(text),
         });
+
+        this.#settleViolations();
 
         return;
       }
@@ -378,7 +416,7 @@ class Heard {
           : undefined;
 
         // Only a CSP issue is a violation: any other kind of issue is neither listed nor counted.
-        if (details === undefined || !this.#take(this.audited, "Audits")) return;
+        if (details === undefined || !this.#takeViolation(this.audited, "Audits")) return;
 
         const directive = details.violatedDirective;
 
@@ -391,6 +429,8 @@ class Heard {
           blocked,
           text: cut(`${directive ?? "a directive"} blocked ${blocked ?? "a resource"}`),
         });
+
+        this.#settleViolations();
 
         return;
       }
@@ -450,22 +490,33 @@ class Heard {
       if (!same) lines.push(entry.text);
     }
 
-    // A block that overflowed is usually in both lists (an issue and a log line), so the most either list dropped counts each
-    // once, where the sum would count it twice.
-    return { lines, dropped: Math.max(this.audited.dropped, this.logged.dropped) };
+    // Only whether any were left out is told: past the cap the sources are off, so there is no count to give.
+    return { lines, dropped: this.audited.dropped + this.logged.dropped };
   }
 }
 
-/** `items` cut at the bound, with a warning that says how many were left out (`dropped` more were left out as they came). */
+/**
+ * `items` cut at the bound, with a warning when some were left out. A list whose source is turned off at the cap (`stops`) has
+ * no count past it: the warning says there may be more. Any other says how many (`dropped` more were left out as they came).
+ */
 const bounded = <A>(
   items: ReadonlyArray<A>,
   dropped: number,
   what: string,
   warnings: string[],
+  stops: boolean,
 ): A[] => {
-  const left = items.length - VISUAL_CHECK_MAX_ITEMS + dropped;
+  if (stops) {
+    if (items.length >= VISUAL_CHECK_MAX_ITEMS || dropped > 0) {
+      warnings.push(
+        `There may be more ${what} than the ${VISUAL_CHECK_MAX_ITEMS} shown: the check stopped collecting them at that cap.`,
+      );
+    }
+  } else {
+    const left = items.length - VISUAL_CHECK_MAX_ITEMS + dropped;
 
-  if (left > 0) warnings.push(`${left} more ${what} are not shown.`);
+    if (left > 0) warnings.push(`${left} more ${what} are not shown.`);
+  }
 
   return items.slice(0, VISUAL_CHECK_MAX_ITEMS);
 };
@@ -499,6 +550,8 @@ type Progress = {
   clipped: boolean;
   /** Whether the page was asked to load: before that, nothing of the page is known and a bound is the browser's. */
   navigated: boolean;
+  /** Whether the page's load event has fired. */
+  loaded: boolean;
 };
 
 /** What `progress` comes to, as a result: each list bounded, and `warnings` as they are. */
@@ -511,9 +564,15 @@ const resultOf = (progress: Progress): VisualCheckResult => {
     coldStart: progress.coldStart,
     clipped: progress.clipped,
     growth: { grows: progress.grows, heights: [...progress.heights] },
-    console: bounded(heard.console.items, heard.console.dropped, "console messages", warnings),
-    violations: bounded(violations.lines, violations.dropped, "CSP violations", warnings),
-    failedLoads: bounded(heard.failed.items, heard.failed.dropped, "failed loads", warnings),
+    console: bounded(
+      heard.console.items,
+      heard.console.dropped,
+      "console messages",
+      warnings,
+      true,
+    ),
+    violations: bounded(violations.lines, violations.dropped, "CSP violations", warnings, true),
+    failedLoads: bounded(heard.failed.items, heard.failed.dropped, "failed loads", warnings, false),
     warnings,
   };
 
@@ -561,6 +620,7 @@ export const checkVisual = async (
     screenshot: undefined,
     clipped: false,
     navigated: false,
+    loaded: false,
   };
 
   const work = measure(transport, input, progress, loadMs, (id) => {
@@ -585,8 +645,12 @@ export const checkVisual = async (
       );
     }
 
+    // A page whose load never fired has not finished loading in time (a slow one, or one stuck in its load); one that loaded
+    // and then answers no command has stopped responding (a hung main thread).
     progress.warnings.unshift(
-      `The page stopped responding within the check's ${seconds(workMs)} s (its main thread may be hung, for example by a script that never returns), so the check was cut off: this is what it had by then.`,
+      progress.loaded
+        ? `The page stopped responding within the check's ${seconds(workMs)} s (its main thread may be hung, for example by a script that never returns), so the check was cut off: this is what it had by then.`
+        : `The page had not finished loading within the check's ${seconds(workMs)} s (it may be very slow to load, or a script may never return), so the check was cut off before it could measure it: this is what it had by then.`,
     );
 
     return resultOf(progress);
@@ -706,8 +770,10 @@ const measure = async (
     if (event.sessionId !== sessionId) return;
 
     if (event.method === "Fetch.requestPaused") answer(event.params);
-    else if (event.method === "Page.loadEventFired") loaded();
-    else heard.onPage(event.method, event.params);
+    else if (event.method === "Page.loadEventFired") {
+      progress.loaded = true;
+      loaded();
+    } else heard.onPage(event.method, event.params);
   });
 
   const evaluate = async (expression: string, awaitPromise = false) => {

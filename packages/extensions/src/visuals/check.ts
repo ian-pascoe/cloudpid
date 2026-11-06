@@ -152,6 +152,7 @@ export const describeCheck = (
   );
   section(
     "CSP violations",
+    // A lambda, not `quoted` itself: `Arr.map` passes the index, which `quoted` would take as its `max`.
     Arr.map(result.violations, (line) => quoted(line)),
   );
   section(
