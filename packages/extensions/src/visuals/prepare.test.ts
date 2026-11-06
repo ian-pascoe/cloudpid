@@ -310,6 +310,54 @@ describe("the copy of a path", () => {
     }
   });
 
+  it("fails once the files it has read pass the bound, even those it left out", async () => {
+    const binary = Uint8Array.of(0xff, 0xfe, ...new Uint8Array(100 * 1024));
+    const leaky = Uint8Array.of(...new TextEncoder().encode(SECRET), ...new Uint8Array(100 * 1024));
+
+    for (const [extension, tag, bytes] of [
+      ["css", (name: string) => `<link rel="stylesheet" href="${name}">`, binary],
+      ["js", (name: string) => `<script src="${name}"></script>`, binary],
+      ["png", (name: string) => `<img src="${name}">`, leaky],
+      ["svg", (name: string) => `<img src="${name}">`, binary],
+    ] as const) {
+      const names = Array.from({ length: 30 }, (_, n) => `${n}.${extension}`);
+      const reads: string[] = [];
+
+      expect(
+        await failure(
+          { path: "page.html" },
+          {
+            "/workspace/repo/page.html": `<!doctype html>${names.map(tag).join("")}`,
+            ...Object.fromEntries(names.map((name) => [`/workspace/repo/${name}`, bytes])),
+          },
+          reads,
+        ),
+      ).toMatchObject({
+        kind: "too_large",
+        message: "The files the page names come to over the 2 MiB a Visual may be",
+      });
+      // 20 files of 100 KiB are 2,000 KiB; the 21st passes 2 MiB, and nothing is read after it.
+      expect(reads).toHaveLength(1 + 21);
+    }
+  });
+
+  it("leaves out a stylesheet or script that is not UTF-8, and says so", async () => {
+    const shown = await show(
+      { path: "page.html" },
+      {
+        "/workspace/repo/page.html":
+          '<!doctype html><link rel="stylesheet" href="s.css"><script src="a.js"></script>',
+        "/workspace/repo/s.css": Uint8Array.of(0xff),
+        "/workspace/repo/a.js": Uint8Array.of(0xff),
+      },
+    );
+
+    expect(kinds(shown.warnings)).toEqual(["asset_missing", "asset_missing"]);
+    expect(shown.html).toContain('<link rel="stylesheet" href="s.css">');
+    expect(shown.html).toContain('<script src="a.js"></script>');
+    expect(shown.counts).toMatchObject({ stylesheets: 0, scripts: 0 });
+  });
+
   it("warns once of a missing file the page names many times", async () => {
     const shown = await show(
       { path: "page.html" },

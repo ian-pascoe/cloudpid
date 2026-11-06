@@ -467,33 +467,19 @@ export const prepareVisual = (
       );
     }
 
+    /** The bytes of every asset read so far, which may not pass the page's own bound: what is read is held. */
+    let assetBytes = 0;
+
     /**
-     * Each asset's read, by its resolved path: a file the page names many times is read, and warned of, once. What it holds
-     * is bounded by the page's: each file read is inlined at least once, and the page fails past its bound.
+     * The local asset `reference` names, at its resolved `path`, read from the page's Workspace, or a warning that it is
+     * missing or too large. Each kind of asset keeps what it makes of a file, by its resolved path, never the file's bytes,
+     * so a file the page names many times is read, and warned of, once; and the show fails once the files it has read come
+     * to more than a page may be.
      */
-    const assets = new Map<
-      string,
-      { readonly path: string; readonly bytes: Uint8Array } | undefined
-    >();
-
-    /** A local asset of the page's file, or a warning that it is missing or too large (once for each file). */
-    const asset = (reference: string) =>
+    const asset = (reference: string, path: string) =>
       Effect.gen(function* () {
-        if (file === undefined || files === undefined || !isLocal(reference)) return undefined;
+        if (files === undefined) return undefined;
 
-        const path = resolveFrom(file, reference);
-
-        if (assets.has(path)) return assets.get(path);
-
-        const found = yield* readAsset(files, reference, path);
-
-        assets.set(path, found);
-
-        return found;
-      });
-
-    const readAsset = (files: VisualFiles, reference: string, path: string) =>
-      Effect.gen(function* () {
         const read = yield* files.read(path, MAX_VISUAL_ASSET_BYTES);
 
         if (read.kind === "too_large") {
@@ -514,8 +500,51 @@ export const prepareVisual = (
           return undefined;
         }
 
-        return { path, bytes: read.bytes };
+        assetBytes += read.bytes.length;
+
+        if (assetBytes > MAX_VISUAL_BYTES) {
+          return yield* fail(
+            "too_large",
+            `The files the page names come to over the ${sizeOf(MAX_VISUAL_BYTES)} a Visual may be`,
+          );
+        }
+
+        return read.bytes;
       });
+
+    /** What each kind of asset made of a file, by its resolved path: none when it was left out. */
+    const made = () => new Map<string, string | undefined>();
+
+    /** `make` of the asset `reference` names, made once for each resolved path; none for a reference that is not local. */
+    const once = (
+      cache: Map<string, string | undefined>,
+      reference: string,
+      make: (bytes: Uint8Array, path: string) => string | undefined,
+    ) =>
+      Effect.gen(function* () {
+        if (file === undefined || !isLocal(reference)) return undefined;
+
+        const path = resolveFrom(file, reference);
+
+        if (cache.has(path)) return cache.get(path);
+
+        const bytes = yield* asset(reference, path);
+        const product = bytes === undefined ? undefined : make(bytes, path);
+
+        cache.set(path, product);
+
+        return product;
+      });
+
+    /** `bytes` as UTF-8 text, or a warning that the asset was left out for not being text. */
+    const textOf = (reference: string, bytes: Uint8Array): string | undefined => {
+      const text = decodeUtf8(bytes);
+
+      if (text === undefined)
+        warn("asset_missing", `${reference} is not UTF-8 text: it was left out`);
+
+      return text;
+    };
 
     /** The page has grown past its bound while its assets were inlined: no more is read or built. */
     const overBound = () =>
@@ -555,6 +584,9 @@ export const prepareVisual = (
       });
 
     if (file !== undefined) {
+      const stylesheets = made();
+      const scripts = made();
+
       // Stylesheets first: their `url()`s are made absolute from the stylesheet's own place, for the images after.
       html = yield* replaceEach(html, /<link\b[^>]*>/gi, (match) =>
         Effect.gen(function* () {
@@ -563,24 +595,27 @@ export const prepareVisual = (
           if (!/\bstylesheet\b/i.test(attribute(tag, "rel") ?? "")) return undefined;
 
           const href = attribute(tag, "href");
-          const found = href === undefined ? undefined : yield* asset(href);
 
-          if (found === undefined) return undefined;
+          if (href === undefined) return undefined;
 
-          const css = decodeUtf8(found.bytes) ?? "";
+          return yield* once(stylesheets, href, (bytes, path) => {
+            const css = textOf(href, bytes);
 
-          const located = css.replace(
-            /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)/gi,
-            (whole, a?: string, b?: string, c?: string) => {
-              const reference = (a ?? b ?? c ?? "").trim();
+            if (css === undefined) return undefined;
 
-              return isLocal(reference) ? `url("${resolveFrom(found.path, reference)}")` : whole;
-            },
-          );
+            const located = css.replace(
+              /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)/gi,
+              (whole, a?: string, b?: string, c?: string) => {
+                const reference = (a ?? b ?? c ?? "").trim();
 
-          counts.stylesheets += 1;
+                return isLocal(reference) ? `url("${resolveFrom(path, reference)}")` : whole;
+              },
+            );
 
-          return `<style>${escapeClose(located, "style")}</style>`;
+            counts.stylesheets += 1;
+
+            return `<style>${escapeClose(located, "style")}</style>`;
+          });
         }),
       );
 
@@ -590,16 +625,18 @@ export const prepareVisual = (
         (match) =>
           Effect.gen(function* () {
             const reference = match[2] ?? match[3] ?? match[4] ?? "";
-            const found = yield* asset(reference);
 
-            if (found === undefined) return undefined;
+            const script = yield* once(scripts, reference, (bytes) => {
+              const text = textOf(reference, bytes);
 
-            const attributes = `${match[1] ?? ""}${match[5] ?? ""}`;
-            const script = decodeUtf8(found.bytes) ?? "";
+              if (text !== undefined) counts.scripts += 1;
 
-            counts.scripts += 1;
+              return text === undefined ? undefined : escapeClose(text, "script");
+            });
 
-            return `<script${attributes}>${escapeClose(script, "script")}</script>`;
+            if (script === undefined) return undefined;
+
+            return `<script${match[1] ?? ""}${match[5] ?? ""}>${script}</script>`;
           }),
       );
     }
@@ -624,56 +661,38 @@ export const prepareVisual = (
 
     if (file !== undefined) {
       /** Each image's `data:` URL, by its resolved path: built, and redacted or left out, once however often it is named. */
-      const images = new Map<string, string | undefined>();
+      const images = made();
 
-      const inlineImage = (reference: string) =>
-        Effect.gen(function* () {
-          if (!isLocal(reference)) return undefined;
+      const inlineImage = (reference: string) => {
+        const mime = imageMime(reference.split(/[?#]/, 1)[0] ?? reference);
 
-          const mime = imageMime(reference.split(/[?#]/, 1)[0] ?? reference);
+        return mime === undefined
+          ? Effect.undefined
+          : once(images, reference, (read) => {
+              let bytes = read;
 
-          if (mime === undefined) return undefined;
+              if (mime === "image/svg+xml") {
+                const text = decodeUtf8(bytes);
 
-          const path = resolveFrom(file, reference);
+                if (text === undefined) {
+                  warn("asset_missing", `${reference} is not an SVG in UTF-8: it was left out`);
 
-          if (images.has(path)) return images.get(path);
+                  return undefined;
+                }
 
-          const data = yield* imageData(reference, mime);
+                bytes = new TextEncoder().encode(redactCounting(text));
+              } else if (secretBytes.some((secret) => holds(bytes, secret))) {
+                imagesDropped += 1;
+                counts.secrets += 1;
 
-          images.set(path, data);
+                return undefined;
+              }
 
-          return data;
-        });
+              counts.images += 1;
 
-      const imageData = (reference: string, mime: string) =>
-        Effect.gen(function* () {
-          const found = yield* asset(reference);
-
-          if (found === undefined) return undefined;
-
-          let bytes = found.bytes;
-
-          if (mime === "image/svg+xml") {
-            const text = decodeUtf8(bytes);
-
-            if (text === undefined) {
-              warn("asset_missing", `${reference} is not an SVG in UTF-8: it was left out`);
-
-              return undefined;
-            }
-
-            bytes = new TextEncoder().encode(redactCounting(text));
-          } else if (secretBytes.some((secret) => holds(bytes, secret))) {
-            imagesDropped += 1;
-            counts.secrets += 1;
-
-            return undefined;
-          }
-
-          counts.images += 1;
-
-          return `data:${mime};base64,${base64(bytes)}`;
-        });
+              return `data:${mime};base64,${base64(bytes)}`;
+            });
+      };
 
       html = yield* replaceEach(html, /<img\b[^>]*>/gi, (match) =>
         Effect.gen(function* () {
