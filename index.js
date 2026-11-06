@@ -11,7 +11,7 @@ import {
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-// ../../../../../.bun/install/cache/links/effect@4.0.6-af8bd1bb894346aa/node_modules/effect/dist/Predicate.js
+// ../../../../../.bun/install/cache/links/effect@4.1.2-719644ce1e810253/node_modules/effect/dist/Predicate.js
 function isString(input) {
   return typeof input === "string";
 }
@@ -217,7 +217,7 @@ var completionsFor = (prefix) => {
   return matches.length === 0 ? null : matches;
 };
 
-// ../../node_modules/.bun/@ian-pascoe+pi-utils@0.13.0+36e02baeb1169e47/node_modules/@ian-pascoe/pi-utils/dist/layered-settings.js
+// ../../node_modules/.bun/@ian-pascoe+pi-utils@0.13.0+57ebcfc6a302590c/node_modules/@ian-pascoe/pi-utils/dist/layered-settings.js
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 function resolveLayeredOptions(input) {
@@ -442,7 +442,7 @@ ${SETUP_STEPS}`);
   const file = scope === "project" ? files.project : files.global;
   return { url: endpointUrl(settings.baseUrl, `\`cloudpid.baseUrl\` in ${file}`) };
 };
-var BUILD_SHA = "4afbd02f52d08e7ecb4001cf1bcf6db88f1f02d5";
+var BUILD_SHA = "6167c748e61b1a7d8bd66f9d36ab676cd56c4643";
 var clientName = (sha = BUILD_SHA) => `pi-cloudpid/${sha.slice(0, 12)}`;
 
 // ../../node_modules/.bun/@modelcontextprotocol+client@2.4.0/node_modules/@modelcontextprotocol/client/dist/chunk-DYPzFuB5.mjs
