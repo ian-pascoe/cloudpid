@@ -2,10 +2,8 @@
 import { describe, expect, it } from "vitest";
 import {
   INLINE_INITIAL_HEIGHT_PX,
-  changedContext,
   hostCapabilities,
   hostContextOf,
-  hostStyleVariables,
   inlineHeight,
   inlineMaxHeight,
   type HostEnvironment,
@@ -40,17 +38,6 @@ describe("inlineHeight", () => {
     expect(inlineMaxHeight(2000)).toBe(640);
     expect(inlineMaxHeight(0)).toBe(640);
     expect(inlineHeight(5000, 500)).toBe(350);
-  });
-});
-
-describe("hostStyleVariables", () => {
-  it("maps the tokens the page defines, trimmed, and leaves out the ones it does not", () => {
-    const variables = hostStyleVariables(env.readProperty);
-
-    expect(variables["--color-background-primary"]).toBe("#000");
-    expect(variables["--color-text-primary"]).toBeUndefined();
-    expect(variables["--border-radius-md"]).toBe("8px");
-    expect(variables["--font-sans"]).toContain("system-ui");
   });
 });
 
@@ -175,31 +162,5 @@ describe("hostCapabilities of what a frame serves", () => {
       serverResources: {},
       logging: {},
     });
-  });
-});
-
-describe("changedContext", () => {
-  const before = hostContextOf(env, { callId: "c1", name: "page", title: undefined });
-
-  it("is only what differs", () => {
-    const after = hostContextOf(
-      { ...env, dark: false, width: 500 },
-      {
-        callId: "c1",
-        name: "page",
-        title: undefined,
-      },
-    );
-
-    expect(changedContext(before, after)).toEqual({
-      theme: "light",
-      containerDimensions: { width: 500, maxHeight: 640 },
-    });
-  });
-
-  it("is undefined when nothing does", () => {
-    expect(
-      changedContext(before, hostContextOf(env, { callId: "c1", name: "page", title: undefined })),
-    ).toBeUndefined();
   });
 });

@@ -7,7 +7,7 @@ import { useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { createContext, use } from "react";
-import type { AppPlace } from "../app-view/places.ts";
+import type { AppPlace } from "../sandbox-frame/places.ts";
 import { layoutKey } from "../session-layout.ts";
 import { ROOT_AGENT } from "../session/agents.ts";
 import { type ConversationKey, conversationKey } from "../session/conversation-key.ts";

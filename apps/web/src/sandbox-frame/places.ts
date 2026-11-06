@@ -1,12 +1,18 @@
-// docs/architecture/mcp-apps.md → App Views in the transcript (Which App Views are live, Where it renders), App Panes. Which
-// place of a page mounts an App View. A call can be shown in several places at once (its card in the transcript, the same
-// card in a Subagent Pane or page, an App Pane opened for it), and only one of them mounts its View: the places each hold a
-// **claim** on the call, and the highest place hosts it (App Pane, then Subagent Pane or page, then card); the others say
-// where it is shown. A View moves from one place to another by the first one's frame closing (its View is told to tear
+// docs/architecture/visuals.md → The frame; docs/architecture/mcp-apps.md → App Views in the transcript (Which App Views are
+// live, Where it renders), App Panes. Which place of a page mounts an App View (and, keyed `visual:`, a Visual). A call can
+// be shown in several places at once (its card in the transcript, the same card in a Subagent Pane or page, an App Pane
+// opened for it), and only one of them mounts its View: the places each hold a **claim** on the call, and the highest place
+// hosts it (App Pane, then Subagent Pane or page, then card); the others say where it is shown. A View moves from one place to another by the first one's frame closing (its View is told to tear
 // down and answers, or 2 s pass) and only then the next one's mounting, never by moving an iframe, which would reload it.
+//
+// A claim names its call by a **key** the owner builds with {@link placeKey} (`app:<callId>`, and `visual:<callId>` for a
+// Visual), so that the two kinds of call never share one; this module treats it as opaque.
 //
 // This module knows nothing of React or the DOM: it is the state machine, tested without either (`places.test.ts`).
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a small mutable store over native maps.
+
+/** What a claim names its call by: the kind of frame in the call's name space, so an App View's and a Visual's never collide. */
+export const placeKey = (kind: "app" | "visual", callId: string): string => `${kind}:${callId}`;
 
 /** Where an App View can be shown on a page. */
 export type AppPlace = "app-pane" | "subagent-pane" | "subagent-page" | "card";
@@ -66,7 +72,7 @@ export class AppPlaces {
   private seq = 0;
   private count = 0;
 
-  /** Hold a claim on `callId` for a place; it wants no View until `update` says so. */
+  /** Hold a claim on a call (`callId` is its {@link placeKey}) for a place; it wants no View until `update` says so. */
   readonly claim = (id: string, callId: string, place: AppPlace): void => {
     const known = this.claims.get(id);
 

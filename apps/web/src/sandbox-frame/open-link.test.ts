@@ -3,7 +3,7 @@
 /* oxlint-disable anti-slop/no-unknown-parameters -- a View's params are whatever it sent */
 // @effect-diagnostics preferEffectArray:off asyncFunction:off -- recorded calls in native lists, and promises a handler answers.
 import { describe, expect, it, vi } from "vitest";
-import { RpcError } from "./bridge.ts";
+import { RpcError } from "./frame-protocol.ts";
 import { DISMISSED, linkOf, openLinkHandler, type PendingLink, shownLink } from "./open-link.ts";
 
 describe("linkOf", () => {

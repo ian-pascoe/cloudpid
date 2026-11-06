@@ -7,7 +7,7 @@
 import { MCP_APP_INVALID_PARAMS } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { RpcError, type RequestHandler } from "./bridge.ts";
+import { RpcError, type RequestHandler } from "./frame-protocol.ts";
 
 /** JSON-RPC's implementation-defined error that answers a request the owner turned down or did not answer. */
 export const DISMISSED = -32000;

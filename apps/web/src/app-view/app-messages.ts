@@ -15,7 +15,8 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { type BridgeOptions, HOST_REFUSED, RpcError, type RequestHandler } from "./bridge.ts";
+import { HOST_REFUSED, RpcError, type RequestHandler } from "../sandbox-frame/frame-protocol.ts";
+import type { BridgeOptions } from "./bridge.ts";
 
 /** What the card does with the View's messages and context; each is only there when the frame can serve it. */
 export interface AppSpeech {

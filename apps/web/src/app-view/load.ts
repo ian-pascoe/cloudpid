@@ -6,7 +6,7 @@
 import type { McpAppHtmlAnswer, McpAppRecord, McpAppStub } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import type { SessionClient } from "../session/client.ts";
-import { isSandboxOrigin } from "./frame-url.ts";
+import { isSandboxOrigin } from "../sandbox-frame/frame-url.ts";
 
 /** What loading needs of the Session's client: its two App commands. */
 export type AppClient = Pick<SessionClient, "mountApp" | "appPage" | "appToolPage">;

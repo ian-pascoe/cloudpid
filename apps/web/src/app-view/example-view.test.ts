@@ -11,7 +11,8 @@ import { Window } from "happy-dom";
 import { build } from "vite";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PROXY_JS, proxyPage } from "../../../app-sandbox/src/proxy.ts";
-import { createBridge, type Bridge, type BridgeEvent, type IncomingMessage } from "./bridge.ts";
+import type { IncomingMessage } from "../sandbox-frame/frame-protocol.ts";
+import { createBridge, type Bridge, type BridgeEvent } from "./bridge.ts";
 import {
   HOST_INFO,
   hostCapabilities,

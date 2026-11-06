@@ -10,13 +10,10 @@ import {
   INITIALIZE_TIMEOUT_MS,
   MCP_APPS_PROTOCOL_VERSION,
   RpcError,
-  retire,
   TEARDOWN_TIMEOUT_MS,
-  createBridge,
-  type BridgeEvent,
-  type BridgeOptions,
   type IncomingMessage,
-} from "./bridge.ts";
+} from "../sandbox-frame/frame-protocol.ts";
+import { retire, createBridge, type BridgeEvent, type BridgeOptions } from "./bridge.ts";
 import {
   HOST_INFO,
   hostCapabilities,
