@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { appOriginOf, viewHost } from "./view-host.ts";
-import { viewHash, viewSourceOf } from "./view-hash.ts";
+import { viewHash, viewSourceOf, visualViewHash } from "./view-hash.ts";
 
 /** An independent base32 (RFC 4648, lowercase, unpadded) of a digest, by bit string. */
 const reference = (bytes: Uint8Array): string => {
@@ -87,5 +87,26 @@ describe("viewSourceOf", () => {
 
   it("has none for a source this build does not know", () => {
     expect(viewSourceOf({ kind: "workspace" })).toBeUndefined();
+  });
+});
+
+describe("visualViewHash (docs/architecture/visuals.md → Network and isolation: The origin)", () => {
+  it("is the first 26 base32 characters of SHA-256 over the Session's ID, under a prefix of its own", () => {
+    for (const session of ["s-1", "", "é"]) {
+      expect(visualViewHash(session)).toBe(
+        reference(createHash("sha256").update(`visual\0v1\0${session}`).digest()).slice(0, 26),
+      );
+    }
+  });
+
+  it("is one origin per Session, on the sandbox, and never an MCP server's", () => {
+    const hash = visualViewHash("s-1");
+
+    expect(hash).toMatch(/^[a-z2-7]{26}$/);
+    expect(appOriginOf(viewHost(hash, "prod"))).toBe("https://pi.ianpascoe.dev");
+    expect(visualViewHash("s-2")).not.toBe(hash);
+    // No MCP server's parts make the Visual's: an MCP preimage always starts `v1\0`, a Visual's `visual\0`.
+    expect(viewHash({ environment: "s-1", source: "", normalizedName: "" })).not.toBe(hash);
+    expect(viewHash({ environment: "visual", source: "v1", normalizedName: "s-1" })).not.toBe(hash);
   });
 });

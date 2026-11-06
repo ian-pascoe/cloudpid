@@ -1,4 +1,5 @@
-// docs/architecture/mcp-apps.md → The App sandbox (Origins). The hash that names an App View's origin. Kept apart from
+// docs/architecture/mcp-apps.md → The App sandbox (Origins); docs/architecture/visuals.md → Network and isolation (The origin).
+// The hashes that name an App View's origin and a Session's Visuals' origin. Kept apart from
 // `view-host.ts`, which the App sandbox Worker bundles and which imports nothing but `deployment.ts`: this one needs the
 // SHA-256 of `@cloudpid/config`, which only the main Worker (the host that knows an Environment's servers) uses.
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over values, not combinators.
@@ -65,3 +66,12 @@ export const viewHash = (input: {
   base32(
     bytesOf(sha256Hex(`v1\0${input.environment}\0${input.source}\0${input.normalizedName}`)),
   ).slice(0, HASH_LENGTH);
+
+/**
+ * The 26 characters that name the origin of a Session's Visuals (`docs/architecture/visuals.md` → Network and isolation: The
+ * origin): the first 26 of the base32 of SHA-256 over `"visual\0v1\0" + sessionId`. One origin per Session, so Sessions do
+ * not share page storage; kept apart from MCP servers' hashes, whose preimage always starts `v1\0`, so no server's parts
+ * can make a Session's Visuals' origin, nor a Session's ID a server's.
+ */
+export const visualViewHash = (session: string): string =>
+  base32(bytesOf(sha256Hex(`visual\0v1\0${session}`))).slice(0, HASH_LENGTH);

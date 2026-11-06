@@ -31,6 +31,7 @@ import {
   type McpAppRequestAnswer,
   type McpAppTool,
   type SentAppMessage,
+  type VisualEntry,
   type McpTask,
   type McpWatchEntry,
   type McpResourcePreviewAnswer,
@@ -90,6 +91,7 @@ import { isWithdrawn, SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
 import { McpApps } from "./mcp-apps.ts";
+import { SessionVisuals } from "./visuals-store.ts";
 import { McpWatches } from "./mcp-watches.ts";
 import { McpResourcePreviews, type SpillRead } from "./mcp-resource-previews.ts";
 import { socketCompletions } from "./mcp-completions.ts";
@@ -281,6 +283,7 @@ const HELLO_FEATURES = {
   appContext: true,
   mcpDecline: true,
   mcpCompletions: true,
+  visuals: true,
 } as const;
 
 /** The `mcp_app_tools` message for `tools`, which every client is sent after `hello` and whenever the inventory changes them. */
@@ -343,6 +346,13 @@ export const mcpAppsMessage = (
   conversationId: ConversationId,
   apps: ReadonlyArray<McpAppEntry>,
 ): ServerMessage => ({ type: "mcp_apps", conversationId, apps });
+
+/** The `visuals` message: a conversation's Visuals, whole (`docs/architecture/visuals.md` → Socket messages). */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- builds a message, not a combinator.
+export const visualsMessage = (
+  conversationId: ConversationId,
+  visuals: ReadonlyArray<VisualEntry>,
+): ServerMessage => ({ type: "visuals", conversationId, visuals });
 
 /**
  * The agent change a `configure` asks for: a field it leaves out is left out, as is. The socket's `configure` and the MCP
@@ -500,6 +510,7 @@ export const sessionSocketsLayer = (
   | AnnotationStore
   | ViewedStore
   | McpApps
+  | SessionVisuals
   | McpWatches
   | McpResourcePreviews
   | SessionReviews
@@ -514,6 +525,7 @@ export const sessionSocketsLayer = (
       const annotations = yield* AnnotationStore;
       const viewed = yield* ViewedStore;
       const mcpApps = yield* McpApps;
+      const visuals = yield* SessionVisuals;
       const mcpWatches = yield* McpWatches;
       const resourcePreviews = yield* McpResourcePreviews;
       const reviews = yield* SessionReviews;
@@ -572,6 +584,7 @@ export const sessionSocketsLayer = (
 
                     return Effect.forkChild(streamTodos(socket, conversationId)).pipe(
                       Effect.andThen(Effect.forkChild(streamMcpApps(socket, conversationId))),
+                      Effect.andThen(Effect.forkChild(streamVisuals(socket, conversationId))),
                       Effect.asVoid,
                     );
                   }),
@@ -626,6 +639,17 @@ export const sessionSocketsLayer = (
         mcpApps.updates(conversationId).pipe(
           Stream.runForEach((apps) => send(socket, mcpAppsMessage(conversationId, apps))),
           Effect.catchCause((cause) => Effect.logWarning("App calls watch ended", cause)),
+        );
+
+      /**
+       * Stream `conversationId`'s Visuals to `socket`, as its App calls are (`visuals`): the list now, and again each time a
+       * Visual is kept or evicted. A child of the conversation's watch, so it ends with it; one that fails is logged, and the
+       * client keeps the last list it was sent.
+       */
+      const streamVisuals = (socket: WebSocket, conversationId: ConversationId) =>
+        visuals.updates(conversationId).pipe(
+          Stream.runForEach((list) => send(socket, visualsMessage(conversationId, list))),
+          Effect.catchCause((cause) => Effect.logWarning("Visuals watch ended", cause)),
         );
 
       /**
@@ -1140,6 +1164,9 @@ export const sessionSocketsLayer = (
             return annotations.delete(message.annotationId).pipe(Effect.as(null));
           case "mcp_app_mount":
             return mcpApps.mount(message.callId);
+          case "visual_page":
+            // The page of a Visual this Session keeps, with its origin; a mount is the most recently mounted.
+            return visuals.page(message.callId);
           case "mcp_app_html":
             // A running call's page, by its tool; an older client sends none, and the call's is the record's.
             if (message.tool !== undefined) {

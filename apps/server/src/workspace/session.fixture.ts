@@ -32,6 +32,7 @@ import {
   subagentOptions,
 } from "@cloudpid/extensions/subagents";
 import { fixedToolSearchSettings } from "@cloudpid/extensions/tool-search";
+import { VisualRecorder } from "@cloudpid/extensions/visuals";
 import { WebConfig } from "@cloudpid/extensions/web";
 import { DEFAULT_OFFERED_TOOLS } from "@cloudpid/config";
 import { repoDirectory, WORKSPACE_ROOT } from "@cloudpid/protocol";
@@ -152,6 +153,7 @@ export class TestWorkspaceSession extends TestSession {
       Effect.provideService(WorkspaceFiles, this.#workspace().files),
       Effect.provideService(WorkspaceContainer, this.#workspace().container),
       Effect.provideService(Images, this.env.IMAGES),
+      Effect.provideService(VisualRecorder, this.visuals()),
       Effect.provideService(CodemodeSandbox, this.sandbox()),
       // No browser: the tests script the model, and none drives one.
       Effect.provideService(BrowserHost, {

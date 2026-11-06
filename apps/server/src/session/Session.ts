@@ -15,6 +15,7 @@ import { Approvals } from "@cloudpid/extensions/approvals";
 import { DeployCredentials, Environments } from "@cloudpid/extensions/environment";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
+import { VisualRecorder } from "@cloudpid/extensions/visuals";
 import { InstructionsSettings } from "@cloudpid/extensions/instructions";
 import { type McpQuestionCopy, rememberSampling } from "@cloudpid/extensions/mcp";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
@@ -36,12 +37,15 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Predicate from "effect/Predicate";
+import * as Result from "effect/Result";
 import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import { githubAppKeyForms } from "../github/app.ts";
 import { GitHubAppConfig } from "../github/config.ts";
 import { LOCAL_MODE_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
 import { viewOrigin } from "../view-host.ts";
+import { visualViewHash } from "../view-hash.ts";
+import { sessionVisuals, sessionVisualsLayer } from "./visuals-store.ts";
 import { McpHost } from "../mcp/McpHost.ts";
 import { mcpHostName } from "../mcp/name.ts";
 import { isOwnHost } from "../mcp/own-hosts.ts";
@@ -649,6 +653,26 @@ export const SessionLive = Session.make(
             }),
         });
 
+        // The Visuals the agent showed, kept in this object's storage outside History (`./visuals-store.ts`), served at one
+        // origin for the Session: a hash of its ID on the App sandbox, from this stage's deploy-time label, never stored.
+        const visuals = sessionVisuals({
+          storage: kv,
+          origin:
+            name === undefined
+              ? undefined
+              : Result.getOrUndefined(
+                  Result.try(() =>
+                    viewOrigin({
+                      hash: visualViewHash(name),
+                      label: Predicate.isString(worker[STAGE_LABEL_VAR])
+                        ? worker[STAGE_LABEL_VAR]
+                        : undefined,
+                      local: worker[LOCAL_MODE_VAR] === "true",
+                    }),
+                  ),
+                ),
+        });
+
         // The MCP tasks the agent's calls started: followed in the background, results kept in this object's storage
         // (`./mcp-tasks.ts`).
         const mcpTasks = sessionMcpTasks({ storage: kv });
@@ -1010,6 +1034,8 @@ export const SessionLive = Session.make(
                     values: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
                   }),
                   Effect.provideService(Images, images),
+                  // `visual_show` hands each page it prepared to the Session's Visuals.
+                  Effect.provideService(VisualRecorder, visuals),
                   // For extensions that need the owner (a Browser Handoff, say): pushes through the Registry.
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
                   Effect.provideService(CodemodeSandbox, sandbox),
@@ -1074,7 +1100,12 @@ export const SessionLive = Session.make(
             Layer.provideMerge(Layer.merge(mcpQuestions.layer, mcpSampling.layer)),
             // The App records, redacted of the same Secrets, the Resource watches' list the sockets send and end, and the owner's previews, which are not redacted.
             Layer.provideMerge(
-              Layer.mergeAll(mcpApps.layer, mcpWatches.layer, mcpResourcePreviews),
+              Layer.mergeAll(
+                mcpApps.layer,
+                mcpWatches.layer,
+                mcpResourcePreviews,
+                sessionVisualsLayer(visuals),
+              ),
             ),
             // The Sign-in requests, which redact the agent's words of the same Secrets.
             // The MCP tasks, which redact what a server writes of them of the same Secrets.
