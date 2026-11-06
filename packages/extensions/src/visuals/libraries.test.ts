@@ -1,8 +1,8 @@
-// docs/architecture/visuals.md → Testing. An opt-in check of the library table against cdnjs: `VISUAL_LIBS_CHECK=1 pnpm exec
-// vitest run src/visuals/libraries.test.ts`. Each file the guidance names is fetched at its pinned version, and its text is
-// scanned for the calls the frame's CSP (no `unsafe-eval`) refuses: `eval(`, `new Function(` and `Function("…")`. A library
-// passes when it has none, or only the ones listed below, each on a path a Visual does not take. It is skipped otherwise:
-// it needs the network, and a pin does not change under it.
+// docs/architecture/visuals.md → Testing. An opt-in check of the library table against cdnjs: `VISUAL_LIBS_CHECK=1 bun
+// --cwd packages/extensions vitest run src/visuals/libraries.test.ts`. Each file the guidance names is fetched at its pinned
+// version, and its text is scanned for the calls the frame's CSP (no `unsafe-eval`) refuses: `eval(`, `new Function(`
+// and `Function("…")`. A library passes when it has none, or only the ones listed below, each on a path a Visual does not
+// take. It is skipped otherwise: it needs the network, and a pin does not change under it.
 // @effect-diagnostics asyncFunction:off processEnv:off preferEffectArray:off globalFetch:off -- vitest awaits; an opt-in
 // switch; a plain fetch and scan of public files.
 import { VISUAL_LIBRARIES } from "@cloudpid/protocol";

@@ -75,10 +75,13 @@ const failedRead = (error: { readonly code: string; readonly message: string }):
 
 /**
  * The calling conversation's Workspace, as the preparation reads it, through the call's environment. A file is measured
- * before it is read, as `call-diff.ts` does: a link by its target, which is read in its place; anything but a regular file,
- * a file under `/dev`, `/proc` or `/sys`, and a file over the bound are never read.
+ * before it is read, as `call-diff.ts` does, at its canonical path (every link resolved), which is read in its place;
+ * anything but a regular file, a file whose canonical path is under `/dev`, `/proc` or `/sys`, and a file over the bound are
+ * never read.
  */
-const filesOf = (env: ExecutionEnv): VisualFiles => ({
+export const visualFilesOf = (
+  env: Pick<ExecutionEnv, "absolutePath" | "fileInfo" | "canonicalPath" | "readBinaryFile">,
+): VisualFiles => ({
   absolute: (path) =>
     Effect.gen(function* () {
       const context = yield* ChordContext;
@@ -92,19 +95,16 @@ const filesOf = (env: ExecutionEnv): VisualFiles => ({
 
       if (isSpecialPath(path)) return { kind: "not_file" } satisfies VisualFile;
 
-      let target = path;
-      let info = yield* Effect.promise(() => env.fileInfo(target, context));
+      // Every link on the way resolved, a directory's as well as the file's: `/workspace/p/self/environ`, with `p` a link
+      // to `/proc`, is `/proc/self/environ`.
+      const canonical = yield* Effect.promise(() => env.canonicalPath(path, context));
 
-      if (info.ok && info.value.kind === "symlink") {
-        const canonical = yield* Effect.promise(() => env.canonicalPath(path, context));
+      if (!canonical.ok) return failedRead(canonical.error);
 
-        if (!canonical.ok) return failedRead(canonical.error);
+      if (isSpecialPath(canonical.value)) return { kind: "not_file" } satisfies VisualFile;
 
-        if (isSpecialPath(canonical.value)) return { kind: "not_file" } satisfies VisualFile;
-
-        target = canonical.value;
-        info = yield* Effect.promise(() => env.fileInfo(target, context));
-      }
+      const target = canonical.value;
+      const info = yield* Effect.promise(() => env.fileInfo(target, context));
 
       if (!info.ok) return failedRead(info.error);
 
@@ -180,7 +180,7 @@ export const VisualShowTool = defineEffectTool({
       const held = yield* secrets.environment;
 
       const prepared = yield* prepareVisual(args, {
-        files: api.env === undefined ? undefined : filesOf(api.env),
+        files: api.env === undefined ? undefined : visualFilesOf(api.env),
         redact: (text) => secrets.redact(text),
         secretValues: Record.values(held),
       });

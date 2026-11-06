@@ -174,6 +174,31 @@ describe("what a show fails on", () => {
     expect(shown.warnings).toEqual([]);
   });
 
+  it("bounds the title and summary as they are kept, with their Secrets replaced", async () => {
+    // A short value, whose reference is longer than it.
+    const value = "pw1";
+
+    const options = {
+      files: undefined,
+      redact: (text: string) => text.replaceAll(value, secretReference("DATABASE_PASSWORD")),
+      secretValues: [value],
+    };
+
+    const title = `${"t".repeat(200 - value.length)}${value}`;
+
+    const exit = await Effect.runPromiseExit(
+      prepareVisual({ html: PAGE, title, summary: "s" }, options),
+    );
+
+    expect(title.length).toBe(200);
+    expect(Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : undefined).toMatchObject(
+      Option.some({
+        kind: "bad_title",
+        message: expect.stringContaining("with its Secrets replaced by their references"),
+      }),
+    );
+  });
+
   it("fails on a bad title or summary", async () => {
     expect(await failure({ html: PAGE, title: " " })).toMatchObject({ kind: "bad_title" });
     expect(await failure({ html: PAGE, title: "t".repeat(201) })).toMatchObject({
@@ -257,6 +282,41 @@ describe("the copy of a path", () => {
     expect(kinds(shown.warnings)).toEqual(["asset_too_large", "asset_missing", "asset_missing"]);
     expect(shown.warnings[1]?.message).toContain("is not a regular file");
     expect(reads).toEqual(["/workspace/repo/page.html"]);
+  });
+
+  it("reads a file the page names many times once, and fails as soon as its copies pass the bound", async () => {
+    const reads: string[] = [];
+    const image = new Uint8Array(100 * 1024);
+    const script = `/* ${"x".repeat(100 * 1024)} */`;
+
+    for (const [tag, name, bytes] of [
+      ['<img src="a.png">', "a.png", image],
+      ['<script src="app.js"></script>', "app.js", script],
+      ['<link rel="stylesheet" href="s.css">', "s.css", script],
+    ] as const) {
+      reads.length = 0;
+
+      expect(
+        await failure(
+          { path: "page.html" },
+          {
+            "/workspace/repo/page.html": `<!doctype html>${tag.repeat(40_000)}`,
+            [`/workspace/repo/${name}`]: bytes,
+          },
+          reads,
+        ),
+      ).toMatchObject({ kind: "too_large", message: expect.stringContaining("after inlining") });
+      expect(reads).toEqual(["/workspace/repo/page.html", `/workspace/repo/${name}`]);
+    }
+  });
+
+  it("warns once of a missing file the page names many times", async () => {
+    const shown = await show(
+      { path: "page.html" },
+      { "/workspace/repo/page.html": `<!doctype html>${'<img src="gone.png">'.repeat(1000)}` },
+    );
+
+    expect(kinds(shown.warnings)).toEqual(["asset_missing"]);
   });
 
   it("redacts an SVG before inlining it", async () => {

@@ -362,32 +362,6 @@ export const prepareVisual = (
   options: PrepareOptions,
 ): Effect.Effect<PreparedVisual, VisualShowError> =>
   Effect.gen(function* () {
-    const title = input.title.trim();
-    const summary = input.summary.trim();
-
-    if (title === "" || title.length > MAX_VISUAL_TITLE) {
-      return yield* fail(
-        "bad_title",
-        `title must be 1 to ${MAX_VISUAL_TITLE} characters; it is ${title.length}`,
-      );
-    }
-
-    if (summary === "" || summary.length > MAX_VISUAL_SUMMARY) {
-      return yield* fail(
-        "bad_summary",
-        `summary must be 1 to ${MAX_VISUAL_SUMMARY} characters; it is ${summary.length}: it stands for the page wherever it is not rendered`,
-      );
-    }
-
-    const hasPath = input.path !== undefined && input.path.trim() !== "";
-
-    const hasHtml = input.html !== undefined;
-
-    if (hasPath && hasHtml)
-      return yield* fail("two_sources", "Give exactly one of path or html, not both");
-
-    if (!hasPath && !hasHtml) return yield* fail("no_source", "Give exactly one of path or html");
-
     const warnings: VisualWarning[] = [];
 
     const warn = (kind: VisualWarningKind, message: string) => {
@@ -405,9 +379,36 @@ export const prepareVisual = (
       return redacted;
     };
 
-    // The title and summary are shown and exported wherever the page is not, so they are redacted as the page is.
-    const shownTitle = redactCounting(title);
-    const shownSummary = redactCounting(summary);
+    // The title and summary are shown and exported wherever the page is not, so they are redacted as the page is, and
+    // bounded as they are kept: a Secret's reference may be longer than its value.
+    const title = redactCounting(input.title.trim());
+    const summary = redactCounting(input.summary.trim());
+
+    const redactedNote = (text: string, original: string) =>
+      text === original.trim() ? "" : " with its Secrets replaced by their references";
+
+    if (title === "" || title.length > MAX_VISUAL_TITLE) {
+      return yield* fail(
+        "bad_title",
+        `title must be 1 to ${MAX_VISUAL_TITLE} characters; it is ${title.length}${redactedNote(title, input.title)}`,
+      );
+    }
+
+    if (summary === "" || summary.length > MAX_VISUAL_SUMMARY) {
+      return yield* fail(
+        "bad_summary",
+        `summary must be 1 to ${MAX_VISUAL_SUMMARY} characters; it is ${summary.length}${redactedNote(summary, input.summary)}: it stands for the page wherever it is not rendered`,
+      );
+    }
+
+    const hasPath = input.path !== undefined && input.path.trim() !== "";
+
+    const hasHtml = input.html !== undefined;
+
+    if (hasPath && hasHtml)
+      return yield* fail("two_sources", "Give exactly one of path or html, not both");
+
+    if (!hasPath && !hasHtml) return yield* fail("no_source", "Give exactly one of path or html");
 
     let source: VisualSource = { kind: "inline" };
     let html = input.html ?? "";
@@ -466,12 +467,33 @@ export const prepareVisual = (
       );
     }
 
-    /** A local asset of the page's file, or a warning that it is missing or too large. */
+    /**
+     * Each asset's read, by its resolved path: a file the page names many times is read, and warned of, once. What it holds
+     * is bounded by the page's: each file read is inlined at least once, and the page fails past its bound.
+     */
+    const assets = new Map<
+      string,
+      { readonly path: string; readonly bytes: Uint8Array } | undefined
+    >();
+
+    /** A local asset of the page's file, or a warning that it is missing or too large (once for each file). */
     const asset = (reference: string) =>
       Effect.gen(function* () {
         if (file === undefined || files === undefined || !isLocal(reference)) return undefined;
 
         const path = resolveFrom(file, reference);
+
+        if (assets.has(path)) return assets.get(path);
+
+        const found = yield* readAsset(files, reference, path);
+
+        assets.set(path, found);
+
+        return found;
+      });
+
+    const readAsset = (files: VisualFiles, reference: string, path: string) =>
+      Effect.gen(function* () {
         const read = yield* files.read(path, MAX_VISUAL_ASSET_BYTES);
 
         if (read.kind === "too_large") {
@@ -495,11 +517,22 @@ export const prepareVisual = (
         return { path, bytes: read.bytes };
       });
 
-    /** `text` with each match of `pattern` replaced by what `replace` gives (its own text when it gives none), in order. */
+    /** The page has grown past its bound while its assets were inlined: no more is read or built. */
+    const overBound = () =>
+      fail(
+        "too_large",
+        `The page is over the ${sizeOf(MAX_VISUAL_BYTES)} a Visual may be after inlining`,
+      );
+
+    /**
+     * `text` with each match of `pattern` replaced by what `replace` gives (its own text when it gives none), in order. It
+     * fails as soon as what it has built passes the page's bound: a string's length never exceeds its UTF-8 bytes, so a
+     * page this stops is over it, and one it lets through is measured exactly at the end.
+     */
     const replaceEach = (
       text: string,
       pattern: RegExp,
-      replace: (match: RegExpExecArray) => Effect.Effect<string | undefined>,
+      replace: (match: RegExpExecArray) => Effect.Effect<string | undefined, VisualShowError>,
     ) =>
       Effect.gen(function* () {
         let out = "";
@@ -510,9 +543,15 @@ export const prepareVisual = (
 
           out += text.slice(last, match.index) + (replaced ?? match[0]);
           last = match.index + match[0].length;
+
+          if (out.length > MAX_VISUAL_BYTES) return yield* overBound();
         }
 
-        return out + text.slice(last);
+        const built = out + text.slice(last);
+
+        if (built.length > MAX_VISUAL_BYTES) return yield* overBound();
+
+        return built;
       });
 
     if (file !== undefined) {
@@ -584,6 +623,9 @@ export const prepareVisual = (
     let imagesDropped = 0;
 
     if (file !== undefined) {
+      /** Each image's `data:` URL, by its resolved path: built, and redacted or left out, once however often it is named. */
+      const images = new Map<string, string | undefined>();
+
       const inlineImage = (reference: string) =>
         Effect.gen(function* () {
           if (!isLocal(reference)) return undefined;
@@ -592,6 +634,19 @@ export const prepareVisual = (
 
           if (mime === undefined) return undefined;
 
+          const path = resolveFrom(file, reference);
+
+          if (images.has(path)) return images.get(path);
+
+          const data = yield* imageData(reference, mime);
+
+          images.set(path, data);
+
+          return data;
+        });
+
+      const imageData = (reference: string, mime: string) =>
+        Effect.gen(function* () {
           const found = yield* asset(reference);
 
           if (found === undefined) return undefined;
@@ -702,5 +757,5 @@ export const prepareVisual = (
       );
     }
 
-    return { title: shownTitle, summary: shownSummary, source, html, bytes, warnings, counts };
+    return { title, summary, source, html, bytes, warnings, counts };
   });
