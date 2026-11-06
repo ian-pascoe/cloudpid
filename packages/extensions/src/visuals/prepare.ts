@@ -17,8 +17,11 @@ import {
   visualSizeText,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { secretReference } from "../secrets/references.ts";
+import { Secrets } from "../secrets/store.ts";
+import { quoted } from "./quote.ts";
 
 /** A file as the preparation reads it from the Workspace. */
 export type VisualFile =
@@ -47,6 +50,12 @@ const ASSET_UNREAD = {
   not_file: "is not a regular file",
   unreadable: "could not be read",
 } as const;
+
+/**
+ * A reference, path or host the page named, as it goes into a warning: quoted and cut (it is the page's own text, which can
+ * hold a newline or anything else, and warnings reach the model as lines of their own).
+ */
+const shown = (text: string): string => quoted(text, 200);
 
 /** Whether `path` is under a directory of devices or kernel files, whose "files" are never a page's (`/dev/zero` never ends). */
 export const isSpecialPath = (path: string): boolean => /^\/(?:dev|proc|sys)(?:\/|$)/.test(path);
@@ -490,7 +499,7 @@ export const prepareVisual = (
         if (read.kind === "too_large") {
           warn(
             "asset_too_large",
-            `${reference} is ${sizeOf(read.size)}, over the ${sizeOf(MAX_VISUAL_ASSET_BYTES)} an asset may be: it was left out`,
+            `${shown(reference)} is ${sizeOf(read.size)}, over the ${sizeOf(MAX_VISUAL_ASSET_BYTES)} an asset may be: it was left out`,
           );
 
           return undefined;
@@ -499,7 +508,7 @@ export const prepareVisual = (
         if (read.kind !== "file") {
           warn(
             "asset_missing",
-            `${reference} (${path}) ${ASSET_UNREAD[read.kind]}: it was left out`,
+            `${shown(reference)} (${shown(path)}) ${ASSET_UNREAD[read.kind]}: it was left out`,
           );
 
           return undefined;
@@ -546,7 +555,7 @@ export const prepareVisual = (
       const text = decodeUtf8(bytes);
 
       if (text === undefined)
-        warn("asset_missing", `${reference} is not UTF-8 text: it was left out`);
+        warn("asset_missing", `${shown(reference)} is not UTF-8 text: it was left out`);
 
       return text;
     };
@@ -680,7 +689,10 @@ export const prepareVisual = (
                 const text = decodeUtf8(bytes);
 
                 if (text === undefined) {
-                  warn("asset_missing", `${reference} is not an SVG in UTF-8: it was left out`);
+                  warn(
+                    "asset_missing",
+                    `${shown(reference)} is not an SVG in UTF-8: it was left out`,
+                  );
 
                   return undefined;
                 }
@@ -782,4 +794,34 @@ export const prepareVisual = (
     }
 
     return { title, summary, source, html, bytes, warnings, counts };
+  });
+
+/**
+ * A call's page prepared for what it does with it (`visual_show` shows it, `visual_check` renders it, and `done` is what
+ * neither did when this fails): read from the call's Workspace (`files`), redacted of the Session's Secrets, checked and
+ * bounded. A page that cannot be told clean of the Secrets (they could not be read) is not prepared: it is never kept or
+ * rendered.
+ */
+export const prepareForCall = (
+  input: VisualShowInput,
+  files: VisualFiles | undefined,
+  done: "shown" | "rendered",
+) =>
+  Effect.gen(function* () {
+    const secrets = yield* Secrets;
+
+    if (!(yield* secrets.readable)) {
+      return yield* VisualShowError.make({
+        kind: "secrets_unavailable",
+        message: `The Session's Secrets could not be read, so the page could not be checked for them and nothing was ${done}: try again shortly`,
+      });
+    }
+
+    const held = yield* secrets.environment;
+
+    return yield* prepareVisual(input, {
+      files,
+      redact: (text) => secrets.redact(text),
+      secretValues: Record.values(held),
+    });
   });

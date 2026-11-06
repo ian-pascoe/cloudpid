@@ -413,7 +413,7 @@ describe("a Visual shown in a Session", () => {
     const script = (
       stub: DurableObjectStub<TestSession>,
       kvKey: "visual-check-result" | "visual-check-failure",
-      value: VisualCheckResult | { message: string; unavailable?: boolean },
+      value: VisualCheckResult | { message: string; unavailable?: boolean; busy?: boolean },
     ) =>
       runInDurableObject(stub, (_instance: TestSession, state) => {
         state.storage.kv.put(kvKey, value);
@@ -495,6 +495,24 @@ describe("a Visual shown in a Session", () => {
       );
 
       expect(text).toContain("visual_check is unavailable");
+    });
+
+    it("fails as busy, not as the browser's fault, when the host holds as many checks as it takes", async () => {
+      const { stub } = fresh();
+
+      await script(stub, "visual-check-failure", {
+        message: "checkVisual: the Session's browser is busy with other checks",
+        busy: true,
+      });
+      await check(stub, { html: PAGE });
+
+      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.toolResults(),
+      );
+
+      expect(text).toContain("visual_check is busy");
+      expect(text).not.toContain("Not checked");
+      expect(text).not.toContain("the browser could not render");
     });
 
     it("does not read a failure's words as unavailable: only the host's own flag says so", async () => {

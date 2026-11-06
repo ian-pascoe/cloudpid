@@ -472,7 +472,9 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
     Effect.suspend(() => {
       kv.put("visual-checks", [...(kv.get<VisualCheckInput[]>("visual-checks") ?? []), input]);
 
-      const failure = kv.get<{ message: string; unavailable?: boolean }>("visual-check-failure");
+      const failure = kv.get<{ message: string; unavailable?: boolean; busy?: boolean }>(
+        "visual-check-failure",
+      );
 
       return failure === undefined
         ? Effect.succeed(kv.get<VisualCheckResult>("visual-check-result") ?? CHECKED)

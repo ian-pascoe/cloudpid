@@ -48,6 +48,8 @@ export {
   VISUAL_CHECK_MAX_ITEMS,
   VISUAL_CHECK_MAX_TEXT,
   VISUAL_CHECK_MS,
+  isVisualCheckBusy,
+  type VisualCheckBusy,
   type VisualCheckFailedLoad,
   type VisualCheckInput,
   type VisualCheckMessage,
@@ -58,12 +60,17 @@ export {
 /**
  * The browser could not be reached or failed outside the model's code: the model sees `message` as the error result.
  * `unavailable` is true when the call is one the Browsers Worker does not have yet (one from before it): a deploy that has
- * not reached it, which retrying does not change.
+ * not reached it, which retrying does not change. `busy` is true when the host holds as many checks as it takes: retrying
+ * later does change it.
  */
 export class BrowserError extends Schema.TaggedError<
   BrowserError,
   { readonly brand: unique symbol }
->()("BrowserError", { message: Schema.String, unavailable: Schema.optionalKey(Schema.Boolean) }) {}
+>()("BrowserError", {
+  message: Schema.String,
+  unavailable: Schema.optionalKey(Schema.Boolean),
+  busy: Schema.optionalKey(Schema.Boolean),
+}) {}
 
 export type BrowserHostService = {
   /** The `browser` tool's description, which tells the model how to drive the browser (written by `agents/browser`). */

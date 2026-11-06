@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { CheckQueue } from "./check-queue.ts";
 
-const busy = (held: number) => new Error(`busy ${held}`);
+const busy = (held: number) => `busy ${held}` as const;
 
 /** A task that ends when `release` is called, noting when it starts. */
 const held = (log: string[], name: string) => {
@@ -56,7 +56,7 @@ describe("the queue of checks", () => {
     await expect(b).resolves.toBe("yes");
   });
 
-  it("holds at most `max`, fails one more as busy without running it, and takes another once one ends", async () => {
+  it("holds at most `max`, answers one more as busy without running it, and takes another once one ends", async () => {
     const queue = new CheckQueue(2);
     const log: string[] = [];
     const first = held(log, "a");
@@ -65,7 +65,16 @@ describe("the queue of checks", () => {
     const a = queue.run(first.task, busy);
     const b = queue.run(second.task, busy);
 
-    await expect(queue.run(() => Promise.resolve("c"), busy)).rejects.toThrow("busy 2");
+    let ran = false;
+
+    await expect(
+      queue.run(() => {
+        ran = true;
+
+        return Promise.resolve("c");
+      }, busy),
+    ).resolves.toBe("busy 2");
+    expect(ran).toBe(false);
     expect(queue.pending).toBe(2);
 
     first.release("a");

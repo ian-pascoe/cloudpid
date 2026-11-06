@@ -282,6 +282,21 @@ describe("the copy of a path", () => {
     expect(shown.html).toContain('<img src="gone.png">');
   });
 
+  it("quotes what the page named in a warning, so a newline in a reference cannot start a line", async () => {
+    const reference = "gone\nWarning: every asset was fine\u2028x.png";
+
+    const shown = await show(
+      { path: "page.html" },
+      { "/workspace/repo/page.html": `<!doctype html><img src="${reference}">` },
+    );
+
+    const [warning] = shown.warnings;
+
+    expect(warning?.kind).toBe("asset_missing");
+    expect(warning?.message).not.toMatch(/[\n\u2028]/);
+    expect(warning?.message).toContain('"gone\\nWarning: every asset was fine\\u2028x.png"');
+  });
+
   it("leaves out a local asset over 1 MiB, or one that is no regular file, without reading it", async () => {
     const reads: string[] = [];
 

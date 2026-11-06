@@ -29,15 +29,13 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
-import { Secrets } from "../secrets/store.ts";
 import { VISUAL_SHOW, VISUAL_SHOW_DESCRIPTION } from "./guidance.ts";
 import {
   isSpecialPath,
   type PreparedVisual,
-  prepareVisual,
+  prepareForCall,
   type VisualFile,
   type VisualFiles,
-  type VisualShowInput,
   VisualShowError,
 } from "./prepare.ts";
 import { VisualRecorder } from "./recorder.ts";
@@ -128,34 +126,10 @@ export const visualFilesOf = (
     }),
 });
 
-/**
- * A call's page prepared for what it does with it (`visual_show` shows it, `visual_check` renders it, and `done` is what
- * neither did when this fails): read from the call's Workspace, redacted of the Session's Secrets, checked and bounded. A page
- * that cannot be told clean of the Secrets (they could not be read) is not prepared: it is never kept or rendered.
- */
-export const prepareForCall = (
-  input: VisualShowInput,
+/** The files of the call's Workspace the preparation reads from, when the call has an environment. */
+export const visualFilesOfCall = (
   env: Parameters<typeof visualFilesOf>[0] | undefined,
-  done: "shown" | "rendered",
-) =>
-  Effect.gen(function* () {
-    const secrets = yield* Secrets;
-
-    if (!(yield* secrets.readable)) {
-      return yield* VisualShowError.make({
-        kind: "secrets_unavailable",
-        message: `The Session's Secrets could not be read, so the page could not be checked for them and nothing was ${done}: try again shortly`,
-      });
-    }
-
-    const held = yield* secrets.environment;
-
-    return yield* prepareVisual(input, {
-      files: env === undefined ? undefined : visualFilesOf(env),
-      redact: (text) => secrets.redact(text),
-      secretValues: Record.values(held),
-    });
-  });
+): VisualFiles | undefined => (env === undefined ? undefined : visualFilesOf(env));
 
 /** A show's counts as span attributes, under `visual.`: fixed values and counts only. */
 const spanOf = (prepared: PreparedVisual, evicted: number): ToolSpanAttributes => {
@@ -198,7 +172,7 @@ export const VisualShowTool = defineEffectTool({
       const caller = task?.input as ToolTaskInput | undefined;
 
       // A copy that cannot be told clean of the Session's Secrets is not kept: their values never enter durable state.
-      const prepared = yield* prepareForCall(args, api.env, "shown");
+      const prepared = yield* prepareForCall(args, visualFilesOfCall(api.env), "shown");
 
       const draft: Mutable<VisualDraft> = {
         callId: api.callId,

@@ -126,7 +126,13 @@ const run = (
   rest: Partial<Parameters<typeof checkVisual>[2]> = {},
   input = INPUT,
 ) =>
-  checkVisual(fake.transport, input, { coldStart: false, timeoutMs: 2_000, loadMs: 500, ...rest });
+  checkVisual(fake.transport, input, {
+    coldStart: false,
+    timeoutMs: 2_000,
+    loadMs: 500,
+    disposeMs: 100,
+    ...rest,
+  });
 
 const sentOf = (fake: ReturnType<typeof fakeTransport>, method: string) =>
   fake.sent.filter((command) => command.method === method);
@@ -338,7 +344,7 @@ describe("checkVisual: what it measures", () => {
     expect(result.console).toEqual([
       { type: "log", text: "hello 3" },
       { type: "error", text: "TypeError: x is not a function" },
-      { type: "error", text: "uncaught: ReferenceError: y" },
+      { type: "uncaught", text: "ReferenceError: y" },
     ]);
   });
 
@@ -525,6 +531,71 @@ describe("checkVisual: what it keeps as it hears", () => {
     expect(result.warnings).toContain("2950 more CSP violations are not shown.");
   });
 
+  it("counts a violation dropped from both the audits and the log once, and no other kind of issue", async () => {
+    const both = Array.from({ length: 80 }, (_, index) => [
+      inPage("Audits.issueAdded", {
+        issue: {
+          code: "ContentSecurityPolicyIssue",
+          details: {
+            contentSecurityPolicyIssueDetails: {
+              blockedURL: `https://evil.example/${index}.js`,
+              violatedDirective: "script-src-elem",
+            },
+          },
+        },
+      }),
+      inPage("Log.entryAdded", {
+        entry: {
+          source: "security",
+          text: `Loading the script 'https://evil.example/${index}.js' violates the following Content Security Policy directive: "script-src 'self'".`,
+        },
+      }),
+    ]).flat();
+
+    // Issues of other kinds (a cookie, a deprecation) are not violations: not listed, not counted, and they use no room.
+    const others = Array.from({ length: 100 }, () =>
+      inPage("Audits.issueAdded", { issue: { code: "CookieIssue", details: {} } }),
+    );
+
+    const result = await run(scripted({ events: [...others, ...both] }));
+
+    expect(result.violations).toHaveLength(50);
+    expect(result.warnings).toContain("30 more CSP violations are not shown.");
+  });
+
+  it("says nothing of other kinds of issue", async () => {
+    const others = Array.from({ length: 100 }, () =>
+      inPage("Audits.issueAdded", { issue: { code: "CookieIssue", details: {} } }),
+    );
+
+    const fake = scripted({ events: others });
+    const result = await run(fake);
+
+    expect(result.violations).toEqual([]);
+    expect(result.warnings).toEqual([]);
+    expect(sentOf(fake, "Audits.disable")).toHaveLength(0);
+  });
+
+  it("turns a source off once its list is full, once, and goes on with the check", async () => {
+    const lines = Array.from({ length: 80 }, (_, index) =>
+      inPage("Runtime.consoleAPICalled", {
+        type: "log",
+        args: [{ type: "string", value: `line ${index}` }],
+      }),
+    );
+
+    const fake = scripted({ events: lines });
+    const result = await run(fake);
+
+    expect(sentOf(fake, "Runtime.disable")).toEqual([
+      { method: "Runtime.disable", params: {}, sessionId: PAGE },
+    ]);
+    expect(sentOf(fake, "Log.disable")).toHaveLength(0);
+    // The check's own commands still ran.
+    expect(result.contentHeight).toBe(400);
+    expect(result.screenshot).toBeDefined();
+  });
+
   it("keeps no more than a bounded number of the page's requests to name the ones that fail", async () => {
     const sent = Array.from({ length: 3_000 }, (_, index) =>
       inPage("Network.requestWillBeSent", {
@@ -701,6 +772,24 @@ describe("checkVisual: the dispose", () => {
     await expect(run(fake, { timeoutMs: 100, loadMs: 30 })).rejects.toThrow(VisualCheckTimeout);
 
     expect(fake.methods().at(-1)).toBe("Target.disposeBrowserContext");
+    expect(fake.state.closed).toBe(true);
+  });
+
+  it("ends within its bound in all: the page's work and a dispose that never answers share it", async () => {
+    const fake = scripted({
+      replies: {
+        "Runtime.evaluate": () => new Promise<Schema.Json>(() => undefined),
+        "Target.disposeBrowserContext": () => new Promise<Schema.Json>(() => undefined),
+      },
+    });
+
+    const started = Date.now();
+    const result = await run(fake, { timeoutMs: 400, disposeMs: 150, loadMs: 30 });
+    const took = Date.now() - started;
+
+    expect(result.warnings[0]).toMatch(/stopped responding/);
+    expect(took).toBeGreaterThanOrEqual(380);
+    expect(took).toBeLessThan(400 + 100);
     expect(fake.state.closed).toBe(true);
   });
 

@@ -59,12 +59,17 @@ export type VisualCheckOptions = {
   readonly timeoutMs?: number;
   /** The longest it waits for the load, the fonts and two frames. Defaults to `VISUAL_CHECK_LOAD_MS`. */
   readonly loadMs?: number;
+  /** The longest the dispose takes, which `timeoutMs` includes. Defaults to `DISPOSE_MS`. */
+  readonly disposeMs?: number;
 };
 
 /** Something the check waits for before it has a page (the browser, its connection, its first commands) ran past the bound. */
 export class VisualCheckTimeout extends Error {
   override readonly name = "VisualCheckTimeout";
 }
+
+/** `ms` as seconds, to a tenth. */
+const seconds = (ms: number): number => Math.round(ms / 100) / 10;
 
 /**
  * `work`'s answer, or a `VisualCheckTimeout` that says `what` did not answer in `ms`. A `work` that answers later is handed to
@@ -82,7 +87,7 @@ export const within = <A>(
     const timer = setTimeout(
       () => {
         over = true;
-        reject(new VisualCheckTimeout(`${what} did not answer within ${ms / 1_000} s`));
+        reject(new VisualCheckTimeout(`${what} did not answer within ${seconds(ms)} s`));
       },
       Math.max(1, ms),
     );
@@ -232,6 +237,9 @@ const textOf = (remote: typeof Remote.Type): string => {
 
 const cut = (text: string): string => text.slice(0, VISUAL_CHECK_MAX_TEXT);
 
+/** The type of a message that is an error the page's script did not catch (`VisualCheckMessage`). */
+export const UNCAUGHT = "uncaught";
+
 /** How much of an address or a log line is matched against another: past it, two of them are told apart by their start. */
 const MATCH_CHARACTERS = 2_048;
 
@@ -262,8 +270,8 @@ class Capped<A> {
   readonly items: A[] = [];
   dropped = 0;
 
-  /** Whether there is room for one more; when there is not, the one is counted as left out. */
-  room(): boolean {
+  /** Whether there is room for one more, which the caller then adds; when there is not, the one is counted as left out. */
+  take(): boolean {
     if (this.items.length < VISUAL_CHECK_MAX_ITEMS) return true;
 
     this.dropped += 1;
@@ -275,18 +283,43 @@ class Capped<A> {
 /** The CSP violations as lines, and how many were left out as they came. */
 type ViolationLines = { readonly lines: string[]; readonly dropped: number };
 
-/** What one check hears of its page: bounded as it is heard (`Capped`, `cut`). */
+/** A CDP domain whose events feed a list: it is turned off once the list is full. */
+type Source = "Runtime" | "Log" | "Audits";
+
+/**
+ * What one check hears of its page: bounded as it is heard (`Capped`, `cut`). `stop` is told once for a source whose list is
+ * full, to turn its events off, so the socket stops delivering what would be counted and dropped; `Runtime.evaluate` needs no
+ * `Runtime.enable`, so the check's own commands go on.
+ */
 class Heard {
   readonly console = new Capped<VisualCheckMessage>();
   readonly logged = new Capped<Violation>();
   readonly audited = new Capped<Violation>();
   readonly failed = new Capped<VisualCheckFailedLoad>();
   readonly #urls = new Map<string, string>();
+  readonly #stop: (source: Source) => void;
+  readonly #stopped = new Set<Source>();
+
+  constructor(stop: (source: Source) => void) {
+    this.#stop = stop;
+  }
+
+  /** Room in `list` for one more (see `Capped.take`); once it is full, its `source` is turned off. */
+  #take<A>(list: Capped<A>, source: Source): boolean {
+    if (list.take()) return true;
+
+    if (!this.#stopped.has(source)) {
+      this.#stopped.add(source);
+      this.#stop(source);
+    }
+
+    return false;
+  }
 
   onPage(method: string, params: Schema.Json | undefined): void {
     switch (method) {
       case "Runtime.consoleAPICalled": {
-        if (!this.console.room()) return;
+        if (!this.#take(this.console, "Runtime")) return;
 
         const called = decodeConsole(params);
 
@@ -301,17 +334,18 @@ class Heard {
       }
 
       case "Runtime.exceptionThrown": {
-        if (!this.console.room()) return;
+        if (!this.#take(this.console, "Runtime")) return;
 
         const thrown = decodeException(params);
 
         if (Option.isSome(thrown)) {
           const { text, exception } = thrown.value.exceptionDetails;
 
-          // Marked apart from `console.error`: it is the page's script that failed, not something it chose to say.
+          // Its own type, which the page cannot write (a console call's is the browser's: `log`, `error`...), so what the page
+          // says with `console.error("uncaught: ...")` cannot pass for it.
           this.console.items.push({
-            type: "error",
-            text: cut(`uncaught: ${exception?.description ?? text ?? ""}`),
+            type: UNCAUGHT,
+            text: cut(exception?.description ?? text ?? ""),
           });
         }
 
@@ -325,7 +359,7 @@ class Heard {
 
         const text = log.value.entry.text.slice(0, MATCH_CHARACTERS);
 
-        if (SANDBOX_WARNING.test(text) || !this.logged.room()) return;
+        if (SANDBOX_WARNING.test(text) || !this.#take(this.logged, "Log")) return;
 
         this.logged.items.push({
           directive: LOGGED_DIRECTIVE.exec(text)?.[1],
@@ -337,15 +371,14 @@ class Heard {
       }
 
       case "Audits.issueAdded": {
-        if (!this.audited.room()) return;
-
         const added = decodeIssue(params);
 
         const details = Option.isSome(added)
           ? added.value.issue.details?.contentSecurityPolicyIssueDetails
           : undefined;
 
-        if (details === undefined) return;
+        // Only a CSP issue is a violation: any other kind of issue is neither listed nor counted.
+        if (details === undefined || !this.#take(this.audited, "Audits")) return;
 
         const directive = details.violatedDirective;
 
@@ -383,7 +416,7 @@ class Heard {
 
         this.#urls.delete(failed.value.requestId);
 
-        if (url === `${VISUAL_CHECK_URL}favicon.ico` || !this.failed.room()) return;
+        if (url === `${VISUAL_CHECK_URL}favicon.ico` || !this.failed.take()) return;
 
         this.failed.items.push({
           url: cut(url),
@@ -417,7 +450,9 @@ class Heard {
       if (!same) lines.push(entry.text);
     }
 
-    return { lines, dropped: this.audited.dropped + this.logged.dropped };
+    // A block that overflowed is usually in both lists (an issue and a log line), so the most either list dropped counts each
+    // once, where the sum would count it twice.
+    return { lines, dropped: Math.max(this.audited.dropped, this.logged.dropped) };
   }
 }
 
@@ -455,6 +490,8 @@ const Evaluated = Schema.Struct({
 type Progress = {
   readonly coldStart: boolean;
   readonly heard: Heard;
+  /** The page's session, once it is attached. */
+  cdpSessionId: string | undefined;
   readonly warnings: string[];
   readonly heights: number[];
   grows: boolean;
@@ -505,14 +542,19 @@ export const checkVisual = async (
 ): Promise<VisualCheckResult> => {
   const timeoutMs = options.timeoutMs ?? VISUAL_CHECK_MS;
   const loadMs = options.loadMs ?? VISUAL_CHECK_LOAD_MS;
-  // The dispose has its own bound, which the whole is not to pass.
-  const workMs = Math.max(timeoutMs - DISPOSE_MS, timeoutMs / 2);
+  const disposeMs = options.disposeMs ?? DISPOSE_MS;
+  // The dispose has its own bound, which the whole is not to pass: the page's work has what `timeoutMs` leaves.
+  const workMs = Math.max(1, timeoutMs - disposeMs);
   let browserContextId: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   const progress: Progress = {
     coldStart: options.coldStart,
-    heard: new Heard(),
+    heard: new Heard((source) => {
+      // The page's session, once there is one; the page may be gone by the time it is told, which is the dispose's.
+      transport.send(`${source}.disable`, {}, progress.cdpSessionId).catch(() => undefined);
+    }),
+    cdpSessionId: undefined,
     warnings: [],
     heights: [],
     grows: false,
@@ -539,38 +581,38 @@ export const checkVisual = async (
 
     if (!progress.navigated) {
       throw new VisualCheckTimeout(
-        `The browser did not answer within ${workMs / 1_000} s, before the page was loaded`,
+        `The browser did not answer within ${seconds(workMs)} s, before the page was loaded`,
       );
     }
 
     progress.warnings.unshift(
-      `The page stopped responding within the check's ${workMs / 1_000} s (its main thread may be hung, for example by a script that never returns), so the check was cut off: this is what it had by then.`,
+      `The page stopped responding within the check's ${seconds(workMs)} s (its main thread may be hung, for example by a script that never returns), so the check was cut off: this is what it had by then.`,
     );
 
     return resultOf(progress);
   } finally {
     clearTimeout(timer);
-    await dispose(transport, browserContextId);
+    await dispose(transport, browserContextId, disposeMs);
   }
 };
 
 /** Dispose the context, if one was made, and close the connection: the context goes with the connection anyway. */
-const dispose = async (transport: CdpTransport, browserContextId: string | undefined) => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
+const dispose = async (
+  transport: CdpTransport,
+  browserContextId: string | undefined,
+  disposeMs: number,
+) => {
   try {
     if (browserContextId !== undefined) {
-      await Promise.race([
+      await within(
+        disposeMs,
         transport.send("Target.disposeBrowserContext", { browserContextId }),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, DISPOSE_MS);
-        }),
-      ]);
+        "The dispose",
+      );
     }
   } catch {
     // `disposeOnDetach` ties the context to this connection, which is closed next.
   } finally {
-    clearTimeout(timer);
     transport.close();
   }
 };
@@ -606,6 +648,8 @@ const measure = async (
     { targetId, flatten: true },
     Attached,
   );
+
+  progress.cdpSessionId = sessionId;
 
   const live = { transport, cdpSessionId: sessionId };
 
@@ -727,16 +771,10 @@ const measure = async (
   await send("Page.navigate", { url: VISUAL_CHECK_URL });
 
   // The load, the fonts and two frames, at most `loadMs` in all.
-  let loadTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const inTime = await Promise.race([
-    loadEvent.then(() => true),
-    new Promise<boolean>((resolve) => {
-      loadTimer = setTimeout(() => resolve(false), loadMs);
-    }),
-  ]);
-
-  clearTimeout(loadTimer);
+  const inTime = await within(loadMs, loadEvent, "The page's load").then(
+    () => true,
+    () => false,
+  );
 
   if (inTime) await evaluate(settled(loadMs - (Date.now() - started)), true);
   else {

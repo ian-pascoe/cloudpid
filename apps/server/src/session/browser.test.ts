@@ -238,6 +238,39 @@ describe("the Session's browser host", () => {
     expect(down).toEqual(BrowserError.make({ message: "checkVisual: Error: overloaded" }));
   });
 
+  it("fails a Visual check the host answered as busy, with its own flag", async () => {
+    const page = { html: "<p>hi</p>", width: 736, theme: "light", top: 0 } as const;
+    const down = () => Promise.reject(new Error("unused"));
+
+    const host = remoteBrowserHost(
+      {
+        getByName: () => ({
+          describe: down,
+          run: down,
+          close: down,
+          checkVisual: () => Promise.resolve({ busy: true, held: 4 }),
+          startHandoff: down,
+          liveView: down,
+          ownerTabView: down,
+          ownerTabs: down,
+          openOwnerTab: down,
+          showOwnerTab: down,
+          closeOwnerTab: down,
+          readOwnerTabPages: down,
+          waitHandoff: down,
+          endHandoff: down,
+        }),
+      },
+      "session-1",
+      noWorkspace,
+    );
+
+    const busy = await Effect.runPromise(host.checkVisual(page).pipe(Effect.flip));
+
+    expect(busy.busy).toBe(true);
+    expect(busy.unavailable).toBeUndefined();
+  });
+
   it("hands a conversation's tab to the owner, mints its links, waits on the handoff, and ends it, in the object named for the Session", async () => {
     const calls: unknown[] = [];
 

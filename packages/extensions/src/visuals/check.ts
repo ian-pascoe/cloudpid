@@ -32,8 +32,9 @@ import {
 import { BrowserSession } from "../browser/session.ts";
 import { asOutput, outputSchema } from "../outputs.ts";
 import { VISUAL_CHECK_DESCRIPTION } from "./guidance.ts";
-import { type PreparedVisual } from "./prepare.ts";
-import { prepareForCall } from "./tool.ts";
+import { type PreparedVisual, prepareForCall } from "./prepare.ts";
+import { quoted } from "./quote.ts";
+import { visualFilesOfCall } from "./tool.ts";
 
 /** The narrowest and widest page a check renders: a phone's, and a wide desktop's. */
 const MIN_WIDTH = 200;
@@ -71,34 +72,38 @@ const Parameters = Schema.Struct({
   ),
 });
 
-/** A check that could not run: the browser is unavailable, or the Browsers Worker has no check yet. */
+/** A check that could not run: the browser is unavailable, the Browsers Worker has no check yet, or it is busy with others. */
 export class VisualCheckError extends Schema.TaggedError<
   VisualCheckError,
   { readonly brand: unique symbol }
 >()("VisualCheckError", {
-  kind: Schema.Literals(["not_checked", "unavailable"]),
+  kind: Schema.Literals(["not_checked", "unavailable", "busy"]),
   message: Schema.String,
 }) {}
 
 /** How a failed host call reads to the model. */
-const unchecked = (error: BrowserError): VisualCheckError =>
-  error.unavailable === true
-    ? VisualCheckError.make({
-        kind: "unavailable",
-        message:
-          "visual_check is unavailable: the browser host does not support it yet, so nothing was checked. Show the page without a check, or try again later.",
-      })
-    : VisualCheckError.make({
-        kind: "not_checked",
-        message: `Not checked: the browser could not render the page (${error.message}). Try again, or show the page without a check.`,
-      });
+const unchecked = (error: BrowserError): VisualCheckError => {
+  if (error.unavailable === true) {
+    return VisualCheckError.make({
+      kind: "unavailable",
+      message:
+        "visual_check is unavailable: the browser host does not support it yet, so nothing was checked. Show the page without a check, or try again later.",
+    });
+  }
 
-/**
- * `text` as one quoted string on one line: what the page wrote (a console message, a blocked address) reaches the model in
- * quotes, with its newlines and quotes escaped, so it cannot pass for a line or a section of the check's own.
- */
-const quoted = (text: string): string =>
-  JSON.stringify(text).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+  if (error.busy === true) {
+    return VisualCheckError.make({
+      kind: "busy",
+      message:
+        "visual_check is busy: this Session's browser is already running other checks, so nothing was checked. Wait for them to end, then check again.",
+    });
+  }
+
+  return VisualCheckError.make({
+    kind: "not_checked",
+    message: `Not checked: the browser could not render the page (${error.message}). Try again, or show the page without a check.`,
+  });
+};
 
 /** The findings as the text the model reads: what to look at first, then what the page did. */
 export const describeCheck = (
@@ -145,7 +150,10 @@ export const describeCheck = (
     "Console",
     Arr.map(result.console, (message) => `[${message.type}] ${quoted(message.text)}`),
   );
-  section("CSP violations", Arr.map(result.violations, quoted));
+  section(
+    "CSP violations",
+    Arr.map(result.violations, (line) => quoted(line)),
+  );
   section(
     "Failed loads",
     Arr.map(
@@ -212,7 +220,7 @@ export const VisualCheckTool = defineEffectTool({
       // has no title or summary: those are `visual_show`'s.
       const prepared = yield* prepareForCall(
         { path: args.path, html: args.html },
-        api.env,
+        visualFilesOfCall(api.env),
         "rendered",
       );
 

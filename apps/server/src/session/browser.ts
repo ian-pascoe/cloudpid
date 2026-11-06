@@ -2,7 +2,12 @@
 // A Session's browser (`docs/architecture/browser.md`, ADR-0007): its host is a Durable Object of the `apps/browser` Worker, one
 // per Session, named by the Session's ID and reached over a Durable Object binding, as the codemode sandbox is
 // (`./codemode.ts`).
-import { BrowserError, type BrowserHostService } from "@cloudpid/extensions/browser";
+import {
+  BrowserError,
+  type BrowserHostService,
+  isVisualCheckBusy,
+  type VisualCheckResult,
+} from "@cloudpid/extensions/browser";
 import type {
   BrowserHostRpc,
   ContainerPreviewWorkspace,
@@ -34,17 +39,13 @@ export const remoteBrowserHost = (
 ): BrowserHostService => {
   const named = Effect.tryPromise(workspace).pipe(Effect.orElseSucceed(() => undefined));
 
-  const call = <A>(operation: string, run: (host: BrowserHostRpc) => Promise<A>) =>
-    Effect.tryPromise({
-      try: () => run(namespace.getByName(name)),
-      catch: (cause) =>
-        operation === "checkVisual" && NO_SUCH_METHOD.test(String(cause))
-          ? BrowserError.make({
-              message: `${operation}: the Browsers Worker has no such method yet`,
-              unavailable: true,
-            })
-          : BrowserError.make({ message: `${operation}: ${String(cause)}` }),
-    });
+  const call = <A>(
+    operation: string,
+    run: (host: BrowserHostRpc) => Promise<A>,
+    /** How a call that threw reads, by default as the call that failed. */
+    failed: (cause: unknown) => BrowserError = (cause) =>
+      BrowserError.make({ message: `${operation}: ${String(cause)}` }),
+  ) => Effect.tryPromise({ try: () => run(namespace.getByName(name)), catch: failed });
 
   /** A call that can acquire a browser: it names the Session's Workspace, or none. */
   const acquiring = <A>(
@@ -57,7 +58,29 @@ export const remoteBrowserHost = (
     run: ({ code, conversationId, ownerTabId }) =>
       acquiring("run", (host, at) => host.run(code, conversationId, ownerTabId, at)),
     close: call("close", (host) => host.close()),
-    checkVisual: (input) => acquiring("checkVisual", (host, at) => host.checkVisual(input, at)),
+    checkVisual: (input) =>
+      Effect.flatMap(named, (at) =>
+        call(
+          "checkVisual",
+          (host) => host.checkVisual(input, at),
+          (cause) =>
+            NO_SUCH_METHOD.test(String(cause))
+              ? BrowserError.make({
+                  message: "checkVisual: the Browsers Worker has no such method yet",
+                  unavailable: true,
+                })
+              : BrowserError.make({ message: `checkVisual: ${String(cause)}` }),
+        ),
+      ).pipe(
+        Effect.filterOrFail(
+          (answer): answer is VisualCheckResult => !isVisualCheckBusy(answer),
+          () =>
+            BrowserError.make({
+              message: "checkVisual: the Session's browser is busy with other checks",
+              busy: true,
+            }),
+        ),
+      ),
     startHandoff: (input) => call("startHandoff", (host) => host.startHandoff(input)),
     liveView: (requestId) => call("liveView", (host) => host.liveView(requestId)),
     ownerTabView: (open) => acquiring("ownerTabView", (host, at) => host.ownerTabView(open, at)),

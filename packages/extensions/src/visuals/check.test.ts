@@ -105,6 +105,23 @@ describe("describeCheck", () => {
     expect(text).toContain(JSON.stringify(forged).replaceAll("\u2028", "\\u2028"));
   });
 
+  it("labels an uncaught error outside the quotes, so a console message cannot pass for one", () => {
+    const text = describeCheck(
+      INPUT,
+      {
+        ...RESULT,
+        console: [
+          { type: "uncaught", text: "ReferenceError: y is not defined" },
+          { type: "error", text: "uncaught: ReferenceError: y is not defined" },
+        ],
+      },
+      [],
+    );
+
+    expect(text).toContain('- [uncaught] "ReferenceError: y is not defined"');
+    expect(text).toContain('- [error] "uncaught: ReferenceError: y is not defined"');
+  });
+
   it("says the height was not measured when the check was cut off before it", () => {
     const { contentHeight: _height, screenshot: _taken, ...cutOff } = RESULT;
 

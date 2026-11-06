@@ -17,9 +17,9 @@ export class CheckQueue {
     return this.#pending;
   }
 
-  /** `task` once those ahead have ended, or a rejection with `busy(held)` when `max` are held already. */
-  run<A>(task: () => Promise<A>, busy: (held: number) => Error): Promise<A> {
-    if (this.#pending >= this.#max) return Promise.reject(busy(this.#pending));
+  /** `task`'s answer once those ahead have ended, or `busy(held)` at once, without running it, when `max` are held already. */
+  run<A, B>(task: () => Promise<A>, busy: (held: number) => B): Promise<A | B> {
+    if (this.#pending >= this.#max) return Promise.resolve(busy(this.#pending));
 
     this.#pending += 1;
 

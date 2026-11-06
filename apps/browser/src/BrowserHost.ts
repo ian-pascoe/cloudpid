@@ -24,6 +24,8 @@ import {
   type ContainerPreviewWorkspace,
   VISUAL_CHECK_MAX_PENDING,
   VISUAL_CHECK_MS,
+  VISUAL_CHECK_SETUP_MS,
+  type VisualCheckBusy,
   type VisualCheckInput,
   type VisualCheckResult,
 } from "@cloudpid/extensions/browser/contract";
@@ -226,30 +228,29 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
    * Render a Visual's page in a throwaway context of the Session's browser, on a CDP connection of this host's own, and say
    * what it measured and saw (`visual-check.ts`; `docs/architecture/visuals.md` → The check). It starts the browser when none
    * runs, as a `run` does. One check runs at a time: a second waits for the first, and at most `VISUAL_CHECK_MAX_PENDING` are
-   * held (the one that runs and those behind it): one more fails as busy. A check that runs takes `VISUAL_CHECK_MS` at most
-   * in all, the browser's start and connection included. A browser that cannot be reached fails the call.
+   * held (the one that runs and those behind it): one more is answered busy, without waiting. A check that runs takes
+   * `VISUAL_CHECK_MS` at most in all: the browser's start and connection (`VISUAL_CHECK_SETUP_MS` of it), the page and the
+   * dispose. A browser that cannot be reached fails the call.
    */
   checkVisual(
     input: VisualCheckInput,
     workspace?: ContainerPreviewWorkspace,
-  ): Promise<VisualCheckResult> {
+  ): Promise<VisualCheckResult | VisualCheckBusy> {
     this.#containerPreviews.given(workspace);
 
     return this.#checks.run(
       () => this.#checkVisual(input),
-      (held) =>
-        new Error(
-          `visual_check is busy: ${held} checks are already held for this Session's browser. Wait for them, then check again.`,
-        ),
+      (held): VisualCheckBusy => ({ busy: true, held }),
     );
   }
 
   async #checkVisual(input: VisualCheckInput): Promise<VisualCheckResult> {
     const started = Date.now();
 
-    // The browser and its connection are in the check's time: a connection that opens after the bound is closed.
+    // The browser and its connection are in the check's time, up to `VISUAL_CHECK_SETUP_MS` of it: a connection that opens
+    // after that is closed. What is left is the check's, its dispose included.
     const { transport, coldStart } = await within(
-      VISUAL_CHECK_MS,
+      VISUAL_CHECK_SETUP_MS,
       this.#openCheckSocket(),
       "The browser",
       ({ transport: late }) => late.close(),
@@ -257,7 +258,7 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
 
     return checkVisual(transport, input, {
       coldStart,
-      timeoutMs: Math.max(1, VISUAL_CHECK_MS - (Date.now() - started)),
+      timeoutMs: VISUAL_CHECK_MS - (Date.now() - started),
     });
   }
 
