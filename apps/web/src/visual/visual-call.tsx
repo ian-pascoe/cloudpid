@@ -15,6 +15,7 @@ import {
   VISUAL_MIN_HEIGHT,
   type VisualEntry,
   type VisualFileAnswer,
+  type ShownVisual,
   type VisualRecord,
 } from "@cloudpid/protocol";
 import { RegistryContext, useAtom, useAtomValue } from "@effect/atom-react";
@@ -46,7 +47,12 @@ import {
 import { copyToClipboard } from "../lib/clipboard.ts";
 import { appPlaces, PLACE_NAMES, placeKey, type AppPlaces } from "../sandbox-frame/places.ts";
 import { appChoiceAtom } from "../session-layout-state.ts";
-import { keepsVisualsAtom, sessionClientAtom, visualsAtom } from "../session/atoms.ts";
+import {
+  activeBranchAtom,
+  keepsVisualsAtom,
+  sessionClientAtom,
+  visualsAtom,
+} from "../session/atoms.ts";
 import {
   type VisualLoad,
   visualHeightAtom,
@@ -56,7 +62,7 @@ import {
 } from "./atoms.ts";
 import { shouldMount, useNearViewport } from "./lazy.ts";
 import { VisualFailed, VisualFrame } from "./visual-frame.tsx";
-import { visualEntries, visualEntryOf, visualsOfScript } from "./visuals.ts";
+import { visualEntries, visualEntryOf, visualsListed, visualsOfScript } from "./visuals.ts";
 
 /** The places of this page: the app's, shared with App Views under their own keys. A test gives its own. */
 export const VisualPlacesContext = createContext<AppPlaces>(appPlaces);
@@ -245,6 +251,28 @@ export const VisualEvicted = ({ sessionId, entry }: { sessionId: string; entry: 
       <div className="text-muted-foreground">
         <span className="font-mono break-all">{sourceText(entry)}</span> · {formatSize(entry.bytes)}{" "}
         · {timeOf(entry.at)}
+      </div>
+    </div>
+  </div>
+);
+
+/**
+ * A Visual the Session keeps no entry of: a call whose result says it showed one, in a Session whose list of Visuals does not
+ * (a Fork or Clone whose source's copy this build could not use, one from a build before Visuals). What the result says is all
+ * the card has: no page, no time and no Open file, which the Session answers from a record.
+ */
+export const VisualUnkept = ({ callId, shown }: { callId: string; shown: ShownVisual }) => (
+  <div className="my-2 overflow-hidden rounded-md border border-dashed" data-visual={callId}>
+    <Chrome title={shown.title}>
+      <span>no longer kept</span>
+    </Chrome>
+    <div className="space-y-0.5 px-3 pb-2 text-xs">
+      <div>{shown.summary}</div>
+      <div className="text-muted-foreground">
+        <span className="font-mono break-all">
+          {shown.source_path ?? "Written inline by the call"}
+        </span>
+        {shown.bytes !== undefined && <> · {formatSize(shown.bytes)}</>}
       </div>
     </div>
   </div>
@@ -472,23 +500,35 @@ const VisualShown = ({ entry }: { entry: VisualEntry }) => {
 
 /**
  * The Visual of a `visual_show` call, under its card: the Visual once the Session lists it, its progress while the call
- * streams or runs, and nothing for a call that failed (the card says why) or a Session that keeps no Visual of it.
+ * streams or runs, "no longer kept" for a call that showed one (`shown`, from its result) once the Session's list of the
+ * thread's Visuals has come without it, and nothing for a call that failed (the card says why) or before that list.
  */
 export const VisualCall = ({
   callId,
   progress,
+  shown,
 }: {
   callId: string;
   progress?: VisualProgress | undefined;
+  shown?: ShownVisual | undefined;
 }) => {
   const sessionId = useShownSessionId();
+  const conversationId = useThreadConversation();
+  const activeBranch = useAtomValue(activeBranchAtom(sessionId));
   const entry = useAtomValue(visualsAtom(sessionId), (visuals) => visualEntryOf(visuals, callId));
+
+  const listed = useAtomValue(visualsAtom(sessionId), (visuals) =>
+    visualsListed(visuals, conversationId, activeBranch),
+  );
 
   if (entry !== undefined) return <VisualShown entry={entry} />;
 
   if (progress?.phase === "streaming" || progress?.phase === "running") {
     return <VisualPending title={progress.title} />;
   }
+
+  // Every mismatch between the builds of a Fork's source and its Session degrades to this card, never to a Fork that fails.
+  if (shown !== undefined && listed) return <VisualUnkept callId={callId} shown={shown} />;
 
   return null;
 };

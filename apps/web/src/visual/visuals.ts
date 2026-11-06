@@ -20,6 +20,21 @@ export const visualEntryOf = (visuals: Visuals, callId: string): VisualEntry | u
     Option.getOrUndefined,
   );
 
+/**
+ * Whether the Session has sent the Visuals of `conversation` (undefined: the root thread's, which is the active branch's, null
+ * until the Session says): a call with no Visual in a list that came is one the Session keeps none of, and in one that has not
+ * come is one it may yet send.
+ */
+export const visualsListed = (
+  visuals: Visuals,
+  conversation: number | null | undefined,
+  activeBranch: number | null,
+): boolean => {
+  const id = conversation ?? activeBranch;
+
+  return id !== null && Record.has(visuals, String(id));
+};
+
 /** The Visuals a `codemode` script showed (`parentCall` is its call), oldest first. */
 export const visualsOfScript = (
   entries: ReadonlyArray<VisualEntry>,

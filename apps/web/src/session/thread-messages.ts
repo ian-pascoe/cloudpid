@@ -12,6 +12,8 @@ import {
   SessionVia,
   type SessionView,
   ShownReviewAnnotation,
+  shownVisualOf,
+  type ShownVisual,
   type TranscriptMessage,
   type TranscriptPart,
 } from "@cloudpid/protocol";
@@ -152,6 +154,8 @@ const resolveCall = (
     const resources = resourcesOf(result.details, result.content);
     const mcp = mcpStatusOf(result.details);
     const diff = callDiffOf(result.name, result.details, result.error);
+    // A call that failed shows no Visual: its details say none.
+    const visual = result.error ? undefined : shownVisualOf(result.details);
 
     const resolved = { ...call, result: textOf(result.content), isError: result.error };
 
@@ -180,6 +184,8 @@ const resolveCall = (
 
     if (diff !== undefined) artifact.diff = diff;
 
+    if (visual !== undefined) artifact.visual = visual;
+
     turn?.content.splice(
       index,
       1,
@@ -192,7 +198,8 @@ const resolveCall = (
         samplings.length === 0 &&
         resources.length === 0 &&
         mcp === undefined &&
-        diff === undefined
+        diff === undefined &&
+        visual === undefined
         ? resolved
         : { ...resolved, artifact },
     );
@@ -214,6 +221,8 @@ type CardArtifact = {
   resources?: ReadonlyArray<ShownResource>;
   mcp?: ShownMcpStatus;
   diff?: CallDiff;
+  /** What a `visual_show` call showed, by its result's details: its card says so when the Session keeps no Visual of it. */
+  visual?: ShownVisual;
   /** The call is in the message being streamed: the model is still emitting its arguments. */
   streaming?: boolean;
 };

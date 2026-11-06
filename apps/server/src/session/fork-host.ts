@@ -1,7 +1,8 @@
 // @effect-diagnostics asyncFunction:off -- the commit callbacks are pi-durable Promise code, as the Harness's own are.
 // Forks and Clones over the Session's open Harness (GLOSSARY.md → Fork, Clone; ADR-0017): the source's side, which
 // answers what a Fork carries and its entries a page at a time, and the new Session's, which appends them and takes
-// the rest. The main Worker drives both (`fillSession`). What is copied, in plain functions, is `fork.ts`'s.
+// the rest. The main Worker drives both (`fillSession`). What is copied, in plain functions, is `fork.ts`'s. A page's
+// Visuals are adopted as the root conversation's and never fail a Fork (`docs/architecture/visuals.md` → Fork and Clone).
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { TodoDoc } from "@cloudpid/extensions/todo";
 import type { McpQuestionCopies, McpQuestionCopy } from "@cloudpid/extensions/mcp";
@@ -355,9 +356,17 @@ export const sessionForks = (options: ForksOptions) => {
         yield* Effect.sync(() => options.questions?.adopt(questions, ROOT_CONVERSATION_ID));
       }
 
-      // A source from before Visuals sends none; a copy this build cannot use is skipped, never a failed Fork.
+      // A source from before Visuals sends none; a copy this build cannot use is skipped, and a failure to keep them (the
+      // storage refusing a write) drops them: the Visuals are kept beside the History, and a Fork is never failed for them.
       if (visuals !== undefined && visuals.length > 0) {
-        yield* Effect.sync(() => options.visuals?.adopt(visuals, ROOT_CONVERSATION_ID));
+        yield* Effect.sync(() => options.visuals?.adopt(visuals, ROOT_CONVERSATION_ID)).pipe(
+          Effect.catchDefect((cause) =>
+            Effect.logWarning(
+              "The Fork or Clone could not keep the Visuals of a page; they are dropped",
+              cause,
+            ),
+          ),
+        );
       }
 
       kv.put(FILL_KEY, {

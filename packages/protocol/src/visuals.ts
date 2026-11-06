@@ -1,5 +1,5 @@
-// Visuals on the Session socket and in the Session (`docs/architecture/visuals.md` → Tools, The copy, Socket messages, The
-// frame, Network and isolation, Guidance): the record the Session keeps for each `visual_show`, its bounds, the `visuals` and
+// Visuals on the Session socket and in the Session (`docs/architecture/visuals.md` → Tools, The copy, Socket messages, Fork
+// and Clone, The frame, Network and isolation, Guidance): the record the Session keeps for each `visual_show`, its bounds, the `visuals` and
 // `visual_page` messages, the fixed list of hosts a page may load from and the CSP that holds it, the pinned libraries the
 // tool's description names, and the shim the web client injects into a page at mount. Records are additive-only, with
 // fallback members and no format `v`, as App records are: a member a later build adds is a key an older reader passes over,
@@ -214,10 +214,22 @@ export type VisualStub = typeof VisualStub.Type;
  * client, and never decoded: a Session reads one it cannot use as no copy at all.
  */
 export type VisualCopy =
-  | { readonly kind: "record"; readonly record: VisualRecord }
-  | { readonly kind: "stub"; readonly stub: VisualStub }
+  | VisualRecordCopy
+  | VisualStubCopy
   // A kind a newer Session sends: skipped, never an error that leaves a Fork half done.
   | { readonly kind: string };
+
+export type VisualRecordCopy = { readonly kind: "record"; readonly record: VisualRecord };
+
+export type VisualStubCopy = { readonly kind: "stub"; readonly stub: VisualStub };
+
+/** Whether `copy` is a record copy (its kind, and its key: one from another build may have the kind alone). */
+export const isRecordCopy = (copy: VisualCopy): copy is VisualRecordCopy =>
+  copy.kind === "record" && "record" in copy;
+
+/** Whether `copy` is a stub copy (its kind, and its key). */
+export const isStubCopy = (copy: VisualCopy): copy is VisualStubCopy =>
+  copy.kind === "stub" && "stub" in copy;
 
 /** What a Session does with the Visuals of a Fork or Clone (`ExportPage.visuals`): what its calls' copies are, and keeping them. */
 export type VisualCopies = {
@@ -337,19 +349,29 @@ export const VISUAL_DETAILS_KEY = "visual";
 export const visualTranscriptLine = (title: string, summary: string): string =>
   `Visual: ${title} — ${summary} (not rendered)`;
 
-const ShownDetails = Schema.Struct({
-  [VISUAL_DETAILS_KEY]: Schema.Struct({ title: Schema.String, summary: Schema.String }),
+/**
+ * What a result's `details.visual` says of the Visual its call showed: the title and summary, and, when it says them, the
+ * file it was shown from (`source_path`, null for an inline page) and its size.
+ */
+export const ShownVisual = Schema.Struct({
+  title: Schema.String,
+  summary: Schema.String,
+  source_path: Schema.NullOr(Schema.String).pipe(Schema.optionalKey),
+  bytes: Schema.Finite.pipe(Schema.optionalKey),
 });
+
+export type ShownVisual = typeof ShownVisual.Type;
+
+const ShownDetails = Schema.Struct({ [VISUAL_DETAILS_KEY]: ShownVisual });
 
 const isShownDetails = Schema.is(ShownDetails);
 
 /**
- * The Visual a tool result's `details` say it showed, by title and summary (`details.visual`), for `/export` and
- * `session_transcript`; none for any other result.
+ * The Visual a tool result's `details` say it showed (`details.visual`), for `/export` and `session_transcript`, and for the
+ * card of a call whose Visual a Session does not keep (a Fork whose source's copy could not be read); none for any other
+ * result, a failed call included.
  */
-export const shownVisualOf = (
-  details: JsonValue | undefined,
-): { readonly title: string; readonly summary: string } | undefined =>
+export const shownVisualOf = (details: JsonValue | undefined): ShownVisual | undefined =>
   isShownDetails(details) ? details[VISUAL_DETAILS_KEY] : undefined;
 
 // ---------------------------------------------------------------------------------------------------------------------

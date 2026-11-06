@@ -3,18 +3,20 @@
 // pi-durable forks only inside one Session, and every Session is a Durable Object of its own, so the new Session is
 // filled by copying: the source answers what to copy (`ForkPlan`) and the branch's entries in pages, and the new Session
 // appends them to its root conversation, renumbered, then takes the documents a fork carries (Notes, the Todo List) and
-// the agent as of the point.
+// the agent as of the point. The App records, question records and Visuals of the calls a page holds go with it, fitted to
+// `MAX_COPY_PAGE_SIZE` (`docs/architecture/visuals.md` → Fork and Clone; `docs/architecture/mcp-apps.md` → App records).
 import type { ContextState } from "@cloudpid/extensions/context";
 import type { McpQuestionCopy } from "@cloudpid/extensions/mcp";
 import type { TodoState } from "@cloudpid/extensions/todo";
-import type {
-  AttachedResource,
-  McpAppCopy,
-  McpAppStub,
-  McpPromptData,
-  TreePoint,
-  VisualCopy,
-  VisualStub,
+import {
+  type AttachedResource,
+  isRecordCopy,
+  type McpAppCopy,
+  type McpAppStub,
+  type McpPromptData,
+  type TreePoint,
+  type VisualCopy,
+  type VisualStub,
 } from "@cloudpid/protocol";
 import type {
   AgentState,
@@ -123,7 +125,7 @@ const stubOfCopy = (copy: McpAppCopy): McpAppCopy => {
 
 /** What a Visual is left as when it does not fit a page: its stub, everything its card shows without the page. */
 const stubOfVisualCopy = (copy: VisualCopy): VisualCopy => {
-  if (copy.kind !== "record" || !("record" in copy)) return copy;
+  if (!isRecordCopy(copy)) return copy;
 
   const { callId, conversation, parentCall, title, summary, source, bytes, at } = copy.record;
   const stub: Mutable<VisualStub> = { callId, conversation, title, summary, source, bytes, at };

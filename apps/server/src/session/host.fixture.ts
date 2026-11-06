@@ -969,14 +969,31 @@ export class TestSession extends DurableObject {
   }
 
   #visuals: SessionVisualsService | undefined;
+  #visualsRefused = false;
+
+  /** From now on the storage refuses every write of a Visual, as one that fails does: a Fork or Clone must still be made. */
+  refuseVisuals(): void {
+    this.#visualsRefused = true;
+  }
 
   /**
    * The Session's Visuals, made once, as the Session DO's: at the origin of its ID on a deployed `prod` stage's sandbox. The
    * `visuals` extension records through it (`visualRecorder`), and the sockets serve it.
    */
   protected visuals(): SessionVisualsService {
+    const { kv } = this.ctx.storage;
+
     this.#visuals ??= sessionVisuals({
-      storage: this.ctx.storage.kv,
+      // The Session's storage, whose writes of Visuals `refuseVisuals` makes fail: the History and the rest still write.
+      storage: {
+        get: (key) => kv.get(key),
+        put: (key, value) => {
+          if (this.#visualsRefused) throw new Error("Durable Object storage refused the write");
+
+          kv.put(key, value);
+        },
+        delete: (key) => kv.delete(key),
+      },
       origin: viewOrigin({
         hash: visualViewHash(this.ctx.id.name ?? this.ctx.id.toString()),
         label: undefined,

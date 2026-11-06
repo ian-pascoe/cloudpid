@@ -22,6 +22,8 @@ import {
   MAX_VISUALS,
   MAX_VISUALS_BYTES,
   sourcePathOf,
+  isRecordCopy,
+  isStubCopy,
   type VisualCopies,
   type VisualCopy,
   type VisualDraft,
@@ -137,6 +139,17 @@ const stubOf = (entry: IndexEntry): VisualStub => ({
   ...shownOf(entry),
 });
 
+/** The index entry of a kept `record` written as `parts` parts, mounted last at `mountedAt`. */
+const keptEntry = (record: VisualRecord, parts: number, mountedAt: number): IndexEntry => ({
+  callId: record.callId,
+  conversation: record.conversation,
+  state: "kept",
+  bytes: record.bytes,
+  parts,
+  mountedAt,
+  ...fieldsOf({ ...record, size: record.bytes }),
+});
+
 export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsService => {
   const { storage } = options;
   const now = options.now ?? Date.now;
@@ -200,19 +213,8 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
             ),
           );
 
-          const written = records.write(
-            entries,
-            draft.callId,
-            JSON.stringify(record),
-            (parts): IndexEntry => ({
-              callId: draft.callId,
-              conversation: draft.conversation,
-              state: "kept",
-              bytes: draft.bytes,
-              parts,
-              mountedAt: at,
-              ...fieldsOf({ ...draft, size: draft.bytes, at }),
-            }),
+          const written = records.write(entries, draft.callId, JSON.stringify(record), (parts) =>
+            keptEntry(record, parts, at),
           );
 
           const touched = records.settle(written, draft.callId);
@@ -317,7 +319,7 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
     for (const copy of copies) {
       // A copy is an RPC's value, never decoded: each is read by its shape, and one this build cannot use is skipped, so a
       // Fork from another build is still made and a card says "no longer kept" where its Visual is not.
-      if (copy.kind === "record" && "record" in copy && Predicate.isObject(copy.record)) {
+      if (isRecordCopy(copy) && Predicate.isObject(copy.record)) {
         const { record } = copy;
 
         // Its size as this build counts it, which the bounds hold to.
@@ -328,25 +330,14 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
         if (isRecord(record) && bytes <= MAX_VISUAL_BYTES) {
           const kept: VisualRecord = { ...record, conversation: root, bytes };
 
-          entries = records.write(
-            entries,
-            kept.callId,
-            JSON.stringify(kept),
-            (parts): IndexEntry => ({
-              callId: kept.callId,
-              conversation: root,
-              state: "kept",
-              bytes,
-              parts,
-              mountedAt: at,
-              ...fieldsOf({ ...kept, size: bytes }),
-            }),
+          entries = records.write(entries, kept.callId, JSON.stringify(kept), (parts) =>
+            keptEntry(kept, parts, at),
           );
         } else if (isStub({ ...record, bytes })) {
           // A page this build cannot keep or read leaves what its card shows.
           entries = adoptStub(entries, { ...record, bytes }, root, at);
         }
-      } else if (copy.kind === "stub" && "stub" in copy && isStub(copy.stub)) {
+      } else if (isStubCopy(copy) && isStub(copy.stub)) {
         entries = adoptStub(entries, copy.stub, root, at);
       }
     }

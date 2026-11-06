@@ -13,9 +13,11 @@ import {
   MAX_VISUAL_BYTES,
   ServerMessageJson,
   type ServerMessage,
+  isRecordCopy,
   type VisualCopy,
   type VisualDraft,
   type VisualEntry,
+  type VisualRecord,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import * as Arr from "effect/Array";
@@ -404,13 +406,13 @@ type Answered = Awaited<ReturnType<Awaited<ReturnType<typeof connect>>["answer"]
 const copyOf = (value: JsonValue): VisualCopy => value as VisualCopy;
 
 describe("the Visuals a Fork or Clone carries", () => {
-  /** Fork or Clone `source` into a new Session of the Visuals' name, `transit` changing what its pages carry on the way. */
-  const forkOf = async (
+  /** Copy `source` into a new Session of the Visuals' name, `transit` changing what its pages carry on the way. */
+  const copyInto = async (
     source: DurableObjectStub<TestSession>,
+    request: ForkSourceRequest,
     transit?: (page: ExportPage) => ExportPage,
-    request: ForkSourceRequest = { quiet: "none" },
   ) => {
-    const name = `visuals-fork-${counter++}`;
+    const name = `visuals-copy-${counter++}`;
 
     await runInDurableObject(source, (instance: TestSession) =>
       instance.forkInto(name, request, transit),
@@ -419,7 +421,23 @@ describe("the Visuals a Fork or Clone carries", () => {
     return { name, stub: env.SESSIONS.getByName(name) };
   };
 
-  /** A new Session's own words about a Session's Visuals: what its clients are told of the root conversation, and its page for `callId`. */
+  /** A Clone of `source`: a copy with no point, of its latest entry. */
+  const cloneOf = (
+    source: DurableObjectStub<TestSession>,
+    transit?: (page: ExportPage) => ExportPage,
+  ) => copyInto(source, { quiet: "none" }, transit);
+
+  /** A Fork of `source` just before its `n`th owner's message (from 1). */
+  const forkBefore = async (source: DurableObjectStub<TestSession>, n: number) => {
+    const tree = await runInDurableObject(source, (instance: TestSession) => instance.tree());
+    const message = tree.nodes.filter((node) => node.role === "user")[n - 1];
+
+    if (message === undefined) throw new Error(`No owner message ${n}`);
+
+    return copyInto(source, { point: { entryId: message.id, position: "before" }, quiet: "none" });
+  };
+
+  /** What a Session's clients are told of its root conversation's Visuals, and its answer to `visual_page` for each of `callIds`. */
   const seen = async (
     stub: DurableObjectStub<TestSession>,
     callIds: ReadonlyArray<string> = [],
@@ -442,7 +460,7 @@ describe("the Visuals a Fork or Clone carries", () => {
     return { root, visuals, pages };
   };
 
-  /** A Session that showed two Visuals, and the calls' IDs. */
+  /** A Session that showed two Visuals, in two owner messages, and the two calls' IDs. */
   const showedTwo = async () => {
     const { stub } = fresh();
 
@@ -454,26 +472,26 @@ describe("the Visuals a Fork or Clone carries", () => {
     });
 
     const { visuals } = await seen(stub);
+    const [first, second] = Arr.map(visuals, (each) => each.callId);
 
-    return { stub, ids: Arr.map(visuals, (each) => each.callId) };
+    if (first === undefined || second === undefined)
+      throw new Error("The Session has no two Visuals");
+
+    return { stub, first, second };
   };
 
-  it("shows the source's Visuals in a Fork, each page at the Fork's own origin", async () => {
-    const { stub, ids } = await showedTwo();
-    const fork = await forkOf(stub);
-    const [first] = ids;
-
-    expect(ids).toHaveLength(2);
-
-    const { root, visuals, pages } = await seen(fork.stub, ids);
+  it("shows the source's Visuals in a Clone, each page at the Clone's own origin", async () => {
+    const { stub, first, second } = await showedTwo();
+    const clone = await cloneOf(stub);
+    const { root, visuals, pages } = await seen(clone.stub, [first]);
 
     expect(Arr.map(visuals, (each) => [each.callId, each.title, each.state])).toEqual([
-      [ids[0], "First", "kept"],
-      [ids[1], "Second", "kept"],
+      [first, "First", "kept"],
+      [second, "Second", "kept"],
     ]);
-    expect(pages[first ?? ""]).toMatchObject({
+    expect(pages[first]).toMatchObject({
       status: "page",
-      origin: viewOrigin({ hash: visualViewHash(fork.name), label: undefined, local: false }),
+      origin: viewOrigin({ hash: visualViewHash(clone.name), label: undefined, local: false }),
       record: { callId: first, html: PAGE, title: "First", conversation: String(root) },
     });
 
@@ -481,28 +499,15 @@ describe("the Visuals a Fork or Clone carries", () => {
     expect((await seen(stub)).visuals).toHaveLength(2);
   });
 
-  it("shows them in a Clone too, and takes only the calls of the path it copies in a Fork made before a message", async () => {
-    const { stub, ids } = await showedTwo();
-    const clone = await forkOf(stub);
+  it("shows the Visuals of the calls before a Fork's point only", async () => {
+    const { stub, first } = await showedTwo();
+    const fork = await forkBefore(stub, 2);
 
-    expect((await seen(clone.stub)).visuals).toHaveLength(2);
-
-    const tree = await runInDurableObject(stub, (instance: TestSession) => instance.tree());
-    const second = tree.nodes.filter((node) => node.role === "user")[1];
-
-    if (second === undefined) throw new Error("No second owner message");
-
-    const before = await forkOf(stub, undefined, {
-      point: { entryId: second.id, position: "before" },
-      quiet: "none",
-    });
-
-    expect(Arr.map((await seen(before.stub)).visuals, (each) => each.callId)).toEqual([ids[0]]);
+    expect(Arr.map((await seen(fork.stub)).visuals, (each) => each.callId)).toEqual([first]);
   });
 
-  it("keeps a Visual the source had evicted as the stub it was, through a Fork of a Fork", async () => {
-    const { stub, ids } = await showedTwo();
-    const [first, second] = ids;
+  it("keeps a Visual the source had evicted as the stub it was, through a Clone of a Clone", async () => {
+    const { stub, first, second } = await showedTwo();
 
     // Sixteen pages of nearly 2 MiB fill the 32 MiB with the two small ones; mounting the second and one more page past the
     // bound evicts the least recently mounted: the first, and a page of the filler.
@@ -515,78 +520,104 @@ describe("the Visuals a Fork or Clone carries", () => {
     const client = await connect(stub);
 
     await client.root();
-    client.send({ type: "visual_page", id: "m", callId: second ?? "" });
+    client.send({ type: "visual_page", id: "m", callId: second });
     expect(await client.answer("m")).toMatchObject({ status: "page" });
     client.close();
 
     await runInDurableObject(stub, (instance: TestSession) =>
       instance.visualPut(draft("filler-16", big)),
     );
-    expect((await seen(stub, [first ?? ""])).pages[first ?? ""]).toMatchObject({
-      status: "evicted",
-    });
+    expect((await seen(stub, [first])).pages[first]).toMatchObject({ status: "evicted" });
 
-    // The filler belongs to no call of the History, so a Fork carries the two calls' Visuals only.
-    const fork = await forkOf(stub);
-    const again = await forkOf(fork.stub);
-    const copied = await seen(again.stub, ids);
+    // The filler belongs to no call of the History, so a Clone carries the two calls' Visuals only.
+    const clone = await cloneOf(stub);
+    const again = await cloneOf(clone.stub);
+    const copied = await seen(again.stub, [first]);
 
     expect(Arr.map(copied.visuals, (each) => [each.callId, each.state])).toEqual([
       [first, "evicted"],
       [second, "kept"],
     ]);
-    expect(copied.pages[first ?? ""]).toMatchObject({
+    expect(copied.pages[first]).toMatchObject({
       status: "evicted",
       stub: { callId: first, title: "First", summary: "The first, as bars" },
     });
   });
 
+  it("is made without them when the storage refuses to keep them, with the History copied", async () => {
+    const { stub } = await showedTwo();
+    const name = `visuals-copy-${counter++}`;
+    const target = env.SESSIONS.getByName(name);
+
+    await runInDurableObject(target, (instance: TestSession) => instance.refuseVisuals());
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.forkInto(name, { quiet: "none" }),
+    );
+
+    expect(await runInDurableObject(target, (instance: TestSession) => instance.copying())).toBe(
+      false,
+    );
+    expect((await seen(target)).visuals).toEqual([]);
+
+    const nodes = (session: DurableObjectStub<TestSession>) =>
+      runInDurableObject(
+        session,
+        async (instance: TestSession) => (await instance.tree()).nodes.length,
+      );
+
+    expect(await nodes(target)).toBe(await nodes(stub));
+  });
+
   describe("across builds", () => {
-    /** Fork a Session with one Visual (the first of two: `transit` sees the page that carries it). */
+    /** A Clone of a Session of two Visuals, `change` given the copies of a page (the first Visual's among them) and the first's. */
     const skewed = async (
       change: (
         visuals: ReadonlyArray<VisualCopy>,
-        record: VisualCopy,
+        first: VisualCopy,
       ) => ReadonlyArray<VisualCopy> | undefined,
     ) => {
-      const { stub, ids } = await showedTwo();
+      const { stub, first, second } = await showedTwo();
 
-      const fork = await forkOf(stub, (page) => {
+      const clone = await cloneOf(stub, (page) => {
         const { visuals, ...rest } = page;
-        const record = visuals?.[0];
+        const head = visuals?.[0];
 
-        if (visuals === undefined || record === undefined) return page;
+        if (visuals === undefined || head === undefined) return page;
 
-        const changed = change(visuals, record);
+        const changed = change(visuals, head);
 
         return changed === undefined ? rest : { ...rest, visuals: changed };
       });
 
-      // The Fork was made: its Session takes messages and shows its History.
+      // The Clone was made: its Session takes messages and shows its History.
       expect(
-        await runInDurableObject(fork.stub, (instance: TestSession) => instance.copying()),
+        await runInDurableObject(clone.stub, (instance: TestSession) => instance.copying()),
       ).toBe(false);
 
-      return { ...(await seen(fork.stub, ids)), ids };
+      return { ...(await seen(clone.stub, [first])), first, second };
     };
 
-    it("from a source before Visuals, or to a target before them, shows none, and the Fork is made", async () => {
+    /** `copy` as a record of another build changed it, or as it is when it is not a record. */
+    const recordChanged = (copy: VisualCopy, change: (record: VisualRecord) => JsonValue) =>
+      isRecordCopy(copy) ? copyOf({ kind: "record", record: change(copy.record) }) : copy;
+
+    it("from a source before Visuals shows none, and the Clone is made", async () => {
       const { visuals } = await skewed(() => undefined);
 
       expect(visuals).toEqual([]);
     });
 
     it("skips a kind of copy it does not know, and keeps the others", async () => {
-      const { visuals, ids } = await skewed((all) => [
+      const { visuals, first, second } = await skewed((all) => [
         copyOf({ kind: "future", payload: { html: PAGE } }),
         ...all,
       ]);
 
-      expect(Arr.map(visuals, (each) => each.callId)).toEqual(ids);
+      expect(Arr.map(visuals, (each) => each.callId)).toEqual([first, second]);
     });
 
     it("skips a copy that is not the shape of its kind", async () => {
-      const { visuals, ids } = await skewed((all) => [
+      const { visuals, first, second } = await skewed((all) => [
         copyOf({ kind: "record" }),
         copyOf({ kind: "record", record: "not a record" }),
         copyOf({ kind: "stub", stub: null }),
@@ -594,58 +625,54 @@ describe("the Visuals a Fork or Clone carries", () => {
         ...all,
       ]);
 
-      expect(Arr.map(visuals, (each) => each.callId)).toEqual(ids);
+      expect(Arr.map(visuals, (each) => each.callId)).toEqual([first, second]);
     });
 
     it("keeps a record it cannot read as the stub its card shows: no longer kept", async () => {
-      const { visuals, pages, ids } = await skewed((all, record) => [
-        record.kind === "record" && "record" in record
-          ? copyOf({ kind: "record", record: { ...record.record, html: 42 } })
-          : record,
+      const { visuals, pages, first, second } = await skewed((all, head) => [
+        recordChanged(head, (record) => ({ ...record, html: 42 })),
         ...all.slice(1),
       ]);
 
       expect(Arr.map(visuals, (each) => [each.callId, each.state])).toEqual([
-        [ids[0], "evicted"],
-        [ids[1], "kept"],
+        [first, "evicted"],
+        [second, "kept"],
       ]);
-      expect(pages[ids[0] ?? ""]).toMatchObject({
+      expect(pages[first]).toMatchObject({
         status: "evicted",
-        stub: { callId: ids[0], title: "First", summary: "The first, as bars" },
+        stub: { callId: first, title: "First", summary: "The first, as bars" },
       });
     });
 
     it("keeps a page past this build's bound as a stub, whatever its record says it weighs", async () => {
-      const { visuals, ids } = await skewed((all, record) => [
-        record.kind === "record" && "record" in record
-          ? copyOf({
-              kind: "record",
-              record: { ...record.record, html: "x".repeat(MAX_VISUAL_BYTES + 1), bytes: 10 },
-            })
-          : record,
+      const { visuals, first, second } = await skewed((all, head) => [
+        recordChanged(head, (record) => ({
+          ...record,
+          html: "x".repeat(MAX_VISUAL_BYTES + 1),
+          bytes: 10,
+        })),
         ...all.slice(1),
       ]);
 
       expect(
         Arr.map(visuals, (each) => [each.callId, each.state, each.bytes > MAX_VISUAL_BYTES]),
       ).toEqual([
-        [ids[0], "evicted", true],
-        [ids[1], "kept", false],
+        [first, "evicted", true],
+        [second, "kept", false],
       ]);
     });
 
     it("keeps the fields a newer build added to a record, and a source kind it does not know", async () => {
-      const { pages, ids } = await skewed((all, record) => [
-        record.kind === "record" && "record" in record
-          ? copyOf({
-              kind: "record",
-              record: { ...record.record, source: { kind: "url", url: "https://x" }, later: 1 },
-            })
-          : record,
+      const { pages, first } = await skewed((all, head) => [
+        recordChanged(head, (record) => ({
+          ...record,
+          source: { kind: "url", url: "https://x" },
+          later: 1,
+        })),
         ...all.slice(1),
       ]);
 
-      expect(pages[ids[0] ?? ""]).toMatchObject({
+      expect(pages[first]).toMatchObject({
         status: "page",
         record: { html: PAGE, source: { kind: "url" } },
       });

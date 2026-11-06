@@ -491,6 +491,38 @@ describe("the thread messages of a view", () => {
     expect(subagent(undefined)).not.toHaveProperty("artifact");
   });
 
+  it("puts what a finished visual_show call showed on its card, and nothing for a call that failed", () => {
+    const shown = { title: "Sales", summary: "Sales by month", source_path: null, bytes: 70 };
+
+    const call = (error: boolean) =>
+      toThreadMessages(
+        view({
+          messages: [
+            user("1", "show it"),
+            assistant("2", [{ type: "tool-call", id: "c1", name: "visual_show", arguments: {} }]),
+            {
+              id: "r",
+              role: "tool",
+              timestamp: 3,
+              parts: [
+                {
+                  type: "tool-result",
+                  id: "c1",
+                  name: "visual_show",
+                  content: [{ type: "text", text: "Shown" }],
+                  error,
+                  details: { visual: shown },
+                },
+              ],
+            },
+          ],
+        }),
+      )[1]?.content[0];
+
+    expect(call(false)).toMatchObject({ artifact: { visual: shown } });
+    expect(call(true)).not.toHaveProperty("artifact");
+  });
+
   it("puts the Agent change a call made on its card: the field, and its values before and after", () => {
     const changed = (
       details: NonNullable<
