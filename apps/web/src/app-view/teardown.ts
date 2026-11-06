@@ -5,7 +5,7 @@
 // the Session branch) asks the Views that will go to tear down first, and only then does it. Every mounted frame is
 // registered here for that.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- a small registry over a native set.
-import type { AppPlace } from "./places.ts";
+import type { AppPlace } from "../sandbox-frame/places.ts";
 
 /** Every View on the page: a page change or a reload ends them all. */
 export const EVERY_VIEW = "every-view";

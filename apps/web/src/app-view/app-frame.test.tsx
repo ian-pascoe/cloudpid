@@ -12,7 +12,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppFrame, type AppFrameProps } from "./app-frame.tsx";
-import { TEARDOWN_TIMEOUT_MS } from "./bridge.ts";
+import { TEARDOWN_TIMEOUT_MS } from "../sandbox-frame/frame-protocol.ts";
 import { afterTeardown, appViews, EVERY_VIEW } from "./teardown.ts";
 import { installFakeFrames, ORIGIN, type Sent, viewOf } from "./frame-kit.testing.ts";
 import type { AppPage } from "./load.ts";

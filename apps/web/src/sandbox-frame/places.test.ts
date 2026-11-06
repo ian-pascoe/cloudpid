@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → App Views in the transcript (Where it renders, Remounting), App Panes. Which place mounts
 // a View, how it moves, and that the next place mounts only once the last one's frame has gone.
 import { describe, expect, it } from "vitest";
-import { AppPlaces, type AppPlace } from "./places.ts";
+import { AppPlaces, placeKey, type AppPlace } from "./places.ts";
 
 /** A store, and a way to make a place that claims a call and wants its View. */
 const setup = () => {
@@ -167,5 +167,17 @@ describe("moving a View between places: teardown first", () => {
 
     places.update("card", true);
     expect(places.viewKey("card")).toBe(key);
+  });
+});
+
+describe("a call's key", () => {
+  it("keeps an App View's call and a Visual's of the same ID apart, one mount each", () => {
+    const { places, place } = setup();
+
+    place("app-card", placeKey("app", "c1"), "card");
+    place("visual-card", placeKey("visual", "c1"), "card");
+
+    expect(places.viewOf("app-card")).toMatchObject({ kind: "hosting", closing: false });
+    expect(places.viewOf("visual-card")).toMatchObject({ kind: "hosting", closing: false });
   });
 });

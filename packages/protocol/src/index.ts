@@ -65,6 +65,8 @@ export * from "./settings-mcp.ts";
 
 export * from "./skills.ts";
 
+export * from "./style-variables.ts";
+
 export * from "./transcript.ts";
 
 export * from "./uri-template.ts";

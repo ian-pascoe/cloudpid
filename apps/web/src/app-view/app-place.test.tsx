@@ -21,7 +21,7 @@ import { AppFrame } from "./app-frame.tsx";
 import { focusChatOnEscape } from "./app-pane.tsx";
 import { installFakeFrames, ORIGIN, viewOf } from "./frame-kit.testing.ts";
 import type { AppPage } from "./load.ts";
-import { AppPlaces } from "./places.ts";
+import { AppPlaces } from "../sandbox-frame/places.ts";
 
 const record: McpAppRecord = {
   callId: "c1",

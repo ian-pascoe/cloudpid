@@ -3,7 +3,7 @@
 // before an unmount the page drives: the Views are stand-ins that count what they are told.
 // @effect-diagnostics newPromise:off asyncFunction:off -- stand-ins that hold a promise open and let it go.
 import { describe, expect, it, vi } from "vitest";
-import type { AppPlace } from "./places.ts";
+import type { AppPlace } from "../sandbox-frame/places.ts";
 import { afterBranchTeardown, afterTeardown, EVERY_VIEW, ViewRegistry } from "./teardown.ts";
 
 /** A View that answers its teardown when `answer` is called. */

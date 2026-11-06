@@ -10,7 +10,7 @@ import {
   UI_MESSAGE,
   UI_UPDATE_MODEL_CONTEXT,
 } from "./app-messages.ts";
-import { RpcError } from "./bridge.ts";
+import { RpcError } from "../sandbox-frame/frame-protocol.ts";
 
 const SIGNAL = { signal: new AbortController().signal };
 

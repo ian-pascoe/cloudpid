@@ -21,7 +21,7 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type { SessionClient } from "../session/client.ts";
-import { RpcError, type RequestHandler } from "./bridge.ts";
+import { RpcError, type RequestHandler } from "../sandbox-frame/frame-protocol.ts";
 
 /** What serving a View's requests needs of the Session's client. */
 export type AppRequestClient = Pick<SessionClient, "appRequest" | "appLog">;

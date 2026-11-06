@@ -12,7 +12,7 @@ import {
 } from "@assistant-ui/react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useRef, type ReactNode } from "react";
-import type { AppPlace } from "../app-view/places.ts";
+import type { AppPlace } from "../sandbox-frame/places.ts";
 import { cn } from "../lib/utils.ts";
 import { agentOfConversation, canStopAllBelow } from "../session/agents.ts";
 import {

@@ -7,8 +7,8 @@
 import * as Schema from "effect/Schema";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-import type { AppPlace } from "./places.ts";
-import type { RequestHandler } from "./bridge.ts";
+import type { AppPlace } from "../sandbox-frame/places.ts";
+import type { RequestHandler } from "../sandbox-frame/frame-protocol.ts";
 import { AVAILABLE_DISPLAY_MODES, type DisplayContext, type DisplayMode } from "./host-context.ts";
 
 /** The display mode a View in `place` is in: only the App Pane is `fullscreen`. */

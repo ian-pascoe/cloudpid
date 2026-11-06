@@ -3,7 +3,7 @@
 // unavailable). A call that is no App's adds nothing. The same component places the Views of a `codemode` script's calls
 // (`AppStrip`, under the script's card) and of a subagent's thread.
 //
-// Which place mounts a View is `places.ts`'s; whether a View is live is `generation.ts`'s, with what the owner chose of it
+// Which place mounts a View is `sandbox-frame/places.ts`'s; whether a View is live is `generation.ts`'s, with what the owner chose of it
 // on this device. The frame itself is `app-frame.tsx`'s.
 // @effect-diagnostics missingPipeableSignature:off globalTimers:off -- a hook over the Session's atoms, not a combinator; the grace for a record is a native timer.
 import { GLOBAL_SCOPE, isKeptApp, type McpAppContext, type McpAppTool } from "@cloudpid/protocol";
@@ -62,7 +62,13 @@ import { appAvailability, type AppAvailability } from "./availability.ts";
 import type { AppPage } from "./load.ts";
 import type { DisplayMode } from "./host-context.ts";
 import { callsOfScript, isAppLive, stripRows } from "./generation.ts";
-import { appPlaces, PLACE_NAMES, type AppPlace, type AppPlaces } from "./places.ts";
+import {
+  appPlaces,
+  PLACE_NAMES,
+  placeKey,
+  type AppPlace,
+  type AppPlaces,
+} from "../sandbox-frame/places.ts";
 import { holdWhereShown, shownInAtom } from "./shown-in.ts";
 import { afterTeardown, paneElement } from "./teardown.ts";
 
@@ -457,7 +463,7 @@ export interface AppPlaceMountProps {
 }
 
 /**
- * One place's part in a call's View: it claims the call (`places.ts`), and is told whether it mounts the View, waits for
+ * One place's part in a call's View: it claims the call (`sandbox-frame/places.ts`), and is told whether it mounts the View, waits for
  * another place's frame to go first, or leaves it to another ("Shown in …"). A View that stops being wanted here (collapsed,
  * its server gone, moved to an App Pane) is not unmounted from under its frame: the frame stays, closing, until the View has
  * answered its teardown (`AppFrame`), and only then does the note replace it. A View that is wanted again (Reopen, the server
@@ -478,15 +484,16 @@ export const AppPlaceMount = ({
   const places = use(AppPlacesContext);
   const id = useId();
   const { callId } = facts;
+  const key = placeKey("app", callId);
 
   // The claim lives as long as this place; what it wants is told after every render, which costs nothing when it is the same.
   useLayoutEffect(() => {
-    places.claim(id, callId, place);
+    places.claim(id, key, place);
 
     return () => {
       places.release(id);
     };
-  }, [places, id, callId, place]);
+  }, [places, id, key, place]);
 
   useLayoutEffect(() => {
     places.update(id, live);

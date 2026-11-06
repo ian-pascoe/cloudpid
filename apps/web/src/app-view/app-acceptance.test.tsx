@@ -42,10 +42,10 @@ import { sessionListAtom } from "../sessions.ts";
 import { keyValueStoreLayer } from "../storage.ts";
 import { AppCall, AppPlacesContext } from "./app-call.tsx";
 import { appKey, appLoadAtom } from "./atoms.ts";
-import { POLL_MS } from "./focus.ts";
+import { POLL_MS } from "../sandbox-frame/focus.ts";
 import { installFakeFrames, ORIGIN, viewOf } from "./frame-kit.testing.ts";
 import type { AppPage } from "./load.ts";
-import { AppPlaces } from "./places.ts";
+import { AppPlaces } from "../sandbox-frame/places.ts";
 import type { AppRequestClient } from "./requests.ts";
 
 const TOOL: McpAppTool = {

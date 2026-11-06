@@ -14,31 +14,24 @@ import { copyToClipboard } from "../lib/clipboard.ts";
 import { cn } from "../lib/utils.ts";
 import { AppContextChip } from "./app-context-chip.tsx";
 import { refusingSpeech, speechHandlers, type AppSpeech } from "./app-messages.ts";
-import {
-  createBridge,
-  HOST_REFUSED,
-  retire,
-  RpcError,
-  type Bridge,
-  type BridgeOptions,
-  type RequestHandler,
-} from "./bridge.ts";
+import { createBridge, retire, type Bridge, type BridgeOptions } from "./bridge.ts";
+import { HOST_REFUSED, RpcError, type RequestHandler } from "../sandbox-frame/frame-protocol.ts";
 import { createPartialFeed, type PartialFeed, type ToolArguments } from "./partial-input.ts";
 import { displayModeHandler, displayOf, isFullscreen } from "./display-mode.ts";
-import { focusWatch } from "./focus.ts";
-import { declaredCsp, frameUrl } from "./frame-url.ts";
+import { focusWatch } from "../sandbox-frame/focus.ts";
+import { declaredCsp, frameUrl } from "../sandbox-frame/frame-url.ts";
 import {
   type DisplayMode,
-  changedContext,
   hostCapabilities,
   hostContextOf,
   HOST_INFO,
   inlineHeight,
 } from "./host-context.ts";
 import type { AppPage } from "./load.ts";
-import { openLinkHandler, type PendingLink } from "./open-link.ts";
+import { openLinkHandler, type PendingLink } from "../sandbox-frame/open-link.ts";
+import { changedContext } from "../sandbox-frame/host-context.ts";
 import { readEnvironment, readSafeAreaInsets, scrollerOf } from "./page-environment.ts";
-import type { AppPlace } from "./places.ts";
+import type { AppPlace } from "../sandbox-frame/places.ts";
 import { auditLog, viewLogSink, viewRequestHandlers, type AppRequestClient } from "./requests.ts";
 import { appViews } from "./teardown.ts";
 
@@ -306,7 +299,7 @@ const LiveFrame = ({
   // What the View's requests came to, since the card mounted: a sign-in the server asked for, and the audit entries kept.
   const [signIn, setSignIn] = useState<{ stepUp: boolean } | null>(null);
   const [audited, setAudited] = useState<ReadonlyArray<McpAppAuditEntry>>([]);
-  // The link the View asked to open, waiting for the owner (`open-link.ts`).
+  // The link the View asked to open, waiting for the owner (`sandbox-frame/open-link.ts`).
   const [link, setLink] = useState<PendingLink | null>(null);
 
   // Who the call is, from its record or, while it runs, from what the card knows of it.
@@ -642,7 +635,7 @@ const LiveFrame = ({
     [callId, place],
   );
 
-  // Whether the View has the keyboard focus: its frame is the document's active element (`focus.ts`, which also sees focus
+  // Whether the View has the keyboard focus: its frame is the document's active element (`sandbox-frame/focus.ts`, which also sees focus
   // pass from one frame to another).
   const latestFocused = useRef(onFocused);
 

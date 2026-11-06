@@ -1,16 +1,16 @@
 // docs/architecture/mcp-apps.md → The bridge (hostContext, hostCapabilities). What cloudpid tells an App View of its host:
 // the context `ui/initialize` answers and `host-context-changed` updates, and the capabilities it advertises. Pure over a
 // `HostEnvironment` the component reads from the page, so a test gives it any.
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- small native tables of CSS variables.
+// The style variables and the context diff are the frame's, shared with Visuals (`sandbox-frame/host-context.ts`).
+// @effect-diagnostics missingPipeableSignature:off -- plain functions over small values.
 import type { McpAppTool } from "@cloudpid/protocol";
 import type {
   McpUiHostCapabilities,
   McpUiHostContext,
   McpUiResourceCsp,
-  McpUiStyleVariableKey,
-  McpUiStyles,
 } from "@modelcontextprotocol/ext-apps";
 import type * as Types from "effect/Types";
+import { hostStyleVariables } from "../sandbox-frame/host-context.ts";
 
 /** The host's name and version, as `ui/initialize` answers them. */
 export const HOST_INFO = { name: "cloudpid", version: "1" } as const;
@@ -37,67 +37,6 @@ export const inlineMaxHeight = (scrollerHeight: number): number =>
   scrollerHeight > 0
     ? Math.floor(Math.min(INLINE_MAX_HEIGHT_PX, scrollerHeight * INLINE_MAX_HEIGHT_SHARE))
     : INLINE_MAX_HEIGHT_PX;
-
-/** The system font stacks the host's fonts are (`--font-sans`, `--font-mono`; apps/web/DESIGN.md). */
-export const FONT_SANS = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
-export const FONT_MONO = 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace';
-
-/**
- * cloudpid's design tokens (`styles.css`) by the spec's style variable they stand for. Each is read as its resolved value
- * from the page; one the page does not define is left out, never guessed.
- */
-const TOKENS: ReadonlyArray<readonly [McpUiStyleVariableKey, string]> = [
-  ["--color-background-primary", "--background"],
-  ["--color-background-secondary", "--muted"],
-  ["--color-background-tertiary", "--accent"],
-  ["--color-background-inverse", "--foreground"],
-  ["--color-text-primary", "--foreground"],
-  ["--color-text-secondary", "--muted-foreground"],
-  ["--color-text-inverse", "--background"],
-  ["--color-text-danger", "--destructive"],
-  ["--color-text-success", "--success"],
-  ["--color-border-primary", "--border"],
-  ["--color-border-secondary", "--input"],
-  ["--color-border-danger", "--destructive"],
-  ["--color-border-success", "--success"],
-  ["--color-ring-primary", "--ring"],
-  ["--color-ring-danger", "--destructive"],
-  ["--color-ring-success", "--success"],
-];
-
-/** The radii (apps/web/DESIGN.md: 4, 6, 8, 10 px, and a pill) and weights, which are constants of the design. */
-const CONSTANTS: ReadonlyArray<readonly [McpUiStyleVariableKey, string]> = [
-  ["--font-sans", FONT_SANS],
-  ["--font-mono", FONT_MONO],
-  ["--font-weight-normal", "400"],
-  ["--font-weight-medium", "500"],
-  ["--font-weight-semibold", "600"],
-  ["--border-radius-xs", "4px"],
-  ["--border-radius-sm", "6px"],
-  ["--border-radius-md", "8px"],
-  ["--border-radius-lg", "10px"],
-  ["--border-radius-full", "9999px"],
-  ["--border-width-regular", "1px"],
-];
-
-/**
- * The style variables of the host: cloudpid's tokens as the page resolves them (`read` gives a custom property's value, or
- * an empty string), and its constants. Unmapped ones are omitted.
- */
-export const hostStyleVariables = (read: (property: string) => string): McpUiStyles => {
-  const variables: Partial<Record<McpUiStyleVariableKey, string>> = {};
-
-  for (const [key, property] of TOKENS) {
-    const value = read(property).trim();
-
-    if (value !== "") variables[key] = value;
-  }
-
-  for (const [key, value] of CONSTANTS) variables[key] = value;
-
-  // SAFETY: the spec types the record with every key, though a host sends the ones it has (the generated schema is partial).
-  return variables as McpUiStyles;
-};
 
 /** What the page tells the host context of itself and the card. */
 export interface HostEnvironment {
@@ -231,21 +170,4 @@ export const hostCapabilities = (
   capabilities.logging = {};
 
   return capabilities;
-};
-
-/**
- * What of `next` differs from `before`, by top-level key, for `host-context-changed` (which carries only what changed);
- * undefined when nothing does. Values are compared as the JSON they are sent as.
- */
-export const changedContext = (
-  before: McpUiHostContext,
-  next: McpUiHostContext,
-): McpUiHostContext | undefined => {
-  const changed: McpUiHostContext = {};
-
-  for (const key of Object.keys(next)) {
-    if (JSON.stringify(before[key]) !== JSON.stringify(next[key])) changed[key] = next[key];
-  }
-
-  return Object.keys(changed).length === 0 ? undefined : changed;
 };

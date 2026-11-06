@@ -49,7 +49,7 @@ import { sessionListAtom } from "../sessions.ts";
 import { keyValueStoreLayer } from "../storage.ts";
 import { AppPlacesContext } from "./app-call.tsx";
 import { installFakeFrames, ORIGIN, viewOf } from "./frame-kit.testing.ts";
-import { AppPlaces } from "./places.ts";
+import { AppPlaces } from "../sandbox-frame/places.ts";
 
 const NAME = "mcp__docs__page";
 
