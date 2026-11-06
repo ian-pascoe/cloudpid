@@ -13,7 +13,7 @@ import { useShownSessionId } from "../chat/conversation.ts";
 import type { PaneProps } from "../panes.ts";
 import { focusChatOnEscape } from "../sandbox-frame/focus.ts";
 import { visualsAtom } from "../session/atoms.ts";
-import { type VisualLoad, visualKey, visualLoadAtom } from "./atoms.ts";
+import { NO_LOAD, visualKey, visualLoadAtom } from "./atoms.ts";
 import {
   Chrome,
   HeaderButton,
@@ -24,11 +24,7 @@ import {
 } from "./visual-call.tsx";
 import { VisualFailed, VisualFrame } from "./visual-frame.tsx";
 import { visualEntryOf } from "./visuals.ts";
-import * as Atom from "effect/reactivity/Atom";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
-
-/** What the Pane reads while it wants no page: nothing is loaded. */
-const NO_LOAD = Atom.make(AsyncResult.initial<VisualLoad>());
 
 /** A line of the Pane where there is no Visual: one the Session does not have, or has not kept. */
 const PaneNote = ({ children }: { children: ReactNode }) => (

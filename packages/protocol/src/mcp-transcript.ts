@@ -105,16 +105,16 @@ const toolCall = (part: Extract<TranscriptPart, { type: "tool-call" }>, redact: 
 };
 
 /** ` · <link>` to a Visual's Pane on the Session's page (`/sessions/<id>?pane=visual:<callId>`), once both are known. */
-const paneLink = (callId: string | undefined, session: string | undefined): string =>
-  callId === undefined || session === undefined
+const paneLink = (callId: string | undefined, sessionId: string | undefined): string =>
+  callId === undefined || sessionId === undefined
     ? ""
-    : ` · /sessions/${encodeURIComponent(session)}${visualPaneQuery(callId)}`;
+    : ` · /sessions/${encodeURIComponent(sessionId)}${visualPaneQuery(callId)}`;
 
 const toolResult = (
   part: Extract<TranscriptPart, { type: "tool-result" }>,
   detail: TranscriptDetail,
   redact: Redact,
-  session: string | undefined,
+  sessionId: string | undefined,
 ): string => {
   const body = redact(text(part.content));
   const pictures = images(part.content);
@@ -127,7 +127,9 @@ const toolResult = (
       ? []
       : [
           oneLine(
-            redact(visualTranscriptLine(shown.title, shown.summary) + paneLink(shown.id, session)),
+            redact(
+              visualTranscriptLine(shown.title, shown.summary) + paneLink(shown.id, sessionId),
+            ),
           ),
         ];
 
@@ -177,7 +179,7 @@ const block = (
   message: TranscriptMessage,
   detail: TranscriptDetail,
   redact: Redact,
-  session: string | undefined,
+  sessionId: string | undefined,
 ): string | undefined => {
   if (message.role === "notice") {
     const body = oneLine(redact(text(message.parts)));
@@ -191,7 +193,7 @@ const block = (
 
   if (message.role === "tool") {
     for (const part of message.parts) {
-      if (part.type === "tool-result") lines.push(toolResult(part, detail, redact, session));
+      if (part.type === "tool-result") lines.push(toolResult(part, detail, redact, sessionId));
     }
   } else {
     if (body !== "") lines.push(middleCut(body, ENTRY_TEXT_CHARS[detail]));
@@ -220,14 +222,14 @@ export const renderTranscript = (
     readonly detail?: TranscriptDetail;
     readonly redact?: (text: string) => string;
     /** The Session's ID: a Visual's line links to its Pane on the Session's page. */
-    readonly session?: string | undefined;
+    readonly sessionId?: string | undefined;
   } = {},
 ): TranscriptEntry[] => {
   const detail = options.detail ?? "summary";
   const redact = options.redact ?? redactGithubTokens;
 
   return messages.flatMap((message): TranscriptEntry[] => {
-    const rendered = block(message, detail, redact, options.session);
+    const rendered = block(message, detail, redact, options.sessionId);
     const entryId = Number(message.id);
 
     if (rendered === undefined || !Number.isInteger(entryId)) return [];

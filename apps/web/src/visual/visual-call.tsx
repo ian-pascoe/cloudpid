@@ -23,7 +23,6 @@ import { RegistryContext, useAtom, useAtomSet, useAtomValue } from "@effect/atom
 import * as Arr from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Atom from "effect/reactivity/Atom";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import {
   createContext,
@@ -63,7 +62,7 @@ import {
   visualsAtom,
 } from "../session/atoms.ts";
 import {
-  type VisualLoad,
+  NO_LOAD,
   visualHeightAtom,
   visualKey,
   visualLoadAtom,
@@ -75,9 +74,6 @@ import { visualEntries, visualEntryOf, visualsListed, visualsOfScript } from "./
 
 /** The places of this page: the app's, shared with App Views under their own keys. A test gives its own. */
 export const VisualPlacesContext = createContext<AppPlaces>(appPlaces);
-
-/** What a card reads while it wants no page: nothing is loaded. */
-const NO_LOAD = Atom.make(AsyncResult.initial<VisualLoad>());
 
 /** Where the call is when its card is drawn, for one that has not finished: streaming or running, with its title so far. */
 export interface VisualProgress {
@@ -130,7 +126,7 @@ export const HeaderButton = ({
 );
 
 /** Where a Visual's page came from, as a line says it. */
-export const sourceText = (entry: Pick<VisualEntry, "source">): string =>
+const sourceText = (entry: Pick<VisualEntry, "source">): string =>
   sourcePathOf(entry.source) ?? "Written inline by the call";
 
 /**
@@ -392,6 +388,8 @@ export const VisualOpen = ({
   const card = useRef<HTMLDivElement>(null);
   const view = useVisualPlace(entry.callId);
   const hosting = view.kind === "hosting" && !view.closing;
+  // Popped out: only a Visual Pane is a place to bring a Visual back from, the other places are the thread's own.
+  const inPane = view.kind === "elsewhere" && view.place === "visual-pane";
   const { near, seen } = useNearViewport(card);
   const [focused, setFocused] = useState(false);
   const [details, setDetails] = useState(false);
@@ -414,8 +412,7 @@ export const VisualOpen = ({
       return (
         <div className="flex items-center gap-2 border-t px-3 py-2 text-xs text-muted-foreground">
           <span>Shown in {PLACE_NAMES[view.place]}</span>
-          {/* Only a Visual Pane is a place to bring a Visual back from: the others are the thread's own. */}
-          {view.place === "visual-pane" && (
+          {inPane && (
             <Button
               variant="ghost"
               size="sm"
@@ -483,7 +480,7 @@ export const VisualOpen = ({
     >
       <Chrome title={entry.title}>
         <HeaderButton onClick={onCollapse}>Collapse</HeaderButton>
-        {!(view.kind === "elsewhere" && view.place === "visual-pane") && (
+        {!inPane && (
           <HeaderButton
             onClick={() => {
               actOnPanes({ type: "open", key: visualPaneKey(entry.callId) });

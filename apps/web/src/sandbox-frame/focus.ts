@@ -1,4 +1,4 @@
-// docs/architecture/mcp-apps.md → App Views in the transcript (Which App Views are live). Which View holds the keyboard
+// docs/architecture/mcp-apps.md → App Views in the transcript (Which App Views are live), App Panes (Escape in a Pane's own chrome: `focusChatOnEscape`); docs/architecture/visuals.md → The frame (The Visual Pane). Which View holds the keyboard
 // focus: the one whose frame is the document's active element. Focus moving into a frame from the page blurs the window, but
 // from one frame straight to another nothing is fired at the page, so while a frame holds the focus the active element is also
 // read on a short poll (and on `focusin`, which the page's own elements do fire). One watch serves every frame.

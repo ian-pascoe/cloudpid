@@ -354,7 +354,8 @@ export const visualPaneKey = (callId: string): string => `visual:${callId}`;
 
 /**
  * The query of the Session's page that opens that Pane (`?pane=visual:call_1`), as the web app writes a Pane key: encoded
- * but for the `:` after the type, so `URLSearchParams` reads back the key `visualPaneKey` gives.
+ * but for the `:` after the type, so `URLSearchParams` reads back the key `visualPaneKey` gives. The web app's `encodeKey` (`apps/web/src/router.ts`) writes
+ * a Pane key the same way; keep the two alike.
  */
 export const visualPaneQuery = (callId: string): string =>
   `?pane=${encodeURIComponent(visualPaneKey(callId)).replaceAll("%3A", ":")}`;

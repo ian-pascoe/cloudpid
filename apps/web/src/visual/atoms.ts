@@ -5,6 +5,7 @@
 import type { VisualPageAnswer, VisualRecord, VisualStub } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Atom from "effect/reactivity/Atom";
+import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Schema from "effect/Schema";
 import type { ConversationKey } from "../chat/conversation.ts";
 import { appRuntime } from "../runtime.ts";
@@ -72,6 +73,9 @@ export const loadVisual = (
       Effect.succeed<VisualLoad>({ status: "failed", reason: error.message }),
     ),
   );
+
+/** What a card or Pane reads while it wants no page: nothing is loaded. */
+export const NO_LOAD = Atom.make(AsyncResult.initial<VisualLoad>());
 
 /**
  * Visual `key`'s page (`visualKey`), loaded: it loads when something reads it and again when read after nothing did, and

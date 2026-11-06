@@ -168,8 +168,8 @@ describe("renderTranscript", () => {
 
     const line = "Visual: Sales — Bars (not rendered) · /sessions/s1?pane=visual:call_1%7Cfc:2";
 
-    expect(renderTranscript([shown], { session: "s1" })[0]?.text).toContain(`\n${line}`);
-    expect(renderTranscript([shown], { session: "s1", detail: "full" })[0]?.text).toContain(
+    expect(renderTranscript([shown], { sessionId: "s1" })[0]?.text).toContain(`\n${line}`);
+    expect(renderTranscript([shown], { sessionId: "s1", detail: "full" })[0]?.text).toContain(
       `\n${line}`,
     );
     // Without the Session's ID, or from a result that names no call, the line has none.
