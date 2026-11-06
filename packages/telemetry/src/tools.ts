@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off -- pi-durable tools are Promise code.
 // Tool spans (`docs/architecture/operations.md` → Telemetry): every tool's call is a `pi.tool` span of the Session's telemetry,
 // whether the tool is Effect, native, or run by a codemode script as a nested call. Arguments and results are never
-// recorded.
+// recorded; a tool may add fixed values and counts of its own (`annotateToolSpan`).
 import {
   defineExtension,
   type Extension,
@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { TelemetryContext } from "@earendil-works/pi-telemetry";
 import * as Arr from "effect/Array";
+import { listToolSpan } from "@cloudpid/effect-durable";
 
 export const extensionName = "telemetry";
 
@@ -28,7 +29,12 @@ const traced = (telemetry: TelemetryContext, tool: ToolRegistration): ToolRegist
         },
       },
       async (span) => {
-        const result = await tool.execute(args, api, context);
+        // The tool's own counts reach its span by the call's ID (`annotateToolSpan`), for as long as the call runs.
+        const unlist = listToolSpan(api.callId, (attributes) => {
+          span.setAttributes(attributes);
+        });
+
+        const result = await tool.execute(args, api, context).finally(unlist);
 
         span.setAttributes({ "tool.is_error": result.isError === true });
 
