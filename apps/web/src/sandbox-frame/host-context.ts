@@ -4,25 +4,39 @@
 // between two host contexts, which `host-context-changed` carries. Pure: the page's values are handed in.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- small native tables of CSS variables.
 import { CONSTANTS, TOKENS } from "@cloudpid/protocol";
-import type { McpUiHostContext, McpUiStyles } from "@modelcontextprotocol/ext-apps";
+import type {
+  McpUiHostContext,
+  McpUiStyleVariableKey,
+  McpUiStyles,
+} from "@modelcontextprotocol/ext-apps";
+
+/**
+ * The table's names against the spec's: a name that is not an `McpUiStyleVariableKey` (a misspelling, or one a new ext-apps
+ * dropped) fails the typecheck here, which `packages/protocol` cannot do, as it imports nothing of ext-apps.
+ */
+const keyed = <Key extends McpUiStyleVariableKey>(
+  table: ReadonlyArray<readonly [Key, string]>,
+): ReadonlyArray<readonly [McpUiStyleVariableKey, string]> => table;
+
+const TOKEN_VARIABLES = keyed(TOKENS);
+const CONSTANT_VARIABLES = keyed(CONSTANTS);
 
 /**
  * The style variables of the host: cloudpid's tokens as the page resolves them (`read` gives a custom property's value, or
  * an empty string), and its constants. Unmapped ones are omitted.
  */
 export const hostStyleVariables = (read: (property: string) => string): McpUiStyles => {
-  const variables: Partial<Record<string, string>> = {};
+  const variables: Partial<Record<McpUiStyleVariableKey, string>> = {};
 
-  for (const [key, property] of TOKENS) {
+  for (const [key, property] of TOKEN_VARIABLES) {
     const value = read(property).trim();
 
     if (value !== "") variables[key] = value;
   }
 
-  for (const [key, value] of CONSTANTS) variables[key] = value;
+  for (const [key, value] of CONSTANT_VARIABLES) variables[key] = value;
 
-  // SAFETY: the table's keys are the spec's style variable names, and the spec types the record with every key, though a host
-  // sends the ones it has (the generated schema is partial).
+  // SAFETY: the spec types the record with every key, though a host sends the ones it has (the generated schema is partial).
   return variables as McpUiStyles;
 };
 

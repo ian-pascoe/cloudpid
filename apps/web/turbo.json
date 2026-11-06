@@ -2,10 +2,11 @@
   "$schema": "https://turborepo.dev/schema.json",
   "extends": ["//"],
   "tasks": {
-    // Tests (and the typecheck and lint that follow their imports) of the App View code read a few files of other packages by
-    // relative path, which turbo does not see as inputs of this one: the server's sandbox constants (`sandbox-frame/frame-url.test.ts`, the
-    // drift guard) and the sandbox's proxy script (`example-view.test.ts`, which runs the real one). A package dependency
-    // would hash the whole server for every web change, so the files are named here.
+    // Tests (and the typecheck and lint that follow their imports) of the App View and sandbox-frame code read a few files of
+    // other packages by relative path, which turbo does not see as inputs of this one: the server's sandbox constants
+    // (`sandbox-frame/frame-url.test.ts`, the drift guard) and the sandbox's proxy script (`app-view/example-view.test.ts`,
+    // which runs the real one). A package dependency would hash the whole server for every web change, so the files are
+    // named here.
     "typecheck": {
       "inputs": [
         "$TURBO_DEFAULT$",

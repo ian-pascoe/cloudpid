@@ -1,18 +1,20 @@
-// docs/architecture/mcp-apps.md → The bridge, Testing. The bridge against a fake iframe: the handshake, the notifications
-// and the origin checks, then the real ext-apps `App` (the runtime every example View bundles, read from the package and
-// run unmodified in a fake window) as the View on the other side of a relaying proxy.
+// docs/architecture/mcp-apps.md → The bridge, Testing. The App View's bridge against a fake iframe: the tool notifications and
+// the retire, over the frame protocol (`sandbox-frame/frame-protocol.test.ts` tests that on its own), then the real ext-apps
+// `App` (the runtime every example View bundles, read from the package and run unmodified in a fake window) as the View on
+// the other side of a relaying proxy.
 /* oxlint-disable anti-slop/no-unknown-parameters, anti-slop/no-unknown-returns, anti-slop/no-unsafe-dictionary-type, anti-slop/no-known-value-widening, anti-slop/no-runtime-typeof, anti-slop/require-safety-comment-for-type-assertion, typescript/no-implied-eval -- fakes of the browser's windows and of JSON-RPC traffic: their data is whatever a case posts, a View's runtime is evaluated from the package as a function of its window (`new Function`, the only way to run it here), and the casts are cut down to a case's shape */
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off asyncFunction:off nodeBuiltinImport:off globalTimers:off newPromise:off -- fakes of the browser's windows and timers.
 import { readFileSync } from "node:fs";
-import { MCP_APP_METHOD_NOT_FOUND } from "@cloudpid/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MCP_APPS_PROTOCOL_VERSION } from "../sandbox-frame/frame-protocol.ts";
 import {
-  INITIALIZE_TIMEOUT_MS,
-  MCP_APPS_PROTOCOL_VERSION,
-  RpcError,
-  TEARDOWN_TIMEOUT_MS,
-  type IncomingMessage,
-} from "../sandbox-frame/frame-protocol.ts";
+  fakePage,
+  HTML,
+  ORIGIN,
+  handshake,
+  methodsOf,
+  rpc,
+} from "../sandbox-frame/fake-page.testing.ts";
 import { retire, createBridge, type BridgeEvent, type BridgeOptions } from "./bridge.ts";
 import {
   HOST_INFO,
@@ -20,48 +22,6 @@ import {
   hostContextOf,
   type HostEnvironment,
 } from "./host-context.ts";
-
-const ORIGIN = "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app";
-const EVIL = "https://evil.example";
-
-type Post = { readonly data: Record<string, unknown>; readonly target: string };
-
-/** The page's window and the proxy frame in it, as the bridge sees them. */
-const fakePage = () => {
-  const listeners = new Set<(message: IncomingMessage) => void>();
-  const posts: Post[] = [];
-
-  const frame = {
-    postMessage: (data: unknown, target: string) => {
-      // SAFETY: the bridge posts JSON-RPC objects.
-      posts.push({ data: data as Record<string, unknown>, target });
-    },
-  };
-
-  const other = { postMessage: () => undefined };
-
-  return {
-    listeners,
-    posts,
-    frame,
-    other,
-    listen: (handler: (message: IncomingMessage) => void) => {
-      listeners.add(handler);
-
-      return () => listeners.delete(handler);
-    },
-    /** A message event of the page's window. */
-    deliver: (data: unknown, from: { source?: unknown; origin?: string } = {}) => {
-      for (const listener of Array.from(listeners)) {
-        listener({
-          source: "source" in from ? from.source : frame,
-          origin: from.origin ?? ORIGIN,
-          data,
-        });
-      }
-    },
-  };
-};
 
 const env: HostEnvironment = {
   dark: false,
@@ -77,16 +37,6 @@ const env: HostEnvironment = {
 };
 
 const context = hostContextOf(env, { callId: "call-1", name: "get-time", title: "Get time" });
-
-const rpc = (method: string, params: unknown = {}, id?: number) => {
-  const message: Record<string, unknown> = { jsonrpc: "2.0", method, params };
-
-  if (id !== undefined) message["id"] = id;
-
-  return message;
-};
-
-const HTML = "<main>view</main>";
 
 const make = (page: ReturnType<typeof fakePage>, more: Partial<BridgeOptions> = {}) => {
   const events: BridgeEvent[] = [];
@@ -106,30 +56,6 @@ const make = (page: ReturnType<typeof fakePage>, more: Partial<BridgeOptions> = 
   return { bridge, events };
 };
 
-const sent = (page: ReturnType<typeof fakePage>) => page.posts.map((post) => post.data);
-
-const methodsOf = (page: ReturnType<typeof fakePage>) =>
-  page.posts.flatMap((post) =>
-    typeof post.data["method"] === "string" ? [post.data["method"]] : [],
-  );
-
-/** Drive the View's side of the handshake by hand. */
-const handshake = (page: ReturnType<typeof fakePage>) => {
-  page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
-  page.deliver(
-    rpc(
-      "ui/initialize",
-      {
-        appInfo: { name: "view", version: "1" },
-        appCapabilities: {},
-        protocolVersion: MCP_APPS_PROTOCOL_VERSION,
-      },
-      1,
-    ),
-  );
-  page.deliver(rpc("ui/notifications/initialized"));
-};
-
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -138,69 +64,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("the handshake", () => {
-  it("gives the proxy its page when it announces itself, and answers ui/initialize with the host's capabilities and context", async () => {
-    const page = fakePage();
-    const { bridge, events } = make(page);
-
-    bridge.start();
-    expect(page.posts).toEqual([]);
-
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
-
-    expect(sent(page)).toEqual([
-      { jsonrpc: "2.0", method: "ui/notifications/sandbox-resource-ready", params: { html: HTML } },
-    ]);
-
-    page.deliver(
-      rpc(
-        "ui/initialize",
-        {
-          appInfo: { name: "view", version: "1" },
-          appCapabilities: {},
-          protocolVersion: "2026-01-26",
-        },
-        7,
-      ),
-    );
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(page.posts[1]?.data).toEqual({
-      jsonrpc: "2.0",
-      id: 7,
-      result: {
-        protocolVersion: "2026-01-26",
-        hostInfo: { name: "cloudpid", version: "1" },
-        hostCapabilities: { sandbox: {} },
-        hostContext: context,
-      },
-    });
-    expect(events).toEqual([]);
-
-    page.deliver(rpc("ui/notifications/initialized"));
-    expect(events).toEqual([{ type: "ready" }]);
-  });
-
-  it("sends the declared CSP with the page, and posts only to the sandbox origin, never to *", async () => {
-    const page = fakePage();
-    const csp = { connectDomains: ["https://api.example.com"] };
-
-    const { bridge } = make(page, {
-      page: { html: HTML, csp },
-      capabilities: hostCapabilities(csp),
-    });
-
-    bridge.start();
-    handshake(page);
-    bridge.toolInput({ a: 1 });
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(page.posts[0]?.data["params"]).toEqual({ html: HTML, csp });
-    expect(page.posts.length).toBeGreaterThan(2);
-
-    for (const post of page.posts) expect(post.target).toBe(ORIGIN);
-  });
-
+describe("the tool notifications", () => {
   it("holds tool-input and tool-result until the View says initialized, and sends them in order after", async () => {
     const page = fakePage();
     const { bridge } = make(page);
@@ -255,181 +119,12 @@ describe("the handshake", () => {
       params: { theme: "dark" },
     });
   });
-
-  it("ignores a second proxy-ready, so the page is given once", () => {
-    const page = fakePage();
-    const { bridge } = make(page);
-
-    bridge.start();
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
-    expect(page.posts).toHaveLength(1);
-  });
-
-  it("does not take initialized as the handshake until ui/initialize was asked and answered", () => {
-    const page = fakePage();
-    const { bridge, events } = make(page);
-
-    bridge.start();
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
-    page.deliver(rpc("ui/notifications/initialized"));
-    expect(events).toEqual([]);
-  });
-
-  it("fails when the View sends no ui/initialize within 10 s, and not once it has", async () => {
-    const page = fakePage();
-    const quiet = make(page);
-
-    quiet.bridge.start();
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
-    await vi.advanceTimersByTimeAsync(INITIALIZE_TIMEOUT_MS - 1);
-    expect(quiet.events).toEqual([]);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(quiet.events).toEqual([
-      { type: "failed", reason: "The App did not start within 10 seconds" },
-    ]);
-
-    const page2 = fakePage();
-    const noProxy = make(page2);
-
-    noProxy.bridge.start();
-    await vi.advanceTimersByTimeAsync(INITIALIZE_TIMEOUT_MS);
-    expect(noProxy.events).toEqual([
-      { type: "failed", reason: "The App sandbox did not answer within 10 seconds" },
-    ]);
-
-    const page3 = fakePage();
-    const fine = make(page3);
-
-    fine.bridge.start();
-    handshake(page3);
-    await vi.advanceTimersByTimeAsync(INITIALIZE_TIMEOUT_MS * 2);
-    expect(fine.events).toEqual([{ type: "ready" }]);
-  });
 });
 
-describe("the origin checks", () => {
-  const unlistened = (page: ReturnType<typeof fakePage>, events: BridgeEvent[]) => {
-    expect(page.posts).toEqual([]);
-    expect(events.every((event) => event.type === "rejected")).toBe(true);
-  };
-
-  it.each([
-    ["another origin", { origin: EVIL }],
-    [
-      "the sandbox's origin on another stage's host",
-      { origin: "https://bbbbbbbbbbbbbbbbbbbbbbbbbb.ianpascoe.app" },
-    ],
-    ["the opaque origin", { origin: "null" }],
-    ["the app's own origin", { origin: "https://pi.ianpascoe.dev" }],
-    ["http at the sandbox's host", { origin: ORIGIN.replace("https", "http") }],
-    ["a trailing slash", { origin: `${ORIGIN}/` }],
-  ])("drops a proxy-ready from %s, and gives it no page", (_name, from) => {
+describe("retire", () => {
+  const ready = async () => {
     const page = fakePage();
-    const { bridge, events } = make(page);
-
-    bridge.start();
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"), from);
-    unlistened(page, events);
-  });
-
-  it("drops a message from another window at the sandbox's origin", () => {
-    const page = fakePage();
-    const { bridge, events } = make(page);
-
-    bridge.start();
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"), { source: page.other });
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"), { source: null });
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"), {
-      source: {},
-    });
-    unlistened(page, events);
-  });
-
-  it("answers nothing from a forged View: another origin, or another window, in the middle of a real handshake", () => {
-    const page = fakePage();
-    const { bridge, events } = make(page);
-
-    bridge.start();
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
-
-    const before = page.posts.length;
-
-    page.deliver(
-      rpc(
-        "ui/initialize",
-        {
-          appInfo: { name: "v", version: "1" },
-          appCapabilities: {},
-          protocolVersion: "2026-01-26",
-        },
-        1,
-      ),
-      { origin: EVIL },
-    );
-    page.deliver(
-      rpc(
-        "ui/initialize",
-        {
-          appInfo: { name: "v", version: "1" },
-          appCapabilities: {},
-          protocolVersion: "2026-01-26",
-        },
-        2,
-      ),
-      { source: page.other },
-    );
-    page.deliver(rpc("ui/notifications/initialized"), { origin: EVIL });
-    page.deliver(rpc("ui/notifications/size-changed", { height: 99 }), { origin: EVIL });
-
-    expect(page.posts).toHaveLength(before);
-    expect(events.filter((event) => event.type !== "rejected")).toEqual([]);
-    expect(events).toHaveLength(4);
-  });
-
-  it("drops what is not a JSON-RPC message, and anything of the View's before the proxy was ready", () => {
-    const page = fakePage();
-    const { bridge, events } = make(page);
-
-    bridge.start();
-
-    for (const data of [
-      "hi",
-      null,
-      7,
-      [],
-      { method: "ui/initialize" },
-      { jsonrpc: "1.0", method: "x" },
-      { jsonrpc: "2.0" },
-    ]) {
-      page.deliver(data);
-    }
-
-    page.deliver(rpc("ui/initialize", { protocolVersion: "2026-01-26" }, 1));
-    expect(page.posts).toEqual([]);
-    expect(events.every((event) => event.type === "rejected")).toBe(true);
-  });
-
-  it("stops listening when closed, and posts nothing after it", async () => {
-    const page = fakePage();
-    const { bridge } = make(page);
-
-    bridge.start();
-    expect(page.listeners.size).toBe(1);
-    bridge.close();
-    expect(page.listeners.size).toBe(0);
-
-    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
-    bridge.toolInput({});
-    await bridge.teardown();
-    expect(page.posts).toEqual([]);
-  });
-});
-
-describe("a View's requests", () => {
-  const ready = async (more: Partial<BridgeOptions> = {}) => {
-    const page = fakePage();
-    const made = make(page, more);
+    const made = make(page);
 
     made.bridge.start();
     handshake(page);
@@ -438,152 +133,6 @@ describe("a View's requests", () => {
 
     return { page, ...made };
   };
-
-  it("answers -32601 for every method it does not serve, the draft-only and later ones included", async () => {
-    const { page } = await ready();
-
-    for (const method of [
-      "tools/call",
-      "resources/read",
-      "ui/open-link",
-      "ui/message",
-      "ui/update-model-context",
-      "ui/download-file",
-      "sampling/createMessage",
-      "ui/request-teardown",
-      "nope",
-      // Properties every object has, which a View may name: they are no handlers.
-      "constructor",
-      "toString",
-      "__proto__",
-      "hasOwnProperty",
-    ]) {
-      page.deliver(rpc(method, {}, 40));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(page.posts.pop()?.data).toEqual({
-        jsonrpc: "2.0",
-        id: 40,
-        error: { code: MCP_APP_METHOD_NOT_FOUND, message: `Method not found: ${method}` },
-      });
-    }
-  });
-
-  it("does not take an inherited property of its handlers for one", async () => {
-    const { page } = await ready({ handlers: {} });
-
-    for (const method of ["constructor", "toString", "__proto__"]) {
-      page.deliver(rpc(method, {}, 41));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(page.posts.pop()?.data).toMatchObject({
-        id: 41,
-        error: { code: MCP_APP_METHOD_NOT_FOUND },
-      });
-    }
-  });
-
-  it("answers ping, and a display mode request with the mode that is set (inline: fullscreen and pip are refused)", async () => {
-    const { page } = await ready();
-
-    page.deliver(rpc("ping", {}, 1));
-    page.deliver(rpc("ui/request-display-mode", { mode: "fullscreen" }, 2));
-    page.deliver(rpc("ui/request-display-mode", { mode: "pip" }, 3));
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(sent(page)).toEqual([
-      { jsonrpc: "2.0", id: 1, result: {} },
-      { jsonrpc: "2.0", id: 2, result: { mode: "inline" } },
-      { jsonrpc: "2.0", id: 3, result: { mode: "inline" } },
-    ]);
-  });
-
-  it("serves a method through the handler it was given, and answers a refusal with its code", async () => {
-    const { page } = await ready({
-      handlers: {
-        "ui/open-link": () => Promise.resolve({ isError: false }),
-        "ui/message": () => Promise.reject(new RpcError(-32_000, "no")),
-        "ui/update-model-context": () => Promise.reject(new Error("boom")),
-      },
-    });
-
-    page.deliver(rpc("ui/open-link", {}, 1));
-    page.deliver(rpc("ui/message", {}, 2));
-    page.deliver(rpc("ui/update-model-context", {}, 3));
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(sent(page)).toEqual([
-      { jsonrpc: "2.0", id: 1, result: { isError: false } },
-      { jsonrpc: "2.0", id: 2, error: { code: -32_000, message: "no" } },
-      { jsonrpc: "2.0", id: 3, error: { code: -32_603, message: "The host could not answer" } },
-    ]);
-  });
-
-  it("tells its owner the size a View reports, whichever of width and height it sends", async () => {
-    const { page, events } = await ready();
-
-    page.deliver(rpc("ui/notifications/size-changed", { width: 500, height: 321 }));
-    page.deliver(rpc("ui/notifications/size-changed", { height: 12 }));
-    page.deliver(rpc("ui/notifications/size-changed", { height: "tall" }));
-    expect(events.filter((event) => event.type === "size")).toEqual([
-      { type: "size", width: 500, height: 321 },
-      { type: "size", height: 12 },
-    ]);
-  });
-
-  it("drops a notification it does not serve, such as the View's logging", async () => {
-    const { page, events } = await ready();
-
-    page.deliver(rpc("notifications/message", { level: "info", data: "hi" }));
-    expect(page.posts).toEqual([]);
-    expect(events).toEqual([{ type: "ready" }]);
-  });
-});
-
-describe("teardown", () => {
-  const ready = async (more: Partial<BridgeOptions> = {}) => {
-    const page = fakePage();
-    const made = make(page, more);
-
-    made.bridge.start();
-    handshake(page);
-    await vi.advanceTimersByTimeAsync(0);
-    page.posts.length = 0;
-
-    return { page, ...made };
-  };
-
-  it("sends ui/resource-teardown and resolves when the View answers, then closes", async () => {
-    const { page, bridge } = await ready();
-    let done = false;
-
-    const tearing = bridge.teardown().then(() => {
-      done = true;
-    });
-
-    expect(page.posts).toHaveLength(1);
-    expect(page.posts[0]?.data).toMatchObject({
-      jsonrpc: "2.0",
-      method: "ui/resource-teardown",
-      params: {},
-    });
-    expect(page.posts[0]?.target).toBe(ORIGIN);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(done).toBe(false);
-
-    page.deliver({ jsonrpc: "2.0", id: page.posts[0]?.data["id"], result: {} });
-    await tearing;
-    expect(done).toBe(true);
-    expect(page.listeners.size).toBe(0);
-  });
-
-  it("sends one teardown however often it is asked, and every asker waits for its answer", async () => {
-    const { page, bridge } = await ready();
-    const first = bridge.teardown();
-    const second = bridge.teardown();
-
-    expect(methodsOf(page)).toEqual(["ui/resource-teardown"]);
-    page.deliver({ jsonrpc: "2.0", id: page.posts[0]?.data["id"], result: {} });
-    await Promise.all([first, second]);
-  });
 
   it("retires a View of an unfinished call with tool-cancelled first, then the teardown, in that order", async () => {
     const { page, bridge } = await ready();
@@ -602,74 +151,6 @@ describe("teardown", () => {
     expect(methodsOf(page)).toEqual(["ui/resource-teardown"]);
     page.deliver({ jsonrpc: "2.0", id: page.posts[0]?.data["id"], result: {} });
     await retiring;
-  });
-
-  it("waits at most 2 s for a View that does not answer", async () => {
-    const { page, bridge } = await ready();
-    let done = false;
-
-    const tearing = bridge.teardown().then(() => {
-      done = true;
-    });
-
-    await vi.advanceTimersByTimeAsync(TEARDOWN_TIMEOUT_MS - 1);
-    expect(done).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-    await tearing;
-    expect(done).toBe(true);
-    expect(page.listeners.size).toBe(0);
-  });
-
-  it("does not take an answer from another origin or window for the View's", async () => {
-    const { page, bridge } = await ready();
-    let done = false;
-
-    const tearing = bridge.teardown().then(() => {
-      done = true;
-    });
-
-    const id = page.posts[0]?.data["id"];
-
-    page.deliver({ jsonrpc: "2.0", id, result: {} }, { origin: EVIL });
-    page.deliver({ jsonrpc: "2.0", id, result: {} }, { source: page.other });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(done).toBe(false);
-
-    await vi.advanceTimersByTimeAsync(TEARDOWN_TIMEOUT_MS);
-    await tearing;
-  });
-
-  it("aborts the requests in flight when it closes", async () => {
-    let signal: AbortSignal | undefined;
-
-    const { page, bridge } = await ready({
-      handlers: {
-        "tools/call": (_params, context) => {
-          signal = context.signal;
-
-          return new Promise(() => undefined);
-        },
-      },
-    });
-
-    page.deliver(rpc("tools/call", {}, 9));
-    expect(signal?.aborted).toBe(false);
-
-    const tearing = bridge.teardown();
-
-    page.deliver({ jsonrpc: "2.0", id: page.posts[0]?.data["id"], result: {} });
-    await tearing;
-    expect(signal?.aborted).toBe(true);
-  });
-
-  it("closes at once for a View that never came up, with nothing to tell", async () => {
-    const page = fakePage();
-    const { bridge } = make(page);
-
-    bridge.start();
-    await bridge.teardown();
-    expect(page.posts).toEqual([]);
-    expect(page.listeners.size).toBe(0);
   });
 });
 

@@ -1,8 +1,8 @@
 // docs/architecture/mcp-apps.md → The bridge (hostContext, hostCapabilities). What cloudpid tells an App View of its host:
 // the context `ui/initialize` answers and `host-context-changed` updates, and the capabilities it advertises. Pure over a
 // `HostEnvironment` the component reads from the page, so a test gives it any.
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off missingPipeableSignature:off -- small native tables of CSS variables.
 // The style variables and the context diff are the frame's, shared with Visuals (`sandbox-frame/host-context.ts`).
+// @effect-diagnostics missingPipeableSignature:off -- plain functions over small values.
 import type { McpAppTool } from "@cloudpid/protocol";
 import type {
   McpUiHostCapabilities,
