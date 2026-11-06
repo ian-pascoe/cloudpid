@@ -209,6 +209,25 @@ export const VisualStub = Schema.Struct({
 export type VisualStub = typeof VisualStub.Type;
 
 /**
+ * A call's Visual record or stub as a Fork or Clone carries it to the new Session, with the page of entries that holds its
+ * call (`ExportPage.visuals`; `docs/architecture/visuals.md` → Fork and Clone). Only an RPC's value, never a message to a
+ * client, and never decoded: a Session reads one it cannot use as no copy at all.
+ */
+export type VisualCopy =
+  | { readonly kind: "record"; readonly record: VisualRecord }
+  | { readonly kind: "stub"; readonly stub: VisualStub }
+  // A kind a newer Session sends: skipped, never an error that leaves a Fork half done.
+  | { readonly kind: string };
+
+/** What a Session does with the Visuals of a Fork or Clone (`ExportPage.visuals`): what its calls' copies are, and keeping them. */
+export type VisualCopies = {
+  /** The copies of the Visuals of the calls in `callIds` and of the calls nested in them (a `codemode` script's), kept or not. */
+  readonly copiesFor: (callIds: ReadonlyArray<string>) => ReadonlyArray<VisualCopy>;
+  /** Keep the copies a Fork or Clone's source sent, as the calls of conversation `conversation`; the bounds apply. */
+  readonly adopt: (copies: ReadonlyArray<VisualCopy>, conversation: ConversationId) => void;
+};
+
+/**
  * One Visual of a conversation, as `visuals` lists them: `kept` (its page can be mounted) or `evicted` (a stub: the card shows
  * its title, summary, source, time and size). A state this build does not know reads as `evicted`.
  */

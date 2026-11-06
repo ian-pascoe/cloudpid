@@ -137,6 +137,7 @@ import type {
   ConfigureRequest,
   McpAppCopy,
   SessionStatusReport,
+  VisualCopy,
   StageImportAppend,
   StageImportBegin,
   StageImportFinish,
@@ -208,6 +209,7 @@ export type SessionMethods = {
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
     questions?: ReadonlyArray<McpQuestionCopy>,
+    visuals?: ReadonlyArray<VisualCopy>,
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents a Fork or Clone carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
@@ -1047,6 +1049,8 @@ export const SessionLive = Session.make(
                 reload: reloadSessionExtensions,
                 mcp: mcpTools,
                 apps: mcpApps.service,
+                // The Visuals a Fork or Clone carries with the calls it copies.
+                visuals,
                 // The App contexts Views sent, which the host writes to a conversation as an untrusted notice.
                 appContexts: mcpApps.service.contexts,
                 // The Resource watches of a branch the Session moved off are ended at the hosts, and its pending App contexts dropped.
@@ -1197,8 +1201,8 @@ export const SessionLive = Session.make(
           forkSource: (request) => invoked("session.fork.source", host.forkSource(request)),
           exportEntries: (request) => invoked("session.fork.export", host.exportEntries(request)),
           importStart: () => invoked("session.fork.start", host.importStart),
-          importEntries: (entries, apps, questions) =>
-            invoked("session.fork.import", host.importEntries(entries, apps, questions)),
+          importEntries: (entries, apps, questions, visuals) =>
+            invoked("session.fork.import", host.importEntries(entries, apps, questions, visuals)),
           importFinish: (plan) =>
             invoked(
               "session.fork.finish",

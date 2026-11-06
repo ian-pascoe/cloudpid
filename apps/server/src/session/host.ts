@@ -84,6 +84,7 @@ import {
   promptArguments,
   promptArgumentsProblem,
   type McpAppCopy,
+  type VisualCopy,
   SessionVia,
   clampPage,
   pageBlock,
@@ -96,6 +97,7 @@ import {
   type UserEntryData,
   userEntryData,
   type McpAppCopies,
+  type VisualCopies,
   type SentAppMessage,
   base64FromBytes,
   isMcpSpillPath,
@@ -610,6 +612,8 @@ export type SessionHostOptions<R = never> = {
    * it copies, a page of entries at a time.
    */
   readonly apps?: McpAppCopies | undefined;
+  /** The Session's Visuals (`docs/architecture/visuals.md` → Fork and Clone): a Fork or Clone carries those of the calls it copies. */
+  readonly visuals?: VisualCopies | undefined;
   /**
    * The App contexts the Views sent (`docs/architecture/mcp-apps.md` → App messages and App context): the pending ones of a
    * conversation are written to it as one untrusted notice when input is admitted to it (`admitDraft`), and while it is busy
@@ -867,11 +871,12 @@ export type SessionHostService = {
   readonly exportEntries: (request: ExportRequest) => Effect.Effect<ExportPage, SessionError>;
   /** Start filling this new Session as a Fork or Clone: it takes no message until `importFinish`. */
   readonly importStart: Effect.Effect<void, SessionError>;
-  /** Append a page of the source's entries to the root conversation, renumbered, and keep the App records it carries. */
+  /** Append a page of the source's entries to the root conversation, renumbered, and keep the App records, questions and Visuals it carries. */
   readonly importEntries: (
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
     questions?: ReadonlyArray<McpQuestionCopy>,
+    visuals?: ReadonlyArray<VisualCopy>,
   ) => Effect.Effect<void, SessionError>;
   /** Take the agent and documents the plan carries, and take messages from then on. */
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, SessionError>;
@@ -1618,6 +1623,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     picked,
     apps: options.apps,
     questions: options.records?.copies,
+    visuals: options.visuals,
     inArrivalOrder,
   });
 

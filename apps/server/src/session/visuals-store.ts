@@ -1,4 +1,4 @@
-// The Session's Visuals (`docs/architecture/visuals.md` → The copy, Socket messages): one record for each `visual_show`, written
+// The Session's Visuals (`docs/architecture/visuals.md` → The copy, Socket messages, Fork and Clone): one record for each `visual_show`, written
 // by the `visuals` extension through the Session's `VisualRecorder` into this object's key-value storage, outside History, and
 // read back for a mount (`visual_page`) on any device, after a reload and in an archived Session. The record's JSON is kept in
 // parts under `cloudpid:visual:<callId>:<n>`, with an index of every record and stub, oldest first, under `cloudpid:visuals`,
@@ -6,7 +6,8 @@
 // and 2000 stubs, past which the least recently mounted Visual (never the one just written) becomes a stub that keeps what its
 // card shows. The page arrives prepared (inlined, redacted, bounded: `@cloudpid/extensions/visuals`); the store keeps it, lists
 // it, and answers its page with the origin the Session's Visuals are served at, which is computed from the Session, never
-// kept. A write is one synchronous run, so no reader sees half of it.
+// kept. A Fork or Clone copies the Visuals of the calls it copies (`copiesFor`, `adopt`), reading each copy by its shape since
+// the source may be another build. A write is one synchronous run, so no reader sees half of it.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off -- plain storage reads under
 // Effect.sync, and a record of JSON values kept as its text (its write is one `Effect.try`, whose failure is the call's).
 import {
@@ -21,12 +22,14 @@ import {
   MAX_VISUALS,
   MAX_VISUALS_BYTES,
   sourcePathOf,
+  type VisualCopies,
+  type VisualCopy,
   type VisualDraft,
   type VisualEntry,
   type VisualPageAnswer,
   VisualRecord,
   type VisualSource,
-  type VisualStub,
+  VisualStub,
   visualSizeText,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -34,6 +37,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -61,22 +65,28 @@ type IndexEntry = CallRecordEntry<VisualFields>;
 
 const decodeRecord = Schema.decodeUnknownOption(Schema.fromJsonString(VisualRecord));
 
+const isRecord = Schema.is(VisualRecord);
+const isStub = Schema.is(VisualStub);
+
+const encoder = new TextEncoder();
+
 /** The Session's Visuals, as the sockets and the extension reach them. */
-export type SessionVisualsService = VisualRecorderService & {
-  /** `conversation`'s Visuals, oldest first: what `visuals` lists. */
-  readonly list: (conversation: ConversationId) => Effect.Effect<ReadonlyArray<VisualEntry>>;
-  /** `conversation`'s Visuals now, and again each time they change. */
-  readonly updates: (conversation: ConversationId) => Stream.Stream<ReadonlyArray<VisualEntry>>;
-  /** `callId`'s page with its origin (marking it the most recently mounted), its stub, or none. */
-  readonly page: (callId: string) => Effect.Effect<VisualPageAnswer>;
-  /**
-   * The file `callId`'s Visual was shown from and the conversation that showed it, kept or evicted, for Open file; none for
-   * an inline page or a call that showed no Visual.
-   */
-  readonly fileOf: (
-    callId: string,
-  ) => Effect.Effect<{ readonly conversation: string; readonly path: string } | undefined>;
-};
+export type SessionVisualsService = VisualRecorderService &
+  VisualCopies & {
+    /** `conversation`'s Visuals, oldest first: what `visuals` lists. */
+    readonly list: (conversation: ConversationId) => Effect.Effect<ReadonlyArray<VisualEntry>>;
+    /** `conversation`'s Visuals now, and again each time they change. */
+    readonly updates: (conversation: ConversationId) => Stream.Stream<ReadonlyArray<VisualEntry>>;
+    /** `callId`'s page with its origin (marking it the most recently mounted), its stub, or none. */
+    readonly page: (callId: string) => Effect.Effect<VisualPageAnswer>;
+    /**
+     * The file `callId`'s Visual was shown from and the conversation that showed it, kept or evicted, for Open file; none for
+     * an inline page or a call that showed no Visual.
+     */
+    readonly fileOf: (
+      callId: string,
+    ) => Effect.Effect<{ readonly conversation: string; readonly path: string } | undefined>;
+  };
 
 export class SessionVisuals extends Context.Service<SessionVisuals, SessionVisualsService>()(
   "@cloudpid/server/session/visuals-store/SessionVisuals",
@@ -260,6 +270,94 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
         : { status: "page", record: record.value, origin: options.origin };
     });
 
+  const copiesFor: SessionVisualsService["copiesFor"] = (callIds) => {
+    if (callIds.length === 0) return [];
+
+    const wanted = new Set(callIds);
+
+    return Arr.map(
+      Arr.filter(
+        records.index(),
+        (entry) =>
+          wanted.has(entry.callId) ||
+          (entry.parentCall !== undefined && wanted.has(entry.parentCall)),
+      ),
+      (entry): VisualCopy => {
+        if (entry.state === "kept") {
+          const record = decodeRecord(records.read(entry));
+
+          if (Option.isSome(record)) return { kind: "record", record: record.value };
+        }
+
+        // Evicted, or its parts are gone or unreadable: all that is left of it is a stub.
+        return { kind: "stub", stub: stubOf(entry) };
+      },
+    );
+  };
+
+  /** `entries` with `stub`'s call a stub of the conversation `root`. */
+  const adoptStub = (
+    entries: ReadonlyArray<IndexEntry>,
+    stub: VisualStub,
+    root: string,
+    at: number,
+  ) =>
+    records.stub(entries, {
+      ...fieldsOf({ ...stub, size: stub.bytes }),
+      callId: stub.callId,
+      conversation: root,
+      mountedAt: at,
+    });
+
+  const adopt: SessionVisualsService["adopt"] = (copies, conversation) => {
+    const at = now();
+    const root = String(conversation);
+    let entries = records.index();
+
+    for (const copy of copies) {
+      // A copy is an RPC's value, never decoded: each is read by its shape, and one this build cannot use is skipped, so a
+      // Fork from another build is still made and a card says "no longer kept" where its Visual is not.
+      if (copy.kind === "record" && "record" in copy && Predicate.isObject(copy.record)) {
+        const { record } = copy;
+
+        // Its size as this build counts it, which the bounds hold to.
+        const bytes = Predicate.isString(record.html)
+          ? encoder.encode(record.html).length
+          : record.bytes;
+
+        if (isRecord(record) && bytes <= MAX_VISUAL_BYTES) {
+          const kept: VisualRecord = { ...record, conversation: root, bytes };
+
+          entries = records.write(
+            entries,
+            kept.callId,
+            JSON.stringify(kept),
+            (parts): IndexEntry => ({
+              callId: kept.callId,
+              conversation: root,
+              state: "kept",
+              bytes,
+              parts,
+              mountedAt: at,
+              ...fieldsOf({ ...kept, size: bytes }),
+            }),
+          );
+        } else if (isStub({ ...record, bytes })) {
+          // A page this build cannot keep or read leaves what its card shows.
+          entries = adoptStub(entries, { ...record, bytes }, root, at);
+        }
+      } else if (copy.kind === "stub" && "stub" in copy && isStub(copy.stub)) {
+        entries = adoptStub(entries, copy.stub, root, at);
+      }
+    }
+
+    // The index is written once, after the bounds hold of every copy together.
+    const touched = records.settle(entries, undefined);
+
+    touched.add(root);
+    changed(touched);
+  };
+
   const updates: SessionVisualsService["updates"] = (conversation) =>
     Stream.callback<ReadonlyArray<VisualEntry>>((queue) =>
       Effect.acquireRelease(
@@ -304,6 +402,8 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
     updates,
     page,
     fileOf,
+    copiesFor,
+    adopt,
   };
 };
 

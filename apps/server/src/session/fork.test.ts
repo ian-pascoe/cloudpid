@@ -2,7 +2,7 @@
 import type { AgentState, EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import type { McpQuestionCopy, McpQuestionRecord } from "@cloudpid/extensions/mcp";
-import type { McpAppCopy } from "@cloudpid/protocol";
+import type { McpAppCopy, VisualCopy } from "@cloudpid/protocol";
 import { copiedDraft, copyAgent, exportPage, MAX_COPY_PAGE_SIZE, toolResultIds } from "./fork.ts";
 
 type FixtureValue =
@@ -200,6 +200,141 @@ describe("the App records of one entry too large for a page", () => {
       },
     });
     expect(JSON.stringify(page).length).toBeLessThanOrEqual(MAX_COPY_PAGE_SIZE + 1024);
+  });
+});
+
+describe("the Visuals a page of a Fork carries", () => {
+  const record = (callId: string, size: number): VisualCopy => ({
+    kind: "record",
+    record: {
+      callId,
+      conversation: "1",
+      title: `Visual ${callId}`,
+      summary: `What ${callId} shows`,
+      source: { kind: "path", path: "/workspace/v.html" },
+      html: "z".repeat(size),
+      bytes: size,
+      warnings: [{ kind: "wrapped", message: "Wrapped" }],
+      at: 7,
+    },
+  });
+
+  it("holds the copies of the calls its entries have results of, and none when there are none", () => {
+    const visualsOf = (each: EntryRecord) =>
+      toolResultIds(each).map((callId) => record(callId, 10));
+
+    const page = exportPage(
+      [entry(1), result(2, "call-2"), result(3, "call-3")],
+      false,
+      undefined,
+      undefined,
+      visualsOf,
+    );
+
+    expect(page.visuals).toEqual([record("call-2", 10), record("call-3", 10)]);
+    expect(page.entries).toHaveLength(3);
+    // A page of calls that showed no Visual has no `visuals` at all, as one from a Session before them.
+    expect(exportPage([entry(1)], false, undefined, undefined, visualsOf)).toEqual({
+      entries: [entry(1)],
+      next: null,
+    });
+  });
+
+  it("counts the copies in the page's size, so a page of large Visuals is cut, and its copies go with its entries", () => {
+    const visualsOf = (each: EntryRecord) =>
+      toolResultIds(each).map((callId) => record(callId, MAX_COPY_PAGE_SIZE / 2));
+
+    const page = exportPage(
+      [result(1, "a"), result(2, "b"), result(3, "c")],
+      false,
+      undefined,
+      undefined,
+      visualsOf,
+    );
+
+    expect(page.entries.map((each) => each.id)).toEqual([1]);
+    expect(page.next).toBe(1);
+    expect(page.visuals).toHaveLength(1);
+    expect(page.visuals?.[0]).toMatchObject({ kind: "record", record: { callId: "a" } });
+  });
+
+  it("fits to what is left of the page beside the entry and its App records", () => {
+    const apps = (): McpAppCopy[] => [stubOf("call-1")];
+
+    const left =
+      MAX_COPY_PAGE_SIZE -
+      JSON.stringify(result(1, "call-1")).length -
+      JSON.stringify(stubOf("call-1")).length;
+
+    // A record whose JSON is `weighing` characters.
+    const weighing = (weight: number) => {
+      let size = weight;
+
+      // Its `bytes` is a number of as many digits as `size` has, so settle on the size that makes the weight.
+      while (JSON.stringify(record("call-1", size)).length > weight) size -= 1;
+
+      return record("call-1", size);
+    };
+
+    const exactly = weighing(left);
+    const over = weighing(left + 1);
+
+    expect(
+      exportPage([result(1, "call-1")], false, apps, undefined, () => [exactly]).visuals,
+    ).toEqual([exactly]);
+    expect(
+      exportPage([result(1, "call-1")], false, apps, undefined, () => [over]).visuals?.[0]?.kind,
+    ).toBe("stub");
+  });
+});
+
+describe("the Visuals of one entry too large for a page", () => {
+  it("carries the records that fit, in order, and the rest as stubs with everything the card shows", () => {
+    const large = (callId: string): VisualCopy => ({
+      kind: "record",
+      record: {
+        callId,
+        conversation: "1",
+        parentCall: "script",
+        title: `Visual ${callId}`,
+        summary: `What ${callId} shows`,
+        source: { kind: "inline" },
+        html: "z".repeat(MAX_COPY_PAGE_SIZE / 3),
+        bytes: MAX_COPY_PAGE_SIZE / 3,
+        warnings: [],
+        at: 7,
+      },
+    });
+
+    // One `codemode` script's result, whose four nested Visuals weigh more than a page.
+    const visualsOf = () => ["a", "b", "c", "d"].map(large);
+
+    const page = exportPage([result(1, "script")], false, undefined, undefined, visualsOf);
+
+    expect(page.entries).toHaveLength(1);
+    expect(page.visuals?.map((copy) => copy.kind)).toEqual(["record", "record", "stub", "stub"]);
+    expect(page.visuals?.[3]).toEqual({
+      kind: "stub",
+      stub: {
+        callId: "d",
+        conversation: "1",
+        parentCall: "script",
+        title: "Visual d",
+        summary: "What d shows",
+        source: { kind: "inline" },
+        bytes: MAX_COPY_PAGE_SIZE / 3,
+        at: 7,
+      },
+    });
+    expect(JSON.stringify(page).length).toBeLessThanOrEqual(MAX_COPY_PAGE_SIZE + 1024);
+  });
+
+  it("keeps a stub, and a kind it does not know, as they are", () => {
+    const unknown: VisualCopy = { kind: "future" };
+
+    const page = exportPage([result(1, "a")], false, undefined, undefined, () => [unknown]);
+
+    expect(page.visuals).toEqual([unknown]);
   });
 });
 

@@ -13,6 +13,8 @@ import type {
   McpAppStub,
   McpPromptData,
   TreePoint,
+  VisualCopy,
+  VisualStub,
 } from "@cloudpid/protocol";
 import type {
   AgentState,
@@ -79,13 +81,14 @@ export type ExportRequest = {
  * One page of the entries a Fork copies, oldest first, and the entry the next page starts after (null: the last), and the
  * App records (and stubs) of the calls those entries hold the results of (`apps`; absent when there are none, or from a
  * Session before App records: a page only ever gains), and likewise the settled question records of those calls
- * (`questions`, never a value).
+ * (`questions`, never a value), and the Visuals of those calls (`visuals`, as the App records are).
  */
 export type ExportPage = {
   readonly entries: ReadonlyArray<EntryRecord>;
   readonly next: number | null;
   readonly apps?: ReadonlyArray<McpAppCopy>;
   readonly questions?: ReadonlyArray<McpQuestionCopy>;
+  readonly visuals?: ReadonlyArray<VisualCopy>;
 };
 
 /** The IDs of the tool calls whose results `entry` holds: the calls it copies, and the `codemode` calls that nested ones belong to. */
@@ -103,6 +106,9 @@ export type AppCopier = (entry: EntryRecord) => ReadonlyArray<McpAppCopy>;
  */
 export type QuestionCopier = (entry: EntryRecord, budget: number) => ReadonlyArray<McpQuestionCopy>;
 
+/** What a copy carries of the Visuals of the calls whose results an entry holds (`VisualCopies.copiesFor`). */
+export type VisualCopier = (entry: EntryRecord) => ReadonlyArray<VisualCopy>;
+
 /** What a record is left as when it does not fit a page: its stub (who the call was, and its time). */
 const stubOfCopy = (copy: McpAppCopy): McpAppCopy => {
   if (copy.kind !== "record" || !("record" in copy)) return copy;
@@ -115,15 +121,28 @@ const stubOfCopy = (copy: McpAppCopy): McpAppCopy => {
   return { kind: "stub", stub };
 };
 
+/** What a Visual is left as when it does not fit a page: its stub, everything its card shows without the page. */
+const stubOfVisualCopy = (copy: VisualCopy): VisualCopy => {
+  if (copy.kind !== "record" || !("record" in copy)) return copy;
+
+  const { callId, conversation, parentCall, title, summary, source, bytes, at } = copy.record;
+  const stub: Mutable<VisualStub> = { callId, conversation, title, summary, source, bytes, at };
+
+  if (parentCall !== undefined) stub.parentCall = parentCall;
+
+  return { kind: "stub", stub };
+};
+
 /**
- * `copies` as they fit in `budget` characters: the records in order while they do, the rest as stubs. A page is a single
- * RPC's value and an entry is never split from its copies, so what one entry's calls hold past the budget (a `codemode`
- * script with many App calls) is carried as stubs, which a card shows as "App data no longer kept".
+ * `copies` as they fit in `budget` characters: the records in order while they do, the rest as stubs (`stubOf`). A page is a
+ * single RPC's value and an entry is never split from its copies, so what one entry's calls hold past the budget (a
+ * `codemode` script with many App calls or Visuals) is carried as stubs, which a card shows as "no longer kept".
  */
-const fitCopies = (
-  copies: ReadonlyArray<McpAppCopy>,
+const fitCopies = <C extends { readonly kind: string }>(
+  copies: ReadonlyArray<C>,
   budget: number,
-): ReadonlyArray<McpAppCopy> => {
+  stubOf: (copy: C) => C,
+): ReadonlyArray<C> => {
   let left = budget;
 
   return Arr.map(copies, (copy) => {
@@ -135,7 +154,7 @@ const fitCopies = (
       return copy;
     }
 
-    const stub = stubOfCopy(copy);
+    const stub = stubOf(copy);
 
     left -= JSON.stringify(stub).length;
 
@@ -153,17 +172,21 @@ export const exportPage = (
   more: boolean,
   appsOf?: AppCopier,
   questionsOf?: QuestionCopier,
+  visualsOf?: VisualCopier,
 ): ExportPage => {
   const kept: EntryRecord[] = [];
   const apps: McpAppCopy[] = [];
   const questions: McpQuestionCopy[] = [];
+  const visuals: VisualCopy[] = [];
   let size = 0;
 
   for (const entry of entries) {
     const own = JSON.stringify(entry).length;
 
     const copies =
-      appsOf === undefined ? [] : fitCopies(appsOf(entry), Math.max(0, MAX_COPY_PAGE_SIZE - own));
+      appsOf === undefined
+        ? []
+        : fitCopies(appsOf(entry), Math.max(0, MAX_COPY_PAGE_SIZE - own), stubOfCopy);
 
     const withApps = own + Arr.reduce(copies, 0, (sum, copy) => sum + JSON.stringify(copy).length);
 
@@ -174,14 +197,28 @@ export const exportPage = (
         ? []
         : questionsOf(entry, Math.max(0, MAX_COPY_PAGE_SIZE - withApps));
 
-    const length =
+    const withQuestions =
       withApps + Arr.reduce(asked, 0, (sum, record) => sum + JSON.stringify(record).length);
+
+    // The Visuals fit in what is left, a page at most 2 MiB each, the rest of an entry's as stubs.
+    const shown =
+      visualsOf === undefined
+        ? []
+        : fitCopies(
+            visualsOf(entry),
+            Math.max(0, MAX_COPY_PAGE_SIZE - withQuestions),
+            stubOfVisualCopy,
+          );
+
+    const length =
+      withQuestions + Arr.reduce(shown, 0, (sum, copy) => sum + JSON.stringify(copy).length);
 
     if (kept.length > 0 && size + length > MAX_COPY_PAGE_SIZE) break;
 
     kept.push(entry);
     apps.push(...copies);
     questions.push(...asked);
+    visuals.push(...shown);
     size += length;
   }
 
@@ -193,6 +230,8 @@ export const exportPage = (
   if (apps.length > 0) page.apps = apps;
 
   if (questions.length > 0) page.questions = questions;
+
+  if (visuals.length > 0) page.visuals = visuals;
 
   return page;
 };
@@ -209,6 +248,7 @@ export type FillTarget<E, R> = {
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
     questions?: ReadonlyArray<McpQuestionCopy>,
+    visuals?: ReadonlyArray<VisualCopy>,
   ) => Effect.Effect<void, E, R>;
   readonly importFinish: (plan: ForkPlan) => Effect.Effect<void, E, R>;
 };
@@ -235,7 +275,7 @@ export const fillSession = <E, R>(
           after,
         });
 
-        yield* target.importEntries(page.entries, page.apps, page.questions);
+        yield* target.importEntries(page.entries, page.apps, page.questions, page.visuals);
         after = page.next;
       } while (after !== null);
     }
