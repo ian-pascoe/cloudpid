@@ -91,7 +91,7 @@ Additive; old tabs skip messages they do not know.
   - Pop out, Show here and the Visual Pane come with [#660](https://github.com/ian-pascoe/cloudpid/issues/660); until then a card has Collapse, Copy HTML, Open file and Details, and the places (`visual:`) choose between a card and a Subagent Pane or page.
   - The Escape is the notification `cloudpid/notifications/escape` (`VISUAL_ESCAPE`): ext-apps has none. The frame protocol takes it through a `notifications` option, and names its subject in the 10 s failure ("The Visual did not start within 10 seconds").
   - Collapse and Reopen are kept on the device with the App Views' choices, by call.
-  - A frame mounts within 1,200 px of the viewport and unmounts past 3,600 px, so a card at the edge does not flicker; the height guard counts any growth that answers a host resize within 1 s, whatever its amount (a page sized by its frame may climb in proportion as well as by a fixed step), so only a page that loads in stages apart from its frame's resizes is spared.
+  - A frame mounts within 1,200 px of the viewport and unmounts past 3,600 px, so a card at the edge does not flicker; the height guard counts any growth that answers a host resize within 200 ms (a frame or two), whatever its amount, since a script sized by its frame may climb in proportion as well as by a fixed step; a page that loads in stages a few hundred milliseconds apart is spared, and measuring at `max-content` already stops a CSS percentage from looping.
   - Copy HTML is offered once the page has loaded; Open file shows the file's text in a dialog (`visual_file`).
   - A link the page opens offers Open and Dismiss; the Browser Pane is an App View's choice.
 

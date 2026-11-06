@@ -117,8 +117,11 @@ describe("a Visual's height", () => {
     expect(proportional.set).toEqual([400, 440, 484, 484, 484]);
   });
 
-  it("does not freeze a page that loads in stages apart from its resizes, or that shrinks between them", () => {
-    expect(reports([300, 700, 760, 1500, 1520], GROWTH_WINDOW_MS + 1).guard.frozen).toBe(false);
+  it("does not freeze a page that loads in stages, or that shrinks between growths", () => {
+    // A font, a chart, then an image, each a few hundred milliseconds after the last.
+    expect(reports([300, 340, 900, 1300], 300).guard.frozen).toBe(false);
+    expect(reports([300, 340, 900, 1300], 500).guard.frozen).toBe(false);
+    expect(reports([400, 420, 440, 460], GROWTH_WINDOW_MS + 1).guard.frozen).toBe(false);
     expect(reports([400, 420, 410, 430, 450]).guard.frozen).toBe(false);
   });
 

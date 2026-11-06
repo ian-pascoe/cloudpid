@@ -1,8 +1,9 @@
 // docs/architecture/visuals.md → The frame: Height. A Visual's frame fits its content from 160 px up to 20,000 px and then
 // scrolls inside; a page whose height grows after each of 3 consecutive host resizes (one that sizes itself by its frame, and
-// would climb to the cap) is frozen where it is: growth that answers a resize within a second, by any amount (a page sized by
-// its frame may climb by a fixed step or in proportion), and not a page that loads in stages (an image, then a chart) apart
-// from its frame's resizes; and the height is remembered on this device, so a reload, a remount or a lazy unmount keeps the
+// would climb to the cap) is frozen where it is: growth that answers a resize within a frame or two, by any amount (a script
+// that sizes the page by its frame may climb by a fixed step or in proportion), and not a page that loads in stages (a font,
+// then a chart, then an image), each a few hundred milliseconds apart. Measuring the content at `max-content` (the shim)
+// already stops a CSS percentage from looping, so what is left is a script's; and the height is remembered on this device, so a reload, a remount or a lazy unmount keeps the
 // transcript where it was. Pure: the reports and the clock go in.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- plain decisions over small native lists.
 import { VISUAL_GROWTH_RESIZES, VISUAL_MAX_HEIGHT, VISUAL_MIN_HEIGHT } from "@cloudpid/protocol";
@@ -11,8 +12,11 @@ import { VISUAL_GROWTH_RESIZES, VISUAL_MAX_HEIGHT, VISUAL_MIN_HEIGHT } from "@cl
 export const fitHeight = (reported: number): number =>
   Math.min(VISUAL_MAX_HEIGHT, Math.max(VISUAL_MIN_HEIGHT, Math.ceil(reported)));
 
-/** How soon after a host resize a page's growth counts as an answer to it, in ms. */
-export const GROWTH_WINDOW_MS = 1000;
+/**
+ * How soon after a host resize a page's growth counts as an answer to it, in ms: a frame or two, as a script that sizes the
+ * page by its frame answers; a page's own stages come later.
+ */
+export const GROWTH_WINDOW_MS = 200;
 
 /**
  * What the guard knows of a frame: the height the host set last and when, how many resizes in a row the page grew after,
