@@ -103,14 +103,14 @@ Additive; old tabs skip messages they do not know.
 
 `BrowserHost.checkVisual` (`apps/browser`), on the host's own CDP socket (`openCdpSocket`), never on a conversation's tab or an Owner tab ([_Browser_](browser.md)).
 
-- **The context:** a browser context with `disposeOnDetach`, a target in it, and the viewport (`width`) and color scheme (`theme`) emulated.
-- **The page:** `Fetch` fulfils `https://visual.invalid/` with the page and the real CSP header, built by the same `buildCsp` as the sandbox's; requests to the list's hosts pass, and everything else fails. A real header on an https origin matches the frame. `Page.setDocumentContent` with a `<meta>` CSP is kept as the fallback: it lands on an opaque origin, where `localStorage` throws.
-- **Measuring:** it waits for the load, the fonts and two frames (at most 10 s), measures the layout, runs the growth probe, and collects console messages, CSP violations and failed loads.
+- **The context:** a browser context with `disposeOnDetach` (it ends with the socket that made it, so a dropped socket takes it too), a target in it, and the viewport (`width`, with `mobile` false: a mobile viewport lays a page with no viewport meta out at 980 px) and color scheme (`theme`) emulated.
+- **The page:** `Fetch` fulfils `https://visual.invalid/` with the page and the real CSP header, built by the same `buildCsp` as the sandbox's; requests to the list's hosts pass, and everything else fails. A real header on an https origin matches the frame. The check adds `sandbox allow-scripts allow-same-origin` to the header, the frame's flags, on top of `buildCsp`'s output and not in `buildCsp`, so App Views and the sandbox Worker do not change ([ADR-0046](../adr/0046-visuals-are-first-party-and-kept-apart-from-mcp-apps-sharing-only-the-app-sandbox-and-the-frames-components.md)): without it a pop-up, a new target `Fetch` on the page does not see, reaches the network. `Page.setDocumentContent` with a `<meta>` CSP is kept as the fallback, which the spike showed is not needed: it lands on an opaque origin, where `localStorage` throws, and a meta cannot carry `sandbox`, so it would need a pop-up guard of its own ([_Risks_](risks-and-spikes.md)).
+- **Measuring:** it waits for the load, the fonts and two frames (at most 10 s), measures the layout, runs the growth probe, and collects console messages (`Runtime.consoleAPICalled`), CSP violations (`Log.entryAdded` of source `security` and `Audits.issueAdded`, each of which saw every kind the spike made; neither is a console message or an exception; the check drops the `sandbox` directive's own `Log.entryAdded` warning, "an iframe with both allow-scripts and allow-same-origin can remove its sandbox", rather than report it as the page's) and failed loads (`Network.loadingFailed`, which a CSP-blocked script or image has, with `blockedReason: csp`, and a blocked `fetch` or `eval` does not).
 - **The screenshot:** JPEG at quality 80, clipped to 3,000 px from `top`; over 750,000 base64 characters (the bound the transcript holds images to: [_Filesystem and tools_](workspace.md#filesystem-and-tools)) it is retaken at quality 60, then with the clip halved.
 - **Bounds:** the context is disposed in a `finally`; one check runs at a time per Session, for at most 20 s in all, and each is noted as a use of the browser, as a `browser` run is, for the idle close.
 - **Cost:** the screenshot's tokens count at `Models`, as any input's; browser time does not, as with `browser`, and a context starts no new browser instance. A ledger of browser time was rejected: `browser` has none either.
 - **Failures:** a browser that is unavailable fails the call ("not checked"), a partial result warns, and a Browsers Worker without `checkVisual` makes the tool fail as "unavailable".
-- **Not yet probed:** nothing of this has been run on Browser Run, whose docs show contexts only by example and say nothing of `Fetch.fulfillRequest`. A spike on a deployed non-prod stage comes first and gates `visual_check` only ([_Risks_](risks-and-spikes.md); [_Slices_](#slices)).
+- **Probed, in part:** the spike ran the context, the fulfilled page, the CSP and its events, the screenshots, the times and the cleanup on a deployed non-prod stage, over `openCdpSocket`; its numbers, what it did not run (the growth probe, the 10 s wait, the retake ladder as a ladder, WebRTC and the resource hints) and what it found ([_Risks_](risks-and-spikes.md), #657) are not repeated here. The violation events were seen with the `sandbox` directive on the header. No check ran through the real `checkVisual`, so #661 confirms the events and the directive on a deployed stage before `visual_check` ships; the spike no longer gates the design, and `visual_check` waits for S1 ([_Slices_](#slices)).
 
 ## Fork and Clone
 
@@ -144,7 +144,7 @@ Following [`AGENTS.md`](../../AGENTS.md)'s conventions; a Playwright runner was 
 - **Node unit tests:** the protocol types; the shim's served text, run in a fake window; the preparation of a show and of a check; `visual-check.test.ts`, on a scripted `CdpTransport`; the view hash (the Session's origin); the page fitting in `fork.ts`; the library table (exact-version URLs), and its opt-in fetch and eval scan (`VISUAL_LIBS_CHECK=1`).
 - **Workerd tests:** `call-records` (the extracted primitive), the App store's tests as its regression, and `visuals.workerd.test.ts`: the socket messages, a Fork across builds, and a recording tracer for the spans.
 - **Web component tests:** the card, the frame, the height, lazy mounting and the places; the `styles.css` drift test of the style-variable values; the 736 px constant against the layout.
-- **Real browsers:** the spike ([_The check_](#the-check)), and a hand checklist on a preview stage, on desktop Chrome, Safari and Firefox, iPhone Safari and Android Chrome, which adds touch scrolling over a frame on the phones (the iPhone's result decides S5) and wheel chaining on desktop Firefox and Safari.
+- **Real browsers:** the spike, done ([_The check_](#the-check)); S4's deployed-stage confirmation of the events and the directive; and a hand checklist on a preview stage, on desktop Chrome, Safari and Firefox, iPhone Safari and Android Chrome, which adds touch scrolling over a frame on the phones (the iPhone's result decides S5) and wheel chaining on desktop Firefox and Safari.
 
 ## Slices
 
@@ -152,10 +152,10 @@ Each slice ships alone and degrades safely; one big change was rejected, since t
 
 - **S0a:** extract the chunked-record primitive from the App record store; the App store's tests are its regression.
 - **S0b:** move the shared frame code from `apps/web/src/app-view/` into `apps/web/src/sandbox-frame/`; App View tests move with it.
-- **Spike:** the check on Browser Run, run in parallel from the start ([_Risks_](risks-and-spikes.md)).
+- **Spike:** the check on Browser Run, done: it settled the design, with the header's `sandbox` directive added ([_Risks_](risks-and-spikes.md); #657).
 - **S1:** `visual_show` end to end: the extension, the store, the socket messages, the shim and the card.
 - **S2:** Fork and Clone copies, in parallel with S3.
 - **S3:** the Visual Pane, in parallel with S2.
-- **S4:** `visual_check`, after the spike and S1.
+- **S4:** `visual_check`, after S1 (the spike is done). Before it ships, it confirms on a deployed stage, through the real `checkVisual`, the violation events and the `sandbox` directive (#661).
 - **S5:** the tap-to-interact overlay, only if the iPhone check fails.
 - **Not a slice:** `Connection-Allowlist` on the proxy page is a separate App sandbox follow-up ([#664](https://github.com/ian-pascoe/cloudpid/issues/664); [_Network and isolation_](#network-and-isolation)).
