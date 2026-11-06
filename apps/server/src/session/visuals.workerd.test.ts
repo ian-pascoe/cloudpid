@@ -19,6 +19,7 @@ import {
   type VisualEntry,
   type VisualRecord,
 } from "@cloudpid/protocol";
+import type { VisualCheckInput, VisualCheckResult } from "@cloudpid/extensions/browser/contract";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -65,6 +66,18 @@ const show = async (stub: DurableObjectStub<TestSession>, args: Record<string, s
   await runInDurableObject(stub, async (instance: TestSession) => {
     instance.script([`call:visual_show:${JSON.stringify(args)}`, "done"]);
     await instance.submit({ requestId: `turn-${counter++}`, text: "show it" });
+  });
+  await idle(stub);
+};
+
+/** The model calls `visual_check` with `args`, and the call is done. */
+const check = async (
+  stub: DurableObjectStub<TestSession>,
+  args: Record<string, string | number>,
+) => {
+  await runInDurableObject(stub, async (instance: TestSession) => {
+    instance.script([`call:visual_check:${JSON.stringify(args)}`, "done"]);
+    await instance.submit({ requestId: `turn-${counter++}`, text: "check it" });
   });
   await idle(stub);
 };
@@ -381,6 +394,162 @@ describe("a Visual shown in a Session", () => {
     for (const words of ["Secret title", "Secret summary", "fragment", "example.com"]) {
       expect(recorded).not.toContain(words);
     }
+  });
+
+  describe("checked with visual_check", () => {
+    const FOUND: VisualCheckResult = {
+      coldStart: true,
+      contentHeight: 5_200,
+      screenshot: { data: "AAAA", mimeType: "image/jpeg", top: 0, height: 3_000, quality: 80 },
+      clipped: true,
+      growth: { grows: false, heights: [5_200, 5_200] },
+      console: [{ type: "error", text: "secret console words" }],
+      violations: ["connect-src blocked https://secret.example/api"],
+      failedLoads: [{ url: "https://secret.example/x.png", reason: "csp" }],
+      warnings: [],
+    };
+
+    /** Script what the browser host answers a check: its result, or the failure of the call. */
+    const script = (
+      stub: DurableObjectStub<TestSession>,
+      kvKey: "visual-check-result" | "visual-check-failure",
+      value: VisualCheckResult | string,
+    ) =>
+      runInDurableObject(stub, (_instance: TestSession, state) => {
+        state.storage.kv.put(kvKey, value);
+      });
+
+    /** The pages the browser host was asked to check, oldest first; none when it was never asked. */
+    const asked = (stub: DurableObjectStub<TestSession>) =>
+      runInDurableObject(stub, (_instance: TestSession, state) =>
+        // SAFETY: the test host (`testBrowserHost`) keeps each `VisualCheckInput` it is given under this key.
+        state.storage.kv.get<VisualCheckInput[]>("visual-checks"),
+      );
+
+    it("asks the browser host to render the prepared page at the width, theme and top, and tells the model what it found", async () => {
+      const { stub } = fresh();
+
+      await script(stub, "visual-check-result", FOUND);
+      await check(stub, { html: PAGE, width: 360, theme: "dark", top: 100 });
+
+      const pages = await asked(stub);
+
+      expect(pages).toHaveLength(1);
+      expect(pages?.[0]).toMatchObject({ width: 360, theme: "dark", top: 100 });
+      expect(pages?.[0]?.html).toContain("<h1>Sales</h1>");
+
+      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.toolResults(),
+      );
+
+      expect(text).toContain("Checked at 360 px wide in the dark theme");
+      expect(text).toContain("5200 px tall");
+      expect(text).toContain("check again with top 3000");
+      expect(text).toContain("[error] secret console words");
+      expect(text).toContain("connect-src blocked https://secret.example/api");
+      expect(text).toContain("https://secret.example/x.png (csp)");
+    });
+
+    it("renders at the thread's width in the light theme from the top unless told otherwise, and keeps nothing", async () => {
+      const { stub } = fresh();
+
+      await check(stub, { html: PAGE });
+
+      expect(await asked(stub)).toMatchObject([{ width: 736, theme: "light", top: 0 }]);
+
+      const client = await connect(stub);
+      const { root } = await client.root();
+
+      client.send({ type: "watch", conversationId: root });
+      expect(await client.visuals(root)).toEqual([]);
+      client.close();
+    });
+
+    it("fails as not checked when the browser is unavailable", async () => {
+      const { stub } = fresh();
+
+      await script(stub, "visual-check-failure", "checkVisual: Error: Browser Run is down");
+      await check(stub, { html: PAGE });
+
+      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.toolResults(),
+      );
+
+      expect(text).toContain("Not checked");
+      expect(text).toContain("Browser Run is down");
+    });
+
+    it("fails as unavailable when the Browsers Worker predates the check", async () => {
+      const { stub } = fresh();
+
+      await script(stub, "visual-check-failure", "checkVisual: visual_check is unavailable");
+      await check(stub, { html: PAGE });
+
+      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.toolResults(),
+      );
+
+      expect(text).toContain("visual_check is unavailable");
+    });
+
+    it("warns of what a partial result could not do", async () => {
+      const { stub } = fresh();
+
+      const { screenshot: _taken, ...without } = FOUND;
+
+      await script(stub, "visual-check-result", {
+        ...without,
+        warnings: ["The screenshot failed: boom"],
+      });
+      await check(stub, { html: PAGE });
+
+      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.toolResults(),
+      );
+
+      expect(text).toContain("There is no screenshot");
+      expect(text).toContain("Warning: The screenshot failed: boom");
+    });
+
+    it("refuses a page that gives both sources before it asks the browser", async () => {
+      const { stub } = fresh();
+
+      await check(stub, { html: PAGE, path: "/workspace/a.html" });
+
+      expect(await asked(stub)).toBeUndefined();
+    });
+
+    it("puts counts and fixed values on the call's span, never the page's words, the console's or a host", async () => {
+      const { stub } = fresh();
+
+      await script(stub, "visual-check-result", FOUND);
+      await check(stub, { html: "<p>secret page words</p>", width: 360 });
+
+      const spans = await runInDurableObject(stub, (instance: TestSession) =>
+        Arr.filter(instance.spans(), (span) => span.name === "pi.tool.visual_check"),
+      );
+
+      expect(spans).toHaveLength(1);
+      expect(spans[0]?.attributes).toMatchObject({
+        "tool.is_error": false,
+        "visual.width": 360,
+        "visual.theme": "light",
+        "visual.cold_start": true,
+        "visual.outcome": "checked",
+        "visual.console": 1,
+        "visual.violations": 1,
+        "visual.failed_loads": 1,
+        "visual.content_height": 5_200,
+        "visual.screenshot_bytes": 3,
+        "visual.clipped": true,
+      });
+
+      const recorded = JSON.stringify(spans);
+
+      for (const words of ["secret page words", "secret console words", "secret.example"]) {
+        expect(recorded).not.toContain(words);
+      }
+    });
   });
 
   it("tells the model when to show a Visual in a section of its own, which the tool's grant shows", async () => {

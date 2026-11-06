@@ -3,6 +3,7 @@
 // rules, the layout, the style variables and the libraries. Both are fixed text, so the provider's prompt cache keeps hitting
 // (AGENTS.md → Prompt cache); the description is one constant, bumped by a deliberate deploy.
 // @effect-diagnostics preferEffectArray:off -- static text over small constant tables.
+import { VISUAL_CHECK_CLIP_PX } from "../browser/contract.ts";
 import {
   CONSTANTS,
   MAX_VISUAL_ASSET_BYTES,
@@ -13,6 +14,7 @@ import {
   VISUAL_HOSTS,
   VISUAL_KNOWN_FAILURES,
   VISUAL_LIBRARIES,
+  VISUAL_CHECK,
   VISUAL_PHONE_WIDTH,
   VISUAL_SCRATCH_DIRECTORY,
   VISUAL_SHOW,
@@ -20,12 +22,12 @@ import {
   visualSizeText,
 } from "@cloudpid/protocol";
 
-export { VISUAL_SHOW };
+export { VISUAL_CHECK, VISUAL_SHOW };
 
 /** The `visuals` section's lines: when to show a Visual, and how to reach the tool when it is deferred. Never changes. */
 export const VISUALS_SECTION = [
   `- When a picture says it better than text (a chart, a diagram, an explainer, a mockup), show the owner a Visual with ${VISUAL_SHOW}: a page of your own rendered inline in this conversation, on desktop and phone. Don't restate what it shows.`,
-  `- If ${VISUAL_SHOW} is not loaded, load it with tool_search ("visual") first; its description has the page rules and the libraries.`,
+  `- If ${VISUAL_SHOW} or ${VISUAL_CHECK} is not loaded, load it with tool_search ("visual") first; ${VISUAL_SHOW}'s description has the page rules and the libraries, and ${VISUAL_CHECK} looks at a page before you show it.`,
 ].join("\n");
 
 const styleVariables = [...TOKENS.map(([name]) => name), ...CONSTANTS.map(([name]) => name)];
@@ -43,6 +45,7 @@ export const VISUAL_SHOW_DESCRIPTION = [
   "- One HTML document; scripts and styles inline or from the list below. No network calls (fetch, XHR, WebSocket, EventSource), forms or frames: they are blocked.",
   "- No viewport-height units (vh, svh, lvh, dvh) in the page's CSS: the call fails on them. The frame fits its height to the content.",
   "- Never ask the owner for credentials or anything private in a Visual.",
+  `- Check the page with ${VISUAL_CHECK} before you show it, and in dark too when it sets its own colors.`,
   "- Accessible: alt on images, <title> in SVGs, real text rather than text drawn in a canvas, and respect prefers-reduced-motion. Set touch-action, overscroll-behavior and touch listeners (passive: true unless a gesture needs otherwise) only where a gesture needs them, or the page can trap the chat's scrolling on a phone.",
   "",
   `Layout: the frame is the thread's width (${VISUAL_THREAD_WIDTH} px on a desktop, about ${VISUAL_PHONE_WIDTH} on a phone) and grows with the content, from 160 px up to 20,000 px, so a long explainer is one tall page, not a scroll box. Design for both widths.`,
@@ -54,4 +57,13 @@ export const VISUAL_SHOW_DESCRIPTION = [
   `Known not to work: ${VISUAL_KNOWN_FAILURES.join("; ")}.`,
   "",
   'The result is "Shown" with any warnings (a missing or too large asset, a host not on the list, network calls, a frame or form, touch handling, Secrets replaced, a fragment wrapped): fix what they say and show again. Scripts get { id, title, bytes, source_path, supersedes, warnings }.',
+].join("\n");
+
+/** `visual_check`'s description (`docs/architecture/visuals.md` → Tools): static; the page rules are `visual_show`'s. */
+export const VISUAL_CHECK_DESCRIPTION = [
+  `Look at a page before you show it with ${VISUAL_SHOW}: it is rendered in a real browser, in a throwaway context, with the theme, the style variables and the policy a Visual's frame gives it, and you get a screenshot with what was measured and seen. Nothing is shown to the owner or kept. The page rules, layout, style variables and libraries are in ${VISUAL_SHOW}'s description.`,
+  "",
+  `Give exactly one of path (an HTML file of this Workspace, its local images, stylesheets and scripts inlined as ${VISUAL_SHOW} does) or html (the page itself), and optionally width (default ${VISUAL_THREAD_WIDTH} px, the thread's column on a desktop; use ${VISUAL_PHONE_WIDTH} for a phone), theme ("light" by default, or "dark": also check dark when the page sets its own colors) and top (where the screenshot starts, in px, default 0; it shows at most ${VISUAL_CHECK_CLIP_PX} px, so check a long page again with a later top).`,
+  "",
+  "The result is a JPEG screenshot and: the page's height, whether the screenshot is clipped, whether the page grows after each time its frame is resized (a height that follows the frame's, which the frame freezes), what the page logged to the console or threw, what the policy blocked (CSP violations), the resources that failed to load, and warnings (a partial result says what could not be done). Fix what it reports, then show the page. It fails with \"not checked\" when the browser is unavailable.",
 ].join("\n");

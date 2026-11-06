@@ -7,12 +7,17 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain functions over small values.
 import type { JsonValue } from "@earendil-works/pi-ai";
 import * as Schema from "effect/Schema";
+import { buildCsp, NO_OWN_HOSTS } from "./csp.ts";
 import { ConversationId } from "./conversation-id.ts";
+import { visualStyleVariables } from "./style-variables.ts";
 
 const MiB = 1024 * 1024;
 
 /** The tool that shows a Visual: the one name the extension defines it by and the client knows its card by. */
 export const VISUAL_SHOW = "visual_show";
+
+/** The tool that checks a Visual before it is shown (`docs/architecture/visuals.md` → The check). */
+export const VISUAL_CHECK = "visual_check";
 
 /** A bound in bytes as messages say it: `2 MiB`, `1 MiB`, `512 KiB`. */
 export const visualSizeText = (bytes: number): string =>
@@ -73,6 +78,22 @@ export const VISUAL_HOSTS = [
 export const VISUAL_CSP = {
   resourceDomains: VISUAL_HOSTS.map((host) => `https://${host}`),
 } as const;
+
+/**
+ * The flags of a Visual's frame, as the header's `sandbox` directive says them: what `visual_check` adds to the policy of the
+ * page it renders at the top level, where there is no frame to give them. Without it a pop-up (a new target the check's
+ * `Fetch` does not see) reaches the network (`docs/architecture/risks-and-spikes.md`, #657).
+ */
+export const VISUAL_SANDBOX_DIRECTIVE = "sandbox allow-scripts allow-same-origin";
+
+/**
+ * The `Content-Security-Policy` header of a Visual the check renders (`docs/architecture/visuals.md` → The check): the policy
+ * the sandbox gives a frame (`buildCsp`, the same function, over `VISUAL_CSP`) and the frame's flags. `frame-ancestors` is
+ * `'none'`: the page is the top-level document, framed by no one. The list names none of cloudpid's hosts, so nothing is
+ * dropped as its own.
+ */
+export const visualCheckPolicy = (): string =>
+  `${buildCsp(JSON.stringify(VISUAL_CSP), "'none'", NO_OWN_HOSTS)}; ${VISUAL_SANDBOX_DIRECTIVE}`;
 
 /** Whether `host` (a URL's host name) is one of the list's. */
 export const isVisualHost = (host: string): boolean => {
@@ -342,6 +363,27 @@ export const VisualShown = Schema.Struct({
 
 export type VisualShown = typeof VisualShown.Type;
 
+/**
+ * What `visual_check` gives a script (`docs/architecture/visuals.md` → Tools): the width and theme it rendered at, the page's
+ * content height, whether the screenshot shows less than the page (and from where to where it does), whether the page grows
+ * after each of the frame's resizes, and what the page logged, was blocked from and failed to load, with the check's own
+ * warnings. The screenshot itself is an image of the result, never a value.
+ */
+export const VisualChecked = Schema.Struct({
+  width: Schema.Finite,
+  theme: Schema.Literals(["light", "dark"]),
+  content_height: Schema.Finite,
+  clipped: Schema.Boolean,
+  screenshot: Schema.NullOr(Schema.Struct({ top: Schema.Finite, height: Schema.Finite })),
+  grows: Schema.Boolean,
+  console: Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.String })),
+  violations: Schema.Array(Schema.String),
+  failed_loads: Schema.Array(Schema.Struct({ url: Schema.String, reason: Schema.String })),
+  warnings: Schema.Array(Schema.String),
+});
+
+export type VisualChecked = typeof VisualChecked.Type;
+
 /** The key of a `visual_show` result's `details` that holds what it showed (`VisualShown`, with its `summary`). */
 export const VISUAL_DETAILS_KEY = "visual";
 
@@ -389,6 +431,16 @@ export const shownVisualOf = (details: JsonValue | undefined): ShownVisual | und
 // ---------------------------------------------------------------------------------------------------------------------
 // The shim
 
+/** The WebRTC constructors the shim deletes before the page's scripts run (and the check's prelude does), a speed bump. */
+export const VISUAL_WEBRTC_NAMES = [
+  "RTCPeerConnection",
+  "webkitRTCPeerConnection",
+  "mozRTCPeerConnection",
+  "RTCDataChannel",
+  "RTCSessionDescription",
+  "RTCIceCandidate",
+] as const;
+
 /** The notification the shim posts for an Escape the page did not handle; cloudpid's own, since ext-apps has none. */
 export const VISUAL_ESCAPE = "cloudpid/notifications/escape";
 
@@ -407,7 +459,7 @@ export const VISUAL_SHIM = `(function () {
   var host = window.parent;
   if (!host || host === window) return;
   var target = window.location.origin && window.location.origin !== "null" ? window.location.origin : "*";
-  ["RTCPeerConnection", "webkitRTCPeerConnection", "mozRTCPeerConnection", "RTCDataChannel", "RTCSessionDescription", "RTCIceCandidate"].forEach(function (name) {
+  ${JSON.stringify(VISUAL_WEBRTC_NAMES)}.forEach(function (name) {
     try { Object.defineProperty(window, name, { value: undefined, configurable: false, writable: false }); } catch (e) {}
   });
   var style = document.createElement("style");
@@ -504,9 +556,8 @@ export const VISUAL_SHIM = `(function () {
   });
 })();`;
 
-/** `html` with the shim first in its `<head>` (or right after `<html>`, or first of all), so it runs before the page's scripts. */
-export const withVisualShim = (html: string): string => {
-  const script = `<script>${VISUAL_SHIM}</script>`;
+/** `html` with `script` first in its `<head>` (or right after `<html>`, or first of all), so it runs before the page's scripts. */
+const withScriptFirst = (html: string, script: string): string => {
   const head = /<head(\s[^>]*)?>/i.exec(html);
 
   if (head !== null) {
@@ -529,3 +580,28 @@ export const withVisualShim = (html: string): string => {
     ? `${script}${html}`
     : `${doctype[0]}${script}${html.slice(doctype[0].length)}`;
 };
+
+/** `html` with the shim first in its `<head>` (or right after `<html>`, or first of all), so it runs before the page's scripts. */
+export const withVisualShim = (html: string): string =>
+  withScriptFirst(html, `<script>${VISUAL_SHIM}</script>`);
+
+/**
+ * What `visual_check` runs first in the page it renders at the top level, where the shim (which answers only a host above it)
+ * would do nothing: the theme and style variables a frame is told, on `<html>` (`color-scheme`, `data-theme` and the custom
+ * properties, as the shim applies them), and the WebRTC constructors deleted. The values are the table's for `theme`.
+ */
+export const visualCheckPrelude = (theme: "light" | "dark"): string =>
+  `(function () {
+  var root = document.documentElement;
+  root.style.colorScheme = ${JSON.stringify(theme)};
+  root.setAttribute("data-theme", ${JSON.stringify(theme)});
+  var variables = ${JSON.stringify(visualStyleVariables(theme))};
+  Object.keys(variables).forEach(function (key) { root.style.setProperty(key, variables[key]); });
+  ${JSON.stringify(VISUAL_WEBRTC_NAMES)}.forEach(function (name) {
+    try { Object.defineProperty(window, name, { value: undefined, configurable: false, writable: false }); } catch (e) {}
+  });
+})();`;
+
+/** `html` as `visual_check` renders it: the prelude first in its `<head>`, never stored. */
+export const withVisualCheckPrelude = (html: string, theme: "light" | "dark"): string =>
+  withScriptFirst(html, `<script>${visualCheckPrelude(theme)}</script>`);

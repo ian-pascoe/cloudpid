@@ -15,6 +15,8 @@ import type {
   OwnerTabLinks,
   OwnerTabListing,
   OwnerTabPageRead,
+  VisualCheckInput,
+  VisualCheckResult,
 } from "./contract.ts";
 
 export {
@@ -40,6 +42,17 @@ export {
   type OwnerTabListing,
   SHOWN_OWNER_TAB,
   type OwnerTabPageRead,
+  VISUAL_CHECK_CLIP_PX,
+  VISUAL_CHECK_IMAGE_CHARACTERS,
+  VISUAL_CHECK_LOAD_MS,
+  VISUAL_CHECK_MAX_ITEMS,
+  VISUAL_CHECK_MAX_TEXT,
+  VISUAL_CHECK_MS,
+  type VisualCheckFailedLoad,
+  type VisualCheckInput,
+  type VisualCheckMessage,
+  type VisualCheckResult,
+  type VisualCheckScreenshot,
 } from "./contract.ts";
 
 /** The browser could not be reached or failed outside the model's code: the model sees `message` as the error result. */
@@ -64,6 +77,12 @@ export type BrowserHostService = {
   }) => Effect.Effect<BrowserRun, BrowserError>;
   /** Close the Session's browser; says whether there was one. The next `run` starts a new browser. */
   readonly close: Effect.Effect<boolean, BrowserError>;
+  /**
+   * Render a Visual's page in a throwaway context of the browser and say what was measured and seen (`VisualCheckResult`).
+   * Fails (`BrowserError`) when the browser is unavailable or the check cannot finish, and when the host predates the check
+   * (the message holds `VISUAL_CHECK_UNAVAILABLE`).
+   */
+  readonly checkVisual: (input: VisualCheckInput) => Effect.Effect<VisualCheckResult, BrowserError>;
   /**
    * Hand conversation `conversationId`'s tab to the owner (Browser Run's `Cloudflare.handoff`). Starting a handoff again
    * under the same `requestId` finds the one already started. Fails when the conversation has no tab to hand over.
@@ -110,6 +129,9 @@ export type BrowserHostService = {
    */
   readonly endHandoff: (requestId: string) => Effect.Effect<HandoffEnded, BrowserError>;
 };
+
+/** What the message of a failed `checkVisual` holds when the Browsers Worker has no such method yet (one from before it). */
+export const VISUAL_CHECK_UNAVAILABLE = "visual_check is unavailable";
 
 export class BrowserHost extends Context.Service<BrowserHost, BrowserHostService>()(
   "@cloudpid/extensions/browser/host/BrowserHost",

@@ -161,6 +161,7 @@ export class TestWorkspaceSession extends TestSession {
         describe: Effect.succeed(""),
         run: () => Effect.succeed({ output: [] }),
         close: Effect.succeed(false),
+        checkVisual: () => Effect.die("No browser"),
         startHandoff: () => Effect.die("No browser"),
         liveView: () => Effect.die("No browser"),
         ownerTabView: () => Effect.die("No browser"),

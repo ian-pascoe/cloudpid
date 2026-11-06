@@ -163,6 +163,71 @@ export type BrowserOutputPart =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "image"; readonly data: string; readonly mimeType: string };
 
+// ---------------------------------------------------------------------------------------------------------------------
+// The Visual check (`docs/architecture/visuals.md` → The check)
+
+/** The longest a check runs in all, from the first command to the dispose. */
+export const VISUAL_CHECK_MS = 20_000;
+
+/** The longest a check waits for the load, the fonts and two frames. */
+export const VISUAL_CHECK_LOAD_MS = 10_000;
+
+/** The tallest part of the page a screenshot shows, in CSS pixels, from `top`. */
+export const VISUAL_CHECK_CLIP_PX = 3_000;
+
+/**
+ * The most base64 characters of a screenshot a check returns: the bound the transcript holds images to
+ * (`MAX_IMAGE_CHARACTERS` in `../images/prepare.ts`, which a test holds this to).
+ */
+export const VISUAL_CHECK_IMAGE_CHARACTERS = 750_000;
+
+/** The most console messages, violations and failed loads a check reports of each, and the longest one's text. */
+export const VISUAL_CHECK_MAX_ITEMS = 50;
+export const VISUAL_CHECK_MAX_TEXT = 500;
+
+/** What `visual_check` asks the host to render: the page as prepared (never with the shim), at `width`, in `theme`, from `top`. */
+export type VisualCheckInput = {
+  readonly html: string;
+  readonly width: number;
+  readonly theme: "light" | "dark";
+  readonly top: number;
+};
+
+/** A console message the page logged, or an error it threw (`type` is `error`). */
+export type VisualCheckMessage = { readonly type: string; readonly text: string };
+
+/** A resource that did not load: what the browser called the failure, a CSP block (`csp`) among them. */
+export type VisualCheckFailedLoad = { readonly url: string; readonly reason: string };
+
+/** The screenshot a check took: a JPEG of the page from `top` for `height` CSS pixels, at `quality`. */
+export type VisualCheckScreenshot = {
+  readonly data: string;
+  readonly mimeType: "image/jpeg";
+  readonly top: number;
+  readonly height: number;
+  readonly quality: number;
+};
+
+/** What a check saw and measured. Each list is cut at `VISUAL_CHECK_MAX_ITEMS`, its entries at `VISUAL_CHECK_MAX_TEXT`. */
+export type VisualCheckResult = {
+  /** Whether the check started the browser. */
+  readonly coldStart: boolean;
+  /** The page's height at `max-content`, as the frame measures it, in CSS pixels. */
+  readonly contentHeight: number;
+  /** The screenshot, or none when it could not be taken or kept (`warnings` say why). */
+  readonly screenshot?: VisualCheckScreenshot;
+  /** Whether the screenshot shows less than the page: it starts below the top, or the clip ended before the content did. */
+  readonly clipped: boolean;
+  /** The growth probe: whether the page's height grew after each of the frame's resizes, and the heights it reported. */
+  readonly growth: { readonly grows: boolean; readonly heights: ReadonlyArray<number> };
+  readonly console: ReadonlyArray<VisualCheckMessage>;
+  /** Content-Security-Policy violations, one line each (the directive and what it blocked). */
+  readonly violations: ReadonlyArray<string>;
+  readonly failedLoads: ReadonlyArray<VisualCheckFailedLoad>;
+  /** What the check could not do or finish: a partial result says so. */
+  readonly warnings: ReadonlyArray<string>;
+};
+
 /** What one run of the model's code returned, as the tool result it becomes. */
 export type BrowserRun = {
   readonly output: ReadonlyArray<BrowserOutputPart>;
@@ -193,6 +258,15 @@ export type BrowserHostRpc = {
   ): Promise<BrowserRun>;
   /** Close the browser; false when there was none. */
   close(): Promise<boolean>;
+  /**
+   * Render a Visual's page in a throwaway browser context of the Session's browser, starting it when none runs, and say what
+   * it measured and saw (`docs/architecture/visuals.md` → The check). One runs at a time; it fails when the browser is
+   * unavailable, or the check passes `VISUAL_CHECK_MS`. A host that predates it has no such method.
+   */
+  checkVisual(
+    input: VisualCheckInput,
+    workspace?: ContainerPreviewWorkspace,
+  ): Promise<VisualCheckResult>;
   /**
    * Hand the tab of conversation `input.conversationId` to the owner: note its viewport and send `Cloudflare.handoff`.
    * Idempotent by `requestId`: a handoff already started under it answers as it did. Fails when the conversation has no

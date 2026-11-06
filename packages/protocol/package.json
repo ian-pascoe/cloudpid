@@ -5,12 +5,15 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./base64": "./src/base64.ts",
     "./call-diff": "./src/call-diff.ts",
+    "./csp": "./src/csp.ts",
     "./live-view": "./src/live-view.ts",
     "./mcp-api": "./src/mcp-api.ts",
     "./mcp-tools": "./src/mcp-tools.ts",
     "./mirror": "./src/mirror.ts",
-    "./repo": "./src/repo.ts"
+    "./repo": "./src/repo.ts",
+    "./visuals": "./src/visuals.ts"
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs",

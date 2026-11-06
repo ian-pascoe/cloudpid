@@ -22,6 +22,8 @@ import {
   type OwnerTabListing,
   type OwnerTabPageRead,
   type ContainerPreviewWorkspace,
+  type VisualCheckInput,
+  type VisualCheckResult,
 } from "@cloudpid/extensions/browser/contract";
 import {
   Browser,
@@ -37,8 +39,10 @@ import { HandoffHost } from "./handoff.ts";
 import { confinedToOwnerTabs, OwnerTabCalls } from "./owner-tab-agent.ts";
 import { OwnerTabs } from "./owner-tabs.ts";
 import { type ContainerPreviewProps, ContainerPreviewRoutes } from "./container-preview.ts";
+import { checkVisual } from "./visual-check.ts";
 import {
   adoptTab,
+  browserKey,
   conversationScope,
   forgetScope,
   openTab,
@@ -95,6 +99,8 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
   readonly #ownerTabCalls: OwnerTabCalls;
   /** The Container previews' routes every browser is acquired with, to the Workspace the latest call named. */
   readonly #containerPreviews: ContainerPreviewRoutes;
+  /** The check that runs now, or the last one to be queued: one runs at a time (`checkVisual`). */
+  #checking: Promise<unknown> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: BrowserHostEnv) {
     super(ctx, env);
@@ -211,6 +217,35 @@ export class BrowserHost extends DurableObject<BrowserHostEnv> implements Browse
     );
 
     return { ...rest, output: output ?? content ?? [] };
+  }
+
+  /**
+   * Render a Visual's page in a throwaway context of the Session's browser, on a CDP connection of this host's own, and say
+   * what it measured and saw (`visual-check.ts`; `docs/architecture/visuals.md` → The check). It starts the browser when none
+   * runs, as a `run` does. One check runs at a time: a second waits for the first. A browser that cannot be reached fails the
+   * call.
+   */
+  checkVisual(
+    input: VisualCheckInput,
+    workspace?: ContainerPreviewWorkspace,
+  ): Promise<VisualCheckResult> {
+    this.#containerPreviews.given(workspace);
+
+    const result = this.#checking.then(() => this.#checkVisual(input));
+
+    // The next check waits for this one to end, however it ends.
+    this.#checking = result.catch(() => undefined);
+
+    return result;
+  }
+
+  async #checkVisual(input: VisualCheckInput): Promise<VisualCheckResult> {
+    const before = await this.#store.get(browserKey(this.#browser.name));
+    const { sessionId, restarted } = await this.#browser.resolve();
+
+    return checkVisual(await openCdpSocket(this.env.BROWSER, sessionId), input, {
+      coldStart: restarted || before === undefined || before.closedAt !== undefined,
+    });
   }
 
   /** Hand conversation `input.conversationId`'s tab to the owner (`Cloudflare.handoff`), noting its viewport. */

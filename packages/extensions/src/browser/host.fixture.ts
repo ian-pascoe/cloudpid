@@ -11,6 +11,8 @@ import {
   type HandoffStatus,
   type LiveViewLinks,
   type OwnerTabListing,
+  type VisualCheckInput,
+  type VisualCheckResult,
 } from "./host.ts";
 
 /** The credential in every Live View link the fake host mints, to look for where it must not be. */
@@ -52,6 +54,10 @@ export const fakeHandoffHost = (
     readonly now?: () => number;
     /** The origins of the windows the tab leaves open, which ending a handoff says. */
     readonly windowOrigins?: ReadonlyArray<string>;
+    /** What a Visual check answers; by default it fails, as a host that was not scripted for it does. */
+    readonly checkVisual?: (
+      input: VisualCheckInput,
+    ) => Effect.Effect<VisualCheckResult, BrowserError>;
   } = {},
 ) => {
   const calls: HandoffCalls = { started: [], liveViews: [], waits: [], ended: [] };
@@ -66,6 +72,9 @@ export const fakeHandoffHost = (
       options.run?.(input.code) ??
       Effect.succeed({ output: [{ type: "text", text: "ok" }], details: { status: "completed" } }),
     close: Effect.succeed(true),
+    checkVisual: (input) =>
+      options.checkVisual?.(input) ??
+      Effect.fail(BrowserError.make({ message: "checkVisual: not scripted" })),
     startHandoff: (input) =>
       Effect.suspend(() => {
         calls.started.push(input);

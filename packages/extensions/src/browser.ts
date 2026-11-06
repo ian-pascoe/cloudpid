@@ -43,6 +43,9 @@ export {
   type OwnerTabListing,
   SHOWN_OWNER_TAB,
   type OwnerTabPageRead,
+  VISUAL_CHECK_UNAVAILABLE,
+  type VisualCheckInput,
+  type VisualCheckResult,
 } from "./browser/host.ts";
 
 export {

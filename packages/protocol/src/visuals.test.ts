@@ -9,6 +9,7 @@ import {
   VISUAL_CSP,
   VISUAL_ESCAPE,
   VISUAL_LIBRARIES,
+  VISUAL_SANDBOX_DIRECTIVE,
   VISUAL_SHIM,
   VisualFileAnswer,
   VisualPageAnswer,
@@ -16,7 +17,9 @@ import {
   isVisualHost,
   shownVisualOf,
   sourcePathOf,
+  visualCheckPolicy,
   visualTranscriptLine,
+  withVisualCheckPrelude,
   withVisualShim,
 } from "./visuals.ts";
 
@@ -442,5 +445,56 @@ describe("the shim", () => {
 
     hostSays({ jsonrpc: "2.0", id: 7, method: "ui/resource-teardown", params: {} });
     expect(posted.at(-1)?.message).toEqual({ jsonrpc: "2.0", id: 7, result: {} });
+  });
+});
+
+describe("the check's header", () => {
+  it("is the frame's policy and the frame's flags", () => {
+    const policy = visualCheckPolicy();
+
+    expect(policy).toContain("connect-src 'none'");
+    expect(policy).toContain("form-action 'none'");
+    expect(policy).toContain("https://cdnjs.cloudflare.com");
+    expect(policy.endsWith(`; ${VISUAL_SANDBOX_DIRECTIVE}`)).toBe(true);
+    expect(VISUAL_SANDBOX_DIRECTIVE).toBe("sandbox allow-scripts allow-same-origin");
+  });
+});
+
+describe("withVisualCheckPrelude", () => {
+  it("puts the prelude first in the head, as the shim goes", () => {
+    const page = withVisualCheckPrelude("<html><head><title>x</title></head></html>", "dark");
+
+    expect(page.startsWith("<html><head><script>")).toBe(true);
+    expect(page.endsWith("</script><title>x</title></head></html>")).toBe(true);
+  });
+
+  it("gives the page the theme and the style variables of a frame, and no WebRTC", () => {
+    const attributes: Record<string, string> = {};
+    const properties: Record<string, string> = {};
+
+    const root = {
+      style: {
+        colorScheme: "",
+        setProperty: (name: string, value: string) => {
+          properties[name] = value;
+        },
+      },
+      setAttribute: (name: string, value: string) => {
+        attributes[name] = value;
+      },
+    };
+
+    const window: Record<string, unknown> = { RTCPeerConnection: () => undefined };
+    const page = withVisualCheckPrelude("<head></head>", "dark");
+    const code = /<script>([\s\S]*)<\/script>/.exec(page)?.[1] ?? "";
+
+    // oxlint-disable-next-line typescript/no-implied-eval -- the test runs the served text, as a browser does.
+    new Function("window", "document", code)(window, { documentElement: root });
+
+    expect(root.style.colorScheme).toBe("dark");
+    expect(attributes["data-theme"]).toBe("dark");
+    expect(properties["--color-background-primary"]).toBe("oklch(0.2 0.012 250)");
+    expect(properties["--border-radius-md"]).toBe("8px");
+    expect(window["RTCPeerConnection"]).toBeUndefined();
   });
 });
