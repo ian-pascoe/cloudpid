@@ -32,7 +32,7 @@ import {
   McpAppsMessage,
   McpAppToolsMessage,
 } from "./mcp-apps.ts";
-import { VisualPageCommand, VisualsMessage } from "./visuals.ts";
+import { VisualFileCommand, VisualPageCommand, VisualsMessage } from "./visuals.ts";
 import {
   MAX_MCP_COMPLETE_NAME_CHARS,
   McpCompletionArgument,
@@ -969,6 +969,7 @@ export const ClientMessage = Schema.Union([
   McpAppLog,
   McpAppContextCommand,
   VisualPageCommand,
+  VisualFileCommand,
   McpTaskCancel,
   ContainerKeep,
   McpResourceRead,

@@ -27,6 +27,7 @@ import {
   type ClientMessage,
   type McpAppEntry,
   type McpAppHtmlAnswer,
+  type VisualFileAnswer,
   type McpAppMounted,
   type McpAppRequestAnswer,
   type McpAppTool,
@@ -91,7 +92,7 @@ import { isWithdrawn, SessionError } from "./errors.ts";
 import { SessionHost } from "./host.ts";
 import { SessionReviews } from "./reviews.ts";
 import { McpApps } from "./mcp-apps.ts";
-import { SessionVisuals } from "./visuals-store.ts";
+import { SessionVisuals, visualFileAnswer } from "./visuals-store.ts";
 import { McpWatches } from "./mcp-watches.ts";
 import { McpResourcePreviews, type SpillRead } from "./mcp-resource-previews.ts";
 import { socketCompletions } from "./mcp-completions.ts";
@@ -1167,6 +1168,21 @@ export const sessionSocketsLayer = (
           case "visual_page":
             // The page of a Visual this Session keeps, with its origin; a mount is the most recently mounted.
             return visuals.page(message.callId);
+          case "visual_file":
+            // The file a Visual was shown from, as it is now: the path is the record's, never the client's.
+            return visuals.fileOf(message.callId).pipe(
+              Effect.flatMap((file) =>
+                file === undefined
+                  ? Effect.succeed<VisualFileAnswer>({ status: "none" })
+                  : host.workspaceFile(conversationOf(file.conversation), file.path).pipe(
+                      Effect.map((read) => visualFileAnswer(file.path, read)),
+                      Effect.orElseSucceed((): VisualFileAnswer => ({
+                        status: "missing",
+                        path: file.path,
+                      })),
+                    ),
+              ),
+            );
           case "mcp_app_html":
             // A running call's page, by its tool; an older client sends none, and the call's is the record's.
             if (message.tool !== undefined) {

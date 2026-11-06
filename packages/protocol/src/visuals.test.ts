@@ -10,6 +10,7 @@ import {
   VISUAL_ESCAPE,
   VISUAL_LIBRARIES,
   VISUAL_SHIM,
+  VisualFileAnswer,
   VisualPageAnswer,
   isKeptVisual,
   isVisualHost,
@@ -112,6 +113,25 @@ describe("the messages", () => {
     const answer = Schema.decodeUnknownSync(VisualPageAnswer)({ status: "gone" });
 
     expect(answer.status).toBe("gone");
+    expect(Schema.decodeUnknownSync(VisualFileAnswer)({ status: "gone" }).status).toBe("gone");
+  });
+
+  it("reads a visual_file, which names the call and never a path, and its answers", () => {
+    expect(decodeClient(JSON.stringify({ type: "visual_file", id: "q2", callId: "c1" }))).toEqual({
+      type: "visual_file",
+      id: "q2",
+      callId: "c1",
+    });
+    expect(
+      Schema.decodeUnknownSync(VisualFileAnswer)({
+        status: "text",
+        path: "/workspace/a.html",
+        text: "<p>a</p>",
+      }),
+    ).toEqual({ status: "text", path: "/workspace/a.html", text: "<p>a</p>" });
+    expect(
+      Schema.decodeUnknownSync(VisualFileAnswer)({ status: "missing", path: "/workspace/a.html" }),
+    ).toEqual({ status: "missing", path: "/workspace/a.html" });
   });
 
   it("writes a Visual for a transcript without its page", () => {

@@ -100,6 +100,7 @@ import {
   base64FromBytes,
   isMcpSpillPath,
   MAX_MCP_RESOURCE_PREVIEW_BYTES,
+  MAX_VISUAL_BYTES,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -316,6 +317,18 @@ const spillDirectoriesOf = (path: string): ReadonlyArray<string> => {
   const parts = path.split("/").slice(2, -1);
 
   return Arr.map(parts, (_, index) => `/workspace/${Arr.join(Arr.take(parts, index + 1), "/")}`);
+};
+
+/** Whether `path` is an absolute path under `/workspace` with no empty, `.` or `..` segment: a file a Visual's Open file may read. */
+const isWorkspaceFilePath = (path: string): boolean => {
+  const parts = path.split("/");
+
+  return (
+    parts[0] === "" &&
+    parts[1] === "workspace" &&
+    parts.length > 2 &&
+    Arr.every(parts.slice(1), (part) => part !== "" && part !== "." && part !== "..")
+  );
 };
 
 /** A conversation ID from the number a client passed in a cursor. */
@@ -1036,6 +1049,16 @@ export type SessionHostService = {
     conversationId: ConversationId | undefined,
     path: string,
     hold: (bytes: number) => HoldSlot,
+  ) => Effect.Effect<SpillRead, SessionError>;
+  /**
+   * What the Workspace of conversation `conversationId` holds at `path` now, for a Visual's Open file
+   * (`docs/architecture/visuals.md` → The frame: The card): read as `spill` reads, through the lookup environment that never
+   * starts the Container, with no symbolic link followed, and `too_large` past `MAX_VISUAL_BYTES` without reading it. A
+   * path outside `/workspace`, or one with a `.` or `..` segment, is `missing`; so is a Workspace that does not answer in time.
+   */
+  readonly workspaceFile: (
+    conversationId: ConversationId,
+    path: string,
   ) => Effect.Effect<SpillRead, SessionError>;
   /**
    * A page of the transcript of the active branch, or of the conversation `conversationId` names (`entriesPage`): what
@@ -2329,6 +2352,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     path: string,
     hold: (bytes: number) => HoldSlot,
     bounded: <A, E>(work: Effect.Effect<A, E>) => Effect.Effect<A, E | Cause.TimeoutError>,
+    max: number = MAX_MCP_RESOURCE_PREVIEW_BYTES,
   ) =>
     Effect.gen(function* () {
       const missing: SpillRead = { kind: "missing" };
@@ -2371,7 +2395,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
         const size = info.value.size;
 
-        if (size > MAX_MCP_RESOURCE_PREVIEW_BYTES) return { kind: "too_large" } as const;
+        if (size > max) return { kind: "too_large" } as const;
 
         // The wait for the slot is the previews ahead's, not the Workspace's: it is not under the Workspace's time limit.
         if (size > PREVIEW_SLOT_OVER) {
@@ -4462,6 +4486,27 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
                 : spillOf(env, path, hold, withinExpandTimeout),
             ),
             // The Workspace that cannot answer in time has no file to show: the card reads the resource instead.
+            Effect.catchTag("TimeoutError", () => Effect.succeed<SpillRead>({ kind: "missing" })),
+          ),
+    workspaceFile: (conversationId, path) =>
+      !isWorkspaceFilePath(path)
+        ? Effect.succeed<SpillRead>({ kind: "missing" })
+        : addressed(conversationId).pipe(
+            Effect.flatMap((conversation) =>
+              environment(conversation, { lookup: true }).pipe(withinExpandTimeout),
+            ),
+            Effect.flatMap((env) =>
+              env === undefined
+                ? Effect.succeed<SpillRead>({ kind: "missing" })
+                : // One file of at most 2 MiB at the owner's click: no decode slot to wait for.
+                  spillOf(
+                    env,
+                    path,
+                    () => Effect.succeed("held"),
+                    withinExpandTimeout,
+                    MAX_VISUAL_BYTES,
+                  ),
+            ),
             Effect.catchTag("TimeoutError", () => Effect.succeed<SpillRead>({ kind: "missing" })),
           ),
     entryPage: ({ query, limit, conversationId }) =>

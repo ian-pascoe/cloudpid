@@ -260,6 +260,34 @@ export const VisualPageAnswer = Schema.Union([
 export type VisualPageAnswer = typeof VisualPageAnswer.Type;
 
 /**
+ * Ask for the file a Visual was shown from, as it is now (`docs/architecture/visuals.md` → The frame: The card, Open file):
+ * answered with a `VisualFileAnswer`. The file is the one the Visual's record names, read from the Workspace of the
+ * conversation that showed it, never a path the client sends. Sent only to a Session whose `hello` says `visuals`.
+ */
+export const VisualFileCommand = Schema.Struct({
+  type: Schema.Literal("visual_file"),
+  id: Schema.optionalKey(Schema.String),
+  callId: Schema.String.check(Schema.isMaxLength(MAX_VISUAL_KEY)),
+});
+
+/**
+ * What `visual_file` answers: the file's `text` as it is now, with its path; `missing` (it was moved, removed or never a
+ * file, or the Workspace did not answer in time), `too_large` (over the 2 MiB a page may be), `not_text` (not UTF-8), or
+ * `none` (no Visual of that call, or one shown inline). A status this build does not know reads as `none`.
+ */
+export const VisualFileAnswer = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("text"), path: Schema.String, text: Schema.String }),
+  Schema.Struct({
+    status: Schema.Literals(["missing", "too_large", "not_text"]),
+    path: Schema.String,
+  }),
+  Schema.Struct({ status: Schema.Literal("none") }),
+  Schema.Struct({ status: Schema.String }),
+]);
+
+export type VisualFileAnswer = typeof VisualFileAnswer.Type;
+
+/**
  * What `visual_show` gives a script (`docs/architecture/visuals.md` → Tools): the Visual's id (its call's), its title, size and
  * source file, the earlier Visual of the same file in the conversation that now shows collapsed, and the warnings' messages.
  * The same keys are the result's `details.visual`, which `/export` and `session_transcript` read.

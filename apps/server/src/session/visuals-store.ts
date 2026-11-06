@@ -15,6 +15,7 @@ import {
   type VisualRecorderService,
 } from "@cloudpid/extensions/visuals";
 import {
+  bytesFromBase64,
   type ConversationId,
   MAX_VISUAL_BYTES,
   MAX_VISUAL_STUBS,
@@ -23,6 +24,7 @@ import {
   sourcePathOf,
   type VisualDraft,
   type VisualEntry,
+  type VisualFileAnswer,
   type VisualPageAnswer,
   VisualRecord,
   type VisualSource,
@@ -38,6 +40,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Mutable } from "effect/Types";
 import { callRecords, type CallRecordEntry } from "./call-records.ts";
+import type { SpillRead } from "./mcp-resource-previews.ts";
 import type { SessionKv } from "./session-kv.ts";
 
 /** The index of every Visual and stub, oldest first. */
@@ -60,6 +63,27 @@ type IndexEntry = CallRecordEntry<VisualFields>;
 
 const decodeRecord = Schema.decodeUnknownOption(Schema.fromJsonString(VisualRecord));
 
+/** What `visual_file` answers for the file at `path` as the Workspace read it: its text when it is UTF-8. */
+export const visualFileAnswer = (path: string, read: SpillRead): VisualFileAnswer => {
+  if (read.kind === "too_large") return { status: "too_large", path };
+
+  if (read.kind !== "base64") return { status: "missing", path };
+
+  const bytes = bytesFromBase64(read.base64);
+
+  if (bytes === undefined) return { status: "missing", path };
+
+  try {
+    return {
+      status: "text",
+      path,
+      text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
+    };
+  } catch {
+    return { status: "not_text", path };
+  }
+};
+
 /** The Session's Visuals, as the sockets and the extension reach them. */
 export type SessionVisualsService = VisualRecorderService & {
   /** `conversation`'s Visuals, oldest first: what `visuals` lists. */
@@ -68,6 +92,13 @@ export type SessionVisualsService = VisualRecorderService & {
   readonly updates: (conversation: ConversationId) => Stream.Stream<ReadonlyArray<VisualEntry>>;
   /** `callId`'s page with its origin (marking it the most recently mounted), its stub, or none. */
   readonly page: (callId: string) => Effect.Effect<VisualPageAnswer>;
+  /**
+   * The file `callId`'s Visual was shown from and the conversation that showed it, kept or evicted, for Open file; none for
+   * an inline page or a call that showed no Visual.
+   */
+  readonly fileOf: (
+    callId: string,
+  ) => Effect.Effect<{ readonly conversation: string; readonly path: string } | undefined>;
 };
 
 export class SessionVisuals extends Context.Service<SessionVisuals, SessionVisualsService>()(
@@ -292,11 +323,25 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
       Stream.changesWith((left, right) => JSON.stringify(left) === JSON.stringify(right)),
     );
 
+  const fileOf: SessionVisualsService["fileOf"] = (callId) =>
+    Effect.sync(() =>
+      Arr.findFirst(records.index(), (entry) => entry.callId === callId).pipe(
+        Option.flatMap((entry) =>
+          Option.map(Option.fromNullishOr(sourcePathOf(entry.source)), (path) => ({
+            conversation: entry.conversation,
+            path,
+          })),
+        ),
+        Option.getOrUndefined,
+      ),
+    );
+
   return {
     put,
     list: (conversation) => Effect.sync(() => list(conversation)),
     updates,
     page,
+    fileOf,
   };
 };
 

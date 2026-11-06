@@ -24,6 +24,7 @@ import { viewOrigin } from "../view-host.ts";
 import { visualViewHash } from "../view-hash.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
+import { visualFileAnswer } from "./visuals-store.ts";
 
 declare global {
   namespace Cloudflare {
@@ -252,6 +253,43 @@ describe("a Visual shown in a Session", () => {
       "a",
       undefined,
     ]);
+  });
+
+  it("answers Open file with the file the record names, never one the client does, and nothing for an inline page", async () => {
+    const { stub } = fresh();
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      await instance.visualPut(draft("file", PAGE, "/workspace/v.html"));
+      await instance.visualPut(draft("inline", PAGE));
+    });
+
+    const client = await connect(stub);
+
+    await client.root();
+    client.send({ type: "visual_file", id: "f1", callId: "inline" });
+    expect(await client.answer("f1")).toEqual({ status: "none" });
+    client.send({ type: "visual_file", id: "f2", callId: "no-such-call" });
+    expect(await client.answer("f2")).toEqual({ status: "none" });
+    // The test's Session has no Workspace to read it from.
+    client.send({ type: "visual_file", id: "f3", callId: "file" });
+    expect(await client.answer("f3")).toEqual({ status: "missing", path: "/workspace/v.html" });
+    client.close();
+  });
+
+  it("reads a file for Open file as its UTF-8 text, or says why not", () => {
+    const path = "/workspace/v.html";
+
+    expect(visualFileAnswer(path, { kind: "base64", base64: btoa("<p>hi</p>") })).toEqual({
+      status: "text",
+      path,
+      text: "<p>hi</p>",
+    });
+    expect(visualFileAnswer(path, { kind: "base64", base64: btoa("\u00ff\u00fe") })).toEqual({
+      status: "not_text",
+      path,
+    });
+    expect(visualFileAnswer(path, { kind: "too_large" })).toEqual({ status: "too_large", path });
+    expect(visualFileAnswer(path, { kind: "missing" })).toEqual({ status: "missing", path });
   });
 
   it("evicts the least recently mounted Visual to a stub its card still shows, never the one just kept", async () => {
