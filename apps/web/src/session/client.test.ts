@@ -3375,6 +3375,56 @@ describe("the App calls on a Session connection", () => {
   );
 
   it.effect(
+    "keeps each conversation's Visuals, asks a Session that keeps them for a page and a file, and one from before nothing",
+    () =>
+      Effect.gen(function* () {
+        const { client, latest, state } = yield* setup();
+
+        yield* greeted(latest(), {});
+        expect(state().keepsVisuals).toBe(false);
+        expect(yield* client.visualPage("c1")).toEqual({ status: "none" });
+        expect(yield* client.visualFile("c1")).toEqual({ status: "none" });
+        expect(
+          latest()
+            .commands()
+            .filter((command) => command.type === "visual_page" || command.type === "visual_file"),
+        ).toEqual([]);
+
+        yield* greeted(latest(), { visuals: true });
+        expect(state().keepsVisuals).toBe(true);
+
+        yield* latest().say({
+          type: "visuals",
+          conversationId: 1,
+          visuals: [
+            {
+              callId: "c1",
+              title: "Sales",
+              summary: "Sales by month",
+              source: { kind: "inline" },
+              state: "kept",
+              bytes: 9,
+              at: 1,
+            },
+          ],
+        });
+        expect(state().visuals["1"]?.[0]?.callId).toBe("c1");
+
+        const page = yield* client.visualPage("c1").pipe(Effect.forkChild);
+
+        yield* settle;
+
+        const asked = latest()
+          .commands()
+          .find((command) => command.type === "visual_page");
+
+        expect(asked).toEqual({ type: "visual_page", id: expect.any(String), callId: "c1" });
+        yield* latest().say({ type: "result", id: asked?.id, result: { status: "none" } });
+        expect(yield* Fiber.join(page)).toEqual({ status: "none" });
+      }),
+  );
+
+  it.effect(
     "sends a Session from before no App context, answering refused, and decides again at each hello",
     () =>
       Effect.gen(function* () {

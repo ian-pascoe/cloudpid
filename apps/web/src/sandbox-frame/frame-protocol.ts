@@ -139,6 +139,13 @@ export interface FrameOptions {
   readonly handlers?: Readonly<Record<string, RequestHandler>> | undefined;
   /** The `params` of each `notifications/message` the View sends, for telemetry (`requests.ts`); dropped when there is none. */
   readonly logs?: ((params: unknown) => void) | undefined;
+  /**
+   * Handlers of the page's notifications the protocol does not serve itself, by method (a Visual's Escape,
+   * `VISUAL_ESCAPE`): each is given the `params` as the page sent them; any other notification is dropped.
+   */
+  readonly notifications?: Readonly<Record<string, (params: unknown) => void>> | undefined;
+  /** What the failure to start names: "The <subject> did not start within 10 seconds"; `App` when none is given. */
+  readonly subject?: string | undefined;
   readonly onEvent: (event: FrameEvent) => void;
 }
 
@@ -336,6 +343,11 @@ export const createFrameProtocol = (options: FrameOptions): FrameProtocol => {
       return;
     }
 
+    // Own properties only, as for requests: the page chooses the method.
+    const notified = options.notifications;
+
+    if (notified !== undefined && Object.hasOwn(notified, method)) notified[method]?.(params);
+
     // Any other notification is nothing the host serves yet; it is dropped.
   };
 
@@ -443,7 +455,7 @@ export const createFrameProtocol = (options: FrameOptions): FrameProtocol => {
       initializeTimer = setTimeout(() => {
         fail(
           proxyReady
-            ? "The App did not start within 10 seconds"
+            ? `The ${options.subject ?? "App"} did not start within 10 seconds`
             : "The App sandbox did not answer within 10 seconds",
         );
       }, INITIALIZE_TIMEOUT_MS);

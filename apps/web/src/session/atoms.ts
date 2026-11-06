@@ -548,3 +548,9 @@ export const mcpAppToolsAtom = slice((state) => state.mcpAppTools);
 
 /** Every conversation's App calls the Session has sent (`mcp_apps`), by conversation. */
 export const mcpAppsAtom = slice((state) => state.mcpApps);
+
+/** Every conversation's Visuals the Session has sent (`visuals`), by conversation. */
+export const visualsAtom = slice((state) => state.visuals);
+
+/** Whether the Session keeps Visuals (`hello.visuals`): a `visual_show` call to one that does not is an ordinary card. */
+export const keepsVisualsAtom = slice((state) => state.keepsVisuals);

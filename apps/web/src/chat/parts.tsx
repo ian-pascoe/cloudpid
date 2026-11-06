@@ -29,6 +29,8 @@ import { DiffTally } from "../diff-pane/parts.tsx";
 import { CallDiffBody, CallDiffStats } from "./call-diff-card.tsx";
 import { changesOf, type ShownChange } from "./agent-change.ts";
 import { AppCall, AppStrip, type CallProgress } from "../app-view/app-call.tsx";
+import { useKeepsVisuals, VisualCall, VisualStrip } from "../visual/visual-call.tsx";
+import { VISUAL_TOOL } from "../visual/visuals.ts";
 import { elicitationLine, questionsOf } from "./mcp-elicitation-detail.ts";
 import { ResourceChips } from "./mcp-resource-view.tsx";
 import { LiveResource } from "./mcp-resource-live.tsx";
@@ -202,6 +204,8 @@ const StreamedOutput = Schema.Struct({ output: Schema.NonEmptyString });
 const decodeStreamedOutput = Schema.decodeUnknownOption(StreamedOutput);
 
 const decodePath = Schema.decodeUnknownOption(Schema.Struct({ path: Schema.String }));
+
+const decodeTitle = Schema.decodeUnknownOption(Schema.Struct({ title: Schema.String }));
 
 const decodeStreaming = Schema.decodeUnknownOption(
   Schema.Struct({ streaming: Schema.Literal(true) }),
@@ -400,6 +404,8 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   artifact,
   status,
 }) => {
+  const keepsVisuals = useKeepsVisuals();
+
   // A call is running only while its message is; one in a message that ended (errored, cancelled, or cut off) is stopped.
   const running = result === undefined && status.type === "running";
   const stopped = result === undefined && !running;
@@ -533,6 +539,8 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
             arguments: args,
           };
 
+  // A Visual shows under its call's card, outside the disclosure (`docs/architecture/visuals.md` → The frame: The card), and a
+  // script's Visuals in a strip under its card; a Session that keeps no Visuals shows the call as an ordinary card.
   const app = toolName.startsWith("mcp__") ? (
     <AppCall
       callId={toolCallId}
@@ -540,7 +548,23 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
       {...(progress === undefined ? {} : { progress })}
     />
   ) : toolName === "codemode" ? (
-    <AppStrip parentId={toolCallId} />
+    <>
+      <AppStrip parentId={toolCallId} />
+      {keepsVisuals && <VisualStrip parentId={toolCallId} />}
+    </>
+  ) : toolName === VISUAL_TOOL && keepsVisuals ? (
+    <VisualCall
+      callId={toolCallId}
+      progress={
+        progress === undefined
+          ? undefined
+          : {
+              phase: progress.phase,
+              // The title a `visual_show` call has streamed so far, for its card while it is prepared.
+              title: Option.getOrUndefined(Option.map(decodeTitle(args), (found) => found.title)),
+            }
+      }
+    />
   ) : null;
 
   // The MCP task it started, while the call waits for it and after (`docs/architecture/mcp-server-requests.md` → MCP tasks).

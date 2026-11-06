@@ -28,6 +28,7 @@ import {
   type SessionView,
   type TaskGraphSummary,
   type TodoTask,
+  type VisualEntry,
   type UserInput,
   type ViewedFile,
 } from "@cloudpid/protocol";
@@ -218,6 +219,17 @@ export interface SessionState {
    */
   readonly mcpApps: Readonly<Record<string, readonly McpAppEntry[]>>;
   /**
+   * The Visuals of each conversation this socket watches, by conversation ID, as the last `visuals` of it listed them (whole,
+   * replacing the one before): which have a page to mount, and which were evicted (`docs/architecture/visuals.md` → Socket
+   * messages).
+   */
+  readonly visuals: Readonly<Record<string, readonly VisualEntry[]>>;
+  /**
+   * Whether the Session on this connection keeps Visuals (its `hello` says `visuals`): a `visual_show` call to one that does
+   * not is shown as an ordinary tool card.
+   */
+  readonly keepsVisuals: boolean;
+  /**
    * The active Session branch's conversation (GLOSSARY.md → Session branch), the one the root view shows; null until the
    * Session says.
    */
@@ -260,6 +272,8 @@ export const INITIAL_SESSION_STATE: SessionState = {
   todos: [],
   mcpAppTools: null,
   mcpApps: {},
+  visuals: {},
+  keepsVisuals: false,
   activeBranch: null,
   treeVersion: 0,
   copying: false,
