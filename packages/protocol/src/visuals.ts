@@ -344,7 +344,8 @@ export const VISUAL_ESCAPE = "cloudpid/notifications/escape";
  * at mount, never stored, so a fix reaches every stored Visual. A plain script, not a module, so a test runs the very text in
  * a fake window. It speaks a subset of the ext-apps frame protocol to the proxy above it: `ui/initialize` (answered with the
  * host context, whose style variables and theme it applies to the page's root, live with each `host-context-changed`), the
- * content's height as `size-changed`, a link the page opens as `ui/open-link` (the host asks the owner first), and an Escape
+ * content's height as `size-changed` (the root's height at `max-content`, as ext-apps' own apps measure it, so a page
+ * shorter than its frame reports its own height and the frame shrinks; a `scrollHeight` is never less than the frame), a link the page opens as `ui/open-link` (the host asks the owner first), and an Escape
  * the page did not handle. Before the page's scripts run it forces `overscroll-behavior: auto` so a scroll at the frame's end
  * chains to the chat, and deletes the WebRTC constructors: a speed bump, not a boundary (a fresh realm bypasses it).
  */
@@ -385,8 +386,12 @@ export const VISUAL_SHIM = `(function () {
   var sent = -1;
   var measure = function () {
     var root = document.documentElement;
-    var body = document.body;
-    var height = Math.ceil(Math.max(root.scrollHeight, body ? body.scrollHeight : 0));
+    var before = root.style.getPropertyValue("height");
+    var priority = root.style.getPropertyPriority("height");
+    root.style.setProperty("height", "max-content", "important");
+    var height = Math.ceil(root.getBoundingClientRect().height);
+    if (before) root.style.setProperty("height", before, priority);
+    else root.style.removeProperty("height");
     if (height !== sent) {
       sent = height;
       notify("ui/notifications/size-changed", { height: height });

@@ -165,23 +165,46 @@ type Posted = { readonly message: Record<string, unknown>; readonly target: stri
 
 type Handler = (event: Record<string, unknown>) => void;
 
-/** A fake element of the page: attributes, a parent, and the style properties set on it. */
+/**
+ * A fake element of the page: attributes, a parent, and the style properties set on it. Its box is `frameHeight` px tall
+ * (the frame's, as a root with `height: 100%` is) or its content's `contentHeight`, whichever is more, and its content's at
+ * `height: max-content`.
+ */
 const element = (name: string, attributes: Record<string, string> = {}, parent?: unknown) => {
   const properties = new Map<string, string>();
+  const priorities = new Map<string, string>();
 
   return {
     nodeType: 1,
     nodeName: name.toUpperCase(),
     parentNode: parent ?? null,
-    scrollHeight: 0,
+    frameHeight: 0,
+    contentHeight: 0,
     textContent: "",
     children: [] as unknown[],
     attributes: { ...attributes } as Record<string, string>,
     style: {
       colorScheme: "",
-      setProperty: (key: string, value: string) => properties.set(key, value),
+      setProperty: (key: string, value: string, priority = "") => {
+        properties.set(key, value);
+        priorities.set(key, priority);
+      },
+      getPropertyValue: (key: string) => properties.get(key) ?? "",
+      getPropertyPriority: (key: string) => priorities.get(key) ?? "",
+      removeProperty: (key: string) => {
+        properties.delete(key);
+        priorities.delete(key);
+      },
     },
     properties,
+    getBoundingClientRect() {
+      return {
+        height:
+          properties.get("height") === "max-content"
+            ? this.contentHeight
+            : Math.max(this.frameHeight, this.contentHeight),
+      };
+    },
     getAttribute(key: string) {
       return this.attributes[key] ?? null;
     },
@@ -290,7 +313,7 @@ describe("the shim", () => {
     expect(posted[0]?.target).toBe("https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app");
     expect(posted[0]?.message).toMatchObject({ jsonrpc: "2.0", method: "ui/initialize" });
 
-    root.scrollHeight = 420;
+    root.contentHeight = 420;
     hostSays({
       jsonrpc: "2.0",
       id: posted[0]?.message["id"],
@@ -311,6 +334,32 @@ describe("the shim", () => {
       { jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: 420 } },
     ]);
     expect(observed).toHaveLength(2);
+  });
+
+  it("reports the content's height, not the frame's, so a frame taller than its page shrinks", () => {
+    const { posted, root, hostSays, windowListeners } = runShim();
+
+    root.frameHeight = 1200;
+    root.contentHeight = 300.4;
+    root.style.setProperty("height", "100%");
+    hostSays({ jsonrpc: "2.0", id: posted[0]?.message["id"], result: { hostContext: {} } });
+
+    expect(posted.at(-1)?.message).toEqual({
+      jsonrpc: "2.0",
+      method: "ui/notifications/size-changed",
+      params: { height: 301 },
+    });
+    // The page's own height is put back as it was.
+    expect(root.properties.get("height")).toBe("100%");
+
+    // Without a height of its own, it measures as the frame changes.
+    root.style.removeProperty("height");
+    root.contentHeight = 200;
+
+    for (const handler of windowListeners.get("load") ?? []) handler({});
+
+    expect(posted.at(-1)?.message).toMatchObject({ params: { height: 200 } });
+    expect(root.properties.has("height")).toBe(false);
   });
 
   it("follows a host-context change, and ignores a message that is not its host's", () => {
