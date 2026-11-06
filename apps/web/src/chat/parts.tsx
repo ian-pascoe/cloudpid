@@ -3,7 +3,7 @@ import {
   type ReasoningMessagePartComponent,
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
-import { VISUAL_SHOW } from "@cloudpid/protocol";
+import { ShownVisual, VISUAL_SHOW } from "@cloudpid/protocol";
 import { useAtom } from "@effect/atom-react";
 import type { ReactNode } from "react";
 import * as Arr from "effect/Array";
@@ -220,6 +220,8 @@ const decodeImages = Schema.decodeUnknownOption(
 const decodeNested = Schema.decodeUnknownOption(
   Schema.Struct({ nested: Schema.Array(NestedCall) }),
 );
+
+const decodeShownVisual = Schema.decodeUnknownOption(Schema.Struct({ visual: ShownVisual }));
 
 const decodeOmitted = Schema.decodeUnknownOption(Schema.Struct({ omittedCalls: OmittedCalls }));
 
@@ -555,6 +557,9 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
   ) : toolName === VISUAL_SHOW && keepsVisuals ? (
     <VisualCall
       callId={toolCallId}
+      shown={Option.getOrUndefined(
+        Option.map(decodeShownVisual(artifact), (found) => found.visual),
+      )}
       progress={
         progress === undefined
           ? undefined

@@ -14,6 +14,7 @@ import {
   VisualPageAnswer,
   isKeptVisual,
   isVisualHost,
+  shownVisualOf,
   sourcePathOf,
   visualTranscriptLine,
   withVisualShim,
@@ -138,6 +139,25 @@ describe("the messages", () => {
     expect(visualTranscriptLine("Chart", "Sales by month")).toBe(
       "Visual: Chart — Sales by month (not rendered)",
     );
+  });
+});
+
+describe("the Visual a result's details say it showed", () => {
+  it("is its title and summary, with the file and size when they say them, and none for other details", () => {
+    expect(shownVisualOf({ visual: { title: "t", summary: "s" } })).toEqual({
+      title: "t",
+      summary: "s",
+    });
+    expect(
+      shownVisualOf({
+        visual: { title: "t", summary: "s", source_path: "/a.html", bytes: 9, id: "x" },
+      }),
+    ).toMatchObject({ title: "t", summary: "s", source_path: "/a.html", bytes: 9 });
+    expect(
+      shownVisualOf({ visual: { title: "t", summary: "s", source_path: null } }),
+    ).toMatchObject({ source_path: null });
+    expect(shownVisualOf({ visual: { title: "t" } })).toBeUndefined();
+    expect(shownVisualOf(undefined)).toBeUndefined();
   });
 });
 

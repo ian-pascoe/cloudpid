@@ -18,6 +18,14 @@ import { sessionStateAtom } from "../session/atoms.ts";
 import { INITIAL_SESSION_STATE } from "../session/state.ts";
 import { VisualCall, VisualDetails, VisualStrip } from "./visual-call.tsx";
 
+/** What a `visual_show` result's details say it showed. */
+const SHOWN = {
+  title: "Sales",
+  summary: "Sales by month, as bars",
+  source_path: "/workspace/.cloudpid/tmp/visuals/sales.html",
+  bytes: 2048,
+};
+
 const assistant = (id: string, name: string, ...calls: string[]): TranscriptMessage => ({
   id,
   role: "assistant",
@@ -50,6 +58,7 @@ const registryWith = (
         ...INITIAL_SESSION_STATE,
         view,
         visuals: { "1": visuals },
+        activeBranch: 1,
         keepsVisuals,
       }),
     ],
@@ -148,6 +157,63 @@ describe("a visual_show call's card", () => {
       markup(registry, <VisualCall callId="a" progress={{ phase: "streaming", title: "Sales" }} />),
     ).toContain("Visual · Sales Preparing…");
     expect(markup(registryWith([], []), <VisualCall callId="a" />)).toBe("");
+  });
+
+  it("says a Visual is no longer kept when its call showed one and the Session's list of the thread's has come without it", () => {
+    const registry = registryWith([assistant("1", "visual_show", "a")], []);
+
+    expect(markup(registry, <VisualCall callId="a" shown={SHOWN} />)).toBe(
+      " Visual · Sales no longer kept Sales by month, as bars /workspace/.cloudpid/tmp/visuals/sales.html · 2 KB ",
+    );
+
+    const inline = registryWith([assistant("1", "visual_show", "a")], []);
+
+    expect(
+      markup(inline, <VisualCall callId="a" shown={{ ...SHOWN, source_path: null, bytes: 70 }} />),
+    ).toContain("Written inline by the call · 70 B");
+  });
+
+  it("waits for the list of the thread's Visuals before it says so, and says nothing of a call that showed none", () => {
+    const view: SessionView = { ...EMPTY_VIEW, messages: [assistant("1", "visual_show", "a")] };
+
+    const early = AtomRegistry.make({
+      initialValues: [
+        Atom.initialValue(sessionStateAtom("s1"), {
+          ...INITIAL_SESSION_STATE,
+          view,
+          activeBranch: 1,
+          keepsVisuals: true,
+        }),
+      ],
+    });
+
+    expect(markup(early, <VisualCall callId="a" shown={SHOWN} />)).toBe("");
+
+    // A failed call shows none: its details say nothing of a Visual.
+    expect(markup(registryWith([], []), <VisualCall callId="a" />)).toBe("");
+  });
+
+  it("shows the card of a call's result from its artifact, in the card a Session that keeps Visuals shows", () => {
+    const registry = registryWith([assistant("1", "visual_show", "a")], []);
+
+    expect(
+      markup(
+        registry,
+        <ToolCallCard
+          type="tool-call"
+          toolCallId="a"
+          toolName="visual_show"
+          args={{ title: "Sales" }}
+          argsText=""
+          result="Shown"
+          artifact={{ visual: SHOWN }}
+          status={{ type: "complete" }}
+          addResult={() => undefined}
+          resume={() => undefined}
+          respondToApproval={() => Promise.resolve()}
+        />,
+      ),
+    ).toContain("Visual · Sales no longer kept");
   });
 
   it("is an ordinary card for a Session that keeps no Visuals", () => {

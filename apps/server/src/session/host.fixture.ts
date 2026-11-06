@@ -62,6 +62,7 @@ import type {
   AttachedPage,
   McpAppCopy,
   McpAppDraft,
+  VisualCopy,
   VisualDraft,
   McpAppEntry,
   McpWatchEntry,
@@ -201,7 +202,7 @@ import {
   type SlashCommand,
 } from "./host.ts";
 import type { NavigateRequest } from "./branches.ts";
-import { fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
+import { type ExportPage, fillSession, type ForkPlan, type ForkSourceRequest } from "./fork.ts";
 import { destroySession } from "./lifecycle.ts";
 import { type RemovalRegistry, removals } from "../registry/removal.ts";
 import { onIdle, wakeAt, withdrawCall } from "./wake.ts";
@@ -968,14 +969,31 @@ export class TestSession extends DurableObject {
   }
 
   #visuals: SessionVisualsService | undefined;
+  #visualsRefused = false;
+
+  /** From now on the storage refuses every write of a Visual, as one that fails does: a Fork or Clone must still be made. */
+  refuseVisuals(): void {
+    this.#visualsRefused = true;
+  }
 
   /**
    * The Session's Visuals, made once, as the Session DO's: at the origin of its ID on a deployed `prod` stage's sandbox. The
    * `visuals` extension records through it (`visualRecorder`), and the sockets serve it.
    */
   protected visuals(): SessionVisualsService {
+    const { kv } = this.ctx.storage;
+
     this.#visuals ??= sessionVisuals({
-      storage: this.ctx.storage.kv,
+      // The Session's storage, whose writes of Visuals `refuseVisuals` makes fail: the History and the rest still write.
+      storage: {
+        get: (key) => kv.get(key),
+        put: (key, value) => {
+          if (this.#visualsRefused) throw new Error("Durable Object storage refused the write");
+
+          kv.put(key, value);
+        },
+        delete: (key) => kv.delete(key),
+      },
       origin: viewOrigin({
         hash: visualViewHash(this.ctx.id.name ?? this.ctx.id.toString()),
         label: undefined,
@@ -1289,6 +1307,7 @@ export class TestSession extends DurableObject {
               reload: this.#searching() ? reloadSessionExtensions : undefined,
               mcp: this.hostMcp(),
               apps: this.#mcpApps().service,
+              visuals: this.visuals(),
               appContexts: this.#mcpApps().service.contexts,
               onBranchLeft: leaveConversation(
                 this.#mcpWatches().service,
@@ -2260,18 +2279,26 @@ export class TestSession extends DurableObject {
 
   /**
    * Copy this Session as a Fork or Clone into the `TestSession` named `name`, through its stub, as the main Worker does.
+   * `transit`, when given, changes each page on its way: a source of another build sends a page of another shape.
    */
-  async forkInto(name: string, request: ForkSourceRequest): Promise<ForkPlan> {
+  async forkInto(
+    name: string,
+    request: ForkSourceRequest,
+    transit?: (page: ExportPage) => ExportPage,
+  ): Promise<ForkPlan> {
     const plan = await this.#runtime.runPromise(this.#host.forkSource(request));
     const target = this.env.SESSIONS.getByName(name);
 
     await this.#runtime.runPromise(
       fillSession(
-        { exportEntries: this.#host.exportEntries },
+        {
+          exportEntries: (each) =>
+            this.#host.exportEntries(each).pipe(Effect.map((page) => transit?.(page) ?? page)),
+        },
         {
           importStart: Effect.promise(() => target.importStart()),
-          importEntries: (entries, apps, questions) =>
-            Effect.promise(() => target.importEntries(entries, apps, questions)),
+          importEntries: (entries, apps, questions, visuals) =>
+            Effect.promise(() => target.importEntries(entries, apps, questions, visuals)),
           importFinish: (finished) => Effect.promise(() => target.importFinish(finished)),
         },
         plan,
@@ -2293,8 +2320,9 @@ export class TestSession extends DurableObject {
     entries: ReadonlyArray<EntryRecord>,
     apps?: ReadonlyArray<McpAppCopy>,
     questions?: ReadonlyArray<McpQuestionCopy>,
+    visuals?: ReadonlyArray<VisualCopy>,
   ): Promise<void> {
-    return this.#runtime.runPromise(this.#host.importEntries(entries, apps, questions));
+    return this.#runtime.runPromise(this.#host.importEntries(entries, apps, questions, visuals));
   }
 
   importFinish(plan: ForkPlan): Promise<void> {

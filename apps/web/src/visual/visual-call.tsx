@@ -1,7 +1,8 @@
-// docs/architecture/visuals.md → The frame (The card, Lazy mounting), The copy (Revisions, Bounds), Lifecycle. What a
+// docs/architecture/visuals.md → The frame (The card, Lazy mounting), The copy (Revisions, Bounds), Fork and Clone, Lifecycle. What a
 // `visual_show` call's card adds: its Visual, outside the card's disclosure, under the chrome "Visual · <title>", with
 // Collapse, Copy HTML, Open file (for a `path` source) and Details; a collapsed row with Reopen (and "A newer version is
-// below" for one a newer Visual of the same file supersedes); the evicted card; and, while the call streams, its progress.
+// below" for one a newer Visual of the same file supersedes); the evicted card, and the same card for a call whose Visual a Fork
+// could not copy (`VisualUnkept`); and, while the call streams, its progress.
 // A `codemode` script's Visuals show in a strip under its card (`VisualStrip`), and a subagent's in its thread.
 //
 // Which place mounts a frame is `sandbox-frame/places.ts`'s, keyed `visual:`; a Visual has no teardown, so a place told to let
@@ -15,6 +16,7 @@ import {
   VISUAL_MIN_HEIGHT,
   type VisualEntry,
   type VisualFileAnswer,
+  type ShownVisual,
   type VisualRecord,
 } from "@cloudpid/protocol";
 import { RegistryContext, useAtom, useAtomValue } from "@effect/atom-react";
@@ -46,7 +48,12 @@ import {
 import { copyToClipboard } from "../lib/clipboard.ts";
 import { appPlaces, PLACE_NAMES, placeKey, type AppPlaces } from "../sandbox-frame/places.ts";
 import { appChoiceAtom } from "../session-layout-state.ts";
-import { keepsVisualsAtom, sessionClientAtom, visualsAtom } from "../session/atoms.ts";
+import {
+  activeBranchAtom,
+  keepsVisualsAtom,
+  sessionClientAtom,
+  visualsAtom,
+} from "../session/atoms.ts";
 import {
   type VisualLoad,
   visualHeightAtom,
@@ -56,7 +63,7 @@ import {
 } from "./atoms.ts";
 import { shouldMount, useNearViewport } from "./lazy.ts";
 import { VisualFailed, VisualFrame } from "./visual-frame.tsx";
-import { visualEntries, visualEntryOf, visualsOfScript } from "./visuals.ts";
+import { visualEntries, visualEntryOf, visualsListed, visualsOfScript } from "./visuals.ts";
 
 /** The places of this page: the app's, shared with App Views under their own keys. A test gives its own. */
 export const VisualPlacesContext = createContext<AppPlaces>(appPlaces);
@@ -233,21 +240,69 @@ const OpenFile = ({ sessionId, entry }: { sessionId: string; entry: VisualEntry 
   );
 };
 
-/** A Visual that was evicted: everything its card shows without the page, with Open file for a `path` source. */
-export const VisualEvicted = ({ sessionId, entry }: { sessionId: string; entry: VisualEntry }) => (
-  <div className="my-2 overflow-hidden rounded-md border border-dashed" data-visual={entry.callId}>
-    <Chrome title={entry.title}>
+/**
+ * The card of a Visual whose page is not kept: its title, "no longer kept" with whatever the state adds beside it (`actions`),
+ * and what the card shows without the page: the summary, the source, and the size and time when they are known.
+ */
+const UnkeptCard = ({
+  callId,
+  title,
+  summary,
+  source,
+  bytes,
+  at,
+  actions,
+}: {
+  callId: string;
+  title: string;
+  summary: string;
+  source: string;
+  bytes?: number | undefined;
+  at?: number | undefined;
+  actions?: ReactNode;
+}) => (
+  <div className="my-2 overflow-hidden rounded-md border border-dashed" data-visual={callId}>
+    <Chrome title={title}>
       <span>no longer kept</span>
-      <OpenFile sessionId={sessionId} entry={entry} />
+      {actions}
     </Chrome>
     <div className="space-y-0.5 px-3 pb-2 text-xs">
-      <div>{entry.summary}</div>
+      <div>{summary}</div>
       <div className="text-muted-foreground">
-        <span className="font-mono break-all">{sourceText(entry)}</span> · {formatSize(entry.bytes)}{" "}
-        · {timeOf(entry.at)}
+        <span className="font-mono break-all">{source}</span>
+        {bytes !== undefined && <> · {formatSize(bytes)}</>}
+        {at !== undefined && <> · {timeOf(at)}</>}
       </div>
     </div>
   </div>
+);
+
+/** A Visual that was evicted: everything its card shows without the page, with Open file for a `path` source. */
+export const VisualEvicted = ({ sessionId, entry }: { sessionId: string; entry: VisualEntry }) => (
+  <UnkeptCard
+    callId={entry.callId}
+    title={entry.title}
+    summary={entry.summary}
+    source={sourceText(entry)}
+    bytes={entry.bytes}
+    at={entry.at}
+    actions={<OpenFile sessionId={sessionId} entry={entry} />}
+  />
+);
+
+/**
+ * A Visual the Session keeps no entry of: a call whose result says it showed one, in a Session whose list of Visuals does not
+ * (a Fork or Clone whose source's copy this build could not use, one from a build before Visuals). What the result says is all
+ * the card has: no page, no time and no Open file, which the Session answers from a record.
+ */
+export const VisualUnkept = ({ callId, shown }: { callId: string; shown: ShownVisual }) => (
+  <UnkeptCard
+    callId={callId}
+    title={shown.title}
+    summary={shown.summary}
+    source={shown.source_path ?? "Written inline by the call"}
+    bytes={shown.bytes}
+  />
 );
 
 /** A Visual that is collapsed: its title, why (a newer version of the same file is below), and Reopen. */
@@ -472,23 +527,35 @@ const VisualShown = ({ entry }: { entry: VisualEntry }) => {
 
 /**
  * The Visual of a `visual_show` call, under its card: the Visual once the Session lists it, its progress while the call
- * streams or runs, and nothing for a call that failed (the card says why) or a Session that keeps no Visual of it.
+ * streams or runs, "no longer kept" for a call that showed one (`shown`, from its result) once the Session's list of the
+ * thread's Visuals has come without it, and nothing for a call that failed (the card says why) or before that list.
  */
 export const VisualCall = ({
   callId,
   progress,
+  shown,
 }: {
   callId: string;
   progress?: VisualProgress | undefined;
+  shown?: ShownVisual | undefined;
 }) => {
   const sessionId = useShownSessionId();
+  const conversationId = useThreadConversation();
+  const activeBranch = useAtomValue(activeBranchAtom(sessionId));
   const entry = useAtomValue(visualsAtom(sessionId), (visuals) => visualEntryOf(visuals, callId));
+
+  const listed = useAtomValue(visualsAtom(sessionId), (visuals) =>
+    visualsListed(visuals, conversationId, activeBranch),
+  );
 
   if (entry !== undefined) return <VisualShown entry={entry} />;
 
   if (progress?.phase === "streaming" || progress?.phase === "running") {
     return <VisualPending title={progress.title} />;
   }
+
+  // Every mismatch between the builds of a Fork's source and its Session degrades to this card, never to a Fork that fails.
+  if (shown !== undefined && listed) return <VisualUnkept callId={callId} shown={shown} />;
 
   return null;
 };

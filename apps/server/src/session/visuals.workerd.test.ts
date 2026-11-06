@@ -2,7 +2,8 @@
 // Session's storage, outside History, which `visual_page` answers with the Session's origin, after the object restarts too; the
 // sockets say `hello.visuals`, and send a watched conversation's Visuals (`visuals`) after its view and as they change; past its
 // bounds the least recently mounted Visual becomes a stub its card can still show; an earlier Visual of the same file is the
-// one a show supersedes; and the call's `pi.tool.visual_show` span carries counts and fixed values, never the page's words.
+// one a show supersedes; the call's `pi.tool.visual_show` span carries counts and fixed values, never the page's words; and a
+// Fork or Clone shows the Visuals of the calls it copies, across builds too, where what a build cannot use is "no longer kept".
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
@@ -12,9 +13,13 @@ import {
   MAX_VISUAL_BYTES,
   ServerMessageJson,
   type ServerMessage,
+  isRecordCopy,
+  type VisualCopy,
   type VisualDraft,
   type VisualEntry,
+  type VisualRecord,
 } from "@cloudpid/protocol";
+import type { JsonValue } from "@earendil-works/pi-ai";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -23,6 +28,7 @@ import { describe, expect, it, vi } from "vitest";
 import { viewOrigin } from "../view-host.ts";
 import { visualViewHash } from "../view-hash.ts";
 import { poll } from "../poll.fixture.ts";
+import type { ExportPage, ForkSourceRequest } from "./fork.ts";
 import type { TestSession } from "./host.fixture.ts";
 import { visualFileAnswer } from "./visual-file.ts";
 
@@ -389,5 +395,287 @@ describe("a Visual shown in a Session", () => {
     expect(sections[0]).toContain("visual_show");
     // Frozen: every request of the Context Window shows the same text.
     expect(new Set(sections).size).toBe(1);
+  });
+});
+
+type Answered = Awaited<ReturnType<Awaited<ReturnType<typeof connect>>["answer"]>>;
+
+/** A copy another build might send: an RPC's value is never decoded, so any shape arrives. */
+// SAFETY: that is the point of the test; `adopt` reads a copy by its shape and skips what it cannot use.
+// oxlint-disable-next-line anti-slop/no-chained-type-assertions
+const copyOf = (value: JsonValue): VisualCopy => value as VisualCopy;
+
+describe("the Visuals a Fork or Clone carries", () => {
+  /** Copy `source` into a new Session of the Visuals' name, `transit` changing what its pages carry on the way. */
+  const copyInto = async (
+    source: DurableObjectStub<TestSession>,
+    request: ForkSourceRequest,
+    transit?: (page: ExportPage) => ExportPage,
+  ) => {
+    const name = `visuals-copy-${counter++}`;
+
+    await runInDurableObject(source, (instance: TestSession) =>
+      instance.forkInto(name, request, transit),
+    );
+
+    return { name, stub: env.SESSIONS.getByName(name) };
+  };
+
+  /** A Clone of `source`: a copy with no point, of its latest entry. */
+  const cloneOf = (
+    source: DurableObjectStub<TestSession>,
+    transit?: (page: ExportPage) => ExportPage,
+  ) => copyInto(source, { quiet: "none" }, transit);
+
+  /** A Fork of `source` just before its `n`th owner's message (from 1). */
+  const forkBefore = async (source: DurableObjectStub<TestSession>, n: number) => {
+    const tree = await runInDurableObject(source, (instance: TestSession) => instance.tree());
+    const message = tree.nodes.filter((node) => node.role === "user")[n - 1];
+
+    if (message === undefined) throw new Error(`No owner message ${n}`);
+
+    return copyInto(source, { point: { entryId: message.id, position: "before" }, quiet: "none" });
+  };
+
+  /** What a Session's clients are told of its root conversation's Visuals, and its answer to `visual_page` for each of `callIds`. */
+  const seen = async (
+    stub: DurableObjectStub<TestSession>,
+    callIds: ReadonlyArray<string> = [],
+  ) => {
+    const client = await connect(stub);
+    const { root } = await client.root();
+
+    client.send({ type: "watch", conversationId: root });
+
+    const visuals = await client.visuals(root);
+    const pages: Record<string, Answered> = {};
+
+    for (const callId of callIds) {
+      client.send({ type: "visual_page", id: `page-${callId}`, callId });
+      pages[callId] = await client.answer(`page-${callId}`);
+    }
+
+    client.close();
+
+    return { root, visuals, pages };
+  };
+
+  /** A Session that showed two Visuals, in two owner messages, and the two calls' IDs. */
+  const showedTwo = async () => {
+    const { stub } = fresh();
+
+    await show(stub, { html: PAGE, title: "First", summary: "The first, as bars" });
+    await show(stub, {
+      html: `${PAGE}<p>2</p>`,
+      title: "Second",
+      summary: "The second, as a table",
+    });
+
+    const { visuals } = await seen(stub);
+    const [first, second] = Arr.map(visuals, (each) => each.callId);
+
+    if (first === undefined || second === undefined)
+      throw new Error("The Session has no two Visuals");
+
+    return { stub, first, second };
+  };
+
+  it("shows the source's Visuals in a Clone, each page at the Clone's own origin", async () => {
+    const { stub, first, second } = await showedTwo();
+    const clone = await cloneOf(stub);
+    const { root, visuals, pages } = await seen(clone.stub, [first]);
+
+    expect(Arr.map(visuals, (each) => [each.callId, each.title, each.state])).toEqual([
+      [first, "First", "kept"],
+      [second, "Second", "kept"],
+    ]);
+    expect(pages[first]).toMatchObject({
+      status: "page",
+      origin: viewOrigin({ hash: visualViewHash(clone.name), label: undefined, local: false }),
+      record: { callId: first, html: PAGE, title: "First", conversation: String(root) },
+    });
+
+    // The source keeps its own.
+    expect((await seen(stub)).visuals).toHaveLength(2);
+  });
+
+  it("shows the Visuals of the calls before a Fork's point only", async () => {
+    const { stub, first } = await showedTwo();
+    const fork = await forkBefore(stub, 2);
+
+    expect(Arr.map((await seen(fork.stub)).visuals, (each) => each.callId)).toEqual([first]);
+  });
+
+  it("keeps a Visual the source had evicted as the stub it was, through a Clone of a Clone", async () => {
+    const { stub, first, second } = await showedTwo();
+
+    // Sixteen pages of nearly 2 MiB fill the 32 MiB with the two small ones; mounting the second and one more page past the
+    // bound evicts the least recently mounted: the first, and a page of the filler.
+    const big = `<!doctype html><p>${"x".repeat(MAX_VISUAL_BYTES - 64)}</p>`;
+
+    await runInDurableObject(stub, async (instance: TestSession) => {
+      for (let n = 0; n < 16; n++) await instance.visualPut(draft(`filler-${n}`, big));
+    });
+
+    const client = await connect(stub);
+
+    await client.root();
+    client.send({ type: "visual_page", id: "m", callId: second });
+    expect(await client.answer("m")).toMatchObject({ status: "page" });
+    client.close();
+
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.visualPut(draft("filler-16", big)),
+    );
+    expect((await seen(stub, [first])).pages[first]).toMatchObject({ status: "evicted" });
+
+    // The filler belongs to no call of the History, so a Clone carries the two calls' Visuals only.
+    const clone = await cloneOf(stub);
+    const again = await cloneOf(clone.stub);
+    const copied = await seen(again.stub, [first]);
+
+    expect(Arr.map(copied.visuals, (each) => [each.callId, each.state])).toEqual([
+      [first, "evicted"],
+      [second, "kept"],
+    ]);
+    expect(copied.pages[first]).toMatchObject({
+      status: "evicted",
+      stub: { callId: first, title: "First", summary: "The first, as bars" },
+    });
+  });
+
+  it("is made without them when the storage refuses to keep them, with the History copied", async () => {
+    const { stub } = await showedTwo();
+    const name = `visuals-copy-${counter++}`;
+    const target = env.SESSIONS.getByName(name);
+
+    await runInDurableObject(target, (instance: TestSession) => instance.refuseVisuals());
+    await runInDurableObject(stub, (instance: TestSession) =>
+      instance.forkInto(name, { quiet: "none" }),
+    );
+
+    expect(await runInDurableObject(target, (instance: TestSession) => instance.copying())).toBe(
+      false,
+    );
+    expect((await seen(target)).visuals).toEqual([]);
+
+    const nodes = (session: DurableObjectStub<TestSession>) =>
+      runInDurableObject(
+        session,
+        async (instance: TestSession) => (await instance.tree()).nodes.length,
+      );
+
+    expect(await nodes(target)).toBe(await nodes(stub));
+  });
+
+  describe("across builds", () => {
+    /** A Clone of a Session of two Visuals, `change` given the copies of a page (the first Visual's among them) and the first's. */
+    const skewed = async (
+      change: (
+        visuals: ReadonlyArray<VisualCopy>,
+        first: VisualCopy,
+      ) => ReadonlyArray<VisualCopy> | undefined,
+    ) => {
+      const { stub, first, second } = await showedTwo();
+
+      const clone = await cloneOf(stub, (page) => {
+        const { visuals, ...rest } = page;
+        const head = visuals?.[0];
+
+        if (visuals === undefined || head === undefined) return page;
+
+        const changed = change(visuals, head);
+
+        return changed === undefined ? rest : { ...rest, visuals: changed };
+      });
+
+      // The Clone was made: its Session takes messages and shows its History.
+      expect(
+        await runInDurableObject(clone.stub, (instance: TestSession) => instance.copying()),
+      ).toBe(false);
+
+      return { ...(await seen(clone.stub, [first])), first, second };
+    };
+
+    /** `copy` as a record of another build changed it, or as it is when it is not a record. */
+    const recordChanged = (copy: VisualCopy, change: (record: VisualRecord) => JsonValue) =>
+      isRecordCopy(copy) ? copyOf({ kind: "record", record: change(copy.record) }) : copy;
+
+    it("from a source before Visuals shows none, and the Clone is made", async () => {
+      const { visuals } = await skewed(() => undefined);
+
+      expect(visuals).toEqual([]);
+    });
+
+    it("skips a kind of copy it does not know, and keeps the others", async () => {
+      const { visuals, first, second } = await skewed((all) => [
+        copyOf({ kind: "future", payload: { html: PAGE } }),
+        ...all,
+      ]);
+
+      expect(Arr.map(visuals, (each) => each.callId)).toEqual([first, second]);
+    });
+
+    it("skips a copy that is not the shape of its kind", async () => {
+      const { visuals, first, second } = await skewed((all) => [
+        copyOf({ kind: "record" }),
+        copyOf({ kind: "record", record: "not a record" }),
+        copyOf({ kind: "stub", stub: null }),
+        copyOf({ kind: "stub", stub: { callId: 7 } }),
+        ...all,
+      ]);
+
+      expect(Arr.map(visuals, (each) => each.callId)).toEqual([first, second]);
+    });
+
+    it("keeps a record it cannot read as the stub its card shows: no longer kept", async () => {
+      const { visuals, pages, first, second } = await skewed((all, head) => [
+        recordChanged(head, (record) => ({ ...record, html: 42 })),
+        ...all.slice(1),
+      ]);
+
+      expect(Arr.map(visuals, (each) => [each.callId, each.state])).toEqual([
+        [first, "evicted"],
+        [second, "kept"],
+      ]);
+      expect(pages[first]).toMatchObject({
+        status: "evicted",
+        stub: { callId: first, title: "First", summary: "The first, as bars" },
+      });
+    });
+
+    it("keeps a page past this build's bound as a stub, whatever its record says it weighs", async () => {
+      const { visuals, first, second } = await skewed((all, head) => [
+        recordChanged(head, (record) => ({
+          ...record,
+          html: "x".repeat(MAX_VISUAL_BYTES + 1),
+          bytes: 10,
+        })),
+        ...all.slice(1),
+      ]);
+
+      expect(
+        Arr.map(visuals, (each) => [each.callId, each.state, each.bytes > MAX_VISUAL_BYTES]),
+      ).toEqual([
+        [first, "evicted", true],
+        [second, "kept", false],
+      ]);
+    });
+
+    it("keeps the fields a newer build added to a record, and a source kind it does not know", async () => {
+      const { pages, first } = await skewed((all, head) => [
+        recordChanged(head, (record) => ({
+          ...record,
+          source: { kind: "url", url: "https://x" },
+          later: 1,
+        })),
+        ...all.slice(1),
+      ]);
+
+      expect(pages[first]).toMatchObject({
+        status: "page",
+        record: { html: PAGE, source: { kind: "url" } },
+      });
+    });
   });
 });

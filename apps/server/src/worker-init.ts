@@ -98,8 +98,8 @@ export const serverInit = Effect.gen(function* () {
     forkSource: (id, request) => Effect.orDie(sessions.getByName(id).forkSource(request)),
     exportEntries: (id, request) => Effect.orDie(sessions.getByName(id).exportEntries(request)),
     importStart: (id) => Effect.orDie(sessions.getByName(id).importStart()),
-    importEntries: (id, entries, apps, questions) =>
-      Effect.orDie(sessions.getByName(id).importEntries(entries, apps, questions)),
+    importEntries: (id, entries, apps, questions, visuals) =>
+      Effect.orDie(sessions.getByName(id).importEntries(entries, apps, questions, visuals)),
     importFinish: (id, plan) => Effect.orDie(sessions.getByName(id).importFinish(plan)),
     releaseFork: (id) => Effect.orDie(sessions.getByName(id).releaseFork()),
     deleteSubagent: (id, agent, workspace) =>
