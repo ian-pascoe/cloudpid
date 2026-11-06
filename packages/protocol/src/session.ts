@@ -32,6 +32,7 @@ import {
   McpAppsMessage,
   McpAppToolsMessage,
 } from "./mcp-apps.ts";
+import { VisualFileCommand, VisualPageCommand, VisualsMessage } from "./visuals.ts";
 import {
   MAX_MCP_COMPLETE_NAME_CHARS,
   McpCompletionArgument,
@@ -967,6 +968,8 @@ export const ClientMessage = Schema.Union([
   McpAppCancel,
   McpAppLog,
   McpAppContextCommand,
+  VisualPageCommand,
+  VisualFileCommand,
   McpTaskCancel,
   ContainerKeep,
   McpResourceRead,
@@ -1001,7 +1004,9 @@ export type ClientMessage = typeof ClientMessage.Type;
  * `mcp_resource_menu`, and `resourcePreviews` that it takes `mcp_resource_read`, which a client sends on the same terms; `mcpDecline` says it takes `scope` on
  * `mcp_elicitation_answer` and `mcp_elicitation_revoke`; `mcpCompletions` that it takes `mcp_complete` and `mcp_complete_cancel`.
  * `appMessages` says it takes `submit.app`, and `appContext` that it takes `mcp_app_context`: a client holds an App's
- * message, and forwards its context, only for a Session that says so.
+ * message, and forwards its context, only for a Session that says so. `visuals` says it keeps Visuals (`visuals`,
+ * `visual_page`, and `visual_file` for Open file: `docs/architecture/visuals.md` → Socket messages): a client shows a
+ * `visual_show` call to a Session that does not say so as an ordinary tool card.
  */
 export const Hello = Schema.Struct({
   type: Schema.Literal("hello"),
@@ -1015,6 +1020,7 @@ export const Hello = Schema.Struct({
   appContext: Schema.optionalKey(Schema.Boolean),
   mcpDecline: Schema.optionalKey(Schema.Boolean),
   mcpCompletions: Schema.optionalKey(Schema.Boolean),
+  visuals: Schema.optionalKey(Schema.Boolean),
 });
 
 /**
@@ -1838,6 +1844,7 @@ export const ServerMessage = Schema.Union([
   McpAppToolsMessage,
   McpTasksMessage,
   McpWatchesMessage,
+  VisualsMessage,
 ]);
 
 export type ServerMessage = typeof ServerMessage.Type;

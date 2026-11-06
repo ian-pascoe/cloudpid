@@ -1,4 +1,4 @@
-import type { Harness } from "@cloudpid/effect-durable";
+import type { Harness, ToolSpans } from "@cloudpid/effect-durable";
 import { AgentsMd } from "@cloudpid/extensions/agents-md";
 import { ApprovalTools, type EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
 import type { Approvals } from "@cloudpid/extensions/approvals";
@@ -34,6 +34,7 @@ import { Skills } from "@cloudpid/extensions/skills";
 import { SkillSearchTools } from "@cloudpid/extensions/skill-search-tool";
 import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Todo } from "@cloudpid/extensions/todo";
+import { type VisualRecorder, Visuals } from "@cloudpid/extensions/visuals";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
 import { Web, WebConfig, WebNetworkLive } from "@cloudpid/extensions/web";
 import type { Extension } from "@earendil-works/pi-durable";
@@ -50,7 +51,8 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * the tools above and run in the `CodemodeSandbox` (`./codemode.ts`); the subagent tools, which read their roles,
  * depth cap, and toolsets from `SubagentSettings`; and the context tools (`context_notes`, `context_history`,
  * `context_rollover`), whose compaction hook asks the agent for a Handoff through the Session's `Harness`; the `todo` tool,
- * whose list is a conversation document that a hook puts back in front of the model after a Handoff or compaction; and the secret tools
+ * whose list is a conversation document that a hook puts back in front of the model after a Handoff or compaction; `visual_show`,
+ * which shows the owner a page inline and hands it to the Session's `VisualRecorder`, and the `visuals` section; and the secret tools
  * (`secret_ask`, `secret_list`, `secret_forget`), whose wraps let the coding and file tools and `web_fetch` use the
  * Session's `Secrets` (never `web_search`: a Secret does not belong in a search query); the `skills` section, which lists
  * the skills in the conversation's `.agents/skills` directories (`@cloudpid/extensions/skills`); the
@@ -103,6 +105,8 @@ export const sessionExtensions: Effect.Effect<
   | SettingsReload
   | Approvals
   | EnvironmentRemoval
+  | VisualRecorder
+  | ToolSpans
 > = Effect.all([
   CodingTools,
   Files,
@@ -111,6 +115,8 @@ export const sessionExtensions: Effect.Effect<
   Subagents,
   ContextManagement,
   Todo,
+  // `visual_show`, which hands each page to the Session's `VisualRecorder` (`docs/architecture/visuals.md`).
+  Visuals,
   Browser,
   Skills,
   // `skill_search`: skills.sh, over the same network as the web tools.

@@ -12,8 +12,10 @@ import {
   type McpAppContext,
   projectEntry,
   sessionCommandsFor,
+  shownVisualOf,
   type TranscriptMessage,
   type TranscriptPart,
+  visualTranscriptLine,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
@@ -157,6 +159,13 @@ const appCallMarkdown = (
     : [`Last App context (${contextStanding(held)}):\n\n${quoted(held.context.text)}`]),
 ];
 
+/** What an export says of a Visual a call showed (`docs/architecture/visuals.md` → Lifecycle): its title and summary. */
+const visualMarkdown = (part: Extract<TranscriptPart, { type: "tool-result" }>): string[] => {
+  const shown = part.error ? undefined : shownVisualOf(part.details);
+
+  return shown === undefined ? [] : [`_${visualTranscriptLine(shown.title, shown.summary)}_`];
+};
+
 /** A call's last context as seen from the conversation exported: `here` when it was held for that conversation. */
 export type ExportedAppContext = {
   readonly context: McpAppContext;
@@ -232,6 +241,8 @@ const messageMarkdown = (
                 ...(isAppResult(part.details)
                   ? appCallMarkdown(part, options.appContext?.(part.id))
                   : []),
+                // A Visual the call showed, by its title and summary: an export never renders a page.
+                ...visualMarkdown(part),
                 // The questions the call asked, kept outside the History, as one line each.
                 ...(options.mcpLines?.get(part.id) ?? []),
               ]

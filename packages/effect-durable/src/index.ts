@@ -9,6 +9,16 @@ export { effectHook, type EffectHooks } from "./hook.ts";
 
 export { effectSection, frozenSection } from "./section.ts";
 
+export {
+  annotateToolSpan,
+  makeToolSpans,
+  noToolSpans,
+  type ToolSpanAttributes,
+  type ToolSpanRegistry,
+  ToolSpans,
+  type ToolSpanValue,
+} from "./tool-span.ts";
+
 export { effectTask, type EffectTaskDefinition, type TaskFailure } from "./task.ts";
 
 export {

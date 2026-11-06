@@ -124,6 +124,31 @@ describe("renderTranscript", () => {
     );
   });
 
+  it("writes a Visual a call showed as its title and summary, never its page", () => {
+    const shown: TranscriptMessage = {
+      id: "7",
+      role: "tool",
+      timestamp: at,
+      parts: [
+        {
+          type: "tool-result",
+          id: "v1",
+          name: "visual_show",
+          content: [{ type: "text", text: 'Shown "Sales". Don\'t restate it.' }],
+          error: false,
+          details: { visual: { id: "v1", title: "Sales", summary: "Sales by month, as bars" } },
+        },
+      ],
+    };
+
+    expect(render(shown)[0]?.text).toBe(
+      "### tool · visual_show · 14:02\n✓ 1 line\nVisual: Sales — Sales by month, as bars (not rendered)",
+    );
+    expect(renderTranscript([shown], { detail: "full" })[0]?.text).toContain(
+      "\nVisual: Sales — Sales by month, as bars (not rendered)",
+    );
+  });
+
   it("shows images by size and notices on one line, and skips what shows nothing", () => {
     const picture: TranscriptMessage = {
       id: "6",

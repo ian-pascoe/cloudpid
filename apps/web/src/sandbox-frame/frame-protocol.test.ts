@@ -183,6 +183,34 @@ describe("the handshake", () => {
     expect(events).toEqual([]);
   });
 
+  it("names its subject in the failure: a Visual's is the Visual's", async () => {
+    const page = fakePage();
+    const visual = make(page, { subject: "Visual" });
+
+    visual.protocol.start();
+    page.deliver(rpc("ui/notifications/sandbox-proxy-ready"));
+    await vi.advanceTimersByTimeAsync(INITIALIZE_TIMEOUT_MS);
+    expect(visual.events).toEqual([
+      { type: "failed", reason: "The Visual did not start within 10 seconds" },
+    ]);
+  });
+
+  it("hands a notification it does not serve to the handler given for it, by own property only", () => {
+    const page = fakePage();
+    const escaped: unknown[] = [];
+
+    const { protocol } = make(page, {
+      notifications: { "cloudpid/notifications/escape": (params) => escaped.push(params) },
+    });
+
+    protocol.start();
+    handshake(page);
+    page.deliver(rpc("cloudpid/notifications/escape", { key: "Escape" }));
+    page.deliver(rpc("toString"));
+    page.deliver(rpc("cloudpid/notifications/other"));
+    expect(escaped).toEqual([{ key: "Escape" }]);
+  });
+
   it("fails when the View sends no ui/initialize within 10 s, and not once it has", async () => {
     const page = fakePage();
     const quiet = make(page);

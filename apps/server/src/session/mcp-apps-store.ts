@@ -3,7 +3,7 @@
 // key-value storage, outside History, and read by the same path for a live mount and a replay (`mcp_app_mount`). The
 // extension hands over a draft; the record is redacted of the Secrets held, then bounded (`boundAppRecord`: 1 MiB), kept
 // in parts under `cloudpid:mcp-app:<callId>:<n>`, with an index of every record and stub, oldest first, under
-// `cloudpid:mcp-apps`, by the chunked-record primitive (`./call-records.ts`, which Visuals' store will share). Past 32 MiB, or
+// `cloudpid:mcp-apps`, by the chunked-record primitive (`./call-records.ts`, which Visuals' store shares). Past 32 MiB, or
 // `MAX_MCP_APP_RECORDS` records, the least recently mounted record is evicted and leaves a stub (who the call was and
 // nothing of its data); the oldest stubs are dropped past `MAX_MCP_APP_STUBS`, and read as no record. The whole of a write
 // is one synchronous run, so no reader sees half of it.

@@ -1,6 +1,6 @@
 // The chunked-record primitive under the Session's per-call stores (`docs/architecture/visuals.md` → The copy: The store;
 // `docs/architecture/mcp-apps.md` → App records): the App record store (`./mcp-apps-store.ts`) sits on it today, and
-// Visuals' store will share it (#658). A call's record is text, kept in this object's key-value storage in parts of at most
+// Visuals' store shares it (#658). A call's record is text, kept in this object's key-value storage in parts of at most
 // `PART_LENGTH` characters, with an index of every record and stub, oldest first, under one key, written last of everything
 // a change touches. Past its bounds (bytes kept, records kept, stubs kept) the least recently mounted record is evicted to a
 // stub (a call's entry that holds no data), never the one just written, and the oldest stubs are dropped. Everything here is

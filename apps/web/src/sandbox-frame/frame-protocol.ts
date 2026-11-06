@@ -124,12 +124,14 @@ export interface FrameOptions {
   readonly listen: (handler: (message: IncomingMessage) => void) => () => void;
   /**
    * What `sandbox-resource-ready` carries: the View's HTML, the CSP it declared (which the proxy's header already enforces)
-   * and the browser permissions it declared, which the proxy puts on its inner frame's `allow` (`apps/app-sandbox`).
+   * and the browser permissions it declared, which the proxy puts on its inner frame's `allow` (`apps/app-sandbox`); and
+   * the inner frame's `sandbox` flags, when the page names its own instead of the proxy's default.
    */
   readonly page: {
     readonly html: string;
     readonly csp?: McpUiResourceCsp;
     readonly permissions?: McpUiResourcePermissions;
+    readonly sandbox?: string;
   };
   /** The host's context as it is now, which `ui/initialize` is answered with. */
   readonly hostContext: () => McpUiHostContext;
@@ -139,6 +141,13 @@ export interface FrameOptions {
   readonly handlers?: Readonly<Record<string, RequestHandler>> | undefined;
   /** The `params` of each `notifications/message` the View sends, for telemetry (`requests.ts`); dropped when there is none. */
   readonly logs?: ((params: unknown) => void) | undefined;
+  /**
+   * Handlers of the page's notifications the protocol does not serve itself, by method (a Visual's Escape,
+   * `VISUAL_ESCAPE`): each is given the `params` as the page sent them; any other notification is dropped.
+   */
+  readonly notifications?: Readonly<Record<string, (params: unknown) => void>> | undefined;
+  /** What the failure to start names: "The <subject> did not start within 10 seconds"; `App` when none is given. */
+  readonly subject?: string | undefined;
   readonly onEvent: (event: FrameEvent) => void;
 }
 
@@ -336,6 +345,11 @@ export const createFrameProtocol = (options: FrameOptions): FrameProtocol => {
       return;
     }
 
+    // Own properties only, as for requests: the page chooses the method.
+    const notified = options.notifications;
+
+    if (notified !== undefined && Object.hasOwn(notified, method)) notified[method]?.(params);
+
     // Any other notification is nothing the host serves yet; it is dropped.
   };
 
@@ -384,7 +398,7 @@ export const createFrameProtocol = (options: FrameOptions): FrameProtocol => {
 
       proxyReady = true;
 
-      const { csp, permissions } = options.page;
+      const { csp, permissions, sandbox } = options.page;
 
       const resource: Types.Mutable<McpUiSandboxResourceReadyNotification["params"]> = {
         html: options.page.html,
@@ -393,6 +407,8 @@ export const createFrameProtocol = (options: FrameOptions): FrameProtocol => {
       if (csp !== undefined) resource.csp = csp;
 
       if (permissions !== undefined) resource.permissions = permissions;
+
+      if (sandbox !== undefined) resource.sandbox = sandbox;
 
       notify(RESOURCE_READY, resource);
 
@@ -443,7 +459,7 @@ export const createFrameProtocol = (options: FrameOptions): FrameProtocol => {
       initializeTimer = setTimeout(() => {
         fail(
           proxyReady
-            ? "The App did not start within 10 seconds"
+            ? `The ${options.subject ?? "App"} did not start within 10 seconds`
             : "The App sandbox did not answer within 10 seconds",
         );
       }, INITIALIZE_TIMEOUT_MS);

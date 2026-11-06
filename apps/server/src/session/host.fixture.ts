@@ -4,7 +4,13 @@
 // as the Session DO hosts them over the model proxy. Tests drive it with `runInDurableObject()` and client sockets,
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
-import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
+import {
+  callDurable,
+  defineEffectTool,
+  Harness,
+  makeToolSpans,
+  ToolSpans,
+} from "@cloudpid/effect-durable";
 import { type RefusingStorage, refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import {
   Browser,
@@ -45,6 +51,8 @@ import {
 import { scrubbingModels, Secrets, secretsExtension } from "@cloudpid/extensions/secrets";
 import { ContextDoc } from "@cloudpid/extensions/context";
 import { Todo, TodoDoc } from "@cloudpid/extensions/todo";
+import { type VisualKept, VisualRecorder, Visuals } from "@cloudpid/extensions/visuals";
+import { effectTelemetry, tracingTools } from "@cloudpid/telemetry";
 import type {
   StageImportAppend,
   StageImportBegin,
@@ -54,6 +62,7 @@ import type {
   AttachedPage,
   McpAppCopy,
   McpAppDraft,
+  VisualDraft,
   McpAppEntry,
   McpWatchEntry,
   McpAppMounted,
@@ -143,6 +152,12 @@ import type * as Types from "effect/Types";
 import type { TestMcpHost } from "../mcp/host.fixture.ts";
 import { mcpHostName } from "../mcp/name.ts";
 import { viewOrigin } from "../view-host.ts";
+import { visualViewHash } from "../view-hash.ts";
+import {
+  sessionVisuals,
+  sessionVisualsLayer,
+  type SessionVisualsService,
+} from "./visuals-store.ts";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import { type McpHostAnswers, type McpHostStub, mcpHostClient, sessionMcp } from "./mcp-host.ts";
 import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
@@ -674,7 +689,8 @@ export class TestSession extends DurableObject {
    * starts with `instructions-`, the `owner_instructions` section over the Instructions the Session last read; and, for
    * one whose name starts with `tool-search-`, `tool_search` over the Registry's offered tools, which is installed
    * again when they change; and, for one whose name starts with `mcp-`, an empty `mcp` extension and `tool_search`,
-   * which its request starts install again (`hostMcp`).
+   * which its request starts install again (`hostMcp`); and, for one whose name starts with `visuals-`, `visual_show` over the
+   * Session's Visuals, its calls traced.
    */
   protected hostExtensions(): Effect.Effect<
     readonly Extension[],
@@ -698,6 +714,9 @@ export class TestSession extends DurableObject {
     const hanging = this.ctx.id.name?.startsWith("hang-") === true;
     const nesting = this.ctx.id.name?.startsWith("settings-nest-") === true;
     const mcp = this.#hasMcpTools();
+    const showing = this.ctx.id.name?.startsWith("visuals-") === true;
+    const visuals = this.visuals();
+    const tracer = this.#tracer;
     const settingsRegistry = this.#settingsRegistry();
     const session = this.ctx.id.name;
 
@@ -779,6 +798,19 @@ export class TestSession extends DurableObject {
         yield* Todo,
         ...(mcp ? [emptyMcpExtension] : []),
       ];
+
+      // `visual_show`, recording through the Session's Visuals, its calls `pi.tool` spans of the instance's tracer as the
+      // Session DO's are of its telemetry.
+      if (showing) {
+        const spans = makeToolSpans();
+
+        const shown = yield* Visuals.pipe(
+          Effect.provideService(VisualRecorder, visuals),
+          Effect.provideService(ToolSpans, spans),
+        );
+
+        extensions.push(shown, tracingTools(effectTelemetry(tracer), shown.tools ?? [], spans));
+      }
 
       if (writing) {
         const runs = yield* SessionRuns;
@@ -935,6 +967,25 @@ export class TestSession extends DurableObject {
     return this.#apps;
   }
 
+  #visuals: SessionVisualsService | undefined;
+
+  /**
+   * The Session's Visuals, made once, as the Session DO's: at the origin of its ID on a deployed `prod` stage's sandbox. The
+   * `visuals` extension records through it (`visualRecorder`), and the sockets serve it.
+   */
+  protected visuals(): SessionVisualsService {
+    this.#visuals ??= sessionVisuals({
+      storage: this.ctx.storage.kv,
+      origin: viewOrigin({
+        hash: visualViewHash(this.ctx.id.name ?? this.ctx.id.toString()),
+        label: undefined,
+        local: false,
+      }),
+    });
+
+    return this.#visuals;
+  }
+
   /** The Session's previews of a card's links, read through its MCP tools. */
   #resourcePreviews() {
     return mcpResourcePreviewsLayer({
@@ -1070,6 +1121,17 @@ export class TestSession extends DurableObject {
 
   /** The spans this instance's Effects made, in the order they started. */
   readonly #spans: Tracer.NativeSpan[] = [];
+
+  /** The tracer that keeps them, which the runtime makes every span with, and the traced tools' `pi.tool` spans too. */
+  readonly #tracer = Tracer.make({
+    span: (options) => {
+      const span = new Tracer.NativeSpan(options);
+
+      this.#spans.push(span);
+
+      return span;
+    },
+  });
   #host!: SessionHostService;
   #sockets!: SessionSocketsService;
   #changes!: SessionChangesService;
@@ -1443,7 +1505,13 @@ export class TestSession extends DurableObject {
             }),
           ),
           Layer.provideMerge(Layer.merge(this.#mcpQuestions().layer, this.#mcpSampling().layer)),
-          Layer.provideMerge(Layer.merge(this.#mcpApps().layer, this.#mcpWatches().layer)),
+          Layer.provideMerge(
+            Layer.mergeAll(
+              this.#mcpApps().layer,
+              this.#mcpWatches().layer,
+              sessionVisualsLayer(this.visuals()),
+            ),
+          ),
           Layer.provideMerge(this.#resourcePreviews()),
           Layer.provideMerge(this.#mcpSignIns().layer),
           Layer.provideMerge(this.#mcpTasks().layer),
@@ -1463,20 +1531,7 @@ export class TestSession extends DurableObject {
             }),
           ),
           // The spans this instance's Effects make, kept to read.
-          Layer.provideMerge(
-            Layer.succeed(
-              Tracer.Tracer,
-              Tracer.make({
-                span: (options) => {
-                  const span = new Tracer.NativeSpan(options);
-
-                  this.#spans.push(span);
-
-                  return span;
-                },
-              }),
-            ),
-          ),
+          Layer.provideMerge(Layer.succeed(Tracer.Tracer, this.#tracer)),
         ),
       );
 
@@ -2803,6 +2858,11 @@ export class TestSession extends DurableObject {
   }
 
   /** Stop everything, as Stop all and Archive do: every branch and every subagent, background work included. */
+  /** Keep `draft` as a shown Visual, as `visual_show` hands it to the Session (`VisualRecorder.put`). */
+  visualPut(draft: VisualDraft): Promise<VisualKept> {
+    return Effect.runPromise(this.visuals().put(draft));
+  }
+
   stopEverything(): Promise<void> {
     return Effect.runPromise(this.#host.stopEverything);
   }

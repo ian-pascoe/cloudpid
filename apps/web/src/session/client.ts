@@ -30,6 +30,8 @@ import {
   McpAppContextAnswer,
   McpAppRequestAnswer,
   McpAppMounted,
+  VisualFileAnswer,
+  VisualPageAnswer,
   McpCompletionArgument,
   McpCompletionContext,
   McpCompletionRef,
@@ -560,6 +562,19 @@ export interface SessionClient {
    * (`ui/message`) only when `appMessages`, since a send with `submit.app` would be refused by one from before.
    */
   readonly takes: () => { readonly appMessages: boolean; readonly appContext: boolean };
+  /**
+   * The page of the Visual of call `callId` (`docs/architecture/visuals.md` → Socket messages: `visual_page`): its record and
+   * the origin it is served at, its stub when it was evicted, or `none`. Answering with a page marks the Visual the most
+   * recently mounted. A Session whose `hello` did not say `visuals` is answered `none` with nothing sent; fails as `catalog`
+   * does when the socket is down.
+   */
+  readonly visualPage: (callId: string) => Effect.Effect<VisualPageAnswer, SessionCommandError>;
+  /**
+   * The file the Visual of call `callId` was shown from, as it is now (`visual_file`: Open file): its text, or why there is
+   * none. A Session whose `hello` did not say `visuals` is answered `none` with nothing sent; fails as `catalog` does when
+   * the socket is down.
+   */
+  readonly visualFile: (callId: string) => Effect.Effect<VisualFileAnswer, SessionCommandError>;
 }
 
 /** What the owner is told of a command a Session from before does not take. */
@@ -660,6 +675,10 @@ const decodeOwnerTabLinks = Schema.decodeUnknownOption(OwnerTabLinks);
 const decodeOwnerTabListing = Schema.decodeUnknownOption(OwnerTabListing);
 
 const decodeMcpAppMounted = Schema.decodeUnknownOption(McpAppMounted);
+
+const decodeVisualPageAnswer = Schema.decodeUnknownOption(VisualPageAnswer);
+
+const decodeVisualFileAnswer = Schema.decodeUnknownOption(VisualFileAnswer);
 
 const decodeMcpAppHtmlAnswer = Schema.decodeUnknownOption(McpAppHtmlAnswer);
 
@@ -813,6 +832,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
   let appMessages = false;
   let appContext = false;
   let mcpDecline = false;
+  // Whether it keeps Visuals and takes `visual_page` (`hello.visuals`), on the same terms.
+  let visuals = false;
 
   /** Tell the Session whether this page is visible (`page_visible`): a hidden tab's App Views make no requests. */
   const sendVisibility = (): void => {
@@ -971,6 +992,8 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         | "todos"
         | "mcpAppTools"
         | "mcpApps"
+        | "visuals"
+        | "keepsVisuals"
         | "activeBranch"
         | "treeVersion"
         | "copying"
@@ -1210,6 +1233,7 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
     attachedResources = null;
     appMessages = false;
     appContext = false;
+    visuals = false;
     resourcePreviews = false;
     mcpDecline = false;
     mcpCompletions = false;
@@ -1263,7 +1287,9 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
         appContext = message.appContext === true;
         mcpDecline = message.mcpDecline === true;
         mcpCompletions = message.mcpCompletions === true;
+        visuals = message.visuals === true;
         update({
+          keepsVisuals: visuals,
           activeBranch: root,
           copying: message.copying === true,
           treeVersion: moved ? current.treeVersion + 1 : current.treeVersion,
@@ -1433,6 +1459,12 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
 
       case "mcp_apps":
         update({ mcpApps: { ...current.mcpApps, [String(message.conversationId)]: message.apps } });
+
+        return;
+      case "visuals":
+        update({
+          visuals: { ...current.visuals, [String(message.conversationId)]: message.visuals },
+        });
 
         return;
       case "view":
@@ -2443,6 +2475,14 @@ export const make = Effect.fnUntraced(function* (socketUrl: string) {
             message: "This Session cannot take App context until it is updated",
           }),
     takes: () => ({ appMessages, appContext }),
+    visualPage: (callId) =>
+      visuals
+        ? request((id) => ({ type: "visual_page", id, callId }), decodeVisualPageAnswer)
+        : Effect.succeed<VisualPageAnswer>({ status: "none" }),
+    visualFile: (callId) =>
+      visuals
+        ? request((id) => ({ type: "visual_file", id, callId }), decodeVisualFileAnswer)
+        : Effect.succeed<VisualFileAnswer>({ status: "none" }),
     resourcePreview: (conversationId, server, uri, path) =>
       resourcePreviews
         ? request((id) => {
