@@ -3,7 +3,7 @@
 // key-value storage, outside History, and read by the same path for a live mount and a replay (`mcp_app_mount`). The
 // extension hands over a draft; the record is redacted of the Secrets held, then bounded (`boundAppRecord`: 1 MiB), kept
 // in parts under `cloudpid:mcp-app:<callId>:<n>`, with an index of every record and stub, oldest first, under
-// `cloudpid:mcp-apps`, by the chunked-record primitive (`./call-records.ts`, which Visuals' store shares). Past 32 MiB, or
+// `cloudpid:mcp-apps`, by the chunked-record primitive (`./call-records.ts`, which Visuals' store will share). Past 32 MiB, or
 // `MAX_MCP_APP_RECORDS` records, the least recently mounted record is evicted and leaves a stub (who the call was and
 // nothing of its data); the oldest stubs are dropped past `MAX_MCP_APP_STUBS`, and read as no record. The whole of a write
 // is one synchronous run, so no reader sees half of it.
@@ -66,11 +66,8 @@ const partKey = (callId: string, part: number) => `cloudpid:mcp-app:${callId}:${
  */
 const auditKey = (callId: string) => `cloudpid:mcp-app-audit:${callId}`;
 
-/**
- * One call's entry of the index: a record's (`kept`, with its size and parts) or a stub's (`evicted`). `mountedAt` orders
- * the eviction.
- */
-type IndexEntry = CallRecordEntry & {
+/** What an App call's entry holds besides the primitive's fields (`./call-records.ts`). */
+type AppFields = {
   readonly server: string;
   readonly tool: string;
   readonly parentCall?: string;
@@ -80,6 +77,9 @@ type IndexEntry = CallRecordEntry & {
   readonly truncated?: boolean;
   readonly at: number;
 };
+
+/** One call's entry of the index: a record's (`kept`, with its size and parts) or a stub's (`evicted`). */
+type IndexEntry = CallRecordEntry<AppFields>;
 
 const decodeRecord = Schema.decodeUnknownOption(McpAppRecord);
 
@@ -146,26 +146,13 @@ const stubOf = (entry: IndexEntry): McpAppStub => {
   return stub;
 };
 
-/** The entry of a call that has no record: what an evicted record, and a copied stub, are left as. */
-const evictedOf = (
-  call: Pick<IndexEntry, "callId" | "server" | "tool" | "conversation" | "parentCall" | "at">,
-  mountedAt: number,
-): IndexEntry => {
-  const entry: Mutable<IndexEntry> = {
-    callId: call.callId,
-    server: call.server,
-    tool: call.tool,
-    conversation: call.conversation,
-    state: "evicted",
-    bytes: 0,
-    parts: 0,
-    at: call.at,
-    mountedAt,
-  };
+/** What a call that has no record keeps of its entry: what an evicted record, and a copied stub, are left as. */
+const stubFields = (call: Pick<AppFields, "server" | "tool" | "parentCall" | "at">): AppFields => {
+  const fields: Mutable<AppFields> = { server: call.server, tool: call.tool, at: call.at };
 
-  if (call.parentCall !== undefined) entry.parentCall = call.parentCall;
+  if (call.parentCall !== undefined) fields.parentCall = call.parentCall;
 
-  return entry;
+  return fields;
 };
 
 /** The entry of a call whose record, `count` parts long, was just kept. */
@@ -208,7 +195,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       : Effect.as(bound.refresh, bound),
   );
 
-  const records = callRecords<IndexEntry>({
+  const records = callRecords<AppFields>({
     storage,
     indexKey: INDEX_KEY,
     partKey,
@@ -219,10 +206,10 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
       records: MAX_MCP_APP_RECORDS,
       stubs: MAX_MCP_APP_STUBS,
     },
-    evicted: (entry) => evictedOf(entry, entry.mountedAt),
+    keeps: stubFields,
   });
 
-  const { index, dropParts } = records;
+  const { index } = records;
 
   const readAudit = (callId: string): ReadonlyArray<McpAppAuditEntry> =>
     storage.get<ReadonlyArray<McpAppAuditEntry>>(auditKey(callId)) ?? [];
@@ -230,7 +217,7 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
   /** The record of a kept entry with its audit log, or none when its parts are gone or unreadable. */
   const readRecord = (entry: IndexEntry) => {
     try {
-      return Option.map(decodeRecord(JSON.parse(records.text(entry))), (record) => ({
+      return Option.map(decodeRecord(JSON.parse(records.read(entry))), (record) => ({
         ...record,
         audit: readAudit(entry.callId),
       }));
@@ -524,15 +511,13 @@ export const sessionMcpApps = (options: SessionMcpAppsOptions): SessionMcpApps =
         entries = withRecord(entries, boundAppRecord({ ...copy.record, conversation: root }), at);
       } else if (copy.kind === "stub" && "stub" in copy) {
         const { stub } = copy;
-        const old = Arr.findFirst(entries, (entry) => entry.callId === stub.callId);
-
         // A call that has a record here keeps no parts once it is a stub.
-        if (Option.isSome(old)) dropParts(old.value);
-
-        entries = [
-          ...Arr.filter(entries, (entry) => entry.callId !== stub.callId),
-          evictedOf({ ...stub, conversation: root, at: stub.at ?? at }, at),
-        ];
+        entries = records.stub(entries, {
+          ...stubFields({ ...stub, at: stub.at ?? at }),
+          callId: stub.callId,
+          conversation: root,
+          mountedAt: at,
+        });
       }
 
       // A kind a newer Session sends is skipped: the rest of the Fork is still made.

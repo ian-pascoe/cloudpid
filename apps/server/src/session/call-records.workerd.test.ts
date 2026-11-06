@@ -37,7 +37,9 @@ const partKey = (callId: string, part: number) => `test-records:${callId}:${part
 const sideKey = (callId: string) => `test-records:side:${callId}`;
 
 /** An entry as a store adds its own fields to the primitive's. */
-type Entry = CallRecordEntry & { readonly title: string };
+type Own = { readonly title: string };
+
+type Entry = CallRecordEntry<Own>;
 
 const entry = (callId: string, fields: Partial<Entry> = {}): Entry => ({
   callId,
@@ -50,19 +52,22 @@ const entry = (callId: string, fields: Partial<Entry> = {}): Entry => ({
   ...fields,
 });
 
-const open = (storage: SessionKv): CallRecords<Entry> =>
-  callRecords<Entry>({
+/** What a stub of an entry keeps of its own fields; the primitive sets the rest. */
+const keeps = (each: Entry): Own => ({ title: each.title });
+
+const open = (storage: SessionKv): CallRecords<Own> =>
+  callRecords<Own>({
     storage,
     indexKey: INDEX,
     partKey,
     alsoKeys: (callId) => [sideKey(callId)],
     bounds: BOUNDS,
-    evicted: (each) => ({ ...each, state: "evicted", bytes: 0, parts: 0 }),
+    keeps,
   });
 
 let counter = 0;
 
-/** Run `body` in a fresh object, over its real storage and the replaceable gate over it. */
+/** Run `body` in a fresh object, given its state and so its real storage. */
 const inSession = <A>(body: (state: DurableObjectState) => A) => {
   counter += 1;
 
@@ -76,7 +81,7 @@ const keysOf = (kv: SessionKv & { readonly list: DurableObjectStorage["kv"]["lis
 
 /** Keep `text` as call `callId`'s record and settle, as a store's write does. */
 const keep = (
-  records: CallRecords<Entry>,
+  records: CallRecords<Own>,
   callId: string,
   text: string,
   fields: Partial<Entry> = {},
@@ -105,7 +110,7 @@ describe("the chunked-record primitive", () => {
       ]);
       expect(state.storage.kv.get<string>(partKey("big", 0))).toHaveLength(PART_LENGTH);
       expect(state.storage.kv.get<string>(partKey("big", 2))).toBe("c".repeat(10));
-      expect(kept === undefined ? undefined : records.text(kept)).toBe(text);
+      expect(kept === undefined ? undefined : records.read(kept)).toBe(text);
     });
   });
 
@@ -131,7 +136,7 @@ describe("the chunked-record primitive", () => {
       const [kept] = records.index();
 
       expect(records.index()).toHaveLength(1);
-      expect(kept === undefined ? undefined : records.text(kept)).toBe("short");
+      expect(kept === undefined ? undefined : records.read(kept)).toBe("short");
       // The other value goes with the parts it was kept beside: a store that has one writes it again.
       expect(keysOf(state.storage.kv)).toEqual([INDEX, partKey("page", 0)]);
     });
@@ -154,14 +159,14 @@ describe("the chunked-record primitive", () => {
         },
       };
 
-      const records = callRecords<Entry>({
+      const records = callRecords<Own>({
         storage: recording,
         indexKey: INDEX,
         partKey,
         alsoKeys: (callId) => [sideKey(callId)],
         // Two records fit: the third written evicts the least recently mounted.
         bounds: { bytes: 25, records: 1000, stubs: 2000 },
-        evicted: (each) => ({ ...each, state: "evicted", bytes: 0, parts: 0 }),
+        keeps,
       });
 
       keep(records, "old", "o".repeat(PART_LENGTH + 1), { mountedAt: 1 });
@@ -262,13 +267,55 @@ describe("the chunked-record primitive", () => {
       keep(records, "d", "d", { bytes: 10 * MiB, mountedAt: 4 });
 
       expect(states()).toEqual(["a:evicted", "b:kept", "c:kept", "d:kept"]);
-      expect(records.index()[0]).toMatchObject({ title: "a", bytes: 0, parts: 0 });
+      // The stub keeps its own fields and its place in the order of mounts; the primitive empties the rest.
+      expect(records.index()[0]).toMatchObject({
+        callId: "a",
+        conversation: "1",
+        title: "a",
+        bytes: 0,
+        parts: 0,
+        mountedAt: 1,
+      });
       expect(state.storage.kv.get(partKey("a", 0))).toBeUndefined();
 
       // A lone record over the bound stays: the one just written is never evicted.
       keep(records, "huge", "h", { bytes: 40 * MiB, mountedAt: 5 });
 
       expect(states()).toEqual(["a:evicted", "b:evicted", "c:evicted", "d:evicted", "huge:kept"]);
+    });
+  });
+
+  it("writes a stub over a call's record, last, with no parts of the record left", async () => {
+    await inSession((state) => {
+      const records = open(state.storage.kv);
+
+      keep(records, "a", "x".repeat(PART_LENGTH + 1), { bytes: 50 });
+      keep(records, "b", "b");
+      state.storage.kv.put(sideKey("a"), ["note"]);
+
+      records.settle(
+        records.stub(records.index(), {
+          callId: "a",
+          conversation: "2",
+          mountedAt: 9,
+          title: "copied",
+        }),
+        undefined,
+      );
+
+      expect(records.index()).toEqual([
+        expect.objectContaining({ callId: "b", state: "kept" }),
+        {
+          callId: "a",
+          conversation: "2",
+          mountedAt: 9,
+          title: "copied",
+          state: "evicted",
+          bytes: 0,
+          parts: 0,
+        },
+      ]);
+      expect(keysOf(state.storage.kv)).toEqual([partKey("b", 0), INDEX]);
     });
   });
 
@@ -284,7 +331,7 @@ describe("the chunked-record primitive", () => {
       if (listed === undefined) throw new Error("no record");
 
       // Its second part is gone: the text is short, so a store's parse fails and it evicts.
-      expect(records.text(listed)).toHaveLength(PART_LENGTH);
+      expect(records.read(listed)).toHaveLength(PART_LENGTH);
 
       records.settle(records.evict(records.index(), listed), undefined);
 
@@ -329,7 +376,7 @@ describe("the chunked-record primitive", () => {
 
       expect(next.index()).toHaveLength(1);
       expect(listed).toMatchObject({ callId: "kept", state: "kept" });
-      expect(listed === undefined ? undefined : next.text(listed)).toBe("the first");
+      expect(listed === undefined ? undefined : next.read(listed)).toBe("the first");
 
       // The call the cut write left unlisted is written again as any new call.
       keep(next, "lost", "written again", { mountedAt: 3 });
@@ -337,7 +384,7 @@ describe("the chunked-record primitive", () => {
       const lost = next.index().find((each) => each.callId === "lost");
 
       expect(next.index()).toHaveLength(2);
-      expect(lost === undefined ? undefined : next.text(lost)).toBe("written again");
+      expect(lost === undefined ? undefined : next.read(lost)).toBe("written again");
     });
   });
 });
