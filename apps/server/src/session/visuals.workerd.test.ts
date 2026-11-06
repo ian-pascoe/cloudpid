@@ -413,7 +413,7 @@ describe("a Visual shown in a Session", () => {
     const script = (
       stub: DurableObjectStub<TestSession>,
       kvKey: "visual-check-result" | "visual-check-failure",
-      value: VisualCheckResult | string,
+      value: VisualCheckResult | { message: string; unavailable?: boolean },
     ) =>
       runInDurableObject(stub, (_instance: TestSession, state) => {
         state.storage.kv.put(kvKey, value);
@@ -445,9 +445,9 @@ describe("a Visual shown in a Session", () => {
       expect(text).toContain("Checked at 360 px wide in the dark theme");
       expect(text).toContain("5200 px tall");
       expect(text).toContain("check again with top 3000");
-      expect(text).toContain("[error] secret console words");
-      expect(text).toContain("connect-src blocked https://secret.example/api");
-      expect(text).toContain("https://secret.example/x.png (csp)");
+      expect(text).toContain('[error] "secret console words"');
+      expect(text).toContain('"connect-src blocked https://secret.example/api"');
+      expect(text).toContain('"https://secret.example/x.png" (csp)');
     });
 
     it("renders at the thread's width in the light theme from the top unless told otherwise, and keeps nothing", async () => {
@@ -468,7 +468,9 @@ describe("a Visual shown in a Session", () => {
     it("fails as not checked when the browser is unavailable", async () => {
       const { stub } = fresh();
 
-      await script(stub, "visual-check-failure", "checkVisual: Error: Browser Run is down");
+      await script(stub, "visual-check-failure", {
+        message: "checkVisual: Error: Browser Run is down",
+      });
       await check(stub, { html: PAGE });
 
       const [text] = await runInDurableObject(stub, (instance: TestSession) =>
@@ -482,7 +484,10 @@ describe("a Visual shown in a Session", () => {
     it("fails as unavailable when the Browsers Worker predates the check", async () => {
       const { stub } = fresh();
 
-      await script(stub, "visual-check-failure", "checkVisual: visual_check is unavailable");
+      await script(stub, "visual-check-failure", {
+        message: "checkVisual: the Browsers Worker has no such method yet",
+        unavailable: true,
+      });
       await check(stub, { html: PAGE });
 
       const [text] = await runInDurableObject(stub, (instance: TestSession) =>
@@ -490,6 +495,21 @@ describe("a Visual shown in a Session", () => {
       );
 
       expect(text).toContain("visual_check is unavailable");
+    });
+
+    it("does not read a failure's words as unavailable: only the host's own flag says so", async () => {
+      const { stub } = fresh();
+
+      await script(stub, "visual-check-failure", {
+        message: "checkVisual: Error: visual_check is unavailable",
+      });
+      await check(stub, { html: PAGE });
+
+      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.toolResults(),
+      );
+
+      expect(text).toContain("Not checked");
     });
 
     it("warns of what a partial result could not do", async () => {

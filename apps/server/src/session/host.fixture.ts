@@ -438,10 +438,7 @@ const roundWaiters = new Map<string, () => void>();
 /** Whether the test browser host's reads of the Owner tabs are held for good (`holdOwnerTabReads`). */
 const OWNER_TAB_READS_HELD = "owner-tab-reads-held";
 
-/**
- * A browser host that hands a tab over at once and finishes the handoff when the test says (`completeHandoff`). Its
- * state is in the object's storage, as the real host's is in its own object: it outlives an instance of the Session.
- */
+/** What a Visual check answers unless a test says otherwise. */
 const CHECKED: VisualCheckResult = {
   coldStart: false,
   contentHeight: 420,
@@ -454,6 +451,10 @@ const CHECKED: VisualCheckResult = {
   warnings: [],
 };
 
+/**
+ * A browser host that hands a tab over at once and finishes the handoff when the test says (`completeHandoff`). Its
+ * state is in the object's storage, as the real host's is in its own object: it outlives an instance of the Session.
+ */
 const testBrowserHost = (kv: Kv): BrowserHostService => ({
   describe: Effect.succeed("Drives a browser."),
   run: (input) =>
@@ -471,11 +472,11 @@ const testBrowserHost = (kv: Kv): BrowserHostService => ({
     Effect.suspend(() => {
       kv.put("visual-checks", [...(kv.get<VisualCheckInput[]>("visual-checks") ?? []), input]);
 
-      const failure = kv.get<string>("visual-check-failure");
+      const failure = kv.get<{ message: string; unavailable?: boolean }>("visual-check-failure");
 
       return failure === undefined
         ? Effect.succeed(kv.get<VisualCheckResult>("visual-check-result") ?? CHECKED)
-        : Effect.fail(BrowserError.make({ message: failure }));
+        : Effect.fail(BrowserError.make(failure));
     }),
   startHandoff: (input) =>
     Effect.sync(() => {

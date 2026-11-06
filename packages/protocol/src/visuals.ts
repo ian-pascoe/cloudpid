@@ -9,7 +9,7 @@ import type { JsonValue } from "@earendil-works/pi-ai";
 import * as Schema from "effect/Schema";
 import { buildCsp, NO_OWN_HOSTS } from "./csp.ts";
 import { ConversationId } from "./conversation-id.ts";
-import { visualStyleVariables } from "./style-variables.ts";
+import { VISUAL_THEMES, visualStyleVariables, type VisualTheme } from "./style-variables.ts";
 
 const MiB = 1024 * 1024;
 
@@ -49,6 +49,10 @@ export const VISUAL_SCRATCH_DIRECTORY = "/workspace/.cloudpid/tmp/visuals";
 /** The frame's height bounds, in CSS pixels (`docs/architecture/visuals.md` → The frame: Height). */
 export const VISUAL_MIN_HEIGHT = 160;
 export const VISUAL_MAX_HEIGHT = 20_000;
+
+/** The height a frame gives a page that reports `reported` px: between `VISUAL_MIN_HEIGHT` and `VISUAL_MAX_HEIGHT`. */
+export const fitHeight = (reported: number): number =>
+  Math.min(VISUAL_MAX_HEIGHT, Math.max(VISUAL_MIN_HEIGHT, Math.ceil(reported)));
 
 /** How many consecutive host resizes a page's height may follow by growing before the frame's height is frozen. */
 export const VISUAL_GROWTH_RESIZES = 3;
@@ -365,14 +369,14 @@ export type VisualShown = typeof VisualShown.Type;
 
 /**
  * What `visual_check` gives a script (`docs/architecture/visuals.md` → Tools): the width and theme it rendered at, the page's
- * content height, whether the screenshot shows less than the page (and from where to where it does), whether the page grows
+ * content height (null when the check was cut off before it measured it), whether the screenshot shows less than the page (and from where to where it does), whether the page grows
  * after each of the frame's resizes, and what the page logged, was blocked from and failed to load, with the check's own
  * warnings. The screenshot itself is an image of the result, never a value.
  */
 export const VisualChecked = Schema.Struct({
   width: Schema.Finite,
-  theme: Schema.Literals(["light", "dark"]),
-  content_height: Schema.Finite,
+  theme: Schema.Literals(VISUAL_THEMES),
+  content_height: Schema.NullOr(Schema.Finite),
   clipped: Schema.Boolean,
   screenshot: Schema.NullOr(Schema.Struct({ top: Schema.Finite, height: Schema.Finite })),
   grows: Schema.Boolean,
@@ -590,7 +594,7 @@ export const withVisualShim = (html: string): string =>
  * would do nothing: the theme and style variables a frame is told, on `<html>` (`color-scheme`, `data-theme` and the custom
  * properties, as the shim applies them), and the WebRTC constructors deleted. The values are the table's for `theme`.
  */
-export const visualCheckPrelude = (theme: "light" | "dark"): string =>
+export const visualCheckPrelude = (theme: VisualTheme): string =>
   `(function () {
   var root = document.documentElement;
   root.style.colorScheme = ${JSON.stringify(theme)};
@@ -603,5 +607,5 @@ export const visualCheckPrelude = (theme: "light" | "dark"): string =>
 })();`;
 
 /** `html` as `visual_check` renders it: the prelude first in its `<head>`, never stored. */
-export const withVisualCheckPrelude = (html: string, theme: "light" | "dark"): string =>
+export const withVisualCheckPrelude = (html: string, theme: VisualTheme): string =>
   withScriptFirst(html, `<script>${visualCheckPrelude(theme)}</script>`);

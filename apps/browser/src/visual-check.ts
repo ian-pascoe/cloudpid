@@ -7,7 +7,10 @@
 // The page is the document `Fetch` fulfils at `https://visual.invalid/` with the real CSP as a header (the sandbox's own
 // policy, `visualCheckPolicy`) and the frame's flags (`sandbox allow-scripts allow-same-origin`, which without a frame the
 // check adds itself: it also blocks a pop-up, a new target `Fetch` does not see). Requests to the list's hosts pass; every other
-// request is failed.
+// request is failed, and so is every document but that one, in any frame: a page that navigates away (`location = ...`) would
+// leave the CSP and the directive behind. What the page says is collected as it comes, each list kept to its first
+// `VISUAL_CHECK_MAX_ITEMS` and each text cut, so a page that logs in a loop costs nothing past the cap. The check is bound to
+// `timeoutMs` in all: a page that stops responding (a hung main thread) gives what it had done by then, with a warning.
 import {
   VISUAL_CHECK_CLIP_PX,
   VISUAL_CHECK_IMAGE_CHARACTERS,
@@ -23,9 +26,9 @@ import {
 } from "@cloudpid/extensions/browser/contract";
 import { base64FromBytes } from "@cloudpid/protocol/base64";
 import {
+  fitHeight,
   isVisualHost,
   VISUAL_GROWTH_RESIZES,
-  VISUAL_MAX_HEIGHT,
   VISUAL_MIN_HEIGHT,
   visualCheckPolicy,
   withVisualCheckPrelude,
@@ -49,20 +52,49 @@ const DISPOSE_MS = 3_000;
 export type VisualCheckOptions = {
   /** Whether this check started the browser. */
   readonly coldStart: boolean;
-  /** The longest the check runs in all. Defaults to `VISUAL_CHECK_MS`. */
+  /**
+   * The longest the check runs in all, from its first command to the dispose (what the host spent before, to start the browser
+   * and connect, is out of it). Defaults to `VISUAL_CHECK_MS`.
+   */
   readonly timeoutMs?: number;
   /** The longest it waits for the load, the fonts and two frames. Defaults to `VISUAL_CHECK_LOAD_MS`. */
   readonly loadMs?: number;
 };
 
-/** The check ran past its bound. */
+/** Something the check waits for before it has a page (the browser, its connection, its first commands) ran past the bound. */
 export class VisualCheckTimeout extends Error {
   override readonly name = "VisualCheckTimeout";
 }
 
-/** The height a frame gives a page that reports `reported` px (`fitHeight` in `apps/web/src/visual/height.ts`). */
-const fitHeight = (reported: number): number =>
-  Math.min(VISUAL_MAX_HEIGHT, Math.max(VISUAL_MIN_HEIGHT, Math.ceil(reported)));
+/**
+ * `work`'s answer, or a `VisualCheckTimeout` that says `what` did not answer in `ms`. A `work` that answers later is handed to
+ * `late` (to close the connection it opened); one that fails later is of no one's.
+ */
+export const within = <A>(
+  ms: number,
+  work: Promise<A>,
+  what: string,
+  late: (value: A) => void = () => undefined,
+): Promise<A> =>
+  new Promise<A>((resolve, reject) => {
+    let over = false;
+
+    const timer = setTimeout(
+      () => {
+        over = true;
+        reject(new VisualCheckTimeout(`${what} did not answer within ${ms / 1_000} s`));
+      },
+      Math.max(1, ms),
+    );
+
+    // A rejection after the bound is the promise's already: rejecting again does nothing.
+    work
+      .finally(() => clearTimeout(timer))
+      .then((value) => {
+        if (over) late(value);
+        else resolve(value);
+      }, reject);
+  });
 
 // ---------------------------------------------------------------------------------------------------------------------
 // What the page is asked
@@ -200,23 +232,68 @@ const textOf = (remote: typeof Remote.Type): string => {
 
 const cut = (text: string): string => text.slice(0, VISUAL_CHECK_MAX_TEXT);
 
-/** What one check hears of its page. */
+/** How much of an address or a log line is matched against another: past it, two of them are told apart by their start. */
+const MATCH_CHARACTERS = 2_048;
+
+/** The most requests whose address is kept to name a failed one: a page that makes more is not followed past them. */
+const MAX_REQUESTS = 1_000;
+
+/** The most arguments of one console call that are read. */
+const MAX_ARGUMENTS = 20;
+
+/** A console call's arguments as one text, read no further than the text may be, and cut. */
+const consoleText = (args: ReadonlyArray<typeof Remote.Type>): string => {
+  let text = "";
+
+  for (const arg of args.slice(0, MAX_ARGUMENTS)) {
+    if (text.length >= VISUAL_CHECK_MAX_TEXT) break;
+
+    text += `${text === "" ? "" : " "}${cut(textOf(arg))}`;
+  }
+
+  return cut(text);
+};
+
+/**
+ * A list that keeps the first `VISUAL_CHECK_MAX_ITEMS` and counts the rest, as they come: what a page says is unbounded, and
+ * a page that logs in a loop must cost the host no more past the cap than a count.
+ */
+class Capped<A> {
+  readonly items: A[] = [];
+  dropped = 0;
+
+  /** Whether there is room for one more; when there is not, the one is counted as left out. */
+  room(): boolean {
+    if (this.items.length < VISUAL_CHECK_MAX_ITEMS) return true;
+
+    this.dropped += 1;
+
+    return false;
+  }
+}
+
+/** The CSP violations as lines, and how many were left out as they came. */
+type ViolationLines = { readonly lines: string[]; readonly dropped: number };
+
+/** What one check hears of its page: bounded as it is heard (`Capped`, `cut`). */
 class Heard {
-  readonly console: VisualCheckMessage[] = [];
-  readonly logged: Violation[] = [];
-  readonly audited: Violation[] = [];
-  readonly failed: VisualCheckFailedLoad[] = [];
+  readonly console = new Capped<VisualCheckMessage>();
+  readonly logged = new Capped<Violation>();
+  readonly audited = new Capped<Violation>();
+  readonly failed = new Capped<VisualCheckFailedLoad>();
   readonly #urls = new Map<string, string>();
 
   onPage(method: string, params: Schema.Json | undefined): void {
     switch (method) {
       case "Runtime.consoleAPICalled": {
+        if (!this.console.room()) return;
+
         const called = decodeConsole(params);
 
         if (Option.isSome(called)) {
-          this.console.push({
+          this.console.items.push({
             type: called.value.type,
-            text: cut((called.value.args ?? []).map(textOf).join(" ")),
+            text: consoleText(called.value.args ?? []),
           });
         }
 
@@ -224,12 +301,18 @@ class Heard {
       }
 
       case "Runtime.exceptionThrown": {
+        if (!this.console.room()) return;
+
         const thrown = decodeException(params);
 
         if (Option.isSome(thrown)) {
           const { text, exception } = thrown.value.exceptionDetails;
 
-          this.console.push({ type: "error", text: cut(exception?.description ?? text ?? "") });
+          // Marked apart from `console.error`: it is the page's script that failed, not something it chose to say.
+          this.console.items.push({
+            type: "error",
+            text: cut(`uncaught: ${exception?.description ?? text ?? ""}`),
+          });
         }
 
         return;
@@ -240,20 +323,22 @@ class Heard {
 
         if (Option.isNone(log) || log.value.entry.source !== "security") return;
 
-        const { text } = log.value.entry;
+        const text = log.value.entry.text.slice(0, MATCH_CHARACTERS);
 
-        if (SANDBOX_WARNING.test(text)) return;
+        if (SANDBOX_WARNING.test(text) || !this.logged.room()) return;
 
-        this.logged.push({
+        this.logged.items.push({
           directive: LOGGED_DIRECTIVE.exec(text)?.[1],
           blocked: LOGGED_BLOCKED.exec(text)?.[1],
-          text,
+          text: cut(text),
         });
 
         return;
       }
 
       case "Audits.issueAdded": {
+        if (!this.audited.room()) return;
+
         const added = decodeIssue(params);
 
         const details = Option.isSome(added)
@@ -265,21 +350,26 @@ class Heard {
         const directive = details.violatedDirective;
 
         const blocked =
-          details.blockedURL ?? blockedWithoutUrl(details.contentSecurityPolicyViolationType);
+          details.blockedURL?.slice(0, MATCH_CHARACTERS) ??
+          blockedWithoutUrl(details.contentSecurityPolicyViolationType);
 
-        this.audited.push({
+        this.audited.items.push({
           directive,
           blocked,
-          text: `${directive ?? "a directive"} blocked ${blocked ?? "a resource"}`,
+          text: cut(`${directive ?? "a directive"} blocked ${blocked ?? "a resource"}`),
         });
 
         return;
       }
 
       case "Network.requestWillBeSent": {
+        if (this.#urls.size >= MAX_REQUESTS) return;
+
         const sent = decodeRequested(params);
 
-        if (Option.isSome(sent)) this.#urls.set(sent.value.requestId, sent.value.request.url);
+        if (Option.isSome(sent)) {
+          this.#urls.set(sent.value.requestId, sent.value.request.url.slice(0, MATCH_CHARACTERS));
+        }
 
         return;
       }
@@ -291,11 +381,13 @@ class Heard {
 
         const url = this.#urls.get(failed.value.requestId) ?? "";
 
-        if (url === `${VISUAL_CHECK_URL}favicon.ico`) return;
+        this.#urls.delete(failed.value.requestId);
 
-        this.failed.push({
+        if (url === `${VISUAL_CHECK_URL}favicon.ico` || !this.failed.room()) return;
+
+        this.failed.items.push({
           url: cut(url),
-          reason: failed.value.blockedReason ?? failed.value.errorText,
+          reason: cut(failed.value.blockedReason ?? failed.value.errorText),
         });
       }
     }
@@ -304,13 +396,14 @@ class Heard {
   /**
    * The CSP violations the page caused, one line each: what the audits say, then what the log says that the audits did not
    * (the same block is both: the log line names the effective directive and the URL, the issue the directive that was
-   * violated and what it blocked).
+   * violated and what it blocked); and how many were left out at the cap. Each list holds at most `VISUAL_CHECK_MAX_ITEMS`,
+   * so matching them is bounded.
    */
-  violations(): string[] {
-    const lines = this.audited.map((violation) => violation.text);
+  violations(): ViolationLines {
+    const lines = this.audited.items.map((violation) => violation.text);
 
-    for (const entry of this.logged) {
-      const same = this.audited.some(
+    for (const entry of this.logged.items) {
+      const same = this.audited.items.some(
         (audit) =>
           (entry.blocked !== undefined &&
             entry.blocked !== "" &&
@@ -324,15 +417,20 @@ class Heard {
       if (!same) lines.push(entry.text);
     }
 
-    return lines.map(cut);
+    return { lines, dropped: this.audited.dropped + this.logged.dropped };
   }
 }
 
-/** `items` cut at the bound, with a warning that says how many were left out. */
-const bounded = <A>(items: ReadonlyArray<A>, what: string, warnings: string[]): A[] => {
-  if (items.length > VISUAL_CHECK_MAX_ITEMS) {
-    warnings.push(`${items.length - VISUAL_CHECK_MAX_ITEMS} more ${what} are not shown.`);
-  }
+/** `items` cut at the bound, with a warning that says how many were left out (`dropped` more were left out as they came). */
+const bounded = <A>(
+  items: ReadonlyArray<A>,
+  dropped: number,
+  what: string,
+  warnings: string[],
+): A[] => {
+  const left = items.length - VISUAL_CHECK_MAX_ITEMS + dropped;
+
+  if (left > 0) warnings.push(`${left} more ${what} are not shown.`);
 
   return items.slice(0, VISUAL_CHECK_MAX_ITEMS);
 };
@@ -351,9 +449,54 @@ const Evaluated = Schema.Struct({
 });
 
 /**
+ * What a check has so far: what it heard, measured and shot, kept as it goes so that a check cut off by its bound can say what
+ * it had (`resultOf`).
+ */
+type Progress = {
+  readonly coldStart: boolean;
+  readonly heard: Heard;
+  readonly warnings: string[];
+  readonly heights: number[];
+  grows: boolean;
+  screenshot: VisualCheckScreenshot | undefined;
+  clipped: boolean;
+  /** Whether the page was asked to load: before that, nothing of the page is known and a bound is the browser's. */
+  navigated: boolean;
+};
+
+/** What `progress` comes to, as a result: each list bounded, and `warnings` as they are. */
+const resultOf = (progress: Progress): VisualCheckResult => {
+  const warnings = [...progress.warnings];
+  const { heard } = progress;
+  const violations = heard.violations();
+
+  const found: Types.Mutable<VisualCheckResult> = {
+    coldStart: progress.coldStart,
+    clipped: progress.clipped,
+    growth: { grows: progress.grows, heights: [...progress.heights] },
+    console: bounded(heard.console.items, heard.console.dropped, "console messages", warnings),
+    violations: bounded(violations.lines, violations.dropped, "CSP violations", warnings),
+    failedLoads: bounded(heard.failed.items, heard.failed.dropped, "failed loads", warnings),
+    warnings,
+  };
+
+  const contentHeight = progress.heights.at(-1);
+
+  if (contentHeight !== undefined) found.contentHeight = contentHeight;
+
+  if (progress.screenshot !== undefined) found.screenshot = progress.screenshot;
+
+  return found;
+};
+
+const TIMED_OUT = "timed out";
+
+/**
  * Render `input` on `transport` (a connection to the browser, which the check owns and closes) and say what it saw: see the
- * file's header. Fails when the browser cannot be driven or the check passes `options.timeoutMs`; the context is disposed in
- * either case.
+ * file's header. The check, with its dispose, takes at most `options.timeoutMs`. Fails when the browser cannot be driven, or
+ * does not answer before the page is asked to load. A page that stops responding after (a hung main thread: nothing
+ * answers a command) is not a failure: the result is what the check had by then, with a warning. The context is disposed
+ * whatever came of it.
  */
 export const checkVisual = async (
   transport: CdpTransport,
@@ -362,25 +505,49 @@ export const checkVisual = async (
 ): Promise<VisualCheckResult> => {
   const timeoutMs = options.timeoutMs ?? VISUAL_CHECK_MS;
   const loadMs = options.loadMs ?? VISUAL_CHECK_LOAD_MS;
+  // The dispose has its own bound, which the whole is not to pass.
+  const workMs = Math.max(timeoutMs - DISPOSE_MS, timeoutMs / 2);
   let browserContextId: string | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const work = measure(transport, input, options.coldStart, loadMs, (id) => {
+  const progress: Progress = {
+    coldStart: options.coldStart,
+    heard: new Heard(),
+    warnings: [],
+    heights: [],
+    grows: false,
+    screenshot: undefined,
+    clipped: false,
+    navigated: false,
+  };
+
+  const work = measure(transport, input, progress, loadMs, (id) => {
     browserContextId = id;
   });
 
   // The loser of the race goes on against a connection that is closed by then; its failure is of no one's.
   work.catch(() => undefined);
 
-  const bound = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => reject(new VisualCheckTimeout(`The check timed out after ${timeoutMs / 1_000} s`)),
-      timeoutMs,
-    );
+  const bound = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), workMs);
   });
 
   try {
-    return await Promise.race([work, bound]);
+    const outcome = await Promise.race([work, bound]);
+
+    if (outcome !== TIMED_OUT) return outcome;
+
+    if (!progress.navigated) {
+      throw new VisualCheckTimeout(
+        `The browser did not answer within ${workMs / 1_000} s, before the page was loaded`,
+      );
+    }
+
+    progress.warnings.unshift(
+      `The page stopped responding within the check's ${workMs / 1_000} s (its main thread may be hung, for example by a script that never returns), so the check was cut off: this is what it had by then.`,
+    );
+
+    return resultOf(progress);
   } finally {
     clearTimeout(timer);
     await dispose(transport, browserContextId);
@@ -411,12 +578,11 @@ const dispose = async (transport: CdpTransport, browserContextId: string | undef
 const measure = async (
   transport: CdpTransport,
   input: VisualCheckInput,
-  coldStart: boolean,
+  progress: Progress,
   loadMs: number,
   made: (browserContextId: string) => void,
 ): Promise<VisualCheckResult> => {
-  const warnings: string[] = [];
-  const heard = new Heard();
+  const { warnings, heard } = progress;
 
   const { browserContextId } = await ask(
     { transport, cdpSessionId: undefined },
@@ -453,7 +619,10 @@ const measure = async (
     new TextEncoder().encode(withVisualCheckPrelude(input.html, input.theme)),
   );
 
-  /** Answer a request the page made: the document is fulfilled, the list's hosts pass, everything else fails. */
+  /**
+   * Answer a request the page made: its document is fulfilled, and no other document is (a navigation of the page or of a
+   * frame in it would leave the CSP and the sandbox directive behind), the list's hosts pass, everything else fails.
+   */
   const answer = (params: Schema.Json | undefined) => {
     const paused = decodePaused(params);
 
@@ -472,6 +641,10 @@ const measure = async (
           ],
           body,
         });
+      }
+
+      if (paused.value.resourceType === "Document") {
+        return send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" });
       }
 
       const url = URL.canParse(request.url) ? new URL(request.url) : undefined;
@@ -549,6 +722,8 @@ const measure = async (
 
   const started = Date.now();
 
+  progress.navigated = true;
+
   await send("Page.navigate", { url: VISUAL_CHECK_URL });
 
   // The load, the fonts and two frames, at most `loadMs` in all.
@@ -573,10 +748,12 @@ const measure = async (
   // The frame starts at its minimum height and follows the page: its first report sets the frame's height, and each report
   // after that which fits a taller one, right after a resize, extends a streak; the page that grows after each of
   // `VISUAL_GROWTH_RESIZES` in a row would climb to the cap, and the frame freezes it (`apps/web/src/visual/height.ts`).
-  const heights = [await height()];
+  const { heights } = progress;
+
+  heights.push(await height());
+
   let applied: number | undefined;
   let streak = 0;
-  let grows = false;
 
   for (let round = 0; round <= VISUAL_GROWTH_RESIZES + 2; round++) {
     const fit = fitHeight(heights.at(-1) ?? 0);
@@ -587,7 +764,7 @@ const measure = async (
       streak = fit > applied ? streak + 1 : 0;
 
       if (streak >= VISUAL_GROWTH_RESIZES) {
-        grows = true;
+        progress.grows = true;
         break;
       }
     }
@@ -599,25 +776,13 @@ const measure = async (
 
   const contentHeight = heights.at(-1) ?? 0;
 
-  const screenshot = await shoot(send, input, contentHeight, warnings);
+  progress.screenshot = await shoot(send, input, contentHeight, warnings);
 
-  const clipped =
-    input.top > 0 || (screenshot !== undefined && input.top + screenshot.height < contentHeight);
+  progress.clipped =
+    input.top > 0 ||
+    (progress.screenshot !== undefined && input.top + progress.screenshot.height < contentHeight);
 
-  const found: Types.Mutable<VisualCheckResult> = {
-    coldStart,
-    contentHeight,
-    clipped,
-    growth: { grows, heights },
-    console: bounded(heard.console, "console messages", warnings),
-    violations: bounded(heard.violations(), "CSP violations", warnings),
-    failedLoads: bounded(heard.failed, "failed loads", warnings),
-    warnings,
-  };
-
-  if (screenshot !== undefined) found.screenshot = screenshot;
-
-  return found;
+  return resultOf(progress);
 };
 
 /**

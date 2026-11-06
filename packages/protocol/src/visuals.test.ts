@@ -6,10 +6,13 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { ClientMessageJson, ServerMessageJson } from "./session.ts";
 import {
+  fitHeight,
   VISUAL_CSP,
   VISUAL_ESCAPE,
   VISUAL_LIBRARIES,
   VISUAL_SANDBOX_DIRECTIVE,
+  VISUAL_MAX_HEIGHT,
+  VISUAL_MIN_HEIGHT,
   VISUAL_SHIM,
   VisualFileAnswer,
   VisualPageAnswer,
@@ -22,6 +25,14 @@ import {
   withVisualCheckPrelude,
   withVisualShim,
 } from "./visuals.ts";
+
+describe("the height a frame fits", () => {
+  it("is the page's from 160 px to 20,000 px", () => {
+    expect(fitHeight(10)).toBe(VISUAL_MIN_HEIGHT);
+    expect(fitHeight(480.2)).toBe(481);
+    expect(fitHeight(1e6)).toBe(VISUAL_MAX_HEIGHT);
+  });
+});
 
 describe("the list and its policy", () => {
   it("allows only cdnjs and Google Fonts, as resource domains", () => {

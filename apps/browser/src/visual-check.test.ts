@@ -1,7 +1,7 @@
 // docs/architecture/visuals.md → The check, Testing; docs/architecture/browser.md. `checkVisual` over a scripted `CdpTransport`:
 // the order of its commands, the page it fulfils and the requests it lets through, what it collects, the screenshot's ladder, and
 // that the context is disposed on success, on a timeout and on a throw.
-// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off preferEffectRecord:off schemaSync:off
+// @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off preferEffectRecord:off schemaSync:off
 import { Schema } from "effect";
 import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
@@ -13,7 +13,7 @@ import { bytesFromBase64 } from "@cloudpid/protocol/base64";
 import { visualCheckPolicy } from "@cloudpid/protocol/visuals";
 import type { CdpEvent, CdpParams } from "./cdp.ts";
 import { fakeTransport, type Reply } from "./cdp.testing.ts";
-import { checkVisual, VISUAL_CHECK_URL } from "./visual-check.ts";
+import { checkVisual, VISUAL_CHECK_URL, VisualCheckTimeout, within } from "./visual-check.ts";
 
 const Fulfilled = Schema.Struct({
   responseHeaders: Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.String })),
@@ -249,6 +249,32 @@ describe("checkVisual: the page", () => {
   });
 });
 
+describe("checkVisual: a navigation", () => {
+  it("fails every document but the page's, in any frame, so the page cannot leave the CSP behind", async () => {
+    const fake = scripted({
+      requests: [
+        // `location = "https://cdnjs..."`: a top-level navigation to a host the list allows.
+        { url: "https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.2/", resourceType: "Document" },
+        // A frame in the page, and a frame of the page's own address.
+        { url: "https://evil.example/", resourceType: "Document" },
+        { url: "https://cdnjs.cloudflare.com/ok.js", resourceType: "Script" },
+      ],
+    });
+
+    await run(fake);
+
+    expect(sentOf(fake, "Fetch.failRequest").map((command) => command.params)).toEqual([
+      { requestId: "req-0", errorReason: "BlockedByClient" },
+      { requestId: "req-1", errorReason: "BlockedByClient" },
+    ]);
+    expect(sentOf(fake, "Fetch.continueRequest").map((command) => command.params)).toEqual([
+      { requestId: "req-2" },
+    ]);
+    // Only the page's own document was fulfilled.
+    expect(sentOf(fake, "Fetch.fulfillRequest")).toHaveLength(1);
+  });
+});
+
 describe("checkVisual: what it measures", () => {
   it("reports the content height, and a page that settles does not grow", async () => {
     const fake = scripted({ heights: [500, 500] });
@@ -312,7 +338,7 @@ describe("checkVisual: what it measures", () => {
     expect(result.console).toEqual([
       { type: "log", text: "hello 3" },
       { type: "error", text: "TypeError: x is not a function" },
-      { type: "error", text: "ReferenceError: y" },
+      { type: "error", text: "uncaught: ReferenceError: y" },
     ]);
   });
 
@@ -457,6 +483,68 @@ describe("checkVisual: what it measures", () => {
   });
 });
 
+describe("checkVisual: what it keeps as it hears", () => {
+  it("keeps the first of each list and counts the rest as they come, and cuts one text before it is joined", async () => {
+    const loop = Array.from({ length: 5_000 }, (_, index) =>
+      inPage("Runtime.consoleAPICalled", {
+        type: "log",
+        args: [{ type: "string", value: `line ${index}` }],
+      }),
+    );
+
+    const audits = Array.from({ length: 3_000 }, (_, index) =>
+      inPage("Audits.issueAdded", {
+        issue: {
+          code: "ContentSecurityPolicyIssue",
+          details: {
+            contentSecurityPolicyIssueDetails: {
+              blockedURL: `https://evil.example/${index}`,
+              violatedDirective: "img-src",
+            },
+          },
+        },
+      }),
+    );
+
+    const huge = inPage("Runtime.consoleAPICalled", {
+      type: "log",
+      args: Array.from({ length: 40 }, () => ({ type: "string", value: "y".repeat(100_000) })),
+    });
+
+    const fake = scripted({ events: [huge, ...loop, ...audits] });
+
+    const started = Date.now();
+    const result = await run(fake);
+
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(result.console).toHaveLength(50);
+    expect(result.console[0]?.text).toHaveLength(500);
+    expect(result.console[1]?.text).toBe("line 0");
+    expect(result.violations).toHaveLength(50);
+    expect(result.warnings).toContain("4951 more console messages are not shown.");
+    expect(result.warnings).toContain("2950 more CSP violations are not shown.");
+  });
+
+  it("keeps no more than a bounded number of the page's requests to name the ones that fail", async () => {
+    const sent = Array.from({ length: 3_000 }, (_, index) =>
+      inPage("Network.requestWillBeSent", {
+        requestId: `r${index}`,
+        request: { url: `https://cdnjs.cloudflare.com/${index}.js` },
+      }),
+    );
+
+    const failed = inPage("Network.loadingFailed", {
+      requestId: "r2999",
+      errorText: "net::ERR_FAILED",
+    });
+
+    const result = await run(scripted({ events: [...sent, failed] }));
+
+    // Past the cap a request's address is not kept, so the failure is told without one.
+    expect(result.failedLoads).toEqual([{ url: "", reason: "net::ERR_FAILED" }]);
+  });
+});
+
 describe("checkVisual: the screenshot", () => {
   it("is a JPEG at quality 80, clipped to 3,000 px from top", async () => {
     const fake = scripted({ heights: [10_000, 10_000], screenshots: [5_000] });
@@ -549,6 +637,50 @@ describe("checkVisual: a partial result", () => {
     expect(result.contentHeight).toBe(400);
   });
 
+  it("gives what it heard, with a warning, when the page stops responding: nothing answers its commands", async () => {
+    const fake = scripted({
+      events: [
+        inPage("Runtime.consoleAPICalled", {
+          type: "log",
+          args: [{ type: "string", value: "starting" }],
+        }),
+        inPage("Log.entryAdded", {
+          entry: {
+            source: "security",
+            text: "Loading the script 'https://evil.example/a.js' violates the following Content Security Policy directive: \"script-src 'self'\".",
+          },
+        }),
+      ],
+      // The page's main thread is stuck (`while (true) {}`): it answers none of the commands that run in it.
+      replies: { "Runtime.evaluate": () => new Promise<Schema.Json>(() => undefined) },
+    });
+
+    const result = await run(fake, { timeoutMs: 200, loadMs: 30 });
+
+    expect(result.console).toEqual([{ type: "log", text: "starting" }]);
+    expect(result.violations).toHaveLength(1);
+    expect(result.warnings[0]).toMatch(/stopped responding/);
+    expect(result.contentHeight).toBeUndefined();
+    expect(result.screenshot).toBeUndefined();
+    expect(fake.methods().at(-1)).toBe("Target.disposeBrowserContext");
+    expect(fake.state.closed).toBe(true);
+  });
+
+  it("gives the measurement it already had when the page stops responding after it", async () => {
+    const fake = scripted({
+      heights: [400],
+      replies: { "Page.captureScreenshot": () => new Promise<Schema.Json>(() => undefined) },
+    });
+
+    const result = await run(fake, { timeoutMs: 300, loadMs: 100 });
+
+    expect(result.contentHeight).toBe(400);
+    expect(result.growth.heights).toEqual([400, 400]);
+    expect(result.screenshot).toBeUndefined();
+    expect(result.warnings[0]).toMatch(/stopped responding/);
+    expect(fake.state.closed).toBe(true);
+  });
+
   it("says whether the check started the browser", async () => {
     const cold = await checkVisual(scripted().transport, INPUT, {
       coldStart: true,
@@ -561,12 +693,12 @@ describe("checkVisual: a partial result", () => {
 });
 
 describe("checkVisual: the dispose", () => {
-  it("disposes the context and closes the connection when the check times out", async () => {
+  it("disposes the context and closes the connection when the browser stops answering before the page is asked to load", async () => {
     const fake = scripted({
-      replies: { "Runtime.evaluate": () => new Promise<Schema.Json>(() => undefined) },
+      replies: { "Target.createTarget": () => new Promise<Schema.Json>(() => undefined) },
     });
 
-    await expect(run(fake, { timeoutMs: 60, loadMs: 30 })).rejects.toThrow(/timed out/);
+    await expect(run(fake, { timeoutMs: 100, loadMs: 30 })).rejects.toThrow(VisualCheckTimeout);
 
     expect(fake.methods().at(-1)).toBe("Target.disposeBrowserContext");
     expect(fake.state.closed).toBe(true);
@@ -620,7 +752,7 @@ describe("checkVisual: the dispose", () => {
   it("fails when the connection is lost mid-check", async () => {
     const fake = scripted({ neverLoads: true });
 
-    const result = run(fake, { loadMs: 1_000 });
+    const result = run(fake, { timeoutMs: 5_000, loadMs: 300 });
 
     setTimeout(() => {
       fake.state.closed = true;
@@ -628,5 +760,27 @@ describe("checkVisual: the dispose", () => {
 
     await expect(result).rejects.toThrow();
     expect(Predicate.isString(fake.methods()[0])).toBe(true);
+  });
+});
+
+describe("within", () => {
+  it("answers with the work's answer, or fails when it takes longer, and hands a late answer on", async () => {
+    await expect(within(100, Promise.resolve(1), "x")).resolves.toBe(1);
+    await expect(within(100, Promise.reject(new Error("no")), "x")).rejects.toThrow("no");
+
+    const late: number[] = [];
+
+    await expect(
+      within(
+        20,
+        new Promise<number>((resolve) => setTimeout(() => resolve(7), 60)),
+        "The browser",
+        (value) => late.push(value),
+      ),
+    ).rejects.toThrow(/The browser did not answer within/);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(late).toEqual([7]);
   });
 });

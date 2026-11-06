@@ -51,12 +51,15 @@ const ASSET_UNREAD = {
 /** Whether `path` is under a directory of devices or kernel files, whose "files" are never a page's (`/dev/zero` never ends). */
 export const isSpecialPath = (path: string): boolean => /^\/(?:dev|proc|sys)(?:\/|$)/.test(path);
 
-/** What `visual_show` was called with. */
+/**
+ * What `visual_show` was called with. A page that is only rendered (`visual_check`) has no title or summary: left out, they
+ * are not checked, and the prepared page has none (empty).
+ */
 export type VisualShowInput = {
   readonly path?: string | undefined;
   readonly html?: string | undefined;
-  readonly title: string;
-  readonly summary: string;
+  readonly title?: string | undefined;
+  readonly summary?: string | undefined;
 };
 
 /** Why a show failed, as telemetry counts it (never its text). */
@@ -97,6 +100,7 @@ export type VisualCounts = {
 };
 
 export type PreparedVisual = {
+  /** The title and summary as kept, redacted; empty when the input had none. */
   readonly title: string;
   readonly summary: string;
   readonly source: VisualSource;
@@ -381,23 +385,24 @@ export const prepareVisual = (
 
     // The title and summary are shown and exported wherever the page is not, so they are redacted as the page is, and
     // bounded as they are kept: a Secret's reference may be longer than its value.
-    const title = redactCounting(input.title.trim());
-    const summary = redactCounting(input.summary.trim());
+    const labelled = input.title !== undefined || input.summary !== undefined;
+    const title = redactCounting((input.title ?? "").trim());
+    const summary = redactCounting((input.summary ?? "").trim());
 
     const redactedNote = (text: string, original: string) =>
       text === original.trim() ? "" : " with its Secrets replaced by their references";
 
-    if (title === "" || title.length > MAX_VISUAL_TITLE) {
+    if (labelled && (title === "" || title.length > MAX_VISUAL_TITLE)) {
       return yield* fail(
         "bad_title",
-        `title must be 1 to ${MAX_VISUAL_TITLE} characters; it is ${title.length}${redactedNote(title, input.title)}`,
+        `title must be 1 to ${MAX_VISUAL_TITLE} characters; it is ${title.length}${redactedNote(title, input.title ?? "")}`,
       );
     }
 
-    if (summary === "" || summary.length > MAX_VISUAL_SUMMARY) {
+    if (labelled && (summary === "" || summary.length > MAX_VISUAL_SUMMARY)) {
       return yield* fail(
         "bad_summary",
-        `summary must be 1 to ${MAX_VISUAL_SUMMARY} characters; it is ${summary.length}${redactedNote(summary, input.summary)}: it stands for the page wherever it is not rendered`,
+        `summary must be 1 to ${MAX_VISUAL_SUMMARY} characters; it is ${summary.length}${redactedNote(summary, input.summary ?? "")}: it stands for the page wherever it is not rendered`,
       );
     }
 

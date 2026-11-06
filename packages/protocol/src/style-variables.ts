@@ -7,6 +7,11 @@
 // reads the table (`apps/web/src/sandbox-frame/host-context.ts`), so a misspelled name fails its typecheck.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off -- small native tables of CSS variables.
 
+/** The color schemes a Visual is rendered in: the theme a frame is told and a check renders at. */
+export const VISUAL_THEMES = ["light", "dark"] as const;
+
+export type VisualTheme = (typeof VISUAL_THEMES)[number];
+
 /** The system font stacks the host's fonts are (`--font-sans`, `--font-mono`; apps/web/DESIGN.md). */
 export const FONT_SANS = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif';
 export const FONT_MONO = 'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace';
@@ -79,10 +84,10 @@ export const TOKEN_VALUES = {
     "--destructive": "oklch(0.7 0.17 25)",
     "--success": "oklch(0.74 0.14 150)",
   },
-} as const satisfies Record<"light" | "dark", Record<(typeof TOKENS)[number][1], string>>;
+} as const satisfies Record<VisualTheme, Record<(typeof TOKENS)[number][1], string>>;
 
 /** The style variables a page is given in `theme`, as a frame gives them: the tokens' values for it, and the constants. */
-export const visualStyleVariables = (theme: "light" | "dark"): Record<string, string> => {
+export const visualStyleVariables = (theme: VisualTheme): Record<string, string> => {
   const values: Record<string, string> = Object.fromEntries(CONSTANTS);
 
   for (const [variable, token] of TOKENS) values[variable] = TOKEN_VALUES[theme][token];

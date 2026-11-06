@@ -1,7 +1,14 @@
 // What the Session and its browser host (`apps/browser`) agree on, in plain data a Durable Object RPC carries and
-// without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension, and of
-// `@cloudpid/protocol` only types and its import-free `live-view` module.
-import type { LiveViewLinks, OwnerTabLinks, OwnerTabListing } from "@cloudpid/protocol";
+// without imports a Worker would have to bundle: the host's Worker takes this file alone, not the extension, and this file
+// takes only types of `@cloudpid/protocol`. The Worker's own modules take its `live-view`, and, for the Visual check
+// (`apps/browser/src/visual-check.ts`), its `base64` and `visuals` (which imports `csp`, `conversation-id` and
+// `style-variables`) at runtime, which import only `effect`.
+import type {
+  LiveViewLinks,
+  OwnerTabLinks,
+  OwnerTabListing,
+  VisualTheme,
+} from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import * as Predicate from "effect/Predicate";
 
@@ -166,7 +173,10 @@ export type BrowserOutputPart =
 // ---------------------------------------------------------------------------------------------------------------------
 // The Visual check (`docs/architecture/visuals.md` → The check)
 
-/** The longest a check runs in all, from the first command to the dispose. */
+/**
+ * The longest a check runs in all once it runs: the browser's resolution and connection, the page, and the dispose. A check
+ * queued behind another starts its time when it starts; `VISUAL_CHECK_MAX_PENDING` bounds the wait.
+ */
 export const VISUAL_CHECK_MS = 20_000;
 
 /** The longest a check waits for the load, the fonts and two frames. */
@@ -185,15 +195,18 @@ export const VISUAL_CHECK_IMAGE_CHARACTERS = 750_000;
 export const VISUAL_CHECK_MAX_ITEMS = 50;
 export const VISUAL_CHECK_MAX_TEXT = 500;
 
+/** The most checks a host holds at once, the one that runs and those queued behind it; one more fails as busy. */
+export const VISUAL_CHECK_MAX_PENDING = 4;
+
 /** What `visual_check` asks the host to render: the page as prepared (never with the shim), at `width`, in `theme`, from `top`. */
 export type VisualCheckInput = {
   readonly html: string;
   readonly width: number;
-  readonly theme: "light" | "dark";
+  readonly theme: VisualTheme;
   readonly top: number;
 };
 
-/** A console message the page logged, or an error it threw (`type` is `error`). */
+/** A console message the page logged, or an error it threw (`type` is `error`, and the text starts `uncaught:`). */
 export type VisualCheckMessage = { readonly type: string; readonly text: string };
 
 /** A resource that did not load: what the browser called the failure, a CSP block (`csp`) among them. */
@@ -208,12 +221,16 @@ export type VisualCheckScreenshot = {
   readonly quality: number;
 };
 
-/** What a check saw and measured. Each list is cut at `VISUAL_CHECK_MAX_ITEMS`, its entries at `VISUAL_CHECK_MAX_TEXT`. */
+/**
+ * What a check saw and measured. A check cut off by its bound because the page stopped responding gives what it had, and
+ * says so in `warnings`: what it heard (the console, violations and failed loads) and whatever it had measured or shot. Each
+ * list is cut at `VISUAL_CHECK_MAX_ITEMS` and each entry at `VISUAL_CHECK_MAX_TEXT`; all of it is the page's own text.
+ */
 export type VisualCheckResult = {
   /** Whether the check started the browser. */
   readonly coldStart: boolean;
-  /** The page's height at `max-content`, as the frame measures it, in CSS pixels. */
-  readonly contentHeight: number;
+  /** The page's height at `max-content`, as the frame measures it, in CSS pixels; none when the check was cut off before. */
+  readonly contentHeight?: number;
   /** The screenshot, or none when it could not be taken or kept (`warnings` say why). */
   readonly screenshot?: VisualCheckScreenshot;
   /** Whether the screenshot shows less than the page: it starts below the top, or the clip ended before the content did. */

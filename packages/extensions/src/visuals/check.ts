@@ -10,30 +10,37 @@ import {
   defineEffectTool,
   type ToolSpanAttributes,
 } from "@cloudpid/effect-durable";
-import { base64Bytes, VISUAL_CHECK, VISUAL_THREAD_WIDTH, VisualChecked } from "@cloudpid/protocol";
+import {
+  base64Bytes,
+  VISUAL_CHECK,
+  VISUAL_THEMES,
+  VISUAL_THREAD_WIDTH,
+  VisualChecked,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
-import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import {
   BrowserHost,
+  type BrowserError,
   type BrowserOutputPart,
   type VisualCheckInput,
   type VisualCheckResult,
-  VISUAL_CHECK_UNAVAILABLE,
 } from "../browser/host.ts";
 import { BrowserSession } from "../browser/session.ts";
-import { Secrets } from "../secrets/store.ts";
 import { asOutput, outputSchema } from "../outputs.ts";
 import { VISUAL_CHECK_DESCRIPTION } from "./guidance.ts";
-import { prepareVisual, type PreparedVisual, VisualShowError } from "./prepare.ts";
-import { visualFilesOf } from "./tool.ts";
+import { type PreparedVisual } from "./prepare.ts";
+import { prepareForCall } from "./tool.ts";
 
 /** The narrowest and widest page a check renders: a phone's, and a wide desktop's. */
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 2_000;
+
+/** The furthest down a screenshot may start: far past any page, so a call cannot ask for a clip at an absurd offset. */
+const MAX_TOP = 100_000;
 
 const Parameters = Schema.Struct({
   path: Schema.optionalKey(
@@ -53,14 +60,13 @@ const Parameters = Schema.Struct({
     }),
   ),
   theme: Schema.optionalKey(
-    Schema.Literals(["light", "dark"]).annotate({
+    Schema.Literals(VISUAL_THEMES).annotate({
       description: 'The color scheme the page is rendered in: "light" (default) or "dark"',
     }),
   ),
   top: Schema.optionalKey(
-    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
-      description:
-        "Where the screenshot starts, in px from the top of the page; default 0. It shows at most 3,000 px",
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: MAX_TOP })).annotate({
+      description: `Where the screenshot starts, in px from the top of the page, up to ${MAX_TOP.toLocaleString("en-US")}; default 0. It shows at most 3,000 px`,
     }),
   ),
 });
@@ -75,8 +81,8 @@ export class VisualCheckError extends Schema.TaggedError<
 }) {}
 
 /** How a failed host call reads to the model. */
-const unchecked = (message: string): VisualCheckError =>
-  message.includes(VISUAL_CHECK_UNAVAILABLE)
+const unchecked = (error: BrowserError): VisualCheckError =>
+  error.unavailable === true
     ? VisualCheckError.make({
         kind: "unavailable",
         message:
@@ -84,8 +90,15 @@ const unchecked = (message: string): VisualCheckError =>
       })
     : VisualCheckError.make({
         kind: "not_checked",
-        message: `Not checked: the browser could not render the page (${message}). Try again, or show the page without a check.`,
+        message: `Not checked: the browser could not render the page (${error.message}). Try again, or show the page without a check.`,
       });
+
+/**
+ * `text` as one quoted string on one line: what the page wrote (a console message, a blocked address) reaches the model in
+ * quotes, with its newlines and quotes escaped, so it cannot pass for a line or a section of the check's own.
+ */
+const quoted = (text: string): string =>
+  JSON.stringify(text).replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
 
 /** The findings as the text the model reads: what to look at first, then what the page did. */
 export const describeCheck = (
@@ -104,9 +117,12 @@ export const describeCheck = (
             : ""
         }.`;
 
-  const lines = [
-    `Checked at ${input.width} px wide in the ${input.theme} theme. The page is ${result.contentHeight} px tall. ${shown}`,
-  ];
+  const tall =
+    result.contentHeight === undefined
+      ? "The page's height was not measured."
+      : `The page is ${result.contentHeight} px tall.`;
+
+  const lines = [`Checked at ${input.width} px wide in the ${input.theme} theme. ${tall} ${shown}`];
 
   if (result.growth.grows) {
     lines.push(
@@ -114,21 +130,27 @@ export const describeCheck = (
     );
   }
 
+  // What the page wrote is quoted, and said to be: it is the page's own text and can say anything, so a line of the check's
+  // own never starts inside it.
   const section = (title: string, items: ReadonlyArray<string>) => {
-    if (items.length > 0)
-      lines.push(`${title} (${items.length}):`, ...Arr.map(items, (item) => `- ${item}`));
+    if (items.length > 0) {
+      lines.push(
+        `${title} (${items.length}; the page's own text, quoted):`,
+        ...Arr.map(items, (item) => `- ${item}`),
+      );
+    }
   };
 
   section(
     "Console",
-    Arr.map(result.console, (message) => `[${message.type}] ${message.text}`),
+    Arr.map(result.console, (message) => `[${message.type}] ${quoted(message.text)}`),
   );
-  section("CSP violations", result.violations);
+  section("CSP violations", Arr.map(result.violations, quoted));
   section(
     "Failed loads",
     Arr.map(
       result.failedLoads,
-      (load) => `${load.url === "" ? "(unknown)" : load.url} (${load.reason})`,
+      (load) => `${load.url === "" ? "(unknown)" : quoted(load.url)} (${load.reason})`,
     ),
   );
 
@@ -150,22 +172,29 @@ const spanOf = (
   input: VisualCheckInput,
   result: VisualCheckResult,
   prepared: PreparedVisual,
-): ToolSpanAttributes => ({
-  "visual.width": input.width,
-  "visual.theme": input.theme,
-  "visual.cold_start": result.coldStart,
-  "visual.outcome": result.warnings.length > 0 ? "partial" : "checked",
-  "visual.bytes": prepared.bytes,
-  "visual.console": result.console.length,
-  "visual.violations": result.violations.length,
-  "visual.failed_loads": result.failedLoads.length,
-  "visual.warnings": result.warnings.length + prepared.warnings.length,
-  "visual.content_height": result.contentHeight,
-  "visual.grows": result.growth.grows,
-  "visual.screenshot_bytes":
-    result.screenshot === undefined ? 0 : base64Bytes(result.screenshot.data),
-  "visual.clipped": result.clipped,
-});
+): ToolSpanAttributes => {
+  const attributes: Mutable<ToolSpanAttributes> = {
+    "visual.width": input.width,
+    "visual.theme": input.theme,
+    "visual.cold_start": result.coldStart,
+    "visual.outcome": result.warnings.length > 0 ? "partial" : "checked",
+    "visual.bytes": prepared.bytes,
+    "visual.console": result.console.length,
+    "visual.violations": result.violations.length,
+    "visual.failed_loads": result.failedLoads.length,
+    "visual.warnings": result.warnings.length + prepared.warnings.length,
+    "visual.grows": result.growth.grows,
+    "visual.screenshot_bytes":
+      result.screenshot === undefined ? 0 : base64Bytes(result.screenshot.data),
+    "visual.clipped": result.clipped,
+  };
+
+  // A check cut off before it measured the page has no height to count.
+  if (result.contentHeight !== undefined)
+    attributes["visual.content_height"] = result.contentHeight;
+
+  return attributes;
+};
 
 export const VisualCheckTool = defineEffectTool({
   name: VISUAL_CHECK,
@@ -176,29 +205,15 @@ export const VisualCheckTool = defineEffectTool({
   replay: "safe",
   execute: (args, api) =>
     Effect.gen(function* () {
-      const secrets = yield* Secrets;
       const host = yield* BrowserHost;
       const session = yield* BrowserSession;
 
-      // A page that cannot be told clean of the Session's Secrets is not rendered, as `visual_show` does not keep one.
-      if (!(yield* secrets.readable)) {
-        return yield* VisualShowError.make({
-          kind: "secrets_unavailable",
-          message:
-            "The Session's Secrets could not be read, so the page could not be checked for them and nothing was rendered: try again shortly",
-        });
-      }
-
-      const held = yield* secrets.environment;
-
-      // The title and summary are `visual_show`'s; a check has neither.
-      const prepared = yield* prepareVisual(
-        { path: args.path, html: args.html, title: "check", summary: "check" },
-        {
-          files: api.env === undefined ? undefined : visualFilesOf(api.env),
-          redact: (text) => secrets.redact(text),
-          secretValues: Record.values(held),
-        },
+      // A page that cannot be told clean of the Session's Secrets is not rendered, as `visual_show` does not keep one. A check
+      // has no title or summary: those are `visual_show`'s.
+      const prepared = yield* prepareForCall(
+        { path: args.path, html: args.html },
+        api.env,
+        "rendered",
       );
 
       const input: VisualCheckInput = {
@@ -211,10 +226,9 @@ export const VisualCheckTool = defineEffectTool({
       // Used from the start, and again whatever came of it: the browser may have been started before the check failed.
       yield* session.touch;
 
-      const result = yield* host.checkVisual(input).pipe(
-        Effect.ensuring(session.touch),
-        Effect.mapError((error) => unchecked(error.message)),
-      );
+      const result = yield* host
+        .checkVisual(input)
+        .pipe(Effect.ensuring(session.touch), Effect.mapError(unchecked));
 
       yield* annotateToolSpan(api.callId, spanOf(input, result, prepared));
 
@@ -238,7 +252,7 @@ export const VisualCheckTool = defineEffectTool({
         structuredOutput: asOutput(VisualChecked, {
           width: input.width,
           theme: input.theme,
-          content_height: result.contentHeight,
+          content_height: result.contentHeight ?? null,
           clipped: result.clipped,
           screenshot:
             result.screenshot === undefined

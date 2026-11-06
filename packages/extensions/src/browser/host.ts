@@ -55,11 +55,15 @@ export {
   type VisualCheckScreenshot,
 } from "./contract.ts";
 
-/** The browser could not be reached or failed outside the model's code: the model sees `message` as the error result. */
+/**
+ * The browser could not be reached or failed outside the model's code: the model sees `message` as the error result.
+ * `unavailable` is true when the call is one the Browsers Worker does not have yet (one from before it): a deploy that has
+ * not reached it, which retrying does not change.
+ */
 export class BrowserError extends Schema.TaggedError<
   BrowserError,
   { readonly brand: unique symbol }
->()("BrowserError", { message: Schema.String }) {}
+>()("BrowserError", { message: Schema.String, unavailable: Schema.optionalKey(Schema.Boolean) }) {}
 
 export type BrowserHostService = {
   /** The `browser` tool's description, which tells the model how to drive the browser (written by `agents/browser`). */
@@ -80,7 +84,7 @@ export type BrowserHostService = {
   /**
    * Render a Visual's page in a throwaway context of the browser and say what was measured and seen (`VisualCheckResult`).
    * Fails (`BrowserError`) when the browser is unavailable or the check cannot finish, and when the host predates the check
-   * (the message holds `VISUAL_CHECK_UNAVAILABLE`).
+   * (`unavailable` is true).
    */
   readonly checkVisual: (input: VisualCheckInput) => Effect.Effect<VisualCheckResult, BrowserError>;
   /**
@@ -129,9 +133,6 @@ export type BrowserHostService = {
    */
   readonly endHandoff: (requestId: string) => Effect.Effect<HandoffEnded, BrowserError>;
 };
-
-/** What the message of a failed `checkVisual` holds when the Browsers Worker has no such method yet (one from before it). */
-export const VISUAL_CHECK_UNAVAILABLE = "visual_check is unavailable";
 
 export class BrowserHost extends Context.Service<BrowserHost, BrowserHostService>()(
   "@cloudpid/extensions/browser/host/BrowserHost",

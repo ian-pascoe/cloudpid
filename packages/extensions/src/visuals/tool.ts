@@ -37,6 +37,7 @@ import {
   prepareVisual,
   type VisualFile,
   type VisualFiles,
+  type VisualShowInput,
   VisualShowError,
 } from "./prepare.ts";
 import { VisualRecorder } from "./recorder.ts";
@@ -127,6 +128,35 @@ export const visualFilesOf = (
     }),
 });
 
+/**
+ * A call's page prepared for what it does with it (`visual_show` shows it, `visual_check` renders it, and `done` is what
+ * neither did when this fails): read from the call's Workspace, redacted of the Session's Secrets, checked and bounded. A page
+ * that cannot be told clean of the Secrets (they could not be read) is not prepared: it is never kept or rendered.
+ */
+export const prepareForCall = (
+  input: VisualShowInput,
+  env: Parameters<typeof visualFilesOf>[0] | undefined,
+  done: "shown" | "rendered",
+) =>
+  Effect.gen(function* () {
+    const secrets = yield* Secrets;
+
+    if (!(yield* secrets.readable)) {
+      return yield* VisualShowError.make({
+        kind: "secrets_unavailable",
+        message: `The Session's Secrets could not be read, so the page could not be checked for them and nothing was ${done}: try again shortly`,
+      });
+    }
+
+    const held = yield* secrets.environment;
+
+    return yield* prepareVisual(input, {
+      files: env === undefined ? undefined : visualFilesOf(env),
+      redact: (text) => secrets.redact(text),
+      secretValues: Record.values(held),
+    });
+  });
+
 /** A show's counts as span attributes, under `visual.`: fixed values and counts only. */
 const spanOf = (prepared: PreparedVisual, evicted: number): ToolSpanAttributes => {
   const { counts, warnings } = prepared;
@@ -160,7 +190,6 @@ export const VisualShowTool = defineEffectTool({
   structuredOutputSchema: Schema.toJsonSchemaDocument(VisualShown).schema,
   execute: (args, api) =>
     Effect.gen(function* () {
-      const secrets = yield* Secrets;
       const recorder = yield* VisualRecorder;
 
       // Whether this is a nested call, and of which call: a script's Visuals show under its card.
@@ -169,21 +198,7 @@ export const VisualShowTool = defineEffectTool({
       const caller = task?.input as ToolTaskInput | undefined;
 
       // A copy that cannot be told clean of the Session's Secrets is not kept: their values never enter durable state.
-      if (!(yield* secrets.readable)) {
-        return yield* VisualShowError.make({
-          kind: "secrets_unavailable",
-          message:
-            "The Session's Secrets could not be read, so the page could not be checked for them and nothing was shown: try again shortly",
-        });
-      }
-
-      const held = yield* secrets.environment;
-
-      const prepared = yield* prepareVisual(args, {
-        files: api.env === undefined ? undefined : visualFilesOf(api.env),
-        redact: (text) => secrets.redact(text),
-        secretValues: Record.values(held),
-      });
+      const prepared = yield* prepareForCall(args, api.env, "shown");
 
       const draft: Mutable<VisualDraft> = {
         callId: api.callId,

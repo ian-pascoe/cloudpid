@@ -199,6 +199,23 @@ describe("what a show fails on", () => {
     );
   });
 
+  it("needs no title or summary of a page that is only rendered, and has none", async () => {
+    const prepared = await Effect.runPromise(prepareVisual({ html: PAGE }, optionsOf({})));
+
+    expect(prepared.title).toBe("");
+    expect(prepared.summary).toBe("");
+    expect(prepared.html).toContain("<p>Hi</p>");
+
+    // Given one, a show still needs the other.
+    const exit = await Effect.runPromiseExit(
+      prepareVisual({ html: PAGE, title: "Chart" }, optionsOf({})),
+    );
+
+    expect(Exit.isFailure(exit) ? Cause.findErrorOption(exit.cause) : undefined).toMatchObject(
+      Option.some({ kind: "bad_summary" }),
+    );
+  });
+
   it("fails on a bad title or summary", async () => {
     expect(await failure({ html: PAGE, title: " " })).toMatchObject({ kind: "bad_title" });
     expect(await failure({ html: PAGE, title: "t".repeat(201) })).toMatchObject({

@@ -1,6 +1,6 @@
 // The Session's browser host as the Session DO reaches it: a failed call is a typed failure.
 // @effect-diagnostics asyncFunction:off
-import { BrowserError, VISUAL_CHECK_UNAVAILABLE } from "@cloudpid/extensions/browser";
+import { BrowserError } from "@cloudpid/extensions/browser";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { remoteBrowserHost } from "./browser.ts";
@@ -215,7 +215,23 @@ describe("the Session's browser host", () => {
         .pipe(Effect.flip),
     );
 
-    expect(old.message).toContain(VISUAL_CHECK_UNAVAILABLE);
+    expect(old.unavailable).toBe(true);
+
+    // A `TypeError` inside a current host's method, or a missing method of another name, is a failure of the check.
+    const typeError = await Effect.runPromise(
+      over("TypeError: page.measure is not a function").checkVisual(page).pipe(Effect.flip),
+    );
+
+    expect(typeError.unavailable).toBeUndefined();
+    expect(typeError.message).toContain("page.measure is not a function");
+
+    const other = await Effect.runPromise(
+      over('The RPC receiver does not implement the method "run".')
+        .checkVisual(page)
+        .pipe(Effect.flip),
+    );
+
+    expect(other.unavailable).toBeUndefined();
 
     const down = await Effect.runPromise(over("overloaded").checkVisual(page).pipe(Effect.flip));
 

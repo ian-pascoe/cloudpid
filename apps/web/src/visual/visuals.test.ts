@@ -5,6 +5,7 @@
 // @effect-diagnostics preferEffectArray:off nodeBuiltinImport:off -- a transcript in native lists, and the layout's source read as text.
 import { readFileSync } from "node:fs";
 import {
+  fitHeight,
   VISUAL_MAX_HEIGHT,
   VISUAL_MIN_HEIGHT,
   VISUAL_THREAD_WIDTH,
@@ -15,7 +16,6 @@ import {
 import { describe, expect, it } from "vitest";
 import { loadOf } from "./atoms.ts";
 import {
-  fitHeight,
   GROWTH_WINDOW_MS,
   GUARD_START,
   guardReport,
