@@ -18,9 +18,9 @@ import {
   type AppPlaceMountProps,
 } from "./app-call.tsx";
 import { AppFrame } from "./app-frame.tsx";
-import { focusChatOnEscape } from "./app-pane.tsx";
 import { installFakeFrames, ORIGIN, viewOf } from "./frame-kit.testing.ts";
 import type { AppPage } from "./load.ts";
+import { focusChatOnEscape } from "../sandbox-frame/focus.ts";
 import { AppPlaces } from "../sandbox-frame/places.ts";
 
 const record: McpAppRecord = {

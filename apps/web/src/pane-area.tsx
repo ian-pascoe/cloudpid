@@ -21,6 +21,8 @@ import {
   type RefObject,
 } from "react";
 import { AppPane } from "./app-view/app-pane.tsx";
+import { visualEntryOf } from "./visual/visuals.ts";
+import { VisualPane } from "./visual/visual-pane.tsx";
 import { afterTeardown, paneElement } from "./app-view/teardown.ts";
 import { useShownLayoutKey, useShownSessionId } from "./chat/conversation.ts";
 import { SessionTreePane } from "./chat/tree-pane.tsx";
@@ -44,7 +46,7 @@ import {
 } from "./panes.ts";
 import { agentLabel } from "./session/agents.ts";
 import { appEntryOf } from "./session/apps.ts";
-import { mcpAppsAtom, taskGraphAtom } from "./session/atoms.ts";
+import { mcpAppsAtom, taskGraphAtom, visualsAtom } from "./session/atoms.ts";
 import {
   DEFAULT_PANE_WIDTH,
   MAX_PANE_WIDTH,
@@ -67,6 +69,7 @@ const PANE_COMPONENTS = {
   "live-view": LiveViewPane,
   diff: DiffPane,
   app: AppPane,
+  visual: VisualPane,
 } satisfies {
   readonly [Id in PaneTypeId]: ComponentType<PaneProps>;
 };
@@ -159,18 +162,20 @@ const ResizeHandle = ({
 
 /**
  * What the tabs' labels look up in the Session shown: whose Browser Handoff a Live View is for, and which agent a
- * Subagent Pane shows.
+ * Subagent Pane shows, whose App a Pane has and which Visual a Visual Pane has.
  */
 const usePaneLookups = (): PaneLookups => {
   const sessionId = useShownSessionId();
   const handoffAgents = useAtomValue(handoffAgentsAtom(sessionId));
   const graph = useAtomValue(taskGraphAtom(sessionId));
   const apps = useAtomValue(mcpAppsAtom(sessionId));
+  const visuals = useAtomValue(visualsAtom(sessionId));
 
   return {
     agentOfHandoff: (requestId) => handoffAgents.get(requestId),
     agentOfConversation: (conversationId) => agentLabel(graph, conversationId),
     serverOfApp: (callId) => appEntryOf(apps, callId)?.server,
+    titleOfVisual: (callId) => visualEntryOf(visuals, callId)?.title,
   };
 };
 

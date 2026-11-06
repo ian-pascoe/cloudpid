@@ -2,7 +2,7 @@
 // live, Where it renders), App Panes. Which place of a page mounts an App View (and, keyed `visual:`, a Visual). A call can
 // be shown in several places at once (its card in the transcript, the same card in a Subagent Pane or page, an App Pane
 // opened for it), and only one of them mounts its View: the places each hold a **claim** on the call, and the highest place
-// hosts it (App Pane, then Subagent Pane or page, then card); the others say where it is shown. A View moves from one place to another by the first one's frame closing (its View is told
+// hosts it (App Pane or Visual Pane, which a call of one kind has only one of; then Subagent Pane or page; then card); the others say where it is shown. A View moves from one place to another by the first one's frame closing (its View is told
 // to tear down and answers, or 2 s pass) and only then the next one's mounting, never by moving an iframe, which would
 // reload it.
 //
@@ -15,12 +15,13 @@
 /** What a claim names its call by: the kind of frame in the call's name space, so an App View's and a Visual's never collide. */
 export const placeKey = (kind: "app" | "visual", callId: string): string => `${kind}:${callId}`;
 
-/** Where an App View can be shown on a page. */
-export type AppPlace = "app-pane" | "subagent-pane" | "subagent-page" | "card";
+/** Where an App View or a Visual can be shown on a page (a Visual's Pane is `visual-pane`, an App View's `app-pane`). */
+export type AppPlace = "app-pane" | "visual-pane" | "subagent-pane" | "subagent-page" | "card";
 
 /** Which place mounts a View when several claim its call: the highest, then the one that has it, then the first to claim. */
 const RANKS: Readonly<Record<AppPlace, number>> = {
   "app-pane": 3,
+  "visual-pane": 3,
   "subagent-pane": 2,
   "subagent-page": 2,
   card: 1,
@@ -29,6 +30,7 @@ const RANKS: Readonly<Record<AppPlace, number>> = {
 /** How a place that does not mount a View says where it is: "Shown in …". */
 export const PLACE_NAMES: Readonly<Record<AppPlace, string>> = {
   "app-pane": "the App Pane",
+  "visual-pane": "the Visual Pane",
   "subagent-pane": "the Subagent Pane",
   "subagent-page": "the Subagent page",
   card: "the transcript",
