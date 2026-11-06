@@ -18,6 +18,7 @@ A **Visual** is a page the agent writes and shows the owner inline in a conversa
   - **Warns** on: a local asset that is missing or too large; a host not on the list ([_Network and isolation_](#network-and-isolation)); `fetch`, XHR, `WebSocket` or `EventSource` in a script; an `<iframe>` or a `<form>`; `touch-action`, `overscroll-behavior` or a non-passive touch listener; Secrets replaced; a fragment wrapped into a document.
 - **`visual_check({ path | html, width?, theme?, top? })`:** read-only. It renders the page in a throwaway context of the Session's Browser Run browser with the theme, shim and CSP a frame gives it, and returns a JPEG screenshot with what it measured and saw: the content height, whether the screenshot was clipped, the growth probe's finding, console messages, CSP violations and failed loads. `width` defaults to 736 px, the thread's column (`max-w-3xl` less `px-4`, one constant tested against the layout), about 360 for a phone; `theme` to `light`; `top` is where the 3,000 px screenshot starts. A browser that is unavailable fails the call ("not checked"); a Browsers Worker that predates `checkVisual` fails it as "unavailable"; a partial result warns. It is a tool of its own because Browser Run is the only real browser: `browser` cannot read the Workspace or apply the theme, shim and CSP, and a `check` mode of `visual_show` would have parameters that mean nothing for showing.
 - **No rate limit:** the model sets the pace, and storage is bounded ([_The copy_](#the-copy) → Bounds).
+- **As built ([#658](https://github.com/ian-pascoe/cloudpid/issues/658); `packages/extensions/src/visuals/`):** `visual_show` only; `visual_check` comes with [#661](https://github.com/ian-pascoe/cloudpid/issues/661), so the description and the section name `visual_show` alone until then. A copy the Session cannot keep fails the call (unlike an App record, the copy is the point). The preparation is regex-based (a speed bump; the CSP is the boundary) and strips `preconnect`, `dns-prefetch`, `prerender` and `prefetch` links, not `preload`.
 
 ## Guidance
 
@@ -53,6 +54,7 @@ A **Visual** is a page the agent writes and shows the owner inline in a conversa
 - **The record** holds the `callId`, the conversation, the parent call (the `codemode` script's, for a nested call), the title, the summary, the source (`path`, or inline), the redacted page with its assets inlined, its size in bytes, the warnings given at the show, and the time. The origin is computed from the Session, never stored ([_Network and isolation_](#network-and-isolation)).
 - **The store:** `visuals-store.ts`, in the Session's storage, built on a chunked-record primitive extracted from the App record store (`mcp-apps-store.ts`; [_App records_](mcp-apps.md#app-records)). A kind of App record was rejected: every App reader would branch on the kind, and Visuals would evict App data within one bound. Sharing the `mcp_app_*` messages was rejected too: a Visual's page lives in the Session, not in `McpHost`.
 - **Revisions:** every show is a new Visual. An earlier Visual from the same file in the same conversation shows collapsed, "A newer version is below", with Reopen, worked out from the transcript; `supersedes` in the result names it. Replacing a Visual by its ID was rejected: an earlier card would then show what was not shown at the time, and a Fork would be ambiguous.
+- **As built ([#658](https://github.com/ian-pascoe/cloudpid/issues/658)):** the Secrets are replaced in the extension's preparation, which counts them for the warning, and not again in the store; `supersedes` is worked out by the store when it keeps the copy (the latest earlier entry of the conversation from the same path), and the card's collapse from the transcript (`apps/web/src/visual/visuals.ts`).
 
 ## Socket messages
 
@@ -61,6 +63,7 @@ Additive; old tabs skip messages they do not know.
 - **Session → client:** `visuals { conversationId, visuals }`, per conversation on `watch`, as `mcp_apps` is ([_Socket messages_](mcp-apps.md#socket-messages)).
 - **Client → Session:** `visual_page { id, callId }`, answered through the socket's `id`/`result` reply with the page, `evicted` or `none`.
 - **`hello.visuals`:** a Session says it keeps Visuals. A client shows a `visual_show` call to a Session that does not say so as an ordinary tool card.
+- **Client → Session:** `visual_file { id, callId }`, for Open file ([_The frame_](#the-frame) → The card), answered with the file's text as it is now, or `missing`, `too_large`, `not_text` or `none`. The path is the record's, never one the client sends, and the file is read from the Workspace of the conversation that showed it through the lookup environment, which never starts the Container (as a Result Spill's preview is).
 
 ## The frame
 
@@ -84,6 +87,13 @@ Additive; old tabs skip messages they do not know.
 - **The Visual Pane:** Pop out moves a Visual to a Visual Pane, one per Visual, at full size (a sheet on a phone), and the card says where it is shown, through the shared places.
 - **Links:** a link the page opens goes through the same confirmation as an App View's `ui/open-link` ([_The bridge_](mcp-apps.md#the-bridge)): nothing opens before the owner chooses.
 - **Accessibility:** the frame's `title` is "Visual: <title>", and the summary is its accessible description; a mount never takes focus, and Tab moves in and out natively. The shim posts an Escape the page did not handle, and focus returns to the card, which App Views cannot do. Full conformance is not the aim, since nobody would verify it; the description asks for `alt`, SVG titles, real text and `prefers-reduced-motion`.
+- **As built ([#658](https://github.com/ian-pascoe/cloudpid/issues/658); `apps/web/src/visual/`):**
+  - Pop out, Show here and the Visual Pane come with [#660](https://github.com/ian-pascoe/cloudpid/issues/660); until then a card has Collapse, Copy HTML, Open file and Details, and the places (`visual:`) choose between a card and a Subagent Pane or page.
+  - The Escape is the notification `cloudpid/notifications/escape` (`VISUAL_ESCAPE`): ext-apps has none. The frame protocol takes it through a `notifications` option, and names its subject in the 10 s failure ("The Visual did not start within 10 seconds").
+  - Collapse and Reopen are kept on the device with the App Views' choices, by call.
+  - A frame mounts within 1,200 px of the viewport and unmounts past 3,600 px, so a card at the edge does not flicker; the height guard counts growth that answers a host resize within 1 s by the same step (±2 px), so a page that loads in stages is not frozen.
+  - Copy HTML is offered once the page has loaded; Open file shows the file's text in a dialog (`visual_file`).
+  - A link the page opens offers Open and Dismiss; the Browser Pane is an App View's choice.
 
 ## Network and isolation
 
@@ -127,6 +137,7 @@ Additive; old tabs skip messages they do not know.
 - **Compaction and Rollover** do not touch the store; an inline page is still recoverable through `context_history`.
 - **Notifications:** a Visual sends no Web Push or Notification.
 - **Export and transcript:** `/export` and `session_transcript` write a Visual as "Visual: <title> — <summary> (not rendered)"; `session_transcript` adds a link to its Visual Pane ([_Transcripts_](mcp-endpoint.md#transcripts)).
+  - **As built ([#658](https://github.com/ian-pascoe/cloudpid/issues/658)):** both read the title and summary from the result's `details.visual`, so a call that failed writes none; the link to the Visual Pane comes with the Pane ([#660](https://github.com/ian-pascoe/cloudpid/issues/660)).
 - **Local agents and imports:** out of scope. `/mcp` drives Sessions, not their tools, and a Session import carries no Visuals: converting an imported HTML file would guess what the conversation showed.
 
 ## Telemetry
@@ -136,6 +147,7 @@ The existing `pi.tool.visual_show` and `pi.tool.visual_check` spans ([ADR-0010](
 - **`visual_show`:** the source kind, bytes, inlined counts, Secrets replaced, evictions, and the kinds of warning and failure.
 - **`visual_check`:** width, theme, cold start, outcome, counts, content height, screenshot bytes, and whether it was clipped.
 - **Never:** page text, title, summary, path, console text or hosts; a host is content the page chose.
+- **As built ([#658](https://github.com/ian-pascoe/cloudpid/issues/658)):** a tool cannot see the `pi.tool` span its call runs in, so `effect-durable` keeps the open span of each call by its `callId` (`tool-span.ts`), and `visual_show` adds its counts there through `annotateToolSpan`.
 
 ## Testing
 
