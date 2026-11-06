@@ -1,5 +1,5 @@
 ---
-status: accepted (non-prod app origins and the sandbox's owner: amended by #421)
+status: accepted (non-prod app origins and the sandbox's owner: amended by #421; one origin per Session for Visuals: amended by ADR-0045)
 ---
 
 # App Views run in a public, secretless sandbox on a domain of their own, one origin per Environment's MCP server
