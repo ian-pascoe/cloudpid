@@ -7,7 +7,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getOrThrow } from "@earendil-works/pi-durable/env";
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { idle } from "../durable-waits.fixture.ts";
 import type { TestCodemodeSession } from "./codemode.fixture.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
@@ -181,11 +182,8 @@ describe("the codemode tool", () => {
     await evictDurableObject(stub);
     expect(await runDurableObjectAlarm(stub)).toBe(true);
 
-    await vi.waitFor(async () =>
-      expect(
-        await runInDurableObject(stub, (instance: TestCodemodeSession) => instance.idle()),
-      ).toBe(true),
-    );
+    // The woken instance reruns the script and answers the next turn: over 1 s on a loaded CI runner.
+    await idle(stub);
 
     const { results, holds } = await runInDurableObject(
       stub,
