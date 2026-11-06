@@ -194,6 +194,7 @@ import { attempt, CONVERSATION_MISSING, refuse, SessionError, withdrawnFailure }
 import type { AppContextCall, AppContexts } from "./mcp-app-context.ts";
 import type { PromptCatalog } from "./mcp-prompt-catalog.ts";
 import type { HoldSlot, SpillRead } from "./mcp-resource-previews.ts";
+import type { WorkspaceFileRead } from "./visual-file.ts";
 import { promptFileName, promptMessage, type PromptFile } from "./mcp-prompt.ts";
 import {
   type AttachedBudgets,
@@ -1059,7 +1060,7 @@ export type SessionHostService = {
   readonly workspaceFile: (
     conversationId: ConversationId,
     path: string,
-  ) => Effect.Effect<SpillRead, SessionError>;
+  ) => Effect.Effect<WorkspaceFileRead, SessionError>;
   /**
    * A page of the transcript of the active branch, or of the conversation `conversationId` names (`entriesPage`): what
    * a client's transcript loads before its oldest entry or into a gap.
@@ -4490,24 +4491,33 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           ),
     workspaceFile: (conversationId, path) =>
       !isWorkspaceFilePath(path)
-        ? Effect.succeed<SpillRead>({ kind: "missing" })
+        ? Effect.succeed<WorkspaceFileRead>({ kind: "missing" })
         : addressed(conversationId).pipe(
             Effect.flatMap((conversation) =>
               environment(conversation, { lookup: true }).pipe(withinExpandTimeout),
             ),
             Effect.flatMap((env) =>
               env === undefined
-                ? Effect.succeed<SpillRead>({ kind: "missing" })
-                : // One file of at most 2 MiB at the owner's click: no decode slot to wait for.
+                ? Effect.succeed<WorkspaceFileRead>({ kind: "missing" })
+                : // One file of at most 2 MiB at the owner's click: no decode slot to wait for, so a read is
+                  // never `waited` or `aborted`.
                   spillOf(
                     env,
                     path,
                     () => Effect.succeed("held"),
                     withinExpandTimeout,
                     MAX_VISUAL_BYTES,
+                  ).pipe(
+                    Effect.map((read: SpillRead): WorkspaceFileRead =>
+                      read.kind === "base64" || read.kind === "too_large"
+                        ? read
+                        : { kind: "missing" },
+                    ),
                   ),
             ),
-            Effect.catchTag("TimeoutError", () => Effect.succeed<SpillRead>({ kind: "missing" })),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.succeed<WorkspaceFileRead>({ kind: "missing" }),
+            ),
           ),
     entryPage: ({ query, limit, conversationId }) =>
       addressed(conversationId).pipe(

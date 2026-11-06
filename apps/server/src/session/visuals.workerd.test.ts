@@ -24,7 +24,7 @@ import { viewOrigin } from "../view-host.ts";
 import { visualViewHash } from "../view-hash.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
-import { visualFileAnswer } from "./visuals-store.ts";
+import { visualFileAnswer } from "./visual-file.ts";
 
 declare global {
   namespace Cloudflare {

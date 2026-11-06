@@ -1005,8 +1005,8 @@ export type ClientMessage = typeof ClientMessage.Type;
  * `mcp_elicitation_answer` and `mcp_elicitation_revoke`; `mcpCompletions` that it takes `mcp_complete` and `mcp_complete_cancel`.
  * `appMessages` says it takes `submit.app`, and `appContext` that it takes `mcp_app_context`: a client holds an App's
  * message, and forwards its context, only for a Session that says so. `visuals` says it keeps Visuals (`visuals`,
- * `visual_page`: `docs/architecture/visuals.md` → Socket messages): a client shows a `visual_show` call to a Session that does
- * not say so as an ordinary tool card.
+ * `visual_page`, and `visual_file` for Open file: `docs/architecture/visuals.md` → Socket messages): a client shows a
+ * `visual_show` call to a Session that does not say so as an ordinary tool card.
  */
 export const Hello = Schema.Struct({
   type: Schema.Literal("hello"),

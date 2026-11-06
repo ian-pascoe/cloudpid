@@ -15,7 +15,6 @@ import {
   type VisualRecorderService,
 } from "@cloudpid/extensions/visuals";
 import {
-  bytesFromBase64,
   type ConversationId,
   MAX_VISUAL_BYTES,
   MAX_VISUAL_STUBS,
@@ -24,7 +23,6 @@ import {
   sourcePathOf,
   type VisualDraft,
   type VisualEntry,
-  type VisualFileAnswer,
   type VisualPageAnswer,
   VisualRecord,
   type VisualSource,
@@ -41,7 +39,6 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type { Mutable } from "effect/Types";
 import { callRecords, type CallRecordEntry } from "./call-records.ts";
-import type { SpillRead } from "./mcp-resource-previews.ts";
 import type { SessionKv } from "./session-kv.ts";
 
 /** The index of every Visual and stub, oldest first. */
@@ -63,27 +60,6 @@ type VisualFields = {
 type IndexEntry = CallRecordEntry<VisualFields>;
 
 const decodeRecord = Schema.decodeUnknownOption(Schema.fromJsonString(VisualRecord));
-
-/** What `visual_file` answers for the file at `path` as the Workspace read it: its text when it is UTF-8. */
-export const visualFileAnswer = (path: string, read: SpillRead): VisualFileAnswer => {
-  if (read.kind === "too_large") return { status: "too_large", path };
-
-  if (read.kind !== "base64") return { status: "missing", path };
-
-  const bytes = bytesFromBase64(read.base64);
-
-  if (bytes === undefined) return { status: "missing", path };
-
-  try {
-    return {
-      status: "text",
-      path,
-      text: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes),
-    };
-  } catch {
-    return { status: "not_text", path };
-  }
-};
 
 /** The Session's Visuals, as the sockets and the extension reach them. */
 export type SessionVisualsService = VisualRecorderService & {
@@ -117,52 +93,39 @@ export type SessionVisualsOptions = {
   readonly now?: () => number;
 };
 
-const entryOf = (entry: IndexEntry): VisualEntry => {
-  const shown: Mutable<VisualEntry> = {
-    callId: entry.callId,
-    title: entry.title,
-    summary: entry.summary,
-    source: entry.source,
-    state: entry.state,
-    bytes: entry.size,
-    at: entry.at,
-  };
-
-  if (entry.parentCall !== undefined) shown.parentCall = entry.parentCall;
-
-  return shown;
-};
-
-const stubOf = (entry: IndexEntry): VisualStub => {
-  const stub: Mutable<VisualStub> = {
-    callId: entry.callId,
-    conversation: entry.conversation,
-    title: entry.title,
-    summary: entry.summary,
-    source: entry.source,
-    bytes: entry.size,
-    at: entry.at,
-  };
-
-  if (entry.parentCall !== undefined) stub.parentCall = entry.parentCall;
-
-  return stub;
-};
-
-/** What a stub keeps of a Visual's own fields: all of them, since none is the page. */
-const keeps = (entry: IndexEntry): VisualFields => {
+/** A Visual's own fields, and nothing else of `from`: the one place they are listed, for an entry, a stub and a write. */
+const fieldsOf = (from: VisualFields): VisualFields => {
   const fields: Mutable<VisualFields> = {
-    title: entry.title,
-    summary: entry.summary,
-    source: entry.source,
-    size: entry.size,
-    at: entry.at,
+    title: from.title,
+    summary: from.summary,
+    source: from.source,
+    size: from.size,
+    at: from.at,
   };
 
-  if (entry.parentCall !== undefined) fields.parentCall = entry.parentCall;
+  if (from.parentCall !== undefined) fields.parentCall = from.parentCall;
 
   return fields;
 };
+
+/** A Visual's own fields as a client reads them, where the page's size is `bytes`. */
+const shownOf = (entry: IndexEntry) => {
+  const { size, ...fields } = fieldsOf(entry);
+
+  return { ...fields, bytes: size };
+};
+
+const entryOf = (entry: IndexEntry): VisualEntry => ({
+  callId: entry.callId,
+  state: entry.state,
+  ...shownOf(entry),
+});
+
+const stubOf = (entry: IndexEntry): VisualStub => ({
+  callId: entry.callId,
+  conversation: entry.conversation,
+  ...shownOf(entry),
+});
 
 export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsService => {
   const { storage } = options;
@@ -174,7 +137,8 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
     indexKey: INDEX_KEY,
     partKey,
     bounds: { bytes: MAX_VISUALS_BYTES, records: MAX_VISUALS, stubs: MAX_VISUAL_STUBS },
-    keeps,
+    // What a stub keeps of a Visual's own fields: all of them, since none is the page.
+    keeps: fieldsOf,
   });
 
   const changed = (conversations: ReadonlySet<string>) => {
@@ -226,25 +190,20 @@ export const sessionVisuals = (options: SessionVisualsOptions): SessionVisualsSe
             ),
           );
 
-          const written = records.write(entries, draft.callId, JSON.stringify(record), (parts) => {
-            const entry: Mutable<IndexEntry> = {
+          const written = records.write(
+            entries,
+            draft.callId,
+            JSON.stringify(record),
+            (parts): IndexEntry => ({
               callId: draft.callId,
               conversation: draft.conversation,
               state: "kept",
               bytes: draft.bytes,
               parts,
               mountedAt: at,
-              title: draft.title,
-              summary: draft.summary,
-              source: draft.source,
-              size: draft.bytes,
-              at,
-            };
-
-            if (draft.parentCall !== undefined) entry.parentCall = draft.parentCall;
-
-            return entry;
-          });
+              ...fieldsOf({ ...draft, size: draft.bytes, at }),
+            }),
+          );
 
           const touched = records.settle(written, draft.callId);
 
