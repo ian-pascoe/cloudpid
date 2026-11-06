@@ -129,7 +129,10 @@ export const paneParamsOf = (search: string): PaneParams => {
   };
 };
 
-/** A Pane key as it is written in a query: encoded, but for the `:` that separates its type from its argument. */
+/**
+ * A Pane key as it is written in a query: encoded, but for the `:` that separates its type from its argument. (`visualPaneQuery`
+ * and `liveViewPaneQuery` in `@cloudpid/protocol` write one the same way for the links a server makes; keep them alike.)
+ */
 const encodeKey = (key: string): string => encodeURIComponent(key).replaceAll("%3A", ":");
 
 /**

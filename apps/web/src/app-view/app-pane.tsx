@@ -6,24 +6,9 @@
 import { useAtom } from "@effect/atom-react";
 import { useShownLayoutKey } from "../chat/conversation.ts";
 import type { PaneProps } from "../panes.ts";
+import { focusChatOnEscape } from "../sandbox-frame/focus.ts";
 import { appChoiceAtom } from "../session-layout-state.ts";
 import { AppIdle, AppNote, AppPlaceMount, useAppFacts } from "./app-call.tsx";
-
-/**
- * Escape in the Pane returns the focus to the chat: the composer's input. It is a key pressed in the Pane's own chrome (its
- * header and buttons): a key pressed inside the View's frame never reaches the page, and ext-apps has no message for a View
- * to hand Escape back with, so from inside a View the way out is Tab, or the Pane's "Back to chat".
- */
-export const focusChatOnEscape = (event: {
-  readonly key: string;
-  readonly defaultPrevented: boolean;
-  readonly preventDefault: () => void;
-}): void => {
-  if (event.key !== "Escape" || event.defaultPrevented) return;
-
-  event.preventDefault();
-  document.querySelector<HTMLElement>('textarea[aria-label="Message"]')?.focus();
-};
 
 /**
  * The App Pane of the call named by `argument`. A Pane is the owner's choice, so its View is live whatever generation its

@@ -105,7 +105,7 @@ describe("a visual_show call's card", () => {
     const registry = registryWith([assistant("1", "visual_show", "a")], [entry("a")]);
     const html = markup(registry, <VisualCall callId="a" />);
 
-    expect(html).toContain("Visual · Chart a Collapse Copy HTML Open file Details");
+    expect(html).toContain("Visual · Chart a Collapse Pop out Copy HTML Open file Details");
   });
 
   it("offers no Open file for an inline page", () => {

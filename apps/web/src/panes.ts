@@ -14,6 +14,7 @@
 // types the owner can open, when no Pane is open, and otherwise hides the area and shows it again. A hidden area keeps
 // its Panes open (and mounted, so a Live View stays connected); opening or showing a Pane shows it again.
 
+import { visualPaneKey } from "@cloudpid/protocol";
 import * as Match from "effect/Match";
 import { paneParamsOf, withPaneParams, type PaneParams } from "./router.ts";
 
@@ -34,6 +35,8 @@ export interface PaneLookups {
   readonly agentOfConversation: (conversationId: number) => string | undefined;
   /** The server whose App View call `callId` made, when the Session's App calls list it. */
   readonly serverOfApp: (callId: string) => string | undefined;
+  /** The title of the Visual call `callId` showed, when the Session's Visuals list it. */
+  readonly titleOfVisual: (callId: string) => string | undefined;
 }
 
 /** One kind of Pane. */
@@ -78,7 +81,7 @@ const subagentLabel = (argument: string | undefined, lookups: PaneLookups): Pane
     : { name: subagentPaneName(conversationId, lookups.agentOfConversation(conversationId)) };
 };
 
-/** The longest call ID an App Pane's key carries (`MAX_MCP_APP_KEY`, which the socket's messages bound it by). */
+/** The longest call ID an App Pane's or a Visual Pane's key carries (`MAX_MCP_APP_KEY`, which the socket's messages bound it by). */
 const MAX_APP_CALL_ID = 512;
 
 /** An App Pane's tab: "App", and the server whose App View it shows once the Session's App calls list the call. */
@@ -88,10 +91,17 @@ const appLabel = (argument: string | undefined, lookups: PaneLookups): PaneLabel
   return server === undefined ? { name: "App" } : { name: "App", agent: server };
 };
 
+/** A Visual Pane's tab: "Visual", and the Visual's title once the Session's Visuals list the call. */
+const visualLabel = (argument: string | undefined, lookups: PaneLookups): PaneLabel => {
+  const title = argument === undefined ? undefined : lookups.titleOfVisual(argument);
+
+  return title === undefined ? { name: "Visual" } : { name: "Visual", agent: title };
+};
+
 /**
  * The Pane types: the New pane, the Subagents Pane, the Session tree Pane, the Browser Pane and the Diff pane, one each
  * per Session, a Subagent Pane per subagent the owner opens (`subagent:<conversationId>`), and a Live View per Browser Handoff waiting
- * (`live-view:<requestId>`), and an App Pane per App View popped out (`app:<callId>`). The Terminal (#139) joins them here, and in the New pane's choices (`new-pane.tsx`) if the
+ * (`live-view:<requestId>`), an App Pane per App View popped out (`app:<callId>`), and a Visual Pane per Visual popped out (`visual:<callId>`). The Terminal (#139) joins them here, and in the New pane's choices (`new-pane.tsx`) if the
  * owner opens it.
  */
 export const PANE_TYPES = [
@@ -112,6 +122,12 @@ export const PANE_TYPES = [
     multiple: true,
     accepts: (argument) => argument.length <= MAX_APP_CALL_ID,
     label: appLabel,
+  },
+  {
+    id: "visual",
+    multiple: true,
+    accepts: (argument) => argument.length <= MAX_APP_CALL_ID,
+    label: visualLabel,
   },
 ] as const satisfies readonly PaneType[];
 
@@ -154,6 +170,9 @@ export const TREE_PANE = "tree";
 
 /** The key of the App Pane that shows call `callId`'s App View, one per App View (docs/architecture/mcp-apps.md → App Panes). */
 export const appPaneKey = (callId: string): string => `app:${callId}`;
+
+/** The key of the Visual Pane that shows call `callId`'s Visual, one per Visual (docs/architecture/visuals.md → The frame). */
+export { visualPaneKey };
 
 /** The key of the Browser Pane: the Session's browser, in an Owner tab. Its tab is labelled "Browser". */
 export const BROWSER_PANE = "browser";

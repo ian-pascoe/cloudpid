@@ -615,7 +615,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
 
             const rendered = renderTranscript(
               projectEntries(forward ? records : Arr.reverse(records)),
-              { detail, redact },
+              { detail, redact, sessionId: options.session },
             );
 
             for (const entry of forward ? rendered : Arr.reverse(rendered)) {

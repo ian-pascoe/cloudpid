@@ -1,7 +1,7 @@
 // docs/architecture/mcp-apps.md → App Views in the transcript (Where it renders, Remounting), App Panes. Which place mounts
 // a View, how it moves, and that the next place mounts only once the last one's frame has gone.
 import { describe, expect, it } from "vitest";
-import { AppPlaces, placeKey, type AppPlace } from "./places.ts";
+import { AppPlaces, PLACE_NAMES, placeKey, type AppPlace } from "./places.ts";
 
 /** A store, and a way to make a place that claims a call and wants its View. */
 const setup = () => {
@@ -179,5 +179,28 @@ describe("a call's key", () => {
 
     expect(places.viewOf("app-card")).toMatchObject({ kind: "hosting", closing: false });
     expect(places.viewOf("visual-card")).toMatchObject({ kind: "hosting", closing: false });
+  });
+});
+
+describe("a Visual's places", () => {
+  it("mounts a Visual Pane's frame over a Subagent Pane's or a card's, which say where it is shown, and gives it back when the Pane goes", () => {
+    const { places, place } = setup();
+    const key = placeKey("visual", "c1");
+
+    place("card", key, "card");
+    place("sub", key, "subagent-pane");
+    places.closed("card");
+    place("pane", key, "visual-pane");
+    places.closed("sub");
+
+    expect(places.viewOf("pane")).toMatchObject({ kind: "hosting", closing: false });
+    expect(places.viewOf("sub")).toEqual({ kind: "elsewhere", place: "visual-pane" });
+    expect(places.viewOf("card")).toEqual({ kind: "elsewhere", place: "visual-pane" });
+    expect(PLACE_NAMES["visual-pane"]).toBe("the Visual Pane");
+
+    // Show here: the Pane closes, and the Subagent Pane's thread, the higher of the two, mounts it next.
+    places.release("pane");
+    expect(places.viewOf("sub")).toMatchObject({ kind: "hosting", closing: false });
+    expect(places.viewOf("card")).toEqual({ kind: "elsewhere", place: "subagent-pane" });
   });
 });

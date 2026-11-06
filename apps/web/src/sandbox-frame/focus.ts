@@ -1,4 +1,4 @@
-// docs/architecture/mcp-apps.md → App Views in the transcript (Which App Views are live). Which View holds the keyboard
+// docs/architecture/mcp-apps.md → App Views in the transcript (Which App Views are live), App Panes (Escape in a Pane's own chrome: `focusChatOnEscape`); docs/architecture/visuals.md → The frame (The Visual Pane). Which View holds the keyboard
 // focus: the one whose frame is the document's active element. Focus moving into a frame from the page blurs the window, but
 // from one frame straight to another nothing is fired at the page, so while a frame holds the focus the active element is also
 // read on a short poll (and on `focusin`, which the page's own elements do fire). One watch serves every frame.
@@ -68,3 +68,19 @@ let shared: FocusWatch | undefined;
 
 /** The page's watch, made when the first View asks. */
 export const focusWatch = (): FocusWatch => (shared ??= new FocusWatch(document, window));
+
+/**
+ * Escape in an App Pane or a Visual Pane returns the focus to the chat: the composer's input. It is a key pressed in the Pane's own chrome (its
+ * header and buttons): a key pressed inside the View's frame never reaches the page, and ext-apps has no message for a View
+ * to hand Escape back with, so from inside a View the way out is Tab, or the Pane's "Back to chat".
+ */
+export const focusChatOnEscape = (event: {
+  readonly key: string;
+  readonly defaultPrevented: boolean;
+  readonly preventDefault: () => void;
+}): void => {
+  if (event.key !== "Escape" || event.defaultPrevented) return;
+
+  event.preventDefault();
+  document.querySelector<HTMLElement>('textarea[aria-label="Message"]')?.focus();
+};

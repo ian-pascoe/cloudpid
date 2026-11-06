@@ -1,6 +1,6 @@
 // docs/architecture/visuals.md → The frame (The card, Lazy mounting), The copy (Revisions, Bounds), Fork and Clone, Lifecycle. What a
 // `visual_show` call's card adds: its Visual, outside the card's disclosure, under the chrome "Visual · <title>", with
-// Collapse, Copy HTML, Open file (for a `path` source) and Details; a collapsed row with Reopen (and "A newer version is
+// Collapse, Pop out (to a Visual Pane: `visual-pane.tsx`), Copy HTML, Open file (for a `path` source) and Details; a collapsed row with Reopen (and "A newer version is
 // below" for one a newer Visual of the same file supersedes); the evicted card, and the same card for a call whose Visual a Fork
 // could not copy (`VisualUnkept`); and, while the call streams, its progress.
 // A `codemode` script's Visuals show in a strip under its card (`VisualStrip`), and a subagent's in its thread.
@@ -19,11 +19,10 @@ import {
   type ShownVisual,
   type VisualRecord,
 } from "@cloudpid/protocol";
-import { RegistryContext, useAtom, useAtomValue } from "@effect/atom-react";
+import { RegistryContext, useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Atom from "effect/reactivity/Atom";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import {
   createContext,
@@ -46,7 +45,15 @@ import {
   useThreadPlace,
 } from "../chat/conversation.ts";
 import { copyToClipboard } from "../lib/clipboard.ts";
-import { appPlaces, PLACE_NAMES, placeKey, type AppPlaces } from "../sandbox-frame/places.ts";
+import {
+  appPlaces,
+  PLACE_NAMES,
+  placeKey,
+  type AppPlace,
+  type AppPlaces,
+} from "../sandbox-frame/places.ts";
+import { visualPaneKey } from "../panes.ts";
+import { panesAtom } from "../panes-state.ts";
 import { appChoiceAtom } from "../session-layout-state.ts";
 import {
   activeBranchAtom,
@@ -55,7 +62,7 @@ import {
   visualsAtom,
 } from "../session/atoms.ts";
 import {
-  type VisualLoad,
+  NO_LOAD,
   visualHeightAtom,
   visualKey,
   visualLoadAtom,
@@ -67,9 +74,6 @@ import { visualEntries, visualEntryOf, visualsListed, visualsOfScript } from "./
 
 /** The places of this page: the app's, shared with App Views under their own keys. A test gives its own. */
 export const VisualPlacesContext = createContext<AppPlaces>(appPlaces);
-
-/** What a card reads while it wants no page: nothing is loaded. */
-const NO_LOAD = Atom.make(AsyncResult.initial<VisualLoad>());
 
 /** Where the call is when its card is drawn, for one that has not finished: streaming or running, with its title so far. */
 export interface VisualProgress {
@@ -89,7 +93,7 @@ const timeOf = (at: number) => {
 };
 
 /** The chrome of every state of a Visual's card: "Visual · <title>", then what the state adds on the right. */
-const Chrome = ({ title, children }: { title: string; children?: ReactNode }) => (
+export const Chrome = ({ title, children }: { title: string; children?: ReactNode }) => (
   <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
     <span className="text-foreground">Visual</span>
     <span>·</span>
@@ -99,7 +103,7 @@ const Chrome = ({ title, children }: { title: string; children?: ReactNode }) =>
 );
 
 /** One of the header's text buttons. */
-const HeaderButton = ({
+export const HeaderButton = ({
   onClick,
   expanded,
   disabled,
@@ -189,7 +193,7 @@ const fileText = (answer: VisualFileAnswer): string | undefined => {
 };
 
 /** Open file: the file a Visual was shown from, as it is now, read when the dialog opens. */
-const OpenFile = ({ sessionId, entry }: { sessionId: string; entry: VisualEntry }) => {
+export const OpenFile = ({ sessionId, entry }: { sessionId: string; entry: VisualEntry }) => {
   const [open, setOpen] = useState(false);
   const [answer, setAnswer] = useState<VisualFileAnswer | { status: "loading" } | undefined>();
   const client = useAtomValue(sessionClientAtom(sessionId));
@@ -338,9 +342,10 @@ const VisualPending = ({ title }: { title: string | undefined }) => (
  * One place's claim on a Visual (`sandbox-frame/places.ts`, keyed `visual:`): whether its frame is here, in another place,
  * or nowhere yet. A place told to let its frame go lets it go at once: a Visual has nothing to tear down.
  */
-const useVisualPlace = (callId: string) => {
+export const useVisualPlace = (callId: string, own?: AppPlace) => {
   const places = use(VisualPlacesContext);
-  const place = useThreadPlace();
+  const thread = useThreadPlace();
+  const place = own ?? thread;
   const id = useId();
   const key = placeKey("visual", callId);
 
@@ -383,6 +388,8 @@ export const VisualOpen = ({
   const card = useRef<HTMLDivElement>(null);
   const view = useVisualPlace(entry.callId);
   const hosting = view.kind === "hosting" && !view.closing;
+  // Popped out: only a Visual Pane is a place to bring a Visual back from, the other places are the thread's own.
+  const inPane = view.kind === "elsewhere" && view.place === "visual-pane";
   const { near, seen } = useNearViewport(card);
   const [focused, setFocused] = useState(false);
   const [details, setDetails] = useState(false);
@@ -390,6 +397,7 @@ export const VisualOpen = ({
   const registry = use(RegistryContext);
   const loaded = useAtomValue(hosting && seen ? visualLoadAtom(key) : NO_LOAD);
   const [remembered, remember] = useAtom(visualHeightAtom(entry.callId));
+  const actOnPanes = useAtomSet(panesAtom);
   const load = AsyncResult.isSuccess(loaded) ? loaded.value : undefined;
   const page = load?.status === "page" ? load : undefined;
 
@@ -402,8 +410,20 @@ export const VisualOpen = ({
   const body = (() => {
     if (view.kind === "elsewhere") {
       return (
-        <div className="border-t px-3 py-2 text-xs text-muted-foreground">
-          Shown in {PLACE_NAMES[view.place]}
+        <div className="flex items-center gap-2 border-t px-3 py-2 text-xs text-muted-foreground">
+          <span>Shown in {PLACE_NAMES[view.place]}</span>
+          {inPane && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-auto"
+              onClick={() => {
+                actOnPanes({ type: "close", key: visualPaneKey(entry.callId) });
+              }}
+            >
+              Show here
+            </Button>
+          )}
         </div>
       );
     }
@@ -460,6 +480,15 @@ export const VisualOpen = ({
     >
       <Chrome title={entry.title}>
         <HeaderButton onClick={onCollapse}>Collapse</HeaderButton>
+        {!inPane && (
+          <HeaderButton
+            onClick={() => {
+              actOnPanes({ type: "open", key: visualPaneKey(entry.callId) });
+            }}
+          >
+            Pop out
+          </HeaderButton>
+        )}
         <HeaderButton
           disabled={page === undefined}
           onClick={() => {

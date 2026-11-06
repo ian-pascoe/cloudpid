@@ -19,6 +19,7 @@ import {
   type PaneArea,
   type PaneLookups,
   type PaneType,
+  visualPaneKey,
 } from "./panes.ts";
 
 /** What the tabs' labels look up, knowing nothing but what `known` says. */
@@ -26,6 +27,7 @@ const lookups = (known: Partial<PaneLookups> = {}): PaneLookups => ({
   agentOfHandoff: () => undefined,
   agentOfConversation: () => undefined,
   serverOfApp: () => undefined,
+  titleOfVisual: () => undefined,
   ...known,
 });
 
@@ -116,6 +118,27 @@ describe("a Pane key", () => {
     expect(paneKeyOf("app:")).toBeUndefined();
     expect(paneKeyOf(key, paneTypesOf(true))?.type.id).toBe("app");
     expect(paneKeyOf(`app:${"x".repeat(513)}`)).toBeUndefined();
+  });
+
+  it("knows a Visual Pane per Visual, keyed by its call, named for its title once the page knows the Visual", () => {
+    const key = visualPaneKey("call_1|fc:2");
+    const pane = paneKeyOf(key);
+
+    expect(key).toBe("visual:call_1|fc:2");
+    expect(pane?.argument).toBe("call_1|fc:2");
+    expect(pane?.type.label(pane.argument, lookups())).toEqual({ name: "Visual" });
+    expect(pane?.type.label(pane.argument, lookups({ titleOfVisual: () => "Sales" }))).toEqual({
+      name: "Visual",
+      agent: "Sales",
+    });
+    // One per Visual, and its call is needed; a Subagent page opens it too, and a link names it in the URL.
+    expect(paneKeyOf("visual")).toBeUndefined();
+    expect(paneKeyOf("visual:")).toBeUndefined();
+    expect(paneKeyOf(key, paneTypesOf(true))?.type.id).toBe("visual");
+    expect(paneKeyOf(`visual:${"x".repeat(513)}`)).toBeUndefined();
+    expect(
+      paneAreaOf(searchWithPaneArea("", applyPaneAction(NO_PANES, { type: "open", key }))),
+    ).toEqual({ open: [key], shown: key, hidden: false });
   });
 
   it("knows a Subagent Pane per conversation, named for its agent, or its conversation until the page knows the agent", () => {
