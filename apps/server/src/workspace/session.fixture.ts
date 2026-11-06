@@ -3,7 +3,7 @@
 // @effect-diagnostics asyncFunction:off
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
-import type { Harness } from "@cloudpid/effect-durable";
+import { type Harness, makeToolSpans, ToolSpans } from "@cloudpid/effect-durable";
 import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
 import type { Approvals } from "@cloudpid/extensions/approvals";
 import {
@@ -154,6 +154,7 @@ export class TestWorkspaceSession extends TestSession {
       Effect.provideService(WorkspaceContainer, this.#workspace().container),
       Effect.provideService(Images, this.env.IMAGES),
       Effect.provideService(VisualRecorder, this.visuals()),
+      Effect.provideService(ToolSpans, makeToolSpans()),
       Effect.provideService(CodemodeSandbox, this.sandbox()),
       // No browser: the tests script the model, and none drives one.
       Effect.provideService(BrowserHost, {

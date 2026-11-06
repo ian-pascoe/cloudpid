@@ -1,4 +1,4 @@
-import type { Harness } from "@cloudpid/effect-durable";
+import type { Harness, ToolSpans } from "@cloudpid/effect-durable";
 import { AgentsMd } from "@cloudpid/extensions/agents-md";
 import { ApprovalTools, type EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
 import type { Approvals } from "@cloudpid/extensions/approvals";
@@ -106,6 +106,7 @@ export const sessionExtensions: Effect.Effect<
   | Approvals
   | EnvironmentRemoval
   | VisualRecorder
+  | ToolSpans
 > = Effect.all([
   CodingTools,
   Files,

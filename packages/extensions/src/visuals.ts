@@ -3,7 +3,7 @@
 // two static lines shown whenever the tool is granted, loaded or not, and frozen per Context Window. `visual_check` is a
 // later slice (#661). Every conversation has the tool by the usual rules: the root, each subagent whose grant has it, and
 // `codemode` scripts, as nested calls.
-import { frozenSection } from "@cloudpid/effect-durable";
+import { frozenSection, type ToolSpans } from "@cloudpid/effect-durable";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -29,8 +29,8 @@ const VISUAL_TOOLS: ReadonlySet<string> = new Set([VISUAL_SHOW]);
 const isVisualTool = (tool: { readonly name: string }) => VISUAL_TOOLS.has(tool.name);
 
 /** The `visuals` extension: `visual_show` and its section. */
-export const Visuals: Effect.Effect<Extension, never, Secrets | VisualRecorder> = Effect.gen(
-  function* () {
+export const Visuals: Effect.Effect<Extension, never, Secrets | VisualRecorder | ToolSpans> =
+  Effect.gen(function* () {
     const tool = yield* VisualShowTool;
 
     // Static and frozen: it holds nothing that changes, so a conversation that loads the tool later reads the same text.
@@ -43,5 +43,4 @@ export const Visuals: Effect.Effect<Extension, never, Secrets | VisualRecorder> 
     );
 
     return defineExtension({ name: extensionName, tools: [tool], sections: [section] });
-  },
-);
+  });

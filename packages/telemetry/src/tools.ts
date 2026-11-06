@@ -10,12 +10,16 @@ import {
 } from "@earendil-works/pi-durable";
 import type { TelemetryContext } from "@earendil-works/pi-telemetry";
 import * as Arr from "effect/Array";
-import { listToolSpan } from "@cloudpid/effect-durable";
+import type { ToolSpanRegistry } from "@cloudpid/effect-durable";
 
 export const extensionName = "telemetry";
 
 /** `tool` with its call a `pi.tool` span of `telemetry`. */
-const traced = (telemetry: TelemetryContext, tool: ToolRegistration): ToolRegistration => ({
+const traced = (
+  telemetry: TelemetryContext,
+  tool: ToolRegistration,
+  spans: ToolSpanRegistry | undefined,
+): ToolRegistration => ({
   ...tool,
   execute: (args, api, context) =>
     telemetry.startSpan(
@@ -29,12 +33,13 @@ const traced = (telemetry: TelemetryContext, tool: ToolRegistration): ToolRegist
         },
       },
       async (span) => {
-        // The tool's own counts reach its span by the call's ID (`annotateToolSpan`), for as long as the call runs.
-        const unlist = listToolSpan(api.callId, (attributes) => {
+        // The tool's own counts reach its span by the call's ID in this Session's list (`annotateToolSpan`), for as long
+        // as the call runs.
+        const unlist = spans?.list(api.callId, (attributes) => {
           span.setAttributes(attributes);
         });
 
-        const result = await tool.execute(args, api, context).finally(unlist);
+        const result = await tool.execute(args, api, context).finally(() => unlist?.());
 
         span.setAttributes({ "tool.is_error": result.isError === true });
 
@@ -49,13 +54,15 @@ const traced = (telemetry: TelemetryContext, tool: ToolRegistration): ToolRegist
 
 /**
  * An extension that wraps each of `tools` so its calls are traced. Install it after the extensions that bring the
- * tools: it wraps what the others' wraps made, so the span covers them.
+ * tools: it wraps what the others' wraps made, so the span covers them. `spans` is the Session's list of its running calls'
+ * spans (`makeToolSpans`), the one its tools are given as `ToolSpans`; without it a tool's own counts go nowhere.
  */
 export const tracingTools = (
   telemetry: TelemetryContext,
   tools: ReadonlyArray<ToolRegistration>,
+  spans?: ToolSpanRegistry,
 ): Extension =>
   defineExtension({
     name: extensionName,
-    wraps: Arr.map(tools, (tool) => wrapTool(tool, (wrapped) => traced(telemetry, wrapped))),
+    wraps: Arr.map(tools, (tool) => wrapTool(tool, (wrapped) => traced(telemetry, wrapped, spans))),
   });

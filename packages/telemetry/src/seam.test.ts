@@ -17,6 +17,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { InMemoryTelemetryContext } from "@earendil-works/pi-telemetry";
 import { describe, expect, it, vi } from "vitest";
 import { tracingModels } from "./models.ts";
+import { makeToolSpans, type ToolSpanRegistry } from "@cloudpid/effect-durable";
 import { tracingTools } from "./tools.ts";
 import { obj, str } from "@earendil-works/pi-schema";
 
@@ -150,5 +151,53 @@ describe("tracingTools", () => {
     });
     expect(JSON.stringify(spans)).not.toContain("hunter2");
     expect(JSON.stringify(spans)).not.toContain("the die shows");
+  });
+
+  it("puts a tool's own counts on its call's span through the Session's list, and never on another Session's", async () => {
+    const run = async (spans: ToolSpanRegistry, other: ToolSpanRegistry) => {
+      const { models, faux } = fauxModels();
+      const telemetry = new InMemoryTelemetryContext();
+
+      const counted = defineTool({
+        name: "count_it",
+        description: "Count",
+        parameters: obj({}),
+        execute: (_args, api) => {
+          // The same call ID in another Session's list: a Fork's, or another Session in the isolate.
+          other.annotate(api.callId, { "count.other": 1 });
+          spans.annotate(api.callId, { "count.mine": 3 });
+
+          return Promise.resolve({ output: [{ type: "text", text: "ok" }] });
+        },
+      });
+
+      const registry = createRegistry();
+
+      registry.install(defineExtension({ name: "counts", tools: [counted] }));
+      registry.install(tracingTools(telemetry, [counted], spans));
+      other.list("call-1", () => undefined);
+
+      faux.setResponses([
+        fauxAssistantMessage([fauxToolCall("count_it", {}, { id: "call-1" })], {
+          stopReason: "toolUse",
+        }),
+        fauxAssistantMessage("done"),
+      ]);
+
+      const harness = await Harness.open(new MemoryStorage(), { models, registry }, context);
+
+      const root = await harness.root(context, {
+        agent: { model: { provider: "faux", modelId: "faux-1" } },
+      });
+
+      await (await root.submit({ type: "input", content: "count" }, context)).wait(context);
+
+      return telemetry.getSpans()[0]?.attributes;
+    };
+
+    const attributes = await run(makeToolSpans(), makeToolSpans());
+
+    expect(attributes).toMatchObject({ "count.mine": 3 });
+    expect(attributes).not.toHaveProperty("count.other");
   });
 });

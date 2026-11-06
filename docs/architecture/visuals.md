@@ -147,7 +147,7 @@ The existing `pi.tool.visual_show` and `pi.tool.visual_check` spans ([ADR-0010](
 - **`visual_show`:** the source kind, bytes, inlined counts, Secrets replaced, evictions, and the kinds of warning and failure.
 - **`visual_check`:** width, theme, cold start, outcome, counts, content height, screenshot bytes, and whether it was clipped.
 - **Never:** page text, title, summary, path, console text or hosts; a host is content the page chose.
-- **As built ([#658](https://github.com/ian-pascoe/cloudpid/issues/658)):** a tool cannot see the `pi.tool` span its call runs in, so `effect-durable` keeps the open span of each call by its `callId` (`tool-span.ts`), and `visual_show` adds its counts there through `annotateToolSpan`.
+- **As built ([#658](https://github.com/ian-pascoe/cloudpid/issues/658)):** a tool cannot see the `pi.tool` span its call runs in, so each Session keeps its running calls' spans by `callId` (`tool-span.ts` in `effect-durable`; [_Operations_](operations.md) → Telemetry), and `visual_show` adds its counts there through `annotateToolSpan`.
 
 ## Testing
 

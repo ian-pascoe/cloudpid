@@ -4,7 +4,13 @@
 // as the Session DO hosts them over the model proxy. Tests drive it with `runInDurableObject()` and client sockets,
 // evict it, and run its alarm.
 import { DurableObject } from "cloudflare:workers";
-import { callDurable, defineEffectTool, Harness } from "@cloudpid/effect-durable";
+import {
+  callDurable,
+  defineEffectTool,
+  Harness,
+  makeToolSpans,
+  ToolSpans,
+} from "@cloudpid/effect-durable";
 import { type RefusingStorage, refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import {
   Browser,
@@ -796,9 +802,14 @@ export class TestSession extends DurableObject {
       // `visual_show`, recording through the Session's Visuals, its calls `pi.tool` spans of the instance's tracer as the
       // Session DO's are of its telemetry.
       if (showing) {
-        const shown = yield* Visuals.pipe(Effect.provideService(VisualRecorder, visuals));
+        const spans = makeToolSpans();
 
-        extensions.push(shown, tracingTools(effectTelemetry(tracer), shown.tools ?? []));
+        const shown = yield* Visuals.pipe(
+          Effect.provideService(VisualRecorder, visuals),
+          Effect.provideService(ToolSpans, spans),
+        );
+
+        extensions.push(shown, tracingTools(effectTelemetry(tracer), shown.tools ?? [], spans));
       }
 
       if (writing) {

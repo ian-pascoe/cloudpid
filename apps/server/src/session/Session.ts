@@ -16,6 +16,7 @@ import { DeployCredentials, Environments } from "@cloudpid/extensions/environmen
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
 import { Images } from "@cloudpid/extensions/images";
 import { VisualRecorder } from "@cloudpid/extensions/visuals";
+import { makeToolSpans, ToolSpans } from "@cloudpid/effect-durable";
 import { InstructionsSettings } from "@cloudpid/extensions/instructions";
 import { type McpQuestionCopy, rememberSampling } from "@cloudpid/extensions/mcp";
 import { OwnerNotifications } from "@cloudpid/extensions/notify";
@@ -632,6 +633,17 @@ export const SessionLive = Session.make(
           notify: notifyOwner,
         });
 
+        // The origin a View or the Session's Visuals are served on: from this stage's deploy-time label, never from a
+        // request's `Host`.
+        const sandboxOrigin = (hash: string) =>
+          viewOrigin({
+            hash,
+            label: Predicate.isString(worker[STAGE_LABEL_VAR])
+              ? worker[STAGE_LABEL_VAR]
+              : undefined,
+            local: worker[LOCAL_MODE_VAR] === "true",
+          });
+
         // The App calls' records, kept in this object's storage, and the inventory's App tools, told to every client
         // (`./mcp-apps-store.ts`). The page of a record is the host's, asked through the MCP tools' own client.
         const mcpApps = sessionMcpApps({
@@ -642,15 +654,7 @@ export const SessionLive = Session.make(
           request: (input) => mcpTools.appRequest(input),
           // An archived Session's Views may read and call nothing: a Registry that cannot say is read as archived.
           archived: Effect.suspend(() => archivedSession).pipe(Effect.orElseSucceed(() => true)),
-          // The origin a View is served on: from this stage's deploy-time label, never from a request's `Host`.
-          viewOrigin: (view) =>
-            viewOrigin({
-              hash: view,
-              label: Predicate.isString(worker[STAGE_LABEL_VAR])
-                ? worker[STAGE_LABEL_VAR]
-                : undefined,
-              local: worker[LOCAL_MODE_VAR] === "true",
-            }),
+          viewOrigin: sandboxOrigin,
         });
 
         // The Visuals the agent showed, kept in this object's storage outside History (`./visuals-store.ts`), served at one
@@ -660,18 +664,12 @@ export const SessionLive = Session.make(
           origin:
             name === undefined
               ? undefined
-              : Result.getOrUndefined(
-                  Result.try(() =>
-                    viewOrigin({
-                      hash: visualViewHash(name),
-                      label: Predicate.isString(worker[STAGE_LABEL_VAR])
-                        ? worker[STAGE_LABEL_VAR]
-                        : undefined,
-                      local: worker[LOCAL_MODE_VAR] === "true",
-                    }),
-                  ),
-                ),
+              : Result.getOrUndefined(Result.try(() => sandboxOrigin(visualViewHash(name)))),
         });
+
+        // This Session's spans of its running calls, by call ID: its tracing wrap lists them, and its tools add their own
+        // counts (`annotateToolSpan`). One per Session object, so a Fork's reused call IDs never reach another's spans.
+        const toolSpans = makeToolSpans();
 
         // The MCP tasks the agent's calls started: followed in the background, results kept in this object's storage
         // (`./mcp-tasks.ts`).
@@ -1013,7 +1011,7 @@ export const SessionLive = Session.make(
 
                         return [
                           ...installed,
-                          tracingTools(telemetry.context, tools),
+                          tracingTools(telemetry.context, tools, toolSpans),
                           runsOpeningTools(tools, runs),
                           changesRefreshingTools(tools, changes),
                           annotationsPruningTools(tools, annotations),
@@ -1036,6 +1034,8 @@ export const SessionLive = Session.make(
                   Effect.provideService(Images, images),
                   // `visual_show` hands each page it prepared to the Session's Visuals.
                   Effect.provideService(VisualRecorder, visuals),
+                  // This Session's spans of its running calls, which its tools add their counts to (`annotateToolSpan`).
+                  Effect.provideService(ToolSpans, toolSpans),
                   // For extensions that need the owner (a Browser Handoff, say): pushes through the Registry.
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
                   Effect.provideService(CodemodeSandbox, sandbox),
