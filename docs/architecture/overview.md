@@ -4,26 +4,27 @@ A personal, always-on coding agent that recreates the local pi harness on Cloudf
 
 These documents record the settled design (first settled on 2026-10-20). Terms follow [`GLOSSARY.md`](../../GLOSSARY.md); the hard-to-reverse choices have ADRs in [`docs/adr/`](../adr/). How to run, deploy and upgrade the stack is in [`docs/development/`](../development/).
 
-| Document                                           | Covers                                                                                                                        |
-| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `overview.md` (this one)                           | Scope, the Durable Objects, the Session host, the Effect boundary, models, settings, repository layout, milestones            |
-| [`workspace.md`](workspace.md)                     | Environments, Repos and Workspaces, the file tools, Skills and project instructions, backends and `bash` routing, git         |
-| [`container.md`](container.md)                     | The Container: image, Toolchains, bootstrap, Setup and Start Scripts, settings, snapshots, Builds, idle stop                  |
-| [`agent-capabilities.md`](agent-capabilities.md)   | The agent's tools: tool discovery, subagents, context management, todo, Secrets, web                                          |
-| [`browser.md`](browser.md)                         | The browser tool, Browser Handoff, the Browser Pane and Container previews                                                    |
-| [`agent-changes.md`](agent-changes.md)             | The agent's changes to Environments and Settings, and the owner's Approval                                                    |
-| [`client-and-protocol.md`](client-and-protocol.md) | The Session socket, Registry RPC, the web UI, notifications, the Session list and titles                                      |
-| [`diffs-and-review.md`](diffs-and-review.md)       | Call diffs, Changes, Comparisons, the Run diff, the Diff pane, Annotations and Reviews                                        |
-| [`mcp.md`](mcp.md)                                 | MCP at a glance: scope, protocol eras, packages and objects, RPC edges, deploys, the request flow; it indexes the seven below |
-| [`mcp-configuration.md`](mcp-configuration.md)     | The MCP server set, a Repo's `.pi/mcp.json`, the Settings page's MCP servers section, the agent's MCP server changes          |
-| [`mcp-connections.md`](mcp-connections.md)         | `McpHost`, `McpEngine`, discovery and the MCP inventory, Legacy sessions, the stdio bridge                                    |
-| [`mcp-in-a-session.md`](mcp-in-a-session.md)       | The `mcp` extension: MCP tools and Exposure, resources and Resource watches, MCP prompts, roots, logging                      |
-| [`mcp-server-requests.md`](mcp-server-requests.md) | Sampling requests, Elicitation requests and MCP tasks                                                                         |
-| [`mcp-sign-in.md`](mcp-sign-in.md)                 | MCP sign-ins, client registration, the client document and callback outside Access, Sign-in requests                          |
-| [`mcp-apps.md`](mcp-apps.md)                       | MCP Apps: App records, App Views and App Panes, the App sandbox                                                               |
-| [`mcp-endpoint.md`](mcp-endpoint.md)               | cloudpid's MCP endpoint (`/mcp`) for a Local agent, and Session import                                                        |
-| [`operations.md`](operations.md)                   | Infra, stages, Access, telemetry, Container cost, the spend limit, testing                                                    |
-| [`risks-and-spikes.md`](risks-and-spikes.md)       | Known risks and what was measured                                                                                             |
+| Document                                           | Covers                                                                                                                           |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `overview.md` (this one)                           | Scope, the Durable Objects, the Session host, the Effect boundary, models, settings, repository layout, milestones               |
+| [`workspace.md`](workspace.md)                     | Environments, Repos and Workspaces, the file tools, Skills and project instructions, backends and `bash` routing, git            |
+| [`container.md`](container.md)                     | The Container: image, Toolchains, bootstrap, Setup and Start Scripts, settings, snapshots, Builds, idle stop                     |
+| [`agent-capabilities.md`](agent-capabilities.md)   | The agent's tools: tool discovery, subagents, context management, todo, Secrets, web                                             |
+| [`browser.md`](browser.md)                         | The browser tool, Browser Handoff, the Browser Pane and Container previews                                                       |
+| [`visuals.md`](visuals.md)                         | Visuals: `visual_show` and `visual_check`, the kept copy, the frame in the App sandbox, the check on Browser Run, Fork and Clone |
+| [`agent-changes.md`](agent-changes.md)             | The agent's changes to Environments and Settings, and the owner's Approval                                                       |
+| [`client-and-protocol.md`](client-and-protocol.md) | The Session socket, Registry RPC, the web UI, notifications, the Session list and titles                                         |
+| [`diffs-and-review.md`](diffs-and-review.md)       | Call diffs, Changes, Comparisons, the Run diff, the Diff pane, Annotations and Reviews                                           |
+| [`mcp.md`](mcp.md)                                 | MCP at a glance: scope, protocol eras, packages and objects, RPC edges, deploys, the request flow; it indexes the seven below    |
+| [`mcp-configuration.md`](mcp-configuration.md)     | The MCP server set, a Repo's `.pi/mcp.json`, the Settings page's MCP servers section, the agent's MCP server changes             |
+| [`mcp-connections.md`](mcp-connections.md)         | `McpHost`, `McpEngine`, discovery and the MCP inventory, Legacy sessions, the stdio bridge                                       |
+| [`mcp-in-a-session.md`](mcp-in-a-session.md)       | The `mcp` extension: MCP tools and Exposure, resources and Resource watches, MCP prompts, roots, logging                         |
+| [`mcp-server-requests.md`](mcp-server-requests.md) | Sampling requests, Elicitation requests and MCP tasks                                                                            |
+| [`mcp-sign-in.md`](mcp-sign-in.md)                 | MCP sign-ins, client registration, the client document and callback outside Access, Sign-in requests                             |
+| [`mcp-apps.md`](mcp-apps.md)                       | MCP Apps: App records, App Views and App Panes, the App sandbox                                                                  |
+| [`mcp-endpoint.md`](mcp-endpoint.md)               | cloudpid's MCP endpoint (`/mcp`) for a Local agent, and Session import                                                           |
+| [`operations.md`](operations.md)                   | Infra, stages, Access, telemetry, Container cost, the spend limit, testing                                                       |
+| [`risks-and-spikes.md`](risks-and-spikes.md)       | Known risks and what was measured                                                                                                |
 
 ## Scope
 
@@ -109,7 +110,7 @@ apps/web/                 Vite + React UI
 apps/sandbox-image/       image/Dockerfile (computerd, mise, preinstalled Toolchains, C toolchain; the Docker build context), base mise.toml, bootstrap
 packages/effect-durable/  Effect ↔ pi-durable adapters and service facades
 packages/computer-env/    ComputerExecutionEnv
-packages/extensions/      one subpath export per extension (/subagents, /context, /todo, /web, /secrets, /browser, …)
+packages/extensions/      one subpath export per extension (/subagents, /context, /todo, /web, /secrets, /browser, /visuals, …)
 packages/protocol/        Session socket messages, RegistryRpcs, conversation-view projection and transcript
 packages/config/          settings Schema and defaults, model roles, shared tsconfig and vitest bases
 packages/mcp/             @cloudpid/mcp: the era-agnostic MCP core over the official SDK; ./types, ./oauth

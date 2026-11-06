@@ -265,7 +265,7 @@ A dev server running in a Workspace's Container, opened in the Session's browser
 _Avoid_: Preview (alone: that is a pull request's preview stage), tunnel, port forward
 
 **Pane**:
-A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), one subagent's conversation (a Subagent Pane, one per subagent opened), the Session tree, a Terminal, a Live View, the Browser Pane, the diffs (the Diff pane), an open file, an App View at full size (an App Pane). Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
+A panel beside a conversation that shows something live the owner can look at or work in: the Session's subagents and background work (the Subagents Pane), one subagent's conversation (a Subagent Pane, one per subagent opened), the Session tree, a Terminal, a Live View, the Browser Pane, the diffs (the Diff pane), an open file, an App View at full size (an App Pane), a Visual at full size (a Visual Pane). Open Panes are tabs of the Session page's **Pane area**, a column beside the chat (a full-screen sheet on a phone), and are named in the page's URL and kept in the Session layout, so a Session opens again with the Panes it was left with. The root agent's Todo List is not a Pane: it is in the Session details.
 _Avoid_: Preview (that is a pull request's preview stage), viewer, surface
 
 **Session details**:
@@ -400,6 +400,16 @@ _Avoid_: Browser (alone, for the Pane, in prose and code; its tab label is "Brow
 A tab of the Session's shared browser that the owner opened in the Browser Pane, apart from the conversations' tabs but sharing their cookies and logins. The owner may have several; the Browser Pane's tab strip lists them by title and shows one of them, the same on every device. A link a page in an Owner tab opens in a new tab becomes an Owner tab; a pop-up the page opens (an OAuth window) stays a window of its tab and is not one. The agent can read and drive one (`browser` with `tab`) without changing its size, while the Browser Pane says the agent is driving it. It lasts as long as the browser it is in, or until it is closed; the host keeps its address (without its fragment), so a browser that replaced the old one reopens it at that address (never its history, page state or logins). A Browser Pane in view keeps the browser alive while it polls, and a Pane that is not in view lets it close.
 _Avoid_: User tab, the owner's tab (for a conversation's tab the owner took over in a Browser Handoff)
 
+## Visuals
+
+**Visual**:
+A page the agent writes and shows the owner in a conversation (a chart, a diagram, an explainer, a mockup), kept by its Session as it was shown, so it shows the same after a reload, on another device and in a Fork. It runs in the App sandbox, and cannot call tools or tell the model anything.
+_Avoid_: Artifact (assistant-ui's, and a Build's output), App View (an MCP server's page), page (alone), HTML render, widget, canvas
+
+**Visual Pane**:
+A Pane, one per Visual the owner moves there, showing it at full size.
+_Avoid_: Visual window, fullscreen view
+
 ## MCP
 
 **MCP server**:
@@ -489,7 +499,7 @@ A Pane, one per App View the owner moves there, showing it at full size.
 _Avoid_: App window, fullscreen view
 
 **App sandbox**:
-Where App Views run: a site of their own apart from cloudpid's, holding no credential of cloudpid's, with one origin for each Environment's MCP server.
+Where App Views and Visuals run: a site of their own apart from cloudpid's, holding no credential of cloudpid's, with one origin for each Environment's MCP server and one for each Session's Visuals.
 _Avoid_: Sandbox (alone; `codemode` scripts run in a sandbox too), iframe host, View host
 
 **App context**:
