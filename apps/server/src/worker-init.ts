@@ -39,6 +39,7 @@ import {
 import { PushConfigLive } from "./push/config.ts";
 import { attachmentRoute, isMcpRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
 import { GitHubAppConfig, GitHubAppConfigLive } from "./github/config.ts";
+import { refuseCrossOrigin } from "./same-origin.ts";
 import { serveAttachment } from "./serve-attachment.ts";
 import { FileListings, fileListingsLayer } from "./session/file-search.ts";
 import { workspaceLookups } from "./session/lookups.ts";
@@ -227,7 +228,13 @@ export const serverInit = Effect.gen(function* () {
 
         const sessionId = sessionSocketId(request);
 
-        if (sessionId !== undefined) return yield* connectSession(sessions, registries, sessionId);
+        // `/rpc` and the Session socket answer only the web app's own page (docs/architecture/client-and-protocol.md →
+        // Same-origin check).
+        if (sessionId !== undefined) {
+          const refused = yield* refuseCrossOrigin(request);
+
+          return refused ?? (yield* connectSession(sessions, registries, sessionId));
+        }
 
         const attachment = attachmentRoute(request);
 
@@ -238,7 +245,11 @@ export const serverInit = Effect.gen(function* () {
         // The start of an MCP sign-in: behind the guard, and the link's own request.
         if (isStartRequest(request)) return yield* serveStart(registry, signInEnv);
 
-        if (isRegistryRpc(request))
+        if (isRegistryRpc(request)) {
+          const refused = yield* refuseCrossOrigin(request);
+
+          if (refused !== undefined) return refused;
+
           return yield* serveRegistryRpc(registries, {
             workspaces,
             sessions: sessionObjects,
@@ -257,6 +268,7 @@ export const serverInit = Effect.gen(function* () {
             skillRepos,
             background: (effect) => execution.waitUntil(effect),
           });
+        }
 
         // None of the routes above: the web app's files, served after the guard.
         return yield* serveAsset(assets);

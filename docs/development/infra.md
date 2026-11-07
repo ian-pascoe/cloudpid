@@ -45,7 +45,7 @@ Every deploy and `alchemy dev` builds the Container's image (`apps/sandbox-image
 
 ## Web UI development
 
-Run `bun run --cwd apps/web dev` next to `alchemy dev`: Vite proxies `/rpc` and the Session socket to `localhost:1337`. On a cloudpid Container its watcher needs no polling: the Workspace DO gives the Container's watchers a file-change signal for the agent's edits ([_File-change signals_](../architecture/container.md)).
+Run `bun run --cwd apps/web dev` next to `alchemy dev`: Vite proxies `/rpc` and the Session socket to `localhost:1337`. The Worker refuses a cross-origin call to `/rpc` and the Session socket (a 403 `cross_origin`; [_Same-origin check_](../architecture/client-and-protocol.md)), and Vite's calls pass it: the page's `fetch` is `same-origin` by `Sec-Fetch-Site`, which the proxy forwards, though `changeOrigin` makes `Host` `localhost:1337` under `Origin: http://localhost:5173`. Keep it that way: a new proxy entry for these paths must forward `Sec-Fetch-Site` and `Origin` as the browser sent them. `alchemy dev` has no Access, and the guard admits loopback requests, so this check is all that keeps a website the owner visits from calling `localhost:1337/rpc`. On a cloudpid Container its watcher needs no polling: the Workspace DO gives the Container's watchers a file-change signal for the agent's edits ([_File-change signals_](../architecture/container.md)).
 
 ## Secrets and variables
 

@@ -1,4 +1,5 @@
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import { Effect } from "effect";
 import { expect, it } from "vitest";
 import {
   attachmentRoute,
@@ -7,6 +8,7 @@ import {
   isRegistryRpc,
   sessionSocketId,
 } from "./routes.ts";
+import { refuseCrossOrigin } from "./same-origin.ts";
 
 const request = (method: string, path: string) =>
   HttpServerRequest.fromWeb(new Request(`http://worker.test${path}`, { method }));
@@ -76,4 +78,46 @@ it("knows the MCP endpoint by exactly /mcp, whatever the method", () => {
   expect(isMcpRoute(request("POST", "/MCP"))).toBe(false);
   expect(isMcpRoute(request("POST", "/mcp/sub"))).toBe(false);
   expect(isMcpRoute(request("POST", "/rpc"))).toBe(false);
+});
+
+// The same-origin check (same-origin.ts) covers exactly the two routes that act for the owner with no preflight: `/rpc` and the
+// Session's socket upgrade; `worker-init.ts` asks it for each.
+const fromPage = (method: string, path: string, headers: Record<string, string>) =>
+  HttpServerRequest.fromWeb(new Request(`http://localhost:1337${path}`, { method, headers }));
+
+const cross = { origin: "https://evil.test", "sec-fetch-site": "cross-site" };
+const vite = { origin: "http://localhost:5173", "sec-fetch-site": "same-origin" };
+
+it("holds /rpc to the same-origin check", async () => {
+  const rpc = (headers: Record<string, string>) => fromPage("POST", "/rpc", headers);
+
+  expect(isRegistryRpc(rpc(cross))).toBe(true);
+  expect((await Effect.runPromise(refuseCrossOrigin(rpc(cross))))?.status).toBe(403);
+  expect(isRegistryRpc(rpc(vite))).toBe(true);
+  expect(await Effect.runPromise(refuseCrossOrigin(rpc(vite)))).toBeUndefined();
+});
+
+it("holds the Session socket upgrade to the same rule", async () => {
+  const socket = (headers: Record<string, string>) =>
+    fromPage("GET", `/sessions/${session}/socket`, {
+      ...headers,
+      upgrade: "websocket",
+    });
+
+  expect(sessionSocketId(socket(cross))).toBe(session);
+  expect((await Effect.runPromise(refuseCrossOrigin(socket(cross))))?.status).toBe(403);
+  // A browser's handshake always carries Origin; the Session page's own is admitted, through Vite's proxy too.
+  expect(
+    await Effect.runPromise(
+      refuseCrossOrigin(socket({ origin: "http://localhost:1337", host: "localhost:1337" })),
+    ),
+  ).toBeUndefined();
+  expect(await Effect.runPromise(refuseCrossOrigin(socket(vite)))).toBeUndefined();
+  expect(
+    (
+      await Effect.runPromise(
+        refuseCrossOrigin(socket({ origin: "https://evil.test", host: "localhost:1337" })),
+      )
+    )?.status,
+  ).toBe(403);
 });
