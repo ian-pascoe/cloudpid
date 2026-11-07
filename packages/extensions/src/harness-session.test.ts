@@ -14,12 +14,13 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ContainerSettings, McpExposure, McpResolvedServer, Settings } from "@cloudpid/config";
-import type { SettingsMcpServer, SettingsMcpView } from "@cloudpid/protocol";
+import type { AgentChange, SettingsMcpServer, SettingsMcpView } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type Extension,
   type JsonObject,
   ROOT_CONVERSATION_ID,
+  type TaskId,
   type ToolExecutionApi,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
@@ -31,16 +32,18 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import { ApprovalTools, EnvironmentRemoval } from "./approval-tools.ts";
-import { Approvals } from "./approvals.ts";
+import { type ApprovalAsk, Approvals, type ApprovalsService } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import {
   AgentChangeLog,
+  type AppliedChange,
   DeployCredentials,
   type EnvironmentDetails,
   Environments,
   EnvironmentsError,
   type EnvironmentsService,
   EnvironmentTools,
+  type RunChange,
 } from "./environment.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
@@ -48,9 +51,11 @@ import { unusedSkills } from "./environment-skills.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import {
+  type AppliedSettingsChange,
   SettingsAccess,
   SettingsAccessError,
   type SettingsAccessService,
+  type SettingsApplied,
   SettingsReload,
   SettingsTools,
   type SettingsView,
@@ -144,7 +149,10 @@ const OTHER: EnvironmentDetails = {
 
 const ENVIRONMENTS: ReadonlyArray<EnvironmentDetails> = [DEFAULT, OTHER];
 
-const environmentsOf = (list: EnvironmentsService["list"]): EnvironmentsService => ({
+const environmentsOf = (
+  list: EnvironmentsService["list"],
+  held: ReadonlyArray<EnvironmentDetails> = ENVIRONMENTS,
+): EnvironmentsService => ({
   ...unusedLifecycle,
   ...unusedSecretMarks,
   ...unusedSkills,
@@ -153,7 +161,7 @@ const environmentsOf = (list: EnvironmentsService["list"]): EnvironmentsService 
   get: (id) =>
     Effect.succeed(
       Option.getOrNull(
-        Arr.findFirst(ENVIRONMENTS, (each) => each.id === id),
+        Arr.findFirst(held, (each) => each.id === id),
       ) satisfies EnvironmentDetails | null,
     ),
   global: Effect.succeed({
@@ -402,8 +410,16 @@ const mcp: SettingsMcpAccessService = {
 // SAFETY: the tools use only `refresh` and `redact` of the Secrets.
 const secrets = { refresh: Effect.void, redact: (value: string) => value } as SecretsService;
 
+/** The services a scenario of a tool that waits for the owner's Approval stands in for. */
+type Standins = {
+  readonly settings?: SettingsAccessService;
+  readonly approvals?: ApprovalsService;
+  readonly log?: { readonly record: (change: RunChange) => Effect.Effect<void> };
+  readonly reload?: { readonly apply: Effect.Effect<SettingsApplied> };
+};
+
 /** The four extensions over the stand-in services, by name. */
-const extensionsOver = (over: EnvironmentsService) =>
+const extensionsOver = (over: EnvironmentsService, standins: Standins = {}) =>
   Effect.gen(function* () {
     const built: Record<(typeof EXTENSIONS)[number], Extension> = {
       environment: yield* EnvironmentTools,
@@ -421,13 +437,13 @@ const extensionsOver = (over: EnvironmentsService) =>
       keptSecrets: () => nothing("deletes"),
       deleteSecret: () => nothing("deletes"),
     }),
-    Effect.provideService(SettingsAccess, settings),
+    Effect.provideService(SettingsAccess, standins.settings ?? settings),
     Effect.provideService(SettingsMcpAccess, mcp),
-    Effect.provideService(SettingsReload, { apply: nothing("reloads") }),
-    Effect.provideService(AgentChangeLog, { record: () => nothing("logs") }),
+    Effect.provideService(SettingsReload, standins.reload ?? { apply: nothing("reloads") }),
+    Effect.provideService(AgentChangeLog, standins.log ?? { record: () => nothing("logs") }),
     Effect.provideService(DeployCredentials, { values: [] }),
     Effect.provideService(Secrets, secrets),
-    Effect.provideService(Approvals, unusedApprovals),
+    Effect.provideService(Approvals, standins.approvals ?? unusedApprovals),
   );
 
 const toolOf = (built: Record<(typeof EXTENSIONS)[number], Extension>, name: string) =>
@@ -446,13 +462,18 @@ const api = { conversationId: ROOT_CONVERSATION_ID } as ToolExecutionApi;
  * What a call answered, as it is: whether it failed, each part of its output, its structured output and its details.
  * `fails` says whether the call is meant to be refused: a call that is not, or one that is, fails the test.
  */
-const answer = (tool: ToolRegistration, args: JsonObject, fails = false) =>
+const answer = (
+  tool: ToolRegistration,
+  args: JsonObject,
+  fails: boolean | "unchecked" = false,
+  calling: ToolExecutionApi = api,
+) =>
   Effect.promise(() =>
     // SAFETY: the arguments are the tool's JSON parameters.
-    tool.execute(args as never, api, BACKGROUND_CONTEXT),
+    tool.execute(args as never, calling, BACKGROUND_CONTEXT),
   ).pipe(
     Effect.map((result) => {
-      expect(result.isError === true).toBe(fails);
+      if (fails !== "unchecked") expect(result.isError === true).toBe(fails);
 
       return result;
     }),
@@ -496,7 +517,11 @@ const shortened = (value: Schema.Json): Schema.Json => {
 };
 
 /** Compare `actual` with the file, or, with `UPDATE_SNAPSHOT=1`, write it. */
-const settle = (actual: { readonly tools: Schema.Json; readonly reads: Schema.Json }) => {
+const settle = (actual: {
+  readonly tools: Schema.Json;
+  readonly reads: Schema.Json;
+  readonly approvals: Schema.Json;
+}) => {
   if (process.env.UPDATE_SNAPSHOT === "1") {
     mkdirSync(dirname(SNAPSHOT), { recursive: true });
     writeFileSync(SNAPSHOT, `${JSON.stringify(actual, null, 2)}\n`);
@@ -508,7 +533,7 @@ const settle = (actual: { readonly tools: Schema.Json; readonly reads: Schema.Js
     throw new Error(`${SNAPSHOT} is missing: run this test with UPDATE_SNAPSHOT=1 to create it`);
   }
 
-  // SAFETY: the file holds the two parts this test wrote.
+  // SAFETY: the file holds the three parts this test wrote.
   const recorded = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as typeof actual;
 
   // Compared as text with the keys in order, as the model sees them, whatever the file's formatting.
@@ -516,7 +541,627 @@ const settle = (actual: { readonly tools: Schema.Json; readonly reads: Schema.Js
 
   expect(text(actual.tools)).toBe(text(recorded.tools));
   expect(text(actual.reads)).toBe(text(recorded.reads));
+  expect(text(actual.approvals)).toBe(text(recorded.approvals));
 };
+
+// --- The tools that wait for the owner's Approval ----------------------------------------------------------------
+
+/** One call of a tool that waits for the owner's Approval: what the owner answers and what the Registry's stand-in says. */
+type Scenario = {
+  readonly tool: string;
+  readonly args: JsonObject;
+  /** The owner's answer to the card; Approve by default. */
+  readonly owner?: { readonly approve: boolean; readonly reason?: string };
+  /** What the Settings change answers, once the owner approved. */
+  readonly settings?: AppliedSettingsChange;
+  /** What the Environment change answers, once the owner approved. */
+  readonly environment?: AppliedChange;
+  /** The Environments, where a scenario needs others than the default pair. */
+  readonly over?: EnvironmentsService;
+  /** Whether the call is meant to be refused. */
+  readonly fails?: boolean;
+};
+
+/** An Agent change as the Registry records it. */
+const recorded = (tool: string, fields: Partial<AgentChange>): AgentChange => ({
+  id: 7,
+  scope: "settings",
+  at: 1_000,
+  actor: "agent",
+  session: "s-1",
+  conversation: 0,
+  tool,
+  reason: "The reason.",
+  field: "",
+  before: null,
+  after: null,
+  reverts: null,
+  revertedBy: null,
+  approved: true,
+  ...fields,
+});
+
+const asking: Pick<ToolExecutionApi, "taskId" | "conversationId"> = {
+  // SAFETY: a task's id is a number pi-durable brands.
+  taskId: 11 as TaskId,
+  conversationId: ROOT_CONVERSATION_ID,
+};
+
+// SAFETY: the tools read only the call's task and conversation from the invocation's API.
+const waitingApi = asking as ToolExecutionApi;
+
+/**
+ * One call of a tool that waits for the owner: the cards the owner was shown, the changes asked of the Settings and of
+ * the Environments, what the Run's Notification and the reload were told, and the call's answer.
+ */
+const attempt = ({
+  tool,
+  args,
+  owner = { approve: true },
+  settings: madeSettings = { status: "unchanged" },
+  environment: madeEnvironment = { status: "missing" },
+  over = environments,
+}: Scenario) =>
+  Effect.gen(function* () {
+    const asked: ApprovalAsk[] = [];
+    const settingsCalls: unknown[] = [];
+    const environmentCalls: unknown[] = [];
+    const logged: RunChange[] = [];
+    let reloads = 0;
+
+    const approvals: ApprovalsService = {
+      ...unusedApprovals,
+      ask: (request) =>
+        Effect.sync(() => {
+          asked.push(request);
+
+          return owner.approve
+            ? { approved: true as const, expected: request.expected }
+            : { approved: false as const, reason: owner.reason, expected: request.expected };
+        }),
+      settle: () => Effect.void,
+    };
+
+    const built = yield* extensionsOver(
+      {
+        ...over,
+        change: (input) => {
+          environmentCalls.push(input);
+
+          return Effect.succeed(madeEnvironment);
+        },
+      },
+      {
+        settings: {
+          ...settings,
+          change: (input) => {
+            settingsCalls.push(input);
+
+            return Effect.succeed(madeSettings);
+          },
+        },
+        approvals,
+        log: {
+          record: (change) =>
+            Effect.sync(() => {
+              logged.push(change);
+            }),
+        },
+        reload: {
+          apply: Effect.sync(() => {
+            reloads += 1;
+
+            return { picked: { model: false, thinkingLevel: false } };
+          }),
+        },
+      },
+    );
+
+    const result = yield* answer(toolOf(built, tool), args, "unchecked", waitingApi);
+
+    return { asked, settingsCalls, environmentCalls, logged, reloads, result };
+  });
+
+/** A size that no Environment's size is above, an Environment sized cpu-3 inheriting Global's limit, and its list. */
+const BIG_ENVIRONMENT: EnvironmentDetails = {
+  ...DEFAULT,
+  id: "00bb00bb",
+  name: "Large",
+  overrides: { instance: "cpu-3" },
+  settings: { ...GLOBAL_CONTAINER, instance: "cpu-3" },
+};
+
+const sizedEnvironments = environmentsOf(
+  Effect.succeed(
+    Arr.map([OTHER, BIG_ENVIRONMENT], ({ id, name, repos, build }) => ({ id, name, repos, build })),
+  ),
+  [OTHER, BIG_ENVIRONMENT],
+);
+
+const REASON = "The reason.";
+
+/** A Secret Reference, which these tools do not resolve. */
+const PLACEHOLDER = `${"{{"}secret:API_KEY${"}}"}`;
+
+const GLOBAL_CHANGED: AppliedChange = {
+  status: "changed",
+  environment: { id: "*", name: "Global" },
+  change: recorded("environment_container_size_limit_set", {
+    scope: "*",
+    field: "maxInstance",
+    before: "cpu-2",
+    after: "cpu-3",
+  }),
+  newBuild: false,
+  global: {
+    overriddenIn: [{ id: "0000abcd", name: "Other" }],
+    newBuilds: [{ id: "default", name: "Default" }],
+    own: true,
+  },
+};
+
+const OWN_CHANGED: AppliedChange = {
+  status: "changed",
+  environment: { id: "default", name: "Default" },
+  change: recorded("environment_container_size_limit_set", {
+    scope: "default",
+    field: "maxInstance",
+    before: "cpu-2",
+    after: "cpu-3",
+    beforeInherited: true,
+  }),
+  newBuild: true,
+};
+
+const OTHER_CHANGED: AppliedChange = {
+  ...OWN_CHANGED,
+  environment: { id: "0000abcd", name: "Other" },
+  newBuild: false,
+};
+
+/** A Settings change made, one record for each field. */
+const settingsChanged = (
+  tool: string,
+  field: string,
+  before: Schema.Json | null,
+  after: Schema.Json | null,
+  more: Partial<AgentChange> = {},
+): AppliedSettingsChange => ({
+  status: "changed",
+  changes: [recorded(tool, { field, before, after, ...more })],
+});
+
+const approvalScenarios = {
+  spend_limit_global: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "*", per_session: 8, reason: REASON },
+    settings: settingsChanged("settings_spend_limit_set", "spendLimit.perSession", 5, 8),
+  },
+  spend_limit_global_off: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "*", per_session: null, reason: REASON },
+    settings: settingsChanged("settings_spend_limit_set", "spendLimit.perSession", 5, null),
+  },
+  spend_limit_environment: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "default", per_session: 3.5, reason: REASON },
+    settings: settingsChanged("settings_spend_limit_set", "spendLimit.perSession", 2, 3.5, {
+      scope: "default",
+      beforeInherited: false,
+      afterInherited: false,
+    }),
+  },
+  spend_limit_declined: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "*", per_session: 8, reason: REASON },
+    owner: { approve: false, reason: "Too much." },
+  },
+  spend_limit_declined_silently: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "default", per_session: 9, reason: REASON },
+    owner: { approve: false },
+  },
+  spend_limit_same: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "*", per_session: 5, reason: REASON },
+  },
+  spend_limit_same_as_override: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "default", per_session: 2, reason: REASON },
+  },
+  spend_limit_approved_but_same: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "*", per_session: 8, reason: REASON },
+    settings: { status: "unchanged" },
+  },
+  spend_limit_changed_since: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "*", per_session: 8, reason: REASON },
+    settings: { status: "changed-since", field: "spendLimit.perSession", current: 6 },
+    fails: true,
+  },
+  spend_limit_changed_since_environment: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "default", per_session: 8, reason: REASON },
+    settings: {
+      status: "changed-since",
+      field: "spendLimit.perSession",
+      current: 4,
+      inherited: true,
+    },
+    fails: true,
+  },
+  spend_limit_rejected: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "*", per_session: 8, reason: REASON },
+    settings: { status: "rejected", message: "spendLimit: not a limit" },
+    fails: true,
+  },
+  spend_limit_unknown_scope: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "nope", per_session: 8, reason: REASON },
+    fails: true,
+  },
+  spend_limit_reason_with_reference: {
+    tool: "settings_spend_limit_set",
+    args: { scope: "*", per_session: 8, reason: `Uses ${PLACEHOLDER} for it.` },
+    fails: true,
+  },
+  subagent_depth_global: {
+    tool: "settings_subagent_depth_set",
+    args: { scope: "*", depth: 2, reason: REASON },
+    settings: settingsChanged(
+      "settings_subagent_depth_set",
+      "extensions.subagents.maxSubagentDepth",
+      1,
+      2,
+    ),
+  },
+  subagent_depth_environment: {
+    tool: "settings_subagent_depth_set",
+    args: { scope: "default", depth: 1, reason: REASON },
+    settings: settingsChanged(
+      "settings_subagent_depth_set",
+      "extensions.subagents.maxSubagentDepth",
+      1,
+      1,
+      { scope: "default", beforeInherited: true, afterInherited: false },
+    ),
+  },
+  subagent_depth_same: {
+    tool: "settings_subagent_depth_set",
+    args: { scope: "*", depth: 1, reason: REASON },
+  },
+  subagent_workspaces_global: {
+    tool: "settings_subagent_workspaces_set",
+    args: { scope: "*", limit: 0, reason: REASON },
+    settings: settingsChanged(
+      "settings_subagent_workspaces_set",
+      "extensions.subagents.maxSubagentWorkspaces",
+      3,
+      0,
+    ),
+  },
+  subagent_workspaces_declined: {
+    tool: "settings_subagent_workspaces_set",
+    args: { scope: "default", limit: 6, reason: REASON },
+    owner: { approve: false, reason: "Costly." },
+  },
+  subagent_workspaces_same: {
+    tool: "settings_subagent_workspaces_set",
+    args: { scope: "*", limit: 3, reason: REASON },
+  },
+  reset_limit_environment: {
+    tool: "settings_reset",
+    args: { scope: "default", field: "spendLimit.perSession", reason: REASON },
+    settings: settingsChanged("settings_reset", "spendLimit.perSession", 2, 5, {
+      scope: "default",
+      beforeInherited: false,
+      afterInherited: true,
+    }),
+  },
+  reset_limit_environment_declined: {
+    tool: "settings_reset",
+    args: { scope: "default", field: "spendLimit.perSession", reason: REASON },
+    owner: { approve: false, reason: "No." },
+  },
+  reset_limit_environment_inherited: {
+    tool: "settings_reset",
+    args: { scope: "big", field: "spendLimit.perSession", reason: REASON },
+  },
+  reset_limit_global: {
+    tool: "settings_reset",
+    args: { scope: "*", field: "extensions.subagents.maxSubagentDepth", reason: REASON },
+    settings: settingsChanged("settings_reset", "extensions.subagents.maxSubagentDepth", 1, 2),
+  },
+  reset_limit_global_changed_since: {
+    tool: "settings_reset",
+    args: { scope: "*", field: "extensions.subagents.maxSubagentWorkspaces", reason: REASON },
+    settings: {
+      status: "changed-since",
+      field: "extensions.subagents.maxSubagentWorkspaces",
+      current: 7,
+    },
+    fails: true,
+  },
+  instructions_global: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: "Prefer rebasing.", reason: REASON },
+    settings: settingsChanged(
+      "settings_instructions_set",
+      "instructions",
+      "Prefer small commits.",
+      "Prefer rebasing.",
+    ),
+  },
+  instructions_global_removed: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: "", reason: REASON },
+    settings: settingsChanged(
+      "settings_instructions_set",
+      "instructions",
+      "Prefer small commits.",
+      "",
+    ),
+  },
+  instructions_environment: {
+    tool: "settings_instructions_set",
+    args: { scope: "default", text: "Run the tests with vitest.", reason: REASON },
+    settings: settingsChanged(
+      "settings_instructions_set",
+      "instructions",
+      "Run the tests with bun.",
+      "Run the tests with vitest.",
+      { scope: "default" },
+    ),
+  },
+  instructions_environment_removed: {
+    tool: "settings_instructions_set",
+    args: { scope: "default", text: "", reason: REASON },
+    settings: settingsChanged(
+      "settings_instructions_set",
+      "instructions",
+      "Run the tests with bun.",
+      "",
+      {
+        scope: "default",
+      },
+    ),
+  },
+  instructions_declined: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: "Prefer rebasing.", reason: REASON },
+    owner: { approve: false, reason: "Not now." },
+  },
+  instructions_removal_declined: {
+    tool: "settings_instructions_set",
+    args: { scope: "default", text: "", reason: REASON },
+    owner: { approve: false },
+  },
+  instructions_same: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: "Prefer small commits.", reason: REASON },
+  },
+  instructions_approved_but_same: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: "Prefer rebasing.", reason: REASON },
+    settings: { status: "unchanged" },
+  },
+  instructions_changed_since: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: "Prefer rebasing.", reason: REASON },
+    settings: { status: "changed-since", field: "instructions", current: "Something else." },
+    fails: true,
+  },
+  instructions_changed_since_none: {
+    tool: "settings_instructions_set",
+    args: { scope: "default", text: "Prefer rebasing.", reason: REASON },
+    settings: { status: "changed-since", field: "instructions", current: "" },
+    fails: true,
+  },
+  instructions_rejected: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: "Prefer rebasing.", reason: REASON },
+    settings: { status: "rejected", message: "instructions: too long" },
+    fails: true,
+  },
+  instructions_too_long: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: "x".repeat(70_000), reason: REASON },
+    fails: true,
+  },
+  instructions_with_reference: {
+    tool: "settings_instructions_set",
+    args: { scope: "*", text: `Use ${PLACEHOLDER}.`, reason: REASON },
+    fails: true,
+  },
+  size_limit_environment: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "default", size: "cpu-3", reason: REASON },
+    environment: OWN_CHANGED,
+  },
+  size_limit_other_environment: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "0000abcd", size: "cpu-3", reason: REASON },
+    environment: OTHER_CHANGED,
+  },
+  size_limit_global: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "*", size: "cpu-3", reason: REASON },
+    environment: GLOBAL_CHANGED,
+  },
+  size_limit_declined: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "default", size: "cpu-3", reason: REASON },
+    owner: { approve: false, reason: "No more." },
+  },
+  size_limit_same_as_global: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "*", size: "cpu-2", reason: REASON },
+  },
+  size_limit_approved_but_same: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "default", size: "cpu-3", reason: REASON },
+    environment: {
+      status: "unchanged",
+      environment: { id: "default", name: "Default" },
+      value: "cpu-3",
+    },
+  },
+  size_limit_changed_since: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "default", size: "cpu-3", reason: REASON },
+    environment: { status: "changed-since", current: "cpu-1" },
+    fails: true,
+  },
+  size_limit_rejected: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "default", size: "cpu-3", reason: REASON },
+    environment: { status: "rejected", message: "maxInstance: no longer a size" },
+    fails: true,
+  },
+  size_limit_missing: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "default", size: "cpu-3", reason: REASON },
+    environment: { status: "missing" },
+    fails: true,
+  },
+  size_limit_unknown_environment: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "nope", size: "cpu-3", reason: REASON },
+    fails: true,
+  },
+  size_limit_below_size: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "00bb00bb", size: "cpu-2", reason: REASON },
+    over: sizedEnvironments,
+    fails: true,
+  },
+  size_limit_below_inheriting_size: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "*", size: "cpu-1", reason: REASON },
+    over: sizedEnvironments,
+    fails: true,
+  },
+  size_limit_reason_with_reference: {
+    tool: "environment_container_size_limit_set",
+    args: { id: "default", size: "cpu-3", reason: `Uses ${PLACEHOLDER}.` },
+    fails: true,
+  },
+  reset_size_limit: {
+    tool: "environment_setting_reset",
+    args: { id: "00bb00bb", setting: "maxInstance", reason: REASON },
+    over: environmentsOf(Effect.succeed([]), [
+      {
+        ...DEFAULT,
+        id: "00bb00bb",
+        name: "Large",
+        overrides: { maxInstance: "cpu-3" },
+        settings: { ...GLOBAL_CONTAINER, maxInstance: "cpu-3" },
+      },
+    ]),
+    environment: {
+      status: "changed",
+      environment: { id: "00bb00bb", name: "Large" },
+      change: recorded("environment_setting_reset", {
+        scope: "00bb00bb",
+        field: "maxInstance",
+        before: "cpu-3",
+        after: "cpu-2",
+        afterInherited: true,
+      }),
+      newBuild: true,
+    },
+  },
+  reset_size_limit_own: {
+    tool: "environment_setting_reset",
+    args: { id: "default", setting: "maxInstance", reason: REASON },
+    over: environmentsOf(Effect.succeed([]), [
+      {
+        ...DEFAULT,
+        overrides: { maxInstance: "cpu-3" },
+        settings: { ...GLOBAL_CONTAINER, maxInstance: "cpu-3" },
+      },
+    ]),
+    environment: {
+      status: "changed",
+      environment: { id: "default", name: "Default" },
+      change: recorded("environment_setting_reset", {
+        scope: "default",
+        field: "maxInstance",
+        before: "cpu-3",
+        after: "cpu-2",
+        afterInherited: true,
+      }),
+      newBuild: false,
+    },
+  },
+  reset_size_limit_declined: {
+    tool: "environment_setting_reset",
+    args: { id: "00bb00bb", setting: "maxInstance", reason: REASON },
+    over: environmentsOf(Effect.succeed([]), [
+      {
+        ...DEFAULT,
+        id: "00bb00bb",
+        name: "Large",
+        overrides: { maxInstance: "cpu-3" },
+        settings: { ...GLOBAL_CONTAINER, maxInstance: "cpu-3" },
+      },
+    ]),
+    owner: { approve: false, reason: "Keep it." },
+  },
+  reset_size_limit_inherited: {
+    tool: "environment_setting_reset",
+    args: { id: "default", setting: "maxInstance", reason: REASON },
+  },
+  reset_size_limit_below_size: {
+    tool: "environment_setting_reset",
+    args: { id: "00bb00bb", setting: "maxInstance", reason: REASON },
+    over: environmentsOf(Effect.succeed([]), [
+      {
+        ...DEFAULT,
+        id: "00bb00bb",
+        name: "Large",
+        overrides: { instance: "cpu-3", maxInstance: "cpu-3" },
+        settings: { ...GLOBAL_CONTAINER, instance: "cpu-3", maxInstance: "cpu-3" },
+      },
+    ]),
+    fails: true,
+  },
+  reset_size_limit_approved_but_inherited: {
+    tool: "environment_setting_reset",
+    args: { id: "00bb00bb", setting: "maxInstance", reason: REASON },
+    over: environmentsOf(Effect.succeed([]), [
+      {
+        ...DEFAULT,
+        id: "00bb00bb",
+        name: "Large",
+        overrides: { maxInstance: "cpu-3" },
+        settings: { ...GLOBAL_CONTAINER, maxInstance: "cpu-3" },
+      },
+    ]),
+    environment: {
+      status: "unchanged",
+      environment: { id: "00bb00bb", name: "Large" },
+      value: "cpu-2",
+    },
+  },
+  reset_size_limit_changed_since: {
+    tool: "environment_setting_reset",
+    args: { id: "00bb00bb", setting: "maxInstance", reason: REASON },
+    over: environmentsOf(Effect.succeed([]), [
+      {
+        ...DEFAULT,
+        id: "00bb00bb",
+        name: "Large",
+        overrides: { maxInstance: "cpu-3" },
+        settings: { ...GLOBAL_CONTAINER, maxInstance: "cpu-3" },
+      },
+    ]),
+    environment: { status: "changed-since", current: "cpu-1" },
+    fails: true,
+  },
+} satisfies Record<string, Scenario>;
 
 describe("the Session's Environment and Settings tools", () => {
   it("registers the tools and answers the reads exactly as the snapshot records", () =>
@@ -595,14 +1240,36 @@ describe("the Session's Environment and Settings tools", () => {
           Object.values(MANY_VARIABLES).reduce((total, value) => total + value.length, 0),
         );
 
+        const approvals = yield* Effect.forEach(
+          Object.entries(approvalScenarios),
+          ([name, each]) => {
+            const scenario: Scenario = each;
+
+            return Effect.map(attempt(scenario), (outcome) => {
+              const refused: boolean = scenario.fails === true;
+
+              expect(outcome.result.isError, name).toBe(refused);
+
+              return [name, outcome] as const;
+            });
+          },
+        );
+
         // SAFETY: the registrations and the answers are JSON; undefined keys are left out by the round trip.
-        const whole = JSON.parse(JSON.stringify({ tools: registered, reads })) as {
+        const whole = JSON.parse(
+          JSON.stringify({ tools: registered, reads, approvals: Object.fromEntries(approvals) }),
+        ) as {
           readonly tools: Schema.Json;
           readonly reads: Schema.Json;
+          readonly approvals: Schema.Json;
         };
 
         // The registrations are kept whole, so a change to one shows; the answers' long strings are shortened.
-        settle({ tools: whole.tools, reads: shortened(whole.reads) });
+        settle({
+          tools: whole.tools,
+          reads: shortened(whole.reads),
+          approvals: shortened(whole.approvals),
+        });
       }),
     ));
 });
