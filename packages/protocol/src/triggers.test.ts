@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
+  armsTrigger,
   FireOutcome,
   FireSource,
   fireText,
@@ -14,6 +15,7 @@ import {
   fieldTrigger,
   fireTimeWords,
   MAX_TRIGGER_MESSAGE_BYTES,
+  triggerChangeJson,
   triggerChangeValue,
   triggerField,
   triggerMessageProblem,
@@ -182,5 +184,18 @@ describe("a Trigger's Agent changes", () => {
       model: "anthropic/claude-sonnet-4-5",
       paused: false,
     });
+  });
+
+  it("arm a Trigger when they leave an active one that was none or paused", () => {
+    const active = triggerChangeJson(definition);
+    const paused = triggerChangeJson({ ...definition, paused: true });
+    const renamed = triggerChangeJson({ ...definition, name: "Daily report" });
+
+    expect(armsTrigger(null, active)).toBe(true);
+    expect(armsTrigger(paused, active)).toBe(true);
+    expect(armsTrigger(active, renamed)).toBe(false);
+    expect(armsTrigger(active, paused)).toBe(false);
+    expect(armsTrigger(active, null)).toBe(false);
+    expect(armsTrigger(null, { kind: "a later kind" })).toBe(false);
   });
 });

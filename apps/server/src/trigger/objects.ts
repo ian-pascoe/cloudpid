@@ -1,11 +1,12 @@
 // The Trigger objects as their callers reach them (`docs/architecture/triggers.md` → Cascades, → Agent tools and
 // Approval): a Trigger that went with its Environment has its object wiped, and one the agent changed, or the owner's
-// revert of an Agent change put back, has its object woken to read its definition again. `wake` fails when the object
-// doesn't answer, for a caller that must see it scheduled; the others log the failure and leave it to the object, which
-// reads its definition again at its next alarm.
+// revert of an Agent change put back, has its object woken to read its definition again. `wake`, for a caller that must
+// see a Trigger with no alarm scheduled (one made, brought back or resumed), tries again and then fails; `sync` and
+// `remove` log a failure and leave it to the object, which reads its definition again at its next alarm.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
 import { TRIGGER_CLASS, triggerObjectName } from "./name.ts";
 import { TriggerUnreachable } from "./object.ts";
 import type { Trigger } from "./Trigger.ts";
@@ -14,17 +15,30 @@ import type { Trigger } from "./Trigger.ts";
 export type TriggerNamespace = Pick<Cloudflare.DurableObject<Trigger>, "getByName">;
 
 export type TriggerObjects = {
-  /** Wake Trigger `id`'s object to read its definition again: arm, re-arm, disarm or wipe it. */
+  /**
+   * Wake Trigger `id`'s object to read its definition again: arm, re-arm, disarm or wipe it. Tried `WAKE_RETRIES` more
+   * times, then fails.
+   */
   readonly wake: (id: string) => Effect.Effect<void, TriggerUnreachable>;
-  /** `wake`, a failure logged and left to the object's next alarm. Never fails. */
+  /** Wake Trigger `id`'s object once, a failure logged and left to its next alarm. Never fails. */
   readonly sync: (id: string) => Effect.Effect<void>;
   /** Wipe Trigger `id`'s object: its alarm and its storage. Never fails. */
   readonly remove: (id: string) => Effect.Effect<void>;
 };
 
-/** The Trigger objects over the `Trigger` namespace. */
-export const triggerObjects = (triggers: TriggerNamespace): TriggerObjects => {
-  const wake = (id: string) =>
+/** How many more times `wake` tries an object that doesn't answer. */
+export const WAKE_RETRIES = 3;
+
+/**
+ * The Trigger objects over the `Trigger` namespace, `wake` waiting `wakeSchedule` between its tries: by default 0.2, 0.4
+ * and 0.8 seconds.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off -- a constructor, not a transform of `triggers`.
+export const triggerObjects = (
+  triggers: TriggerNamespace,
+  wakeSchedule: Schedule.Schedule<unknown, unknown> = Schedule.exponential("200 millis"),
+): TriggerObjects => {
+  const once = (id: string) =>
     Effect.suspend(() => triggers.getByName(triggerObjectName(id)).sync()).pipe(
       Effect.asVoid,
       Effect.catchCause((cause) =>
@@ -37,9 +51,9 @@ export const triggerObjects = (triggers: TriggerNamespace): TriggerObjects => {
     );
 
   return {
-    wake,
+    wake: (id) => once(id).pipe(Effect.retry({ schedule: wakeSchedule, times: WAKE_RETRIES })),
     sync: (id) =>
-      wake(id).pipe(
+      once(id).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("A Trigger's object could not be woken", cause),
         ),

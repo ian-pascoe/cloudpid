@@ -6,6 +6,7 @@
 import { ThinkingLevel } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { MAX_MCP_INPUT_BYTES, TriggerMark } from "./mcp-api.ts";
 import type { AgentChange, EnvironmentRef } from "./registry.ts";
@@ -177,6 +178,23 @@ export const triggerChangeJson = (definition: TriggerDefinition | null): Schema.
 /** A Trigger's value as the JSON its Agent change records and its Approval request keeps. */
 // SAFETY: a Trigger's value is plain JSON, its optional keys left out when absent.
 export const asChangeJson = (value: TriggerChangeValue): Schema.Json => value as Schema.Json;
+
+const decodeChangeValue = Schema.decodeUnknownOption(TriggerChangeValue);
+
+/**
+ * Whether a Trigger change from `before` to `after` (as its Agent change records them) leaves an active Trigger that had
+ * no alarm: one made, brought back or resumed. Its object must be woken to schedule it, since nothing else will.
+ */
+export const armsTrigger = (before: Schema.Json | null, after: Schema.Json | null): boolean => {
+  const now = decodeChangeValue(after);
+
+  if (Option.isNone(now) || now.value.paused) return false;
+
+  return Option.match(decodeChangeValue(before), {
+    onNone: () => true,
+    onSome: (was) => was.paused,
+  });
+};
 
 /** How the agent's change of a Trigger went, as the Registry answers it. */
 export type TriggerChanged =

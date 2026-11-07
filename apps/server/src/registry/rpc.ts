@@ -13,6 +13,7 @@ import {
   fieldRepo,
   fieldSecret,
   fieldSkill,
+  armsTrigger,
   fieldTrigger,
   MAX_ENVIRONMENT_SECRETS,
   type McpAppCopy,
@@ -130,8 +131,11 @@ export type RegistryRpcObjects<R = never> = {
   readonly workspaces: WorkspaceObjects;
   /** Stops a Session when it is archived, and wipes it when it is deleted. */
   readonly sessions: SessionObjects;
-  /** Wipes the objects of the Triggers that went with a deleted Environment. */
-  readonly triggers: Pick<TriggerObjects, "sync" | "remove">;
+  /**
+   * Wipes the objects of the Triggers that went with a deleted Environment, and wakes the object of one a revert put
+   * back.
+   */
+  readonly triggers: Pick<TriggerObjects, "wake" | "sync" | "remove">;
   /** Wipes what is left from before Environments, a few objects at a time (`legacyCleanup`), after the answer. */
   readonly legacy: Effect.Effect<void>;
   /** Keeps each Environment's spare Workspace current (`spareUpkeep`), after the answer. */
@@ -883,11 +887,22 @@ export const serveRegistryRpc = <R = never>(
                 if (fieldSkill(revert.change.field) !== null) return Effect.succeed(revert.change);
 
                 // A Trigger put back, changed back or removed: its object reads its definition again, which arms,
-                // re-arms, disarms or wipes it. A Trigger is not part of a Build either.
+                // re-arms, disarms or wipes it. A Trigger is not part of a Build either. One left active that had no
+                // alarm (brought back, or resumed) has nothing to heal from, so its object is woken now, and the owner
+                // told when it never answers; the others are left to their object's next alarm.
                 const trigger = fieldTrigger(revert.change.field);
 
                 if (trigger !== null) {
-                  return background(triggers.sync(trigger)).pipe(Effect.as(revert.change));
+                  return armsTrigger(revert.change.before, revert.change.after)
+                    ? triggers.wake(trigger).pipe(
+                        Effect.mapError(() =>
+                          failed(
+                            `The change is reverted, but Trigger ${trigger}'s object didn't answer, so it isn't scheduled yet: pause and resume it to schedule it.`,
+                          ),
+                        ),
+                        Effect.as(revert.change),
+                      )
+                    : background(triggers.sync(trigger)).pipe(Effect.as(revert.change));
                 }
 
                 // A Container setting at Global put back: as after the owner's save, each Environment's Build is looked

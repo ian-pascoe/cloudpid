@@ -8,7 +8,6 @@ import type {
   TriggerDefinition,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import * as Schedule from "effect/Schedule";
 import { describe, expect, it } from "vitest";
 import { TriggerUnreachable } from "../trigger/object.ts";
 import { sessionTriggers, type TriggersRegistry } from "./triggers.ts";
@@ -54,10 +53,10 @@ const setUp = (
   answer: TriggerChanged = CHANGED,
   { listed = true, unreachable = 0 }: { listed?: boolean; unreachable?: number } = {},
 ) => {
-  /** How many more wakes fail, as an object that doesn't answer. */
+  /** How many more wakes fail, as an object that doesn't answer after all its tries. */
   let failing = unreachable;
 
-  /** The wakes asked for, each a try of `wake` or a `sync`. */
+  /** The wakes asked for. */
   const woken: string[] = [];
 
   const calls: Array<{
@@ -109,7 +108,6 @@ const setUp = (
           synced.push(id);
         }),
     },
-    wakeSchedule: Schedule.spaced(0),
   });
 
   return { access, calls, synced, woken };
@@ -178,20 +176,20 @@ describe("the Session's Triggers", () => {
     expect([...synced, ...woken]).toEqual([]);
   });
 
-  it("tries a new or resumed Trigger's object again, then fails the call, saying how to schedule it", async () => {
-    const answered = setUp(CHANGED, { unreachable: 2 });
+  it("fails the call when a new or resumed Trigger's object never answers, saying how to schedule it", async () => {
+    const answered = setUp(CHANGED);
 
     await Effect.runPromise(answered.access.create({ id: "t1", trigger: INPUT, author }));
 
-    expect(answered.woken).toEqual(["t1", "t1", "t1"]);
+    expect(answered.woken).toEqual(["t1"]);
 
-    const unreachable = setUp(CHANGED, { unreachable: 10 });
+    const unreachable = setUp(CHANGED, { unreachable: 1 });
 
     const failed = await Effect.runPromise(
       unreachable.access.setPaused({ id: "t1", paused: false, author }).pipe(Effect.flip),
     );
 
-    expect(unreachable.woken).toHaveLength(4);
+    expect(unreachable.woken).toEqual(["t1"]);
     expect(failed.message).toContain("trigger_resume");
 
     // A change that only narrows, or edits, is left to the object's next alarm.
