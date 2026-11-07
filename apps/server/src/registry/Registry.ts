@@ -1157,6 +1157,17 @@ export const RegistryLive = Registry.make(
         const skills = openSkills(state.raw.storage);
         const mcpSignIns = openMcpSignIns(state.raw.storage, store);
         const notify = pushNotifier({ store, vapid: push.vapid });
+        const pushAll = pushToAll({ store, vapid: push.vapid });
+
+        // Eight hex digits rarely collide; one that does (a spare's too, which only its set-up shows) is drawn again.
+        const freshWorkspaceId = Effect.gen(function* () {
+          let id = yield* newWorkspaceId;
+
+          while (store.getWorkspaceSetup(id) !== null) id = yield* newWorkspaceId;
+
+          return id;
+        });
+
         // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
         const skillReader = githubSkillReader(github);
         // The Repos' `.pi/mcp.json` are read through the same reader (one token), and kept in the Registry.
@@ -1385,12 +1396,7 @@ export const RegistryLive = Registry.make(
                 );
               }
 
-              // Eight hex digits rarely collide; one that does (a spare's too, which only its set-up shows) is drawn again.
-              let workspaceId = yield* newWorkspaceId;
-
-              while (store.getWorkspaceSetup(workspaceId) !== null) {
-                workspaceId = yield* newWorkspaceId;
-              }
+              const workspaceId = yield* freshWorkspaceId;
 
               return store.createSession(
                 {
@@ -1829,10 +1835,7 @@ export const RegistryLive = Registry.make(
           createSubagentWorkspace: (input) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
-              // Eight hex digits rarely collide; one that does (a spare's too) is drawn again.
-              let id = yield* newWorkspaceId;
-
-              while (store.getWorkspaceSetup(id) !== null) id = yield* newWorkspaceId;
+              const id = yield* freshWorkspaceId;
 
               return store.createSubagentWorkspace({ ...input, id }, now);
             }),
@@ -2130,10 +2133,7 @@ export const RegistryLive = Registry.make(
           admitFire: (fire) =>
             Effect.gen(function* () {
               const session = yield* newSessionId;
-              // Eight hex digits rarely collide; one that does is drawn again, as `createSession` draws.
-              let workspace = yield* newWorkspaceId;
-
-              while (store.getWorkspaceSetup(workspace) !== null) workspace = yield* newWorkspaceId;
+              const workspace = yield* freshWorkspaceId;
 
               const now = yield* Clock.currentTimeMillis;
 
@@ -2143,9 +2143,7 @@ export const RegistryLive = Registry.make(
             Effect.suspend(() => {
               const known = triggers.get(trigger);
 
-              return known === null
-                ? Effect.void
-                : pushToAll({ store, vapid: push.vapid })(describeTriggerFailure(known, reason));
+              return known === null ? Effect.void : pushAll(describeTriggerFailure(known, reason));
             }),
           deleteEnvironmentWithTriggers: ({ id }) =>
             Clock.currentTimeMillis.pipe(

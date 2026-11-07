@@ -73,9 +73,9 @@ const durableObjects = { Session, Registry, McpHost, Trigger } satisfies {
 };
 
 /**
- * The Server Worker's init (`worker.ts`): its routes, over the Session, Registry, McpHost and Trigger objects, whose Layers it
- * provides. Built at the isolate's first event, never at startup; `worker.ts` imports it dynamically, so that none of this
- * module's graph is evaluated in the Worker's global scope (`docs/development/workers.md` → Startup).
+ * The Server Worker's init (`worker.ts`): its routes, over the Session, Registry, McpHost and Trigger objects, whose
+ * Layers it provides. Built at the isolate's first event, never at startup; `worker.ts` imports it dynamically, so that
+ * none of this module's graph is evaluated in the Worker's global scope (`docs/development/workers.md` → Startup).
  */
 export const serverInit = Effect.gen(function* () {
   const sessions = yield* durableObjects.Session;

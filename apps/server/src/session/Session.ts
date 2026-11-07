@@ -321,7 +321,6 @@ export const SessionLive = Session.make(
       registries: yield* Registry,
       // The Environments' MCP hosts, whose tools the Session's `mcp` extension calls.
       mcpHosts: yield* McpHost,
-
       // The other Sessions' objects, which deleting an Environment the owner approved wipes (`environment_delete`).
       // This class's own namespace, which alchemy hands its constructor (not `yield* Session`: this Layer provides it).
       // SAFETY: the namespace of the class this constructor makes, whose objects answer `SessionMethods`.

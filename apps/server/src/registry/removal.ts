@@ -240,7 +240,8 @@ export const removals = (
   /**
    * Delete Environment `environment` with everything made from it: its Workspaces with their Sessions (archived ones
    * too), its spare Workspace and its Build object, then its record, which takes its kept Secrets, Agent changes and
-   * Triggers (`docs/architecture/triggers.md` → Cascades), whose objects are wiped after it. A Workspace made meanwhile is removed the same way, a few rounds; a failure says what is left. The default
+   * Triggers (`docs/architecture/triggers.md` → Cascades), whose objects are wiped after it. A Workspace made
+   * meanwhile is removed the same way, a few rounds; a failure says what is left. The default
    * Environment is never deleted.
    */
   const deleteEnvironment = (environment: string) =>
@@ -266,17 +267,14 @@ export const removals = (
         yield* removeBuild(environment).pipe(Effect.mapError(environmentKept));
 
         // The record goes only once no Workspace is made from it.
-        const { deletion: deleted, triggers: gone } = yield* registry.deleteEnvironmentWithTriggers(
-          {
-            id: environment,
-          },
-        );
+        const removal = yield* registry.deleteEnvironmentWithTriggers({ id: environment });
+        const deleted = removal.deletion;
 
         if (deleted === "refused") return yield* failed(DEFAULT_KEPT);
 
         if (deleted === "deleted") {
           // Its Triggers went with the record: their objects are wiped, or wipe themselves at their next alarm.
-          yield* Effect.forEach(gone, triggers.remove, { discard: true });
+          yield* Effect.forEach(removal.triggers, triggers.remove, { discard: true });
 
           // A Build upkeep that asked the Build object for a Build after its wipe made it anew; one that asks
           // after this finds the Environment gone (`buildUpkeep`).
