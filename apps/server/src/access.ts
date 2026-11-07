@@ -507,7 +507,7 @@ const forbidden = HttpServerResponse.text("Forbidden", {
 });
 
 /** The hosts a request names: `Host`, and the URL's own when it is absolute. */
-const hostsOf = (request: HttpServerRequest.HttpServerRequest): ReadonlyArray<string> => {
+export const hostsOf = (request: HttpServerRequest.HttpServerRequest): ReadonlyArray<string> => {
   const header = request.headers.host;
   const named = header === undefined ? [] : [header];
 
