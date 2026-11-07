@@ -8,7 +8,7 @@
 // the file structurally (`JSON.parse`), so how it is formatted does not matter. To keep the file small, a string over
 // `LONG_STRING` characters in an answer is kept as its length, its SHA-256 and its start, so a changed character still
 // shows. The registrations (descriptions, parameters, structured output schemas) are kept whole, so a diff shows what
-// moved. Run with `UPDATE_SNAPSHOT=1` to write the file again; a missing file is written too, except in CI.
+// moved. Run with `UPDATE_SNAPSHOT=1` to write the file again; a missing file fails the test.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off globalJsonInEffect:off missedPipeableOpportunity:off globalDate:off nodeBuiltinImport:off processEnv:off
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -442,12 +442,20 @@ const toolOf = (built: Record<(typeof EXTENSIONS)[number], Extension>, name: str
 // SAFETY: the tools read only the calling conversation from the invocation's API.
 const api = { conversationId: ROOT_CONVERSATION_ID } as ToolExecutionApi;
 
-/** What a call answered, as it is: whether it failed, each part of its output, its structured output and its details. */
-const answer = (tool: ToolRegistration, args: JsonObject) =>
+/**
+ * What a call answered, as it is: whether it failed, each part of its output, its structured output and its details.
+ * `fails` says whether the call is meant to be refused: a call that is not, or one that is, fails the test.
+ */
+const answer = (tool: ToolRegistration, args: JsonObject, fails = false) =>
   Effect.promise(() =>
     // SAFETY: the arguments are the tool's JSON parameters.
     tool.execute(args as never, api, BACKGROUND_CONTEXT),
   ).pipe(
+    Effect.map((result) => {
+      expect(result.isError === true).toBe(fails);
+
+      return result;
+    }),
     Effect.map((result) => ({
       isError: result.isError === true,
       output: result.output ?? [],
@@ -487,41 +495,31 @@ const shortened = (value: Schema.Json): Schema.Json => {
   return value;
 };
 
-/** Whether the file is to be written: asked for, or missing outside CI (where a missing file is a failure). */
-const writing = (): boolean => {
-  if (process.env.UPDATE_SNAPSHOT === "1") return true;
-
-  if (existsSync(SNAPSHOT)) return false;
-
-  if (process.env.CI !== undefined) throw new Error(`${SNAPSHOT} is missing`);
-
-  return true;
-};
-
-/** Compare `actual` with the file, or write it. */
-const settle = (actual: Schema.Json) => {
-  if (writing()) {
+/** Compare `actual` with the file, or, with `UPDATE_SNAPSHOT=1`, write it. */
+const settle = (actual: { readonly tools: Schema.Json; readonly reads: Schema.Json }) => {
+  if (process.env.UPDATE_SNAPSHOT === "1") {
     mkdirSync(dirname(SNAPSHOT), { recursive: true });
     writeFileSync(SNAPSHOT, `${JSON.stringify(actual, null, 2)}\n`);
 
     return;
   }
 
-  // SAFETY: the file is what this test wrote, then `oxfmt` laid out.
-  const recorded = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as {
-    readonly tools: Schema.Json;
-    readonly reads: Schema.Json;
-  };
+  if (!existsSync(SNAPSHOT)) {
+    throw new Error(`${SNAPSHOT} is missing: run this test with UPDATE_SNAPSHOT=1 to create it`);
+  }
 
-  // SAFETY: the snapshot is an object of its two parts.
-  const { tools, reads } = actual as { readonly tools: Schema.Json; readonly reads: Schema.Json };
+  // SAFETY: the file holds the two parts this test wrote.
+  const recorded = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as typeof actual;
 
-  expect(tools).toEqual(recorded.tools);
-  expect(reads).toEqual(recorded.reads);
+  // Compared as text with the keys in order, as the model sees them, whatever the file's formatting.
+  const text = (value: Schema.Json) => JSON.stringify(value, null, 2);
+
+  expect(text(actual.tools)).toBe(text(recorded.tools));
+  expect(text(actual.reads)).toBe(text(recorded.reads));
 };
 
 describe("the Session's Environment and Settings tools", () => {
-  it("register as, and the five reads answer as, __snapshots__/harness-session.json records", () =>
+  it("registers the tools and answers the reads exactly as the snapshot records", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const built = yield* extensionsOver(environments);
@@ -530,23 +528,27 @@ describe("the Session's Environment and Settings tools", () => {
 
         const reads = {
           environment_list: yield* answer(tool("environment_list"), {}),
-          environment_list_unreadable: yield* answer(toolOf(failing, "environment_list"), {}),
+          environment_list_unreadable: yield* answer(toolOf(failing, "environment_list"), {}, true),
           // This Session's own Environment, with variables cut.
           environment_get_own: yield* answer(tool("environment_get"), { id: "default" }),
           // Another Environment, with a problem and a failed Build.
           environment_get_other: yield* answer(tool("environment_get"), { id: "0000abcd" }),
           environment_get_global: yield* answer(tool("environment_get"), { id: "*" }),
-          environment_get_unknown: yield* answer(tool("environment_get"), { id: "nope" }),
+          environment_get_unknown: yield* answer(tool("environment_get"), { id: "nope" }, true),
           settings_get_global: yield* answer(tool("settings_get"), { scope: "*" }),
           settings_get_environment: yield* answer(tool("settings_get"), { scope: "default" }),
           // A setting over `MAX_VALUE_BYTES` and Instructions over the result's limit.
           settings_get_too_long: yield* answer(tool("settings_get"), { scope: "big" }),
-          settings_get_unknown: yield* answer(tool("settings_get"), { scope: "nope" }),
+          settings_get_unknown: yield* answer(tool("settings_get"), { scope: "nope" }, true),
           settings_mcp_list_global: yield* answer(tool("settings_mcp_list"), { scope: "*" }),
           settings_mcp_list_environment: yield* answer(tool("settings_mcp_list"), {
             scope: "default",
           }),
-          settings_mcp_list_unknown: yield* answer(tool("settings_mcp_list"), { scope: "nope" }),
+          settings_mcp_list_unknown: yield* answer(
+            tool("settings_mcp_list"),
+            { scope: "nope" },
+            true,
+          ),
           settings_mcp_get_global: yield* answer(tool("settings_mcp_get"), {
             scope: "*",
             name: "shared",
@@ -555,14 +557,22 @@ describe("the Session's Environment and Settings tools", () => {
             scope: "default",
             name: "docs",
           }),
-          settings_mcp_get_unknown_scope: yield* answer(tool("settings_mcp_get"), {
-            scope: "nope",
-            name: "docs",
-          }),
-          settings_mcp_get_unknown_server: yield* answer(tool("settings_mcp_get"), {
-            scope: "default",
-            name: "ghost",
-          }),
+          settings_mcp_get_unknown_scope: yield* answer(
+            tool("settings_mcp_get"),
+            {
+              scope: "nope",
+              name: "docs",
+            },
+            true,
+          ),
+          settings_mcp_get_unknown_server: yield* answer(
+            tool("settings_mcp_get"),
+            {
+              scope: "default",
+              name: "ghost",
+            },
+            true,
+          ),
         };
 
         const registered = Arr.flatMap(EXTENSIONS, (extension) =>
@@ -580,10 +590,6 @@ describe("the Session's Environment and Settings tools", () => {
         // The Environment's variables are cut after the ones that fit.
         expect(reads.environment_get_own.structured).toMatchObject({ variables_truncated: true });
         expect(reads.environment_get_other.structured).toMatchObject({ current: false });
-
-        for (const [name, each] of Object.entries(reads)) {
-          expect(each.isError, name).toBe(/unknown|unreadable/.test(name));
-        }
 
         expect(VARIABLES_BYTES).toBeLessThan(
           Object.values(MANY_VARIABLES).reduce((total, value) => total + value.length, 0),
