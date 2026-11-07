@@ -1,18 +1,7 @@
 // What the GitHub App's setup (`github-app-setup.ts`) computes without GitHub or the disk: the manifest the app is
 // registered from (ADR-0025), and the dev.env the app's secrets are written into.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off -- plain functions over text and native records, not combinators.
-
-/** The permissions the app asks for (ADR-0025): what the agent's git and gh need, and CI's state to read. */
-export const GITHUB_APP_PERMISSIONS = {
-  contents: "write",
-  pull_requests: "write",
-  issues: "write",
-  workflows: "write",
-  actions: "read",
-  checks: "read",
-  statuses: "read",
-  metadata: "read",
-} as const;
+import { GITHUB_APP_PERMISSIONS } from "@cloudpid/config";
 
 /**
  * The manifest GitHub registers the app from: public (so it can be installed on the owner's organizations too), with

@@ -20,6 +20,7 @@ import {
 import { WorkerShellBackend } from "@cloudflare/computer/backends/worker-shell";
 import jq from "@cloudflare/computer/shell/jq";
 import { EXIT_REPORT_HOST } from "@cloudpid/sandbox-image/supervisor";
+import { CONTAINER_GITHUB_PERMISSIONS } from "@cloudpid/config";
 import { type KeptSecret, type KeptVault, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import { GitHubApp, type MintedToken } from "../github/app.ts";
 import { redactText } from "./redact.ts";
@@ -344,6 +345,8 @@ export class Workspace extends ContainerHost {
             privateKey: env.CLOUDPID_GITHUB_APP_PRIVATE_KEY,
             fetch: (url, init) => this.githubFetch(url, init),
             now: () => this.clock(),
+            // Never all of the installation's: a permission the App gains reaches a Container only through this list.
+            permissions: CONTAINER_GITHUB_PERMISSIONS,
             kept: {
               load: () => ctx.storage.kv.get<ReadonlyArray<MintedToken>>(GITHUB_TOKENS_KEY),
               save: (minted) => ctx.storage.kv.put(GITHUB_TOKENS_KEY, minted),
