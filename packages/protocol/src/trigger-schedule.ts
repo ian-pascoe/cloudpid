@@ -141,9 +141,10 @@ export const dueFires = (
 ): DueFires => {
   if (now <= after) return { fire: undefined, missed: [] };
 
-  // croner's previous runs are before the reference, so a time exactly at `now` is found from a millisecond on.
+  // croner's previous runs are before the reference, which it reads to the second: a time exactly at `now` is found
+  // from a second on (a Schedule's times are whole minutes), and what is past `now` is filtered out.
   const due = cronOf(schedule)
-    .previousRuns(keep + 1, new Date(now + 1))
+    .previousRuns(keep + 1, new Date(now + 1000))
     .map((time) => time.getTime())
     .filter((time) => time > after && time <= now);
 

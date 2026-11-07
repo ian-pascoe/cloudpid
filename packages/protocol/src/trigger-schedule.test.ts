@@ -146,6 +146,18 @@ describe("dueFires", () => {
     ).toEqual({ fire: at("2026-11-07T11:00:00Z"), missed: [] });
   });
 
+  it("fires a time due exactly now, as the alarm set for it wakes", () => {
+    expect(
+      dueFires(hourly, { after: at("2026-11-07T10:00:00Z"), now: at("2026-11-07T11:00:00Z") }),
+    ).toEqual({ fire: at("2026-11-07T11:00:00Z"), missed: [] });
+    expect(
+      dueFires(hourly, {
+        after: at("2026-11-07T10:00:00Z"),
+        now: at("2026-11-07T11:00:00Z") + 1,
+      }),
+    ).toEqual({ fire: at("2026-11-07T11:00:00Z"), missed: [] });
+  });
+
   it("fires once, for the latest missed time, and lists the others as missed, oldest first", () => {
     const due = dueFires(hourly, {
       after: at("2026-11-07T10:00:00Z"),
