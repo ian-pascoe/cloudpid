@@ -359,7 +359,7 @@ _Avoid_: Budget, quota, cap
 ## The agent's changes to its harness
 
 **Agent change**:
-A change the agent makes to an Environment or to the Settings, recorded with when, the Session, the reason and the values before and after, so the owner can see it and revert it. Some have no revert: the making of an Environment (deleting one needs the owner's Approval), a Build asked for, and a Secret the owner kept in a `secret_ask` form on the agent's request or that the agent deleted with the owner's Approval (recorded by name only, as the history holds no value to bring back). A change the owner approved first is marked so; deleting an Environment is recorded nowhere, as its history goes with it.
+A change an agent makes to an Environment or to the Settings for the owner, whether a Session's agent or one working through the MCP endpoint, recorded with when, who made it (the Session, or the endpoint's caller by its client's name), the reason and the values before and after, so the owner can see it and revert it. Some have no revert: the making of an Environment (deleting one needs the owner's Approval), a Build asked for, and a Secret the owner kept in a `secret_ask` form on the agent's request or that the agent deleted with the owner's Approval (recorded by name only, as the history holds no value to bring back). A change the owner approved first is marked so; deleting an Environment is recorded nowhere, as its history goes with it.
 _Avoid_: Audit entry, self-modification (for one change), edit
 
 **Limit**:
@@ -367,7 +367,7 @@ A setting that bounds what the agent may spend or start: the Spend limit, an Env
 _Avoid_: Guardrail, ceiling, cap, quota
 
 **Approval**:
-The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; or one no revert can undo (deleting an Environment or a kept Secret).
+The owner's yes or no, given in cloudpid, to an Agent change that waits for it, whether a Session's agent or an agent through the MCP endpoint asked: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; or one no revert can undo (deleting an Environment or a kept Secret).
 _Avoid_: Confirmation, permission, consent
 
 ## Credentials and the browser
@@ -469,12 +469,16 @@ Work an MCP server goes on doing after answering the call that started it. The c
 _Avoid_: Task (alone: that is a Todo Item, or pi-durable's work), background job, async call, task id (the server's id, which is never shown)
 
 **MCP endpoint**:
-cloudpid's own MCP server, through which a Local agent works with cloudpid as the owner: it lists Environments and Sessions, starts and messages Sessions, waits for their Runs and reads their transcripts. It never asks the Local agent anything and answers nothing that waits for the owner.
+cloudpid's own MCP server, through which a Local agent (or a Session, in Self-use) works with cloudpid as the owner: it lists Environments and Sessions, starts and messages Sessions, waits for their Runs, reads their transcripts, and changes Environments and Settings with the tools a Session's agent has. It never asks its caller anything and never answers for the owner: what needs the owner's Approval waits for them in cloudpid, and the caller can only follow it.
 _Avoid_: MCP server (that is one the agent's tools come from), API, `/mcp`
 
 **Local agent**:
-An agent the owner runs outside cloudpid, such as pi or Claude Code on their own machine, that works with cloudpid's Sessions through the MCP endpoint. A Session it starts, and each message it sends, is marked as coming from it.
-_Avoid_: MCP client (the protocol's role, which cloudpid also plays toward MCP servers), remote agent, external agent
+An agent the owner runs outside cloudpid, such as pi or Claude Code on their own machine or a hosted one such as Executor, that works with cloudpid through the MCP endpoint: its Sessions, Environments and Settings. What it starts, sends or changes there is marked as coming from it.
+_Avoid_: MCP client (the protocol's role, which cloudpid also plays toward MCP servers), remote agent, external agent, Self-use (a Session using the endpoint)
+
+**Self-use**:
+A cloudpid Session working with cloudpid through the MCP endpoint, which it has as one of its MCP servers. It runs inside cloudpid, so it is not a Local agent.
+_Avoid_: Loopback, recursion, self-hosting
 
 **Session import**:
 A Session a Local agent starts from a conversation it had on the owner's machine: that conversation's active Session branch becomes the new Session's root conversation, in a new Workspace on the branch the Local agent pushed, with its Carried Changes. It may bring the owner's next message, which the Session answers once the import ends; without one, the Session waits for the owner. The Session is marked as imported from that Local agent.
