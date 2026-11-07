@@ -37,9 +37,9 @@ import {
   spareUpkeep,
 } from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
-import { attachmentRoute, isMcpRoute, isRegistryRpc, sessionSocketId } from "./routes.ts";
+import { attachmentRoute, isMcpRoute } from "./routes.ts";
 import { GitHubAppConfig, GitHubAppConfigLive } from "./github/config.ts";
-import { refuseCrossOrigin } from "./same-origin.ts";
+import { serveOwnerCalls } from "./same-origin.ts";
 import { serveAttachment } from "./serve-attachment.ts";
 import { FileListings, fileListingsLayer } from "./session/file-search.ts";
 import { workspaceLookups } from "./session/lookups.ts";
@@ -226,15 +226,32 @@ export const serverInit = Effect.gen(function* () {
         // The MCP endpoint's own audience and its two kinds of caller are the guard's (`isMcpRoute`); this is its route.
         if (isMcpRoute(request)) return yield* mcpRoute;
 
-        const sessionId = sessionSocketId(request);
-
         // `/rpc` and the Session socket answer only the web app's own page (docs/architecture/client-and-protocol.md →
-        // Same-origin check).
-        if (sessionId !== undefined) {
-          const refused = yield* refuseCrossOrigin(request);
+        // Same-origin check); no other route shares their paths.
+        const ownerCall = yield* serveOwnerCalls({
+          socket: (sessionId) => connectSession(sessions, registries, sessionId),
+          rpc: () =>
+            serveRegistryRpc(registries, {
+              workspaces,
+              sessions: sessionObjects,
+              triggers,
+              legacy,
+              spares,
+              builds,
+              mcp,
+              mcpStatus: mcpStatusReads,
+              mcpSignIns,
+              lookups,
+              branches,
+              skillSearch: searchSkillsSh,
+              // The Worker's own cache: a Durable Object has none.
+              skillDirectory: skillDirectoryOver({ cache: caches.default }),
+              skillRepos,
+              background: (effect) => execution.waitUntil(effect),
+            }),
+        });
 
-          return refused ?? (yield* connectSession(sessions, registries, sessionId));
-        }
+        if (ownerCall !== undefined) return ownerCall;
 
         const attachment = attachmentRoute(request);
 
@@ -244,31 +261,6 @@ export const serverInit = Effect.gen(function* () {
 
         // The start of an MCP sign-in: behind the guard, and the link's own request.
         if (isStartRequest(request)) return yield* serveStart(registry, signInEnv);
-
-        if (isRegistryRpc(request)) {
-          const refused = yield* refuseCrossOrigin(request);
-
-          if (refused !== undefined) return refused;
-
-          return yield* serveRegistryRpc(registries, {
-            workspaces,
-            sessions: sessionObjects,
-            triggers,
-            legacy,
-            spares,
-            builds,
-            mcp,
-            mcpStatus: mcpStatusReads,
-            mcpSignIns,
-            lookups,
-            branches,
-            skillSearch: searchSkillsSh,
-            // The Worker's own cache: a Durable Object has none.
-            skillDirectory: skillDirectoryOver({ cache: caches.default }),
-            skillRepos,
-            background: (effect) => execution.waitUntil(effect),
-          });
-        }
 
         // None of the routes above: the web app's files, served after the guard.
         return yield* serveAsset(assets);
