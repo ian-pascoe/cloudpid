@@ -116,6 +116,16 @@ The endpoint serves the tools a Session's agent has for Environments and Setting
 
 The stages below are not built yet; until a stage lands, its tools are not served (`describe().harness`). What differs from the in-session tools is stated here; everything else is as [`agent-changes.md`](agent-changes.md), [`mcp-configuration.md`](mcp-configuration.md) and [`agent-capabilities.md`](agent-capabilities.md) say.
 
+### Built so far: S1b
+
+The read tools are split into shared definitions and cores; the endpoint does not serve them yet (S1d wires the dispatcher, so none of the five names is in `MCP_TOOL_NAMES`).
+
+- **Definitions** are in `packages/protocol/src/harness-tools/` (`@cloudpid/protocol/harness-tools`): `environments_list`, `environment_list`, `environment_get`, `settings_get` and `settings_mcp_get`, with their input and output schemas, annotations and surface-dependent descriptions. An oxlint override in `packages/protocol/.oxlintrc.json` limits the folder's imports to `effect`, `@cloudpid/config` and its own files.
+- **Cores** are `packages/extensions/src/environment-reads.ts`, `settings-reads.ts` and `settings-mcp-reads.ts`, with shared helpers in `harness.ts` (`HarnessRead`, text cutting, field pages). Each takes a `surface` and bounds; the in-session `defineEffectTool` wrappers call them with the session surface and the in-session bounds, and the session text and `tool_search` snapshot are unchanged.
+- **Reads without a Session** are `environmentReads`, `settingsReads` and `settingsMcpReads` in `apps/server/src/session/`; the Session builders spread them, so the same reads serve a caller with no Session.
+- **Errors** carry an optional `code` (`not_found`, `invalid_argument`) for the dispatcher to map.
+- **Endpoint output** is built from the endpoint's structured value, not from the in-session text: flat objects with optional keys, `_truncated` flags, and a field page whose text ends in a `[Characters a-b of N …]` footer. `settings_mcp_get` leaves an entry or the layers out when they pass 4 KiB (`entry_truncated`, `layers.truncated`), and sheds parts until the answer fits 56 KiB.
+
 ### Shared definitions and the core/wrapper split
 
 - **`@cloudpid/protocol/harness-tools`** (a new subpath) holds, for every shared tool: its name, input and output schemas and annotations; its descriptions, with the sentences that differ by surface; and the description pieces they use (`SIZE_LINES`, `PLAIN_VALUES`, `Reason`, `idOrGlobal`). `McpServer` and the in-session extensions both import it, so a description is written once.
