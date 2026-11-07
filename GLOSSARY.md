@@ -333,7 +333,7 @@ The typed configuration with defaults (default model and thinking level, Roles, 
 _Avoid_: Config, preferences
 
 **Settings page**:
-The one page where the owner configures cloudpid, for the Scope picked at its top: the Settings, Environments, Workspaces, Skills, Variables, Secrets, Notifications and Agent changes, each in a Settings section.
+The one page where the owner configures cloudpid, for the Scope picked at its top: the Settings, Environments, Workspaces, Triggers, Skills, Variables, Secrets, Notifications and Agent changes, each in a Settings section.
 _Avoid_: Preferences, admin page
 
 **Settings section**:
