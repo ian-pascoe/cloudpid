@@ -30,9 +30,18 @@ const TriggerSummaryFields = {
   name: Schema.String.annotate({ description: "The Trigger's name, which titles its Sessions" }),
   kind: Schema.String.annotate({
     description:
-      '"environment": each Fire starts a new Session in a new Workspace of its Environment',
+      '"environment": each Fire starts a new Session in a new Workspace of its Environment; "workspace": each Fire starts a new Session in its Workspace',
   }),
   environment: ScopeRef.annotate({ description: "The Environment the Trigger belongs to" }),
+  workspace: Schema.NullOr(
+    Schema.Struct({
+      id: Schema.String.annotate({ description: "The Workspace's id" }),
+      branch: Schema.String.annotate({ description: "The Workspace's branch" }),
+    }),
+  ).annotate({
+    description:
+      "The Workspace a Workspace trigger is kept for, which it keeps; null for an Environment trigger",
+  }),
   schedule: Schema.NullOr(
     Schema.Struct({
       cron: Schema.String.annotate({ description: "The 5-field cron expression" }),
@@ -43,11 +52,11 @@ const TriggerSummaryFields = {
   }),
   when_busy: Schema.String.annotate({
     description:
-      '"skip": a Fire while the last Fire\'s Session is still at work is skipped; "start": it starts a Session anyway',
+      '"skip": a Fire while the last Fire\'s Session (a Workspace trigger\'s: any Session in its Workspace) is still at work is skipped; "start": it starts a Session anyway; "wait" (a Workspace trigger\'s default): it stays pending until the Workspace is idle',
   }),
   base: Schema.NullOr(Schema.String).annotate({
     description:
-      "The branch each Fire's Workspace starts from; null for each Repo's default branch",
+      "The branch each Fire's Workspace starts from; null for each Repo's default branch, and for a Workspace trigger, which holds none",
   }),
   model: Schema.NullOr(Schema.String).annotate({
     description: "The model of each Fire's Session; null for the Environment's",
@@ -106,6 +115,7 @@ export const triggerSummaryOutput = (
     name: definition.name,
     kind: definition.kind,
     environment: scopeRef(environment),
+    workspace: definition.workspace === undefined ? null : { ...definition.workspace },
     schedule: schedule === undefined ? null : { cron: schedule.cron, zone: schedule.zone },
     when_busy: definition.whenBusy,
     base: definition.base ?? null,

@@ -17,6 +17,8 @@ import type { TriggerObjects } from "../trigger/objects.ts";
 /** What the Session's Triggers read and change in the Registry. */
 export type TriggersRegistry = Pick<
   RegistryMethods,
+  | "getSession"
+  | "getWorkspace"
   | "listTriggers"
   | "triggerDefinition"
   | "agentCreateTrigger"
@@ -75,6 +77,22 @@ export const sessionTriggers = ({
     list: (environment) => registry.listTriggers({ environment }),
     get: (id) => registry.triggerDefinition({ id }),
     newId: newTriggerId,
+    // This Session's own Workspace: the agent can't name another until a tool lists them.
+    workspace: Effect.gen(function* () {
+      const known = session === undefined ? null : yield* registry.getSession({ id: session });
+
+      if (known === null) return yield* unlisted;
+
+      const kept = yield* registry.getWorkspace({ id: known.workspace });
+
+      if (kept === null) {
+        return yield* EnvironmentsError.make({
+          message: "This Session's Workspace is not listed.",
+        });
+      }
+
+      return { id: kept.id, branch: kept.branch, environment: kept.environment };
+    }),
     create: ({ id, trigger, author }) =>
       changing(id, true, (by) =>
         registry.agentCreateTrigger({ id, trigger, author: { session: by, ...author } }),

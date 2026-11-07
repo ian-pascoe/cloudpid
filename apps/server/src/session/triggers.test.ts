@@ -4,8 +4,10 @@
 import type {
   AgentChange,
   EnvironmentTriggerInput,
+  SessionRecord,
   TriggerChanged,
   TriggerDefinition,
+  WorkspaceRecord,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
@@ -81,6 +83,16 @@ const setUp = (
     listTriggers: ({ environment }) =>
       Effect.succeed(environment === undefined || environment === "default" ? [DEFINITION] : []),
     triggerDefinition: ({ id }) => Effect.succeed(id === "t1" ? DEFINITION : null),
+    // SAFETY: the Triggers read only a Session's Workspace and a Workspace's branch and Environment.
+    getSession: ({ id }) =>
+      Effect.succeed(id === "s-1" ? ({ id, workspace: "0f0f0f0f" } as SessionRecord) : null),
+    // SAFETY: as above.
+    getWorkspace: ({ id }) =>
+      Effect.succeed(
+        id === "0f0f0f0f"
+          ? ({ id, branch: "cloudpid/0f0f0f0f", environment: "default" } as WorkspaceRecord)
+          : null,
+      ),
     agentCreateTrigger: (input) => answered("agentCreateTrigger", input),
     agentUpdateTrigger: (input) => answered("agentUpdateTrigger", input),
     agentSetTriggerPaused: (input) => answered("agentSetTriggerPaused", input),
@@ -208,6 +220,22 @@ describe("the Session's Triggers", () => {
     expect(await Effect.runPromise(access.list("default"))).toEqual([DEFINITION]);
     expect(await Effect.runPromise(access.get("nope"))).toBeNull();
     expect(await Effect.runPromise(access.newId)).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("says which Workspace this Session works in, for a Workspace trigger", async () => {
+    const { access } = setUp();
+
+    expect(await Effect.runPromise(access.workspace)).toEqual({
+      id: "0f0f0f0f",
+      branch: "cloudpid/0f0f0f0f",
+      environment: "default",
+    });
+
+    const unlisted = setUp(CHANGED, { listed: false });
+
+    expect(
+      (await Effect.runPromise(unlisted.access.workspace.pipe(Effect.flip))).message,
+    ).toContain("not one the Registry lists");
   });
 
   it("changes nothing for a Session the Registry does not list", async () => {

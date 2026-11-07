@@ -1,6 +1,6 @@
 // The `trigger_*` tools (`docs/architecture/triggers.md` → Agent tools and Approval, ADR-0019, ADR-0047): the agent
-// lists and reads the Triggers, makes an Environment trigger, changes its message, Schedule or options, and pauses,
-// resumes or removes one. Making a Trigger, changing what it sends or when (`trigger_create`, `trigger_message_set`,
+// lists and reads the Triggers, makes an Environment trigger or a Workspace trigger for its own Workspace, changes its
+// message, Schedule or options, and pauses, resumes or removes one. Making a Trigger, changing what it sends or when (`trigger_create`, `trigger_message_set`,
 // `trigger_schedule_set`, `trigger_options_set`) and `trigger_resume` wait for the owner's Approval (`withApproval`),
 // since each makes cloudpid start Sessions unattended; `trigger_pause` and `trigger_remove` only narrow, so they apply at
 // once. A Trigger's kind and Environment never change. There is no fire-now tool: the agent can't start Sessions at
@@ -16,7 +16,6 @@ import { ModelId, ThinkingLevel } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
   type AgentChange,
-  type EnvironmentTriggerInput,
   fireTimeWords,
   nextFires,
   scheduleOf,
@@ -29,9 +28,16 @@ import {
   TriggerChangeValue,
   type TriggerDefinition,
   triggerField,
+  type EnvironmentTriggerInput,
+  type TriggerInput,
+  type TriggerKind,
   triggerMessageProblem,
   triggerNameProblem,
   type TriggerPatch,
+  whenBusyProblem,
+  defaultWhenBusy,
+  type WorkspaceRef,
+  type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
@@ -90,6 +96,12 @@ const MAX_CARD_MESSAGE = MAX_CARD_CHARS;
 /** How many of a Trigger's next Fires a result and a card show. */
 const NEXT_FIRES = 3;
 
+/** The Workspace this Session works in, which a Workspace trigger made from it keeps. */
+export type TriggerWorkspace = WorkspaceRef & { readonly environment: string };
+
+/** What `trigger_create`'s `owner` says for a Trigger kept for this Session's own Workspace. */
+export const WORKSPACE_OWNER = "workspace";
+
 /**
  * What the Session does for the `trigger_*` tools, over the Registry and the Trigger objects: it reads the Triggers,
  * and makes each change as the Registry's Agent change of `triggers.<id>`, by `author` in this Session, then wakes the
@@ -104,9 +116,11 @@ export type TriggerAccessService = {
   readonly get: (id: string) => Effect.Effect<TriggerDefinition | null, EnvironmentsError>;
   /** A fresh Trigger id. */
   readonly newId: Effect.Effect<string>;
+  /** The Workspace this Session works in, with its Environment: all a Workspace trigger made here can mean. */
+  readonly workspace: Effect.Effect<TriggerWorkspace, EnvironmentsError>;
   readonly create: (input: {
     readonly id: string;
-    readonly trigger: EnvironmentTriggerInput;
+    readonly trigger: TriggerInput;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<TriggerChanged, EnvironmentsError>;
   /** Change Trigger `id`'s fields; with `expected`, only while it is as the owner saw it. */
@@ -156,9 +170,9 @@ const Schedule = Schema.Struct({
   }),
 }).annotate({ description: "When the Trigger fires" });
 
-const WhenBusy = Schema.Literals(["skip", "start"]).annotate({
+const WhenBusy = Schema.Literals(["wait", "skip", "start"]).annotate({
   description:
-    '"skip" (the default): a Fire while the last Fire\'s Session is still running or waiting for the user is skipped; "start": it starts a Session anyway',
+    'What a Fire does while the work of the last one is still going on. Environment trigger: "skip" (the default) skips a Fire while the last Fire\'s Session is still running or waiting for the user; "start" starts a Session anyway. Workspace trigger: "wait" (the default) keeps the Fire pending until no Session in the Workspace is at work (the user\'s own included), merging any later Fires into it; "skip" skips it; "start" starts a Session anyway. "wait" is refused for an Environment trigger',
 });
 
 const Base = Schema.String.check(Schema.isMinLength(1)).annotate({
@@ -196,8 +210,9 @@ const nextFiresNote = (schedule: ScheduleSource, now: number): string =>
     "; ",
   )}`;
 
-/** A Trigger's options as the owner reads them. */
+/** A Trigger's options as the owner reads them; a Workspace trigger holds no base. */
 const optionsWords = (options: {
+  readonly kind?: TriggerKind | undefined;
   readonly whenBusy: string;
   readonly base?: string | undefined;
   readonly model?: string | undefined;
@@ -206,7 +221,9 @@ const optionsWords = (options: {
   Arr.join(
     [
       `when busy: ${options.whenBusy}`,
-      `base: ${options.base ?? "each Repo's default branch"}`,
+      ...(options.kind === "workspace"
+        ? []
+        : [`base: ${options.base ?? "each Repo's default branch"}`]),
       `model: ${options.model ?? "the Environment's"}`,
       `thinking: ${options.thinking ?? "the Environment's"}`,
     ],
@@ -242,6 +259,7 @@ const triggerWords = (value: TriggerChangeValue): string =>
   Arr.join(
     [
       `Name: ${value.name}`,
+      ...(value.workspace === undefined ? [] : [`Workspace: ${value.workspace.branch}`]),
       `Schedule: ${scheduleWords(scheduleOf(value))}`,
       `Options: ${optionsWords(value)}`,
       ...(value.paused ? ["Paused"] : []),
@@ -332,9 +350,14 @@ export const TriggerTools: Effect.Effect<
   const environmentNamed = (id: string) =>
     Effect.map(environments.get(id), (details) => ({ id, name: details?.name ?? id }));
 
-  /** The card's target for a Trigger of Environment `environment`. */
-  const targetOf = (environment: { readonly name: string }) =>
-    `Environment ${JSON.stringify(environment.name)}`;
+  /** The card's target for a Trigger of Environment `environment`, kept for `workspace` if it is a Workspace trigger's. */
+  const targetOf = (
+    environment: { readonly name: string },
+    workspace?: { readonly branch: string },
+  ) =>
+    workspace === undefined
+      ? `Environment ${JSON.stringify(environment.name)}`
+      : `Workspace ${JSON.stringify(workspace.branch)} of Environment ${JSON.stringify(environment.name)}`;
 
   /** `definition` as a result gives it, with its next Fires. */
   const outputOf = (definition: TriggerDefinition, environment: EnvironmentRef) =>
@@ -516,12 +539,12 @@ export const TriggerTools: Effect.Effect<
         api,
         {
           tool,
-          target: targetOf(environment),
+          target: targetOf(environment, definition.workspace),
           change,
           before: before(definition),
           after,
           reason,
-          notice: `${change} "${definition.name}", ${targetOf(environment)}`,
+          notice: `${change} "${definition.name}", ${targetOf(environment, definition.workspace)}`,
           notes: notes?.(definition) ?? [],
           expected: triggerChangeJson(definition),
         },
@@ -559,7 +582,7 @@ export const TriggerTools: Effect.Effect<
   const list = yield* defineEffectTool({
     name: "trigger_list",
     description:
-      "List the Triggers: what makes cloudpid start a Session unattended. An Environment trigger fires on its Schedule, each Fire starting a new Session in a new Workspace of its Environment with the Trigger message. Gives each one's id, name, Environment, Schedule, options, whether it is paused, and its next Fires; trigger_get gives one with its message.",
+      "List the Triggers: what makes cloudpid start a Session unattended. An Environment trigger fires on its Schedule, each Fire starting a new Session in a new Workspace of its Environment with the Trigger message; a Workspace trigger starts each Fire's Session in one Workspace, on its files and branch. Gives each one's id, name, kind, Environment, Workspace (a Workspace trigger's), Schedule, options, whether it is paused, and its next Fires; trigger_get gives one with its message.",
     parameters: Schema.Struct({
       environment: Schema.optionalKey(
         Id.annotate({
@@ -585,7 +608,7 @@ export const TriggerTools: Effect.Effect<
         const lines = Arr.map(
           named,
           ({ definition, where }) =>
-            `- ${definition.id}: "${definition.name}", Environment "${where.name}" (${where.id}), ${scheduleWords(scheduleOf(definition))}${definition.paused ? ", paused" : ""}`,
+            `- ${definition.id}: "${definition.name}", ${definition.workspace === undefined ? "" : `Workspace ${definition.workspace.branch} of `}Environment "${where.name}" (${where.id}), ${scheduleWords(scheduleOf(definition))}${definition.paused ? ", paused" : ""}`,
         );
 
         return {
@@ -613,7 +636,7 @@ export const TriggerTools: Effect.Effect<
   const get = yield* defineEffectTool({
     name: "trigger_get",
     description:
-      "Get one Trigger: its name, Environment, Trigger message, Schedule, options, whether it is paused, and its next Fires.",
+      "Get one Trigger: its name, kind, Environment, Workspace (a Workspace trigger's), Trigger message, Schedule, options, whether it is paused, and its next Fires.",
     parameters: Schema.Struct({ id: TriggerId }),
     structuredOutputSchema: outputSchema(TriggerOutput),
     executionMode: "sequential",
@@ -634,7 +657,7 @@ export const TriggerTools: Effect.Effect<
               type: "text" as const,
               text: Arr.join(
                 [
-                  `Trigger ${definition.id} of Environment "${environment.name}" (${environment.id}).`,
+                  `Trigger ${definition.id} of ${definition.workspace === undefined ? "" : `Workspace ${definition.workspace.branch} in `}Environment "${environment.name}" (${environment.id}).`,
                   triggerWords(triggerChangeValue(definition)),
                   next.length === 0
                     ? "No Fires are coming."
@@ -656,7 +679,7 @@ export const TriggerTools: Effect.Effect<
     name: "trigger_create",
     description: Arr.join(
       [
-        "Make a Trigger: on its Schedule, cloudpid starts a new Session in a new Workspace of the Environment and sends it the Trigger message, unattended (an Environment trigger). Use it when the user asks for recurring work, such as a weekly report. The user must approve it, as it starts Sessions on its own. Its kind and Environment never change: to move one, remove it and make another.",
+        "Make a Trigger: on its Schedule, cloudpid starts a new Session and sends it the Trigger message, unattended. An Environment trigger (owner: the Environment's id) starts each Session in a new Workspace of the Environment; a Workspace trigger (owner: \"workspace\") starts each one in this Session's own Workspace, on its files and branch, once no Session there is at work, and keeps that Workspace until it is removed. Use it when the user asks for recurring work, such as a weekly report. The user must approve it, as it starts Sessions on its own. Its kind, Environment and Workspace never change: to move one, remove it and make another.",
         APPROVAL,
       ],
       "\n\n",
@@ -664,7 +687,7 @@ export const TriggerTools: Effect.Effect<
     parameters: Schema.Struct({
       owner: Id.annotate({
         description:
-          "Whose Trigger it is: an Environment's id (each Fire starts a Session in a new Workspace of that Environment)",
+          "Whose Trigger it is: an Environment's id (each Fire starts a Session in a new Workspace of that Environment), or \"workspace\" (this Session's own Workspace only: each Fire starts a Session in it, which then cannot be removed with its last Session while the Trigger exists)",
       }),
       name: Schema.String.annotate({
         description: "1 to 80 characters, which titles each Fire's Session with the Fire's time",
@@ -702,7 +725,21 @@ export const TriggerTools: Effect.Effect<
 
         if (problem !== undefined) return yield* refuse(problem);
 
-        const { environment: id } = yield* target(owner);
+        // `workspace` is this Session's own Workspace: the agent has no tool that lists others.
+        const here = owner === WORKSPACE_OWNER ? yield* access.workspace : undefined;
+        const kind = here === undefined ? "environment" : "workspace";
+
+        if (here !== undefined && base !== undefined) {
+          return yield* refuse(
+            "a Workspace trigger works on its Workspace's branch: it takes no base",
+          );
+        }
+
+        const busyProblem = whenBusyProblem(kind, when_busy ?? defaultWhenBusy(kind));
+
+        if (busyProblem !== undefined) return yield* refuse(busyProblem);
+
+        const { environment: id } = here ?? (yield* target(owner));
         const details = yield* environments.get(id);
 
         if (details === null) {
@@ -713,31 +750,55 @@ export const TriggerTools: Effect.Effect<
 
         const environment = { id: details.id, name: details.name };
 
-        const trigger: Types.Mutable<EnvironmentTriggerInput> = {
-          kind: "environment",
-          environment: environment.id,
+        // The Trigger as the card shows it: the options not given are their defaults.
+        const value: Types.Mutable<TriggerChangeValue> = {
+          kind,
           name: name.trim(),
           message,
           source,
-        };
-
-        // The Trigger as the card shows it: the options not given are their defaults.
-        const value: Types.Mutable<TriggerChangeValue> = {
-          kind: "environment",
-          name: trigger.name,
-          message,
-          source,
-          whenBusy: when_busy ?? "skip",
+          whenBusy: when_busy ?? defaultWhenBusy(kind),
           paused: false,
         };
 
-        if (when_busy !== undefined) trigger.whenBusy = when_busy;
+        let trigger: TriggerInput;
 
-        if (base !== undefined) trigger.base = value.base = base.trim();
+        if (here === undefined) {
+          const made: Types.Mutable<EnvironmentTriggerInput> = {
+            kind: "environment",
+            environment: environment.id,
+            name: value.name,
+            message,
+            source,
+          };
 
-        if (model !== undefined) trigger.model = value.model = model;
+          if (base !== undefined) made.base = value.base = base.trim();
 
-        if (thinking !== undefined) trigger.thinking = value.thinking = thinking;
+          if (when_busy !== undefined) made.whenBusy = when_busy;
+
+          if (model !== undefined) made.model = value.model = model;
+
+          if (thinking !== undefined) made.thinking = value.thinking = thinking;
+
+          trigger = made;
+        } else {
+          const made: Types.Mutable<WorkspaceTriggerInput> = {
+            kind: "workspace",
+            workspace: here.id,
+            name: value.name,
+            message,
+            source,
+          };
+
+          value.workspace = { id: here.id, branch: here.branch };
+
+          if (when_busy !== undefined) made.whenBusy = when_busy;
+
+          if (model !== undefined) made.model = value.model = model;
+
+          if (thinking !== undefined) made.thinking = value.thinking = thinking;
+
+          trigger = made;
+        }
 
         const now = yield* Clock.currentTimeMillis;
         const drawn = yield* access.newId;
@@ -747,14 +808,16 @@ export const TriggerTools: Effect.Effect<
           api,
           {
             tool: "trigger_create",
-            target: targetOf(environment),
+            target: targetOf(environment, here),
             change: "Create a Trigger",
             before: "None",
             after: triggerWords(value),
             reason,
-            notice: `Create the Trigger "${trigger.name}", ${targetOf(environment)}`,
+            notice: `Create the Trigger "${trigger.name}", ${targetOf(environment, here)}`,
             notes: [
-              `Each Fire starts a new Session in a new Workspace of Environment ${JSON.stringify(clipped(environment.name, 80))} and sends it the message, unattended.`,
+              here === undefined
+                ? `Each Fire starts a new Session in a new Workspace of Environment ${JSON.stringify(clipped(environment.name, 80))} and sends it the message, unattended.`
+                : `Each Fire starts a new Session in Workspace ${JSON.stringify(clipped(here.branch, 80))}, on its files and branch, and sends it the message, unattended. It keeps the Workspace: deleting the Workspace's last Session no longer removes it, until this Trigger is removed.`,
               nextFiresNote(source, now),
               ...cutMessageNotes(message),
             ],
@@ -794,7 +857,7 @@ export const TriggerTools: Effect.Effect<
 
               if (applied.status === "missing") {
                 return yield* EnvironmentsError.make({
-                  message: `The user approved, but ${targetOf(environment)} is gone: nothing was made.`,
+                  message: `The user approved, but ${targetOf(environment, here)} is gone: nothing was made.`,
                 });
               }
 
@@ -805,7 +868,7 @@ export const TriggerTools: Effect.Effect<
                 applied,
                 approval: APPROVED,
                 made: (definition) =>
-                  `made the Trigger "${trigger.name}" (id ${asked.value.id}) in ${targetOf(environment)}. ${definition === null ? "" : `It fires ${scheduleWords(source)}; ${nextFiresNote(source, now)}.`} Each Fire starts a new Session there with the message; the user is notified when its Run ends, or if a Fire fails. trigger_pause stops it at once.`,
+                  `made the Trigger "${trigger.name}" (id ${asked.value.id}) in ${targetOf(environment, here)}. ${definition === null ? "" : `It fires ${scheduleWords(source)}; ${nextFiresNote(source, now)}.`} Each Fire starts a new Session there with the message${here === undefined ? "" : ` once the Workspace is idle (when busy: ${trigger.whenBusy ?? "wait"})`}; the user is notified when its Run ends, or if a Fire fails. trigger_pause stops it at once.`,
                 already: `The Trigger "${trigger.name}" exists`,
               });
             }),
@@ -894,7 +957,7 @@ export const TriggerTools: Effect.Effect<
     name: "trigger_options_set",
     description: Arr.join(
       [
-        "Change a Trigger's options, each where its kind takes it: when_busy, base, model and thinking (an Environment trigger takes all four). Give only those to change; null puts base, model or thinking back to its default. The user must approve the change.",
+        "Change a Trigger's options, each where its kind takes it: when_busy, base, model and thinking (an Environment trigger takes all four; a Workspace trigger takes when_busy, model and thinking, and no base). Give only those to change; null puts base, model or thinking back to its default. The user must approve the change.",
         APPROVAL,
       ],
       "\n\n",
@@ -937,10 +1000,21 @@ export const TriggerTools: Effect.Effect<
 
         const definition = yield* found(id);
 
-        // Every option is an Environment trigger's; a kind a later version added is not this version's to change.
-        if (definition.kind !== "environment") {
+        // A kind a later version added is not this version's to change.
+        if (definition.kind !== "environment" && definition.kind !== "workspace") {
           return yield* refuse("this version can't change the options of this Trigger's kind");
         }
+
+        if (definition.kind === "workspace" && base !== undefined && base !== null) {
+          return yield* refuse(
+            "a Workspace trigger works on its Workspace's branch: it takes no base",
+          );
+        }
+
+        const busyProblem =
+          when_busy === undefined ? undefined : whenBusyProblem(definition.kind, when_busy);
+
+        if (busyProblem !== undefined) return yield* refuse(busyProblem);
 
         const patch: Types.Mutable<TriggerPatch> = {};
 
@@ -953,6 +1027,7 @@ export const TriggerTools: Effect.Effect<
         if (thinking !== undefined) patch.thinking = thinking;
 
         const next = (held: TriggerDefinition) => ({
+          kind: held.kind,
           whenBusy: patch.whenBusy ?? held.whenBusy,
           base: patch.base === undefined ? held.base : (patch.base ?? undefined),
           model: patch.model === undefined ? held.model : (patch.model ?? undefined),
