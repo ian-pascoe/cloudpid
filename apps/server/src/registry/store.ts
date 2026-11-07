@@ -346,13 +346,18 @@ export type RegistryStore = {
   readonly getWorkspaceSetup: (id: string) => WorkspaceSetup | null;
   /** Every Workspace but the spares, newest first. */
   readonly listWorkspaces: () => WorkspaceRecord[];
-  /** Forget a Workspace's record, only while no Session is bound to it. */
   /**
-   * Delete Workspace `id`'s record: `in-use` while a Session is bound to it, or (unless `triggers` is `delete`, the
-   * owner's Remove, which takes them with it) while a Workspace trigger is. The Triggers the agent removed that were
-   * kept for its Workspace go with it.
+   * Delete Workspace `id`'s record: `in-use` while a Session is bound to it, or a Workspace trigger is. The Triggers the
+   * agent removed that were kept for its Workspace go with it.
    */
-  readonly deleteWorkspace: (id: string, triggers?: "keep" | "delete") => Deletion;
+  readonly deleteWorkspace: (id: string) => Deletion;
+  /**
+   * The owner's Remove: `deleteWorkspace`, except that a Workspace trigger does not keep the record: its Triggers go
+   * with it, in the same transaction. Still `in-use` while a Session is bound to it.
+   */
+  readonly deleteWorkspaceAndTriggers: (id: string) => Deletion;
+  /** Whether a Workspace trigger is kept for Workspace `id`, which keeps its record with no Session (`deleteWorkspace`). */
+  readonly workspaceKept: (id: string) => boolean;
   /**
    * Keep a spare for each of `environments` that exists (every one when undefined), in one transaction: an Environment
    * whose spare is stale (other Repos, or another Build than its last good one) has it listed, to remove, and one with
@@ -1236,6 +1241,16 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
   const getWorkspaceRow = (id: string): WorkspaceRow | undefined =>
     sql.exec<WorkspaceRow>("SELECT * FROM workspaces WHERE id = ?", id).toArray()[0];
 
+  /** Whether a Session is bound to Workspace `id`, archived ones too. */
+  const workspaceHasSession = (id: string): boolean =>
+    sql.exec("SELECT 1 FROM sessions WHERE workspace = ? LIMIT 1", id).toArray().length > 0;
+
+  /** Whether an active Workspace trigger is kept for Workspace `id`. */
+  const workspaceHasTrigger = (id: string): boolean =>
+    sql
+      .exec("SELECT 1 FROM triggers WHERE workspace = ? AND removed_at IS NULL LIMIT 1", id)
+      .toArray().length > 0;
+
   const getSpareRow = (environment: string): WorkspaceRow | undefined =>
     sql
       .exec<WorkspaceRow>(
@@ -1904,25 +1919,26 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     forgetSpare: (id) =>
       sql.exec("DELETE FROM workspaces WHERE id = ? AND spare = 1", id).rowsWritten > 0,
 
-    deleteWorkspace: (id, triggers = "keep") =>
+    // A Workspace trigger keeps its Workspace (`docs/architecture/triggers.md` → Kinds and what a Fire delivers to).
+    workspaceKept: (id) => workspaceHasTrigger(id),
+
+    deleteWorkspace: (id) =>
       storage.transactionSync((): Deletion => {
         if (getWorkspaceRow(id) === undefined) return "missing";
 
-        if (
-          sql.exec("SELECT 1 FROM sessions WHERE workspace = ? LIMIT 1", id).toArray().length > 0
-        ) {
-          return "in-use";
-        }
+        if (workspaceHasSession(id) || workspaceHasTrigger(id)) return "in-use";
 
-        // A Workspace trigger keeps its Workspace (`docs/architecture/triggers.md` → Kinds and what a Fire delivers to).
-        if (
-          triggers === "keep" &&
-          sql
-            .exec("SELECT 1 FROM triggers WHERE workspace = ? AND removed_at IS NULL LIMIT 1", id)
-            .toArray().length > 0
-        ) {
-          return "in-use";
-        }
+        sql.exec("DELETE FROM triggers WHERE workspace = ?", id);
+        sql.exec("DELETE FROM workspaces WHERE id = ?", id);
+
+        return "deleted";
+      }),
+
+    deleteWorkspaceAndTriggers: (id) =>
+      storage.transactionSync((): Deletion => {
+        if (getWorkspaceRow(id) === undefined) return "missing";
+
+        if (workspaceHasSession(id)) return "in-use";
 
         sql.exec("DELETE FROM triggers WHERE workspace = ?", id);
         sql.exec("DELETE FROM workspaces WHERE id = ?", id);

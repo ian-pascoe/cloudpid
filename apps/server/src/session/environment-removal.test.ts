@@ -54,6 +54,8 @@ const registry: EnvironmentRemovalRegistry = {
   deleteSession: unused,
   deleteWorkspace: unused,
   deleteWorkspaceWithTriggers: unused,
+  deleteWorkspaceTriggers: unused,
+  workspaceKept: unused,
   listSubagentWorkspaces: unused,
   getSpare: unused,
   forgetSpare: unused,

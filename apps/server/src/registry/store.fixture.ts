@@ -336,8 +336,16 @@ export class TestRegistry extends DurableObject {
     return this.#store.listWorkspaces();
   }
 
+  workspaceKept(id: string): boolean {
+    return this.#store.workspaceKept(id);
+  }
+
   deleteWorkspace(id: string): Deletion {
     return this.#store.deleteWorkspace(id);
+  }
+
+  deleteWorkspaceTriggers(id: string): ReadonlyArray<string> {
+    return this.#triggers.deleteWorkspaceTriggers(id);
   }
 
   deleteWorkspaceWithTriggers(id: string): WorkspaceRemoval {

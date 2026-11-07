@@ -913,6 +913,7 @@ describe("a Workspace trigger", () => {
       await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 1_000);
       await registry.deleteSession("s-0");
 
+      expect(await registry.workspaceKept("0f0f0f0f")).toBe(true);
       expect(await registry.deleteWorkspace("0f0f0f0f")).toBe("in-use");
       expect(await registry.getWorkspace("0f0f0f0f")).toMatchObject({ id: "0f0f0f0f" });
       expect((await registry.listWorkspaces()).map((workspace) => workspace.id)).toEqual([
@@ -929,6 +930,9 @@ describe("a Workspace trigger", () => {
       await registry.deleteSession("s-0");
       await registry.removeTrigger("t1");
 
+      // Without a Session or a Trigger the Workspace stays, listed, for the owner to remove: it may hold unpushed work.
+      expect(await registry.workspaceKept("0f0f0f0f")).toBe(false);
+      expect(await registry.getWorkspace("0f0f0f0f")).toMatchObject({ id: "0f0f0f0f" });
       expect(await registry.deleteWorkspace("0f0f0f0f")).toBe("deleted");
 
       await startIn(registry, "s-1", "0e0e0e0e");
@@ -953,7 +957,7 @@ describe("a Workspace trigger", () => {
       expect(await registry.storedTriggerIds()).toEqual([]);
     });
 
-    it("is kept, with its Triggers, while a Session is bound to it, and Remove takes the Triggers with it", async () => {
+    it("keeps its record while a Session is bound to it, and Remove takes its Triggers first, whatever Sessions are bound", async () => {
       const registry = fresh();
 
       await startIn(registry, "s-0", "0f0f0f0f");
@@ -962,20 +966,32 @@ describe("a Workspace trigger", () => {
       await registry.createTrigger("t2", { ...inWorkspace("0f0f0f0f"), name: "Another" }, 1_000);
       await registry.createTrigger("t3", inWorkspace("0e0e0e0e"), 1_000);
 
+      expect(await registry.workspaceKept("0f0f0f0f")).toBe(true);
+      expect(await registry.workspaceKept("0e0e0e0e")).toBe(true);
+      expect(await registry.workspaceKept("0a0a0a0a")).toBe(false);
+
+      // The record and the Triggers stay while a Session is bound.
       expect(await registry.deleteWorkspaceWithTriggers("0f0f0f0f")).toEqual({
         deletion: "in-use",
         triggers: [],
       });
       expect(await registry.listTriggers()).toHaveLength(3);
 
+      // The owner's Remove takes the Triggers alone first, whatever Sessions are bound.
+      expect(await registry.deleteWorkspaceTriggers("0f0f0f0f")).toEqual(
+        expect.arrayContaining(["t1", "t2"]),
+      );
+      expect((await registry.listTriggers()).map((trigger) => trigger.id)).toEqual(["t3"]);
+      expect(await registry.workspaceKept("0f0f0f0f")).toBe(false);
+      expect(await registry.triggerDefinition("t1")).toBeNull();
+      expect(await registry.getWorkspace("0f0f0f0f")).toMatchObject({ id: "0f0f0f0f" });
+
       await registry.deleteSession("s-0");
 
       expect(await registry.deleteWorkspaceWithTriggers("0f0f0f0f")).toEqual({
         deletion: "deleted",
-        triggers: expect.arrayContaining(["t1", "t2"]),
+        triggers: [],
       });
-      expect((await registry.listTriggers()).map((trigger) => trigger.id)).toEqual(["t3"]);
-      expect(await registry.triggerDefinition("t1")).toBeNull();
     });
 
     it("goes with its Environment: it is in use until its Workspaces are removed, then its Triggers go", async () => {

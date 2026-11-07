@@ -789,6 +789,16 @@ export type RegistryMethods = {
     readonly id: string;
   }) => Effect.Effect<WorkspaceRemoval>;
   /**
+   * Delete Workspace `id`'s Triggers alone, whatever Sessions are bound to it, and answer the ids of the active ones,
+   * whose objects the caller wipes: the owner's Remove does it first, so no waiting Fire starts a Session in a Workspace
+   * being removed.
+   */
+  readonly deleteWorkspaceTriggers: (input: {
+    readonly id: string;
+  }) => Effect.Effect<ReadonlyArray<string>>;
+  /** Whether a Workspace trigger is kept for Workspace `id`, which keeps it when its last Session is deleted. */
+  readonly workspaceKept: (input: { readonly id: string }) => Effect.Effect<boolean>;
+  /**
    * What keeps the spare Workspace of each of `environments` (all of them when undefined) current, in one call:
    * the stale spares to remove (`forgetSpare`, then their objects), and the spares registered now, each with what its
    * object prepares itself with, only for an Environment that had a Session in the last `SPARE_REFILL_WINDOW_MS`.
@@ -1895,6 +1905,9 @@ export const RegistryLive = Registry.make(
             Effect.sync(() => store.listSubagentWorkspaces(session)),
           deleteWorkspace: ({ id }) => Effect.sync(() => store.deleteWorkspace(id)),
           deleteWorkspaceWithTriggers: ({ id }) => Effect.sync(() => triggers.deleteWorkspace(id)),
+          deleteWorkspaceTriggers: ({ id }) =>
+            Effect.sync(() => triggers.deleteWorkspaceTriggers(id)),
+          workspaceKept: ({ id }) => Effect.sync(() => store.workspaceKept(id)),
           upkeepSpares: ({ environments }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;

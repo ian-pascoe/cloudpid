@@ -1995,7 +1995,7 @@ export class TestSession extends DurableObject {
         listSessions: () => Effect.promise(() => registry.listSessions()),
         deleteWorkspace: ({ id }: { id: string }) =>
           Effect.promise(() => registry.deleteWorkspace(id)),
-        listTriggers: () => Effect.promise(() => registry.listTriggers()),
+        workspaceKept: ({ id }: { id: string }) => Effect.promise(() => registry.workspaceKept(id)),
       } as unknown as RemovalRegistry;
 
       const removal = removals(methods, {

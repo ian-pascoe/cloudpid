@@ -656,6 +656,7 @@ const fakeRegistries = () => {
 
   /** Each Trigger object's fire log, newest first. */
   const triggerFires = new Map<string, Array<FireRecord>>();
+  const triggerWaiting = new Map<string, { since: number; merged: number }>();
 
   /** Call Trigger `id`'s object, failing as one that never answers when it is unreachable. */
   const reachTrigger = <A>(id: string, answer: () => A) =>
@@ -709,6 +710,7 @@ const fakeRegistries = () => {
         nextFireAt: null,
         lastFire: triggerFires.get(id)?.[0] ?? null,
         pending: 0,
+        waiting: triggerWaiting.get(id) ?? null,
       })),
     wake: (id) =>
       Effect.suspend(() => {
@@ -1388,6 +1390,16 @@ const fakeRegistries = () => {
           ? ("deleted" as const)
           : ("missing" as const);
       }),
+    deleteWorkspaceTriggers: ({ id }) =>
+      Effect.sync(() => {
+        calls.push(`deleteWorkspaceTriggers:${id}`);
+
+        const held = Arr.filter([...triggersHeld.values()], (each) => each.workspace?.id === id);
+
+        for (const each of held) triggersHeld.delete(each.id);
+
+        return Arr.map(held, (each) => each.id);
+      }),
     deleteWorkspaceWithTriggers: ({ id }) =>
       Effect.sync(() => {
         calls.push(`deleteWorkspace:${id}`);
@@ -1407,6 +1419,8 @@ const fakeRegistries = () => {
           triggers: Arr.map(held, (each) => each.id),
         };
       }),
+    workspaceKept: ({ id }) =>
+      Effect.sync(() => Arr.some([...triggersHeld.values()], (held) => held.workspace?.id === id)),
     takeLegacy: ({ limit }) =>
       Effect.sync(() => {
         calls.push("takeLegacy");
@@ -1733,6 +1747,7 @@ const fakeRegistries = () => {
     unreachableTriggers,
     triggersHeld,
     triggerFires,
+    triggerWaiting,
     breakSession: (id: string, message: string) => {
       brokenSessions.set(id, message);
     },
@@ -2939,12 +2954,14 @@ it("removes a Workspace's Triggers with it, then wipes their objects", async () 
 
   await call(fake, (registry) => registry.removeWorkspace({ id: workspace }));
 
+  // Its Triggers go first, objects and all, so no waiting Fire starts a Session in a Workspace being torn down.
+  expect(fake.calls).toContain(`deleteWorkspaceTriggers:${workspace}`);
   expect(lifecycle(fake)).toEqual([
+    "removeTriggerObject:t1",
     `destroy:${session.id}`,
     `deleteSession:${session.id}`,
     `destroyWorkspace:ws:${workspace}`,
     `deleteWorkspace:${workspace}`,
-    "removeTriggerObject:t1",
   ]);
   expect(fake.triggersHeld.size).toBe(0);
   expect(fake.workspaces).toEqual([]);
@@ -4003,6 +4020,23 @@ describe("the owner's Triggers", () => {
     expect(await call(fake, (registry) => registry.listTriggers({ environment: "other" }))).toEqual(
       [],
     );
+  });
+
+  it("lists the Fire a Trigger is waiting to start, from its object's state", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+    await create(fake, "t2", { ...WEEKLY, name: "Other" });
+    fake.triggerWaiting.set("t1", { since: 7, merged: 2 });
+
+    const listed = await call(fake, (registry) =>
+      registry.listTriggers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(Arr.map(listed, ({ definition, waiting }) => [definition.id, waiting])).toEqual([
+      ["t1", { since: 7, merged: 2 }],
+      ["t2", undefined],
+    ]);
   });
 
   it("changes a Trigger only while it has the fields the form opened on, a pause aside", async () => {

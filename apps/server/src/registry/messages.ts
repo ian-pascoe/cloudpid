@@ -12,6 +12,9 @@ export const reason = (cause: Cause.Cause<unknown>): string => {
 /** That no Environment is registered under `id`. */
 export const noEnvironment = (id: string): string => `Environment "${id}" does not exist`;
 
+/** That no Workspace is registered under `id`. */
+export const noWorkspace = (id: string): string => `There is no Workspace ${id}`;
+
 /** That the Trigger asked for is gone: never made, or removed. */
 export const triggerRemoved = "This trigger was removed";
 

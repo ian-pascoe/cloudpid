@@ -21,6 +21,7 @@ import {
   type TriggerKind,
   type TriggerPatch,
   type TriggerSourceInput,
+  baseProblem,
   whenBusyProblem,
   type WorkspaceRef,
 } from "@cloudpid/protocol";
@@ -37,7 +38,7 @@ import type {
   RegistryStore,
   SessionRefusal,
 } from "./store.ts";
-import { subagentWorkspaceHoldsNoTrigger, triggerIdTaken } from "./messages.ts";
+import { noWorkspace, subagentWorkspaceHoldsNoTrigger, triggerIdTaken } from "./messages.ts";
 
 /** What a write of a Trigger answers: the definition as kept, or why nothing was kept. */
 export type TriggerWrite =
@@ -212,9 +213,7 @@ const fieldsProblem = (
   (fields.base !== null && fields.base.trim() === ""
     ? "A base branch can't be empty"
     : undefined) ??
-  (fields.base !== null && kind === "workspace"
-    ? "A Workspace trigger works on its Workspace's branch: it takes no base"
-    : undefined);
+  baseProblem(kind, fields.base);
 
 /** Why `refusal` kept a Fire's Session from being registered, as the fire log says it. */
 const refusalReason = (refusal: SessionRefusal): string => {
@@ -288,9 +287,22 @@ export const openTriggers = (
     | "requestedSession"
     | "deleteEnvironment"
     | "deleteWorkspace"
+    | "deleteWorkspaceAndTriggers"
   >,
 ) => {
   const { sql } = storage;
+
+  /** The ids of the active Triggers kept for Workspace `id`. */
+  const activeWorkspaceTriggers = (id: string): ReadonlyArray<string> =>
+    Arr.map(
+      sql
+        .exec<{ id: string }>(
+          "SELECT id FROM triggers WHERE workspace = ? AND removed_at IS NULL",
+          id,
+        )
+        .toArray(),
+      (found) => found.id,
+    );
 
   /** `row` as a definition, its Workspace named by id and branch. */
   const toDef = (found: TriggerRow): TriggerDefinition => {
@@ -377,7 +389,7 @@ export const openTriggers = (
           const kept = store.getWorkspace(input.workspace);
 
           if (kept === null) {
-            return { status: "invalid", problem: `There is no Workspace ${input.workspace}` };
+            return { status: "invalid", problem: noWorkspace(input.workspace) };
           }
 
           if (kept.subagent !== undefined) {
@@ -725,23 +737,28 @@ export const openTriggers = (
       }),
 
     /**
-     * Delete Workspace `id` as the owner's Remove does (`store.deleteWorkspace` with `delete`, which deletes the Triggers
-     * kept for it in the same transaction) and answer the ids of the active Triggers that went with it, whose objects the
-     * caller wipes (`docs/architecture/triggers.md` → Cascades).
+     * Delete Workspace `id`'s Triggers alone, whatever Sessions are bound to it, and answer the ids of the active ones,
+     * whose objects the caller wipes: the owner's Remove does it first, so no waiting Fire starts a Session in a
+     * Workspace that is being torn down (`docs/architecture/triggers.md` → Cascades).
+     */
+    deleteWorkspaceTriggers: (id: string): ReadonlyArray<string> =>
+      storage.transactionSync(() => {
+        const held = activeWorkspaceTriggers(id);
+
+        sql.exec("DELETE FROM triggers WHERE workspace = ?", id);
+
+        return held;
+      }),
+
+    /**
+     * Delete Workspace `id` as the owner's Remove does (`store.deleteWorkspaceAndTriggers`, which deletes the Triggers
+     * kept for it in the same transaction) and answer the ids of the active Triggers that went with it, whose objects
+     * the caller wipes (`docs/architecture/triggers.md` → Cascades).
      */
     deleteWorkspace: (id: string): WorkspaceRemoval =>
       storage.transactionSync((): WorkspaceRemoval => {
-        const held = Arr.map(
-          sql
-            .exec<{ id: string }>(
-              "SELECT id FROM triggers WHERE workspace = ? AND removed_at IS NULL",
-              id,
-            )
-            .toArray(),
-          (found) => found.id,
-        );
-
-        const deletion = store.deleteWorkspace(id, "delete");
+        const held = activeWorkspaceTriggers(id);
+        const deletion = store.deleteWorkspaceAndTriggers(id);
 
         return { deletion, triggers: deletion === "deleted" ? held : [] };
       }),

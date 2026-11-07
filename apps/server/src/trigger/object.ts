@@ -67,6 +67,11 @@ export type TriggerState = {
   readonly nextFireAt: number | null;
   readonly lastFire: FireRecord | null;
   readonly pending: number;
+  /**
+   * The Fire waiting for its Workspace to be idle (`wait`), when there is one: when it was queued and how many later
+   * Fires were merged into it.
+   */
+  readonly waiting: { readonly since: number; readonly merged: number } | null;
 };
 
 /** What the owner's Fire now answers: the Fire's key once it waits, or why there is none. */
@@ -132,7 +137,13 @@ const sameSchedule = (a: TriggerDefinition | undefined, b: TriggerDefinition): b
 
 const decodeDefinition = Schema.decodeUnknownOption(TriggerDefinition);
 
-const NO_STATE: TriggerState = { definition: null, nextFireAt: null, lastFire: null, pending: 0 };
+const NO_STATE: TriggerState = {
+  definition: null,
+  nextFireAt: null,
+  lastFire: null,
+  pending: 0,
+  waiting: null,
+};
 
 /** The outcome a span and its readers name: `started`, `skipped:<why>` or `failed`. */
 const outcomeName = (outcome: FireOutcome): string =>
@@ -269,17 +280,33 @@ export const triggerHandlers = (options: {
 
     if (kept === undefined) return NO_STATE;
 
+    const pending = kept.pending();
+    const waiting = Arr.findFirst(pending, (fire) => fire.waiting !== undefined);
+
     return {
       definition: kept.definition() ?? null,
       nextFireAt: nextAt() ?? null,
       lastFire: kept.fires(1)[0] ?? null,
-      pending: kept.pending().length,
+      pending: pending.length,
+      waiting: Option.match(waiting, {
+        onNone: () => null,
+        onSome: (fire) => ({ since: fire.queuedAt, merged: fire.waiting?.merged ?? 0 }),
+      }),
     };
   };
 
   /** Record what came of pending Fire `pending` at `at`; a failure is pushed to the owner. */
-  const settle = (pending: PendingFire, outcome: FireOutcome, at: number) =>
+  const settle = (pending: PendingFire, outcomeOf: FireOutcome, at: number) =>
     Effect.gen(function* () {
+      // The later Fires merged into a Fire that fails for good are lost with it: the fire log says how many.
+      const outcome: FireOutcome =
+        outcomeOf.type === "failed" && (pending.waiting?.merged ?? 0) > 0
+          ? {
+              ...outcomeOf,
+              reason: `${outcomeOf.reason}, ${String(pending.waiting?.merged)} merged`,
+            }
+          : outcomeOf;
+
       store().record({ key: pending.key, at, source: pending.source, outcome });
       yield* Effect.annotateCurrentSpan("trigger.outcome", outcomeName(outcome));
 
@@ -308,8 +335,8 @@ export const triggerHandlers = (options: {
 
     if (pending.source.type === "schedule") header.scheduledAt = pending.source.scheduledAt;
 
-    if (pending.coalesced !== undefined && pending.coalesced > 0) {
-      header.coalesced = pending.coalesced;
+    if (pending.waiting !== undefined && pending.waiting.merged > 0) {
+      header.coalesced = pending.waiting.merged;
     }
 
     const request: Types.Mutable<FireRequest> = {
@@ -348,11 +375,11 @@ export const triggerHandlers = (options: {
             store().pending(),
             (other) =>
               other.key !== pending.key &&
-              other.coalesced !== undefined &&
+              other.waiting !== undefined &&
               other.session === undefined,
           );
 
-          if (pending.coalesced === undefined && Option.isSome(waiting)) {
+          if (pending.waiting === undefined && Option.isSome(waiting)) {
             store().coalesce(waiting.value.key);
             yield* settle(pending, { type: "skipped", reason: "coalesced" }, at);
 

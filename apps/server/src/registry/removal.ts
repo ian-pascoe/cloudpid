@@ -25,7 +25,8 @@ export type RemovalRegistry = Pick<
   | "listWorkspaces"
   | "deleteWorkspace"
   | "deleteWorkspaceWithTriggers"
-  | "listTriggers"
+  | "deleteWorkspaceTriggers"
+  | "workspaceKept"
   | "listSubagentWorkspaces"
   | "getSpare"
   | "forgetSpare"
@@ -114,8 +115,9 @@ export const removals = (
   /**
    * Remove Workspace `id` with the Session that left it, when no Session is left in it and no Workspace trigger keeps
    * it (`docs/architecture/triggers.md` → Kinds and what a Fire delivers to). The Session is gone whatever happens here,
-   * so a failure is logged and leaves the Workspace listed, for the owner to remove; a Session started in it meanwhile
-   * keeps the record, and its object is made again as it first works there.
+   * so a failure is logged and leaves the Workspace listed, for the owner to remove. A Session started in it meanwhile,
+   * or a Workspace trigger made for it, keeps the record (`deleteWorkspace` answers `in-use` once the object is wiped),
+   * and the object is made again as a Session first works there.
    */
   const removeIfEmpty = (id: string) =>
     Effect.gen(function* () {
@@ -124,16 +126,16 @@ export const removals = (
       if (Arr.some(left, (session) => session.workspace === id)) return;
 
       // Kept with its files: the Trigger's next Fire works on them.
-      const kept = yield* registry.listTriggers({});
-
-      if (Arr.some(kept, (trigger) => trigger.workspace?.id === id)) return;
+      if (yield* registry.workspaceKept({ id })) return;
 
       yield* inWorkspace("Could not delete the workspace's files", () =>
         workspaces.destroy(workspaceObjectName(id)),
       );
 
       if ((yield* registry.deleteWorkspace({ id })) === "in-use") {
-        yield* Effect.logWarning(`Workspace ${id} got a Session while it was removed, and is kept`);
+        yield* Effect.logWarning(
+          `Workspace ${id} got a Session or a Workspace trigger while it was removed, and is kept: its files are made again as a Session first works there`,
+        );
       }
     }).pipe(
       Effect.catch((error) =>
@@ -199,28 +201,35 @@ export const removals = (
       }
     });
 
+  /** Wipe the objects of Triggers `ids`, which would wipe themselves at their next alarm. */
+  const wipeTriggers = (ids: ReadonlyArray<string>) =>
+    Effect.forEach(ids, triggers.remove, { discard: true });
+
   /**
-   * Remove a Workspace: its Sessions, then its object (files, Container, settings), then its record, which takes its
-   * Triggers with it (`docs/architecture/triggers.md` → Cascades); their objects are wiped after it, or wipe themselves
-   * at their next alarm.
+   * Remove a Workspace: its Triggers first (their records, then their objects), so no waiting Fire starts a Session in a
+   * Workspace being torn down; then its Sessions, then its object (files, Container, settings), then its record, which
+   * takes a Trigger made meanwhile with it (`docs/architecture/triggers.md` → Cascades). The record goes only once no
+   * Session is bound, so none is left in a Workspace that is gone.
    */
   const removeWorkspace = (workspace: WorkspaceRecord) =>
-    // The record goes only once none is bound, so no Session is left in a Workspace that is gone.
-    sweep(
-      (session) => session.workspace === workspace.id,
-      inWorkspace("Could not delete the workspace's files", () =>
-        workspaces.destroy(workspaceObjectName(workspace.id)),
-      ),
-      registry.deleteWorkspaceWithTriggers({ id: workspace.id }).pipe(
-        Effect.tap((removal) =>
-          Effect.forEach(removal.triggers, triggers.remove, { discard: true }),
+    registry.deleteWorkspaceTriggers({ id: workspace.id }).pipe(
+      Effect.flatMap(wipeTriggers),
+      Effect.andThen(
+        sweep(
+          (session) => session.workspace === workspace.id,
+          inWorkspace("Could not delete the workspace's files", () =>
+            workspaces.destroy(workspaceObjectName(workspace.id)),
+          ),
+          registry.deleteWorkspaceWithTriggers({ id: workspace.id }).pipe(
+            Effect.tap((removal) => wipeTriggers(removal.triggers)),
+            Effect.map((removal) => removal.deletion !== "in-use"),
+          ),
+          {
+            kept: "The workspace and its remaining sessions are kept.",
+            busy: "Sessions kept starting in the workspace while it was removed: try again",
+          },
         ),
-        Effect.map((removal) => removal.deletion !== "in-use"),
       ),
-      {
-        kept: "The workspace and its remaining sessions are kept.",
-        busy: "Sessions kept starting in the workspace while it was removed: try again",
-      },
     );
 
   /** Remove an Environment's spare Workspace, if it has one: its record, then its object. */

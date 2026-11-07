@@ -135,6 +135,15 @@ export const whenBusyProblem = (kind: TriggerKind, whenBusy: string): string | u
     ? "Only a Workspace trigger can wait for a busy Workspace"
     : undefined;
 
+/** Why a Trigger of `kind` can't take `base`, or undefined when it can: a Workspace trigger works on its Workspace's branch. */
+export const baseProblem = (
+  kind: TriggerKind,
+  base: string | null | undefined,
+): string | undefined =>
+  kind === "workspace" && base !== null && base !== undefined
+    ? "A Workspace trigger works on its Workspace's branch: it takes no base"
+    : undefined;
+
 /** A Workspace as a Trigger names it: its id, and its branch, which is how the owner reads it. */
 export const WorkspaceRef = Schema.Struct({ id: Schema.String, branch: Schema.String });
 
@@ -393,6 +402,11 @@ export const TriggerOverview = Schema.Struct({
   definition: TriggerDefinition,
   lastFire: Schema.NullOr(FireRecord),
   reached: Schema.Boolean,
+  /**
+   * The Fire of a Workspace trigger waiting for its Workspace to be idle, when there is one: when it was queued and how
+   * many later Fires were merged into it. Absent for none, and from a server that doesn't say.
+   */
+  waiting: Schema.optionalKey(Schema.Struct({ since: Schema.Finite, merged: Schema.Int })),
 });
 
 export type TriggerOverview = typeof TriggerOverview.Type;

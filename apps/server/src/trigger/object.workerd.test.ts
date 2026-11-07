@@ -238,6 +238,7 @@ describe("a Trigger's object", () => {
         nextFireAt: null,
         lastFire: null,
         pending: 0,
+        waiting: null,
       });
       expect(await trigger.alarmAt()).toBeNull();
     });
@@ -368,6 +369,7 @@ describe("a Trigger's object", () => {
         nextFireAt: null,
         lastFire: null,
         pending: 0,
+        waiting: null,
       });
     });
   });
@@ -410,6 +412,7 @@ describe("a Trigger's object", () => {
       nextFireAt: null,
       lastFire: null,
       pending: 0,
+      waiting: null,
     });
   });
 
@@ -445,6 +448,7 @@ describe("a Trigger's object", () => {
         nextFireAt: null,
         lastFire: null,
         pending: 0,
+        waiting: null,
       });
       expect(await object.fireLog()).toEqual([]);
 
@@ -621,7 +625,7 @@ describe("a Workspace trigger's object", () => {
     expect(await trigger.fireLog()).toEqual([]);
     expect(await trigger.sent()).toEqual([]);
     expect(await pendingOf(trigger)).toMatchObject([
-      { key: keyAt(id, nine), attempts: 0, nextTryAt: nine + RETRY_MS, coalesced: 0 },
+      { key: keyAt(id, nine), attempts: 0, nextTryAt: nine + RETRY_MS, waiting: { merged: 0 } },
     ]);
     expect(await trigger.alarmAt()).toBe(nine + RETRY_MS);
 
@@ -679,7 +683,9 @@ describe("a Workspace trigger's object", () => {
       { key: `${id}:manual:a`, outcome: { type: "skipped", reason: "coalesced" } },
     ]);
     // Still one waiting, now with two merged into it.
-    expect(await pendingOf(trigger)).toMatchObject([{ key: keyAt(id, nine), coalesced: 2 }]);
+    expect(await pendingOf(trigger)).toMatchObject([
+      { key: keyAt(id, nine), waiting: { merged: 2 } },
+    ]);
 
     await registry.setSessionStatus("s-0", "idle", nine + 20_000);
     await trigger.setNow(nine + RETRY_MS);
@@ -690,6 +696,57 @@ describe("a Workspace trigger's object", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]?.request.header).toMatchObject({ coalesced: 2, scheduledAt: nine });
     expect(await pendingOf(trigger)).toEqual([]);
+  });
+
+  it("says what it waits for: since when, and how many more Fires were merged into it", async () => {
+    const { registry, trigger } = await kept();
+
+    expect(await trigger.state()).toMatchObject({ waiting: null });
+
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.state()).toMatchObject({
+      pending: 1,
+      waiting: { since: nine, merged: 0 },
+    });
+
+    await trigger.setNow(nine + 10_000);
+    await trigger.fireNow("a");
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.state()).toMatchObject({ waiting: { since: nine, merged: 1 } });
+
+    await registry.setSessionStatus("s-0", "idle", nine + 20_000);
+    await trigger.setNow(nine + RETRY_MS);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.state()).toMatchObject({ pending: 0, waiting: null });
+  });
+
+  it("records how many Fires were merged into a waiting Fire that failed for good", async () => {
+    const { id, registry, trigger } = await kept();
+
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+
+    for (const key of ["a", "b", "c"]) {
+      await trigger.setNow(nine + 10_000);
+      await trigger.fireNow(key);
+      await runDurableObjectAlarm(trigger);
+    }
+
+    await trigger.scriptFires([
+      { ok: false, error: { code: "session_archived", message: "Archived", retryable: false } },
+    ]);
+    await registry.setSessionStatus("s-0", "idle", nine + 20_000);
+    await trigger.setNow(nine + RETRY_MS);
+    await runDurableObjectAlarm(trigger);
+
+    expect((await trigger.fireLog())[0]).toMatchObject({
+      key: keyAt(id, nine),
+      outcome: { type: "failed", reason: "Archived, 3 merged" },
+    });
   });
 
   it("merges a later Fire into the waiting one even when the Workspace is idle by then", async () => {
@@ -706,7 +763,9 @@ describe("a Workspace trigger's object", () => {
     expect(await trigger.fireLog()).toMatchObject([
       { key: `${id}:manual:late`, outcome: { type: "skipped", reason: "coalesced" } },
     ]);
-    expect(await pendingOf(trigger)).toMatchObject([{ key: keyAt(id, nine), coalesced: 1 }]);
+    expect(await pendingOf(trigger)).toMatchObject([
+      { key: keyAt(id, nine), waiting: { merged: 1 } },
+    ]);
   });
 
   it("records skipped: overlap with when_busy skip, and starts at once with start", async () => {

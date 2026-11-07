@@ -34,10 +34,10 @@ import {
   triggerMessageProblem,
   triggerNameProblem,
   type TriggerPatch,
+  baseProblem,
   whenBusyProblem,
   defaultWhenBusy,
   type WorkspaceRef,
-  type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
@@ -729,15 +729,10 @@ export const TriggerTools: Effect.Effect<
         const here = owner === WORKSPACE_OWNER ? yield* access.workspace : undefined;
         const kind = here === undefined ? "environment" : "workspace";
 
-        if (here !== undefined && base !== undefined) {
-          return yield* refuse(
-            "a Workspace trigger works on its Workspace's branch: it takes no base",
-          );
-        }
+        const optionProblem =
+          baseProblem(kind, base) ?? whenBusyProblem(kind, when_busy ?? defaultWhenBusy(kind));
 
-        const busyProblem = whenBusyProblem(kind, when_busy ?? defaultWhenBusy(kind));
-
-        if (busyProblem !== undefined) return yield* refuse(busyProblem);
+        if (optionProblem !== undefined) return yield* refuse(optionProblem);
 
         const { environment: id } = here ?? (yield* target(owner));
         const details = yield* environments.get(id);
@@ -760,44 +755,35 @@ export const TriggerTools: Effect.Effect<
           paused: false,
         };
 
+        // What both kinds are made with: the options not given are left for the Registry's defaults.
+        const shared: Types.Mutable<
+          Pick<
+            EnvironmentTriggerInput,
+            "name" | "message" | "source" | "whenBusy" | "model" | "thinking"
+          >
+        > = { name: value.name, message, source };
+
+        if (when_busy !== undefined) shared.whenBusy = when_busy;
+
+        if (model !== undefined) shared.model = value.model = model;
+
+        if (thinking !== undefined) shared.thinking = value.thinking = thinking;
+
         let trigger: TriggerInput;
 
         if (here === undefined) {
           const made: Types.Mutable<EnvironmentTriggerInput> = {
             kind: "environment",
             environment: environment.id,
-            name: value.name,
-            message,
-            source,
+            ...shared,
           };
 
           if (base !== undefined) made.base = value.base = base.trim();
 
-          if (when_busy !== undefined) made.whenBusy = when_busy;
-
-          if (model !== undefined) made.model = value.model = model;
-
-          if (thinking !== undefined) made.thinking = value.thinking = thinking;
-
           trigger = made;
         } else {
-          const made: Types.Mutable<WorkspaceTriggerInput> = {
-            kind: "workspace",
-            workspace: here.id,
-            name: value.name,
-            message,
-            source,
-          };
-
           value.workspace = { id: here.id, branch: here.branch };
-
-          if (when_busy !== undefined) made.whenBusy = when_busy;
-
-          if (model !== undefined) made.model = value.model = model;
-
-          if (thinking !== undefined) made.thinking = value.thinking = thinking;
-
-          trigger = made;
+          trigger = { kind: "workspace", workspace: here.id, ...shared };
         }
 
         const now = yield* Clock.currentTimeMillis;
@@ -817,7 +803,7 @@ export const TriggerTools: Effect.Effect<
             notes: [
               here === undefined
                 ? `Each Fire starts a new Session in a new Workspace of Environment ${JSON.stringify(clipped(environment.name, 80))} and sends it the message, unattended.`
-                : `Each Fire starts a new Session in Workspace ${JSON.stringify(clipped(here.branch, 80))}, on its files and branch, and sends it the message, unattended. It keeps the Workspace: deleting the Workspace's last Session no longer removes it, until this Trigger is removed.`,
+                : `Each Fire starts a new Session in Workspace ${JSON.stringify(clipped(here.branch, 80))}, on its files and branch, and sends it the message, unattended. It keeps the Workspace: deleting the Workspace's last Session no longer removes it, while this Trigger exists.`,
               nextFiresNote(source, now),
               ...cutMessageNotes(message),
             ],
@@ -1005,16 +991,11 @@ export const TriggerTools: Effect.Effect<
           return yield* refuse("this version can't change the options of this Trigger's kind");
         }
 
-        if (definition.kind === "workspace" && base !== undefined && base !== null) {
-          return yield* refuse(
-            "a Workspace trigger works on its Workspace's branch: it takes no base",
-          );
-        }
+        const optionProblem =
+          baseProblem(definition.kind, base) ??
+          (when_busy === undefined ? undefined : whenBusyProblem(definition.kind, when_busy));
 
-        const busyProblem =
-          when_busy === undefined ? undefined : whenBusyProblem(definition.kind, when_busy);
-
-        if (busyProblem !== undefined) return yield* refuse(busyProblem);
+        if (optionProblem !== undefined) return yield* refuse(optionProblem);
 
         const patch: Types.Mutable<TriggerPatch> = {};
 

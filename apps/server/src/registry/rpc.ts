@@ -15,6 +15,7 @@ import {
   fieldSkill,
   armsTrigger,
   type TriggerDefinition,
+  type TriggerOverview,
   TriggerUnscheduled,
   fieldTrigger,
   MAX_ENVIRONMENT_SECRETS,
@@ -71,6 +72,7 @@ import {
   nameTaken,
   noEnvironment,
   noRepo,
+  noWorkspace,
   repoTaken,
   triggerChangedSince,
   triggerPaused,
@@ -1006,7 +1008,17 @@ export const serveRegistryRpc = <R = never>(
               definitions,
               (definition) =>
                 triggers.state(definition.id).pipe(
-                  Effect.map(({ lastFire }) => ({ definition, lastFire, reached: true })),
+                  Effect.map(({ lastFire, waiting }): TriggerOverview => {
+                    const overview: Mutable<TriggerOverview> = {
+                      definition,
+                      lastFire,
+                      reached: true,
+                    };
+
+                    if (waiting !== null) overview.waiting = waiting;
+
+                    return overview;
+                  }),
                   // Its last Fire unknown: the list still shows the Trigger.
                   Effect.orElseSucceed(() => ({ definition, lastFire: null, reached: false })),
                 ),
@@ -1021,7 +1033,7 @@ export const serveRegistryRpc = <R = never>(
               write,
               trigger.kind === "environment"
                 ? noEnvironment(trigger.environment)
-                : `There is no Workspace ${trigger.workspace}`,
+                : noWorkspace(trigger.workspace),
             ),
           ),
           Effect.flatMap((definition) => afterWrite(definition, "The trigger is saved")),

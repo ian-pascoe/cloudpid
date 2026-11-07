@@ -64,10 +64,11 @@ export type PendingFire = {
   readonly attempts: number;
   readonly session: string | undefined;
   /**
-   * Undefined until the Fire first waited for a busy Workspace (`wait`); then how many later Fires were recorded
-   * `coalesced` into it, which the Session that finally starts is told.
+   * Undefined until the Fire first waited for a busy Workspace (`wait`); then `merged` counts the later Fires recorded
+   * `coalesced` into it, which the Session that finally starts is told. Stored in `trigger_pending.coalesced`, null
+   * while it does not wait.
    */
-  readonly coalesced: number | undefined;
+  readonly waiting: { readonly merged: number } | undefined;
 };
 
 type MetaRow = { readonly definition: string; readonly cursor: number | null };
@@ -106,7 +107,7 @@ const toPending = (row: PendingRow): PendingFire => ({
   nextTryAt: row.next_try_at,
   attempts: row.attempts,
   session: row.session ?? undefined,
-  coalesced: row.coalesced ?? undefined,
+  waiting: row.coalesced === null ? undefined : { merged: row.coalesced },
 });
 
 /**
