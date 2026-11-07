@@ -34,6 +34,7 @@ import type {
   SettingsMcpView,
   SkillChangeFiles,
   SkillFile,
+  TriggerChangeValue,
   TriggerDefinition,
   TriggerPatch,
 } from "@cloudpid/protocol";
@@ -146,6 +147,7 @@ import { PushConfig } from "../push/config.ts";
 import { pushNotifier, pushToAll } from "../push/notify.ts";
 import { describeTriggerFailure, type PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newTriggerId, newWorkspaceId, shortId } from "./ids.ts";
+import { openTriggerChanges, type TriggerChanged } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
   type FireAdmission,
@@ -1043,6 +1045,34 @@ export type RegistryMethods = {
   }) => Effect.Effect<TriggerWrite>;
   /** Forget a Trigger; says whether it was there. The caller wipes its object (`Trigger.remove`). */
   readonly removeTrigger: (input: { readonly id: string }) => Effect.Effect<boolean>;
+  /**
+   * The agent's making of Trigger `id` (an id the Session drew, which the Approval keeps, so a rerun makes no second
+   * one), recorded as an Agent change by `author` under its Environment. The caller wakes its object.
+   */
+  readonly agentCreateTrigger: (input: {
+    readonly id: string;
+    readonly trigger: EnvironmentTriggerInput;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<TriggerChanged>;
+  /** The agent's change of a Trigger's fields, recorded, while it is still `expected`. The caller wakes its object. */
+  readonly agentUpdateTrigger: (input: {
+    readonly id: string;
+    readonly patch: TriggerPatch;
+    readonly expected?: TriggerChangeValue | undefined;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<TriggerChanged>;
+  /** The agent's pause or resume of a Trigger, recorded, while it is still `expected`. The caller wakes its object. */
+  readonly agentSetTriggerPaused: (input: {
+    readonly id: string;
+    readonly paused: boolean;
+    readonly expected?: TriggerChangeValue | undefined;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<TriggerChanged>;
+  /** The agent's removal of a Trigger, recorded, its row kept for a revert. The caller wakes its object. */
+  readonly agentRemoveTrigger: (input: {
+    readonly id: string;
+    readonly author: AgentChangeAuthor;
+  }) => Effect.Effect<TriggerChanged>;
   /** Every Trigger, or `environment`'s, newest first. */
   readonly listTriggers: (input: {
     readonly environment?: string | undefined;
@@ -1154,6 +1184,7 @@ export const RegistryLive = Registry.make(
         const store = openRegistryStore(state.raw.storage);
         const changes = openAgentChanges(state.raw.storage);
         const triggers = openTriggers(state.raw.storage, store);
+        const triggerChanges = openTriggerChanges(state.raw.storage, store, triggers, changes);
         const skills = openSkills(state.raw.storage);
         const mcpSignIns = openMcpSignIns(state.raw.storage, store);
         const notify = pushNotifier({ store, vapid: push.vapid });
@@ -2128,6 +2159,22 @@ export const RegistryLive = Registry.make(
           setTriggerPaused: ({ id, paused }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.setPaused(id, paused, now))),
           removeTrigger: ({ id }) => Effect.sync(() => triggers.remove(id)),
+          agentCreateTrigger: ({ id, trigger, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => triggerChanges.create(id, trigger, author, now)),
+            ),
+          agentUpdateTrigger: ({ id, patch, expected, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => triggerChanges.update(id, patch, expected, author, now)),
+            ),
+          agentSetTriggerPaused: ({ id, paused, expected, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => triggerChanges.setPaused(id, paused, expected, author, now)),
+            ),
+          agentRemoveTrigger: ({ id, author }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => triggerChanges.remove(id, author, now)),
+            ),
           listTriggers: ({ environment }) => Effect.sync(() => triggers.list(environment)),
           triggerDefinition: ({ id }) => Effect.sync(() => triggers.get(id)),
           admitFire: (fire) =>

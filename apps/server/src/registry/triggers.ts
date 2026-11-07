@@ -14,6 +14,7 @@ import {
   TriggerDefinition,
   triggerMessageProblem,
   triggerNameProblem,
+  type TriggerChangeValue,
   type TriggerPatch,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -30,6 +31,10 @@ import type {
 /** What a write of a Trigger answers: the definition as kept, or why nothing was kept. */
 export type TriggerWrite =
   | { readonly status: "ok"; readonly definition: TriggerDefinition }
+  /** The Trigger already was as asked: nothing was written, and its revision stays. */
+  | { readonly status: "unchanged"; readonly definition: TriggerDefinition }
+  /** The Trigger is no longer as the caller's `holds` wants it: nothing was written. */
+  | { readonly status: "changed-since"; readonly definition: TriggerDefinition }
   | { readonly status: "missing" }
   | { readonly status: "invalid"; readonly problem: string };
 
@@ -117,6 +122,10 @@ const toDefinition = (row: TriggerRow): TriggerDefinition => {
   return definition;
 };
 
+/** A Schedule as its column keeps it, its keys always in one order, so the same Schedule is the same text. */
+const sourceText = ({ type, cron, zone }: ScheduleSource): string =>
+  JSON.stringify({ type, cron, zone });
+
 /** Why `fields` can't be a Trigger's, or undefined when they can. */
 const fieldsProblem = (fields: {
   readonly name: string;
@@ -139,6 +148,35 @@ const refusalReason = (refusal: SessionRefusal): string => {
     default:
       return `the Session was refused (${refusal.refused})`;
   }
+};
+
+/** The fields of a Trigger a change can give it. */
+const CHANGEABLE = [
+  "name",
+  "message",
+  "source",
+  "when_busy",
+  "base",
+  "model",
+  "thinking",
+  "paused",
+] as const satisfies ReadonlyArray<keyof TriggerRow>;
+
+/** Whether `next` gives a Trigger the fields it has (`known`): a change of none of them is no change. */
+const sameFields = (known: TriggerRow, next: TriggerRow): boolean =>
+  Arr.every(CHANGEABLE, (field) => known[field] === next[field]);
+
+/**
+ * Forget the Triggers the agent removed that no Agent change in the history refers to any more: one is kept while a
+ * revert could bring it back (`docs/architecture/triggers.md` → Agent tools and Approval).
+ */
+export const dropRemovedTriggers = (sql: RegistryStorage["sql"]): void => {
+  sql.exec(
+    `DELETE FROM triggers WHERE removed_at IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM agent_changes WHERE agent_changes.scope = triggers.environment
+         AND agent_changes.field = 'triggers.' || triggers.id
+     )`,
+  );
 };
 
 /** The Registry's Triggers, over its storage and store. */
@@ -220,7 +258,7 @@ export const openTriggers = (
           input.environment,
           input.name.trim(),
           input.message,
-          JSON.stringify(input.source),
+          sourceText(input.source),
           input.whenBusy ?? "skip",
           base?.trim() ?? null,
           input.model ?? null,
@@ -255,7 +293,16 @@ export const openTriggers = (
         toDefinition,
       ),
 
-    update: (id: string, patch: TriggerPatch, now: number): TriggerWrite =>
+    /**
+     * Change Trigger `id`'s fields at its next revision. A change of none of them writes nothing (`unchanged`); with
+     * `holds`, nothing is written either unless the Trigger is as `holds` wants it (`changed-since`).
+     */
+    update: (
+      id: string,
+      patch: TriggerPatch,
+      now: number,
+      holds?: (current: TriggerDefinition) => boolean,
+    ): TriggerWrite =>
       storage.transactionSync((): TriggerWrite => {
         const known = row(id);
 
@@ -276,7 +323,7 @@ export const openTriggers = (
           revision: known.revision + 1,
           name: patch.name?.trim() ?? known.name,
           message: patch.message ?? known.message,
-          source: JSON.stringify(source),
+          source: sourceText(source),
           when_busy: patch.whenBusy ?? known.when_busy,
           base: option(patch.base === null ? null : patch.base?.trim(), known.base),
           model: option(patch.model, known.model),
@@ -288,14 +335,36 @@ export const openTriggers = (
 
         if (problem !== undefined) return { status: "invalid", problem };
 
+        const current = toDefinition(known);
+
+        if (sameFields(known, next)) return { status: "unchanged", definition: current };
+
+        if (holds !== undefined && !holds(current)) {
+          return { status: "changed-since", definition: current };
+        }
+
         return { status: "ok", definition: write(next) };
       }),
 
-    setPaused: (id: string, paused: boolean, now: number): TriggerWrite =>
+    /** Pause or resume Trigger `id` at its next revision; as `update` for one already so, and for `holds`. */
+    setPaused: (
+      id: string,
+      paused: boolean,
+      now: number,
+      holds?: (current: TriggerDefinition) => boolean,
+    ): TriggerWrite =>
       storage.transactionSync((): TriggerWrite => {
         const known = row(id);
 
         if (known === undefined) return { status: "missing" };
+
+        const current = toDefinition(known);
+
+        if (current.paused === paused) return { status: "unchanged", definition: current };
+
+        if (holds !== undefined && !holds(current)) {
+          return { status: "changed-since", definition: current };
+        }
 
         return {
           status: "ok",
@@ -307,6 +376,61 @@ export const openTriggers = (
           }),
         };
       }),
+
+    /**
+     * Trigger `id`'s definition, and when the agent removed it (null: it is active), or null once it is gone for good:
+     * what a revert of one of its Agent changes reads.
+     */
+    stored: (
+      id: string,
+    ): { readonly definition: TriggerDefinition; readonly removedAt: number | null } | null => {
+      const [found] = sql.exec<TriggerRow>("SELECT * FROM triggers WHERE id = ?", id).toArray();
+
+      return found === undefined
+        ? null
+        : { definition: toDefinition(found), removedAt: found.removed_at };
+    },
+
+    /**
+     * Take an active Trigger out of every read and every Fire, keeping its row while an Agent change refers to it, so a
+     * revert can bring it back (`dropRemovedTriggers`); says whether it was active.
+     */
+    retire: (id: string, now: number): boolean =>
+      sql
+        .exec<{ id: string }>(
+          "UPDATE triggers SET removed_at = ? WHERE id = ? AND removed_at IS NULL RETURNING id",
+          now,
+          id,
+        )
+        .toArray().length > 0,
+
+    /**
+     * Give Trigger `id` (active, or removed by the agent) the fields of `value`, active again, at its next revision: a
+     * revert. Its kind and Environment stay; the caller checked `value`.
+     */
+    restore: (id: string, value: TriggerChangeValue, now: number): TriggerDefinition | null => {
+      const [known] = sql.exec<TriggerRow>("SELECT * FROM triggers WHERE id = ?", id).toArray();
+
+      if (known === undefined) return null;
+
+      const source = scheduleOf(value);
+
+      sql.exec("UPDATE triggers SET removed_at = NULL WHERE id = ?", id);
+
+      return write({
+        ...known,
+        revision: known.revision + 1,
+        name: value.name,
+        message: value.message,
+        source: source === undefined ? known.source : sourceText(source),
+        when_busy: value.whenBusy,
+        base: value.base ?? null,
+        model: value.model ?? null,
+        thinking: value.thinking ?? null,
+        paused: value.paused ? 1 : 0,
+        updated_at: now,
+      });
+    },
 
     /** Forget a Trigger; says whether it was there. */
     remove: (id: string): boolean =>
