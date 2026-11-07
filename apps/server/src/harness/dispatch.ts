@@ -18,7 +18,9 @@ import {
 } from "@cloudpid/protocol/mcp-api";
 import { HARNESS_TOOLS, type HarnessToolName } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { HarnessServices } from "./services.ts";
@@ -35,14 +37,19 @@ const unavailable = apiFailure(
 /** A tool as the dispatcher serves it: its input read again, and its core run on the endpoint's surface. */
 type Served = (input: HarnessRequest["input"]) => Effect.Effect<ApiResult<HarnessAnswer>>;
 
-const serve =
-  <A, E extends CoreError>(
-    tool: HarnessToolName,
-    input: Schema.Codec<A, unknown>,
-    read: HarnessRead<A, E>,
-  ): Served =>
-  (given) => {
-    const decoded = Schema.decodeUnknownResult(input)(given);
+/** What a tool's endpoint input decodes to. */
+type InputOf<Name extends HarnessToolName> =
+  (typeof HARNESS_TOOLS)[Name]["endpoint"]["input"]["Type"];
+
+/** `read` as `tool`'s served form: the input read again with the tool's endpoint schema, then the core on the endpoint's surface. */
+const serve = <Name extends HarnessToolName, E extends CoreError>(
+  tool: Name,
+  read: HarnessRead<InputOf<Name>, E>,
+): Served => {
+  const decode = Schema.decodeUnknownResult(HARNESS_TOOLS[tool].endpoint.input);
+
+  return (given) => {
+    const decoded = decode(given);
 
     if (Result.isFailure(decoded)) {
       return Effect.succeed(
@@ -60,67 +67,36 @@ const serve =
       ),
     );
   };
+};
 
 /**
  * The dispatcher over `services`: `harness({tool, input, via})`. A defect of a service (a Registry call that threw) is
  * `unavailable`, which may heal.
  */
-export const harnessDispatch =
-  (services: HarnessServices) =>
-  (request: HarnessRequest): Effect.Effect<ApiResult<HarnessAnswer>> => {
-    // The tools of `HARNESS_TOOLS_SERVED` (`../mcp/api.ts`), which the test holds to this table.
-    const served = new Map<string, Served>([
-      [
-        "environment_list",
-        serve(
-          "environment_list",
-          HARNESS_TOOLS.environment_list.endpoint.input,
-          environmentListRead(services.environments),
-        ),
-      ],
-      [
-        "environment_get",
-        serve(
-          "environment_get",
-          HARNESS_TOOLS.environment_get.endpoint.input,
-          environmentGetRead(services.environments),
-        ),
-      ],
-      [
-        "settings_get",
-        serve(
-          "settings_get",
-          HARNESS_TOOLS.settings_get.endpoint.input,
-          settingsGetRead(services.settings),
-        ),
-      ],
-      [
-        "settings_mcp_list",
-        serve(
-          "settings_mcp_list",
-          HARNESS_TOOLS.settings_mcp_list.endpoint.input,
-          settingsMcpListRead(services.settingsMcp),
-        ),
-      ],
-      [
-        "settings_mcp_get",
-        serve(
-          "settings_mcp_get",
-          HARNESS_TOOLS.settings_mcp_get.endpoint.input,
-          settingsMcpGetRead(services.settingsMcp),
-        ),
-      ],
-    ]);
+export const harnessDispatch = (services: HarnessServices) => {
+  // The tools `harness` serves: the same names as `HARNESS_TOOLS_SERVED` (`../mcp/api.ts`), which `dispatch.test.ts` checks.
+  const table: Record<HarnessToolName, Served> = {
+    environment_list: serve("environment_list", environmentListRead(services.environments)),
+    environment_get: serve("environment_get", environmentGetRead(services.environments)),
+    settings_get: serve("settings_get", settingsGetRead(services.settings)),
+    settings_mcp_list: serve("settings_mcp_list", settingsMcpListRead(services.settingsMcp)),
+    settings_mcp_get: serve("settings_mcp_get", settingsMcpGetRead(services.settingsMcp)),
+  };
 
-    const run = served.get(request.tool);
+  // Looked up by a name the caller sent: only the table's own keys are tools.
+  const served: Readonly<Record<string, Served>> = table;
 
-    if (run === undefined) {
+  return (request: HarnessRequest): Effect.Effect<ApiResult<HarnessAnswer>> => {
+    const run = Record.get(served, request.tool);
+
+    if (Option.isNone(run)) {
       return Effect.succeed(
         apiFailure("unsupported", `The server does not serve ${request.tool}: it is not offered.`),
       );
     }
 
-    return Effect.suspend(() => run(request.input)).pipe(
+    return Effect.suspend(() => run.value(request.input)).pipe(
       Effect.catchCause(() => Effect.succeed(unavailable)),
     );
   };
+};

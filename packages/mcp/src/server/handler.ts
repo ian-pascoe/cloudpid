@@ -174,8 +174,8 @@ export const toolGate = (
   };
 };
 
-/** The management tools whose answer shows what is set: the ones the "To manage" line names. */
-const HARNESS_READS = ["environment_list", "environment_get", "settings_get"] as const;
+/** The management tools the "To manage" line names: the ones whose answer shows what is set. */
+const SETTING_READS = ["environment_list", "environment_get", "settings_get"] as const;
 
 /** "a, b and c". */
 const listed = (names: ReadonlyArray<string>): string =>
@@ -230,13 +230,15 @@ export const instructionsFor = (enabled: Enabled): string => {
     lines.push("Use session_transcript to read what a Session did.");
   }
 
-  // The reads that show what is set; the other tools of the line are not served yet, so it names none.
-  const shows = HARNESS_READS.filter(has);
+  // The reads of what is set that are served; the line names no other tool.
+  const reads = SETTING_READS.filter(has);
 
-  if (shows.length > 0) {
-    lines.push(
-      `To manage rather than start: ${listed(shows)} show${shows.length === 1 ? "s" : ""} what is set${shows.some((name) => name !== "environment_list") ? " (pass field to read a long text whole)" : ""}.`,
-    );
+  if (reads.length > 0) {
+    const verb = reads.length === 1 ? "shows" : "show";
+    const readsLongTexts = reads.some((name) => name !== "environment_list");
+    const fieldHint = readsLongTexts ? " (pass field to read a long text whole)" : "";
+
+    lines.push(`To manage rather than start: ${listed(reads)} ${verb} what is set${fieldHint}.`);
   }
 
   if (has("session_get") || has("session_wait")) {

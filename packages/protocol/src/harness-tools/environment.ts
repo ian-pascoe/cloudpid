@@ -6,7 +6,7 @@
 // @effect-diagnostics missingPipeableSignature:off
 import { MAX_VARIABLES } from "@cloudpid/config";
 import * as Schema from "effect/Schema";
-import { EnvironmentField, FieldPageFields, PageOffset } from "./field-page.ts";
+import { EnvironmentField, FieldPageFields, NextField, PageOffset } from "./field-page.ts";
 import {
   BuildOutput,
   EnvironmentGetOutput,
@@ -25,6 +25,7 @@ export const ENDPOINT_VARIABLE_VALUE_BYTES = 160;
 
 /** `environment_list` on the endpoint: the Environments, none marked as a Session's own. */
 export const EnvironmentListEndpointOutput = Schema.Struct({
+  ...NextField,
   environments: Schema.Array(
     Schema.Struct({
       id: Schema.String.annotate({ description: "The Environment's id" }),
@@ -58,6 +59,7 @@ const optional = <S extends Schema.Top>(schema: S) => Schema.optionalKey(schema)
  */
 export const EnvironmentGetEndpointOutput = Schema.Struct({
   ...FieldPageFields,
+  ...NextField,
   scope: optional(ScopeRef.annotate({ description: 'The Environment, or Global (id "*")' })),
   repos: optional(Schema.Array(RepoOutput).annotate({ description: "Its Repos; none for Global" })),
   repos_truncated: optional(

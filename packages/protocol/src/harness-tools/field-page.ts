@@ -48,6 +48,18 @@ export const SettingsField = Schema.Literal(SETTINGS_FIELD).annotate({
 });
 
 /**
+ * The sentence `McpServer` adds when a call follows from an answer (the next page, a field that reads a cut text whole),
+ * as an optional key of every endpoint tool's flat output: absent when nothing follows.
+ */
+export const NextField = {
+  next: Schema.optionalKey(
+    Schema.String.annotate({
+      description: "The call that follows from this answer, when one does",
+    }),
+  ),
+};
+
+/**
  * What a page of a field's text answers, as optional keys of the tool's flat output (set together, or all absent):
  * the Scope's id, the field, the page's text, where it starts, the whole text's length, and where the next page starts
  * (absent on the last).

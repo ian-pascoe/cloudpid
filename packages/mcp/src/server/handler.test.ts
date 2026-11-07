@@ -125,7 +125,11 @@ interface ListedTool {
   readonly name: string;
   readonly annotations: { readonly readOnlyHint?: boolean; readonly openWorldHint?: boolean };
   readonly inputSchema: { readonly type: string };
-  readonly outputSchema: { readonly type: string };
+  readonly outputSchema: {
+    readonly type: string;
+    readonly properties?: Readonly<Record<string, { readonly type?: string }>>;
+    readonly required?: ReadonlyArray<string>;
+  };
 }
 
 /** What `structuredContent` holds of the results these tests read. */
@@ -1831,8 +1835,142 @@ describe("the management tools", () => {
     );
 
     expect(result.isError).toBeUndefined();
-    expect(result.content[0]?.text).toBe(text);
+    // The page whole, then the sentence that follows.
+    expect(result.content[0]?.text.startsWith(text)).toBe(true);
     expect(result.structuredContent).toMatchObject({ next_offset: 40_000 });
+  });
+
+  describe("name the call that follows, as next, in the text and the structured value", () => {
+    /** What `McpServer` makes of the answer `structured` to `tool`, with `served` tools offered. */
+    const presented = (
+      tool: string,
+      structured: Schema.Json,
+      served: ReadonlyArray<string> = HARNESS_TOOL_NAMES,
+    ) => {
+      const spec = TOOLS.find((each) => each.name === tool);
+
+      if (spec === undefined) throw new Error(`No tool ${tool}`);
+
+      // SAFETY: the tests name only tools of `HARNESS_TOOL_NAMES`, which `served` lists.
+      return spec.present({ text: "The answer.", structured }, new Set(served) as never);
+    };
+
+    it("sends a list to the tool that shows one, only where that tool is served", () => {
+      const list = { environments: [{ id: "default" }] };
+      const both = presented("environment_list", list);
+
+      const sentence = "Call environment_get with an id to see one Environment's settings.";
+
+      expect(both.structured["next"]).toBe(sentence);
+      expect(both.text).toBe(`The answer.\n\n${sentence}`);
+
+      const alone = presented("environment_list", list, ["environment_list"]);
+
+      expect(alone.structured["next"]).toBeUndefined();
+      expect(alone.text).toBe("The answer.");
+      expect(
+        presented("environment_list", { environments: [] }).structured["next"],
+      ).toBeUndefined();
+    });
+
+    it("names the next page of a field with its offset, and nothing on the last page", () => {
+      expect(
+        presented("environment_get", { ...page, next_offset: 40_000 }).structured["next"],
+      ).toBe(
+        'Call environment_get with id="default", field="setupScript" and offset=40000 for the next page.',
+      );
+      expect(presented("environment_get", page).structured["next"]).toBeUndefined();
+      expect(
+        presented("settings_get", {
+          id: "*",
+          field: "instructions",
+          text: "x",
+          offset: 0,
+          total_chars: 9,
+          next_offset: 1,
+        }).structured["next"],
+      ).toBe(
+        'Call settings_get with scope="*", field="instructions" and offset=1 for the next page.',
+      );
+    });
+
+    it("sends a cut Environment to field, which reads a cut text whole", () => {
+      const scope = { id: "default", name: "Default" };
+
+      expect(
+        presented("environment_get", { scope, settings_truncated: true }).structured["next"],
+      ).toContain('Call environment_get with id="default" and field');
+      expect(
+        presented("environment_get", { scope, variables: [{ value_truncated: true }] }).structured[
+          "next"
+        ],
+      ).toContain("field");
+      expect(
+        presented("environment_get", { scope, settings_truncated: false }).structured["next"],
+      ).toBeUndefined();
+    });
+
+    it("sends cut Instructions to the Scope that keeps the cut text", () => {
+      const instructions = (global: boolean, own: boolean | null) => ({
+        scope: { id: "default", name: "Default" },
+        instructions: {
+          global: { text_truncated: global },
+          environment: own === null ? null : { text_truncated: own },
+        },
+      });
+
+      expect(presented("settings_get", instructions(true, true)).structured["next"]).toBe(
+        'Call settings_get with field="instructions" and scope "*" or "default" to read the cut Instructions whole.',
+      );
+      expect(presented("settings_get", instructions(false, true)).structured["next"]).toContain(
+        'scope "default"',
+      );
+      expect(
+        presented("settings_get", instructions(false, null)).structured["next"],
+      ).toBeUndefined();
+    });
+
+    it("sends a list of MCP servers to settings_mcp_get, and says nothing after a get", () => {
+      expect(
+        presented("settings_mcp_list", {
+          scope: { id: "default", name: "Default" },
+          servers: [{ name: "docs" }],
+        }).structured["next"],
+      ).toBe('Call settings_mcp_get with scope="default" and a server\'s name to see it in full.');
+      expect(
+        presented("settings_mcp_get", { server: { name: "docs" } }).structured["next"],
+      ).toBeUndefined();
+    });
+
+    it("reaches the caller through tools/call, in the text and in structuredContent", async () => {
+      // A valid answer: the SDK checks `structuredContent` against the tool's output schema.
+      const harness = () =>
+        Promise.resolve(
+          apiOk({
+            text: "Pages.",
+            structured: { ...page, next_offset: 40_000, total_chars: 65_536 },
+          }),
+        );
+
+      const result = await call(
+        "environment_get",
+        { id: "default", field: "setupScript" },
+        fakeApi({ describe: serving(HARNESS_TOOL_NAMES), harness }),
+      );
+
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent.next).toContain("offset=40000");
+      expect(result.content[0]?.text).toBe(`Pages.\n\n${result.structuredContent.next}`);
+    });
+
+    it("declares next as an optional key of each output schema", async () => {
+      const tools = await listed(fakeApi({ describe: serving(HARNESS_TOOL_NAMES) }));
+
+      for (const tool of tools.filter((each) => HARNESS_TOOL_NAMES.some((n) => n === each.name))) {
+        expect(tool.outputSchema.properties?.["next"], tool.name).toMatchObject({ type: "string" });
+        expect(tool.outputSchema.required ?? [], tool.name).not.toContain("next");
+      }
+    });
   });
 
   it("pass a core's refusal through as a domain failure", async () => {

@@ -7,6 +7,7 @@
 
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
+import { NextField } from "./field-page.ts";
 import { ScopeRef, SettingsScope } from "./scope.ts";
 import {
   InventoryRead,
@@ -33,6 +34,7 @@ const NEVER_RESOLVED =
 
 /** `settings_mcp_list` on the endpoint: no Scope is marked a Session's own; each part is cut harder. */
 export const SettingsMcpListEndpointOutput = Schema.Struct({
+  ...NextField,
   scope: ScopeRef,
   inventory: InventoryRead,
   servers: Schema.Array(ListServerOutput),
@@ -60,6 +62,7 @@ export const SettingsMcpListEndpointOutput = Schema.Struct({
  */
 export const SettingsMcpGetEndpointOutput = Schema.Struct({
   ...Struct.omit(SettingsMcpGetOutput.fields, ["is_own", "entry", "layers"]),
+  ...NextField,
   entry: Schema.NullOr(Schema.Json).annotate({
     description:
       "The entry in force, every default and adjustment applied, ${NAME} unresolved; null when entry_truncated",

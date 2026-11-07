@@ -110,8 +110,8 @@ export const MCP_API_OPERATIONS_SERVED = [
 
 /**
  * The management tools `harness` serves, which `describe()` lists as `harness`: `McpServer` offers one only when it knows
- * its declaration and it is listed (`docs/architecture/mcp-endpoint.md` → The dispatcher and `describe().harness`). A stage
- * adds a tool here and to `harnessDispatch` (`../harness/dispatch.ts`) together.
+ * its declaration and it is listed (`docs/architecture/mcp-endpoint.md` → The dispatcher and `describe().harness`). It lists the
+ * tools `harnessDispatch` (`../harness/dispatch.ts`) has a table entry for.
  */
 export const HARNESS_TOOLS_SERVED = [
   "environment_list",

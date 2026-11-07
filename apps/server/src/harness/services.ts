@@ -1,7 +1,6 @@
 // docs/architecture/mcp-endpoint.md → Environment and Settings tools → Shared definitions and the core/wrapper split (No
 // Session): the services the management tools' cores read through, built from the Registry and the McpHosts with no
-// Session. `/mcp`'s `api` target runs the cores over them (`./dispatch.ts`); S2a adds the author source and the writes, and
-// S3a's Registry RPC reuses the same module for the owner's approve.
+// Session. `/mcp`'s `api` target runs the cores over them (`./dispatch.ts`).
 import type { SettingsMcpAccessService } from "@cloudpid/extensions/settings-mcp";
 import type { EnvironmentReadServices } from "@cloudpid/extensions/environment-reads";
 import type { SettingsMcpReadServices } from "@cloudpid/extensions/settings-mcp-reads";
@@ -36,7 +35,7 @@ export type HarnessServices = {
   readonly settingsMcp: SettingsMcpReadServices;
 };
 
-/** The reads over `deps`: no write is in them, so none can be made through the endpoint of this stage. */
+/** The reads over `deps`: no write is in them, so none can be made through them. */
 export const harnessServices = ({
   registry,
   mcpHosts,

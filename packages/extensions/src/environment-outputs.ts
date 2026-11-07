@@ -491,7 +491,7 @@ const cutVariables = (variables: Readonly<Record<string, string>>) => {
 export type EnvironmentGetEndpointWhole = Required<
   Omit<
     typeof EnvironmentGetEndpointOutput.Type,
-    "id" | "field" | "text" | "offset" | "total_chars" | "next_offset"
+    "id" | "field" | "text" | "offset" | "total_chars" | "next_offset" | "next"
   >
 >;
 

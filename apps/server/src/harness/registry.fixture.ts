@@ -1,13 +1,14 @@
-// A stand-in Registry and McpHost for the management tools' reads (`./services.ts`, `./dispatch.ts`, and `/mcp`'s
+// docs/architecture/mcp-endpoint.md → Environment and Settings tools → Shared definitions and the core/wrapper split (No
+// Session): a stand-in Registry and McpHost for the management tools' reads (`./services.ts`, `./dispatch.ts`, and `/mcp`'s
 // `endpoint.test.ts`): one Environment, "Default", and Global, with the answers the five read tools ask for. The Registry
-// is cut down to the methods the reads use; each call is noted, and the Registry is the only thing the reads are given.
+// is cut down to the methods the reads use, and each call to it or to a host is noted.
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS } from "@cloudpid/config";
 import type { SettingsMcpServer, SettingsMcpView } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import type { HarnessDeps, HarnessRegistry } from "./services.ts";
 
 /** The Environment the stand-in Registry lists. */
-export const DEFAULT = {
+const DEFAULT = {
   id: "default",
   name: "Default",
   repos: [{ name: "app", url: "https://github.com/o/app.git" }],
@@ -15,12 +16,12 @@ export const DEFAULT = {
 };
 
 /** The setup script of the Environment: long enough to need a second page of 40,000 characters. */
-export const LONG_SCRIPT = `${"echo setup\n".repeat(4_000)}echo done\n`;
+const LONG_SCRIPT = `${"echo setup\n".repeat(4_000)}echo done\n`;
 
 /** The Instructions kept Global, and the Environment's own. */
-export const GLOBAL_INSTRUCTIONS = "Prefer small commits.";
+const GLOBAL_INSTRUCTIONS = "Prefer small commits.";
 
-export const ENVIRONMENT_INSTRUCTIONS = "Run the tests.";
+const ENVIRONMENT_INSTRUCTIONS = "Run the tests.";
 
 const GLOBAL_CONTAINER = { ...DEFAULT_CONTAINER_SETTINGS, variables: { SHARED: "all" } };
 
