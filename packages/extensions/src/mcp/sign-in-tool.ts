@@ -7,7 +7,7 @@
 // owner signs in from the card (`./sign-in.ts` keeps the request, durably).
 import { mcpServerNamespace, signsInOnItsOwn } from "@cloudpid/config";
 import { ChordContext, reachedWait } from "@cloudpid/effect-durable";
-import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
+import { isJsonObject, type JsonObject, type McpServerInventory } from "@cloudpid/mcp/types";
 import { MAX_SIGN_IN_REASON } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
@@ -237,12 +237,12 @@ export const signInTool = (
 
       const kept: McpDetails = { ...details, sign_in_request: "signed_in" };
 
-      const arriving =
-        server === undefined
-          ? 0
-          : named.ownEndpoint === true
-            ? listedTools({ tools: server.tools ?? [], ownEndpoint: true }).length
-            : server.counts.tools;
+      const countOf = (found: McpServerInventory): number =>
+        named.ownEndpoint === true
+          ? listedTools({ tools: found.tools ?? [], ownEndpoint: true }).length
+          : found.counts.tools;
+
+      const arriving = server === undefined ? 0 : countOf(server);
 
       const text =
         server?.state === "connected"

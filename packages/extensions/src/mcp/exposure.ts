@@ -107,15 +107,13 @@ export const reachesModel = (meta: Schema.Json | undefined): boolean =>
  */
 export const isOwnEndpoint = (url: string, appOrigin?: string): boolean => {
   const own = appOrigin === undefined ? null : URL.parse(appOrigin);
-  const parsed = own === null ? null : URL.parse(url);
 
   // An opaque origin (`null`) is no origin: two URLs of a scheme that has none must not match each other.
-  return (
-    parsed !== null &&
-    own?.origin !== "null" &&
-    parsed.origin === own?.origin &&
-    parsed.pathname === MCP_ROUTE
-  );
+  if (own === null || own.origin === "null") return false;
+
+  const parsed = URL.parse(url);
+
+  return parsed !== null && parsed.origin === own.origin && parsed.pathname === MCP_ROUTE;
 };
 
 /** Whether an entry (an HTTP server's `url`) is this stage's own endpoint (`isOwnEndpoint`); any other transport is not. */

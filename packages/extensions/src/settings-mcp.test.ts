@@ -1208,11 +1208,11 @@ describe("the Session's own endpoint (Self-use)", () => {
     });
   });
 
-  it("counts them as direct in the status after a change, as the tools do", async () => {
+  it("leaves them out of the direct count of the status after a change", async () => {
     const access = fakeAccess({ views: { [ENV]: endpointView } });
     const host = fakeMcpHost([endpoint]);
 
-    const [entry] = endpointView.servers;
+    const entry = Option.getOrThrow(Arr.head(endpointView.servers));
 
     const status = (appOrigin: string | undefined) =>
       Effect.runPromise(
@@ -1220,7 +1220,7 @@ describe("the Session's own endpoint (Self-use)", () => {
           { ...access.service, host: () => host.client, appOrigin },
           {
             own: ENV,
-            entry: entry!,
+            entry,
             offered: [],
             waitMs: 0,
             before: () => Effect.void,
