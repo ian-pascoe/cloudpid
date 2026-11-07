@@ -35,6 +35,12 @@ import {
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
+  environmentId,
+  HARNESS_TOOLS,
+  idDescription,
+  idOrGlobal,
+} from "@cloudpid/protocol/harness-tools";
+import {
   type AgentChange,
   type BuildView,
   type EnvironmentRef,
@@ -57,16 +63,8 @@ import * as Schema from "effect/Schema";
 import { Approvals } from "./approvals.ts";
 import { SIZE_LINES } from "./container.ts";
 import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
-import {
-  changeOutput,
-  EnvironmentGetOutput,
-  EnvironmentListOutput,
-  environmentGetOutput,
-  environmentListOutput,
-  FAILED_REASON_TAIL,
-  globalGetOutput,
-  unchangedOutput,
-} from "./environment-outputs.ts";
+import { changeOutput, FAILED_REASON_TAIL, unchangedOutput } from "./environment-outputs.ts";
+import { environmentGetRead, environmentListRead } from "./environment-reads.ts";
 import { resetTool } from "./environment-reset.ts";
 import {
   GLOBAL_ID,
@@ -76,6 +74,7 @@ import {
 } from "./environment-secret-marks.ts";
 import { type EnvironmentSkills, skillTools } from "./environment-skills.ts";
 import { holdsGitHubToken } from "./github-tokens.ts";
+import { NOT_FOUND, toolResult } from "./harness.ts";
 import { asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
@@ -204,7 +203,11 @@ export type AppliedChange =
 export class EnvironmentsError extends Schema.TaggedError<
   EnvironmentsError,
   { readonly brand: unique symbol }
->()("EnvironmentsError", { message: Schema.String }) {}
+>()("EnvironmentsError", {
+  message: Schema.String,
+  /** Why a read was refused, for the endpoint's dispatcher; none for a refusal that is only a message. */
+  code: Schema.optionalKey(Schema.Literals(["not_found", "invalid_argument"])),
+}) {}
 
 /** Why a text that holds a Secret Reference is refused: these tools resolve none, so it would be saved as written. */
 const PLACEHOLDER_REFUSAL =
@@ -339,7 +342,7 @@ export const describeBuild = (build: BuildView): string => {
   }
 };
 
-const reposLine = (repos: ReadonlyArray<EnvironmentRepo>): string =>
+export const reposLine = (repos: ReadonlyArray<EnvironmentRepo>): string =>
   repos.length === 0
     ? "none"
     : Arr.join(
@@ -438,7 +441,7 @@ export const describeEnvironment = (details: EnvironmentDetails, current: boolea
 };
 
 /** What `environment_get` says of what is kept Global (id `*`). */
-const describeGlobal = (details: GlobalDetails): string => {
+export const describeGlobal = (details: GlobalDetails): string => {
   const { settings, overriddenIn } = details;
 
   /** The Environments that override the field at `path`, if any, so a change here does not reach them. */
@@ -484,7 +487,7 @@ const describeGlobal = (details: GlobalDetails): string => {
 };
 
 /** What `environment_list` says of an Environment. */
-const listingLine = (environment: EnvironmentListing, current: boolean): string =>
+export const listingLine = (environment: EnvironmentListing, current: boolean): string =>
   `- ${environment.id}: ${JSON.stringify(environment.name)}${current ? " (this Session's)" : ""}; repos: ${reposLine(environment.repos)}; Build: ${describeBuild(environment.build)}`;
 
 /** A variable's value as the result shows it: plain, in full. */
@@ -492,8 +495,13 @@ const shownValue = (value: Schema.Json | null): string =>
   value === null ? "not set" : JSON.stringify(value);
 
 /** An Environment as a result names it: its name in quotes, then its id; or Global. */
-const namedEnvironment = ({ id, name }: { readonly id: string; readonly name: string }): string =>
-  id === GLOBAL_ID ? GLOBAL_NAME : `Environment ${JSON.stringify(name)} (${id})`;
+export const namedEnvironment = ({
+  id,
+  name,
+}: {
+  readonly id: string;
+  readonly name: string;
+}): string => (id === GLOBAL_ID ? GLOBAL_NAME : `Environment ${JSON.stringify(name)} (${id})`);
 
 /** When a change applies, and whether a Build was asked for. */
 export const describeApplied = (own: boolean, newBuild: boolean): string =>
@@ -582,31 +590,15 @@ export const plainValue = (value: Schema.Json | null): string =>
 export const pathsLine = (value: Schema.Json | null): string =>
   Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
 
-/** Where a tool's `id` description says to find this Session's own Environment: it is named like any other. */
-const FIND_OWN = "environment_list marks this Session's own";
-
-/** What a tool's `id` description says: where to find the id, and that none is assumed; `more` follows the id's own words. */
-const idDescription = (more = "") =>
-  `The id of the Environment, as environment_list shows it (${FIND_OWN})${more}. Name it on purpose: there is no default`;
-
 /** A tool's required `id`: one Environment, named even when it is this Session's own. */
-export const Id = Schema.String.check(Schema.isMinLength(1)).annotate({
-  description: idDescription(),
-});
+export const Id = environmentId();
 
 /** The `id` of `environment_setting_reset`: an Environment's, never `*`, since Global inherits nothing. */
 export const IdNotGlobal = Id.annotate({
   description: `${idDescription()}. Not "*": Global's settings are not reset here`,
 });
 
-/**
- * The `id` of a tool that also takes `*`, `kept` saying what that addresses. Built when used: the constant is not there
- * when this module loads first.
- */
-export const idOrGlobal = (kept: string) =>
-  Schema.String.check(Schema.isMinLength(1)).annotate({
-    description: idDescription(`, or "${GLOBAL_ID}" for ${kept}`),
-  });
+export { idOrGlobal };
 
 /**
  * Fails when `id` is `*`, which only the tools that keep something at Global take: the others change one
@@ -659,6 +651,7 @@ const asJsonValue = (value: Schema.Json): JsonValue => value as JsonValue;
 export const notFound = (id: string) =>
   EnvironmentsError.make({
     message: `No Environment has the id ${JSON.stringify(id)}. Call environment_list for the Environments and their ids.`,
+    code: NOT_FOUND,
   });
 
 /**
@@ -937,80 +930,25 @@ export const EnvironmentTools: Effect.Effect<
         `${text === "" ? `Removed the ${what}` : `Set the ${what}`} of ${where}: it was ${textSize(change.before)}, and is ${textSize(change.after)} now (the user sees the difference on the Environments page). ${note} ${applies}${newBuild || global !== undefined ? "" : " No new Build was asked for."}`,
     });
 
-  const list = yield* defineEffectTool({
-    name: "environment_list",
-    description:
-      "List the Environments: each one's id, name, Repos and Build, marking this Session's own, and how many variables are kept Global. An Environment is what a Workspace is made from: its Repos and its Container settings. Use environment_get with an id to see an Environment's settings.",
-    parameters: Schema.Struct({}),
-    structuredOutputSchema: outputSchema(EnvironmentListOutput),
-    replay: "safe",
-    execute: () =>
-      Effect.gen(function* () {
-        const current = yield* environments.current;
-        const listed = yield* environments.list;
-        const globalDetails = yield* environments.global;
+  const listRead = environmentListRead(environments);
+  const getRead = environmentGetRead(environments);
 
-        return {
-          output: [
-            {
-              type: "text" as const,
-              text:
-                listed.length === 0
-                  ? "There are no Environments."
-                  : `Environments (id: name):\n${Arr.join(
-                      Arr.map(listed, (environment) =>
-                        listingLine(environment, environment.id === current),
-                      ),
-                      "\n",
-                    )}\nVariables at Global: ${Record.size(globalDetails.settings.variables)} (environment_get with id "${GLOBAL_ID}" shows them and the other Container settings at Global)`,
-            },
-          ],
-          structuredOutput: asOutput(
-            EnvironmentListOutput,
-            environmentListOutput(listed, current, Record.size(globalDetails.settings.variables)),
-          ),
-          details: { current, environments: Arr.map(listed, ({ id, name }) => ({ id, name })) },
-        };
-      }),
+  const list = yield* defineEffectTool({
+    name: HARNESS_TOOLS.environment_list.name,
+    description: HARNESS_TOOLS.environment_list.session.description,
+    parameters: HARNESS_TOOLS.environment_list.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_list.session.output),
+    replay: "safe",
+    execute: () => Effect.map(listRead({}, "session"), toolResult),
   });
 
   const get = yield* defineEffectTool({
-    name: "environment_get",
-    description: `Show an Environment (the one id names; environment_list marks this Session's own): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace) in force, each marked as its own (overridden here) or inherited from Global, the variables kept Global that its own do not override, the names of the Secrets kept for it and Global (never their values), its own Skills (name, description, when saved) and the Skills kept Global that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${GLOBAL_ID}", show what is kept Global instead: its Container settings with the Environments that override each, the names of its Secrets and its Skills.`,
-    parameters: Schema.Struct({
-      id: idOrGlobal("the Container settings, Secrets and Skills kept Global"),
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentGetOutput),
+    name: HARNESS_TOOLS.environment_get.name,
+    description: HARNESS_TOOLS.environment_get.session.description,
+    parameters: HARNESS_TOOLS.environment_get.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_get.session.output),
     replay: "safe",
-    execute: ({ id }) =>
-      Effect.gen(function* () {
-        if (id === GLOBAL_ID) {
-          const kept = yield* environments.global;
-
-          return {
-            output: [{ type: "text" as const, text: describeGlobal(kept) }],
-            structuredOutput: asOutput(
-              EnvironmentGetOutput,
-              globalGetOutput(kept, { id: GLOBAL_ID, name: GLOBAL_NAME }),
-            ),
-            details: {
-              environment: { id: GLOBAL_ID, name: GLOBAL_NAME },
-              current: false,
-            },
-          };
-        }
-
-        const { environment, own } = yield* target(id);
-        const details = yield* environments.get(environment);
-
-        if (details === null) return yield* notFound(environment);
-
-        return {
-          output: [{ type: "text" as const, text: describeEnvironment(details, own) }],
-          structuredOutput: asOutput(EnvironmentGetOutput, environmentGetOutput(details, own)),
-          details: { environment: { id: details.id, name: details.name }, current: own },
-        };
-      }),
+    execute: (args) => Effect.map(getRead(args, "session"), toolResult),
   });
 
   const set = yield* defineEffectTool({

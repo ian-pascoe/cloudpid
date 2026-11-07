@@ -72,7 +72,7 @@ export class SettingsMcpAccess extends Context.Service<
  * nothing and has the host start no discovery (`demand: false`): it reads what the host holds, and starts no Container.
  */
 export const readInventory = (
-  access: SettingsMcpAccessService,
+  access: Pick<SettingsMcpAccessService, "host">,
   input: {
     readonly view: SettingsMcpView;
     readonly names?: ReadonlyArray<string>;

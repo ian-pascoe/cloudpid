@@ -8,7 +8,7 @@
 // worst case, under 1 MiB stored, far under what one nested call's result holds (`MAX_NESTED_STRUCTURED_OUTPUT_BYTES`,
 // 1.5 MiB, see `docs/architecture/workspace.md` → The rest of one tool result).
 // @effect-diagnostics missingPipeableSignature:off
-import { type ContainerSettings, InstanceType } from "@cloudpid/config";
+import type { ContainerSettings } from "@cloudpid/config";
 import {
   type AgentChange,
   type BuildView,
@@ -16,9 +16,25 @@ import {
   type EnvironmentSkill,
   variableField,
 } from "@cloudpid/protocol";
+import {
+  BuildOutput,
+  ENDPOINT_VARIABLE_VALUE_BYTES,
+  EnvironmentGetEndpointOutput,
+  EnvironmentListEndpointOutput,
+  EnvironmentGetOutput,
+  EnvironmentListOutput,
+  RepoOutput,
+  SecretOutput,
+  SettingsOutput,
+  SkillOutput,
+  SkillSourceOutput,
+  Source,
+  VariableOutput,
+} from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import type {
   AppliedChange,
   ChangedEnvironment,
@@ -39,6 +55,9 @@ import {
   ScopeRef,
 } from "./outputs.ts";
 import { secretEnvName } from "./secrets/references.ts";
+import { cutStored } from "./stored-bytes.ts";
+
+export { BuildOutput, EnvironmentGetOutput, EnvironmentListOutput, RepoOutput, SkillSourceOutput };
 
 /** The last characters of a failed Build's reason that a result shows. */
 export const FAILED_REASON_TAIL = 1_000;
@@ -60,37 +79,52 @@ export const MAX_OVERRIDING_BYTES = 8 * 1024;
 export const MAX_NAMES_BYTES = 16 * 1024;
 export const MAX_PROBLEM_BYTES = 16 * 1024;
 
+/** What each part of `environment_get`'s value weighs at most, stored. */
+export type GetBounds = {
+  readonly script: number;
+  readonly small: number;
+  readonly repos: number;
+  readonly variables: number;
+  readonly skills: number;
+  readonly secrets: number;
+  readonly overriding: number;
+  readonly names: number;
+  readonly problem: number;
+};
+
+/** The in-session bounds: the worst case is 800 KiB. */
+export const SESSION_GET_BOUNDS: GetBounds = {
+  script: MAX_SCRIPT_BYTES,
+  small: MAX_SMALL_TEXT_BYTES,
+  repos: MAX_REPOS_BYTES,
+  variables: MAX_VARIABLES_BYTES,
+  skills: MAX_SKILLS_BYTES,
+  secrets: MAX_SECRETS_BYTES,
+  overriding: MAX_OVERRIDING_BYTES,
+  names: MAX_NAMES_BYTES,
+  problem: MAX_PROBLEM_BYTES,
+};
+
+/**
+ * The endpoint's bounds, which keep the value near 50 KiB in its worst case, far under the 800 KiB of a Session's: the
+ * scripts 2 x 3, the Toolchains and the paths 2 x 2, the Repos 2, the variables 20 (50 of them, each value cut near
+ * 160 bytes), the Skills 5, the Secrets 3, each of Global's eight settings' overriding Environments 8 x 0.5, the names
+ * Global's variables and Skills that an Environment hides 2 x 1, the problem 1, and the Build's reason (1,000
+ * characters, 6 KiB at most) with the small rest. A text cut here is read whole with `field`.
+ */
+export const ENDPOINT_GET_BOUNDS: GetBounds = {
+  script: 3 * 1024,
+  small: 2 * 1024,
+  repos: 2 * 1024,
+  variables: 20 * 1024,
+  skills: 5 * 1024,
+  secrets: 3 * 1024,
+  overriding: 512,
+  names: 1024,
+  problem: 1024,
+};
+
 // ─── Repos and Builds ────────────────────────────────────────────────────────
-
-/** A Repo of an Environment. */
-export const RepoOutput = Schema.Struct({
-  name: Schema.String.annotate({ description: "The directory below /workspace it is cloned into" }),
-  url: Schema.String.annotate({ description: "The https URL its Workspaces clone" }),
-});
-
-/** An Environment's Build, with the end of a failed one's reason. Times are epoch milliseconds. */
-export const BuildOutput = Schema.Struct({
-  status: Schema.Literals(["none", "building", "ready", "failed"]).annotate({
-    description:
-      "none: no Build made yet, or nothing to build; building: one is being made; ready: the last Build is good; failed: the last attempt failed",
-  }),
-  at: Schema.NullOr(Schema.Finite).annotate({
-    description: "When the last Build finished (ready) or failed (failed); null otherwise",
-  }),
-  since: Schema.NullOr(Schema.Finite).annotate({
-    description: "When the Build being made began (building); null otherwise",
-  }),
-  last_good_at: Schema.NullOr(Schema.Finite).annotate({
-    description:
-      "When the last good Build finished, which new Workspaces start from meanwhile (building, failed); null for none",
-  }),
-  reason: Schema.NullOr(Schema.String).annotate({
-    description: "The end of a failed Build's reason; null for another status",
-  }),
-  reason_truncated: Schema.Boolean.annotate({
-    description: "The reason is cut to its last characters",
-  }),
-});
 
 /** `build` as a value gives it: a failed Build's reason is cut to its last `FAILED_REASON_TAIL` characters. */
 export const buildOutput = (build: BuildView): typeof BuildOutput.Type => {
@@ -141,23 +175,6 @@ const repoOutput = ({ name, url }: EnvironmentRepo): typeof RepoOutput.Type => (
 
 // ─── environment_list ────────────────────────────────────────────────────────
 
-/** `environment_list`: the Environments, and how many variables are kept Global. */
-export const EnvironmentListOutput = Schema.Struct({
-  environments: Schema.Array(
-    Schema.Struct({
-      id: Schema.String.annotate({ description: "The Environment's id" }),
-      name: Schema.String.annotate({ description: "The Environment's name" }),
-      current: Schema.Boolean.annotate({ description: "This Session's own Environment" }),
-      repos: Schema.Array(RepoOutput).annotate({ description: "Its Repos" }),
-      build: BuildOutput.annotate({ description: "How its Build stands" }),
-    }),
-  ).annotate({ description: "The Environments, the first that fit" }),
-  environments_truncated: Schema.Boolean.annotate({
-    description: "More Environments exist than fit; the first ones are listed",
-  }),
-  global_variables: Schema.Int.annotate({ description: "How many variables are kept Global" }),
-});
-
 /** What `environment_list` gives programs: `listed` (the first that fit), the Session's own and Global's variable count. */
 export const environmentListOutput = (
   listed: ReadonlyArray<EnvironmentListing>,
@@ -183,98 +200,6 @@ export const environmentListOutput = (
 
 // ─── environment_get ─────────────────────────────────────────────────────────
 
-const Source = Schema.Literals(["own", "inherited", "global"]).annotate({
-  description:
-    "own: the Environment's own value (overridden here); inherited: Global's, which the Environment does not override; global: kept at Global (for id *)",
-});
-
-/** Where each setting's (or variable's) value comes from, whatever the value. */
-const placement = {
-  source: Source,
-  overridden_in: Schema.Array(ScopeRef).annotate({
-    description:
-      "For Global's settings, the Environments that override it, so a change there does not reach them; empty for an Environment's",
-  }),
-  overridden_in_truncated: Schema.Boolean.annotate({
-    description: "More Environments override it than fit",
-  }),
-};
-
-/** A Container setting in force, and where it comes from. */
-export const SettingsOutput = Schema.Struct({
-  instance: Schema.Struct({
-    value: InstanceType.annotate({ description: "The size of the next Containers" }),
-    ...placement,
-  }),
-  max_instance: Schema.Struct({
-    value: InstanceType.annotate({ description: "The size limit: the largest size allowed" }),
-    ...placement,
-  }),
-  idle_minutes: Schema.Struct({
-    value: Schema.Finite.annotate({
-      description: "Minutes a Container may sit idle before it stops",
-    }),
-    ...placement,
-  }),
-  ignore: Schema.Struct({
-    value: Schema.Array(Schema.String).annotate({
-      description: "Extra Container-only path patterns",
-    }),
-    value_truncated: Schema.Boolean.annotate({ description: "The list is cut to what fits" }),
-    ...placement,
-  }),
-  setup_script: Schema.Struct({
-    value: Schema.String.annotate({ description: "The Setup Script (bash); empty for none" }),
-    value_truncated: Schema.Boolean.annotate({ description: "The script is cut to what fits" }),
-    ...placement,
-  }),
-  start_script: Schema.Struct({
-    value: Schema.String.annotate({ description: "The Start Script (bash); empty for none" }),
-    value_truncated: Schema.Boolean.annotate({ description: "The script is cut to what fits" }),
-    ...placement,
-  }),
-  toolchains: Schema.Struct({
-    value: Schema.String.annotate({
-      description: "The mise.toml text; empty for the image's base Toolchains",
-    }),
-    value_truncated: Schema.Boolean.annotate({ description: "The text is cut to what fits" }),
-    ...placement,
-  }),
-  spare_workspace: Schema.Struct({
-    value: Schema.Boolean.annotate({ description: "A Workspace is kept made ahead" }),
-    ...placement,
-  }),
-});
-
-/** A variable that applies, and where it comes from. */
-export const VariableOutput = Schema.Struct({
-  name: Schema.String.annotate({ description: "The variable's name" }),
-  value: Schema.String.annotate({ description: "The value, plain" }),
-  ...placement,
-});
-
-/** A Secret kept, by name only: never its value. */
-export const SecretOutput = Schema.Struct({
-  name: Schema.String.annotate({ description: "The Secret's name" }),
-  scope: Schema.Literals(["environment", "every"]).annotate({
-    description: "environment: kept for this Environment; every: kept Global",
-  }),
-  build: Schema.Boolean.annotate({ description: "It reaches the Setup Scripts and the Build" }),
-  env_var: Schema.String.annotate({ description: "The variable commands get it as" }),
-});
-
-/** Where a Skill was installed from. */
-export const SkillSourceOutput = Schema.Struct({
-  repo: Schema.String.annotate({ description: "The repo it was installed from, owner/name" }),
-  path: Schema.String.annotate({
-    description: "Its folder in the repo; empty for the repo's root",
-  }),
-  ref: Schema.NullOr(Schema.String).annotate({
-    description: "The ref named at install; null for the repo's default branch",
-  }),
-  commit: Schema.String.annotate({ description: "The commit it resolved to, in full" }),
-});
-
 /** A Skill's source as a value gives it. */
 export const skillSourceOutput = ({
   repo,
@@ -287,24 +212,6 @@ export const skillSourceOutput = ({
   readonly ref: string | null;
   readonly commit: string;
 }): typeof SkillSourceOutput.Type => ({ repo, path, ref, commit });
-
-/** A Skill kept, by its name and description. Times are epoch milliseconds. */
-export const SkillOutput = Schema.Struct({
-  name: Schema.String.annotate({ description: "The Skill's name" }),
-  description: Schema.String.annotate({ description: "What the Skill is for, from its SKILL.md" }),
-  saved_at: Schema.Finite.annotate({ description: "When it was last saved" }),
-  installed_from: Schema.NullOr(SkillSourceOutput).annotate({
-    description: "Where it was installed from; null for one never installed",
-  }),
-  modified: Schema.Boolean.annotate({ description: "Edited since it was installed" }),
-  update_available: Schema.Boolean.annotate({
-    description: "Its source's folder changed at the ref's head",
-  }),
-  origin: Schema.Literals(["own", "inherited", "global"]).annotate({
-    description:
-      "own: the Environment's own; inherited: kept Global and not hidden by the Environment's own; global: kept Global (for id *)",
-  }),
-});
 
 /** `skill` as a value gives it, kept in `origin`. */
 export const skillOutput = (
@@ -327,57 +234,6 @@ const secretOutput = (secret: KeptSecretListing): typeof SecretOutput.Type => ({
   env_var: secretEnvName(secret.name),
 });
 
-/**
- * `environment_get`: an Environment's settings in force, each marked own or inherited, the variables that apply, the
- * Secrets' names, the Skills and the Build; for id `*`, Global's settings with the Environments that override each, its
- * Secrets and its Skills (no Repos, no Build).
- */
-export const EnvironmentGetOutput = Schema.Struct({
-  scope: ScopeRef.annotate({ description: 'The Environment, or Global (id "*")' }),
-  current: Schema.Boolean.annotate({
-    description: "This Session's own Environment; false for Global",
-  }),
-  repos: Schema.Array(RepoOutput).annotate({ description: "Its Repos; none for Global" }),
-  repos_truncated: Schema.Boolean.annotate({ description: "The Repos are cut to what fits" }),
-  build: Schema.NullOr(BuildOutput).annotate({
-    description: "How its Build stands; null for Global",
-  }),
-  settings: SettingsOutput.annotate({
-    description: "The Container settings in force, each with where its value comes from",
-  }),
-  variables: Schema.Array(VariableOutput).annotate({
-    description:
-      "The variables that apply: the Environment's own, then Global's that its own do not override; for Global, its variables",
-  }),
-  variables_truncated: Schema.Boolean.annotate({
-    description: "The variables, or the names in overridden_global_variables, are cut to what fits",
-  }),
-  overridden_global_variables: Schema.Array(Schema.String).annotate({
-    description:
-      "The names of Global's variables the Environment's own override; cut to what fits, which sets variables_truncated",
-  }),
-  secrets: Schema.Array(SecretOutput).annotate({
-    description: "The Secrets kept for the Environment and Global, by name only",
-  }),
-  secrets_truncated: Schema.Boolean.annotate({ description: "The Secrets are cut to what fits" }),
-  skills: Schema.Array(SkillOutput).annotate({
-    description:
-      "The Environment's own Skills, then those kept Global that its own do not hide; for Global, its Skills",
-  }),
-  skills_truncated: Schema.Boolean.annotate({
-    description: "The Skills, or the names in overridden_global_skills, are cut to what fits",
-  }),
-  overridden_global_skills: Schema.Array(Schema.String).annotate({
-    description:
-      "The names of Global's Skills the Environment's own hide; cut to what fits, which sets skills_truncated",
-  }),
-  problem: Schema.NullOr(Schema.String).annotate({
-    description:
-      "Why only some of the saved settings apply, when a later release no longer accepts one; else null",
-  }),
-  problem_truncated: Schema.Boolean.annotate({ description: "The problem is cut to what fits" }),
-});
-
 /** A Container setting an Environment may override: all but the variables, which are placed one by one. */
 type SettingName = Exclude<keyof ContainerSettings, "variables">;
 
@@ -388,43 +244,57 @@ type Placement = {
   readonly overriding: ReadonlyArray<typeof ScopeRef.Type>;
 };
 
-/** `place` as a value gives it: the Environments that override are cut to `MAX_OVERRIDING_BYTES`. */
-const placed = ({ source, overriding }: Placement) => ({
+/** `place` as a value gives it: the Environments that override are cut to `bounds.overriding`. */
+const placed = ({ source, overriding }: Placement, maxBytes: number) => ({
   source,
-  ...overriddenInOutput(overriding, MAX_OVERRIDING_BYTES),
+  ...overriddenInOutput(overriding, maxBytes),
 });
 
 /** `settings` as a value gives them, each placed by `place`. */
 const settingsOutput = (
   settings: ContainerSettings,
   place: (field: SettingName) => Placement,
+  bounds: GetBounds,
 ): SettingsValue => {
-  const ignore = boundItems(settings.ignore, MAX_SMALL_TEXT_BYTES);
-  const setup = boundText(settings.setupScript, MAX_SCRIPT_BYTES);
-  const start = boundText(settings.startScript, MAX_SCRIPT_BYTES);
-  const toolchains = boundText(settings.toolchains, MAX_SMALL_TEXT_BYTES);
+  const ignore = boundItems(settings.ignore, bounds.small);
+  const setup = boundText(settings.setupScript, bounds.script);
+  const start = boundText(settings.startScript, bounds.script);
+  const toolchains = boundText(settings.toolchains, bounds.small);
 
   return {
-    instance: { value: settings.instance, ...placed(place("instance")) },
-    max_instance: { value: settings.maxInstance, ...placed(place("maxInstance")) },
-    idle_minutes: { value: settings.idleMinutes, ...placed(place("idleMinutes")) },
-    ignore: { value: ignore.items, value_truncated: ignore.truncated, ...placed(place("ignore")) },
+    instance: { value: settings.instance, ...placed(place("instance"), bounds.overriding) },
+    max_instance: {
+      value: settings.maxInstance,
+      ...placed(place("maxInstance"), bounds.overriding),
+    },
+    idle_minutes: {
+      value: settings.idleMinutes,
+      ...placed(place("idleMinutes"), bounds.overriding),
+    },
+    ignore: {
+      value: ignore.items,
+      value_truncated: ignore.truncated,
+      ...placed(place("ignore"), bounds.overriding),
+    },
     setup_script: {
       value: setup.text,
       value_truncated: setup.truncated,
-      ...placed(place("setupScript")),
+      ...placed(place("setupScript"), bounds.overriding),
     },
     start_script: {
       value: start.text,
       value_truncated: start.truncated,
-      ...placed(place("startScript")),
+      ...placed(place("startScript"), bounds.overriding),
     },
     toolchains: {
       value: toolchains.text,
       value_truncated: toolchains.truncated,
-      ...placed(place("toolchains")),
+      ...placed(place("toolchains"), bounds.overriding),
     },
-    spare_workspace: { value: settings.spareWorkspace, ...placed(place("spareWorkspace")) },
+    spare_workspace: {
+      value: settings.spareWorkspace,
+      ...placed(place("spareWorkspace"), bounds.overriding),
+    },
   };
 };
 
@@ -433,7 +303,8 @@ const variableOutput = (
   name: string,
   value: string,
   place: Placement,
-): typeof VariableOutput.Type => ({ name, value, ...placed(place) });
+  bounds: GetBounds,
+): typeof VariableOutput.Type => ({ name, value, ...placed(place, bounds.overriding) });
 
 /**
  * What `environment_get` gives programs for Environment `details`: the settings in force with where each comes from, its
@@ -443,6 +314,7 @@ const variableOutput = (
 export const environmentGetOutput = (
   details: EnvironmentDetails,
   current: boolean,
+  bounds: GetBounds = SESSION_GET_BOUNDS,
 ): typeof EnvironmentGetOutput.Type => {
   const { settings, overrides, global } = details;
   const own = overrides.variables ?? {};
@@ -452,13 +324,13 @@ export const environmentGetOutput = (
   const variables = boundItems(
     [
       ...Arr.map(Record.toEntries(own), ([name, value]) =>
-        variableOutput(name, value, { source: "own", overriding: [] }),
+        variableOutput(name, value, { source: "own", overriding: [] }, bounds),
       ),
       ...Arr.map(Record.toEntries(inherited), ([name, value]) =>
-        variableOutput(name, value, { source: "inherited", overriding: [] }),
+        variableOutput(name, value, { source: "inherited", overriding: [] }, bounds),
       ),
     ],
-    MAX_VARIABLES_BYTES,
+    bounds.variables,
   );
 
   const ownSkills = new Set(Arr.map(details.skills, (skill) => skill.name));
@@ -472,19 +344,19 @@ export const environmentGetOutput = (
         (skill) => skillOutput(skill, "inherited"),
       ),
     ],
-    MAX_SKILLS_BYTES,
+    bounds.skills,
   );
 
-  const repos = boundItems(Arr.map(details.repos, repoOutput), MAX_REPOS_BYTES);
-  const secrets = boundItems(Arr.map(details.secrets, secretOutput), MAX_SECRETS_BYTES);
-  const hiddenVariables = boundItems(overridden, MAX_NAMES_BYTES);
+  const repos = boundItems(Arr.map(details.repos, repoOutput), bounds.repos);
+  const secrets = boundItems(Arr.map(details.secrets, secretOutput), bounds.secrets);
+  const hiddenVariables = boundItems(overridden, bounds.names);
 
   const hiddenSkills = boundItems(
     Arr.map(hidden, (skill) => skill.name),
-    MAX_NAMES_BYTES,
+    bounds.names,
   );
 
-  const problem = boundText(details.problem ?? "", MAX_PROBLEM_BYTES);
+  const problem = boundText(details.problem ?? "", bounds.problem);
 
   const place = (field: SettingName): Placement => ({
     source: overrides[field] === undefined ? "inherited" : "own",
@@ -497,7 +369,7 @@ export const environmentGetOutput = (
     repos: repos.items,
     repos_truncated: repos.truncated,
     build: buildOutput(details.build),
-    settings: settingsOutput(settings, place),
+    settings: settingsOutput(settings, place, bounds),
     variables: variables.items,
     variables_truncated: variables.truncated || hiddenVariables.truncated,
     overridden_global_variables: hiddenVariables.items,
@@ -518,6 +390,7 @@ export const environmentGetOutput = (
 export const globalGetOutput = (
   details: GlobalDetails,
   scope: typeof ScopeRef.Type,
+  bounds: GetBounds = SESSION_GET_BOUNDS,
 ): typeof EnvironmentGetOutput.Type => {
   const { settings, overriddenIn } = details;
 
@@ -525,19 +398,24 @@ export const globalGetOutput = (
 
   const variables = boundItems(
     Arr.map(Record.toEntries(settings.variables), ([name, value]) =>
-      variableOutput(name, value, {
-        source: "global",
-        overriding: overriding(variableField(name)),
-      }),
+      variableOutput(
+        name,
+        value,
+        {
+          source: "global",
+          overriding: overriding(variableField(name)),
+        },
+        bounds,
+      ),
     ),
-    MAX_VARIABLES_BYTES,
+    bounds.variables,
   );
 
-  const secrets = boundItems(Arr.map(details.secrets, secretOutput), MAX_SECRETS_BYTES);
+  const secrets = boundItems(Arr.map(details.secrets, secretOutput), bounds.secrets);
 
   const skills = boundItems(
     Arr.map(details.skills, (skill) => skillOutput(skill, "global")),
-    MAX_SKILLS_BYTES,
+    bounds.skills,
   );
 
   return {
@@ -546,10 +424,14 @@ export const globalGetOutput = (
     repos: [],
     repos_truncated: false,
     build: null,
-    settings: settingsOutput(settings, (field) => ({
-      source: "global",
-      overriding: overriding(field),
-    })),
+    settings: settingsOutput(
+      settings,
+      (field) => ({
+        source: "global",
+        overriding: overriding(field),
+      }),
+      bounds,
+    ),
     variables: variables.items,
     variables_truncated: variables.truncated,
     overridden_global_variables: [],
@@ -561,6 +443,119 @@ export const globalGetOutput = (
     problem: null,
     problem_truncated: false,
   };
+};
+
+// ─── On the endpoint ─────────────────────────────────────────────────────────
+
+/** The most the Environments of `environment_list` weigh stored on the endpoint. */
+const MAX_ENDPOINT_LIST_BYTES = 32 * 1024;
+
+/**
+ * What `environment_list` gives the endpoint: `listed` (the first that fit) and Global's variable count, with no
+ * Environment marked a Session's own.
+ */
+export const environmentListEndpointOutput = (
+  listed: ReadonlyArray<EnvironmentListing>,
+  globalVariables: number,
+): typeof EnvironmentListEndpointOutput.Type => {
+  const bounded = boundItems(
+    Arr.map(listed, (environment) => ({
+      id: environment.id,
+      name: environment.name,
+      repos: Arr.map(environment.repos, repoOutput),
+      build: buildOutput(environment.build),
+    })),
+    MAX_ENDPOINT_LIST_BYTES,
+  );
+
+  return {
+    environments: bounded.items,
+    environments_truncated: bounded.truncated,
+    global_variables: globalVariables,
+  };
+};
+
+/** `variables` with each value cut to `ENDPOINT_VARIABLE_VALUE_BYTES` stored, and the names of those that were cut. */
+const cutVariables = (variables: Readonly<Record<string, string>>) => {
+  const cut = new Set<string>();
+
+  const values = Record.map(variables, (value, name) => {
+    const head = cutStored(value, ENDPOINT_VARIABLE_VALUE_BYTES, "");
+
+    if (head !== value) cut.add(name);
+
+    return head;
+  });
+
+  return { values, cut };
+};
+
+/** The endpoint's `environment_get` value of a whole Environment (or Global): every key of it present, none of a page's. */
+export type EnvironmentGetEndpointWhole = Required<
+  Omit<
+    typeof EnvironmentGetEndpointOutput.Type,
+    "id" | "field" | "text" | "offset" | "total_chars" | "next_offset"
+  >
+>;
+
+/** `base`, an Environment's or Global's value in the Session's shape, as the endpoint gives it. */
+const endpointGetOutput = (
+  base: typeof EnvironmentGetOutput.Type,
+  cut: ReadonlySet<string>,
+): EnvironmentGetEndpointWhole => {
+  const { settings } = base;
+
+  return {
+    ...Struct.omit(base, ["current"]),
+    variables: Arr.map(base.variables, (variable) => ({
+      ...variable,
+      value_truncated: cut.has(variable.name),
+    })),
+    settings_truncated:
+      settings.setup_script.value_truncated ||
+      settings.start_script.value_truncated ||
+      settings.toolchains.value_truncated ||
+      settings.ignore.value_truncated,
+  };
+};
+
+/**
+ * What `environment_get` gives the endpoint for Environment `details`: the Session's value, cut to `ENDPOINT_GET_BOUNDS`,
+ * with no mark of a Session's own and each variable's value cut near `ENDPOINT_VARIABLE_VALUE_BYTES` (`value_truncated`).
+ */
+export const environmentGetEndpointOutput = (
+  details: EnvironmentDetails,
+): EnvironmentGetEndpointWhole => {
+  const own = cutVariables(details.overrides.variables ?? {});
+  const inherited = cutVariables(details.global.variables);
+
+  const base = environmentGetOutput(
+    {
+      ...details,
+      overrides: { ...details.overrides, variables: own.values },
+      global: { ...details.global, variables: inherited.values },
+    },
+    false,
+    ENDPOINT_GET_BOUNDS,
+  );
+
+  return endpointGetOutput(base, new Set([...own.cut, ...inherited.cut]));
+};
+
+/** What `environment_get` gives the endpoint for what is kept Global (id `*`), cut as `environmentGetEndpointOutput` is. */
+export const globalGetEndpointOutput = (
+  details: GlobalDetails,
+  scope: typeof ScopeRef.Type,
+): EnvironmentGetEndpointWhole => {
+  const variables = cutVariables(details.settings.variables);
+
+  const base = globalGetOutput(
+    { ...details, settings: { ...details.settings, variables: variables.values } },
+    scope,
+    ENDPOINT_GET_BOUNDS,
+  );
+
+  return endpointGetOutput(base, variables.cut);
 };
 
 // ─── Changes ─────────────────────────────────────────────────────────────────

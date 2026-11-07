@@ -17,6 +17,7 @@ import {
   type McpServerState,
   readMcpServerState,
 } from "@cloudpid/mcp/types";
+import { MAX_GET_INSTRUCTIONS_BYTES, MAX_GET_TOOLS } from "@cloudpid/protocol/harness-tools";
 import type {
   SettingsMcpEnvironment,
   SettingsMcpReload,
@@ -41,11 +42,7 @@ import type {
 /** The most of a server's error the values give, in bytes stored. */
 const MAX_ERROR_BYTES = 300;
 
-/** The most tools `settings_mcp_get` lists: the rest are counted. */
-export const MAX_GET_TOOLS = 500;
-
-/** The most of a server's `instructions` `settings_mcp_get` gives, in bytes of UTF-8 stored. */
-export const MAX_GET_INSTRUCTIONS_BYTES = 4 * 1024;
+export { MAX_GET_INSTRUCTIONS_BYTES, MAX_GET_TOOLS };
 
 /**
  * What each growable part of a value weighs at most, stored (`docs/architecture/agent-capabilities.md` → Bounds). Each
@@ -74,6 +71,29 @@ export const BOUNDS = {
   names: 16 * 1024,
   reloadProblems: 32 * 1024,
 } as const;
+
+/** The bounds of a value's parts, in bytes stored. */
+export type McpBounds = { readonly [Key in keyof typeof BOUNDS]: number };
+
+/**
+ * The endpoint's bounds, which keep `settings_mcp_list` near 38 KiB in its worst case (servers, problems, repos, orphans,
+ * warnings) and `settings_mcp_get` under what `fitted` brings to the limit (tools 14 KiB, the Repos' layers 4, prompts 3,
+ * unmatched keys 2, warnings 2, the instructions 4, one server's own lists 1 KiB each).
+ */
+export const ENDPOINT_BOUNDS: McpBounds = {
+  ...BOUNDS,
+  servers: 24 * 1024,
+  problems: 4 * 1024,
+  repos: 6 * 1024,
+  orphans: 2 * 1024,
+  warnings: 2 * 1024,
+  tools: 14 * 1024,
+  layers: 4 * 1024,
+  prompts: 3 * 1024,
+  unmatched: 2 * 1024,
+  perServer: 1024,
+  missingIn: 512,
+};
 
 /** The MCP hints of a source, as an output gives it. */
 export const sourceOutput = (source: McpSource) =>
@@ -225,6 +245,7 @@ const listServerOutput = (
   entry: SettingsMcpServer,
   offered: ReadonlyArray<string>,
   inventory: McpServerInventory | undefined | null,
+  bounds: McpBounds = BOUNDS,
 ): typeof ListServerOutput.Type => {
   const { server } = entry.server;
 
@@ -234,12 +255,12 @@ const listServerOutput = (
       name: hidden.name,
       differs: hidden.differs,
     })),
-    BOUNDS.perServer,
+    bounds.perServer,
   );
 
   const reads = boundItems(
     Arr.map(entry.reads, (read) => {
-      const missing = environmentsOutput(read.missingIn, BOUNDS.missingIn);
+      const missing = environmentsOutput(read.missingIn, bounds.missingIn);
 
       return {
         name: read.name,
@@ -249,12 +270,12 @@ const listServerOutput = (
         missing_in_truncated: missing.truncated,
       };
     }),
-    BOUNDS.perServer,
+    bounds.perServer,
   );
 
-  const problems = boundItems(Arr.map(entry.problems, problemOutput), BOUNDS.perServer);
-  const overridden = environmentsOutput(entry.overriddenIn, BOUNDS.perServer);
-  const adjusted = environmentsOutput(entry.adjustedIn, BOUNDS.perServer);
+  const problems = boundItems(Arr.map(entry.problems, problemOutput), bounds.perServer);
+  const overridden = environmentsOutput(entry.overriddenIn, bounds.perServer);
+  const adjusted = environmentsOutput(entry.adjustedIn, bounds.perServer);
 
   return {
     name: entry.server.name,
@@ -298,19 +319,25 @@ export const scopeOutput = (view: { readonly scope: string; readonly name: strin
   scopeRef({ id: view.scope, name: view.name });
 
 /** `settings_mcp_list`'s value. */
-export const listOutput = (view: SettingsMcpView, own: string | null, inventory: Inventory) => {
+export const listOutput = (
+  view: SettingsMcpView,
+  own: string | null,
+  inventory: Inventory,
+  bounds: McpBounds = BOUNDS,
+) => {
   const servers = boundItems(
     Arr.map(view.servers, (entry) =>
       listServerOutput(
         entry,
         view.offered,
         inventory.read === "read" ? inventory.byName.get(entry.server.name) : null,
+        bounds,
       ),
     ),
-    BOUNDS.servers,
+    bounds.servers,
   );
 
-  const problems = boundItems(Arr.map(view.problems, problemOutput), BOUNDS.problems);
+  const problems = boundItems(Arr.map(view.problems, problemOutput), bounds.problems);
 
   const repos = boundItems(
     Arr.map(view.repos, (repo) => ({
@@ -325,7 +352,7 @@ export const listOutput = (view: SettingsMcpView, own: string | null, inventory:
       error_since: repo.errorSince ?? null,
       problem: repo.problem ?? null,
     })),
-    BOUNDS.repos,
+    bounds.repos,
   );
 
   const orphans = boundItems(
@@ -334,10 +361,10 @@ export const listOutput = (view: SettingsMcpView, own: string | null, inventory:
       server: orphan.name,
       keys: orphan.keys,
     })),
-    BOUNDS.orphans,
+    bounds.orphans,
   );
 
-  const warnings = boundItems(view.warnings, BOUNDS.warnings);
+  const warnings = boundItems(view.warnings, bounds.warnings);
 
   return {
     scope: scopeOutput(view),
@@ -431,27 +458,28 @@ export const getOutput = (
   layers: NonNullable<SettingsMcpView["layers"]>,
   own: string | null,
   inventory: Inventory,
+  bounds: McpBounds = BOUNDS,
 ): typeof SettingsMcpGetOutput.Type => {
   const row = inventory.read === "read" ? inventory.byName.get(entry.server.name) : undefined;
   const tools = toolsOf(row);
   const names = namesOf(entry.server, tools);
 
-  // At most MAX_GET_TOOLS, and as many of them as weigh BOUNDS.tools stored.
+  // At most MAX_GET_TOOLS, and as many of them as weigh bounds.tools stored.
   const listed = boundItems(
     Arr.map(Arr.take(tools, MAX_GET_TOOLS), (tool) =>
       toolOutput(entry, view.offered, names, row, tool),
     ),
-    BOUNDS.tools,
+    bounds.tools,
   );
 
-  const prompts = boundItems(promptsOf(row), BOUNDS.prompts);
+  const prompts = boundItems(promptsOf(row), bounds.prompts);
 
   const unmatched =
     row?.tools === undefined
       ? null
-      : boundItems(unmatchedKeys(entry.server, tools), BOUNDS.unmatched);
+      : boundItems(unmatchedKeys(entry.server, tools), bounds.unmatched);
 
-  const warnings = boundItems(view.warnings, BOUNDS.warnings);
+  const warnings = boundItems(view.warnings, bounds.warnings);
 
   // Each Repo that defines the name: up to a file's worth of entries (16 KiB each), so by bytes.
   const layerRepos = boundItems(
@@ -462,7 +490,7 @@ export const getOutput = (
       value: repo.value,
       shadowed: repo.shadowed,
     })),
-    BOUNDS.layers,
+    bounds.layers,
   );
 
   const instructions =
@@ -474,7 +502,7 @@ export const getOutput = (
     scope: scopeOutput(view),
     is_own: view.scope === own,
     inventory: inventory.read,
-    server: listServerOutput(entry, view.offered, inventory.read === "read" ? row : null),
+    server: listServerOutput(entry, view.offered, inventory.read === "read" ? row : null, bounds),
     // SAFETY: the entry in force is plain data; only its top-level optional keys may hold undefined, which are left out.
     entry: Record.filter(
       // SAFETY: the same entry, read as the record of its keys.

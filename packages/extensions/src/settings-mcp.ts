@@ -19,20 +19,19 @@
 // and rediscover its HTTP servers at once. It is no Agent change.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off globalDate:off -- builders over plain values.
 import { defineEffectTool } from "@cloudpid/effect-durable";
+import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
-import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { Approvals } from "./approvals.ts";
 import type { McpHostClientService } from "./mcp/client.ts";
 import {
   pushMcpSet,
-  readInventory,
   SettingsMcpAccess,
   type SettingsMcpAccessService,
 } from "./settings-mcp-access.ts";
+import { toolResult } from "./harness.ts";
 import { asOutput, outputSchema } from "./outputs.ts";
 import type { AgentChangeLog, DeployCredentials } from "./environment.ts";
 import type { Secrets } from "./secrets/store.ts";
@@ -44,22 +43,12 @@ import {
   SettingsScope,
 } from "./settings.ts";
 
-import {
-  getOutput,
-  listOutput,
-  MAX_GET_TOOLS,
-  type ReloadHost,
-  reloadOutput,
-  scopeOutput,
-} from "./settings-mcp-values.ts";
-import {
-  SettingsMcpGetOutput,
-  SettingsMcpListOutput,
-  SettingsMcpReloadOutput,
-} from "./settings-mcp-outputs.ts";
+import { type ReloadHost, reloadOutput } from "./settings-mcp-values.ts";
+import { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
+import { settingsMcpGetRead, settingsMcpListRead } from "./settings-mcp-reads.ts";
 import { McpChangeTools } from "./settings-mcp-changes.ts";
 import { McpDefinitionTools } from "./settings-mcp-definitions.ts";
-import { describeGet, describeList, describeReload, scopeWords } from "./settings-mcp-words.ts";
+import { describeReload } from "./settings-mcp-words.ts";
 
 export { pushMcpSet, SettingsMcpAccess, type SettingsMcpAccessService };
 
@@ -95,12 +84,6 @@ const reloadHost = (
     : { status: "failed", servers: [], note: "the host did not answer" };
 };
 
-const SCOPE_NOTE =
-  "Give scope \"*\" for Global, which lists Global's own entries only, or an Environment's id (environment_list shows them) for its whole set: its own entries, Global's and each Repo's .pi/mcp.json.";
-
-const NEVER_RESOLVED =
-  "It reads the Registry and the Environment's MCP host's held inventory: it connects to no server and starts no Container. It shows each ${NAME} an entry reads as a Secret, a Variable or missing, never a value, and no hash. State, tool counts and the negotiated protocol version are what the host already holds (none for Global, or for an Environment with no servers).";
-
 /**
  * The `settings_mcp` extension: its read-only tools over the Session's `SettingsMcpAccess` (the Registry's MCP read) and
  * the Environments' hosts it reaches (`SettingsMcpAccess.host`), and the changing tools: those that change what is reachable
@@ -122,72 +105,25 @@ export const SettingsMcpTools: Effect.Effect<
   const changing = yield* McpChangeTools;
   const defining = yield* McpDefinitionTools;
 
-  const list = yield* defineEffectTool({
-    name: "settings_mcp_list",
-    description: `List the MCP servers of one Scope: per server its name and tool prefix, its source (Global, the Environment, or a Repo's file), the Repo entries it shadows, its transport and target, enabled, Exposure and the count of toolExposure keys each with where it is written, its description, the \${NAME} values it reads (marked secret, variable or missing), the settings_reset fields the Environment holds for it, its connection state with tool, direct, prompt and resource counts, the negotiated protocol version and the last error, its MCP sign-in and its problems; then each Repo's file as last read, adjustments with no server, and warnings. ${SCOPE_NOTE} ${NEVER_RESOLVED} Read-only. To change a server, load the settings_mcp tools that change them with tool_search; a Repo's .pi/mcp.json is edited as a file, in a pull request.`,
-    parameters: Schema.Struct({ scope: SettingsScope }),
-    structuredOutputSchema: outputSchema(SettingsMcpListOutput),
-    replay: "safe",
-    execute: ({ scope }) =>
-      Effect.gen(function* () {
-        const view = yield* access.view({ scope });
-        const own = yield* access.own;
-        const inventory = yield* readInventory(access, { view, parts: ["tools"] });
-        const out = listOutput(view, own, inventory);
+  const listRead = settingsMcpListRead(access);
+  const getRead = settingsMcpGetRead(access);
 
-        return {
-          output: [{ type: "text" as const, text: describeList(out) }],
-          structuredOutput: asOutput(SettingsMcpListOutput, out),
-          details: { scope: view.scope, servers: view.servers.length },
-        };
-      }),
+  const list = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_mcp_list.name,
+    description: HARNESS_TOOLS.settings_mcp_list.session.description,
+    parameters: HARNESS_TOOLS.settings_mcp_list.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_mcp_list.session.output),
+    replay: "safe",
+    execute: (args) => Effect.map(listRead(args, "session"), toolResult),
   });
 
   const get = yield* defineEffectTool({
-    name: "settings_mcp_get",
-    description: `Show one MCP server of one Scope in full: its layers as written (Global's entry, the Environment's entry or adjustment, each Repo's, shadowed ones included), the entry in force, up to ${MAX_GET_TOOLS} of its tools each with its model-facing name, title, effective Exposure and what decided it (the server's, a toolExposure name or pattern, or tools.offered), its annotation hints and problems, the toolExposure keys that match none of its tools, its prompts, its own instructions (cut at 4 KiB), the negotiated protocol version, its sampling setting ("ask", "allow" or "off": whether it may use the user's models) and its state. name is the server in force in that Scope's set. ${SCOPE_NOTE} ${NEVER_RESOLVED} Read-only.`,
-    parameters: Schema.Struct({
-      scope: SettingsScope,
-      name: Schema.String.check(Schema.isMinLength(1)).annotate({
-        description: "The server's name as settings_mcp_list shows it",
-      }),
-    }),
-    structuredOutputSchema: outputSchema(SettingsMcpGetOutput),
+    name: HARNESS_TOOLS.settings_mcp_get.name,
+    description: HARNESS_TOOLS.settings_mcp_get.session.description,
+    parameters: HARNESS_TOOLS.settings_mcp_get.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_mcp_get.session.output),
     replay: "safe",
-    execute: ({ scope, name }) =>
-      Effect.gen(function* () {
-        const view = yield* access.view({ scope, name });
-        const own = yield* access.own;
-        const entry = Arr.head(view.servers);
-
-        if (Option.isNone(entry) || view.layers === null) {
-          return yield* SettingsAccessError.make({
-            message: `No MCP server ${JSON.stringify(name)} in ${scopeWords(scopeOutput(view))}. ${
-              view.names.length === 0
-                ? "It has none."
-                : `Its servers: ${Arr.join(view.names, ", ")}.`
-            }${
-              view.scope === GLOBAL_SETTINGS_SCOPE
-                ? " Global lists its own entries only: a Repo's server is in the set of an Environment that has the Repo (give its id)."
-                : ""
-            }`,
-          });
-        }
-
-        const inventory = yield* readInventory(access, {
-          view,
-          names: [entry.value.server.name],
-          parts: ["tools", "prompts", "instructions", "status"],
-        });
-
-        const out = getOutput(view, entry.value, view.layers, own, inventory);
-
-        return {
-          output: [{ type: "text" as const, text: describeGet(out) }],
-          structuredOutput: asOutput(SettingsMcpGetOutput, out),
-          details: { scope: view.scope, server: entry.value.server.name },
-        };
-      }),
+    execute: (args) => Effect.map(getRead(args, "session"), toolResult),
   });
 
   const reload = yield* defineEffectTool({

@@ -8,6 +8,7 @@
 // @effect-diagnostics missingPipeableSignature:off
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import { type AgentChange, SecretName, secretBuildField } from "@cloudpid/protocol";
+import { GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -24,11 +25,7 @@ import {
 import { asOutput, ChangeOutput, changesOutput, outputSchema, scopeRef } from "./outputs.ts";
 import { secretEnvName } from "./secrets/references.ts";
 
-/** The id that addresses the variables and Secrets kept Global. */
-export const GLOBAL_ID = "*";
-
-/** The name the Agent changes of the variables and Secrets kept Global give their scope. */
-export const GLOBAL_NAME = "Global";
+export { GLOBAL_ID, GLOBAL_NAME };
 
 /** How the Build mark of a kept Secret was changed. */
 export type SecretMarked =

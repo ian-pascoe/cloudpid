@@ -26,6 +26,9 @@ export type SettingsMcpRegistry = Pick<
   | "sessionSettings"
 >;
 
+/** What the MCP read uses of the Registry: the endpoint's Registry stub fits it, as the Session's does. */
+export type SettingsMcpReadsRegistry = Pick<RegistryMethods, "mcpSettingsView">;
+
 export type SessionSettingsMcpAccessOptions = {
   readonly registry: SettingsMcpRegistry;
   /** The Session's id in the Registry; undefined when unknown, for a Session that then has no own Environment. */
@@ -36,12 +39,17 @@ export type SessionSettingsMcpAccessOptions = {
   readonly workspace?: Effect.Effect<string | null, Cause.UnknownError> | undefined;
 };
 
-export const sessionSettingsMcpAccess = ({
-  registry,
-  session,
-  host,
-  workspace,
-}: SessionSettingsMcpAccessOptions): SettingsMcpAccessService => ({
+/**
+ * The read of the Session's `SettingsMcpAccess`, which needs no Session: the MCP servers of a Scope, and the `McpHost` of any
+ * Environment, whose held inventory the reads ask for (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools →
+ * Shared definitions: No Session). The Session spreads it into its service, adding `own`, the checks, the pushes and the
+ * reload; the MCP endpoint builds it from its Registry and its hosts alone.
+ */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const settingsMcpReads = (
+  registry: SettingsMcpReadsRegistry,
+  host: (environment: string) => McpHostClientService,
+): Pick<SettingsMcpAccessService, "view" | "host"> => ({
   view: ({ scope, name }) =>
     Effect.suspend(() =>
       registry.mcpSettingsView({
@@ -54,6 +62,16 @@ export const sessionSettingsMcpAccess = ({
         () => noEnvironment(scope),
       ),
     ),
+  host,
+});
+
+export const sessionSettingsMcpAccess = ({
+  registry,
+  session,
+  host,
+  workspace,
+}: SessionSettingsMcpAccessOptions): SettingsMcpAccessService => ({
+  ...settingsMcpReads(registry, host),
   own:
     session === undefined
       ? Effect.succeed(null)
@@ -92,7 +110,6 @@ export const sessionSettingsMcpAccess = ({
       ),
     ),
   pushed: (input) => Effect.suspend(() => registry.mcpPushed(input)),
-  host,
   workspace:
     workspace === undefined
       ? Effect.succeed(null)

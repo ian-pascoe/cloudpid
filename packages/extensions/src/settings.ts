@@ -32,6 +32,11 @@ import {
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange, McpChangeGuard } from "@cloudpid/protocol";
+import {
+  GLOBAL_SETTINGS_SCOPE,
+  HARNESS_TOOLS,
+  SettingsScope,
+} from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -49,15 +54,18 @@ import {
   MAX_CHANGE_REASON,
 } from "./environment.ts";
 import { formatScope } from "./instructions.ts";
+import { toolResult } from "./harness.ts";
 import { APPROVED, ChangeOutput, outputSchema } from "./outputs.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
+import { settingsGetRead } from "./settings-reads.ts";
 import {
   instructionsOutput,
+  SESSION_SETTINGS_BOUNDS,
+  type SettingsBounds,
   settingOverriddenIn,
   scopeRefOf,
   settingsChangeOutput,
-  SettingsGetOutput,
   settingsGetOutput,
   settingValues,
 } from "./settings-outputs.ts";
@@ -70,8 +78,7 @@ export const extensionName = "settings";
 /** The prefix of every tool of the extension: all of them are the root conversation's only. */
 export const SETTINGS_TOOL_PREFIX = "settings_";
 
-/** The Scope `*`: the Global Settings, which an Environment inherits where it has no Override (ADR-0027). */
-export const GLOBAL_SETTINGS_SCOPE = "*";
+export { GLOBAL_SETTINGS_SCOPE };
 
 /**
  * The Settings of one Scope as the Registry holds them. At Global (`scope: "*"`): the settings in force, the overrides
@@ -160,7 +167,11 @@ export type AppliedSettingsChange =
 export class SettingsAccessError extends Schema.TaggedError<
   SettingsAccessError,
   { readonly brand: unique symbol }
->()("SettingsAccessError", { message: Schema.String }) {}
+>()("SettingsAccessError", {
+  message: Schema.String,
+  /** Why a read was refused, for the endpoint's dispatcher; none for a refusal that is only a message. */
+  code: Schema.optionalKey(Schema.Literals(["not_found", "invalid_argument"])),
+}) {}
 
 /** The Settings, as the Session reaches them through the Registry. */
 export type SettingsAccessService = {
@@ -208,10 +219,7 @@ const Reason = Schema.String.check(
     "Why you make the change, for the user to read in the Settings' Agent changes, such as 'this task is small and cheap'",
 });
 
-/** The `scope` of a tool that changes the Settings: where, named on purpose, with no default (ADR-0027). */
-export const SettingsScope = Schema.String.check(Schema.isMinLength(1)).annotate({
-  description: `Where the change applies: "${GLOBAL_SETTINGS_SCOPE}" for Global, which each Environment inherits unless it overrides the field, or one Environment's id as environment_list shows it, which overrides Global for that Environment's Sessions only. Name it on purpose: there is no default.`,
-});
+export { SettingsScope };
 
 /** What the descriptions of the changing tools say of the `scope`. */
 export const SCOPE_NOTE = `Give scope "${GLOBAL_SETTINGS_SCOPE}" to change Global, which each Environment inherits unless it overrides the field, or an Environment's id (environment_list shows them) to override Global for that Environment's Sessions only; there is no default. At an Environment the value is kept as its Override even when it equals Global's, so the field stops following Global until settings_reset removes the Override.`;
@@ -489,7 +497,11 @@ export const describeSettings = (view: SettingsView, own: string | null): string
 };
 
 /** What `settings_get` gives programs: the settings in force at the Scope, each with where its value comes from. */
-export const settingsOutput = (view: SettingsView, own: string | null) => {
+export const settingsOutput = (
+  view: SettingsView,
+  own: string | null,
+  bounds: SettingsBounds = SESSION_SETTINGS_BOUNDS,
+) => {
   const { settings } = view;
 
   /** One setting: its value in force, read from the settings, and where it comes from. */
@@ -497,21 +509,21 @@ export const settingsOutput = (view: SettingsView, own: string | null) => {
     if (isGlobalView(view)) {
       return {
         field,
-        ...settingValues(value(settings), null),
+        ...settingValues(value(settings), null, bounds.value),
         source: Option.isSome(overrideValue(view.overrides, field))
           ? ("global" as const)
           : ("default" as const),
-        ...settingOverriddenIn(view.overriddenIn[field] ?? []),
+        ...settingOverriddenIn(view.overriddenIn[field] ?? [], bounds.overriddenIn),
       };
     }
 
     return {
       field,
-      ...settingValues(value(settings), value(view.global)),
+      ...settingValues(value(settings), value(view.global), bounds.value),
       source: Option.isSome(overrideValue(view.overrides, field))
         ? ("override" as const)
         : ("inherited" as const),
-      ...settingOverriddenIn([]),
+      ...settingOverriddenIn([], bounds.overriddenIn),
     };
   };
 
@@ -534,44 +546,59 @@ export const settingsOutput = (view: SettingsView, own: string | null) => {
 
   const instructions = isGlobalView(view)
     ? {
-        global: instructionsOutput(settings.instructions, utf8Bytes(settings.instructions)),
+        global: instructionsOutput(
+          settings.instructions,
+          utf8Bytes(settings.instructions),
+          bounds.instructions,
+        ),
         environment: null,
       }
     : {
-        global: instructionsOutput(settings.instructions, utf8Bytes(settings.instructions)),
-        environment: instructionsOutput(view.instructions, utf8Bytes(view.instructions)),
+        global: instructionsOutput(
+          settings.instructions,
+          utf8Bytes(settings.instructions),
+          bounds.instructions,
+        ),
+        environment: instructionsOutput(
+          view.instructions,
+          utf8Bytes(view.instructions),
+          bounds.instructions,
+        ),
       };
 
-  return settingsGetOutput({
-    scope: scopeRefOf(view),
-    own_environment: own,
-    is_own: !isGlobalView(view) && view.scope === own,
-    settings: [
-      entry("model", field("model")),
-      entry("thinkingLevel", field("thinkingLevel")),
-      ...Arr.map(ROLE_NAMES, (role) => entry(`roles.${role}`, field(`roles.${role}`))),
-      ...Arr.map(
-        ["enabled", "reserveTokens", "keepRecentTokens", "backgroundTokens"] as const,
-        (key) => entry(`compaction.${key}`, field(`compaction.${key}`)),
-      ),
-      entry("tools.offered", field("tools.offered")),
-      entry("branchSummary.skipPrompt", field("branchSummary.skipPrompt")),
-      entry("spendLimit.perSession", field("spendLimit.perSession")),
-      entry(
-        depthField,
-        (each) => each.extensions.subagents?.maxSubagentDepth ?? DEFAULT_MAX_SUBAGENT_DEPTH,
-      ),
-      entry(
-        workspacesField,
-        (each) =>
-          each.extensions.subagents?.maxSubagentWorkspaces ?? DEFAULT_MAX_SUBAGENT_WORKSPACES,
-      ),
-      ...options,
-    ],
-    instructions,
-    mcp_servers: view.mcpServers ?? null,
-    problem: view.problem ?? null,
-  });
+  return settingsGetOutput(
+    {
+      scope: scopeRefOf(view),
+      own_environment: own,
+      is_own: !isGlobalView(view) && view.scope === own,
+      settings: [
+        entry("model", field("model")),
+        entry("thinkingLevel", field("thinkingLevel")),
+        ...Arr.map(ROLE_NAMES, (role) => entry(`roles.${role}`, field(`roles.${role}`))),
+        ...Arr.map(
+          ["enabled", "reserveTokens", "keepRecentTokens", "backgroundTokens"] as const,
+          (key) => entry(`compaction.${key}`, field(`compaction.${key}`)),
+        ),
+        entry("tools.offered", field("tools.offered")),
+        entry("branchSummary.skipPrompt", field("branchSummary.skipPrompt")),
+        entry("spendLimit.perSession", field("spendLimit.perSession")),
+        entry(
+          depthField,
+          (each) => each.extensions.subagents?.maxSubagentDepth ?? DEFAULT_MAX_SUBAGENT_DEPTH,
+        ),
+        entry(
+          workspacesField,
+          (each) =>
+            each.extensions.subagents?.maxSubagentWorkspaces ?? DEFAULT_MAX_SUBAGENT_WORKSPACES,
+        ),
+        ...options,
+      ],
+      instructions,
+      mcp_servers: view.mcpServers ?? null,
+      problem: view.problem ?? null,
+    },
+    bounds,
+  );
 };
 
 const encodeJsonText = Schema.encodeOption(Schema.fromJsonString(Schema.Json));
@@ -858,27 +885,15 @@ export const SettingsTools: Effect.Effect<
   const access = yield* SettingsAccess;
   const { apply } = yield* SettingsChanges;
 
-  const get = yield* defineEffectTool({
-    name: "settings_get",
-    description: `Show the Settings of one Scope, which the user edits on the Settings page: the default model and thinking level, the model roles (model and hint), automatic compaction, the offered tools, the branch summary prompt, the Limits (spend limit, subagent depth, Subagent Workspace limit), the extensions' options and the user's Instructions (whole), each with where its value comes from, and any problem with the saved overrides. Pass scope "${GLOBAL_SETTINGS_SCOPE}" for Global (each field's value, whether it is the default or set at Global, and the Environments that override it) or an Environment's id (its settings in force, each overridden for it or inherited from Global); there is no default. This Session runs with its own Environment's Settings (its Overrides over Global over the defaults), and the result names that Environment. Use it before a change, to see what there is and where to change it.`,
-    parameters: Schema.Struct({
-      scope: SettingsScope.annotate({
-        description: `Whose Settings to show: "${GLOBAL_SETTINGS_SCOPE}" for Global, or an Environment's id as environment_list shows it, for its Overrides over Global. Name it on purpose: there is no default.`,
-      }),
-    }),
-    structuredOutputSchema: outputSchema(SettingsGetOutput),
-    replay: "safe",
-    execute: ({ scope }) =>
-      Effect.gen(function* () {
-        const view = yield* access.get(scope);
-        const own = yield* access.own;
+  const getRead = settingsGetRead(access);
 
-        return {
-          output: [{ type: "text" as const, text: describeSettings(view, own) }],
-          structuredOutput: settingsOutput(view, own),
-          details: { scope: view.scope, problem: view.problem ?? null },
-        };
-      }),
+  const get = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_get.name,
+    description: HARNESS_TOOLS.settings_get.session.description,
+    parameters: HARNESS_TOOLS.settings_get.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_get.session.output),
+    replay: "safe",
+    execute: (args) => Effect.map(getRead(args, "session"), toolResult),
   });
 
   const model = yield* defineEffectTool({
