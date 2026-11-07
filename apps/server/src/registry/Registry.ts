@@ -1904,7 +1904,8 @@ export const RegistryLive = Registry.make(
           listSubagentWorkspaces: ({ session }) =>
             Effect.sync(() => store.listSubagentWorkspaces(session)),
           deleteWorkspace: ({ id }) => Effect.sync(() => store.deleteWorkspace(id)),
-          deleteWorkspaceWithTriggers: ({ id }) => Effect.sync(() => triggers.deleteWorkspace(id)),
+          deleteWorkspaceWithTriggers: ({ id }) =>
+            Effect.sync(() => triggers.deleteWorkspaceWithTriggers(id)),
           deleteWorkspaceTriggers: ({ id }) =>
             Effect.sync(() => triggers.deleteWorkspaceTriggers(id)),
           workspaceKept: ({ id }) => Effect.sync(() => store.workspaceKept(id)),

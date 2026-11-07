@@ -349,7 +349,7 @@ export class TestRegistry extends DurableObject {
   }
 
   deleteWorkspaceWithTriggers(id: string): WorkspaceRemoval {
-    return this.#triggers.deleteWorkspace(id);
+    return this.#triggers.deleteWorkspaceWithTriggers(id);
   }
 
   /**

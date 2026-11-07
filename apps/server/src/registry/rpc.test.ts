@@ -3149,6 +3149,34 @@ it("stops a Workspace removal at a Session that cannot be wiped, before its file
   expect(fake.workspaces).toHaveLength(1);
 });
 
+it("says the Triggers of a Workspace are already removed when its removal stops after them", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  await call(fake, (registry) =>
+    registry.createTrigger({
+      id: "t1",
+      trigger: {
+        kind: "workspace",
+        workspace: session.workspace,
+        name: "Nightly check",
+        message: "Check the build.",
+        source: { type: "schedule", cron: "@daily", zone: "UTC" },
+      },
+    }),
+  );
+  fake.breakSession(session.id, "storage error");
+
+  const error = await call(fake, (registry) =>
+    Effect.flip(registry.removeWorkspace({ id: session.workspace })),
+  );
+
+  expect(error.message).toContain("The workspace and its remaining sessions are kept.");
+  expect(error.message).toContain("Its triggers are already removed.");
+  expect(fake.triggersHeld.size).toBe(0);
+  expect(fake.workspaces).toHaveLength(1);
+});
+
 it("keeps a Workspace record whose object could not be wiped, with its Sessions already gone", async () => {
   const fake = fakeRegistries();
   const session = await call(fake, (registry) => registry.createSession({}));

@@ -269,7 +269,9 @@ export const outcomeWords = (outcome: FireOutcome): string => {
     case "started":
       return "Started a session";
     case "skipped":
-      return outcome.reason === "unknown" ? "Skipped" : `Skipped: ${outcome.reason}`;
+      return `${outcome.reason === "unknown" ? "Skipped" : `Skipped: ${outcome.reason}`}${
+        outcome.merged === undefined ? "" : `, ${String(outcome.merged)} merged`
+      }`;
     case "failed":
       return `Failed: ${outcome.reason}`;
     case "unknown":
@@ -296,7 +298,7 @@ export const waitingWords = (
   waiting: { readonly since: number; readonly merged: number },
   zone: string,
 ): string =>
-  `Waiting for the Workspace to be idle (since ${fireTimeWords(waiting.since, zone)}${
+  `Waiting for the workspace to be idle (since ${fireTimeWords(waiting.since, zone)}${
     waiting.merged === 0 ? "" : `, ${String(waiting.merged)} more merged`
   })`;
 

@@ -207,14 +207,21 @@ const NIGHTLY: TriggerDefinition = {
 };
 
 describe("a waiting Fire", () => {
+  it("says how many Fires were merged into one skipped for good", () => {
+    expect(outcomeWords({ type: "skipped", reason: "overlap", merged: 2 })).toBe(
+      "Skipped: overlap, 2 merged",
+    );
+    expect(outcomeWords({ type: "skipped", reason: "overlap" })).toBe("Skipped: overlap");
+  });
+
   it("says since when it waits, and how many more Fires were merged into it", () => {
     const since = Date.parse("2025-01-06T15:00:00Z");
 
     expect(waitingWords({ since, merged: 0 }, "UTC")).toBe(
-      `Waiting for the Workspace to be idle (since ${fireTimeWords(since, "UTC")})`,
+      `Waiting for the workspace to be idle (since ${fireTimeWords(since, "UTC")})`,
     );
     expect(waitingWords({ since, merged: 3 }, "UTC")).toBe(
-      `Waiting for the Workspace to be idle (since ${fireTimeWords(since, "UTC")}, 3 more merged)`,
+      `Waiting for the workspace to be idle (since ${fireTimeWords(since, "UTC")}, 3 more merged)`,
     );
   });
 });

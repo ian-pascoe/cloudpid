@@ -209,28 +209,35 @@ export const removals = (
    * Remove a Workspace: its Triggers first (their records, then their objects), so no waiting Fire starts a Session in a
    * Workspace being torn down; then its Sessions, then its object (files, Container, settings), then its record, which
    * takes a Trigger made meanwhile with it (`docs/architecture/triggers.md` → Cascades). The record goes only once no
-   * Session is bound, so none is left in a Workspace that is gone.
+   * Session is bound, so none is left in a Workspace that is gone. A failure after the Triggers went says they are gone.
    */
   const removeWorkspace = (workspace: WorkspaceRecord) =>
-    registry.deleteWorkspaceTriggers({ id: workspace.id }).pipe(
-      Effect.flatMap(wipeTriggers),
-      Effect.andThen(
-        sweep(
-          (session) => session.workspace === workspace.id,
-          inWorkspace("Could not delete the workspace's files", () =>
-            workspaces.destroy(workspaceObjectName(workspace.id)),
-          ),
-          registry.deleteWorkspaceWithTriggers({ id: workspace.id }).pipe(
-            Effect.tap((removal) => wipeTriggers(removal.triggers)),
-            Effect.map((removal) => removal.deletion !== "in-use"),
-          ),
-          {
-            kept: "The workspace and its remaining sessions are kept.",
-            busy: "Sessions kept starting in the workspace while it was removed: try again",
-          },
+    Effect.gen(function* () {
+      const gone = yield* registry.deleteWorkspaceTriggers({ id: workspace.id });
+
+      yield* wipeTriggers(gone);
+
+      yield* sweep(
+        (session) => session.workspace === workspace.id,
+        inWorkspace("Could not delete the workspace's files", () =>
+          workspaces.destroy(workspaceObjectName(workspace.id)),
         ),
-      ),
-    );
+        registry.deleteWorkspaceWithTriggers({ id: workspace.id }).pipe(
+          Effect.tap((removal) => wipeTriggers(removal.triggers)),
+          Effect.map((removal) => removal.deletion !== "in-use"),
+        ),
+        {
+          kept: "The workspace and its remaining sessions are kept.",
+          busy: "Sessions kept starting in the workspace while it was removed: try again",
+        },
+      ).pipe(
+        Effect.mapError((error) =>
+          gone.length === 0
+            ? error
+            : failed(thenSaying(error.message, "Its triggers are already removed.")),
+        ),
+      );
+    });
 
   /** Remove an Environment's spare Workspace, if it has one: its record, then its object. */
   const removeSpare = (environment: string) =>
@@ -298,7 +305,7 @@ export const removals = (
 
         if (deleted === "deleted") {
           // Its Triggers went with the record: their objects are wiped, or wipe themselves at their next alarm.
-          yield* Effect.forEach(removal.triggers, triggers.remove, { discard: true });
+          yield* wipeTriggers(removal.triggers);
 
           // A Build upkeep that asked the Build object for a Build after its wipe made it anew; one that asks
           // after this finds the Environment gone (`buildUpkeep`).

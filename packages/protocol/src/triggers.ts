@@ -377,7 +377,12 @@ export type FireSkip = typeof FireSkip.Type;
 /** What came of a Fire: `started <session>`, `skipped: <why>` or `failed: <reason>`. */
 export const FireOutcome = Schema.Union([
   Schema.Struct({ type: Schema.Literal("started"), session: Schema.String }),
-  Schema.Struct({ type: Schema.Literal("skipped"), reason: FireSkip }),
+  Schema.Struct({
+    type: Schema.Literal("skipped"),
+    reason: FireSkip,
+    /** For a waiting Fire skipped for good: how many later Fires were merged into it, which are lost with it. */
+    merged: Schema.optionalKey(Schema.Int),
+  }),
   Schema.Struct({ type: Schema.Literal("failed"), reason: Schema.String }),
   Schema.Struct({ type: Schema.Literal("unknown") }),
 ]).pipe(Schema.catchDecoding(() => Effect.succeedSome({ type: "unknown" as const })));

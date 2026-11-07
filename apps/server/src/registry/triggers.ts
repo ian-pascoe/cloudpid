@@ -287,7 +287,7 @@ export const openTriggers = (
     | "requestedSession"
     | "deleteEnvironment"
     | "deleteWorkspace"
-    | "deleteWorkspaceAndTriggers"
+    | "deleteWorkspaceWithTriggers"
   >,
 ) => {
   const { sql } = storage;
@@ -751,14 +751,14 @@ export const openTriggers = (
       }),
 
     /**
-     * Delete Workspace `id` as the owner's Remove does (`store.deleteWorkspaceAndTriggers`, which deletes the Triggers
+     * Delete Workspace `id` as the owner's Remove does (`store.deleteWorkspaceWithTriggers`, which deletes the Triggers
      * kept for it in the same transaction) and answer the ids of the active Triggers that went with it, whose objects
      * the caller wipes (`docs/architecture/triggers.md` → Cascades).
      */
-    deleteWorkspace: (id: string): WorkspaceRemoval =>
+    deleteWorkspaceWithTriggers: (id: string): WorkspaceRemoval =>
       storage.transactionSync((): WorkspaceRemoval => {
         const held = activeWorkspaceTriggers(id);
-        const deletion = store.deleteWorkspaceAndTriggers(id);
+        const deletion = store.deleteWorkspaceWithTriggers(id);
 
         return { deletion, triggers: deletion === "deleted" ? held : [] };
       }),

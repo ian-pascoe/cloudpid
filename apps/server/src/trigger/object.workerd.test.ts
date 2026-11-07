@@ -749,6 +749,27 @@ describe("a Workspace trigger's object", () => {
     });
   });
 
+  it("records how many Fires were merged into a waiting Fire that is skipped for good", async () => {
+    const { id, registry, trigger } = await kept();
+
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+    await trigger.setNow(nine + 10_000);
+    await trigger.fireNow("a");
+    await runDurableObjectAlarm(trigger);
+
+    // The owner changed it to skip while it waited.
+    await registry.updateTrigger(id, { whenBusy: "skip" }, nine + 20_000);
+    await trigger.setNow(nine + RETRY_MS);
+    await trigger.sync();
+    await runDurableObjectAlarm(trigger);
+
+    expect((await trigger.fireLog())[0]).toMatchObject({
+      key: keyAt(id, nine),
+      outcome: { type: "skipped", reason: "overlap", merged: 1 },
+    });
+  });
+
   it("merges a later Fire into the waiting one even when the Workspace is idle by then", async () => {
     const { id, registry, trigger } = await kept();
 

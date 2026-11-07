@@ -71,7 +71,7 @@ export type TriggerState = {
    * The Fire waiting for its Workspace to be idle (`wait`), when there is one: when it was queued and how many later
    * Fires were merged into it.
    */
-  readonly waiting: { readonly since: number; readonly merged: number } | null;
+  readonly waiting?: { readonly since: number; readonly merged: number } | null;
 };
 
 /** What the owner's Fire now answers: the Fire's key once it waits, or why there is none. */
@@ -281,7 +281,12 @@ export const triggerHandlers = (options: {
     if (kept === undefined) return NO_STATE;
 
     const pending = kept.pending();
-    const waiting = Arr.findFirst(pending, (fire) => fire.waiting !== undefined);
+
+    // As `drain` merges into it: the one not yet let through.
+    const waiting = Arr.findFirst(
+      pending,
+      (fire) => fire.waiting !== undefined && fire.session === undefined,
+    );
 
     return {
       definition: kept.definition() ?? null,
@@ -298,14 +303,15 @@ export const triggerHandlers = (options: {
   /** Record what came of pending Fire `pending` at `at`; a failure is pushed to the owner. */
   const settle = (pending: PendingFire, outcomeOf: FireOutcome, at: number) =>
     Effect.gen(function* () {
-      // The later Fires merged into a Fire that fails for good are lost with it: the fire log says how many.
-      const outcome: FireOutcome =
-        outcomeOf.type === "failed" && (pending.waiting?.merged ?? 0) > 0
-          ? {
-              ...outcomeOf,
-              reason: `${outcomeOf.reason}, ${String(pending.waiting?.merged)} merged`,
-            }
-          : outcomeOf;
+      // The later Fires merged into a Fire that fails or is skipped for good are lost with it: the fire log says how many.
+      const merged = pending.waiting?.merged ?? 0;
+      let outcome = outcomeOf;
+
+      if (merged > 0 && outcomeOf.type === "failed") {
+        outcome = { ...outcomeOf, reason: `${outcomeOf.reason}, ${String(merged)} merged` };
+      } else if (merged > 0 && outcomeOf.type === "skipped") {
+        outcome = { ...outcomeOf, merged };
+      }
 
       store().record({ key: pending.key, at, source: pending.source, outcome });
       yield* Effect.annotateCurrentSpan("trigger.outcome", outcomeName(outcome));

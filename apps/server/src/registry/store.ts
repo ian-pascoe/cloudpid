@@ -355,7 +355,7 @@ export type RegistryStore = {
    * The owner's Remove: `deleteWorkspace`, except that a Workspace trigger does not keep the record: its Triggers go
    * with it, in the same transaction. Still `in-use` while a Session is bound to it.
    */
-  readonly deleteWorkspaceAndTriggers: (id: string) => Deletion;
+  readonly deleteWorkspaceWithTriggers: (id: string) => Deletion;
   /** Whether a Workspace trigger is kept for Workspace `id`, which keeps its record with no Session (`deleteWorkspace`). */
   readonly workspaceKept: (id: string) => boolean;
   /**
@@ -1934,7 +1934,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
         return "deleted";
       }),
 
-    deleteWorkspaceAndTriggers: (id) =>
+    deleteWorkspaceWithTriggers: (id) =>
       storage.transactionSync((): Deletion => {
         if (getWorkspaceRow(id) === undefined) return "missing";
 

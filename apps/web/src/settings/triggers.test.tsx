@@ -272,9 +272,9 @@ describe("the Triggers section", () => {
         expect(markup.indexOf("Weekly report")).toBeLessThan(markup.indexOf("feature/lint"));
         expect(markup.indexOf("feature/lint")).toBeLessThan(markup.indexOf("Lint sweep"));
         // Its waiting Fire is said, since when and how many more were merged into it.
-        expect(markup).toContain("Waiting for the Workspace to be idle (since ");
+        expect(markup).toContain("Waiting for the workspace to be idle (since ");
         expect(markup).toContain("2 more merged)");
-        expect(markup.match(/Waiting for the Workspace/g)).toHaveLength(1);
+        expect(markup.match(/Waiting for the workspace/g)).toHaveLength(1);
       }),
   );
 
