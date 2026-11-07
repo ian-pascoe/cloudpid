@@ -127,6 +127,8 @@ export const EnvironmentFootprint = Schema.Struct({
   sessions: Schema.Int,
   /** The Secrets kept for it alone. */
   secrets: Schema.Int,
+  /** Its Triggers; none in an Approval asked before they were counted. */
+  triggers: Schema.Int.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
 });
 
 export type EnvironmentFootprint = typeof EnvironmentFootprint.Type;
@@ -300,11 +302,12 @@ const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" :
 const within = (now: EnvironmentFootprint, approved: EnvironmentFootprint): boolean =>
   now.workspaces <= approved.workspaces &&
   now.sessions <= approved.sessions &&
-  now.secrets <= approved.secrets;
+  now.secrets <= approved.secrets &&
+  now.triggers <= approved.triggers;
 
 /** What deleting an Environment takes with it, as the card says it: what the owner approves. */
 const footprintWords = (footprint: EnvironmentFootprint): string =>
-  `${count(footprint.workspaces, "Workspace")} with ${count(footprint.sessions, "Session")} (archived ones too), its spare Workspace and Build, ${count(footprint.secrets, "kept Secret")} and its Agent changes`;
+  `${count(footprint.workspaces, "Workspace")} with ${count(footprint.sessions, "Session")} (archived ones too), its spare Workspace and Build, ${count(footprint.secrets, "kept Secret")}, ${count(footprint.triggers, "Trigger")} and its Agent changes`;
 
 /** What a change the owner approved says when the target changed between the request and the answer. */
 const changedSince = (what: string, now: string) =>
@@ -1209,7 +1212,7 @@ export const ApprovalTools: Effect.Effect<
     name: "environment_delete",
     description: Arr.join(
       [
-        "Delete an Environment, as the user's delete on the Environments page does: its Workspaces with their Sessions (archived ones too) and everything not pushed in them, its spare Workspace, its Build, the Secrets kept for it and its Agent changes. No revert can bring it back, so the user must approve it. The default Environment and this Session's own Environment cannot be deleted.",
+        "Delete an Environment, as the user's delete on the Environments page does: its Workspaces with their Sessions (archived ones too) and everything not pushed in them, its spare Workspace, its Build, the Secrets kept for it, its Triggers and its Agent changes. No revert can bring it back, so the user must approve it. The default Environment and this Session's own Environment cannot be deleted.",
         APPROVAL,
       ],
       "\n\n",

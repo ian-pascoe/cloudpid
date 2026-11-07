@@ -1,6 +1,6 @@
 // The deletes the agent makes once the owner approved them (`@cloudpid/extensions/approval-tools`, `docs/architecture/agent-changes.md` →
 // Approval): an Environment, deleted as the owner's delete on the Environments page deletes it (`removals`, which the
-// main Worker's endpoint runs too), and a Secret kept for an Environment, deleted and recorded by the Registry
+// main Worker's endpoint runs too, its Triggers with it), and a Secret kept for an Environment, deleted and recorded by the Registry
 // (`agentDeleteSecret`), after which the Builds' upkeep runs as after the owner's delete.
 import type {
   EnvironmentFootprint,
@@ -16,7 +16,10 @@ import { buildsAfterScope } from "./environments.ts";
 
 /** What the deletes read and change in the Registry. */
 export type EnvironmentRemovalRegistry = RemovalRegistry &
-  Pick<RegistryMethods, "listEnvironments" | "listEnvironmentSecrets" | "agentDeleteSecret">;
+  Pick<
+    RegistryMethods,
+    "listEnvironments" | "listEnvironmentSecrets" | "agentDeleteSecret" | "listTriggers"
+  >;
 
 export type SessionEnvironmentRemovalOptions = {
   readonly registry: EnvironmentRemovalRegistry;
@@ -68,6 +71,7 @@ export const sessionEnvironmentRemoval = ({
           workspaces: workspaces.length,
           sessions: sessions.length,
           secrets: (yield* keptIn(environment)).length,
+          triggers: (yield* registry.listTriggers({ environment })).length,
         } satisfies EnvironmentFootprint;
       }),
     deleteEnvironment: (environment) =>
