@@ -70,7 +70,7 @@ export const emptyTriggerDraft = (
   message: "",
   cron: "",
   zone,
-  whenBusy: defaultWhenBusy(workspace === null ? "environment" : "workspace"),
+  whenBusy: defaultWhenBusy(workspace === null ? "environment" : "workspace", SCHEDULE_DEFAULT),
   base: "",
   model: "",
   thinking: "",

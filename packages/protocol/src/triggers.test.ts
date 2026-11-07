@@ -127,14 +127,14 @@ describe("a value a later slice added", () => {
     expect(
       read(TriggerDefinition, {
         ...definition,
-        kind: "workspace",
+        kind: "later-kind",
         source: { type: "webhook", format: "slack" },
-        whenBusy: "wait",
+        whenBusy: "later-overlap",
       }),
     ).toMatchObject({ kind: "unknown", source: { type: "unknown" }, whenBusy: "skip" });
     expect(read(FireSource, { type: "slack", delivery: "d1" })).toEqual({ type: "unknown" });
     expect(read(FireOutcome, { type: "sent", delivery: "queued" })).toEqual({ type: "unknown" });
-    expect(read(FireOutcome, { type: "skipped", reason: "coalesced" })).toEqual({
+    expect(read(FireOutcome, { type: "skipped", reason: "later-reason" })).toEqual({
       type: "skipped",
       reason: "unknown",
     });
