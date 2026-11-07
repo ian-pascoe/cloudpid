@@ -23,7 +23,7 @@ import {
   triggerNoticeAtom,
   triggersAtom,
 } from "../triggers-state.ts";
-import { emptyTriggerDraft } from "../triggers.ts";
+import { emptyTriggerDraft, triggerDraftOf } from "../triggers.ts";
 import { TriggersSection } from "./triggers.tsx";
 
 const environment = (id: string, name: string): EnvironmentRecord => ({
@@ -47,6 +47,12 @@ const definition = (id: string, environmentId: string, name: string): TriggerDef
   updatedAt: 1,
 });
 
+const WEBHOOK_TRIGGER: TriggerDefinition = {
+  ...definition("t3", "work", "CI failed"),
+  source: { type: "webhook", format: "github" },
+  whenBusy: "start",
+};
+
 const STARTED: FireRecord = {
   key: "t1:1",
   at: Date.parse("2025-01-06T15:00:05Z"),
@@ -61,6 +67,7 @@ const TRIGGERS: ReadonlyArray<TriggerOverview> = [
     lastFire: null,
     reached: false,
   },
+  { definition: WEBHOOK_TRIGGER, lastFire: null, reached: true },
 ];
 
 const HANDLERS: Partial<RegistryHandlers> = {
@@ -205,5 +212,30 @@ describe("the Triggers section", () => {
 
         expect(ready).not.toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
       }),
+  );
+
+  it.effect("shows a webhook Trigger by its format, with no Fire now and no next fire", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work");
+
+      expect(markup).toContain("CI failed");
+      expect(markup).toContain("Webhook · github");
+      // Fire now is the Schedule Trigger's alone.
+      expect(markup.match(/Fire now<\/button>/g)).toHaveLength(1);
+    }),
+  );
+
+  it.effect("asks for no Schedule when editing a webhook Trigger, whose source is fixed", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", (registry) => {
+        registry.set(triggerFormAtom("work"), { kind: "edit", opened: WEBHOOK_TRIGGER });
+        registry.set(triggerDraftAtom("work"), triggerDraftOf(WEBHOOK_TRIGGER));
+      });
+
+      expect(markup).toContain('aria-label="Edit trigger"');
+      expect(markup).not.toContain("Time zone");
+      expect(markup).not.toContain("5-field cron");
+      expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Save/);
+    }),
   );
 });

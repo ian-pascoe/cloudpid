@@ -6,7 +6,7 @@ import {
   nextFireOf,
   outcomeWords,
   previewFires,
-  scheduleWords,
+  triggerSourceWords,
   sourceWords,
   triggerDraftOf,
   triggerDraftProblems,
@@ -149,12 +149,45 @@ describe("a Trigger's row and fire log", () => {
   });
 
   it("names a webhook Trigger's format where a Schedule's cron goes, and gives it no next Fire", () => {
-    const hook: TriggerDefinition = {
+    const webhookTrigger: TriggerDefinition = {
       ...DEFINITION,
       source: { type: "webhook", format: "github" },
     };
 
-    expect(scheduleWords(hook)).toBe("Webhook · github");
-    expect(nextFireOf(hook, MONDAY)).toBeNull();
+    expect(triggerSourceWords(webhookTrigger)).toBe("Webhook · github");
+    expect(nextFireOf(webhookTrigger, MONDAY)).toBeNull();
+  });
+});
+
+describe("editing a webhook Trigger", () => {
+  const webhookTrigger: TriggerDefinition = {
+    ...DEFINITION,
+    name: "CI failed",
+    source: { type: "webhook", format: "github" },
+    whenBusy: "start",
+  };
+
+  it("asks for no Schedule, whose source it never sends", () => {
+    const draft = triggerDraftOf(webhookTrigger);
+
+    expect(draft.scheduled).toBe(false);
+    expect(triggerDraftProblems(draft).schedule).toBeNull();
+    expect(triggerDraftReady(draft)).toBe(true);
+    expect(previewFires(draft, MONDAY)).toEqual([]);
+    expect(triggerPatch(webhookTrigger, { ...draft, name: "CI broke" })).toEqual({
+      name: "CI broke",
+    });
+    expect(triggerPatch(webhookTrigger, { ...draft, cron: "@daily", zone: "UTC" })).toEqual({});
+  });
+
+  it("still sends a Schedule's changed source", () => {
+    const draft = triggerDraftOf(DEFINITION);
+
+    expect(draft.scheduled).toBe(true);
+    expect(triggerPatch(DEFINITION, { ...draft, cron: "@daily" }).source).toEqual({
+      type: "schedule",
+      cron: "@daily",
+      zone: "America/Chicago",
+    });
   });
 });
