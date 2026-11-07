@@ -15,6 +15,7 @@ import {
   type MarkedOrigin,
   type SessionOrigin,
   type SettingsOverridesState,
+  type TriggerDefinition,
 } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -73,7 +74,19 @@ import {
   type SubagentWorkspaceRequest,
   type WorkspaceRecord,
   type WorkspaceSetup,
+  STARTING_MS,
 } from "./store.ts";
+import {
+  deleteEnvironmentWithTriggers,
+  type EnvironmentRemoval,
+  type EnvironmentTriggerInput,
+  type FireAdmission,
+  type FireAdmitted,
+  openTriggers,
+  type TriggerPatch,
+  type Triggers,
+  type TriggerWrite,
+} from "./triggers.ts";
 
 /**
  * The Skills `revertAgentChange` takes, for a test whose changes are not a Skill's: the storage's (none kept).
@@ -83,11 +96,13 @@ export const noSkills = (storage: DurableObjectStorage): Skills => openSkills(st
 export class TestRegistry extends DurableObject {
   readonly #store: RegistryStore;
   readonly #changes: AgentChanges;
+  readonly #triggers: Triggers;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     this.#store = openRegistryStore(ctx.storage);
     this.#changes = openAgentChanges(ctx.storage);
+    this.#triggers = openTriggers(ctx.storage, this.#store);
   }
 
   createSession(
@@ -191,6 +206,43 @@ export class TestRegistry extends DurableObject {
 
   deleteEnvironment(id: string): EnvironmentDeletion {
     return this.#store.deleteEnvironment(id);
+  }
+
+  deleteEnvironmentWithTriggers(id: string): EnvironmentRemoval {
+    return deleteEnvironmentWithTriggers(this.ctx.storage, this.#store, this.#triggers, id);
+  }
+
+  createTrigger(id: string, input: EnvironmentTriggerInput, now: number): TriggerWrite {
+    return this.#triggers.create(id, input, now);
+  }
+
+  triggerDefinition(id: string): TriggerDefinition | null {
+    return this.#triggers.get(id);
+  }
+
+  listTriggers(environment?: string): Array<TriggerDefinition> {
+    return this.#triggers.list(environment);
+  }
+
+  updateTrigger(id: string, patch: TriggerPatch, now: number): TriggerWrite {
+    return this.#triggers.update(id, patch, now);
+  }
+
+  setTriggerPaused(id: string, paused: boolean, now: number): TriggerWrite {
+    return this.#triggers.setPaused(id, paused, now);
+  }
+
+  removeTrigger(id: string): boolean {
+    return this.#triggers.remove(id);
+  }
+
+  /** `admitFire` at `now`, registering a Fire's Session under `ids`. */
+  admitFire(
+    fire: FireAdmission,
+    ids: { session: string; workspace: string },
+    now: number,
+  ): FireAdmitted {
+    return this.#triggers.admit(fire, ids, now, STARTING_MS);
   }
 
   addRepo(environment: string, repo: EnvironmentRepo): RepoChange {

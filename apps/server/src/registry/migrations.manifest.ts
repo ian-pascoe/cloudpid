@@ -38,4 +38,5 @@ export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
   "387d36f0e6468ec9",
   "d60b41c698f219ac",
   "68f8043a9aa074ea",
+  "8ccfa20af7360194",
 ];

@@ -109,3 +109,18 @@ export const describeEvent = (
   url: target(event, session.id),
   tag: `${session.id}:${tagKind(event)}`,
 });
+
+/**
+ * The push for a Trigger's Fire that failed (`docs/architecture/triggers.md` → Fire records, origin marks and
+ * notifications), titled by the Trigger, linking to its Environment's Triggers section; tagged by the Trigger, so one
+ * Notification stands per Trigger.
+ */
+export const describeTriggerFailure = (
+  trigger: { readonly id: string; readonly name: string; readonly environment: string },
+  reason: string,
+): PushPayload => ({
+  title: brief(trigger.name, MAX_TITLE),
+  body: brief(`Trigger failed: ${reason}`, MAX_BODY),
+  url: `/settings/${encodeURIComponent(trigger.environment)}/triggers`,
+  tag: `trigger:${trigger.id}:failed`,
+});

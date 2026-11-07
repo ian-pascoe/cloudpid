@@ -1414,6 +1414,16 @@ const fakeRegistries = () => {
         pushes.delete(endpoint);
       }),
     notify: () => Effect.void,
+    createTrigger: () => Effect.succeed({ status: "missing" as const }),
+    updateTrigger: () => Effect.succeed({ status: "missing" as const }),
+    setTriggerPaused: () => Effect.succeed({ status: "missing" as const }),
+    removeTrigger: () => Effect.succeed(false),
+    listTriggers: () => Effect.succeed([]),
+    triggerDefinition: () => Effect.succeed(null),
+    admitFire: () => Effect.succeed({ status: "removed" as const }),
+    notifyTriggerFailed: () => Effect.void,
+    deleteEnvironmentWithTriggers: () =>
+      Effect.succeed({ deletion: "missing" as const, triggers: [] }),
     // The sign-ins are the `McpHost`'s to ask of: the endpoint never hands out a token.
     mcpAccessToken: () => Effect.die("The endpoint hands out no token"),
     reportMcpAuth: () => Effect.die("The endpoint reports no sign-in"),
