@@ -34,6 +34,7 @@ import type {
   SettingsMcpView,
   SkillChangeFiles,
   SkillFile,
+  TriggerChanged,
   TriggerChangeValue,
   TriggerDefinition,
   TriggerPatch,
@@ -147,7 +148,7 @@ import { PushConfig } from "../push/config.ts";
 import { pushNotifier, pushToAll } from "../push/notify.ts";
 import { describeTriggerFailure, type PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newTriggerId, newWorkspaceId, shortId } from "./ids.ts";
-import { openTriggerChanges, type TriggerChanged } from "./trigger-changes.ts";
+import { openTriggerChanges } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
   type FireAdmission,

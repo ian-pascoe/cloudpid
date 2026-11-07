@@ -8,6 +8,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { MAX_MCP_INPUT_BYTES, TriggerMark } from "./mcp-api.ts";
+import type { AgentChange, EnvironmentRef } from "./registry.ts";
 import { openLiterals } from "./open-literals.ts";
 
 /** The longest Trigger name, in characters after trimming. */
@@ -168,6 +169,33 @@ export const triggerChangeValue = ({
   updatedAt: _updatedAt,
   ...value
 }: TriggerDefinition): TriggerChangeValue => value;
+
+/** `definition` as its Agent changes record it, as JSON (null: none, before its creation or after its removal). */
+export const triggerChangeJson = (definition: TriggerDefinition | null): Schema.Json | null =>
+  definition === null ? null : asChangeJson(triggerChangeValue(definition));
+
+/** A Trigger's value as the JSON its Agent change records and its Approval request keeps. */
+// SAFETY: a Trigger's value is plain JSON, its optional keys left out when absent.
+export const asChangeJson = (value: TriggerChangeValue): Schema.Json => value as Schema.Json;
+
+/** How the agent's change of a Trigger went, as the Registry answers it. */
+export type TriggerChanged =
+  | {
+      readonly status: "changed";
+      /** The Trigger after the change; null once removed. */
+      readonly definition: TriggerDefinition | null;
+      /** Its Environment, whose history records the change. */
+      readonly environment: EnvironmentRef;
+      readonly change: AgentChange;
+    }
+  /** It already was as asked: nothing was saved or recorded. */
+  | { readonly status: "unchanged"; readonly definition: TriggerDefinition }
+  /** It is no longer as the owner saw it (`current`; null once gone): nothing was saved. */
+  | { readonly status: "changed-since"; readonly current: TriggerDefinition | null }
+  /** Not allowed, said as the owner's form says it: nothing was saved. */
+  | { readonly status: "invalid"; readonly problem: string }
+  /** No such Trigger, or (for a new one) no such Environment. */
+  | { readonly status: "missing" };
 
 /** What made a Fire: a Schedule's time coming due, or the owner's **Fire now** (`manual`). */
 export const FireSource = Schema.Union([

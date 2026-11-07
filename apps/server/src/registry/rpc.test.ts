@@ -635,7 +635,7 @@ const fakeRegistries = () => {
   const environmentTriggers = new Map<string, Array<string>>();
 
   /** The Trigger objects: what was asked of each, in `calls`. */
-  const triggerObjects: TriggerObjects = {
+  const triggerObjects: Pick<TriggerObjects, "sync" | "remove"> = {
     sync: (id) =>
       Effect.sync(() => {
         calls.push(`syncTriggerObject:${id}`);

@@ -1,10 +1,16 @@
 // The Session's `TriggerAccess` over a fake Registry and fake Trigger objects: each change is the Registry's Agent change
 // by this Session, and the Trigger's object is woken after one that changed something.
 // @effect-diagnostics asyncFunction:off
-import type { AgentChange, TriggerDefinition } from "@cloudpid/protocol";
+import type {
+  AgentChange,
+  EnvironmentTriggerInput,
+  TriggerChanged,
+  TriggerDefinition,
+} from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
+import * as Schedule from "effect/Schedule";
 import { describe, expect, it } from "vitest";
-import type { TriggerChanged } from "../registry/trigger-changes.ts";
+import { TriggerUnreachable } from "../trigger/object.ts";
 import { sessionTriggers, type TriggersRegistry } from "./triggers.ts";
 
 const DEFINITION: TriggerDefinition = {
@@ -44,7 +50,16 @@ const CHANGED: TriggerChanged = {
   change: CHANGE,
 };
 
-const setUp = (answer: TriggerChanged = CHANGED, listed = true) => {
+const setUp = (
+  answer: TriggerChanged = CHANGED,
+  { listed = true, unreachable = 0 }: { listed?: boolean; unreachable?: number } = {},
+) => {
+  /** How many more wakes fail, as an object that doesn't answer. */
+  let failing = unreachable;
+
+  /** The wakes asked for, each a try of `wake` or a `sync`. */
+  const woken: string[] = [];
+
   const calls: Array<{
     method: string;
     input: Parameters<TriggersRegistry[keyof TriggersRegistry]>[0];
@@ -77,17 +92,38 @@ const setUp = (answer: TriggerChanged = CHANGED, listed = true) => {
     registry,
     session: listed ? "s-1" : undefined,
     objects: {
+      wake: (id) =>
+        Effect.suspend(() => {
+          woken.push(id);
+
+          if (failing > 0) {
+            failing--;
+
+            return Effect.fail(TriggerUnreachable.make({ message: "no answer" }));
+          }
+
+          return Effect.void;
+        }),
       sync: (id) =>
         Effect.sync(() => {
           synced.push(id);
         }),
     },
+    wakeSchedule: Schedule.spaced(0),
   });
 
-  return { access, calls, synced };
+  return { access, calls, synced, woken };
 };
 
 const author = { conversation: 0, tool: "trigger_pause", reason: "r" };
+
+const INPUT: EnvironmentTriggerInput = {
+  kind: "environment",
+  environment: "default",
+  name: "Weekly report",
+  message: "Summarize last week's PRs.",
+  source: { type: "schedule", cron: "0 9 * * MON", zone: "America/Chicago" },
+};
 
 describe("the Session's Triggers", () => {
   it("makes each change as this Session's, and wakes the Trigger's object after it", async () => {
@@ -123,12 +159,49 @@ describe("the Session's Triggers", () => {
     expect(synced).toEqual(["t1", "t1", "t1"]);
   });
 
-  it("wakes no object when nothing changed", async () => {
-    const { access, synced } = setUp({ status: "unchanged", definition: DEFINITION });
+  it("wakes the object when nothing changed too: the change may have gone through before an eviction", async () => {
+    const { access, synced, woken } = setUp({ status: "unchanged", definition: DEFINITION });
+
+    await Effect.runPromise(access.setPaused({ id: "t1", paused: true, author }));
+    // The rerun of an approved create the Registry made before the Session restarted.
+    await Effect.runPromise(access.create({ id: "t1", trigger: INPUT, author }));
+
+    expect(synced).toEqual(["t1"]);
+    expect(woken).toEqual(["t1"]);
+  });
+
+  it("wakes no object for a change refused", async () => {
+    const { access, synced, woken } = setUp({ status: "invalid", problem: "no" });
 
     await Effect.runPromise(access.setPaused({ id: "t1", paused: true, author }));
 
-    expect(synced).toEqual([]);
+    expect([...synced, ...woken]).toEqual([]);
+  });
+
+  it("tries a new or resumed Trigger's object again, then fails the call, saying how to schedule it", async () => {
+    const answered = setUp(CHANGED, { unreachable: 2 });
+
+    await Effect.runPromise(answered.access.create({ id: "t1", trigger: INPUT, author }));
+
+    expect(answered.woken).toEqual(["t1", "t1", "t1"]);
+
+    const unreachable = setUp(CHANGED, { unreachable: 10 });
+
+    const failed = await Effect.runPromise(
+      unreachable.access.setPaused({ id: "t1", paused: false, author }).pipe(Effect.flip),
+    );
+
+    expect(unreachable.woken).toHaveLength(4);
+    expect(failed.message).toContain("trigger_resume");
+
+    // A change that only narrows, or edits, is left to the object's next alarm.
+    const narrowing = setUp(CHANGED, { unreachable: 10 });
+
+    await Effect.runPromise(narrowing.access.setPaused({ id: "t1", paused: true, author }));
+    await Effect.runPromise(narrowing.access.update({ id: "t1", patch: { message: "m" }, author }));
+
+    expect(narrowing.synced).toEqual(["t1", "t1"]);
+    expect(narrowing.woken).toEqual([]);
   });
 
   it("reads the Registry's Triggers", async () => {
@@ -140,7 +213,7 @@ describe("the Session's Triggers", () => {
   });
 
   it("changes nothing for a Session the Registry does not list", async () => {
-    const { access, calls } = setUp(CHANGED, false);
+    const { access, calls } = setUp(CHANGED, { listed: false });
 
     const failed = await Effect.runPromise(
       access.setPaused({ id: "t1", paused: true, author }).pipe(Effect.flip),

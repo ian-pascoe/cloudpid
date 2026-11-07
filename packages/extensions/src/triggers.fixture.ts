@@ -4,8 +4,10 @@
 // @effect-diagnostics missingPipeableSignature:off
 import {
   type AgentChange,
+  asChangeJson,
   type EnvironmentTriggerInput,
-  triggerChangeValue,
+  triggerChangeJson,
+  type TriggerChanged,
   type TriggerChangeValue,
   type TriggerDefinition,
   triggerField,
@@ -16,13 +18,11 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { ChangeAuthor } from "./environment.ts";
-import type { TriggerAccessService, TriggerChanged } from "./triggers.ts";
+import type { TriggerAccessService } from "./triggers.ts";
 
 const sameValue = Schema.toEquivalence(Schema.NullOr(Schema.Json));
 
-// SAFETY: a Trigger's value is plain JSON.
-const valueOf = (definition: TriggerDefinition | null): Schema.Json | null =>
-  definition === null ? null : (triggerChangeValue(definition) as Schema.Json);
+const valueOf = triggerChangeJson;
 
 /** What the fake was asked to do, and holds. */
 export type FakeTriggers = {
@@ -33,6 +33,8 @@ export type FakeTriggers = {
   readonly changes: Array<AgentChange & { readonly author: ChangeAuthor }>;
   /** The ids `newId` draws, in turn. */
   readonly ids: Array<string>;
+  /** The changing methods called, in turn: a call answered `unchanged` too. */
+  readonly reached: Array<string>;
 };
 
 /** A fake `TriggerAccess` over `environments` (id → name), its Triggers made at `now`. */
@@ -43,6 +45,7 @@ export const fakeTriggers = (
   const held = new Map<string, TriggerDefinition>();
   const changes: Array<AgentChange & { readonly author: ChangeAuthor }> = [];
   const ids = ["0190-a", "0190-b", "0190-c"];
+  const reached: Array<string> = [];
   let drawn = 0;
 
   const record = (
@@ -99,8 +102,7 @@ export const fakeTriggers = (
       return { status: "unchanged", definition: before };
     }
 
-    // SAFETY: a Trigger's value is plain JSON.
-    if (expected !== undefined && !sameValue(valueOf(before), expected as Schema.Json)) {
+    if (expected !== undefined && !sameValue(valueOf(before), asChangeJson(expected))) {
       return { status: "changed-since", current: before };
     }
 
@@ -184,13 +186,28 @@ export const fakeTriggers = (
       ),
     get: (id) => Effect.sync(() => held.get(id) ?? null),
     newId: Effect.sync(() => ids[drawn++] ?? `0190-${String(drawn)}`),
-    create: ({ id, trigger, author }) => Effect.sync(() => create(id, trigger, author)),
+    create: ({ id, trigger, author }) =>
+      Effect.sync(() => {
+        reached.push("create");
+
+        return create(id, trigger, author);
+      }),
     update: ({ id, patch, expected, author }) =>
-      Effect.sync(() => change(id, expected, author, (known) => patched(known, patch))),
+      Effect.sync(() => {
+        reached.push("update");
+
+        return change(id, expected, author, (known) => patched(known, patch));
+      }),
     setPaused: ({ id, paused, expected, author }) =>
-      Effect.sync(() => change(id, expected, author, (known) => ({ ...known, paused }))),
+      Effect.sync(() => {
+        reached.push("setPaused");
+
+        return change(id, expected, author, (known) => ({ ...known, paused }));
+      }),
     remove: ({ id, author }) =>
       Effect.sync(() => {
+        reached.push("remove");
+
         const before = held.get(id);
 
         if (before === undefined) return { status: "missing" as const };
@@ -201,5 +218,5 @@ export const fakeTriggers = (
       }),
   };
 
-  return { access, held, changes, ids };
+  return { access, held, changes, ids, reached };
 };

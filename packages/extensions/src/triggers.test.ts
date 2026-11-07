@@ -33,7 +33,7 @@ import { Secrets, type SecretsService } from "./secrets/store.ts";
 import { isParentOnly } from "./subagents/toolsets.ts";
 import { TriggerChangeOutput, TriggerListOutput, TriggerOutput } from "./trigger-outputs.ts";
 import { fakeTriggers } from "./triggers.fixture.ts";
-import { MAX_AGENT_TRIGGER_MESSAGE, TriggerAccess, TriggerTools } from "./triggers.ts";
+import { TriggerAccess, TriggerTools } from "./triggers.ts";
 
 const GITHUB_TOKEN = "ghp_0123456789abcdefghijklmnopqrstuvwxyzAB";
 const HELD = "sk-live-0123456789abcdef";
@@ -357,7 +357,6 @@ describe("trigger_create", () => {
     for (const args of [
       { ...WEEKLY, name: "x".repeat(81) },
       { ...WEEKLY, message: " " },
-      { ...WEEKLY, message: "x".repeat(MAX_AGENT_TRIGGER_MESSAGE + 1) },
       { ...WEEKLY, message: `Use ${HELD} to call the API.` },
       { ...WEEKLY, reason: `the token ${GITHUB_TOKEN} works` },
       { ...WEEKLY, owner: "*" },
@@ -367,6 +366,29 @@ describe("trigger_create", () => {
     }
 
     expect(asked).toEqual([]);
+  });
+
+  it("shows a long message cut on the card, with a warning, and keeps it whole", async () => {
+    const { call, asked, triggers } = await setUp();
+
+    const message = `${"a".repeat(16_000)}${"b".repeat(5_000)}`;
+
+    await call("trigger_create", { ...WEEKLY, message });
+
+    expect(asked[0]?.after).toContain(
+      "[The card shows only the first 16000 of the message's 21000 characters: Approve keeps the rest unreviewed.]",
+    );
+    expect(asked[0]?.after).not.toContain("ab");
+    expect(asked[0]?.notes?.join("\n")).toContain("longer than the card shows");
+    expect(triggers.held.get("0190-a")?.message).toBe(message);
+  });
+
+  it("keeps each note of its card within a note's bound", async () => {
+    const { call, asked } = await setUp();
+
+    await call("trigger_create", WEEKLY);
+
+    for (const note of asked[0]?.notes ?? []) expect(note.length).toBeLessThanOrEqual(200);
   });
 
   it("makes the Trigger the owner approved under the id it asked with, on a rerun after an eviction", async () => {
@@ -427,7 +449,7 @@ describe("the changes that wait for the owner's Approval", () => {
     expect(triggers.held.get("t1")?.message).toBe("The owner's words.");
   });
 
-  it("asks nothing for a Trigger that has the values already", async () => {
+  it("asks nothing for a Trigger that has the values already, but still has the Session wake its object", async () => {
     const { call, asked, triggers } = await setUp([weekly({ paused: false })]);
 
     const same = await call("trigger_message_set", {
@@ -442,6 +464,8 @@ describe("the changes that wait for the owner's Approval", () => {
     );
     expect(asked).toEqual([]);
     expect(triggers.changes).toEqual([]);
+    // The Session wakes the object after every call that reaches it, a change of nothing too.
+    expect(triggers.reached).toEqual(["update", "setPaused"]);
   });
 
   it("trigger_schedule_set refuses a bad Schedule without asking, and changes it once approved", async () => {

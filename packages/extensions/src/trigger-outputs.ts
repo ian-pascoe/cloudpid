@@ -4,7 +4,7 @@
 // the fields that already had their value, the owner's Approval) with the Trigger after it. A Trigger message is cut as
 // `boundText` cuts it, and the list as `boundItems` cuts it, each with a `<field>_truncated` flag. Times are ISO 8601.
 // @effect-diagnostics missingPipeableSignature:off globalDate:off -- plain functions that write times as ISO text.
-import { scheduleOf, type TriggerDefinition } from "@cloudpid/protocol";
+import { type EnvironmentRef, scheduleOf, type TriggerDefinition } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import {
@@ -17,9 +17,6 @@ import {
   changesOutput,
 } from "./outputs.ts";
 import type { AgentChange } from "@cloudpid/protocol";
-
-/** An Environment as an output names it. */
-type Scope = { readonly id: string; readonly name: string };
 
 const Time = Schema.String.annotate({ description: "A time, as ISO 8601 text in UTC" });
 
@@ -99,7 +96,7 @@ export const TriggerChangeOutput = Schema.Struct({
 /** `definition` in its Environment `environment`, as a summary gives it, with its next Fires (`next`). */
 export const triggerSummaryOutput = (
   definition: TriggerDefinition,
-  environment: Scope,
+  environment: EnvironmentRef,
   next: ReadonlyArray<number>,
 ): typeof TriggerSummaryOutput.Type => {
   const schedule = scheduleOf(definition);
@@ -122,7 +119,7 @@ export const triggerSummaryOutput = (
 /** `definition` with its message, as `trigger_get` and a change give it. */
 export const triggerOutput = (
   definition: TriggerDefinition,
-  environment: Scope,
+  environment: EnvironmentRef,
   next: ReadonlyArray<number>,
 ): typeof TriggerOutput.Type => {
   const message = boundText(definition.message);
@@ -153,7 +150,7 @@ export const triggerChangeOutput = ({
   approval,
   trigger,
 }: {
-  readonly environment: Scope;
+  readonly environment: EnvironmentRef;
   readonly changes: ReadonlyArray<AgentChange>;
   readonly unchanged?: ReadonlyArray<string>;
   readonly approval: typeof ApprovalOutcome.Type;

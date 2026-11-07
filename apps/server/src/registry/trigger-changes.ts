@@ -9,6 +9,8 @@
 import {
   type AgentChange,
   type EnvironmentTriggerInput,
+  triggerChangeJson,
+  type TriggerChanged,
   triggerChangeValue,
   TriggerChangeValue,
   type TriggerDefinition,
@@ -21,25 +23,6 @@ import * as Schema from "effect/Schema";
 import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
 import type { RegistryStorage, RegistryStore } from "./store.ts";
 import type { Triggers, TriggerWrite } from "./triggers.ts";
-
-/** How an agent's change of a Trigger went. */
-export type TriggerChanged =
-  | {
-      readonly status: "changed";
-      /** The Trigger after the change; null once removed. */
-      readonly definition: TriggerDefinition | null;
-      /** Its Environment, whose history records the change. */
-      readonly environment: { readonly id: string; readonly name: string };
-      readonly change: AgentChange;
-    }
-  /** It already was as asked: nothing was saved or recorded. */
-  | { readonly status: "unchanged"; readonly definition: TriggerDefinition }
-  /** It is no longer as the owner saw it (`current`; null once gone): nothing was saved. */
-  | { readonly status: "changed-since"; readonly current: TriggerDefinition | null }
-  /** Not allowed, said as the owner's form says it: nothing was saved. */
-  | { readonly status: "invalid"; readonly problem: string }
-  /** No such Trigger, or (for a new one) no such Environment. */
-  | { readonly status: "missing" };
 
 /** How the owner's revert of a Trigger's Agent change went. */
 export type TriggerRevert =
@@ -62,10 +45,15 @@ const sameTrigger = Schema.toEquivalence(TriggerChangeValue);
 
 const decodeValue = Schema.decodeUnknownOption(TriggerChangeValue);
 
-/** `definition` as its Agent changes record it, as JSON. */
-// SAFETY: a Trigger's value is plain JSON, its optional keys left out when absent.
-const valueOf = (definition: TriggerDefinition | null): Schema.Json | null =>
-  definition === null ? null : (triggerChangeValue(definition) as Schema.Json);
+const valueOf = triggerChangeJson;
+
+/** What a write that wrote nothing answers the agent: why not. */
+const refused = (
+  written: Extract<TriggerWrite, { status: "invalid" | "missing" }>,
+): TriggerChanged =>
+  written.status === "invalid"
+    ? { status: "invalid", problem: written.problem }
+    : { status: "missing" };
 
 /** The agent's changes of the Registry's Triggers. */
 export const openTriggerChanges = (
@@ -140,9 +128,8 @@ export const openTriggerChanges = (
         case "changed-since":
           return { status: "changed-since", current: written.definition };
         case "invalid":
-          return { status: "invalid", problem: written.problem };
         case "missing":
-          return { status: "missing" };
+          return refused(written);
       }
     });
 
@@ -176,9 +163,8 @@ export const openTriggerChanges = (
           case "changed-since":
             return record(author, id, input.environment, null, made.definition, now);
           case "invalid":
-            return { status: "invalid", problem: made.problem };
           case "missing":
-            return { status: "missing" };
+            return refused(made);
         }
       }),
 

@@ -58,7 +58,6 @@ import {
   AgentChangeLog,
   type ChangeAuthor,
   type ChangedEnvironment,
-  credentialCheck,
   type DeployCredentials,
   describeApplied,
   describeAppliedGlobal,
@@ -69,6 +68,7 @@ import {
   idOrGlobal,
   MAX_CHANGE_REASON,
   notFound,
+  plainTextCheck,
   sizeWords,
 } from "./environment.ts";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
@@ -87,7 +87,6 @@ import {
   outputSchema,
   scopeRef,
 } from "./outputs.ts";
-import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import {
   agentChangeDetails,
@@ -336,37 +335,6 @@ const grouped = (n: number): string => n.toLocaleString("en-US");
  */
 const instructionsApply = (whose: "its" | "their"): string =>
   `from the start of ${whose} next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with.`;
-
-/**
- * The check of a text a tool that waits for the owner's Approval keeps or shows on the card: it fails, asking nothing,
- * when `text` (`what`: the reason, the Instructions' text, a Trigger message) holds a Secret the Session holds, a
- * deploy-time credential, or a Secret Reference's placeholder, which these tools do not resolve (the card and the
- * history would show the reference's text); `fix` says what to do instead.
- */
-export const plainTextCheck: Effect.Effect<
-  (text: string, what: string, fix: string) => Effect.Effect<void, EnvironmentsError>,
-  never,
-  Secrets | DeployCredentials
-> = Effect.gen(function* () {
-  const secrets = yield* Secrets;
-
-  const holdsCredential = yield* credentialCheck;
-
-  return (text: string, what: string, fix: string) =>
-    holdsPlaceholder(text)
-      ? Effect.fail(
-          EnvironmentsError.make({
-            message: `Nothing was asked or saved: ${what} holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. ${fix}`,
-          }),
-        )
-      : Effect.flatMap(secrets.refresh, () =>
-          secrets.redact(text) === text && !holdsCredential(text)
-            ? Effect.void
-            : EnvironmentsError.make({
-                message: `Nothing was asked or saved: ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. ${fix}`,
-              }),
-        );
-});
 
 const APPROVAL =
   "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the user changes the same setting meanwhile, the approval does not apply and you are told to ask again.";

@@ -17,6 +17,7 @@ import {
   type MarkedOrigin,
   type SessionOrigin,
   type SettingsOverridesState,
+  type TriggerChanged,
   type TriggerChangeValue,
   type TriggerDefinition,
   type TriggerPatch,
@@ -80,7 +81,7 @@ import {
   type WorkspaceSetup,
   STARTING_MS,
 } from "./store.ts";
-import { openTriggerChanges, type TriggerChanged, type TriggerChanges } from "./trigger-changes.ts";
+import { openTriggerChanges, type TriggerChanges } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
   type FireAdmission,

@@ -22,6 +22,9 @@ import {
   scheduleOf,
   scheduleProblem,
   type ScheduleSource,
+  type EnvironmentRef,
+  triggerChangeJson,
+  type TriggerChanged,
   triggerChangeValue,
   TriggerChangeValue,
   type TriggerDefinition,
@@ -40,7 +43,6 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { plainTextCheck } from "./approval-tools.ts";
 import {
   type ApprovalAnswer,
   type ApprovalCall,
@@ -59,7 +61,9 @@ import {
   environmentTarget,
   Id,
   MAX_CHANGE_REASON,
+  plainTextCheck,
 } from "./environment.ts";
+import { MAX_CARD_CHARS } from "./environment-skills-global.ts";
 import { APPROVED, asOutput, outputSchema } from "./outputs.ts";
 import type { Secrets } from "./secrets/store.ts";
 import {
@@ -78,32 +82,13 @@ export const extensionName = "triggers";
 export const TRIGGER_TOOL_PREFIX = "trigger_";
 
 /**
- * The longest Trigger message the agent writes, in characters: what an Approval card shows in full, so the owner
- * approves only what they can read. The owner's own form takes far more (`MAX_TRIGGER_MESSAGE_BYTES`).
+ * The most characters of a Trigger message an Approval card shows, as of a Skill's files (`MAX_CARD_CHARS`): a longer
+ * one is shown cut, with a warning that the rest is not, since the owner approves what they can read.
  */
-export const MAX_AGENT_TRIGGER_MESSAGE = 16_000;
+const MAX_CARD_MESSAGE = MAX_CARD_CHARS;
 
 /** How many of a Trigger's next Fires a result and a card show. */
 const NEXT_FIRES = 3;
-
-/** How an agent's change of a Trigger went, as the Registry answers it. */
-export type TriggerChanged =
-  | {
-      readonly status: "changed";
-      /** The Trigger after the change; null once removed. */
-      readonly definition: TriggerDefinition | null;
-      /** Its Environment, whose history records the change. */
-      readonly environment: { readonly id: string; readonly name: string };
-      readonly change: AgentChange;
-    }
-  /** It already was as asked: nothing was saved or recorded. */
-  | { readonly status: "unchanged"; readonly definition: TriggerDefinition }
-  /** It is no longer as the owner saw it (`current`; null once gone): nothing was saved. */
-  | { readonly status: "changed-since"; readonly current: TriggerDefinition | null }
-  /** Not allowed, said as the owner's form says it: nothing was saved. */
-  | { readonly status: "invalid"; readonly problem: string }
-  /** No such Trigger, or (for a new one) no such Environment. */
-  | { readonly status: "missing" };
 
 /**
  * What the Session does for the `trigger_*` tools, over the Registry and the Trigger objects: it reads the Triggers,
@@ -182,7 +167,7 @@ const Base = Schema.String.check(Schema.isMinLength(1)).annotate({
 });
 
 const Message = Schema.String.annotate({
-  description: `The Trigger message: what each Fire's new Session is sent, after cloudpid's header (the Trigger's name, the scheduled and actual time). It runs unattended, so say everything the work needs. At most ${String(MAX_AGENT_TRIGGER_MESSAGE)} characters`,
+  description: `The Trigger message: what each Fire's new Session is sent, after cloudpid's header (the Trigger's name, the scheduled and actual time). It runs unattended, so say everything the work needs; a long one can point to a file in a Repo`,
 });
 
 const APPROVAL =
@@ -228,7 +213,31 @@ const optionsWords = (options: {
     ", ",
   );
 
-/** A Trigger as a card and a result describe it in full. */
+/**
+ * A Trigger message as a card shows it: as written, or its first `MAX_CARD_MESSAGE` characters with a warning, before
+ * and after, that the rest is not shown.
+ */
+const cardMessage = (message: string): string => {
+  if (message.length <= MAX_CARD_MESSAGE) return message;
+
+  const warning = `[The card shows only the first ${String(MAX_CARD_MESSAGE)} of the message's ${String(message.length)} characters: Approve keeps the rest unreviewed.]`;
+
+  return `${warning}\n${message.slice(0, MAX_CARD_MESSAGE)}\n${warning}`;
+};
+
+/** The card's note for a message too long to show in full, if `messages` holds one. */
+const cutMessageNotes = (...messages: ReadonlyArray<string>): ReadonlyArray<string> =>
+  Arr.some(messages, (message) => message.length > MAX_CARD_MESSAGE)
+    ? [
+        `The message is longer than the card shows: only its first ${String(MAX_CARD_MESSAGE)} characters are shown, so the rest is not reviewed.`,
+      ]
+    : [];
+
+/** `text` held to `max` characters, ending in "…" when cut. */
+const clipped = (text: string, max: number): string =>
+  text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+
+/** A Trigger as a card describes it in full, its message as `cardMessage` shows it. */
 const triggerWords = (value: TriggerChangeValue): string =>
   Arr.join(
     [
@@ -236,14 +245,10 @@ const triggerWords = (value: TriggerChangeValue): string =>
       `Schedule: ${scheduleWords(scheduleOf(value))}`,
       `Options: ${optionsWords(value)}`,
       ...(value.paused ? ["Paused"] : []),
-      `Message:\n${value.message}`,
+      `Message:\n${cardMessage(value.message)}`,
     ],
     "\n",
   );
-
-/** The Trigger the owner saw, as a change's request keeps it. */
-// SAFETY: a Trigger's value is plain JSON, its optional keys left out when absent.
-const asExpected = (value: TriggerChangeValue): Schema.Json => value as Schema.Json;
 
 const decodeExpected = Schema.decodeUnknownOption(TriggerChangeValue);
 
@@ -260,23 +265,13 @@ const noTrigger = (id: string) =>
     message: `No Trigger has the id ${JSON.stringify(id)}. Call trigger_list for the Triggers and their ids.`,
   });
 
-/** Why the agent can't give a Trigger `message`, or undefined when it can. */
-const agentMessageProblem = (message: string): string | undefined =>
-  triggerMessageProblem(message) ??
-  (message.length > MAX_AGENT_TRIGGER_MESSAGE
-    ? `A Trigger message you write has at most ${String(MAX_AGENT_TRIGGER_MESSAGE)} characters, so that the user's Approval card shows all of it: put the rest in a file in a Repo, and have the message say to read it`
-    : undefined);
-
 /** A refusal made before asking. */
 const refuse = (problem: string) =>
   EnvironmentsError.make({ message: `Nothing was asked or saved: ${problem}.` });
 
 /** A change's Agent change, as a result's details give it. */
 // SAFETY: the two types describe the same values; the details are never mutated.
-const changeDetails = (
-  environment: { readonly id: string; readonly name: string },
-  change: AgentChange,
-) => ({
+const changeDetails = (environment: EnvironmentRef, change: AgentChange) => ({
   id: change.id,
   environment,
   field: change.field,
@@ -304,6 +299,31 @@ export const TriggerTools: Effect.Effect<
 
   const plainReason = (reason: string) => plainText(reason, "the reason", "Say why without it.");
 
+  /** Fails, asking nothing, for a Trigger message that holds a Secret or that the Registry would refuse. */
+  const plainMessage = (message: string) =>
+    Effect.gen(function* () {
+      yield* plainText(
+        message,
+        "the message",
+        "Have the message name the Secret instead: the Session the Fire starts holds the Environment's Secrets.",
+      );
+
+      const problem = triggerMessageProblem(message);
+
+      if (problem !== undefined) return yield* refuse(problem);
+    });
+
+  /** `schedule` as a Trigger's source, or a refusal, asking nothing, of one the Registry would refuse. */
+  const scheduleSource = (schedule: typeof Schedule.Type) =>
+    Effect.gen(function* () {
+      const source: ScheduleSource = { type: "schedule", cron: schedule.cron, zone: schedule.zone };
+      const problem = scheduleProblem(source);
+
+      if (problem !== undefined) return yield* refuse(problem);
+
+      return source;
+    });
+
   /** Trigger `id`, or a refusal naming the tool that lists them. */
   const found = (id: string) =>
     access.get(id).pipe(Effect.filterOrFail(Predicate.isNotNull, () => noTrigger(id)));
@@ -317,10 +337,7 @@ export const TriggerTools: Effect.Effect<
     `Environment ${JSON.stringify(environment.name)}`;
 
   /** `definition` as a result gives it, with its next Fires. */
-  const outputOf = (
-    definition: TriggerDefinition,
-    environment: { readonly id: string; readonly name: string },
-  ) =>
+  const outputOf = (definition: TriggerDefinition, environment: EnvironmentRef) =>
     Effect.map(Clock.currentTimeMillis, (now) =>
       triggerOutput(definition, environment, nextOf(definition, now)),
     );
@@ -423,7 +440,7 @@ export const TriggerTools: Effect.Effect<
     answer: Extract<ApprovalAnswer, { approved: false }>,
     what: string,
     definition: TriggerDefinition | null,
-    environment: { readonly id: string; readonly name: string },
+    environment: EnvironmentRef,
   ) =>
     Effect.map(
       definition === null ? Effect.succeed(null) : outputOf(definition, environment),
@@ -463,7 +480,7 @@ export const TriggerTools: Effect.Effect<
     readonly same: (definition: TriggerDefinition) => boolean;
     readonly before: (definition: TriggerDefinition) => string;
     readonly after: string;
-    readonly notes?: ReadonlyArray<string> | undefined;
+    readonly notes?: ((definition: TriggerDefinition) => ReadonlyArray<string>) | undefined;
     readonly apply: (
       expected: TriggerChangeValue | undefined,
       author: ChangeAuthor,
@@ -475,12 +492,19 @@ export const TriggerTools: Effect.Effect<
       const definition = yield* found(id);
       const environment = yield* environmentNamed(definition.environment);
 
+      // A Trigger that has the values asks nothing; the call still goes to the Registry, which changes nothing, so the
+      // Trigger's object is woken (a call cut off after the change may never have woken it). It changes only while the
+      // Trigger is as read here, so a change made meanwhile is not made without the owner's Approval.
       if (same(definition) && !(yield* askedBefore(approvals, api))) {
         return yield* outcome({
           tool,
           id,
           name: definition.name,
-          applied: { status: "unchanged", definition },
+          applied: yield* apply(triggerChangeValue(definition), {
+            conversation: api.conversationId,
+            tool,
+            reason,
+          }),
           approval: null,
           made,
           already,
@@ -498,8 +522,8 @@ export const TriggerTools: Effect.Effect<
           after,
           reason,
           notice: `${change} "${definition.name}", ${targetOf(environment)}`,
-          notes: notes ?? [],
-          expected: asExpected(triggerChangeValue(definition)),
+          notes: notes?.(definition) ?? [],
+          expected: triggerChangeJson(definition),
         },
         (answer) =>
           Effect.gen(function* () {
@@ -668,22 +692,12 @@ export const TriggerTools: Effect.Effect<
       Effect.gen(function* () {
         yield* plainReason(reason);
         yield* plainText(name, "the name", "Name it without it.");
-        yield* plainText(
-          message,
-          "the message",
-          "Have the message name the Secret instead: the Session the Fire starts holds the Environment's Secrets.",
-        );
+        yield* plainMessage(message);
 
-        const source: ScheduleSource = {
-          type: "schedule",
-          cron: schedule.cron,
-          zone: schedule.zone,
-        };
+        const source = yield* scheduleSource(schedule);
 
         const problem =
           triggerNameProblem(name) ??
-          agentMessageProblem(message) ??
-          scheduleProblem(source) ??
           (base !== undefined && base.trim() === "" ? "a base branch can't be empty" : undefined);
 
         if (problem !== undefined) return yield* refuse(problem);
@@ -740,8 +754,9 @@ export const TriggerTools: Effect.Effect<
             reason,
             notice: `Create the Trigger "${trigger.name}", ${targetOf(environment)}`,
             notes: [
-              `Each Fire starts a new Session in a new Workspace of ${targetOf(environment)} and sends it the message, unattended.`,
+              `Each Fire starts a new Session in a new Workspace of Environment ${JSON.stringify(clipped(environment.name, 80))} and sends it the message, unattended.`,
               nextFiresNote(source, now),
+              ...cutMessageNotes(message),
             ],
             // The id the Trigger is made under, drawn now: a rerun after an eviction makes this one, not a second.
             expected: { id: drawn },
@@ -814,15 +829,7 @@ export const TriggerTools: Effect.Effect<
     execute: ({ id, message, reason }, api) =>
       Effect.gen(function* () {
         yield* plainReason(reason);
-        yield* plainText(
-          message,
-          "the message",
-          "Have the message name the Secret instead: the Session the Fire starts holds the Environment's Secrets.",
-        );
-
-        const problem = agentMessageProblem(message);
-
-        if (problem !== undefined) return yield* refuse(problem);
+        yield* plainMessage(message);
 
         return yield* approvedChange({
           tool: "trigger_message_set",
@@ -831,8 +838,9 @@ export const TriggerTools: Effect.Effect<
           api,
           change: "Change a Trigger's message",
           same: (definition) => definition.message === message,
-          before: (definition) => definition.message,
-          after: message,
+          before: (definition) => cardMessage(definition.message),
+          after: cardMessage(message),
+          notes: (definition) => cutMessageNotes(definition.message, message),
           apply: (expected, author) => access.update({ id, patch: { message }, expected, author }),
           made: () => "the Trigger's message is changed: its next Fires send the new one.",
           already: "The Trigger has that message already",
@@ -857,16 +865,7 @@ export const TriggerTools: Effect.Effect<
       Effect.gen(function* () {
         yield* plainReason(reason);
 
-        const source: ScheduleSource = {
-          type: "schedule",
-          cron: schedule.cron,
-          zone: schedule.zone,
-        };
-
-        const problem = scheduleProblem(source);
-
-        if (problem !== undefined) return yield* refuse(problem);
-
+        const source = yield* scheduleSource(schedule);
         const now = yield* Clock.currentTimeMillis;
 
         return yield* approvedChange({
@@ -882,7 +881,7 @@ export const TriggerTools: Effect.Effect<
           },
           before: (definition) => scheduleWords(scheduleOf(definition)),
           after: scheduleWords(source),
-          notes: [nextFiresNote(source, now)],
+          notes: () => [nextFiresNote(source, now)],
           apply: (expected, author) => access.update({ id, patch: { source }, expected, author }),
           made: (definition) =>
             `the Trigger fires ${scheduleWords(source)} now${definition?.paused === true ? " (once resumed)" : `; ${nextFiresNote(source, now)}`}.`,
@@ -1008,7 +1007,7 @@ export const TriggerTools: Effect.Effect<
           same: (held) => !held.paused,
           before: () => "Paused",
           after: `Active: fires ${scheduleWords(schedule)}`,
-          notes: schedule === undefined ? [] : [nextFiresNote(schedule, now)],
+          notes: () => (schedule === undefined ? [] : [nextFiresNote(schedule, now)]),
           apply: (expected, author) => access.setPaused({ id, paused: false, expected, author }),
           made: () =>
             `the Trigger is active again${schedule === undefined ? "" : `; ${nextFiresNote(schedule, now)}`}. The times it missed while paused are not caught up.`,

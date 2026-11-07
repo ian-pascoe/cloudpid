@@ -131,7 +131,7 @@ export type RegistryRpcObjects<R = never> = {
   /** Stops a Session when it is archived, and wipes it when it is deleted. */
   readonly sessions: SessionObjects;
   /** Wipes the objects of the Triggers that went with a deleted Environment. */
-  readonly triggers: TriggerObjects;
+  readonly triggers: Pick<TriggerObjects, "sync" | "remove">;
   /** Wipes what is left from before Environments, a few objects at a time (`legacyCleanup`), after the answer. */
   readonly legacy: Effect.Effect<void>;
   /** Keeps each Environment's spare Workspace current (`spareUpkeep`), after the answer. */
