@@ -2,6 +2,12 @@
 // `trigger:<trigger id>`.
 const PREFIX = "trigger:";
 
+/**
+ * The `Trigger` Durable Object class's name, in every stage's migrations, and the name of its namespace's binding in
+ * the Server Worker's environment.
+ */
+export const TRIGGER_CLASS = "Trigger";
+
 /** The name of the `Trigger` object of Trigger `id`. */
 export const triggerObjectName = (id: string): string => `${PREFIX}${id}`;
 

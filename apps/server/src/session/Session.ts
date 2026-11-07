@@ -62,6 +62,7 @@ import { sessionLifecycle } from "./environment-lifecycle.ts";
 import { runChanges } from "./agent-changes.ts";
 import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
+import { triggerObjects, triggersOfEnvironment } from "../trigger/objects.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpRecords } from "./mcp-records.ts";
@@ -320,6 +321,7 @@ export const SessionLive = Session.make(
       registries: yield* Registry,
       // The Environments' MCP hosts, whose tools the Session's `mcp` extension calls.
       mcpHosts: yield* McpHost,
+
       // The other Sessions' objects, which deleting an Environment the owner approved wipes (`environment_delete`).
       // This class's own namespace, which alchemy hands its constructor (not `yield* Session`: this Layer provides it).
       // SAFETY: the namespace of the class this constructor makes, whose objects answer `SessionMethods`.
@@ -487,6 +489,9 @@ export const SessionLive = Session.make(
           lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
         });
 
+        // The objects of the Triggers that go with an Environment the owner approved deleting.
+        const triggers = triggerObjects(triggersOfEnvironment(worker));
+
         // The deletes the owner approved: an Environment with its Workspaces and Sessions, wiped as the owner's delete
         // wipes them (`removals`, `registry/removal.ts`), and a kept Secret.
         const environmentRemoval = sessionEnvironmentRemoval({
@@ -495,6 +500,7 @@ export const SessionLive = Session.make(
           objects: {
             workspaces: workspaceObjects,
             sessions: { destroy: destroySessionObject(sessions) },
+            triggers,
           },
           builds,
         });
@@ -502,6 +508,7 @@ export const SessionLive = Session.make(
         const removal = removals(registryObject, {
           workspaces: workspaceObjects,
           sessions: { destroy: destroySessionObject(sessions) },
+          triggers,
         });
 
         // What wipes this object's own state (`destroySession`), once the host exists: an import that expired deletes its

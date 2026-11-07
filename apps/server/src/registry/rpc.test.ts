@@ -84,6 +84,7 @@ import { mcpStatus } from "../mcp/status.ts";
 import type { McpHostMethods } from "../mcp/host.ts";
 import { buildMovedRepos } from "./mcp-repo-files.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
+import type { TriggerObjects } from "../trigger/objects.ts";
 import { pageSessions } from "./session-page.ts";
 import { SettingsUpdate } from "./settings.ts";
 import type {
@@ -629,6 +630,32 @@ const fakeRegistries = () => {
     },
   });
 
+  /** The Triggers of each Environment, by its id: what deleting it answers, for the caller to wipe their objects. */
+  const environmentTriggers = new Map<string, Array<string>>();
+
+  /** The Trigger objects: what was asked of each, in `calls`. */
+  const triggerObjects: TriggerObjects = {
+    remove: (id) =>
+      Effect.sync(() => {
+        calls.push(`removeTriggerObject:${id}`);
+      }),
+  };
+
+  const deleteEnvironmentOf = (id: string) =>
+    Effect.sync(() => {
+      calls.push(`deleteEnvironment:${id}`);
+
+      if (id === DEFAULT_ENVIRONMENT) return "refused" as const;
+
+      if (Arr.some(workspaces, (workspace) => workspace.environment === id) || spares.has(id)) {
+        return "in-use" as const;
+      }
+
+      return remove(environments, (item) => item.id === id)
+        ? ("deleted" as const)
+        : ("missing" as const);
+    });
+
   const registry = {
     createSession: ({ title, workspace, origin }) =>
       Effect.sync((): SessionRecord | SessionRefusal => {
@@ -758,20 +785,7 @@ const fakeRegistries = () => {
 
         return renamed === null ? { status: "missing" } : { status: "named", environment: renamed };
       }),
-    deleteEnvironment: ({ id }) =>
-      Effect.sync(() => {
-        calls.push(`deleteEnvironment:${id}`);
-
-        if (id === DEFAULT_ENVIRONMENT) return "refused" as const;
-
-        if (Arr.some(workspaces, (workspace) => workspace.environment === id) || spares.has(id)) {
-          return "in-use" as const;
-        }
-
-        return remove(environments, (item) => item.id === id)
-          ? ("deleted" as const)
-          : ("missing" as const);
-      }),
+    deleteEnvironment: ({ id }) => deleteEnvironmentOf(id),
     addRepo: ({ environment, name, url }) =>
       Effect.sync((): RepoChange => {
         calls.push("addRepo");
@@ -1422,8 +1436,14 @@ const fakeRegistries = () => {
     triggerDefinition: () => Effect.succeed(null),
     admitFire: () => Effect.succeed({ status: "removed" as const }),
     notifyTriggerFailed: () => Effect.void,
-    deleteEnvironmentWithTriggers: () =>
-      Effect.succeed({ deletion: "missing" as const, triggers: [] }),
+    deleteEnvironmentWithTriggers: ({ id }) =>
+      Effect.map(deleteEnvironmentOf(id), (deletion) => {
+        const triggers = deletion === "deleted" ? (environmentTriggers.get(id) ?? []) : [];
+
+        if (deletion === "deleted") environmentTriggers.delete(id);
+
+        return { deletion, triggers };
+      }),
     // The sign-ins are the `McpHost`'s to ask of: the endpoint never hands out a token.
     mcpAccessToken: () => Effect.die("The endpoint hands out no token"),
     reportMcpAuth: () => Effect.die("The endpoint reports no sign-in"),
@@ -1521,6 +1541,8 @@ const fakeRegistries = () => {
     settingsNow,
     sessionObjects,
     workspaceObjects,
+    environmentTriggers,
+    triggerObjects,
     breakSession: (id: string, message: string) => {
       brokenSessions.set(id, message);
     },
@@ -1838,6 +1860,7 @@ const worker =
     return serveRegistryRpc(fake.registries, {
       workspaces: fake.workspaceObjects,
       sessions: fake.sessionObjects,
+      triggers: fake.triggerObjects,
       legacy: fake.legacy,
       spares: fake.spareUpkeep,
       builds: fake.buildUpkeep,
@@ -2180,7 +2203,7 @@ const call = <A, E>(
 /** The calls that reached a Session's or a Workspace's object, or forgot or archived a record, in order. */
 const lifecycle = (fake: ReturnType<typeof fakeRegistries>) =>
   Arr.filter(fake.calls, (name) =>
-    /^(stop|destroy|destroyWorkspace|restartContainer|prepareSpare|startBuild|deleteSession|deleteWorkspace|deleteEnvironment|forgetSpare):|^(archive|unarchive)Session$/.test(
+    /^(stop|destroy|destroyWorkspace|restartContainer|prepareSpare|startBuild|deleteSession|deleteWorkspace|deleteEnvironment|forgetSpare|removeTriggerObject):|^(archive|unarchive)Session$/.test(
       name,
     ),
   );
@@ -2657,6 +2680,38 @@ it("deletes an Environment: every Workspace made from it, with its Sessions (arc
   expect(
     Arr.map(await call(fake, (registry) => registry.listEnvironments()), (item) => item.id),
   ).toEqual([DEFAULT_ENVIRONMENT]);
+});
+
+it("deletes an Environment's Triggers with its record, then wipes their objects", async () => {
+  const fake = fakeRegistries();
+  const id = await makeEnvironment(fake, "Triggered");
+
+  fake.environmentTriggers.set(id, ["t1", "t2"]);
+
+  await call(fake, (registry) => registry.deleteEnvironment({ environment: id }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
+    `deleteEnvironment:${id}`,
+    "removeTriggerObject:t1",
+    "removeTriggerObject:t2",
+    `destroyWorkspace:build:${id}`,
+    `destroyWorkspace:test-build:${id}`,
+  ]);
+});
+
+it("wipes no Trigger object of an Environment it could not delete", async () => {
+  const fake = fakeRegistries();
+  const id = await makeEnvironment(fake, "Triggered");
+  const session = await call(fake, (registry) => registry.createSession({ environment: id }));
+
+  fake.environmentTriggers.set(id, ["t1"]);
+  fake.breakSession(session.id, "storage error");
+
+  await call(fake, (registry) => Effect.flip(registry.deleteEnvironment({ environment: id })));
+
+  expect(fake.calls).not.toContain("removeTriggerObject:t1");
 });
 
 it("deletes an Environment with no Workspaces: its Build and Test Build objects, then its record, then those objects again", async () => {

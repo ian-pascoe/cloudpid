@@ -2005,6 +2005,7 @@ export class TestSession extends DurableObject {
             }),
         },
         sessions: { destroy: () => Effect.void },
+        triggers: { remove: () => Effect.void },
       });
 
       return removal

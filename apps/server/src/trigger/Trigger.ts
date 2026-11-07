@@ -17,7 +17,7 @@ import { Session } from "../session/Session.ts";
 import { workersTracing } from "../tracing.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
-import { triggerOfObject } from "./name.ts";
+import { TRIGGER_CLASS, triggerOfObject } from "./name.ts";
 import {
   type TriggerHandlers,
   triggerHandlers,
@@ -29,7 +29,7 @@ import {
  * One Trigger's object. The class name is the Durable Object class name in every stage's migrations. Its methods'
  * failure, `TriggerUnreachable`, crosses RPC as itself.
  */
-export class Trigger extends Cloudflare.DurableObject<Trigger, TriggerHandlers>()("Trigger", {
+export class Trigger extends Cloudflare.DurableObject<Trigger, TriggerHandlers>()(TRIGGER_CLASS, {
   errors: [TriggerUnreachable],
 }) {}
 

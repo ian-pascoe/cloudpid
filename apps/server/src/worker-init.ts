@@ -49,6 +49,7 @@ import {
   Session,
   SessionLive,
 } from "./session/Session.ts";
+import { triggerObjects } from "./trigger/objects.ts";
 import { Trigger, TriggerLive } from "./trigger/Trigger.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
@@ -80,6 +81,8 @@ export const serverInit = Effect.gen(function* () {
   const sessions = yield* durableObjects.Session;
   const registries = yield* durableObjects.Registry;
   const mcpHosts = yield* durableObjects.McpHost;
+  // The objects of the Triggers that go with a deleted Environment are wiped.
+  const triggers = triggerObjects(yield* durableObjects.Trigger);
   // The raw environment: the Workspace DO's own stub, as the Session DOs take it.
   const worker = yield* Cloudflare.WorkerEnvironment;
   // What runs after an answer: the wipe of what is left from before Environments, and the upkeep of the spares and
@@ -204,7 +207,7 @@ export const serverInit = Effect.gen(function* () {
   const mcpRoute = serveMcpRoute({
     registries,
     sessions,
-    objects: { workspaces, sessions: sessionObjects },
+    objects: { workspaces, sessions: sessionObjects, triggers },
     spares,
     builds,
     background: (effect) => execution.waitUntil(effect),
@@ -239,6 +242,7 @@ export const serverInit = Effect.gen(function* () {
           return yield* serveRegistryRpc(registries, {
             workspaces,
             sessions: sessionObjects,
+            triggers,
             legacy,
             spares,
             builds,
