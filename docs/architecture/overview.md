@@ -23,14 +23,14 @@ These documents record the settled design (first settled on 2026-10-20). Terms f
 | [`mcp-sign-in.md`](mcp-sign-in.md)                 | MCP sign-ins, client registration, the client document and callback outside Access, Sign-in requests                             |
 | [`mcp-apps.md`](mcp-apps.md)                       | MCP Apps: App records, App Views and App Panes, the App sandbox                                                                  |
 | [`mcp-endpoint.md`](mcp-endpoint.md)               | cloudpid's MCP endpoint (`/mcp`) for a Local agent: Sessions, the Environment and Settings tools, and Session import             |
-| [`triggers.md`](triggers.md)                       | Triggers (S1 built): Environment, Workspace and Session triggers, Schedules, Trigger URLs, the Trigger object                    |
+| [`triggers.md`](triggers.md)                       | Triggers (S1 and S3 built): Environment, Workspace and Session triggers, Schedules, Trigger URLs, the Trigger object             |
 | [`operations.md`](operations.md)                   | Infra, stages, Access, telemetry, Container cost, the spend limit, testing                                                       |
 | [`risks-and-spikes.md`](risks-and-spikes.md)       | Known risks and what was measured                                                                                                |
 
 ## Scope
 
 - **Single user**, behind Cloudflare Access. There are no tenants, quotas, or per-user isolation.
-- **v1 clients:** an HTTP and WebSocket API and a web UI. A terminal client comes later. Triggers on a Schedule or a webhook (GitHub's included) are designed in [`triggers.md`](triggers.md); Environment triggers on a Schedule are built (the Trigger object, the agent's tools with Approval, and the Settings page's Triggers section), and webhooks are not yet. Slack triggers come later.
+- **v1 clients:** an HTTP and WebSocket API and a web UI. A terminal client comes later. Triggers on a Schedule or a webhook (GitHub's included) are designed in [`triggers.md`](triggers.md); Environment and Workspace triggers on a Schedule are built (the Trigger object, the agent's tools with Approval, and the Settings page's Triggers section), and webhooks are not yet. Slack triggers come later.
 - **Lean on existing packages.** Prefer Earendil (`pi-durable`, `pi-ai`, `pi-codemode`, `pi-mcp` for MCP sign-in only, `pi-telemetry`; the MCP core is the official SDK, [ADR-0036](../adr/0036-the-mcp-core-is-the-official-sdk-inside-cloudpids-own-era-agnostic-module.md)) and Cloudflare (`@cloudflare/computer`, `agents/browser`) building blocks over writing our own.
 
 ## Architecture

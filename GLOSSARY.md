@@ -13,7 +13,7 @@ A Session the owner has put away: kept whole, listed apart under _Archived_ rath
 _Avoid_: Hidden, closed, deleted (for an archived one)
 
 **Deleted Session**:
-A Session deleted for good, with everything it held; the files it wrote in its Workspace stay, unless it was the Workspace's last Session and the Workspace is removed with it.
+A Session deleted for good, with everything it held; the files it wrote in its Workspace stay, unless it was the Workspace's last Session and the Workspace is removed with it; a Workspace trigger keeps the Workspace instead.
 _Avoid_: Archived (for a deleted one), removed
 
 **Session draft**:
@@ -199,7 +199,7 @@ A Workspace made for one Subagent, in its parent's Environment and Session, on a
 _Avoid_: Worktree, sandbox, child Session
 
 **Workspace removal**:
-Deleting a Workspace with its Sessions, files and Container. What it pushed stays on the remote; its uncommitted changes and unpushed commits are lost.
+Deleting a Workspace with its Sessions, Workspace triggers, files and Container. What it pushed stays on the remote; its uncommitted changes and unpushed commits are lost.
 _Avoid_: Cleanup (for the owner's action), reset
 
 **Carried Changes**:
