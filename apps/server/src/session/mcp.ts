@@ -11,6 +11,9 @@ import {
   apiFailure,
   apiOk,
   type ConfigureRequest,
+  type FireRequest,
+  fireText,
+  triggerMessageProblem,
   type CursorState,
   decodeCursor,
   encodeCursor,
@@ -41,6 +44,7 @@ import {
   type WaitRequest,
   type WaitingRequest,
 } from "@cloudpid/protocol";
+import { isModelId } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -69,6 +73,11 @@ export type SessionMcpService = {
   readonly stop: (request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
   /** Pick the model and thinking level a started Session runs with, as the socket's `configure` does. */
   readonly configure: (request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
+  /**
+   * A Trigger's Fire (`docs/architecture/triggers.md` → Pending Fires): its message with cloudpid's header, marked as the
+   * Trigger's, its Run's end notified to the owner, deduplicated by the Fire's `requestId`.
+   */
+  readonly fire: (request: FireRequest) => Effect.Effect<ApiResult<SubmitResult>>;
 };
 
 export class SessionMcp extends Context.Service<SessionMcp, SessionMcpService>()(
@@ -815,6 +824,67 @@ const sessionMcp = (options: SessionMcpOptions) =>
     const configure: SessionMcpService["configure"] = (request) =>
       guarded(host.configure(agentChange(request)).pipe(Effect.as(apiOk(null))));
 
+    const fire: SessionMcpService["fire"] = (request) =>
+      guarded(
+        Effect.gen(function* () {
+          const problem = triggerMessageProblem(request.message);
+
+          if (problem !== undefined) return apiFailure("invalid_argument", problem);
+
+          const earlier = yield* host.admitted(request.requestId);
+
+          // A Fire sent again (a retried alarm) finds its first input, as a repeated start does.
+          if (earlier === undefined && (yield* options.archived)) {
+            return apiFailure("session_archived", "This Session is archived.");
+          }
+
+          const before = yield* host.follow();
+
+          if (earlier === undefined && before.copying) {
+            return apiFailure("session_importing", "This Session is still importing.");
+          }
+
+          // The Trigger's model and thinking level, at its first Fire only: a repeat finds the Session as it was left.
+          // A model this version doesn't offer is left to the Environment's Settings.
+          const pick: Types.Mutable<ConfigureRequest> = {};
+
+          if (request.model !== undefined && isModelId(request.model)) pick.model = request.model;
+
+          if (request.thinking !== undefined) pick.thinkingLevel = request.thinking;
+
+          if (
+            earlier === undefined &&
+            (pick.model !== undefined || pick.thinkingLevel !== undefined)
+          ) {
+            yield* host.configure(agentChange(pick));
+          }
+
+          const id =
+            earlier?.id ??
+            (yield* host.submit({
+              input: fireText(request.header, request.message),
+              via: { auth: "trigger", trigger: request.trigger },
+              requestId: request.requestId,
+            }));
+
+          const after = yield* host.follow();
+          const mark = waitingMark(yield* waiting(yield* redactor, after));
+
+          return apiOk<SubmitResult>({
+            delivery: deliveryOf(undefined, earlier, before.unsettled),
+            cursor: submitCursor(after, id, mark),
+          });
+        }).pipe(
+          Effect.catchTag("SessionError", (error) =>
+            Effect.succeed(
+              error.operation === "submit"
+                ? apiFailure("invalid_argument", error.message)
+                : unavailable(error),
+            ),
+          ),
+        ),
+      );
+
     return {
       status,
       waitForChange,
@@ -822,6 +892,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
       submit,
       stop,
       configure,
+      fire,
     } satisfies SessionMcpService;
   });
 

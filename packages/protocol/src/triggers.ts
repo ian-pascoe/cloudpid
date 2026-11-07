@@ -7,7 +7,7 @@ import { ThinkingLevel } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { MAX_MCP_INPUT_BYTES } from "./mcp-api.ts";
+import { MAX_MCP_INPUT_BYTES, TriggerMark } from "./mcp-api.ts";
 import { openLiterals } from "./open-literals.ts";
 
 /** The longest Trigger name, in characters after trimming. */
@@ -188,3 +188,20 @@ export const renderFireHeader = (header: FireHeader): string => {
 /** A Fire's message as its Session is given it: cloudpid's header, then the Trigger message as written. */
 export const fireText = (header: FireHeader, message: string): string =>
   `${renderFireHeader(header)}\n\n${message}`;
+
+/**
+ * The Session's `fire` argument (`docs/architecture/triggers.md` → Pending Fires): a new method, never a field on
+ * `submit`, so a Session on older code fails loudly rather than take the Trigger message as the owner's own words.
+ * `requestId` is the Fire's key: the same Fire sent again finds its first input. `model` and `thinking` pick the
+ * Session's model and thinking level at its first Fire.
+ */
+export const FireRequest = Schema.Struct({
+  trigger: TriggerMark,
+  requestId: Schema.String,
+  message: Schema.String,
+  header: FireHeader,
+  model: Schema.optionalKey(Schema.String),
+  thinking: Schema.optionalKey(ThinkingLevel),
+});
+
+export type FireRequest = typeof FireRequest.Type;

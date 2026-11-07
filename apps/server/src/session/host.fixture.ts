@@ -75,6 +75,7 @@ import type {
   CompareResult,
   Comparison,
   ConfigureRequest,
+  FireRequest,
   ConversationId,
   EntriesPage,
   FileMatches,
@@ -1624,6 +1625,11 @@ export class TestSession extends DurableObject {
   /** `SessionMethods.configure`. */
   mcpConfigure(request: ConfigureRequest) {
     return Effect.runPromise(this.#mcp.configure(request));
+  }
+
+  /** `SessionMethods.fire`. */
+  fire(request: FireRequest) {
+    return Effect.runPromise(this.#mcp.fire(request));
   }
 
   /** `SessionMethods.stageImportBegin`. */

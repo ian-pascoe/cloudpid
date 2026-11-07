@@ -148,6 +148,7 @@ import type {
   StopResult,
   SubmitRequest,
   SubmitResult,
+  FireRequest,
   TranscriptPage,
   TranscriptRequest,
   WaitOutcome,
@@ -242,6 +243,12 @@ export type SessionMethods = {
   readonly stop: (request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
   /** Pick the model and thinking level of a Session the MCP endpoint is starting (the socket's `configure`). */
   readonly configure: (request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
+  /**
+   * A Trigger's Fire, from its object (`docs/architecture/triggers.md` → Pending Fires): the Trigger message with
+   * cloudpid's header, marked as the Trigger's and deduplicated by the Fire's key. A new method, never a field on
+   * `submit`. A failure is the result's, never a throw.
+   */
+  readonly fire: (request: FireRequest) => Effect.Effect<ApiResult<SubmitResult>>;
   /** Begin the Session import this new Session is for: it shows `importing` and takes no message or move until it ends. */
   readonly stageImportBegin: (request: StageImportBegin) => Effect.Effect<ApiResult<StagedImport>>;
   /** Keep a slice of the pi Session file, at the byte `offset` the held bytes end at. */
@@ -1231,6 +1238,7 @@ export const SessionLive = Session.make(
             invoked("session.mcp.transcript", mcp.transcriptPage(request)),
           submit: (request) => invoked("session.mcp.submit", mcp.submit(request)),
           stop: (request) => invoked("session.mcp.stop", mcp.stop(request)),
+          fire: (request) => invoked("session.trigger.fire", mcp.fire(request)),
           configure: (request) =>
             invoked(
               "session.mcp.configure",
