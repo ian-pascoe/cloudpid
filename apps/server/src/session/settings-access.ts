@@ -5,11 +5,11 @@
 // admit input, as after the owner's save.
 import {
   type AppliedSettingsChange,
-  GLOBAL_SETTINGS_SCOPE,
   SettingsAccessError,
   type SettingsAccessService,
   type SettingsView,
 } from "@cloudpid/extensions/settings";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import type { RegistryMethods } from "../registry/Registry.ts";

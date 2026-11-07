@@ -17,7 +17,14 @@ import {
   type McpServerState,
   readMcpServerState,
 } from "@cloudpid/mcp/types";
-import { MAX_GET_INSTRUCTIONS_BYTES, MAX_GET_TOOLS } from "@cloudpid/protocol/harness-tools";
+import {
+  type InventoryRead,
+  type ListServerOutput,
+  MAX_GET_INSTRUCTIONS_BYTES,
+  MAX_GET_TOOLS,
+  type ServerState,
+  type SettingsMcpGetOutput,
+} from "@cloudpid/protocol/harness-tools";
 import type {
   SettingsMcpEnvironment,
   SettingsMcpReload,
@@ -31,18 +38,10 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { reachesModel } from "./mcp/exposure.ts";
 import { boundItems, boundText, scopeRef } from "./outputs.ts";
-import type {
-  InventoryRead,
-  ServerState,
-  ListServerOutput,
-  SettingsMcpGetOutput,
-  SettingsMcpReloadOutput,
-} from "./settings-mcp-outputs.ts";
+import type { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
 
 /** The most of a server's error the values give, in bytes stored. */
 const MAX_ERROR_BYTES = 300;
-
-export { MAX_GET_INSTRUCTIONS_BYTES, MAX_GET_TOOLS };
 
 /**
  * What each growable part of a value weighs at most, stored (`docs/architecture/agent-capabilities.md` → Bounds). Each

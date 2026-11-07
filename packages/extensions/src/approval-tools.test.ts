@@ -24,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import { SettingsMcpAccess } from "./settings-mcp-access.ts";
 import {
   ApprovalTools,
@@ -50,7 +51,6 @@ import { Redactions } from "./secrets/redaction.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import {
   type AppliedSettingsChange,
-  GLOBAL_SETTINGS_SCOPE,
   SettingsAccess,
   SettingsAccessError,
   type SettingsFieldChange,

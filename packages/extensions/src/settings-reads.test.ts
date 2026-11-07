@@ -7,6 +7,7 @@ import { DEFAULT_SETTINGS, type Settings } from "@cloudpid/config";
 import {
   ENDPOINT_STRUCTURED_BYTES,
   ENDPOINT_TEXT_CHARS,
+  GLOBAL_SETTINGS_SCOPE,
   MAX_PAGE_BYTES,
   MAX_PAGE_CHARS,
   SettingsGetEndpointOutput,
@@ -17,7 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { GLOBAL_SETTINGS_SCOPE, SettingsAccessError, type SettingsView } from "./settings.ts";
+import { SettingsAccessError, type SettingsView } from "./settings.ts";
 import { settingsGetRead, type SettingsReadServices } from "./settings-reads.ts";
 import { storedBytes } from "./stored-bytes.ts";
 

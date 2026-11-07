@@ -7,6 +7,7 @@ import type { McpExposure, McpResolvedServer } from "@cloudpid/config";
 import {
   ENDPOINT_STRUCTURED_BYTES,
   ENDPOINT_TEXT_CHARS,
+  GLOBAL_SETTINGS_SCOPE,
   SettingsMcpGetEndpointOutput,
   SettingsMcpListEndpointOutput,
 } from "@cloudpid/protocol/harness-tools";
@@ -16,7 +17,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { fakeMcpHost } from "./mcp.testing.ts";
-import { GLOBAL_SETTINGS_SCOPE, SettingsAccessError } from "./settings.ts";
+import { SettingsAccessError } from "./settings.ts";
 import {
   settingsMcpGetRead,
   settingsMcpListRead,

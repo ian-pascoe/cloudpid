@@ -17,7 +17,8 @@ import type {
   EnvironmentsService,
   KeptSecretListing,
 } from "@cloudpid/extensions/environment";
-import { EnvironmentsError, GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/extensions/environment";
+import { EnvironmentsError } from "@cloudpid/extensions/environment";
+import { GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/protocol/harness-tools";
 import { containerOverridesFrom, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import type { BuildView } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";

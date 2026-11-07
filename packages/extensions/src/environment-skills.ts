@@ -21,13 +21,13 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import { EnvironmentsError, idOrGlobal, Reason } from "./environment.ts";
+import { GLOBAL_ID, idOrGlobal } from "@cloudpid/protocol/harness-tools";
+import { EnvironmentsError, Reason } from "./environment.ts";
 import {
   SkillInstallOutput,
   SkillRemoveOutput,
   SkillSaveOutput,
 } from "./environment-lifecycle-outputs.ts";
-import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   installedOutcome,
   refused,

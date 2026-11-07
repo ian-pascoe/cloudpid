@@ -4,6 +4,7 @@
 // sentences name neither this Session's own Environment nor a tool the endpoint does not serve, whose `environment_get`
 // takes `field` and `offset`, and whose values are cut harder (`packages/extensions/src/environment-reads.ts`).
 // @effect-diagnostics missingPipeableSignature:off
+import { MAX_VARIABLES } from "@cloudpid/config";
 import * as Schema from "effect/Schema";
 import { EnvironmentField, FieldPageFields, PageOffset } from "./field-page.ts";
 import {
@@ -18,9 +19,6 @@ import {
 } from "./environment-output.ts";
 import { GLOBAL_ID, idOrGlobal, ScopeRef } from "./scope.ts";
 import { READ_ONLY } from "./surface.ts";
-
-/** How many variables an Environment may keep, and so the most `environment_get` lists on the endpoint. */
-export const ENDPOINT_MAX_VARIABLES = 50;
 
 /** The most of a variable's value `environment_get` gives on the endpoint, in bytes stored; `field` reads it whole. */
 export const ENDPOINT_VARIABLE_VALUE_BYTES = 160;
@@ -76,7 +74,7 @@ export const EnvironmentGetEndpointOutput = Schema.Struct({
   ),
   variables: optional(
     Schema.Array(EndpointVariableOutput).annotate({
-      description: `Every variable in force (at most ${ENDPOINT_MAX_VARIABLES}): the Environment's own, then Global's that its own do not override; for Global, its variables`,
+      description: `Every variable in force (at most ${MAX_VARIABLES}): the Environment's own, then Global's that its own do not override; for Global, its variables`,
     }),
   ),
   variables_truncated: optional(
@@ -165,7 +163,7 @@ export const environmentGet = {
     output: EnvironmentGetOutput,
   },
   endpoint: {
-    description: `Show an Environment (the one id names): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace) in force, each marked as its own (overridden here) or inherited from Global, every variable in force (at most ${ENDPOINT_MAX_VARIABLES}, each value cut near ${ENDPOINT_VARIABLE_VALUE_BYTES} bytes), the names of the Secrets kept for it and Global (never their values), its own Skills and the Skills kept Global that its own do not override, and how its Build stands. With id "${GLOBAL_ID}", show what is kept Global instead. The answer is cut to a size a client can read: a part that is cut says so (_truncated, value_truncated), and field reads one long text whole, a page at a time (setupScript, startScript, toolchains, ignore, or variables.<NAME>; pass next_offset as offset for the next page).`,
+    description: `Show an Environment (the one id names): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace) in force, each marked as its own (overridden here) or inherited from Global, every variable in force (at most ${MAX_VARIABLES}, each value cut near ${ENDPOINT_VARIABLE_VALUE_BYTES} bytes), the names of the Secrets kept for it and Global (never their values), its own Skills and the Skills kept Global that its own do not override, and how its Build stands. With id "${GLOBAL_ID}", show what is kept Global instead. The answer is cut to a size a client can read: a part that is cut says so (_truncated, value_truncated), and field reads one long text whole, a page at a time (setupScript, startScript, toolchains, ignore, or variables.<NAME>; pass next_offset as offset for the next page).`,
     input: Schema.Struct({
       id: idOrGlobal("the Container settings, Secrets and Skills kept Global", "endpoint"),
       field: optional(EnvironmentField),

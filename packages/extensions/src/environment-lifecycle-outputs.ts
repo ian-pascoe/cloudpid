@@ -20,7 +20,8 @@ import {
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
-import { RepoOutput, SkillSourceOutput, skillSourceOutput } from "./environment-outputs.ts";
+import { RepoOutput, SkillSourceOutput } from "@cloudpid/protocol/harness-tools";
+import { skillSourceOutput } from "./environment-outputs.ts";
 import {
   changesOutput,
   type ApprovalOutcome,

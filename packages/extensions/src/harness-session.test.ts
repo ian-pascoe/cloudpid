@@ -29,6 +29,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import { ApprovalTools, EnvironmentRemoval } from "./approval-tools.ts";
 import { Approvals } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
@@ -47,7 +48,6 @@ import { unusedSkills } from "./environment-skills.fixture.ts";
 import { fakeMcpHost } from "./mcp.testing.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import {
-  GLOBAL_SETTINGS_SCOPE,
   SettingsAccess,
   SettingsAccessError,
   type SettingsAccessService,

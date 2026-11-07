@@ -4,43 +4,11 @@
 // value, a hash or a token: an entry is as written, each `${NAME}` it reads is marked `secret`, `variable` or `missing`.
 // What can grow is cut as `./outputs.ts` says, with a `*_truncated` flag.
 // @effect-diagnostics missingPipeableSignature:off
-import {
-  InventoryOutput,
-  InventoryRead,
-  KeyFrom,
-  ListServerOutput,
-  McpSourceOutput,
-  OrphanOutput,
-  ProblemOutput,
-  ReadOutput,
-  SERVER_STATES,
-  ServerState,
-  SettingsMcpGetOutput,
-  SettingsMcpListOutput,
-  SignInOutput,
-  ToolOutput,
-} from "@cloudpid/protocol/harness-tools";
+import { SERVER_STATES } from "@cloudpid/protocol/harness-tools";
 import * as Schema from "effect/Schema";
 import { ChangeOutputFields, ScopeRef } from "./outputs.ts";
 
 // The two read tools' schemas are declared once, in `@cloudpid/protocol/harness-tools`, for both surfaces.
-export {
-  InventoryOutput,
-  InventoryRead,
-  KeyFrom,
-  ListServerOutput,
-  McpSourceOutput,
-  OrphanOutput,
-  ProblemOutput,
-  ReadOutput,
-  SERVER_STATES,
-  ServerState,
-  SettingsMcpGetOutput,
-  SettingsMcpListOutput,
-  SignInOutput,
-  ToolOutput,
-};
-
 /** What a reload found of one Repo's file. */
 export const ReloadRepoOutput = Schema.Struct({
   directory: Schema.String,

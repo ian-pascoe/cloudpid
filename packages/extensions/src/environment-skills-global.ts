@@ -25,13 +25,13 @@ import {
   declinedWith,
   withApproval,
 } from "./approvals.ts";
+import { GLOBAL_ID } from "@cloudpid/protocol/harness-tools";
 import { EnvironmentsError } from "./environment.ts";
 import {
   skillInstalledOutput,
   skillRemovedOutput,
   skillSavedOutput,
 } from "./environment-lifecycle-outputs.ts";
-import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   GLOBAL_TARGET,
   installedOutcome,

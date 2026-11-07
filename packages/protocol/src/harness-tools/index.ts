@@ -1,5 +1,5 @@
 // The Environment and Settings tools both surfaces serve, as declarations (`docs/architecture/mcp-endpoint.md` →
-// Environment and Settings tools → Shared definitions and the core/wrapper split; ADR-0050): each tool's name,
+// Environment and Settings tools → Shared definitions and the core/wrapper split): each tool's name,
 // annotations, and, for the Session surface and the endpoint surface, its description, input schema and output schema.
 // `packages/extensions` builds each tool's core and wrapper from one declaration, and `McpServer` turns the endpoint's
 // into MCP tool definitions. This subpath imports only `effect`, `@cloudpid/config` and its own files, so McpWorker can
@@ -15,7 +15,18 @@ import { settingsMcpGet, settingsMcpList } from "./settings-mcp.ts";
 
 export * from "./environment.ts";
 
-export * from "./environment-output.ts";
+// `Source` and `placement` are this folder's own pieces of the output schemas, not part of its surface.
+export {
+  BuildOutput,
+  EnvironmentGetOutput,
+  EnvironmentListOutput,
+  RepoOutput,
+  SecretOutput,
+  SettingsOutput,
+  SkillOutput,
+  SkillSourceOutput,
+  VariableOutput,
+} from "./environment-output.ts";
 
 export * from "./field-page.ts";
 

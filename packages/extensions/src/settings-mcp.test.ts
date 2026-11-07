@@ -25,6 +25,10 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import {
+  GLOBAL_SETTINGS_SCOPE,
+  MAX_GET_INSTRUCTIONS_BYTES,
+} from "@cloudpid/protocol/harness-tools";
 import type { McpHostClientService } from "./mcp/client.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { runSized } from "./program.fixture.ts";
@@ -33,14 +37,8 @@ import { Approvals } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import { AgentChangeLog, DeployCredentials } from "./environment.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
+import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
 import {
-  GLOBAL_SETTINGS_SCOPE,
-  SettingsAccess,
-  SettingsAccessError,
-  SettingsReload,
-} from "./settings.ts";
-import {
-  MAX_GET_INSTRUCTIONS_BYTES,
   SETTINGS_MCP_READ_TOOLS,
   SettingsMcpAccess,
   type SettingsMcpAccessService,

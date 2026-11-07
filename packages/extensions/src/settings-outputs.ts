@@ -7,13 +7,12 @@
 // @effect-diagnostics missingPipeableSignature:off
 import type { AgentChange } from "@cloudpid/protocol";
 import {
-  InstructionsOutput,
+  GLOBAL_ID,
+  GLOBAL_NAME,
   SettingOutput,
-  SettingSource,
   SettingsGetOutput,
 } from "@cloudpid/protocol/harness-tools";
 import type * as Schema from "effect/Schema";
-import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 import {
   ApprovalOutcome,
   asOutput,
@@ -25,7 +24,7 @@ import {
   overriddenInOutput,
   scopeRef,
 } from "./outputs.ts";
-import type { SettingsView } from "./settings.ts";
+import type { SettingsView } from "./settings-describe.ts";
 import { storedBytes } from "./stored-bytes.ts";
 
 /** The most a setting's value weighs stored in `settings_get`, which lists them all, before it is not shown. */
@@ -39,8 +38,6 @@ const MAX_PROBLEM_BYTES = 16 * 1024;
 
 /** The most the list of the Environments that override one field weighs stored in a value. */
 const MAX_OVERRIDDEN_IN_BYTES = 16 * 1024;
-
-export { InstructionsOutput, SettingOutput, SettingSource, SettingsGetOutput };
 
 /** What each growable part of `settings_get`'s value weighs at most, stored. */
 export type SettingsBounds = {

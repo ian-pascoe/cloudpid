@@ -38,6 +38,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import { GLOBAL_SETTINGS_SCOPE, SettingsScope } from "@cloudpid/protocol/harness-tools";
 import { ChangeOutput, outputSchema } from "./outputs.ts";
 import {
   environmentWords,
@@ -58,13 +59,7 @@ import {
 } from "./settings-mcp-entry.ts";
 import { McpChangeOutput } from "./settings-mcp-outputs.ts";
 import { Reason, ServerName, unchanged } from "./settings-mcp-changes.ts";
-import {
-  GLOBAL_SETTINGS_SCOPE,
-  isGlobalView,
-  type SettingsFieldChange,
-  SettingsScope,
-  type SettingsView,
-} from "./settings.ts";
+import { isGlobalView, type SettingsFieldChange, type SettingsView } from "./settings.ts";
 
 const ASKED = "Nothing was asked or saved: ";
 

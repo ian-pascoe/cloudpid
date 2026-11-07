@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import {
+  cutNote,
   cutText,
   fitted,
   type HarnessRead,
@@ -31,10 +32,10 @@ import {
   describeSettings,
   isGlobalView,
   SettingsAccessError,
-  type SettingsAccessService,
   settingsOutput,
   type SettingsView,
-} from "./settings.ts";
+} from "./settings-describe.ts";
+import type { SettingsAccessService } from "./settings.ts";
 import { ENDPOINT_SETTINGS_BOUNDS } from "./settings-outputs.ts";
 
 /** What the core reads: the Registry's Settings, and the Session's own Environment among them. */
@@ -43,8 +44,7 @@ export type SettingsReadServices = Pick<SettingsAccessService, "get" | "own">;
 type GetArgs = typeof HARNESS_TOOLS.settings_get.endpoint.input.Type;
 
 /** What the endpoint's cut text ends with. */
-const CUT_NOTE =
-  '[Cut at 12,000 characters: pass `field: "instructions"` to read the Instructions whole.]';
+const CUT_NOTE = cutNote('pass `field: "instructions"` to read the Instructions whole.');
 
 type Whole = Required<
   Omit<

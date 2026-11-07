@@ -9,6 +9,7 @@
 // (`settingsMcpReads`).
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off globalDate:off -- builders over plain values.
 import {
+  GLOBAL_SETTINGS_SCOPE,
   type HARNESS_TOOLS,
   SettingsMcpGetEndpointOutput,
   SettingsMcpGetOutput,
@@ -19,9 +20,9 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Struct from "effect/Struct";
-import { fitted, type HarnessRead, NOT_FOUND, cutText } from "./harness.ts";
+import { cutNote, cutText, fitted, type HarnessRead, NOT_FOUND } from "./harness.ts";
 import { asOutput } from "./outputs.ts";
-import { GLOBAL_SETTINGS_SCOPE, SettingsAccessError } from "./settings.ts";
+import { SettingsAccessError } from "./settings-describe.ts";
 import { readInventory, type SettingsMcpAccessService } from "./settings-mcp-access.ts";
 import { ENDPOINT_BOUNDS, getOutput, listOutput, scopeOutput } from "./settings-mcp-values.ts";
 import { describeGet, describeList, scopeWords } from "./settings-mcp-words.ts";
@@ -38,8 +39,7 @@ type GetArgs = typeof HARNESS_TOOLS.settings_mcp_get.endpoint.input.Type;
 const MAX_WRITTEN_BYTES = 4 * 1024;
 
 /** What the endpoint's cut text ends with. */
-const CUT_NOTE =
-  "[Cut at 12,000 characters: the structured result has the rest, as far as its limit allows.]";
+const CUT_NOTE = cutNote("the structured result has the rest, as far as its limit allows.");
 
 type Layers = typeof SettingsMcpGetOutput.Type.layers;
 

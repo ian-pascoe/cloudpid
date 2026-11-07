@@ -1,5 +1,5 @@
 // Reading a whole text, and the endpoint's limits (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools →
-// Reading a whole field, and the endpoint's limits; ADR-0050): on the endpoint, `environment_get` and `settings_get` take
+// Reading a whole field, and the endpoint's limits): on the endpoint, `environment_get` and `settings_get` take
 // `field` and `offset`, and answer a page of that field's text. Every harness tool's output schema is a flat object
 // with optional keys for its variants, a page included, so `structuredContent` has the same shape on both MCP lanes.
 // @effect-diagnostics missingPipeableSignature:off

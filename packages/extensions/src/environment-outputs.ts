@@ -28,7 +28,6 @@ import {
   SettingsOutput,
   SkillOutput,
   SkillSourceOutput,
-  Source,
   VariableOutput,
 } from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
@@ -56,8 +55,6 @@ import {
 } from "./outputs.ts";
 import { secretEnvName } from "./secrets/references.ts";
 import { cutStored } from "./stored-bytes.ts";
-
-export { BuildOutput, EnvironmentGetOutput, EnvironmentListOutput, RepoOutput, SkillSourceOutput };
 
 /** The last characters of a failed Build's reason that a result shows. */
 export const FAILED_REASON_TAIL = 1_000;
@@ -240,7 +237,7 @@ type SettingName = Exclude<keyof ContainerSettings, "variables">;
 type SettingsValue = typeof SettingsOutput.Type;
 
 type Placement = {
-  readonly source: typeof Source.Type;
+  readonly source: (typeof VariableOutput.Type)["source"];
   readonly overriding: ReadonlyArray<typeof ScopeRef.Type>;
 };
 
@@ -501,7 +498,7 @@ export type EnvironmentGetEndpointWhole = Required<
 /** `base`, an Environment's or Global's value in the Session's shape, as the endpoint gives it. */
 const endpointGetOutput = (
   base: typeof EnvironmentGetOutput.Type,
-  cut: ReadonlySet<string>,
+  cut: { readonly own: ReadonlySet<string>; readonly inherited: ReadonlySet<string> },
 ): EnvironmentGetEndpointWhole => {
   const { settings } = base;
 
@@ -509,7 +506,8 @@ const endpointGetOutput = (
     ...Struct.omit(base, ["current"]),
     variables: Arr.map(base.variables, (variable) => ({
       ...variable,
-      value_truncated: cut.has(variable.name),
+      // Only the value shown counts: an Environment's short override of a name Global holds long is not cut.
+      value_truncated: (variable.source === "own" ? cut.own : cut.inherited).has(variable.name),
     })),
     settings_truncated:
       settings.setup_script.value_truncated ||
@@ -539,7 +537,7 @@ export const environmentGetEndpointOutput = (
     ENDPOINT_GET_BOUNDS,
   );
 
-  return endpointGetOutput(base, new Set([...own.cut, ...inherited.cut]));
+  return endpointGetOutput(base, { own: own.cut, inherited: inherited.cut });
 };
 
 /** What `environment_get` gives the endpoint for what is kept Global (id `*`), cut as `environmentGetEndpointOutput` is. */
@@ -555,7 +553,7 @@ export const globalGetEndpointOutput = (
     ENDPOINT_GET_BOUNDS,
   );
 
-  return endpointGetOutput(base, variables.cut);
+  return endpointGetOutput(base, { own: variables.cut, inherited: variables.cut });
 };
 
 // ─── Changes ─────────────────────────────────────────────────────────────────

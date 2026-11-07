@@ -26,12 +26,12 @@ import * as Record from "effect/Record";
 import {
   describeEnvironment,
   describeGlobal,
-  type EnvironmentsService,
   EnvironmentsError,
   listingLine,
   notFound,
   reposLine,
-} from "./environment.ts";
+} from "./environment-describe.ts";
+import type { EnvironmentsService } from "./environment.ts";
 import {
   type EnvironmentGetEndpointWhole,
   environmentGetEndpointOutput,
@@ -42,6 +42,7 @@ import {
   globalGetOutput,
 } from "./environment-outputs.ts";
 import {
+  cutNote,
   cutText,
   fitted,
   type HarnessRead,
@@ -64,7 +65,10 @@ type ListArgs = typeof HARNESS_TOOLS.environment_list.endpoint.input.Type;
 type GetArgs = typeof HARNESS_TOOLS.environment_get.endpoint.input.Type;
 
 /** What the endpoint's cut text ends with. */
-const CUT_NOTE = "[Cut at 12,000 characters: pass `field` to read a long text whole.]";
+const CUT_NOTE = cutNote("pass `field` to read a long text whole.");
+
+/** What `environment_list`'s cut text ends with: it takes no `field`. */
+const LIST_CUT_NOTE = cutNote("environment_get shows one Environment.");
 
 /** The sentence that says some of an answer is cut, and how to read it whole. */
 const PASS_FIELD =
@@ -273,7 +277,7 @@ export const environmentListRead =
         );
 
         return {
-          text: cutText(describeEndpointList(out), CUT_NOTE),
+          text: cutText(describeEndpointList(out), LIST_CUT_NOTE),
           structured: asOutput(EnvironmentListEndpointOutput, out),
           details: { environments: Arr.map(listed, ({ id, name }) => ({ id, name })) },
         };

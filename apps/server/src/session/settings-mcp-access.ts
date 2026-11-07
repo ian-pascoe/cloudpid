@@ -7,8 +7,8 @@
 // gate, so a Registry still on the code from before these methods fails the call, loudly, and the next deploy heals it
 // (`docs/architecture/mcp.md` → Deploys).
 import type { McpHostClientService } from "@cloudpid/extensions/mcp";
-import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/extensions/settings";
 import type { SettingsMcpAccessService } from "@cloudpid/extensions/settings-mcp";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
 import type * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";

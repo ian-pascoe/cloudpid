@@ -4,15 +4,15 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off globalDate:off -- text built from plain values.
 import * as Arr from "effect/Array";
 import type * as Schema from "effect/Schema";
-import { GLOBAL_SETTINGS_SCOPE } from "./settings.ts";
-import type {
-  InventoryRead,
-  ListServerOutput,
-  McpSourceOutput,
-  SettingsMcpGetOutput,
-  SettingsMcpListOutput,
-  SettingsMcpReloadOutput,
-} from "./settings-mcp-outputs.ts";
+import {
+  GLOBAL_SETTINGS_SCOPE,
+  type InventoryRead,
+  type ListServerOutput,
+  type McpSourceOutput,
+  type SettingsMcpGetOutput,
+  type SettingsMcpListOutput,
+} from "@cloudpid/protocol/harness-tools";
+import type { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
 
 const INVENTORY_WORDS: Readonly<Record<typeof InventoryRead.Type, string>> = {
   read: "State, counts and tools are what the Environment's MCP host already holds; nothing was connected, discovered or started to read them.",

@@ -127,6 +127,10 @@ describe("environment_list on the endpoint", () => {
         expect(value.environments.length).toBeLessThan(400);
         expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
         expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text).toContain(
+          "[Cut at 12,000 characters: environment_get shows one Environment.]",
+        );
+        expect(answer.text).not.toContain("field");
       }),
     ));
 });
@@ -272,6 +276,47 @@ describe("environment_get on the endpoint", () => {
         expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
         expect(decoded(answer.structured).skills_truncated).toBe(true);
         expect(answer.text).toContain("pass `field`");
+      }),
+    ));
+
+  it("flags a variable cut only when the value shown is the cut one, not when the one it overrides is", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const long = "x".repeat(500);
+
+        const global: ContainerSettings = {
+          ...CONTAINER,
+          variables: { HIDDEN: long, LONG_OWN: "short", LONG_INHERITED: long },
+        };
+
+        const answer = yield* getEndpoint(
+          servicesOf([
+            environment(
+              "default",
+              { variables: { HIDDEN: "short", LONG_OWN: long, LONG_INHERITED: long } },
+              {
+                overrides: { variables: { HIDDEN: "short", LONG_OWN: long } },
+                global,
+              },
+            ),
+          ]),
+          { id: "default" },
+        );
+
+        const flags = Object.fromEntries(
+          (decoded(answer.structured).variables ?? []).map((variable) => [
+            variable.name,
+            { source: variable.source, truncated: variable.value_truncated },
+          ]),
+        );
+
+        expect(flags).toEqual({
+          HIDDEN: { source: "own", truncated: false },
+          LONG_OWN: { source: "own", truncated: true },
+          LONG_INHERITED: { source: "inherited", truncated: true },
+        });
+        expect(answer.text).toContain("HIDDEN=short (overridden here)");
+        expect(answer.text).not.toContain("HIDDEN=short (cut");
       }),
     ));
 

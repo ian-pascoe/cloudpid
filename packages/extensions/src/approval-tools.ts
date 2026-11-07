@@ -65,13 +65,11 @@ import {
   EnvironmentsError,
   environmentTarget,
   Id,
-  idOrGlobal,
   MAX_CHANGE_REASON,
   notFound,
   plainTextCheck,
   sizeWords,
 } from "./environment.ts";
-import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 import {
   changeOutput,
   declinedOutput,
@@ -87,13 +85,19 @@ import {
   outputSchema,
   scopeRef,
 } from "./outputs.ts";
+import {
+  GLOBAL_ID,
+  GLOBAL_NAME,
+  GLOBAL_SETTINGS_SCOPE,
+  idOrGlobal,
+  SettingsScope,
+} from "@cloudpid/protocol/harness-tools";
 import { Secrets } from "./secrets/store.ts";
 import {
   agentChangeDetails,
   CHANGE_NOTE,
   changedLines,
   fieldLabel,
-  GLOBAL_SETTINGS_SCOPE,
   inheritedWords,
   isGlobalView,
   loggedChange,
@@ -107,7 +111,6 @@ import {
   SettingsChanges,
   type SettingsFieldChange,
   SettingsReload,
-  SettingsScope,
   type SettingsView,
 } from "./settings.ts";
 import type { SettingsMcpAccess } from "./settings-mcp-access.ts";

@@ -24,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
+import { GLOBAL_SETTINGS_SCOPE, SettingsGetOutput } from "@cloudpid/protocol/harness-tools";
 import { AgentChangeLog, DeployCredentials, type RunChange } from "./environment.ts";
 import { ChangeOutput } from "./outputs.ts";
 import { runProgram, runSized } from "./program.fixture.ts";
@@ -32,7 +33,6 @@ import { secretReference } from "./secrets/references.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import {
   type AppliedSettingsChange,
-  GLOBAL_SETTINGS_SCOPE,
   isGlobalView,
   SettingsAccess,
   SettingsAccessError,
@@ -48,7 +48,6 @@ import {
   changeSettingsOverrides,
   resolvedGlobal,
 } from "./settings.fixture.ts";
-import { SettingsGetOutput } from "./settings-outputs.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 

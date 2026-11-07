@@ -10,10 +10,11 @@
 import { overrideInherited, settingsFieldValue } from "@cloudpid/config";
 import { isJsonObject } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import { McpQuestionsError } from "./question-records.ts";
 import type { McpSamplingRemember } from "./sampling-questions.ts";
 import { pushMcpSet, type SettingsMcpAccessService } from "../settings-mcp-access.ts";
-import { GLOBAL_SETTINGS_SCOPE, isGlobalView, type SettingsAccessService } from "../settings.ts";
+import { isGlobalView, type SettingsAccessService } from "../settings.ts";
 
 /** The tool name the change is recorded under. */
 export const SAMPLING_WRITE_TOOL = "mcp_sampling_answer";

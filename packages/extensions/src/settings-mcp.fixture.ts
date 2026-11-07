@@ -32,6 +32,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type { Mutable } from "effect/Types";
 import { expect } from "vitest";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import {
   type ApprovalAnswer,
   type ApprovalAsk,
@@ -42,7 +43,6 @@ import { AgentChangeLog, DeployCredentials } from "./environment.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
 import {
-  GLOBAL_SETTINGS_SCOPE,
   SettingsAccess,
   SettingsAccessError,
   type SettingsAccessService,

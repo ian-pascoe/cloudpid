@@ -19,7 +19,11 @@
 // and rediscover its HTTP servers at once. It is no Agent change.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off globalDate:off -- builders over plain values.
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
+import {
+  GLOBAL_SETTINGS_SCOPE,
+  HARNESS_TOOLS,
+  SettingsScope,
+} from "@cloudpid/protocol/harness-tools";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
@@ -35,13 +39,7 @@ import { toolResult } from "./harness.ts";
 import { asOutput, outputSchema } from "./outputs.ts";
 import type { AgentChangeLog, DeployCredentials } from "./environment.ts";
 import type { Secrets } from "./secrets/store.ts";
-import {
-  GLOBAL_SETTINGS_SCOPE,
-  type SettingsAccess,
-  SettingsAccessError,
-  type SettingsReload,
-  SettingsScope,
-} from "./settings.ts";
+import { type SettingsAccess, SettingsAccessError, type SettingsReload } from "./settings.ts";
 
 import { type ReloadHost, reloadOutput } from "./settings-mcp-values.ts";
 import { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
@@ -51,8 +49,6 @@ import { McpDefinitionTools } from "./settings-mcp-definitions.ts";
 import { describeReload } from "./settings-mcp-words.ts";
 
 export { pushMcpSet, SettingsMcpAccess, type SettingsMcpAccessService };
-
-export { MAX_GET_INSTRUCTIONS_BYTES, MAX_GET_TOOLS } from "./settings-mcp-values.ts";
 
 export const extensionName = "settings_mcp";
 

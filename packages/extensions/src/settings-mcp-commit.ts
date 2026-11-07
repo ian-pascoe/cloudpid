@@ -19,6 +19,7 @@ import {
 } from "@cloudpid/config";
 import { callDurable } from "@cloudpid/effect-durable";
 import { decodeMcpServerValue } from "@cloudpid/config";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import { entryReferences, entryTexts } from "./settings-mcp-entry.ts";
 import type {
   AgentChange,
@@ -57,7 +58,6 @@ import {
 import { settingsChangeOutput } from "./settings-outputs.ts";
 import {
   agentChangeDetails,
-  GLOBAL_SETTINGS_SCOPE,
   isGlobalView,
   SettingsAccess,
   SettingsAccessError,

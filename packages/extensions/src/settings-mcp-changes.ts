@@ -36,6 +36,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import { GLOBAL_SETTINGS_SCOPE, SettingsScope } from "@cloudpid/protocol/harness-tools";
 import { MAX_CHANGE_REASON } from "./environment.ts";
 import { ChangeOutput, outputSchema } from "./outputs.ts";
 import { McpChangeOutput } from "./settings-mcp-outputs.ts";
@@ -53,11 +54,9 @@ import {
 } from "./settings-mcp-commit.ts";
 import { settingsChangeOutput } from "./settings-outputs.ts";
 import {
-  GLOBAL_SETTINGS_SCOPE,
   isGlobalView,
   SettingsAccessError,
   type SettingsFieldChange,
-  SettingsScope,
   type SettingsView,
 } from "./settings.ts";
 
