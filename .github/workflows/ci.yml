@@ -540,7 +540,7 @@ jobs:
 
       # `alchemy destroy` swallows an error of an Access application's delete and drops its state row, so a failed one
       # leaves the application on the account: the Bypass application of the two public sign-in paths (#444, bypass-access.ts)
-      # is one. On a host with no script it reaches no Worker, but a reopened pull request would deploy into it, so delete
+      # and the Hooks application of the Trigger URLs (#679, hooks-access.ts) are two. On a host with no script it reaches no Worker, but a reopened pull request would deploy into it, so delete
       # every application whose destinations are all public ones on this stage's host (`cloudpid-server-pr-<number>`
       # exactly, never another stage's or project's). A rerun finds none. It runs even when the destroy or the Container check failed:
       # those are the cases that leave a bypass behind. Fails only if a list or a delete fails.

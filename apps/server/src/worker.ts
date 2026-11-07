@@ -19,6 +19,7 @@ import * as Option from "effect/Option";
 import { deployment, STAGE_LABEL_VAR } from "./deployment.ts";
 import { accessProps } from "./access-props.ts";
 import { bypassAccessProps } from "./bypass-access.ts";
+import { hooksAccessProps } from "./hooks-access.ts";
 import { WEB_NOT_FOUND_HANDLING } from "./assets-config.ts";
 import { webBuildProps } from "./web-build.ts";
 import { SERVER_COMPATIBILITY } from "./worker-shape.ts";
@@ -136,7 +137,8 @@ const mcpBindings = Effect.gen(function* () {
  * guard's vars (`accessProps`) and, off `prod`, the label var (`deployment.ts`), with the stage's `MCP_CLIENT_DOCUMENT`
  * var (on, except under `alchemy dev`). A deployed stage also declares the MCP endpoint's own Access application
  * (`mcpAccessProps`), whose `aud` is the Worker's var `CLOUDPID_MCP_ACCESS_AUD`, and the Bypass application of the two
- * public sign-in paths (`bypassAccessProps`), which the Worker takes no var from. The stage is absent once the Worker
+ * public sign-in paths (`bypassAccessProps`) and the Hooks application of the Trigger URLs (`hooksAccessProps`), which the
+ * Worker takes no var from. The stage is absent once the Worker
  * runs (the props only matter at deploy time), so that case falls back to a non-prod stage.
  */
 const props = Effect.gen(function* () {
@@ -182,6 +184,16 @@ const props = Effect.gen(function* () {
     dev,
     declare: (applicationProps) =>
       Cloudflare.Access.Application("Bypass", applicationProps).pipe(Namespace.push("Server")),
+  });
+
+  // The Hooks application of the Trigger URLs (hooks-access.ts): `<host>/hooks/*`, nothing under `alchemy dev`. Declared
+  // under `Server/` like the others, and independent of the Worker (it names its host and path).
+  yield* hooksAccessProps({
+    stage,
+    runtime,
+    dev,
+    declare: (applicationProps) =>
+      Cloudflare.Access.Application("Hooks", applicationProps).pipe(Namespace.push("Server")),
   });
 
   return {
