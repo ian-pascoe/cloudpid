@@ -9,6 +9,7 @@ import * as Predicate from "effect/Predicate";
 import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
+import { hooksTracing, serveHooks } from "./hooks-serve.ts";
 import { guardedRoutes, isStartRequest } from "./sign-in-routes.ts";
 import {
   serveCallback,
@@ -202,6 +203,9 @@ export const serverInit = Effect.gen(function* () {
       clientDocument: serveClientDocument(signInEnv),
       callback: (path) => serveCallback(registry, path, signInCarry),
     },
+    // The Trigger URLs, `/hooks/<id>/<token>`, are public by `Server/Hooks` and served ahead of the guard: the object
+    // of the Trigger checks each delivery (`hooks-serve.ts`).
+    serveHooks((id, delivery) => triggers.deliver(id, delivery)),
   );
 
   // SAFETY: the Worker's assets are bound as `ASSETS` (the Fetcher of the asset layer), as the deploy declares them.
@@ -293,6 +297,8 @@ export const serverInit = Effect.gen(function* () {
           Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive, GitHubAppConfigLive)),
         ),
       ),
+      // The Worker's own server span records the whole path, and a Trigger URL's path holds its token: none for `/hooks`.
+      Layer.provideMerge(hooksTracing),
     ),
   ),
 );

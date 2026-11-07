@@ -159,11 +159,24 @@ export const serveSignInPaths =
       }
     });
 
+/** What puts the Trigger URLs ahead of the routes it wraps (`serveHooks`, `hooks-serve.ts`). */
+export type HooksRouter = <E, R>(
+  guarded: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+) => Effect.Effect<
+  HttpServerResponse.HttpServerResponse,
+  E,
+  R | HttpServerRequest.HttpServerRequest
+>;
+
 /**
- * What the main Worker wraps its routes in: the sign-in paths first, then the Access guard (`guardAccess`) for every
+ * What the main Worker wraps its routes in: the sign-in paths first, then the Trigger URLs (`hooks`, when the Worker
+ * serves them: a request under `/hooks` otherwise goes to the guard), then the Access guard (`guardAccess`) for every
  * other request. The order is the point: a form of a public path must meet the router's 404, never the guard's answer
  * and never a route behind it. `worker-init.ts` builds its `fetch` with this, and the test of the composition is what keeps
  * the two from being swapped.
  */
-export const guardedRoutes = (guard: AccessGuard, handlers: SignInHandlers) =>
-  flow(guardAccess(guard), serveSignInPaths(handlers));
+export const guardedRoutes = (
+  guard: AccessGuard,
+  handlers: SignInHandlers,
+  hooks: HooksRouter = (guarded) => guarded,
+) => flow(guardAccess(guard), hooks, serveSignInPaths(handlers));
