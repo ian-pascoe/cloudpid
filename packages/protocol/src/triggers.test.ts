@@ -12,6 +12,7 @@ import {
   scheduleOf,
   TriggerDefinition,
   fieldTrigger,
+  fireTimeWords,
   MAX_TRIGGER_MESSAGE_BYTES,
   triggerChangeValue,
   triggerField,
@@ -138,6 +139,14 @@ describe("a value a later slice added", () => {
     expect(scheduleOf(known)).toEqual({ type: "schedule", cron: "@daily", zone: "UTC" });
     expect(scheduleOf(later)).toBeUndefined();
     expect(scheduleOf(undefined)).toBeUndefined();
+  });
+});
+
+describe("fireTimeWords", () => {
+  it("says a time in the Trigger's zone, with the zone's short name", () => {
+    expect(fireTimeWords(at("2026-11-09T15:00:00Z"), "America/Chicago")).toBe(
+      "Mon, Nov 9, 2026, 9:00 AM CST",
+    );
   });
 });
 

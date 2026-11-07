@@ -231,6 +231,10 @@ const DATE_TIME: Intl.DateTimeFormatOptions = {
   minute: "2-digit",
 };
 
+/** A Fire's time as the owner reads it in `zone`, with the zone's short name: "Mon, Nov 9, 2026, 9:00 AM CST". */
+export const fireTimeWords = (at: number, zone: string): string =>
+  formatIn(zone, at, { ...DATE_TIME, timeZoneName: "short" });
+
 /** The title of the Session a Fire starts, "`<name>` · `<date, time>`" in the Trigger's zone: never generated. */
 export const fireTitle = (name: string, at: number, zone: string): string =>
   `${name.trim()} · ${formatIn(zone, at, DATE_TIME)}`;
@@ -248,7 +252,7 @@ export type FireHeader = typeof FireHeader.Type;
 
 /** cloudpid's header of a Fire's message, before the Trigger message (`triggers.md` → Payload and untrusted content). */
 export const renderFireHeader = (header: FireHeader): string => {
-  const at = (time: number) => formatIn(header.zone, time, { ...DATE_TIME, timeZoneName: "short" });
+  const at = (time: number) => fireTimeWords(time, header.zone);
 
   return Arr.join(
     [

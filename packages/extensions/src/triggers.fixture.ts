@@ -1,0 +1,205 @@
+// The Session's `TriggerAccess` as the tests of the `trigger_*` tools fake it: Triggers in memory, each change made as
+// the Registry makes the agent's (`apps/server/src/registry/trigger-changes.ts`): recorded as an Agent change of
+// `triggers.<id>`, made only while the Trigger is as the owner saw it, and nothing for a change of nothing.
+// @effect-diagnostics missingPipeableSignature:off
+import {
+  type AgentChange,
+  type EnvironmentTriggerInput,
+  triggerChangeValue,
+  type TriggerChangeValue,
+  type TriggerDefinition,
+  triggerField,
+  type TriggerPatch,
+} from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
+import type { ChangeAuthor } from "./environment.ts";
+import type { TriggerAccessService, TriggerChanged } from "./triggers.ts";
+
+const sameValue = Schema.toEquivalence(Schema.NullOr(Schema.Json));
+
+// SAFETY: a Trigger's value is plain JSON.
+const valueOf = (definition: TriggerDefinition | null): Schema.Json | null =>
+  definition === null ? null : (triggerChangeValue(definition) as Schema.Json);
+
+/** What the fake was asked to do, and holds. */
+export type FakeTriggers = {
+  readonly access: TriggerAccessService;
+  /** The Triggers, by id: removed ones are gone. */
+  readonly held: Map<string, TriggerDefinition>;
+  /** The Agent changes recorded, oldest first, with who made them. */
+  readonly changes: Array<AgentChange & { readonly author: ChangeAuthor }>;
+  /** The ids `newId` draws, in turn. */
+  readonly ids: Array<string>;
+};
+
+/** A fake `TriggerAccess` over `environments` (id → name), its Triggers made at `now`. */
+export const fakeTriggers = (
+  environments: Readonly<Record<string, string>>,
+  now = 1_000,
+): FakeTriggers => {
+  const held = new Map<string, TriggerDefinition>();
+  const changes: Array<AgentChange & { readonly author: ChangeAuthor }> = [];
+  const ids = ["0190-a", "0190-b", "0190-c"];
+  let drawn = 0;
+
+  const record = (
+    author: ChangeAuthor,
+    id: string,
+    before: TriggerDefinition | null,
+    after: TriggerDefinition | null,
+  ): TriggerChanged => {
+    const environment = (before ?? after)?.environment ?? "";
+
+    const change = {
+      id: changes.length + 1,
+      scope: environment,
+      at: now,
+      actor: "agent" as const,
+      session: "s-1",
+      conversation: author.conversation,
+      tool: author.tool,
+      reason: author.reason,
+      field: triggerField(id),
+      before: valueOf(before),
+      after: valueOf(after),
+      reverts: null,
+      revertedBy: null,
+      author,
+    };
+
+    const recorded = author.approved === true ? { ...change, approved: true as const } : change;
+
+    changes.push(recorded);
+
+    return {
+      status: "changed",
+      definition: after,
+      environment: { id: environment, name: environments[environment] ?? environment },
+      change: recorded,
+    };
+  };
+
+  /** Change Trigger `id` to `next`, while it is `expected`. */
+  const change = (
+    id: string,
+    expected: TriggerChangeValue | undefined,
+    author: ChangeAuthor,
+    next: (held: TriggerDefinition) => TriggerDefinition,
+  ): TriggerChanged => {
+    const before = held.get(id);
+
+    if (before === undefined) return { status: "missing" };
+
+    const after = next(before);
+
+    if (sameValue(valueOf(before), valueOf(after))) {
+      return { status: "unchanged", definition: before };
+    }
+
+    // SAFETY: a Trigger's value is plain JSON.
+    if (expected !== undefined && !sameValue(valueOf(before), expected as Schema.Json)) {
+      return { status: "changed-since", current: before };
+    }
+
+    const revised = { ...after, revision: before.revision + 1 };
+
+    held.set(id, revised);
+
+    return record(author, id, before, revised);
+  };
+
+  /** `definition` with `patch` applied: an option set to null goes back to its default. */
+  const patched = (definition: TriggerDefinition, patch: TriggerPatch): TriggerDefinition => {
+    const { base: _base, model: _model, thinking: _thinking, ...rest } = definition;
+
+    const next: Types.Mutable<TriggerDefinition> = {
+      ...rest,
+      name: patch.name ?? definition.name,
+      message: patch.message ?? definition.message,
+      source: patch.source ?? definition.source,
+      whenBusy: patch.whenBusy ?? definition.whenBusy,
+    };
+
+    const base = patch.base === undefined ? definition.base : patch.base;
+    const model = patch.model === undefined ? definition.model : patch.model;
+    const thinking = patch.thinking === undefined ? definition.thinking : patch.thinking;
+
+    if (base !== undefined && base !== null) next.base = base;
+
+    if (model !== undefined && model !== null) next.model = model;
+
+    if (thinking !== undefined && thinking !== null) next.thinking = thinking;
+
+    return next;
+  };
+
+  const create = (
+    id: string,
+    input: EnvironmentTriggerInput,
+    author: ChangeAuthor,
+  ): TriggerChanged => {
+    const known = held.get(id);
+
+    if (known !== undefined) return { status: "unchanged", definition: known };
+
+    if (environments[input.environment] === undefined) return { status: "missing" };
+
+    const { kind, environment, name, message, source, whenBusy, base, model, thinking } = input;
+
+    const definition: Types.Mutable<TriggerDefinition> = {
+      id,
+      revision: 1,
+      kind,
+      environment,
+      name,
+      message,
+      source,
+      whenBusy: whenBusy ?? "skip",
+      paused: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    if (base !== undefined) definition.base = base;
+
+    if (model !== undefined) definition.model = model;
+
+    if (thinking !== undefined) definition.thinking = thinking;
+
+    held.set(id, definition);
+
+    return record(author, id, null, definition);
+  };
+
+  const access: TriggerAccessService = {
+    list: (environment) =>
+      Effect.sync(() =>
+        Arr.filter(
+          [...held.values()],
+          (definition) => environment === undefined || definition.environment === environment,
+        ),
+      ),
+    get: (id) => Effect.sync(() => held.get(id) ?? null),
+    newId: Effect.sync(() => ids[drawn++] ?? `0190-${String(drawn)}`),
+    create: ({ id, trigger, author }) => Effect.sync(() => create(id, trigger, author)),
+    update: ({ id, patch, expected, author }) =>
+      Effect.sync(() => change(id, expected, author, (known) => patched(known, patch))),
+    setPaused: ({ id, paused, expected, author }) =>
+      Effect.sync(() => change(id, expected, author, (known) => ({ ...known, paused }))),
+    remove: ({ id, author }) =>
+      Effect.sync(() => {
+        const before = held.get(id);
+
+        if (before === undefined) return { status: "missing" as const };
+
+        held.delete(id);
+
+        return record(author, id, before, null);
+      }),
+  };
+
+  return { access, held, changes, ids };
+};
