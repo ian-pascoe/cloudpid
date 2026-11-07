@@ -7,6 +7,7 @@ import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentTriggerInput,
   MAX_FIRE_LOG,
+  type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -561,5 +562,171 @@ describe("a Trigger's object", () => {
     expect(log).toHaveLength(MAX_FIRE_LOG);
     expect(log[0]?.key).toBe(`k${String(MAX_FIRE_LOG + 4)}`);
     expect(log.at(-1)?.key).toBe("k5");
+  });
+});
+
+describe("a Workspace trigger's object", () => {
+  const inWorkspace = (whenBusy?: WorkspaceTriggerInput["whenBusy"]): WorkspaceTriggerInput => ({
+    kind: "workspace",
+    workspace: "0f0f0f0f",
+    name: "Nightly check",
+    message: "Check the build.",
+    source: { type: "schedule", cron: "0 9 * * *", zone: "UTC" },
+    whenBusy,
+  });
+
+  /** A Workspace trigger in a new Registry, whose Workspace has a Session `s-0` running, and its object synced. */
+  const kept = async (whenBusy?: WorkspaceTriggerInput["whenBusy"]) => {
+    const id = `w${String(counter++)}`;
+    const registry = env.REGISTRIES.get(env.REGISTRIES.newUniqueId());
+
+    await registry.createSession(
+      {
+        id: "s-0",
+        title: null,
+        workspace: {
+          kind: "new",
+          id: "0f0f0f0f",
+          environment: DEFAULT_ENVIRONMENT,
+          branch: null,
+          base: null,
+        },
+      },
+      start - HOUR,
+    );
+    await registry.setSessionStatus("s-0", "running", start - HOUR / 2);
+    expect(await registry.createTrigger(id, inWorkspace(whenBusy), start)).toMatchObject({
+      status: "ok",
+    });
+
+    const trigger = env.TRIGGERS.getByName(`trigger:${id}`);
+
+    await trigger.use(registry.id.toString());
+    await trigger.setNow(start);
+    await trigger.sync();
+
+    return { id, registry, trigger };
+  };
+
+  const pendingOf = (trigger: ReturnType<typeof env.TRIGGERS.getByName>) =>
+    runInDurableObject(trigger, (_instance, state) => openTriggerStore(state.storage).pending());
+
+  it("keeps a Fire pending while its Workspace is busy, tries again a minute later, and starts once it is idle", async () => {
+    const { id, registry, trigger } = await kept();
+
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+
+    // Waiting is no failure: nothing is recorded, no attempt is counted, and it is tried again a minute later.
+    expect(await trigger.fireLog()).toEqual([]);
+    expect(await trigger.sent()).toEqual([]);
+    expect(await pendingOf(trigger)).toMatchObject([
+      { key: keyAt(id, nine), attempts: 0, nextTryAt: nine + RETRY_MS, coalesced: 0 },
+    ]);
+    expect(await trigger.alarmAt()).toBe(nine + RETRY_MS);
+
+    await trigger.setNow(nine + RETRY_MS);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.fireLog()).toEqual([]);
+    expect(await trigger.alarmAt()).toBe(nine + 2 * RETRY_MS);
+
+    await registry.setSessionStatus("s-0", "idle", nine + RETRY_MS + 1_000);
+    await trigger.setNow(nine + 2 * RETRY_MS);
+    await runDurableObjectAlarm(trigger);
+
+    // Each try drew a Session id (the fixture draws one per admission), so the one that started is the third.
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: keyAt(id, nine), outcome: { type: "started", session: "s-3" } },
+    ]);
+    expect((await trigger.sent()).map((fire) => fire.session)).toEqual(["s-3"]);
+    // No delivery came in while it waited, so the header says nothing of any.
+    expect((await trigger.sent())[0]?.request.header).not.toHaveProperty("coalesced");
+    expect(await registry.getSession("s-3")).toMatchObject({ workspace: "0f0f0f0f" });
+    expect(await trigger.alarmAt()).toBe(nine + DAY);
+  });
+
+  it("waits as long as the Workspace is busy, never failing for it", async () => {
+    const { id, trigger } = await kept();
+
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+
+    for (let minute = 1; minute <= MAX_FIRE_ATTEMPTS + 3; minute++) {
+      await trigger.setNow(nine + minute * RETRY_MS);
+      await runDurableObjectAlarm(trigger);
+    }
+
+    expect(await trigger.fireLog()).toEqual([]);
+    expect(await trigger.failedNotices()).toEqual([]);
+    expect(await pendingOf(trigger)).toMatchObject([{ key: keyAt(id, nine), attempts: 0 }]);
+  });
+
+  it("records a later Fire coalesced while one waits, and tells the Session that finally starts how many came in", async () => {
+    const { id, registry, trigger } = await kept();
+
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+
+    for (const key of ["a", "b"]) {
+      await trigger.setNow(nine + 10_000);
+      expect(await trigger.fireNow(key)).toEqual({ status: "queued", key: `${id}:manual:${key}` });
+      await runDurableObjectAlarm(trigger);
+    }
+
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: `${id}:manual:b`, outcome: { type: "skipped", reason: "coalesced" } },
+      { key: `${id}:manual:a`, outcome: { type: "skipped", reason: "coalesced" } },
+    ]);
+    // Still one waiting, now with two merged into it.
+    expect(await pendingOf(trigger)).toMatchObject([{ key: keyAt(id, nine), coalesced: 2 }]);
+
+    await registry.setSessionStatus("s-0", "idle", nine + 20_000);
+    await trigger.setNow(nine + RETRY_MS);
+    await runDurableObjectAlarm(trigger);
+
+    const sent = await trigger.sent();
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.request.header).toMatchObject({ coalesced: 2, scheduledAt: nine });
+    expect(await pendingOf(trigger)).toEqual([]);
+  });
+
+  it("merges a later Fire into the waiting one even when the Workspace is idle by then", async () => {
+    const { id, registry, trigger } = await kept();
+
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+    await registry.setSessionStatus("s-0", "idle", nine + 1_000);
+    await trigger.setNow(nine + 2_000);
+    await trigger.fireNow("late");
+    await runDurableObjectAlarm(trigger);
+
+    // The waiting Fire goes first, in its order; the later one is folded into it.
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: `${id}:manual:late`, outcome: { type: "skipped", reason: "coalesced" } },
+    ]);
+    expect(await pendingOf(trigger)).toMatchObject([{ key: keyAt(id, nine), coalesced: 1 }]);
+  });
+
+  it("records skipped: overlap with when_busy skip, and starts at once with start", async () => {
+    const skipping = await kept("skip");
+
+    await skipping.trigger.setNow(nine);
+    await runDurableObjectAlarm(skipping.trigger);
+
+    expect(await skipping.trigger.fireLog()).toMatchObject([
+      { key: keyAt(skipping.id, nine), outcome: { type: "skipped", reason: "overlap" } },
+    ]);
+    expect(await pendingOf(skipping.trigger)).toEqual([]);
+
+    const starting = await kept("start");
+
+    await starting.trigger.setNow(nine);
+    await runDurableObjectAlarm(starting.trigger);
+
+    expect(await starting.trigger.fireLog()).toMatchObject([
+      { key: keyAt(starting.id, nine), outcome: { type: "started", session: "s-1" } },
+    ]);
   });
 });

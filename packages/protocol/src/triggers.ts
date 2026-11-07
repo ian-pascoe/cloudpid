@@ -46,9 +46,12 @@ export const triggerMessageProblem = (message: string): string | undefined => {
 
 /**
  * What keeps a Trigger, and so what each Fire does: an Environment trigger starts a new Session in a new Workspace of its
- * Environment. Workspace and Session triggers are later slices' members.
+ * Environment, a Workspace trigger one in its Workspace. Session triggers are a later slice's member.
  */
-export const TriggerKind = openLiterals(Schema.Literals(["environment", "unknown"]), "unknown");
+export const TriggerKind = openLiterals(
+  Schema.Literals(["environment", "workspace", "unknown"]),
+  "unknown",
+);
 
 export type TriggerKind = typeof TriggerKind.Type;
 
@@ -102,22 +105,40 @@ export const webhookOf = (
   holder: { readonly source: TriggerSource } | undefined,
 ): WebhookSource | undefined => (holder?.source.type === "webhook" ? holder.source : undefined);
 
-/** The `when_busy` a Trigger of `source` has when none is given: `skip` for a Schedule, `start` for a webhook. */
-export const defaultWhenBusy = (source: TriggerSourceInput): TriggerWhenBusy =>
-  source.type === "webhook" ? "start" : "skip";
-
 /** The Schedule `holder` fires on, or undefined for none (a source this version doesn't know). */
 export const scheduleOf = (
   holder: { readonly source: TriggerSource } | undefined,
 ): ScheduleSource | undefined => (holder?.source.type === "schedule" ? holder.source : undefined);
 
 /**
- * What a Fire does while the last Fire's Session is still running or waiting for the owner (`triggers.md` → Overlap):
- * `skip` records it `skipped: overlap`, `start` starts its Session anyway. A value a later kind adds reads as `skip`.
+ * What a Fire does while the work of the last one is still going on (`triggers.md` → Overlap): `skip` records it
+ * `skipped: overlap`, `start` starts its Session anyway, and `wait` (a Workspace trigger's, its default) keeps it pending
+ * until the Workspace is idle. A value a later kind adds reads as `skip`.
  */
-export const TriggerWhenBusy = openLiterals(Schema.Literals(["skip", "start"]), "skip");
+export const TriggerWhenBusy = openLiterals(Schema.Literals(["skip", "start", "wait"]), "skip");
 
 export type TriggerWhenBusy = typeof TriggerWhenBusy.Type;
+
+/**
+ * What a Trigger of `kind` on `source` does by default while busy: a Workspace trigger waits; an Environment trigger skips
+ * for a Schedule and starts for a webhook, whose deliveries are each their own event.
+ */
+export const defaultWhenBusy = (kind: TriggerKind, source: TriggerSourceInput): TriggerWhenBusy => {
+  if (kind === "workspace") return "wait";
+
+  return source.type === "webhook" ? "start" : "skip";
+};
+
+/** Why a Trigger of `kind` can't take `whenBusy`, or undefined when it can: only a Workspace trigger waits. */
+export const whenBusyProblem = (kind: TriggerKind, whenBusy: string): string | undefined =>
+  whenBusy === "wait" && kind !== "workspace"
+    ? "Only a Workspace trigger can wait for a busy Workspace"
+    : undefined;
+
+/** A Workspace as a Trigger names it: its id, and its branch, which is how the owner reads it. */
+export const WorkspaceRef = Schema.Struct({ id: Schema.String, branch: Schema.String });
+
+export type WorkspaceRef = typeof WorkspaceRef.Type;
 
 /** A Trigger as the Registry keeps it, at `revision`, which every change raises. */
 export const TriggerDefinition = Schema.Struct({
@@ -126,6 +147,8 @@ export const TriggerDefinition = Schema.Struct({
   kind: TriggerKind,
   /** The Environment it belongs to: an Environment trigger's own, and the Scope its Agent changes are recorded under. */
   environment: Schema.String,
+  /** The Workspace a Workspace trigger is kept for, which it keeps; absent for the other kinds. */
+  workspace: Schema.optionalKey(WorkspaceRef),
   name: Schema.String,
   /** The Trigger message, as written: the owner's words, or the agent's the owner approved. */
   message: Schema.String,
@@ -159,6 +182,30 @@ export const EnvironmentTriggerInput = Schema.Struct({
 });
 
 export type EnvironmentTriggerInput = typeof EnvironmentTriggerInput.Type;
+
+/**
+ * A new Workspace trigger: kept for Workspace `workspace` (an Environment's Workspace a Session works in: a Subagent
+ * Workspace and a spare are refused), whose Environment it takes. It holds no `base` and no Role.
+ */
+export const WorkspaceTriggerInput = Schema.Struct({
+  kind: Schema.Literal("workspace"),
+  workspace: Schema.String,
+  name: Schema.String,
+  message: Schema.String,
+  source: TriggerSourceInput,
+  /** `wait` when absent, a Workspace trigger's default (`triggers.md` → Overlap). */
+  whenBusy: TriggerWhenBusy.pipe(Schema.optional),
+  model: Schema.String.pipe(Schema.optional),
+  thinking: ThinkingLevel.pipe(Schema.optional),
+  paused: Schema.Boolean.pipe(Schema.optional),
+});
+
+export type WorkspaceTriggerInput = typeof WorkspaceTriggerInput.Type;
+
+/** A new Trigger of any kind the owner's form or `trigger_create` makes. */
+export const TriggerInput = Schema.Union([EnvironmentTriggerInput, WorkspaceTriggerInput]);
+
+export type TriggerInput = typeof TriggerInput.Type;
 
 /**
  * A change of a Trigger's fields: each absent field is kept, and an option set to null goes back to its default. A
@@ -207,6 +254,8 @@ export const fieldTrigger = (field: string): string | null =>
  */
 export const TriggerChangeValue = Schema.Struct({
   kind: TriggerKind,
+  /** The Workspace a Workspace trigger keeps, by id and branch. */
+  workspace: Schema.optionalKey(WorkspaceRef),
   name: Schema.String,
   message: Schema.String,
   source: TriggerSource,
@@ -306,11 +355,11 @@ export const FireSource = Schema.Union([
 export type FireSource = typeof FireSource.Type;
 
 /**
- * Why a Fire was skipped: `overlap`, `missed`, or `paused` (its Trigger was paused before it went out); a later slice
- * adds `coalesced`, `archived` and `importing`.
+ * Why a Fire was skipped: `overlap`, `missed`, `paused` (its Trigger was paused before it went out), or `coalesced` (a
+ * Workspace trigger's Fire that came while another waited, merged into it); a later slice adds `archived` and `importing`.
  */
 export const FireSkip = openLiterals(
-  Schema.Literals(["overlap", "missed", "paused", "unknown"]),
+  Schema.Literals(["overlap", "missed", "paused", "coalesced", "unknown"]),
   "unknown",
 );
 
@@ -400,6 +449,8 @@ export const FireHeader = Schema.Struct({
   firedAt: Schema.Finite,
   /** The owner sent the last delivery again (**Fire again**). */
   again: Schema.optionalKey(Schema.Boolean),
+  /** How many more Fires came in while this one waited for its Workspace to be idle (`coalesced`); absent for none. */
+  coalesced: Schema.optionalKey(Schema.Int),
 });
 
 export type FireHeader = typeof FireHeader.Type;
@@ -434,6 +485,11 @@ export const renderFireHeader = (header: FireHeader, payload?: FirePayload): str
       `[cloudpid] Trigger "${header.name.trim()}" fired.`,
       source,
       `Fired at: ${at(header.firedAt)}.`,
+      ...(header.coalesced === undefined || header.coalesced < 1
+        ? []
+        : [
+            `${String(header.coalesced)} more ${header.coalesced === 1 ? "Fire" : "Fires"} of this Trigger came in while this one waited for the Workspace to be idle, and ${header.coalesced === 1 ? "was" : "were"} merged into it. Check the current state before you act.`,
+          ]),
     ],
     "\n",
   );

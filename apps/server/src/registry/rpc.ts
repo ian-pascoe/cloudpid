@@ -1016,7 +1016,14 @@ export const serveRegistryRpc = <R = never>(
         ),
       createTrigger: ({ id, trigger }) =>
         registry.createTrigger({ id, trigger }).pipe(
-          Effect.flatMap((write) => triggerWritten(write, noEnvironment(trigger.environment))),
+          Effect.flatMap((write) =>
+            triggerWritten(
+              write,
+              trigger.kind === "environment"
+                ? noEnvironment(trigger.environment)
+                : `There is no Workspace ${trigger.workspace}`,
+            ),
+          ),
           Effect.flatMap((definition) => afterWrite(definition, "The trigger is saved")),
         ),
       updateTrigger: ({ id, patch, expected }) =>

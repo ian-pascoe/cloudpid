@@ -8,6 +8,7 @@ import {
   MAX_AGENT_CHANGES,
   type TriggerChangeValue,
   triggerField,
+  type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -406,5 +407,95 @@ describe("a removed Trigger", () => {
       triggers: ["t1"],
     });
     expect(await registry.storedTriggerIds()).toEqual([]);
+  });
+});
+
+describe("the agent's Workspace triggers", () => {
+  const inWorkspace: WorkspaceTriggerInput = {
+    kind: "workspace",
+    workspace: "0f0f0f0f",
+    name: "Nightly check",
+    message: "Check the build.",
+    source: { type: "schedule", cron: "@daily", zone: "UTC" },
+  };
+
+  const started = async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      {
+        id: "s-1",
+        title: null,
+        workspace: {
+          kind: "new",
+          id: "0f0f0f0f",
+          environment: DEFAULT_ENVIRONMENT,
+          branch: null,
+          base: null,
+        },
+      },
+      500,
+    );
+
+    return registry;
+  };
+
+  it("record the Workspace by its branch under the Workspace's Environment, and revert", async () => {
+    const registry = await started();
+
+    const made = await registry.agentCreateTrigger(
+      "t1",
+      inWorkspace,
+      author("trigger_create", true),
+      1_000,
+    );
+
+    expect(made).toMatchObject({
+      status: "changed",
+      definition: { kind: "workspace", workspace: { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f" } },
+      environment: { id: DEFAULT_ENVIRONMENT },
+      change: {
+        scope: DEFAULT_ENVIRONMENT,
+        field: triggerField("t1"),
+        before: null,
+        after: {
+          kind: "workspace",
+          workspace: { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f" },
+          name: "Nightly check",
+          whenBusy: "wait",
+          paused: false,
+        },
+      },
+    });
+
+    const removal = await registry.agentRemoveTrigger("t1", author("trigger_remove"), 2_000);
+
+    if (removal.status !== "changed") throw new Error("not removed");
+
+    // Brought back, still for its Workspace.
+    expect(
+      await registry.revertAgentChange(DEFAULT_ENVIRONMENT, removal.change.id, 3_000),
+    ).toMatchObject({
+      status: "reverted",
+    });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      kind: "workspace",
+      workspace: { id: "0f0f0f0f" },
+      whenBusy: "wait",
+    });
+  });
+
+  it("are refused for a Workspace that isn't there", async () => {
+    const registry = await started();
+
+    expect(
+      await registry.agentCreateTrigger(
+        "t1",
+        { ...inWorkspace, workspace: "feedfeed" },
+        author("trigger_create", true),
+        1_000,
+      ),
+    ).toMatchObject({ status: "invalid" });
+    expect(await registry.listAgentChanges(DEFAULT_ENVIRONMENT)).toEqual([]);
   });
 });

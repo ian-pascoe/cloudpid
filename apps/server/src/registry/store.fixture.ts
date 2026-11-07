@@ -11,7 +11,6 @@ import {
   type AgentChange,
   type EnvironmentRepo,
   type EnvironmentSecretRecord,
-  type EnvironmentTriggerInput,
   holdsEditedFields,
   type PushSubscription,
   SETTINGS_SCOPE,
@@ -21,6 +20,7 @@ import {
   type TriggerChanged,
   type TriggerChangeValue,
   type TriggerDefinition,
+  type TriggerInput,
   type TriggerPatch,
 } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
@@ -85,6 +85,7 @@ import {
 import { openTriggerChanges, type TriggerChanges } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
+  type WorkspaceRemoval,
   type FireAdmission,
   type FireAdmitted,
   openTriggers,
@@ -225,7 +226,7 @@ export class TestRegistry extends DurableObject {
 
   agentCreateTrigger(
     id: string,
-    input: EnvironmentTriggerInput,
+    input: TriggerInput,
     author: AgentChangeAuthor,
     now: number,
   ): TriggerChanged {
@@ -264,7 +265,7 @@ export class TestRegistry extends DurableObject {
     );
   }
 
-  createTrigger(id: string, input: EnvironmentTriggerInput, now: number): TriggerWrite {
+  createTrigger(id: string, input: TriggerInput, now: number): TriggerWrite {
     return this.#triggers.create(id, input, now);
   }
 
@@ -337,6 +338,10 @@ export class TestRegistry extends DurableObject {
 
   deleteWorkspace(id: string): Deletion {
     return this.#store.deleteWorkspace(id);
+  }
+
+  deleteWorkspaceWithTriggers(id: string): WorkspaceRemoval {
+    return this.#triggers.deleteWorkspace(id);
   }
 
   /**

@@ -66,6 +66,7 @@ import * as Result from "effect/Result";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import type * as Schema from "effect/Schema";
+import type * as Types from "effect/Types";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import { describe, expect, it } from "vitest";
 import { type EntryRecord, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
@@ -1378,9 +1379,33 @@ const fakeRegistries = () => {
 
         if (Arr.some(sessions, (session) => session.workspace === id)) return "in-use" as const;
 
+        // A Workspace trigger keeps its Workspace.
+        if (Arr.some([...triggersHeld.values()], (held) => held.workspace?.id === id)) {
+          return "in-use" as const;
+        }
+
         return remove(workspaces, (workspace) => workspace.id === id)
           ? ("deleted" as const)
           : ("missing" as const);
+      }),
+    deleteWorkspaceWithTriggers: ({ id }) =>
+      Effect.sync(() => {
+        calls.push(`deleteWorkspace:${id}`);
+
+        if (Arr.some(sessions, (session) => session.workspace === id)) {
+          return { deletion: "in-use" as const, triggers: [] };
+        }
+
+        const held = Arr.filter([...triggersHeld.values()], (each) => each.workspace?.id === id);
+
+        for (const each of held) triggersHeld.delete(each.id);
+
+        return {
+          deletion: remove(workspaces, (workspace) => workspace.id === id)
+            ? ("deleted" as const)
+            : ("missing" as const),
+          triggers: Arr.map(held, (each) => each.id),
+        };
       }),
     takeLegacy: ({ limit }) =>
       Effect.sync(() => {
@@ -1528,7 +1553,21 @@ const fakeRegistries = () => {
             : { status: "invalid", problem: "taken" };
         }
 
-        if (!Arr.some(environments, (item) => item.id === trigger.environment)) {
+        const kept =
+          trigger.kind === "workspace"
+            ? Arr.findFirst(workspaces, (item) => item.id === trigger.workspace)
+            : Option.none();
+
+        const environment =
+          trigger.kind === "environment"
+            ? trigger.environment
+            : Option.match(kept, { onNone: () => "", onSome: (item) => item.environment });
+
+        if (trigger.kind === "workspace" && Option.isNone(kept)) {
+          return { status: "invalid", problem: `There is no Workspace ${trigger.workspace}` };
+        }
+
+        if (!Arr.some(environments, (item) => item.id === environment)) {
           return { status: "missing" };
         }
 
@@ -1536,19 +1575,23 @@ const fakeRegistries = () => {
 
         if (problem !== undefined) return { status: "invalid", problem };
 
-        const definition: TriggerDefinition = {
+        const made: Types.Mutable<TriggerDefinition> = {
           id,
           revision: 1,
-          kind: "environment",
-          environment: trigger.environment,
+          kind: trigger.kind,
+          environment,
           name: trigger.name,
           message: trigger.message,
           source: trigger.source,
-          whenBusy: trigger.whenBusy ?? "skip",
+          whenBusy: trigger.whenBusy ?? (trigger.kind === "workspace" ? "wait" : "skip"),
           paused: trigger.paused ?? false,
           createdAt: 1,
           updatedAt: 1,
         };
+
+        if (Option.isSome(kept)) made.workspace = { id: kept.value.id, branch: kept.value.branch };
+
+        const definition: TriggerDefinition = made;
 
         triggersHeld.set(id, definition);
 
@@ -2846,6 +2889,65 @@ it("deletes an Environment's Triggers with its record, then wipes their objects"
     `destroyWorkspace:build:${id}`,
     `destroyWorkspace:test-build:${id}`,
   ]);
+});
+
+it("leaves a Workspace its last Session's delete would remove when a Workspace trigger keeps it", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+  const workspace = session.workspace;
+
+  await call(fake, (registry) =>
+    registry.createTrigger({
+      id: "t1",
+      trigger: {
+        kind: "workspace",
+        workspace,
+        name: "Nightly check",
+        message: "Check the build.",
+        source: { type: "schedule", cron: "@daily", zone: "UTC" },
+      },
+    }),
+  );
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+  // Its files and record stay for the Trigger's next Fire.
+  expect(lifecycle(fake)).toEqual([`destroy:${session.id}`, `deleteSession:${session.id}`]);
+  expect(Arr.map(fake.workspaces, (held) => held.id)).toEqual([workspace]);
+  expect(await call(fake, (registry) => registry.listSessions())).toEqual([]);
+});
+
+it("removes a Workspace's Triggers with it, then wipes their objects", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+  const workspace = session.workspace;
+
+  await call(fake, (registry) =>
+    registry.createTrigger({
+      id: "t1",
+      trigger: {
+        kind: "workspace",
+        workspace,
+        name: "Nightly check",
+        message: "Check the build.",
+        source: { type: "schedule", cron: "@daily", zone: "UTC" },
+      },
+    }),
+  );
+  fake.calls.length = 0;
+
+  await call(fake, (registry) => registry.removeWorkspace({ id: workspace }));
+
+  expect(lifecycle(fake)).toEqual([
+    `destroy:${session.id}`,
+    `deleteSession:${session.id}`,
+    `destroyWorkspace:ws:${workspace}`,
+    `deleteWorkspace:${workspace}`,
+    "removeTriggerObject:t1",
+  ]);
+  expect(fake.triggersHeld.size).toBe(0);
+  expect(fake.workspaces).toEqual([]);
 });
 
 it("wipes no Trigger object of an Environment it could not delete", async () => {

@@ -24,6 +24,10 @@ export const triggerPaused = "The trigger is paused: resume it to fire it";
 /** That a Trigger was made under an id another Trigger has, or had, with other values. */
 export const triggerIdTaken = "A trigger was already saved under this id with other values";
 
+/** That a Trigger can't be kept for a Subagent Workspace, which lasts as long as its subagent. */
+export const subagentWorkspaceHoldsNoTrigger =
+  "A subagent's Workspace can't hold a Trigger: it lasts only as long as its subagent";
+
 /** That the Trigger an edit was opened on has changed since. */
 export const triggerChangedSince = "The trigger changed since you opened it: reopen the form";
 

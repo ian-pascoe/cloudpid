@@ -8,13 +8,13 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over SQLite.
 import {
   type AgentChange,
-  type EnvironmentTriggerInput,
   triggerChangeJson,
   type TriggerChanged,
   triggerChangeValue,
   TriggerChangeValue,
   type TriggerDefinition,
   triggerField,
+  type TriggerInput,
   type TriggerPatch,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
@@ -140,7 +140,7 @@ export const openTriggerChanges = (
      */
     create: (
       id: string,
-      input: EnvironmentTriggerInput,
+      input: TriggerInput,
       author: AgentChangeAuthor,
       now: number,
     ): TriggerChanged =>
@@ -153,7 +153,9 @@ export const openTriggerChanges = (
             : { status: "changed-since", current: null };
         }
 
-        if (store.getEnvironment(input.environment) === null) return { status: "missing" };
+        if (input.kind === "environment" && store.getEnvironment(input.environment) === null) {
+          return { status: "missing" };
+        }
 
         const made = triggers.create(id, input, now);
 
@@ -161,7 +163,7 @@ export const openTriggerChanges = (
           case "ok":
           case "unchanged":
           case "changed-since":
-            return record(author, id, input.environment, null, made.definition, now);
+            return record(author, id, made.definition.environment, null, made.definition, now);
           case "invalid":
           case "missing":
             return refused(made);

@@ -8,4 +8,6 @@ export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
   // 1: `trigger_meta` (the definition and the cursor), `trigger_pending` (with its admitted Session) and
   // `trigger_fires`, the fire log.
   "a8419e2c21873eff",
+  // 2: how many later Fires were merged into a pending Fire that waits for its Workspace (`trigger_pending.coalesced`).
+  "8904eb7c72eaa105",
 ];

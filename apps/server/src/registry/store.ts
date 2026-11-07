@@ -347,7 +347,12 @@ export type RegistryStore = {
   /** Every Workspace but the spares, newest first. */
   readonly listWorkspaces: () => WorkspaceRecord[];
   /** Forget a Workspace's record, only while no Session is bound to it. */
-  readonly deleteWorkspace: (id: string) => Deletion;
+  /**
+   * Delete Workspace `id`'s record: `in-use` while a Session is bound to it, or (unless `triggers` is `delete`, the
+   * owner's Remove, which takes them with it) while a Workspace trigger is. The Triggers the agent removed that were
+   * kept for its Workspace go with it.
+   */
+  readonly deleteWorkspace: (id: string, triggers?: "keep" | "delete") => Deletion;
   /**
    * Keep a spare for each of `environments` that exists (every one when undefined), in one transaction: an Environment
    * whose spare is stale (other Repos, or another Build than its last good one) has it listed, to remove, and one with
@@ -1193,6 +1198,13 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     ) STRICT`);
     sql.exec("CREATE INDEX triggers_by_environment ON triggers (environment)");
   },
+  // 35: the Workspace a Workspace trigger is kept for (`docs/architecture/triggers.md` → Kinds and what a Fire delivers
+  // to), which it keeps: the Workspace's record is deleted only while no Session and no active Trigger is bound to it.
+  // Null for every Trigger stored before, and for Environment triggers.
+  (sql) => {
+    sql.exec("ALTER TABLE triggers ADD COLUMN workspace TEXT");
+    sql.exec("CREATE INDEX triggers_by_workspace ON triggers (workspace)");
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */
@@ -1892,17 +1904,31 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
     forgetSpare: (id) =>
       sql.exec("DELETE FROM workspaces WHERE id = ? AND spare = 1", id).rowsWritten > 0,
 
-    deleteWorkspace: (id) => {
-      if (getWorkspaceRow(id) === undefined) return "missing";
+    deleteWorkspace: (id, triggers = "keep") =>
+      storage.transactionSync((): Deletion => {
+        if (getWorkspaceRow(id) === undefined) return "missing";
 
-      if (sql.exec("SELECT 1 FROM sessions WHERE workspace = ? LIMIT 1", id).toArray().length > 0) {
-        return "in-use";
-      }
+        if (
+          sql.exec("SELECT 1 FROM sessions WHERE workspace = ? LIMIT 1", id).toArray().length > 0
+        ) {
+          return "in-use";
+        }
 
-      sql.exec("DELETE FROM workspaces WHERE id = ?", id);
+        // A Workspace trigger keeps its Workspace (`docs/architecture/triggers.md` → Kinds and what a Fire delivers to).
+        if (
+          triggers === "keep" &&
+          sql
+            .exec("SELECT 1 FROM triggers WHERE workspace = ? AND removed_at IS NULL LIMIT 1", id)
+            .toArray().length > 0
+        ) {
+          return "in-use";
+        }
 
-      return "deleted";
-    },
+        sql.exec("DELETE FROM triggers WHERE workspace = ?", id);
+        sql.exec("DELETE FROM workspaces WHERE id = ?", id);
+
+        return "deleted";
+      }),
 
     takeLegacy: (limit, now, leaseMs) =>
       storage.transactionSync(() => {
