@@ -8,13 +8,7 @@
  * wraps it, and the conformance run serves it over `node:http`. Only this package imports the SDK.
  */
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missingPipeableSignature:off missedPipeableOpportunity:off globalDate:off globalTimers:off -- Promise seams (fetch, RPC) over short native lists, and the timer of a call that waits.
-import {
-  type ApiError,
-  ApiDescription,
-  type McpToolName,
-  apiFailure,
-} from "@cloudpid/protocol/mcp-api";
-import { MCP_TOOL_OPERATIONS } from "@cloudpid/protocol/mcp-tools";
+import { type ApiError, ApiDescription, apiFailure } from "@cloudpid/protocol/mcp-api";
 import {
   type CallToolResult,
   createMcpHandler,
@@ -26,13 +20,20 @@ import {
   validateHostHeader,
   validateOriginHeader,
 } from "@modelcontextprotocol/server";
+import { HARNESS_TOOL_NAMES } from "@cloudpid/protocol/harness-tools";
 import * as Exit from "effect/Exit";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { type Caller, clientOf, readBody, type RequestBody, sessionOf } from "./caller.ts";
 import { isMissingMethod } from "../missing-method.ts";
-import { MAX_TEXT_CHARS } from "./render.ts";
-import { type Enabled, type McpServerApi, TOOLS, type Tool, type Wire } from "./tools.ts";
+import {
+  type Enabled,
+  type McpServerApi,
+  TOOLS,
+  type Tool,
+  type ToolName,
+  type Wire,
+} from "./tools.ts";
 
 export type { Caller } from "./caller.ts";
 
@@ -155,12 +156,11 @@ export const toolGate = (
 
       if (Exit.isFailure(described)) return NONE;
 
-      const { operations, version } = described.value;
+      const { version } = described.value;
 
-      const enabled = new Set(
-        TOOLS.map((tool) => tool.name).filter((name) =>
-          operations.includes(MCP_TOOL_OPERATIONS[name]),
-        ),
+      // A tool is offered when `Server` serves it: its operation is listed, and a management tool's name is in `harness`.
+      const enabled = new Set<ToolName>(
+        TOOLS.filter((tool) => tool.served(described.value)).map((tool) => tool.name),
       );
 
       const gate: Gate = { enabled, version };
@@ -174,16 +174,28 @@ export const toolGate = (
   };
 };
 
+/** The management tools whose answer shows what is set: the ones the "To manage" line names. */
+const HARNESS_READS = ["environment_list", "environment_get", "settings_get"] as const;
+
+/** "a, b and c". */
+const listed = (names: ReadonlyArray<string>): string =>
+  names.length < 2
+    ? (names[0] ?? "")
+    : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1] ?? ""}`;
+
 /**
  * What the model is told once (`docs/architecture/mcp-endpoint.md` → The handler, `instructions`, ≤1,500 characters). Line
  * 1 stands alone, since pi shows only line 1 in its `mcp_servers` section. The rest names only tools the deployed
  * `Server` serves.
  */
 export const instructionsFor = (enabled: Enabled): string => {
-  const has = (name: McpToolName) => enabled.has(name);
+  const has = (name: ToolName) => enabled.has(name);
+
+  // A management tool served: line 1 says the endpoint manages Environments and Settings too.
+  const manages = HARNESS_TOOL_NAMES.some(has);
 
   const lines = [
-    "cloudpid: the owner's hosted coding agent. Start or message its Sessions, wait for their Runs, read transcripts, or import a local pi Session.",
+    `cloudpid: the owner's hosted coding agent. Start or message its Sessions, wait for their Runs, read transcripts, ${manages ? "import a local pi Session, or manage its Environments and Settings." : "or import a local pi Session."}`,
   ];
 
   if (has("environments_list") && has("session_start") && has("session_wait")) {
@@ -216,6 +228,15 @@ export const instructionsFor = (enabled: Enabled): string => {
 
   if (has("session_transcript")) {
     lines.push("Use session_transcript to read what a Session did.");
+  }
+
+  // The reads that show what is set; the other tools of the line are not served yet, so it names none.
+  const shows = HARNESS_READS.filter(has);
+
+  if (shows.length > 0) {
+    lines.push(
+      `To manage rather than start: ${listed(shows)} show${shows.length === 1 ? "s" : ""} what is set${shows.some((name) => name !== "environment_list") ? " (pass field to read a long text whole)" : ""}.`,
+    );
   }
 
   if (has("session_get") || has("session_wait")) {
@@ -327,7 +348,7 @@ const success = (
       content: [
         {
           type: "text",
-          text: spec.name === "session_transcript" ? text : cut(text, MAX_TEXT_CHARS),
+          text: cut(text, spec.maxText),
         },
       ],
       structuredContent: structured,

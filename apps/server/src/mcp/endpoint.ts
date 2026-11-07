@@ -15,7 +15,10 @@ import { type RemovalObjects, removals } from "../registry/removal.ts";
 import { type Spares, upkeepAfterStart } from "../registry/rpc.ts";
 import type { Session } from "../session/Session.ts";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
+import { harnessDispatch } from "../harness/dispatch.ts";
+import { harnessServices } from "../harness/services.ts";
 import { mcpApiService, type McpBackend } from "./api.ts";
+import type { McpHost } from "./McpHost.ts";
 import { apiTarget, type RpcTargetBase } from "./api-target.ts";
 
 /**
@@ -41,6 +44,10 @@ export interface RateLimiter {
 export interface McpEndpoint<R = never> {
   readonly registries: Cloudflare.DurableObject<Registry>;
   readonly sessions: Cloudflare.DurableObject<Session>;
+  /** The Environments' hosts, whose held inventory `settings_mcp_list` and `settings_mcp_get` show (`harness/services.ts`). */
+  readonly mcpHosts: Pick<Cloudflare.DurableObject<McpHost>, "getByName">;
+  /** `APP_ORIGIN_VAR`: this stage's own origin, set on live stages only; the management tools' Self-use rule reads it. */
+  readonly appOrigin: string | undefined;
   /** What deleting an import's Session wipes besides its records, as the owner's delete does (`registry/removal.ts`). */
   readonly objects: RemovalObjects;
   /** `McpWorker`'s `McpServer` entrypoint (`MCP_SERVER`). */
@@ -72,7 +79,10 @@ const forwardedRequest = (source: Request): Request => {
 
 /** The Registry's and the Sessions' side of one request: each call is one RPC. */
 const backendOf = (
-  endpoint: Pick<McpEndpoint, "registries" | "sessions" | "spares" | "builds" | "objects">,
+  endpoint: Pick<
+    McpEndpoint,
+    "registries" | "sessions" | "mcpHosts" | "appOrigin" | "spares" | "builds" | "objects"
+  >,
   background: (effect: Effect.Effect<void>) => Effect.Effect<void>,
 ): McpBackend => {
   const registry = endpoint.registries.getByName(REGISTRY_NAME);
@@ -141,6 +151,18 @@ const backendOf = (
     deleteSession: (id) =>
       Effect.suspend(() => removals(registry, endpoint.objects).removeSession(id)).pipe(
         Effect.orDie,
+      ),
+    // The management tools' reads over the Registry and the hosts, with no Session; built per call, since a read of the
+    // Registry's stub is made when the reads are.
+    harness: (request) =>
+      Effect.suspend(() =>
+        harnessDispatch(
+          harnessServices({
+            registry,
+            mcpHosts: endpoint.mcpHosts,
+            appOrigin: endpoint.appOrigin,
+          }),
+        )(request),
       ),
   };
 };

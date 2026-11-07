@@ -1,6 +1,13 @@
 // docs/architecture/mcp-endpoint.md → The handler, Tools, Limits and errors, Telemetry and testing: `serveMcp` on a fake `api`.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off globalDate:off preferEffectRecord:off newPromise:off
-import { apiFailure, apiOk, MAX_MCP_RUNNING, MCP_API_LIMITS } from "@cloudpid/protocol/mcp-api";
+import { HARNESS_TOOL_NAMES } from "@cloudpid/protocol/harness-tools";
+import {
+  apiFailure,
+  apiOk,
+  MAX_MCP_RUNNING,
+  MCP_API_LIMITS,
+  MCP_TOOL_NAMES,
+} from "@cloudpid/protocol/mcp-api";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it, vi } from "vitest";
 import { clientOf } from "./caller.ts";
@@ -37,6 +44,14 @@ const WRITE_OPERATIONS = [...OPERATIONS, "start", "send", "stop"];
 const ALL_OPERATIONS = [...WRITE_OPERATIONS, "wait"];
 
 const CURSOR = "cur-1";
+
+/** The tools of the four read operations, as `tools/list` names them. */
+const OPERATIONS_TOOLS = [
+  "environments_list",
+  "sessions_list",
+  "session_get",
+  "session_transcript",
+];
 
 /** `describe()` listing `operations`, and the deploy id when `Server` sends one. */
 const describing =
@@ -1627,6 +1642,258 @@ describe("the client's name", () => {
 
     expect(named?.name).not.toMatch(/[<>"\n]/);
     expect(named?.name.length).toBeLessThanOrEqual(40);
+  });
+});
+
+/** The operations of every session tool: the four reads, the three writes, the wait and the import channel. */
+const EVERY_OPERATION = [
+  ...ALL_OPERATIONS,
+  "importBegin",
+  "importAppend",
+  "importFinish",
+  "importCancel",
+];
+
+describe("the management tools", () => {
+  /** `describe()` of a `Server` that has the `harness` operation and serves `served` through it. */
+  const serving =
+    (served: ReadonlyArray<string> | undefined): McpServerApi["describe"] =>
+    () => {
+      const description = { operations: [...OPERATIONS, "harness"], limits: MCP_API_LIMITS };
+
+      return served === undefined ? description : { ...description, harness: served };
+    };
+
+  const listed = async (api: McpServerApi) => {
+    const { result } = await messageOf(await serve(post(rpc("tools/list")), api));
+
+    return result?.tools ?? [];
+  };
+
+  /** What a field page is: the flat object `environment_get` answers for `field`. */
+  const page = {
+    id: "default",
+    field: "setupScript",
+    text: "echo hi\n",
+    offset: 0,
+    total_chars: 8,
+  };
+
+  it("are offered when describe().harness lists them, each read-only with a flat object schema", async () => {
+    const tools = await listed(fakeApi({ describe: serving(HARNESS_TOOL_NAMES) }));
+
+    expect(tools.map((tool) => tool.name)).toEqual([...OPERATIONS_TOOLS, ...HARNESS_TOOL_NAMES]);
+
+    for (const tool of tools.filter((each) => HARNESS_TOOL_NAMES.some((n) => n === each.name))) {
+      expect(tool.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+      expect(tool.inputSchema.type).toBe("object");
+      expect(tool.outputSchema.type).toBe("object");
+    }
+  });
+
+  it("are offered only as far as describe().harness lists them", async () => {
+    const tools = await listed(fakeApi({ describe: serving(["settings_get", "unknown_tool"]) }));
+    const names = tools.map((tool) => tool.name);
+
+    expect(names).toContain("settings_get");
+    expect(names).not.toContain("environment_get");
+    expect(names).not.toContain("unknown_tool");
+  });
+
+  it("are left out when describe() has no harness, an empty one, or lists them without the operation", async () => {
+    for (const describing of [
+      serving(undefined),
+      serving([]),
+      (): ReturnType<McpServerApi["describe"]> => ({
+        operations: OPERATIONS,
+        limits: MCP_API_LIMITS,
+        harness: HARNESS_TOOL_NAMES,
+      }),
+    ]) {
+      const names = (await listed(fakeApi({ describe: describing }))).map((tool) => tool.name);
+
+      expect(names.filter((name) => HARNESS_TOOL_NAMES.some((each) => each === name))).toEqual([]);
+    }
+  });
+
+  it("are, with every tool the endpoint offers, each in exactly one of MCP_TOOL_NAMES and HARNESS_TOOL_NAMES", async () => {
+    const api = fakeApi({
+      describe: () => ({
+        operations: [...EVERY_OPERATION, "harness"],
+        limits: MCP_API_LIMITS,
+        harness: HARNESS_TOOL_NAMES,
+      }),
+    });
+
+    const names = (await listed(api)).map((tool) => tool.name);
+
+    expect(names).toHaveLength(MCP_TOOL_NAMES.length + HARNESS_TOOL_NAMES.length);
+
+    for (const name of names) {
+      const session = MCP_TOOL_NAMES.some((each) => each === name);
+      const managed = HARNESS_TOOL_NAMES.some((each) => each === name);
+
+      expect(session !== managed, name).toBe(true);
+    }
+  });
+
+  it("call harness with the tool, the arguments and who is calling, and answer the core's text and flat object", async () => {
+    const harness = vi.fn(() =>
+      Promise.resolve(
+        apiOk({
+          text: "Environments: default",
+          structured: { environments: [], environments_truncated: false, global_variables: 0 },
+        }),
+      ),
+    );
+
+    const result = await call(
+      "environment_list",
+      {},
+      fakeApi({ describe: serving(HARNESS_TOOL_NAMES), harness }),
+    );
+
+    expect(harness).toHaveBeenCalledWith({
+      tool: "environment_list",
+      input: {},
+      via: { era: "legacy" },
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toBe("Environments: default");
+    expect(result.structuredContent).toEqual({
+      environments: [],
+      environments_truncated: false,
+      global_variables: 0,
+    });
+  });
+
+  it("answer the same flat structuredContent on the Legacy and the Modern lane", async () => {
+    const harness = () =>
+      Promise.resolve(
+        apiOk({ text: `${page.text}[Characters 0-8 of 8: the end.]`, structured: page }),
+      );
+
+    const api = fakeApi({ describe: serving(HARNESS_TOOL_NAMES), harness });
+
+    const legacy = await call("environment_get", { id: "default", field: "setupScript" }, api);
+
+    const meta = {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": { name: "modern-client", version: "2" },
+      "io.modelcontextprotocol/clientCapabilities": {},
+    };
+
+    const modern = (
+      await messageOf(
+        await serve(
+          post(
+            rpc("tools/call", {
+              name: "environment_get",
+              arguments: { id: "default", field: "setupScript" },
+              _meta: meta,
+            }),
+            {
+              "mcp-protocol-version": "2026-07-28",
+              "mcp-method": "tools/call",
+              "mcp-name": "environment_get",
+            },
+          ),
+          api,
+        ),
+      )
+    ).result;
+
+    expect(legacy.structuredContent).toEqual(page);
+    expect(modern?.structuredContent).toEqual(page);
+    expect(modern?.content?.[0]?.text).toBe(legacy.content[0]?.text);
+  });
+
+  it("keep a field page's text whole, where a session tool's text is cut at 12,000 characters", async () => {
+    const text = `${"x".repeat(40_000)}\n[Characters 0-40000 of 65536: pass offset 40000 for the next page.]`;
+
+    const harness = () =>
+      Promise.resolve(
+        apiOk({
+          text,
+          structured: {
+            ...page,
+            text: "x".repeat(40_000),
+            total_chars: 65_536,
+            next_offset: 40_000,
+          },
+        }),
+      );
+
+    const result = await call(
+      "environment_get",
+      { id: "default", field: "setupScript" },
+      fakeApi({ describe: serving(HARNESS_TOOL_NAMES), harness }),
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toBe(text);
+    expect(result.structuredContent).toMatchObject({ next_offset: 40_000 });
+  });
+
+  it("pass a core's refusal through as a domain failure", async () => {
+    const harness = () =>
+      Promise.resolve(apiFailure("not_found", "No Environment has the id nope."));
+
+    const result = await call(
+      "environment_get",
+      { id: "nope" },
+      fakeApi({ describe: serving(HARNESS_TOOL_NAMES), harness }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.error).toMatchObject({ code: "not_found" });
+  });
+
+  it("answer unsupported when the api has no harness operation, though describe() lists the tool", async () => {
+    const result = await call(
+      "environment_list",
+      {},
+      fakeApi({ describe: serving(HARNESS_TOOL_NAMES) }),
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent.error?.code).toBe("unsupported");
+  });
+});
+
+describe("the instructions with the management tools", () => {
+  const reads = ["environment_list", "environment_get", "settings_get"] as const;
+
+  const sessions = [
+    "environments_list",
+    "session_start",
+    "session_wait",
+    "session_transcript",
+  ] as const;
+
+  it("add line 1's clause and the To manage line only when the reads are served", () => {
+    const without = instructionsFor(new Set(sessions));
+    const withReads = instructionsFor(new Set([...sessions, ...reads]));
+
+    expect(without.split("\n")[0]).toMatch(/read transcripts, or import a local pi Session\.$/);
+    expect(without).not.toContain("To manage");
+    expect(withReads.split("\n")[0]).toBe(
+      "cloudpid: the owner's hosted coding agent. Start or message its Sessions, wait for their Runs, read transcripts, import a local pi Session, or manage its Environments and Settings.",
+    );
+    expect(withReads.split("\n")).toContain(
+      "To manage rather than start: environment_list, environment_get and settings_get show what is set (pass field to read a long text whole).",
+    );
+    expect(withReads).not.toContain("approval_wait");
+  });
+
+  it("name only the reads that are served, and say nothing of field for a list alone", () => {
+    expect(instructionsFor(new Set([...sessions, "settings_get"]))).toContain(
+      "To manage rather than start: settings_get shows what is set (pass field to read a long text whole).",
+    );
+    expect(instructionsFor(new Set([...sessions, "environment_list"]))).toContain(
+      "To manage rather than start: environment_list shows what is set.",
+    );
+    expect(instructionsFor(new Set([...sessions, "settings_mcp_get"]))).not.toContain("To manage");
   });
 });
 

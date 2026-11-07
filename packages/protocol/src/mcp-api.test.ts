@@ -3,11 +3,16 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
+  ApiDescription,
   ApiError,
   ApiErrorCode,
   ApiResult,
   Delivery,
   EndedBy,
+  HarnessAnswer,
+  HarnessRequest,
+  harnessServed,
+  MCP_API_OPERATIONS,
   McpAuth,
   McpEra,
   McpSessionOrigin,
@@ -266,5 +271,48 @@ describe("Via", () => {
   it("carries the era, and never how the caller got in", () => {
     expect(Option.isNone(Schema.decodeUnknownOption(Via)({}))).toBe(true);
     expect(read(Via, { era: "modern", auth: "oauth" })).toEqual({ era: "modern" });
+  });
+});
+
+describe("describe() and the management tools", () => {
+  const limits = MCP_API_LIMITS;
+
+  it("lists harness among the operations", () => {
+    expect(MCP_API_OPERATIONS).toContain("harness");
+  });
+
+  it("reads the tools a newer Server serves", () => {
+    const description = read(ApiDescription, {
+      operations: ["environments", "harness"],
+      limits,
+      harness: ["environment_list", "settings_get"],
+    });
+
+    expect(harnessServed(description)).toEqual(["environment_list", "settings_get"]);
+  });
+
+  it("reads a describe() from before the management tools as serving none", () => {
+    const description = read(ApiDescription, { operations: ["environments"], limits });
+
+    expect(description.harness).toBeUndefined();
+    expect(harnessServed(description)).toEqual([]);
+  });
+
+  it("decodes a request and an answer, the answer's structured value being any JSON", () => {
+    expect(
+      read(HarnessRequest, {
+        tool: "environment_get",
+        input: { id: "*", field: "setupScript" },
+        via: { era: "modern" },
+      }),
+    ).toEqual({
+      tool: "environment_get",
+      input: { id: "*", field: "setupScript" },
+      via: { era: "modern" },
+    });
+    expect(read(HarnessAnswer, { text: "x", structured: { a: [1, null] } })).toEqual({
+      text: "x",
+      structured: { a: [1, null] },
+    });
   });
 });

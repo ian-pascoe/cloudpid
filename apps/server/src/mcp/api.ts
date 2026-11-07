@@ -1,7 +1,8 @@
 // docs/architecture/mcp-endpoint.md → The `api` target, Access and identity, Limits and errors: what the main Worker
 // builds per `/mcp` request and passes to `McpServer`, over the Registry and the Sessions it already has. It owns
 // authorization (the guard has run), validation, the Registry and Session calls, cursors and rendering; `McpServer` owns
-// the SDK, the schemas and the text. The caller's identity is closed over it and is never an argument. Failures travel
+// the SDK, the schemas and the text, except the management tools', whose shared cores build theirs (`harness`; `../harness/`).
+// The caller's identity is closed over it and is never an argument. Failures travel
 // as values (`ApiResult`); nothing streams. The read operations, `start`, `send`, `stop` and `wait` are here; an operation
 // `describe()` does not list answers `unsupported`, which is also how `McpServer` knows to leave its tool out.
 // @effect-diagnostics globalDate:off preferEffectArray:off missingPipeableSignature:off -- epoch times said as ISO text; short native lists.
@@ -20,6 +21,8 @@ import {
   encodeCursor,
   type EnvironmentRecord,
   type EnvironmentsResult,
+  type HarnessAnswer,
+  type HarnessRequest,
   type ImportAppendRequest,
   type ImportAppendResult,
   type ImportBeginRequest,
@@ -73,6 +76,7 @@ import {
   whenBusyOf,
   type WorkspaceRecord,
 } from "@cloudpid/protocol";
+import type { HarnessToolName } from "@cloudpid/protocol/harness-tools";
 import { WORKSPACE_ROOT } from "@cloudpid/protocol/repo";
 import { importCarryRef } from "@cloudpid/sandbox-image/workspaces";
 import * as Arr from "effect/Array";
@@ -101,7 +105,21 @@ export const MCP_API_OPERATIONS_SERVED = [
   "importAppend",
   "importFinish",
   "importCancel",
+  "harness",
 ] as const;
+
+/**
+ * The management tools `harness` serves, which `describe()` lists as `harness`: `McpServer` offers one only when it knows
+ * its declaration and it is listed (`docs/architecture/mcp-endpoint.md` → The dispatcher and `describe().harness`). A stage
+ * adds a tool here and to `harnessDispatch` (`../harness/dispatch.ts`) together.
+ */
+export const HARNESS_TOOLS_SERVED = [
+  "environment_list",
+  "environment_get",
+  "settings_get",
+  "settings_mcp_list",
+  "settings_mcp_get",
+] as const satisfies ReadonlyArray<HarnessToolName>;
 
 /** What the endpoint reads of the Registry and the Sessions. Each is one RPC; a failure of any is `unavailable`. */
 export interface McpBackend {
@@ -168,6 +186,11 @@ export interface McpBackend {
    * other Session is in it. A failure is a defect, which the operation reads as `unavailable`.
    */
   readonly deleteSession: (id: string) => Effect.Effect<void>;
+  /**
+   * The management tools' dispatcher (`../harness/dispatch.ts`) over the Registry and the McpHosts. Its failures are
+   * values; a defect is read as `unavailable`.
+   */
+  readonly harness: (request: HarnessRequest) => Effect.Effect<ApiResult<HarnessAnswer>>;
 }
 
 /** What one request adds: where the owner's pages are, who is calling, and the rate limit. */
@@ -211,6 +234,7 @@ export interface McpApiService {
   readonly importCancel: (
     request: ImportCancelRequest,
   ) => Effect.Effect<ApiResult<ImportCancelResult>>;
+  readonly harness: (request: HarnessRequest) => Effect.Effect<ApiResult<HarnessAnswer>>;
   /** Counts a call; present when the caller is over its rate. */
   readonly limited: Effect.Effect<{ readonly retryAfterS: number } | undefined>;
   readonly auth: McpAuth;
@@ -525,7 +549,11 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
 
   return {
     describe: () => {
-      const description = { operations: [...MCP_API_OPERATIONS_SERVED], limits: MCP_API_LIMITS };
+      const description = {
+        operations: [...MCP_API_OPERATIONS_SERVED],
+        limits: MCP_API_LIMITS,
+        harness: [...HARNESS_TOOLS_SERVED],
+      };
 
       return context.version === undefined
         ? description
@@ -1095,6 +1123,8 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
           return apiOk<ImportCancelResult>({ cancelled: true });
         }),
       ),
+
+    harness: (request) => guarded(backend.harness(request)),
 
     limited: context.withinRate(identity.rateKey).pipe(
       // A limiter that cannot answer counts as within the rate: the endpoint fails open, the owner's own calls first.

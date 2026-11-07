@@ -23,6 +23,7 @@ import {
   mcpApiService,
   type McpApiContext,
   type McpBackend,
+  HARNESS_TOOLS_SERVED,
 } from "./api.ts";
 
 const ORIGIN = "https://cloudpid.test";
@@ -139,6 +140,7 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
   stageImportCancel: () =>
     Effect.succeed({ ok: true as const, value: { cancelled: true as const } }),
   deleteSession: () => Effect.void,
+  harness: () => Effect.succeed({ ok: true as const, value: { text: "ok", structured: {} } }),
   ...overrides,
 });
 
@@ -172,7 +174,68 @@ describe("describe", () => {
       "importAppend",
       "importFinish",
       "importCancel",
+      "harness",
     ]);
+  });
+
+  it("lists the five management tools it serves in harness, and no other", () => {
+    expect(service().describe().harness).toEqual([
+      "environment_list",
+      "environment_get",
+      "settings_get",
+      "settings_mcp_list",
+      "settings_mcp_get",
+    ]);
+    expect(service().describe().harness).toEqual([...HARNESS_TOOLS_SERVED]);
+  });
+});
+
+describe("harness", () => {
+  const request = {
+    tool: "environment_get",
+    input: { id: "default" },
+    requestId: "r-1",
+    via: { client: { name: "pi" }, era: "modern" as const },
+  };
+
+  it("hands the dispatcher the request as it came and answers its text and structured value", async () => {
+    const asked: Array<unknown> = [];
+
+    const result = await run(
+      service({
+        harness: (given) => {
+          asked.push(given);
+
+          return Effect.succeed({
+            ok: true as const,
+            value: { text: "Environment Default", structured: { scope: { id: "default" } } },
+          });
+        },
+      }).harness(request),
+    );
+
+    expect(asked).toEqual([request]);
+    expect(result).toEqual({
+      ok: true,
+      value: { text: "Environment Default", structured: { scope: { id: "default" } } },
+    });
+  });
+
+  it("passes the dispatcher's refusals through as values", async () => {
+    const result = await run(
+      service({
+        harness: () => Effect.succeed(apiFailure("not_found", "No Environment has the id nope.")),
+      }).harness({ ...request, input: { id: "nope" } }),
+    );
+
+    expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
+  });
+
+  it("answers unavailable when the dispatcher dies", async () => {
+    const result = await run(service({ harness: () => Effect.die("rpc cut") }).harness(request));
+
+    expect(result).toMatchObject({ ok: false, error: { code: "unavailable", retryable: true } });
+    expect(JSON.stringify(result)).not.toContain("rpc cut");
   });
 });
 
