@@ -12,7 +12,7 @@ There is no Session to hold such a request, so the Registry keeps it, holding:
 - the caller's `via`;
 - an expiry of 7 days.
 
-The tool answers at once, `pending` with an `approval_id`, and sends the owner an `input` Notification. The caller can only follow the request (`approval_wait`) or withdraw it (`approval_withdraw`). The owner answers on the same card as in a Session, shown on the target's Settings or Environment page.
+The tool answers at once, `pending` with an `approval_id`, and sends the owner an `input` Notification. The caller can only follow the request (`approval_wait`) or withdraw it (`approval_withdraw`). The owner answers on the same card as in a Session, shown on the Scope's Settings page.
 
 The owner's Approve applies the change. The main Worker runs the tool's own `apply` against the values the card showed, so an approved change never depends on the caller coming back. The decision is recorded before `apply` runs, and an `apply` cut off part-way resumes from the card's _Try again_, the caller's next `approval_wait` (except a long apply, such as deleting an Environment), or the owner's next visit to the web app. There is no Registry alarm, because the Registry can't reach the Workspaces and Sessions a delete removes.
 
@@ -24,3 +24,10 @@ This amends ADR-0019, under which an Approval is always a card in a Session. Ses
 - **Refusing Approval-gated tools over the endpoint**: this leaves Limits, Instructions, MCP server definitions and deletes to the web app, which defeats the endpoint managing what the agent manages.
 - **The caller's next call applies the approved change**: an approved change would then sit unapplied whenever the caller never returns.
 - **Moving Session-held Approvals to the Registry too, for one mechanism**: in a Session an Approval belongs to its call. Stop withdraws it, a rerun after eviction waits for the same request, and its card is in the transcript. Moving it adds a path from the Registry back to the Session, with nothing the owner would notice.
+
+## Consequences
+
+- The Registry gains a table of Approval requests (expiry, a cap per identity, dedupe), and the approve/decline route applies a change on the main Worker, so it carries each tool's `apply` and the after-steps a Session carries today.
+- Resuming a cut-off apply has no timer: it depends on _Try again_, the caller's `approval_wait` or the owner's next visit. An Approval nobody returns to, such as a long delete, can sit approved and unfinished until one of those.
+- Every edge between the Workers only gains (an optional `describe().harness`, new operations, new columns and tables), so a deploy that is half done shows fewer tools and never a broken one; the Registry's feature probe makes the tools refuse, rather than skip a Secret check, while it is on older code.
+- Approvals asked through the endpoint use the owner's Notifications and the Scope's Settings page, so those carry a request that has no Session.

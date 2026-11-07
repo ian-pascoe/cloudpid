@@ -325,7 +325,7 @@ The single index of Environments, Workspaces, Sessions, settings overrides, and 
 _Avoid_: Catalog, directory
 
 **Notification**:
-A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session; and when a Trigger's Fire fails.
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session; when a Trigger's Fire fails; and, with no Session, when an agent changes Environments or Settings through the MCP endpoint (one for each call, listing its changes) or asks for an Approval there, linking to the Scope's Settings page.
 _Avoid_: Alert, push message (for the user-facing thing), MCP notification (a message an MCP server sends, such as a progress report or a list change)
 
 **Settings**:
@@ -511,7 +511,7 @@ Work an MCP server goes on doing after answering the call that started it. The c
 _Avoid_: Task (alone: that is a Todo Item, or pi-durable's work), background job, async call, task id (the server's id, which is never shown)
 
 **MCP endpoint**:
-cloudpid's own MCP server, through which a Local agent (or a Session, in Self-use) works with cloudpid as the owner: it lists Environments and Sessions, starts and messages Sessions, waits for their Runs, reads their transcripts, and changes Environments and Settings with the tools a Session's agent has. It never asks its caller anything and never answers for the owner: what needs the owner's Approval waits for them in cloudpid, and the caller can only follow it.
+cloudpid's own MCP server, through which a Local agent works with cloudpid as the owner: it lists Environments and Sessions, starts and messages Sessions, waits for their Runs, reads their transcripts, and changes Environments and Settings with the tools a Session's agent has. A Session using it (Self-use) is offered only the tools for Sessions, since it has the others itself. It never asks its caller anything and never answers for the owner: what needs the owner's Approval waits for them in cloudpid, and the caller can only follow it.
 _Avoid_: MCP server (that is one the agent's tools come from), API, `/mcp`
 
 **Local agent**:
