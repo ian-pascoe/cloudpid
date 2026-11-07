@@ -8,6 +8,7 @@
     "./base64": "./src/base64.ts",
     "./call-diff": "./src/call-diff.ts",
     "./csp": "./src/csp.ts",
+    "./harness-tools": "./src/harness-tools/index.ts",
     "./live-view": "./src/live-view.ts",
     "./mcp-api": "./src/mcp-api.ts",
     "./mcp-tools": "./src/mcp-tools.ts",
