@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { build, startOf } from "./mcp.fixture.ts";
 import { makeMcpTools } from "./mcp.ts";
 import { type FakeMcpServer, fakeMcpHost } from "./mcp.testing.ts";
-import { isOwnEndpoint, isOwnEntry, selfUseHides } from "./mcp/exposure.ts";
+import { isOwnEndpoint, isOwnServer, selfUseHides } from "./mcp/exposure.ts";
 import { mcpListing } from "./mcp/servers.ts";
 import type { McpBuildServer } from "./mcp/tools.ts";
 
@@ -46,6 +46,13 @@ describe("isOwnEndpoint", () => {
     expect(isOwnEndpoint(`${ORIGIN}:443/mcp`, ORIGIN)).toBe(true);
   });
 
+  it("reads appOrigin as a URL, so an uppercase host or a trailing slash still names the endpoint", () => {
+    expect(isOwnEndpoint(`${ORIGIN}/mcp`, "https://CloudPid.test")).toBe(true);
+    expect(isOwnEndpoint(`${ORIGIN}/mcp`, `${ORIGIN}/`)).toBe(true);
+    expect(isOwnEndpoint(`${ORIGIN}/mcp`, "not a url")).toBe(false);
+    expect(isOwnEndpoint("foo:/mcp", "bar:/x")).toBe(false);
+  });
+
   it("is false for /mcp/, /MCP, a sub-path, another origin, a port, an unparsable URL and no appOrigin", () => {
     expect(isOwnEndpoint(`${ORIGIN}/mcp/`, ORIGIN)).toBe(false);
     expect(isOwnEndpoint(`${ORIGIN}/MCP`, ORIGIN)).toBe(false);
@@ -56,15 +63,15 @@ describe("isOwnEndpoint", () => {
     expect(isOwnEndpoint(`${ORIGIN}:8443/mcp`, ORIGIN)).toBe(false);
     expect(isOwnEndpoint("not a url", ORIGIN)).toBe(false);
     expect(isOwnEndpoint("", ORIGIN)).toBe(false);
-    expect(isOwnEndpoint(`${ORIGIN}/mcp`, undefined)).toBe(false);
+    expect(isOwnEndpoint(`${ORIGIN}/mcp`)).toBe(false);
     expect(isOwnEndpoint(`${ORIGIN}/mcp`, "")).toBe(false);
   });
 
   it("reads an entry as the host stores it: an HTTP server with a URL", () => {
-    expect(isOwnEntry({ type: "http", url: `${ORIGIN}/mcp` }, ORIGIN)).toBe(true);
-    expect(isOwnEntry({ type: "stdio", url: `${ORIGIN}/mcp` }, ORIGIN)).toBe(false);
-    expect(isOwnEntry({ type: "http" }, ORIGIN)).toBe(false);
-    expect(isOwnEntry({ type: "http", url: 3 }, ORIGIN)).toBe(false);
+    expect(isOwnServer({ type: "http", url: `${ORIGIN}/mcp` }, ORIGIN)).toBe(true);
+    expect(isOwnServer({ type: "stdio", url: `${ORIGIN}/mcp` }, ORIGIN)).toBe(false);
+    expect(isOwnServer({ type: "http" }, ORIGIN)).toBe(false);
+    expect(isOwnServer({ type: "http", url: 3 }, ORIGIN)).toBe(false);
   });
 });
 

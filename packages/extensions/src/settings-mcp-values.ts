@@ -36,7 +36,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { isOwnEndpoint, reachesModel, selfUseHides } from "./mcp/exposure.ts";
+import { isOwnServer, reachesModel, selfUseHides } from "./mcp/exposure.ts";
 import { boundItems, boundText, scopeRef } from "./outputs.ts";
 import type { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
 
@@ -190,18 +190,11 @@ const decide = (
   });
 
 /**
- * Whether the Session's model is shown none of an entry's tools that Self-use hides: its URL is this stage's own endpoint
- * (`appOrigin`, the Session's; absent with no rule). The tools stay in the listing, as `model_visible: false`.
+ * Whether the Session's model is shown `tool`: its `_meta` lets it, and it is not one Self-use hides. `hides` is whether
+ * the entry is this stage's own endpoint (`isOwnServer`); its hidden tools stay in the listing, as `model_visible: false`.
  */
-const hidesHarnessTools = (entry: SettingsMcpServer, appOrigin: string | undefined): boolean => {
-  const { server } = entry.server;
-
-  return server.type !== "stdio" && isOwnEndpoint(server.url, appOrigin);
-};
-
-/** Whether the Session's model is shown `tool` of `entry`: its `_meta` lets it, and Self-use does not hide it. */
-const modelSees = (entry: SettingsMcpServer, appOrigin: string | undefined, tool: Tool): boolean =>
-  reachesModel(tool._meta) && !(hidesHarnessTools(entry, appOrigin) && selfUseHides(tool.name));
+const modelSees = (hides: boolean, tool: Tool): boolean =>
+  reachesModel(tool._meta) && !(hides && selfUseHides(tool.name));
 
 /** The server's inventory as a value gives it: from the host's row, or what the entry alone says when it has none. */
 export const inventoryOutput = (
@@ -210,14 +203,13 @@ export const inventoryOutput = (
   inventory: McpServerInventory | undefined,
   appOrigin?: string,
 ) => {
+  const hides = isOwnServer(entry.server.server, appOrigin);
   const tools = toolsOf(inventory);
   const names = namesOf(entry.server, tools);
 
   const direct = Arr.filter(
     tools,
-    (tool) =>
-      modelSees(entry, appOrigin, tool) &&
-      decide(entry, offered, names, tool).exposure === "direct",
+    (tool) => modelSees(hides, tool) && decide(entry, offered, names, tool).exposure === "direct",
   ).length;
 
   const error =
@@ -429,7 +421,7 @@ const toolOutput = (
   names: ReadonlyMap<string, string>,
   inventory: McpServerInventory | undefined,
   tool: Tool,
-  appOrigin: string | undefined,
+  hides: boolean,
 ) => {
   const decision = decide(entry, offered, names, tool);
   const { reason } = decision;
@@ -445,7 +437,7 @@ const toolOutput = (
     title: tool.title ?? annotationTitle,
     exposure: decision.exposure,
     decided_by: decidedBy(reason),
-    model_visible: modelSees(entry, appOrigin, tool),
+    model_visible: modelSees(hides, tool),
     hints: {
       read_only: hintOf(tool.annotations, "readOnlyHint"),
       destructive: hintOf(tool.annotations, "destructiveHint"),
@@ -484,11 +476,12 @@ export const getOutput = (
   const row = inventory.read === "read" ? inventory.byName.get(entry.server.name) : undefined;
   const tools = toolsOf(row);
   const names = namesOf(entry.server, tools);
+  const hides = isOwnServer(entry.server.server, appOrigin);
 
   // At most MAX_GET_TOOLS, and as many of them as weigh bounds.tools stored.
   const listed = boundItems(
     Arr.map(Arr.take(tools, MAX_GET_TOOLS), (tool) =>
-      toolOutput(entry, view.offered, names, row, tool, appOrigin),
+      toolOutput(entry, view.offered, names, row, tool, hides),
     ),
     bounds.tools,
   );

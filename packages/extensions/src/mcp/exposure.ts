@@ -3,7 +3,7 @@
 // server not discovered yet may have a `direct` tool (the first request waits only for those).
 // @effect-diagnostics missingPipeableSignature:off -- readers of plain values, not combinators.
 import { type McpExposure, matchesToolPattern, mcpToolPrefix } from "@cloudpid/config";
-import { type JsonObject, visibilityOfMeta } from "@cloudpid/mcp/types";
+import { visibilityOfMeta } from "@cloudpid/mcp/types";
 import { HARNESS_TOOL_NAMES } from "@cloudpid/protocol/harness-tools";
 import { MCP_ROUTE } from "@cloudpid/protocol/mcp-api";
 import * as Arr from "effect/Array";
@@ -101,26 +101,35 @@ export const reachesModel = (meta: Schema.Json | undefined): boolean =>
 
 /**
  * Whether `url` is this stage's own MCP endpoint (`docs/architecture/mcp-endpoint.md` → Self-use): the same origin as
- * `appOrigin` and a path of exactly `MCP_ROUTE` (the query is ignored). `/mcp/`, `/MCP`, another origin, a URL that does
- * not parse, and no `appOrigin` (`alchemy dev`) are not.
+ * `appOrigin` (read as a URL, so an uppercase host or a trailing slash still names it) and a path of exactly `MCP_ROUTE`
+ * (the query is ignored). `/mcp/`, `/MCP`, another origin, a URL that does not parse, and no `appOrigin` (`alchemy dev`)
+ * are not.
  */
-export const isOwnEndpoint = (url: string, appOrigin: string | undefined): boolean => {
-  if (appOrigin === undefined || appOrigin === "") return false;
+export const isOwnEndpoint = (url: string, appOrigin?: string): boolean => {
+  const own = appOrigin === undefined ? null : URL.parse(appOrigin);
+  const parsed = own === null ? null : URL.parse(url);
 
-  const parsed = URL.parse(url);
-
-  return parsed !== null && parsed.origin === appOrigin && parsed.pathname === MCP_ROUTE;
+  // An opaque origin (`null`) is no origin: two URLs of a scheme that has none must not match each other.
+  return (
+    parsed !== null &&
+    own?.origin !== "null" &&
+    parsed.origin === own?.origin &&
+    parsed.pathname === MCP_ROUTE
+  );
 };
 
-/** Whether an entry as the host stores it is an HTTP server at this stage's own endpoint (`isOwnEndpoint`). */
-export const isOwnEntry = (entry: JsonObject, appOrigin: string | undefined): boolean =>
-  entry["type"] === "http" &&
-  Predicate.isString(entry["url"]) &&
-  isOwnEndpoint(entry["url"], appOrigin);
+/** Whether an entry (an HTTP server's `url`) is this stage's own endpoint (`isOwnEndpoint`); any other transport is not. */
+export const isOwnServer = (
+  entry: { readonly type?: unknown; readonly url?: unknown },
+  appOrigin?: string,
+): boolean =>
+  entry.type === "http" && Predicate.isString(entry.url) && isOwnEndpoint(entry.url, appOrigin);
+
+/** The names the Self-use rule hides from the Session's own endpoint. */
+const HIDDEN = new Set<string>(HARNESS_TOOL_NAMES);
 
 /**
  * Whether the Self-use rule hides tool `name` of the Session's own endpoint: every tool declared in
  * `@cloudpid/protocol/harness-tools` has an in-session twin. The rest of the endpoint's tools (`MCP_TOOL_NAMES`) stay.
  */
-export const selfUseHides = (name: string): boolean =>
-  Arr.some(HARNESS_TOOL_NAMES, (harness) => harness === name);
+export const selfUseHides = (name: string): boolean => HIDDEN.has(name);

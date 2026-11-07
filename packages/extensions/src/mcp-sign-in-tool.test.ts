@@ -100,7 +100,11 @@ const ENTRIES: ReadonlyArray<readonly [string, FakeMcpServer["entry"], boolean]>
   ["a stdio server", { type: "stdio" }, false],
 ];
 
-const builtWith = async (servers: ReadonlyArray<FakeMcpServer>, requests = requestsOf()) => {
+const builtWith = async (
+  servers: ReadonlyArray<FakeMcpServer>,
+  requests = requestsOf(),
+  more: { readonly appOrigin?: string } = {},
+) => {
   const host = fakeMcpHost(servers);
 
   const tools = makeMcpTools(host.client, memoryMcpToolsStore(), {
@@ -108,6 +112,7 @@ const builtWith = async (servers: ReadonlyArray<FakeMcpServer>, requests = reque
     signIns: requests.signIns,
     environment: "env_1",
     connectWaitMs: 50,
+    ...more,
   });
 
   return { host, tools, ...requests };
@@ -237,6 +242,31 @@ describe("mcp_sign_in_ask", () => {
       server: "Docs-Site",
       sign_in_request: "signed_in",
     });
+  });
+
+  it("counts the tools of the own endpoint without the ones Self-use hides", async () => {
+    const own: FakeMcpServer = { ...SERVER, name: "cloudpid" };
+    const setup = await builtWith([own], requestsOf(), { appOrigin: "https://cloudpid.test" });
+
+    const { session, submitted } = await asking(setup, { server: "cloudpid", reason: "I need it" });
+
+    await until(async () => (await Effect.runPromise(setup.signIns.pending)).length > 0);
+
+    const [request] = await Effect.runPromise(setup.signIns.pending);
+
+    setup.host.set([
+      {
+        ...DOCS,
+        name: "cloudpid",
+        tools: [{ name: "environment_list" }, { name: "session_get" }, { name: "sessions_list" }],
+      },
+    ]);
+    await Effect.runPromise(setup.signIns.resolve([request?.id ?? ""]));
+    await submitted.wait(context);
+
+    expect((await session.texts("toolResult")).at(-1)).toBe(
+      "Signed in to cloudpid. 2 tools from your next request.",
+    );
   });
 
   it("says the server is still connecting when it has not connected by the time the answer is read", async () => {

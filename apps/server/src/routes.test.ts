@@ -80,6 +80,5 @@ it("knows the MCP endpoint by exactly /mcp, whatever the method", () => {
 });
 
 it("serves the path @cloudpid/protocol names for the endpoint", () => {
-  expect(MCP_ROUTE).toBe("/mcp");
   expect(isMcpRoute(request("POST", MCP_ROUTE))).toBe(true);
 });

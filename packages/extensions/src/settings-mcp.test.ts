@@ -37,6 +37,7 @@ import { Approvals } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import { AgentChangeLog, DeployCredentials } from "./environment.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
+import { serverStatus } from "./settings-mcp-status.ts";
 import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
 import {
   SETTINGS_MCP_READ_TOOLS,
@@ -1205,6 +1206,30 @@ describe("the Session's own endpoint (Self-use)", () => {
     expect(result.structuredOutput).toMatchObject({
       servers: [{ name: "cloudpid", inventory: { tools: 4, direct: 2 } }],
     });
+  });
+
+  it("counts them as direct in the status after a change, as the tools do", async () => {
+    const access = fakeAccess({ views: { [ENV]: endpointView } });
+    const host = fakeMcpHost([endpoint]);
+
+    const [entry] = endpointView.servers;
+
+    const status = (appOrigin: string | undefined) =>
+      Effect.runPromise(
+        serverStatus(
+          { ...access.service, host: () => host.client, appOrigin },
+          {
+            own: ENV,
+            entry: entry!,
+            offered: [],
+            waitMs: 0,
+            before: () => Effect.void,
+          },
+        ),
+      );
+
+    expect(await status(ORIGIN)).toMatchObject({ status: "connected", tools: 4, direct: 2 });
+    expect(await status(undefined)).toMatchObject({ status: "connected", tools: 4, direct: 4 });
   });
 
   it("shows every tool as visible and direct from another origin, and with no appOrigin", async () => {
