@@ -102,7 +102,8 @@ describe("fencePayload", () => {
   });
 
   it("marks a cut as truncated only when the text shown is shorter than what the body became", () => {
-    const body = `${"a".repeat(MAX_INLINE_PAYLOAD_BYTES)}`;
+    const body = "a".repeat(MAX_INLINE_PAYLOAD_BYTES);
+
     const exact = fencePayload({
       payload: github({ body, size: body.length }),
       path: "/p",
@@ -111,7 +112,7 @@ describe("fencePayload", () => {
 
     // The body is longer than what is shown only by what redaction took out: nothing was cut.
     const shorter = fencePayload({
-      payload: github({ body: `${"a".repeat(20_000)}`, size: 20_000 }),
+      payload: github({ body: "a".repeat(20_000), size: 20_000 }),
       path: "/p",
       redact: () => "short",
     });
