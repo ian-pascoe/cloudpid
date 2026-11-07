@@ -1,5 +1,5 @@
 ---
-status: accepted (Approval: more kinds since, listed in docs/architecture/agent-changes.md → Approval; making or widening a Trigger: amended by ADR-0047)
+status: accepted (Approval: more kinds since, listed in docs/architecture/agent-changes.md → Approval; making or widening a Trigger: amended by ADR-0047; an Approval asked through the MCP endpoint, where no Session holds it: amended by ADR-0050)
 ---
 
 # The agent manages its Environments and Settings
@@ -22,3 +22,4 @@ Tools have one purpose each: one action on one thing, never a general update of 
 - The Session, not only the main Worker, now starts the Build upkeep after a change, and hands the new Container settings to its own Workspace DO at once when the change is to its own Environment. Other Environments' Workspaces get a change at their next readying, as they do for the owner's edits. Every change still applies at a Container's next start; `container_restart` applies it now.
 - Approval is the first approval mechanism in the Session; the Guardian (#38) builds on it.
 - Triggers (#191) follow the same rules when they arrive: the agent manages them through tools.
+- The MCP endpoint serves the same Environment and Settings tools to a Local agent, from shared definitions ([`mcp-endpoint.md`](../architecture/mcp-endpoint.md#environment-and-settings-tools)). Its changes are Agent changes with a `via` author, and what needs the owner's Approval is kept by the Registry and applied by the owner's Approve ([ADR-0050](0050-an-approval-asked-through-the-mcp-endpoint-is-kept-by-the-registry-and-applied-by-the-owners-approve.md)); the card in a Session is unchanged.
