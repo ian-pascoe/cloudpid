@@ -49,6 +49,7 @@ import {
   Session,
   SessionLive,
 } from "./session/Session.ts";
+import { Trigger, TriggerLive } from "./trigger/Trigger.ts";
 import { WORKSPACE_BINDING } from "./workspace/binding.ts";
 import { workspaceObjectsRemote } from "./workspace/lifecycle.ts";
 import type { WorkspaceNamespace } from "./session/workspace.ts";
@@ -62,12 +63,16 @@ import type { ServerDurableObject } from "./worker-shape.ts";
  * with; that each class's own id is its key, and that a Durable Object added to the Layers below is added here and there,
  * is by convention.
  */
-const durableObjects = { Session, Registry, McpHost } satisfies {
-  readonly [Name in ServerDurableObject]: typeof Session | typeof Registry | typeof McpHost;
+const durableObjects = { Session, Registry, McpHost, Trigger } satisfies {
+  readonly [Name in ServerDurableObject]:
+    | typeof Session
+    | typeof Registry
+    | typeof McpHost
+    | typeof Trigger;
 };
 
 /**
- * The Server Worker's init (`worker.ts`): its routes, over the Session, Registry and McpHost objects, whose Layers it
+ * The Server Worker's init (`worker.ts`): its routes, over the Session, Registry, McpHost and Trigger objects, whose Layers it
  * provides. Built at the isolate's first event, never at startup; `worker.ts` imports it dynamically, so that none of this
  * module's graph is evaluated in the Worker's global scope (`docs/development/workers.md` → Startup).
  */
@@ -258,7 +263,9 @@ export const serverInit = Effect.gen(function* () {
   // The Worker's init is its entry point.
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(
-    SessionLive.pipe(
+    TriggerLive.pipe(
+      // A Trigger's object calls the Registry and its Fires' Sessions.
+      Layer.provideMerge(SessionLive),
       Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
       // The Session DOs call their Environment's MCP host.
       Layer.provideMerge(McpHostLive),

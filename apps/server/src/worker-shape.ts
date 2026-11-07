@@ -7,7 +7,7 @@
 export const SERVER_COMPATIBILITY = { date: "2026-08-31" } as const;
 
 /** The Durable Object classes the Server Worker hosts (`worker-init.ts` provides their Layers), by the name each is exported under. */
-export const SERVER_DURABLE_OBJECTS = ["Session", "Registry", "McpHost"] as const;
+export const SERVER_DURABLE_OBJECTS = ["Session", "Registry", "McpHost", "Trigger"] as const;
 
 /** One of {@link SERVER_DURABLE_OBJECTS}. */
 export type ServerDurableObject = (typeof SERVER_DURABLE_OBJECTS)[number];
