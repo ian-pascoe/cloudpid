@@ -6,19 +6,21 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over SQLite.
 import { ThinkingLevel } from "@cloudpid/config";
 import {
+  defaultWhenBusy,
   type EnvironmentTriggerInput,
   fireTitle,
-  scheduleOf,
-  type ScheduleSource,
-  scheduleProblem,
+  sourceProblem,
   TriggerDefinition,
   triggerMessageProblem,
   triggerNameProblem,
   type TriggerChangeValue,
   type TriggerPatch,
+  type TriggerSourceInput,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type {
@@ -45,8 +47,10 @@ export type FireAdmission = {
   /** The revision of the definition the object acted on. */
   readonly revision: number;
   readonly requestId: string;
-  /** The Schedule's time the Fire is for; absent for the owner's Fire now. */
+  /** The Schedule's time the Fire is for; absent for the owner's Fire now and a delivery's Fire. */
   readonly scheduledAt?: number | undefined;
+  /** The event of the delivery the Fire is for (a webhook's), which its Session's title carries. */
+  readonly event?: string | undefined;
 };
 
 /**
@@ -123,20 +127,45 @@ const toDefinition = (row: TriggerRow): TriggerDefinition => {
   return definition;
 };
 
-/** A Schedule as its column keeps it, its keys always in one order, so the same Schedule is the same text. */
-const sourceText = ({ type, cron, zone }: ScheduleSource): string =>
-  JSON.stringify({ type, cron, zone });
+/**
+ * A source as its column keeps it, its keys always in one order (a `match`'s paths sorted, its values as given, which
+ * are an order the owner may have meant), so the same source is the same text.
+ */
+const sourceText = (source: TriggerSourceInput): string => {
+  if (source.type === "schedule") {
+    return JSON.stringify({ type: source.type, cron: source.cron, zone: source.zone });
+  }
+
+  const { type, format, match } = source;
+
+  if (match === undefined) return JSON.stringify({ type, format });
+
+  return JSON.stringify({
+    type,
+    format,
+    match: Record.fromEntries(
+      Arr.map(
+        Arr.sort(Record.keys(match), Order.String),
+        (path) => [path, match[path] ?? []] as const,
+      ),
+    ),
+  });
+};
+
+/** The source `definition` fires on, as one a change may keep; undefined for one this version doesn't know. */
+const sourceOf = (definition: TriggerDefinition): TriggerSourceInput | undefined =>
+  definition.source.type === "unknown" ? undefined : definition.source;
 
 /** Why `fields` can't be a Trigger's, or undefined when they can. */
 const fieldsProblem = (fields: {
   readonly name: string;
   readonly message: string;
-  readonly source: ScheduleSource;
+  readonly source: TriggerSourceInput;
   readonly base: string | null;
 }): string | undefined =>
   triggerNameProblem(fields.name) ??
   triggerMessageProblem(fields.message) ??
-  scheduleProblem(fields.source) ??
+  sourceProblem(fields.source) ??
   (fields.base !== null && fields.base.trim() === "" ? "A base branch can't be empty" : undefined);
 
 /** Why `refusal` kept a Fire's Session from being registered, as the fire log says it. */
@@ -149,6 +178,23 @@ const refusalReason = (refusal: SessionRefusal): string => {
     default:
       return `the Session was refused (${refusal.refused})`;
   }
+};
+
+/**
+ * `source` with `match` (null: none) as its filter, or why it can't have one: only a webhook source has a `match`, so a
+ * Trigger that fires on a Schedule refuses it. Absent: the source as it is.
+ */
+const withMatch = (
+  source: TriggerSourceInput,
+  match: TriggerPatch["match"],
+): { readonly source: TriggerSourceInput } | { readonly problem: string } => {
+  if (match === undefined) return { source };
+
+  if (source.type !== "webhook") return { problem: "Only a webhook Trigger has a match" };
+
+  const { match: _kept, ...rest } = source;
+
+  return { source: match === null ? rest : { ...rest, match } };
 };
 
 /** The fields of a Trigger a change can give it. */
@@ -264,7 +310,7 @@ export const openTriggers = (
           name: input.name.trim(),
           message: input.message,
           source: sourceText(input.source),
-          when_busy: input.whenBusy ?? "skip",
+          when_busy: input.whenBusy ?? defaultWhenBusy(input.source),
           base: base?.trim() ?? null,
           model: input.model ?? null,
           thinking: input.thinking ?? null,
@@ -342,11 +388,19 @@ export const openTriggers = (
 
         if (known === undefined) return { status: "missing" };
 
-        const source = patch.source ?? scheduleOf(toDefinition(known));
+        const kept = sourceOf(toDefinition(known));
+        const changed = patch.source ?? kept;
 
-        if (source === undefined) {
+        if (changed === undefined) {
           return { status: "invalid", problem: "This version can't change the Trigger's source" };
         }
+
+        // A `match` alone changes a webhook's filter and nothing else of its source.
+        const matched = withMatch(changed, patch.match);
+
+        if ("problem" in matched) return { status: "invalid", problem: matched.problem };
+
+        const { source } = matched;
 
         /** An option's new value: kept when absent, back to its default (none) when null. */
         const option = <A>(value: A | null | undefined, kept: A | null): A | null =>
@@ -447,7 +501,7 @@ export const openTriggers = (
 
       if (known === undefined) return null;
 
-      const source = scheduleOf(value);
+      const source = value.source.type === "unknown" ? undefined : value.source;
 
       sql.exec("UPDATE triggers SET removed_at = NULL WHERE id = ?", id);
 
@@ -518,14 +572,20 @@ export const openTriggers = (
           return { status: "skipped", reason: "overlap" };
         }
 
-        if (current.source.type !== "schedule") {
+        if (current.source.type === "unknown") {
           return { status: "failed", reason: "this version can't fire its source" };
         }
+
+        // A Schedule's Fire is titled by its scheduled time in its zone, a webhook's by the event and the time in UTC.
+        const title =
+          current.source.type === "schedule"
+            ? fireTitle(current.name, fire.scheduledAt ?? now, current.source.zone)
+            : fireTitle(current.name, now, "UTC", fire.event ?? "webhook");
 
         const created = store.createSession(
           {
             id: ids.session,
-            title: fireTitle(current.name, fire.scheduledAt ?? now, current.source.zone),
+            title,
             workspace: {
               kind: "new",
               id: ids.workspace,

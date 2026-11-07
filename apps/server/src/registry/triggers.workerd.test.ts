@@ -199,6 +199,111 @@ const fireOf = (revision = 1, requestId = `t1:${new Date(monday).toISOString()}`
   scheduledAt: monday,
 });
 
+describe("a webhook Trigger's definition", () => {
+  const hook: EnvironmentTriggerInput = {
+    ...weekly,
+    name: "CI failed",
+    source: {
+      type: "webhook",
+      format: "github",
+      match: { "workflow_run.conclusion": ["failure"], event: ["workflow_run"] },
+    },
+  };
+
+  it("is kept with its format and match, and starts a Session when busy by default", async () => {
+    const registry = fresh();
+
+    expect(await registry.createTrigger("t1", hook, 1_000)).toMatchObject({ status: "ok" });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      source: hook.source,
+      whenBusy: "start",
+    });
+    expect(await registry.createTrigger("t2", { ...hook, whenBusy: "skip" }, 1_000)).toMatchObject({
+      definition: { whenBusy: "skip" },
+    });
+  });
+
+  it("is made once by a create retried with its match written in another order", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", hook, 1_000);
+
+    expect(
+      await registry.createTrigger(
+        "t1",
+        {
+          ...hook,
+          source: {
+            type: "webhook",
+            format: "github",
+            match: { event: ["workflow_run"], "workflow_run.conclusion": ["failure"] },
+          },
+        },
+        2_000,
+      ),
+    ).toMatchObject({ status: "unchanged" });
+  });
+
+  it("is refused for a match that can't filter", async () => {
+    const registry = fresh();
+
+    for (const match of [{ "a..b": ["x"] }, { event: [] }]) {
+      expect(
+        await registry.createTrigger(
+          "t1",
+          { ...hook, source: { type: "webhook", format: "standard", match } },
+          1_000,
+        ),
+      ).toMatchObject({ status: "invalid" });
+    }
+
+    expect(await registry.listTriggers()).toEqual([]);
+  });
+
+  it("changes its match alone, and takes it away with null", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", hook, 1_000);
+
+    expect(await registry.updateTrigger("t1", { match: { event: ["push"] } }, 2_000)).toMatchObject(
+      {
+        status: "ok",
+        definition: { revision: 2, source: { format: "github", match: { event: ["push"] } } },
+      },
+    );
+    expect(await registry.updateTrigger("t1", { match: { event: ["push"] } }, 3_000)).toMatchObject(
+      {
+        status: "unchanged",
+      },
+    );
+
+    const cleared = await registry.updateTrigger("t1", { match: null }, 4_000);
+
+    expect(cleared).toMatchObject({ status: "ok", definition: { revision: 3 } });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      source: { type: "webhook", format: "github" },
+    });
+    expect((await registry.triggerDefinition("t1"))?.source).not.toHaveProperty("match");
+  });
+
+  it("refuses a match for a Trigger on a Schedule, and one that can't filter", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", weekly, 1_000);
+    await registry.createTrigger("t2", hook, 1_000);
+
+    expect(await registry.updateTrigger("t1", { match: { event: ["push"] } }, 2_000)).toMatchObject(
+      {
+        status: "invalid",
+        problem: "Only a webhook Trigger has a match",
+      },
+    );
+    expect(await registry.updateTrigger("t2", { match: { "": ["x"] } }, 2_000)).toMatchObject({
+      status: "invalid",
+    });
+  });
+});
+
 describe("admitFire", () => {
   it("starts a Session in a new Workspace, titled by cloudpid and marked with the Trigger", async () => {
     const registry = fresh();
@@ -448,5 +553,60 @@ describe("deleting an Environment", () => {
       triggers: [],
     });
     expect(await registry.triggerDefinition("t1")).not.toBeNull();
+  });
+});
+
+describe("admitFire for a webhook Trigger", () => {
+  const hook: EnvironmentTriggerInput = {
+    ...weekly,
+    name: "CI failed",
+    source: { type: "webhook", format: "github" },
+  };
+
+  it("starts a Session titled with the event and the time in UTC", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", hook, 1_000);
+
+    expect(
+      await registry.admitFire(
+        { trigger: "t1", revision: 1, requestId: "t1:d-1", event: "workflow_run" },
+        ids(1),
+        monday,
+      ),
+    ).toMatchObject({ status: "started", session: "s-1" });
+    expect(await registry.getSession("s-1")).toMatchObject({
+      title: "CI failed · workflow_run · Mon, Nov 9, 2026, 3:00 PM UTC",
+      marks: { kind: "trigger", auth: "trigger", trigger: { id: "t1", name: "CI failed" } },
+    });
+  });
+
+  it("starts a Session for each delivery while the last one's runs, and skips when told to", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", hook, 1_000);
+    await registry.createTrigger("t2", { ...hook, whenBusy: "skip" }, 1_000);
+
+    const at = (trigger: string, n: number) => ({
+      trigger,
+      revision: 1,
+      requestId: `${trigger}:d-${String(n)}`,
+    });
+
+    await registry.admitFire(at("t1", 1), ids(1), monday);
+    await registry.setSessionStatus("s-1", "running", monday + 1_000);
+
+    expect(await registry.admitFire(at("t1", 2), ids(2), monday + 2_000)).toMatchObject({
+      status: "started",
+      session: "s-2",
+    });
+
+    await registry.admitFire(at("t2", 1), ids(3), monday);
+    await registry.setSessionStatus("s-3", "running", monday + 1_000);
+
+    expect(await registry.admitFire(at("t2", 2), ids(4), monday + 2_000)).toEqual({
+      status: "skipped",
+      reason: "overlap",
+    });
   });
 });
