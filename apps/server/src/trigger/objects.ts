@@ -1,6 +1,7 @@
-// The Trigger objects as their callers reach them (`docs/architecture/triggers.md` → Cascades): a Trigger that went
-// with its Environment has its object wiped. A wipe that fails is logged and left to the object, which wipes itself at
-// its next alarm, when its definition no longer reads.
+// The Trigger objects as their callers reach them (`docs/architecture/triggers.md` → Cascades, → Agent tools and
+// Approval): a Trigger that went with its Environment has its object wiped, and one the agent changed, or the owner's
+// revert of an Agent change put back, has its object woken to read its definition again. A call that fails is logged and
+// left to the object, which reads its definition again at its next alarm.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Effect from "effect/Effect";
 import { TRIGGER_CLASS, triggerObjectName } from "./name.ts";
@@ -11,12 +12,21 @@ import type { Trigger } from "./Trigger.ts";
 export type TriggerNamespace = Pick<Cloudflare.DurableObject<Trigger>, "getByName">;
 
 export type TriggerObjects = {
+  /** Wake Trigger `id`'s object to read its definition again: arm, re-arm, disarm or wipe it. Never fails. */
+  readonly sync: (id: string) => Effect.Effect<void>;
   /** Wipe Trigger `id`'s object: its alarm and its storage. Never fails. */
   readonly remove: (id: string) => Effect.Effect<void>;
 };
 
 /** The Trigger objects over the `Trigger` namespace. */
 export const triggerObjects = (triggers: TriggerNamespace): TriggerObjects => ({
+  sync: (id) =>
+    Effect.suspend(() => triggers.getByName(triggerObjectName(id)).sync()).pipe(
+      Effect.asVoid,
+      Effect.catchCause((cause) =>
+        Effect.logWarning("A Trigger's object could not be woken", cause),
+      ),
+    ),
   remove: (id) =>
     Effect.suspend(() => triggers.getByName(triggerObjectName(id)).remove()).pipe(
       Effect.catchCause((cause) =>

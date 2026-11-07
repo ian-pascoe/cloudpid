@@ -36,6 +36,7 @@ import { Subagents, SubagentSettings } from "@cloudpid/extensions/subagents";
 import { Todo } from "@cloudpid/extensions/todo";
 import { type VisualRecorder, Visuals } from "@cloudpid/extensions/visuals";
 import { ToolSearch, ToolSearchSettings } from "@cloudpid/extensions/tool-search";
+import { type TriggerAccess, TriggerTools } from "@cloudpid/extensions/triggers";
 import { Web, WebConfig, WebNetworkLive } from "@cloudpid/extensions/web";
 import type { Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
@@ -74,7 +75,9 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * changes); the tools whose change waits for the owner's Approval (`settings_spend_limit_set`,
  * `settings_subagent_depth_set`, `settings_subagent_workspaces_set`, `settings_instructions_set`,
  * `environment_container_size_limit_set`, `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
- * (`docs/architecture/agent-changes.md` → Approval); `mcp`, the Environment's MCP tools, which the Session builds at each
+ * (`docs/architecture/agent-changes.md` → Approval); the `trigger_*` tools, which read and change the Registry's
+ * Triggers (`TriggerAccess`), making or widening one only with the owner's Approval (`docs/architecture/triggers.md` →
+ * Agent tools and Approval); `mcp`, the Environment's MCP tools, which the Session builds at each
  * request start and installs again with `codemode` and `tool_search` (`./mcp-host.ts`); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/architecture/agent-capabilities.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
@@ -105,6 +108,7 @@ export const sessionExtensions: Effect.Effect<
   | SettingsReload
   | Approvals
   | EnvironmentRemoval
+  | TriggerAccess
   | VisualRecorder
   | ToolSpans
 > = Effect.all([
@@ -131,6 +135,8 @@ export const sessionExtensions: Effect.Effect<
   // The MCP servers' own settings tools: `settings_mcp_*`, over the Registry and the Environment's `McpHost`.
   SettingsMcpTools,
   ApprovalTools,
+  // The `trigger_*` tools, over the Registry's Triggers and their objects.
+  TriggerTools,
   // The MCP tools, none until the first request start builds them from the Environment's `McpHost` (`./mcp-host.ts`).
   Effect.succeed(emptyMcpExtension),
   // Every tool result's images held to one result's budget before it is stored.

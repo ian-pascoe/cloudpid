@@ -37,7 +37,7 @@ export type RemovalRegistry = Pick<
 export type RemovalObjects = {
   readonly workspaces: Pick<WorkspaceObjects, "destroy">;
   readonly sessions: Pick<SessionObjects, "destroy">;
-  readonly triggers: TriggerObjects;
+  readonly triggers: Pick<TriggerObjects, "remove">;
 };
 
 /** Why the default Environment is not deleted. */

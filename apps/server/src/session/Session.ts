@@ -11,6 +11,7 @@ import {
 } from "@cloudpid/extensions/browser";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
 import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import { TriggerAccess } from "@cloudpid/extensions/triggers";
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { DeployCredentials, Environments } from "@cloudpid/extensions/environment";
 import { WorkspaceFiles } from "@cloudpid/extensions/files";
@@ -63,6 +64,7 @@ import { runChanges } from "./agent-changes.ts";
 import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { triggerObjects, triggersOfEnvironment } from "../trigger/objects.ts";
+import { sessionTriggers } from "./triggers.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpRecords } from "./mcp-records.ts";
@@ -488,8 +490,16 @@ export const SessionLive = Session.make(
           lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
         });
 
-        // The objects of the Triggers that go with an Environment the owner approved deleting.
+        // The objects of the Triggers the agent changes, and of those that go with an Environment the owner approved
+        // deleting.
         const triggers = triggerObjects(triggersOfEnvironment(worker));
+
+        // The `trigger_*` tools' Triggers: the Registry's, each change this Session's, its object woken after it.
+        const triggerAccess = sessionTriggers({
+          registry: registryObject,
+          session: name,
+          objects: triggers,
+        });
 
         // The deletes the owner approved: an Environment with its Workspaces and Sessions, wiped as the owner's delete
         // wipes them (`removals`, `registry/removal.ts`), and a kept Secret.
@@ -1040,6 +1050,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(SubagentWorkspaces, subagentWorkspaces),
                   Effect.provideService(Environments, environments),
                   Effect.provideService(EnvironmentRemoval, environmentRemoval),
+                  Effect.provideService(TriggerAccess, triggerAccess),
                   Effect.provideService(SettingsAccess, settingsAccess),
                   // The `settings_mcp_*` tools: the Registry's MCP servers, and the hosts of the Environments they name.
                   Effect.provideService(SettingsMcpAccess, settingsMcp),

@@ -13,6 +13,7 @@ import {
   fieldRepo,
   fieldSecret,
   fieldSkill,
+  fieldTrigger,
   MAX_ENVIRONMENT_SECRETS,
   type McpAppCopy,
   type VisualCopy,
@@ -880,6 +881,14 @@ export const serveRegistryRpc = <R = never>(
               case "reverted":
                 // A Skill is not part of a Build: its Workspaces take the set at their next readying.
                 if (fieldSkill(revert.change.field) !== null) return Effect.succeed(revert.change);
+
+                // A Trigger put back, changed back or removed: its object reads its definition again, which arms,
+                // re-arms, disarms or wipes it. A Trigger is not part of a Build either.
+                const trigger = fieldTrigger(revert.change.field);
+
+                if (trigger !== null) {
+                  return background(triggers.sync(trigger)).pipe(Effect.as(revert.change));
+                }
 
                 // A Container setting at Global put back: as after the owner's save, each Environment's Build is looked
                 // at again (and its spare, for the Spare Workspace setting).

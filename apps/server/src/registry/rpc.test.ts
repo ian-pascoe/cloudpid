@@ -19,6 +19,7 @@ import {
   GLOBAL_SCOPE,
   fieldRepo,
   fieldSkill,
+  fieldTrigger,
   fieldVariable,
   forkTitle,
   MAX_ENVIRONMENT_SECRETS,
@@ -635,6 +636,10 @@ const fakeRegistries = () => {
 
   /** The Trigger objects: what was asked of each, in `calls`. */
   const triggerObjects: TriggerObjects = {
+    sync: (id) =>
+      Effect.sync(() => {
+        calls.push(`syncTriggerObject:${id}`);
+      }),
     remove: (id) =>
       Effect.sync(() => {
         calls.push(`removeTriggerObject:${id}`);
@@ -1013,6 +1018,7 @@ const fakeRegistries = () => {
         if (
           fieldRepo(found.value.field) !== null ||
           fieldSkill(found.value.field) !== null ||
+          fieldTrigger(found.value.field) !== null ||
           parseMcpField(found.value.field) !== null ||
           found.value.field === "spareWorkspace"
         ) {
@@ -3588,6 +3594,27 @@ it("hands the Environment's MCP host its set after a revert of an MCP server's k
 
   expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT]);
   expect(fake.calls).not.toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("wakes a Trigger's object after a revert of its change, and builds nothing", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "trigger_remove",
+    field: "triggers.t1",
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain("syncTriggerObject:t1");
+  expect(fake.calls).not.toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+  expect(fake.calls).not.toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
 });
 
 it("leaves the spare Workspace alone after a revert of a variable", async () => {
