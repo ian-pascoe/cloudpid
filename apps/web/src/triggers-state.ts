@@ -15,9 +15,9 @@ import { visibleTickAtom } from "./sessions.ts";
 import { type TriggerDraft, triggerInput, triggerPatch } from "./triggers.ts";
 
 /**
- * The key of the form atoms (`triggerFormAtom`, `triggerDraftAtom`, `triggerNoticeAtom`, `saveTriggerAtom`) of the
- * Workspace trigger made from Workspace `id`'s row in the Workspaces section: the atoms are keyed by Scope otherwise, and
- * the Triggers section's own form stays as it is.
+ * The form key of the Workspace trigger made from Workspace `id`'s row in the Workspaces section. The form atoms
+ * (`triggerFormAtom`, `triggerDraftAtom`, `triggerNoticeAtom`, `saveTriggerAtom`) are keyed by form key: a Scope's (the
+ * Triggers section's own form) or a Workspace's.
  */
 export const workspaceFormKey = (id: string): string => `workspace:${id}`;
 
@@ -46,38 +46,40 @@ export const triggersInAtom = Atom.family((scope: string) =>
 );
 
 /**
- * The form open at Scope `scope`: a new Trigger's, under the id drawn when it opened, or the edit of the Trigger as it
+ * The form open under form key `formKey`: a new Trigger's, under the id drawn when it opened, or the edit of the Trigger as it
  * was when the form opened; null when it is closed.
  */
 export type TriggerForm =
   | { readonly kind: "create"; readonly id: string }
   | { readonly kind: "edit"; readonly opened: TriggerDefinition };
 
-export const triggerFormAtom = Atom.family((_scope: string) => Atom.make<TriggerForm | null>(null));
+export const triggerFormAtom = Atom.family((_formKey: string) =>
+  Atom.make<TriggerForm | null>(null),
+);
 
-/** What is typed in Scope `scope`'s form; set when the form opens. */
-export const triggerDraftAtom = Atom.family((_scope: string) =>
+/** What is typed in form `formKey`; set when the form opens. */
+export const triggerDraftAtom = Atom.family((_formKey: string) =>
   Atom.make<TriggerDraft | null>(null),
 );
 
-/** What Scope `scope`'s section says after its form closed: a Trigger saved but not scheduled yet; null for nothing. */
-export const triggerNoticeAtom = Atom.family((_scope: string) => Atom.make<string | null>(null));
+/** What the section of form `formKey` says after its form closed: a Trigger saved but not scheduled yet; null for nothing. */
+export const triggerNoticeAtom = Atom.family((_formKey: string) => Atom.make<string | null>(null));
 
 /**
- * Save Scope `scope`'s form: make the Trigger under the form's id, or change the one it edits by what was edited since
+ * Save form `formKey`: make the Trigger under the form's id, or change the one it edits by what was edited since
  * it opened, while it still has the fields it opened on (a pause or resume meanwhile aside). Once saved the form closes; one saved but not scheduled
  * closes too, saying so; a refusal keeps it open with what was typed.
  */
-export const saveTriggerAtom = Atom.family((scope: string) =>
+export const saveTriggerAtom = Atom.family((formKey: string) =>
   appRuntime.fn(
     (_: void, get) =>
       Effect.gen(function* () {
-        const form = get.registry.get(triggerFormAtom(scope));
-        const draft = get.registry.get(triggerDraftAtom(scope));
+        const form = get.registry.get(triggerFormAtom(formKey));
+        const draft = get.registry.get(triggerDraftAtom(formKey));
 
         if (form === null || draft === null) return;
 
-        get.set(triggerNoticeAtom(scope), null);
+        get.set(triggerNoticeAtom(formKey), null);
 
         if (form.kind === "create") {
           yield* RegistryClient.use((registry) =>
@@ -85,7 +87,7 @@ export const saveTriggerAtom = Atom.family((scope: string) =>
           ).pipe(
             Effect.catchTag("TriggerUnscheduled", ({ message }) =>
               Effect.sync(() => {
-                get.set(triggerNoticeAtom(scope), message);
+                get.set(triggerNoticeAtom(formKey), message);
               }),
             ),
           );
@@ -101,8 +103,8 @@ export const saveTriggerAtom = Atom.family((scope: string) =>
           );
         }
 
-        get.set(triggerFormAtom(scope), null);
-        get.set(triggerDraftAtom(scope), null);
+        get.set(triggerFormAtom(formKey), null);
+        get.set(triggerDraftAtom(formKey), null);
       }).pipe(changing(["triggers"])),
     { concurrent: true },
   ),

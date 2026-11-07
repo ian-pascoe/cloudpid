@@ -15,6 +15,7 @@ import {
   MAX_TRIGGER_NAME_LENGTH,
   type TriggerDefinition,
   type TriggerOverview,
+  type WorkspaceRef,
 } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -30,6 +31,7 @@ import { InAppLink } from "../in-app-link.tsx";
 import { modelName } from "../models.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import { sessionPath, settingsPath } from "../router.ts";
+import { sessionListAtom } from "../sessions.ts";
 import {
   fireLogAtom,
   fireLogOpenAtom,
@@ -56,9 +58,13 @@ import {
   triggerDraftOf,
   triggerDraftProblems,
   triggerDraftReady,
+  waitingWords,
   whenBusyChoices,
   whenBusyOfText,
   zoneOf,
+  oneOrMany,
+  triggerNames,
+  workspaceTriggersOf,
 } from "../triggers.ts";
 import { CODE_AREA, Field, Group, Pending, SettingsSection, TEXT_AREA } from "./parts.tsx";
 
@@ -134,6 +140,11 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             {triggerSourceWords(definition)}
           </span>
           <span className="text-xs text-muted-foreground">{lastFireWords(overview, zone)}</span>
+          {overview.waiting !== undefined && (
+            <span className="text-xs text-muted-foreground">
+              {waitingWords(overview.waiting, zone)}
+            </span>
+          )}
           <span className="text-xs text-muted-foreground">
             {next === null ? "No next fire" : `Next fire: ${fireTimeWords(next, zone)}`}
           </span>
@@ -278,24 +289,24 @@ const EnvironmentTriggers = ({
  * Environment is fixed.
  */
 export const TriggerFormView = ({
-  scope,
+  formKey,
   draft,
   editing,
   environments,
 }: {
   /** The key of the form's atoms: a Scope, or a Workspace's (`workspaceFormKey`). */
-  scope: string;
+  formKey: string;
   draft: TriggerDraft;
   editing: boolean;
   environments: ReadonlyArray<EnvironmentRecord>;
 }) => {
-  const setDraft = useAtomSet(triggerDraftAtom(scope));
-  const setForm = useAtomSet(triggerFormAtom(scope));
-  const [saved, save] = useAtom(saveTriggerAtom(scope));
+  const setDraft = useAtomSet(triggerDraftAtom(formKey));
+  const setForm = useAtomSet(triggerFormAtom(formKey));
+  const [saved, save] = useAtom(saveTriggerAtom(formKey));
   const problems = triggerDraftProblems(draft);
   const preview = previewFires(draft, Date.now());
   const busy = saved.waiting;
-  const id = (field: string) => `trigger-${field}-${scope}`;
+  const id = (field: string) => `trigger-${field}-${formKey}`;
   const kind = draft.workspace === null ? "environment" : "workspace";
 
   const change = (patch: Partial<TriggerDraft>) => {
@@ -316,7 +327,7 @@ export const TriggerFormView = ({
       aria-label={editing ? "Edit trigger" : "New trigger"}
       className="flex flex-col gap-4"
     >
-      {scope === GLOBAL_SCOPE && !editing && draft.workspace === null && (
+      {formKey === GLOBAL_SCOPE && !editing && draft.workspace === null && (
         <Field label="Environment" htmlFor={id("environment")}>
           <NativeSelect
             id={id("environment")}
@@ -520,13 +531,54 @@ export const TriggerFormView = ({
   );
 };
 
+/**
+ * What removing a Workspace trigger leaves of its Workspace `workspace`: it stays, with its files, because the owner
+ * removes a Workspace only from the Workspaces section; and, while a Session is in it or another trigger keeps it, what
+ * keeps it.
+ */
+const WorkspaceStays = ({
+  workspace,
+  others,
+}: {
+  workspace: WorkspaceRef;
+  /** The other Workspace triggers kept for the Workspace. */
+  others: ReadonlyArray<TriggerDefinition>;
+}) => {
+  const sessions = useAtomValue(sessionListAtom);
+  const branch = <span className="font-mono">{workspace.branch}</span>;
+
+  if (others.length > 0) {
+    return (
+      <>
+        The workspace {branch} stays, kept by {oneOrMany(others.length, "trigger", "triggers")}{" "}
+        {triggerNames(others)}.
+      </>
+    );
+  }
+
+  // A list that has not answered says nothing of the Sessions.
+  if (sessions?.some((session) => session.workspace === workspace.id) === true) {
+    return (
+      <>
+        The workspace {branch} stays, with its files; no trigger keeps it any more, so deleting its
+        last session removes it.
+      </>
+    );
+  }
+
+  return <>The workspace {branch} stays, with its files; remove it from the Workspaces section.</>;
+};
+
 /** Confirm removing Trigger `definition` of Scope `scope`, saying what goes with it and what stays. */
 const RemoveTriggerDialog = ({
   scope,
   definition,
+  triggers,
 }: {
   scope: string;
   definition: TriggerDefinition;
+  /** Every Trigger as last listed, for what else keeps the Workspace. */
+  triggers: ReadonlyArray<TriggerOverview>;
 }) => {
   const [removed, remove] = useAtom(removeTriggerAtom(scope));
   const setRemoving = useAtomSet(removeTriggerDialogAtom(scope));
@@ -547,8 +599,12 @@ const RemoveTriggerDialog = ({
       </p>
       {definition.workspace !== undefined && (
         <p className="text-sm">
-          The workspace <span className="font-mono">{definition.workspace.branch}</span> stays, with
-          its files; no trigger keeps it any more, so deleting its last session removes it.
+          <WorkspaceStays
+            workspace={definition.workspace}
+            others={workspaceTriggersOf(triggers, definition.workspace.id).filter(
+              (other) => other.id !== definition.id,
+            )}
+          />
         </p>
       )}
       <DialogProblem problem={settledFailureOf(removed)} />
@@ -652,7 +708,7 @@ export const TriggersSection = ({ scope }: { scope: string }) => {
         )}
         {form !== null && draft !== null ? (
           <TriggerFormView
-            scope={scope}
+            formKey={scope}
             draft={draft}
             editing={form.kind === "edit"}
             environments={environments}
@@ -673,7 +729,11 @@ export const TriggersSection = ({ scope }: { scope: string }) => {
         title={`Remove ${removingTrigger?.definition.name ?? ""}?`}
       >
         {removingTrigger !== undefined && (
-          <RemoveTriggerDialog scope={scope} definition={removingTrigger.definition} />
+          <RemoveTriggerDialog
+            scope={scope}
+            definition={removingTrigger.definition}
+            triggers={triggers}
+          />
         )}
       </Dialog>
     </SettingsSection>

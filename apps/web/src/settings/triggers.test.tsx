@@ -15,6 +15,7 @@ import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { renderToStaticMarkup } from "react-dom/server";
 import { environmentsAtom } from "../environments-state.ts";
 import { type RegistryHandlers, registryWith, settled } from "../registry.testing.ts";
+import { sessionsAtom } from "../sessions.ts";
 import {
   fireLogAtom,
   fireLogOpenAtom,
@@ -77,13 +78,21 @@ const WORKSPACE_TRIGGER: TriggerDefinition = {
   whenBusy: "wait",
 };
 
+const WORKSPACE_OVERVIEW: TriggerOverview = {
+  definition: WORKSPACE_TRIGGER,
+  lastFire: null,
+  reached: true,
+  waiting: { since: Date.parse("2025-01-06T15:00:00Z"), merged: 2 },
+};
+
 const HANDLERS: Partial<RegistryHandlers> = {
+  listSessions: () => Effect.succeed([]),
   listEnvironments: () =>
     Effect.succeed([environment("work", "Work"), environment("home", "Home")]),
   listTriggers: ({ environment }) =>
     Effect.succeed(
       Arr.filter(
-        [...TRIGGERS, { definition: WORKSPACE_TRIGGER, lastFire: null, reached: true }],
+        [...TRIGGERS, WORKSPACE_OVERVIEW],
         (trigger) => environment === undefined || trigger.definition.environment === environment,
       ),
     ),
@@ -100,9 +109,13 @@ const HANDLERS: Partial<RegistryHandlers> = {
 };
 
 /** The section at Scope `scope`, once its queries answered; `before` sets atoms first. */
-const render = (scope: string, before?: (registry: AtomRegistry.AtomRegistry) => void) =>
+const render = (
+  scope: string,
+  before?: (registry: AtomRegistry.AtomRegistry) => void,
+  handlers: Partial<RegistryHandlers> = {},
+) =>
   Effect.gen(function* () {
-    const registry = registryWith(HANDLERS);
+    const registry = registryWith({ ...HANDLERS, ...handlers });
 
     before?.(registry);
 
@@ -110,6 +123,8 @@ const render = (scope: string, before?: (registry: AtomRegistry.AtomRegistry) =>
     registry.mount(triggersAtom(scope));
     registry.mount(environmentsAtom);
     registry.mount(fireLogAtom("t1"));
+    registry.mount(sessionsAtom);
+    yield* settled(registry, sessionsAtom);
     yield* settled(registry, triggersAtom(scope));
     yield* settled(registry, environmentsAtom);
     yield* settled(registry, fireLogAtom("t1"));
@@ -256,6 +271,10 @@ describe("the Triggers section", () => {
         expect(markup).toMatch(/Workspace <span[^>]*>feature\/lint<\/span>/);
         expect(markup.indexOf("Weekly report")).toBeLessThan(markup.indexOf("feature/lint"));
         expect(markup.indexOf("feature/lint")).toBeLessThan(markup.indexOf("Lint sweep"));
+        // Its waiting Fire is said, since when and how many more were merged into it.
+        expect(markup).toContain("Waiting for the Workspace to be idle (since ");
+        expect(markup).toContain("2 more merged)");
+        expect(markup.match(/Waiting for the Workspace/g)).toHaveLength(1);
       }),
   );
 
@@ -268,8 +287,44 @@ describe("the Triggers section", () => {
         });
 
         expect(markup).toContain("Remove Lint sweep?");
-        expect(markup).toContain("feature/lint</span> stays, with");
-        expect(markup).toContain("deleting its last session removes it");
+        expect(markup).toContain("feature/lint</span> stays, with its files");
+        expect(markup).toContain("remove it from the Workspaces section");
+        expect(markup).not.toContain("deleting its last session removes it");
+
+        // With a Session in it, deleting that Session is what removes it.
+        const sessioned = yield* render(
+          "work",
+          (registry) => {
+            registry.set(removeTriggerDialogAtom("work"), "t3");
+          },
+          // SAFETY: the dialog reads the Session's Workspace id only.
+          { listSessions: () => Effect.succeed([{ id: "s1", workspace: "ab12cd34" } as never]) },
+        );
+
+        expect(sessioned).toContain("so deleting its last session removes it");
+
+        // Another trigger of the Workspace still keeps it.
+        const shared = yield* render(
+          "work",
+          (registry) => {
+            registry.set(removeTriggerDialogAtom("work"), "t3");
+          },
+          {
+            listTriggers: () =>
+              Effect.succeed([
+                WORKSPACE_OVERVIEW,
+                {
+                  definition: { ...WORKSPACE_TRIGGER, id: "t4", name: "Weekly lint" },
+                  lastFire: null,
+                  reached: true,
+                },
+              ]),
+          },
+        );
+
+        expect(shared).toContain("stays, kept by trigger");
+        expect(shared).toContain("Weekly lint");
+        expect(shared).not.toContain("remove it from the Workspaces section");
 
         const environment = yield* render("work", (registry) => {
           registry.set(removeTriggerDialogAtom("work"), "t1");

@@ -51,7 +51,7 @@ import {
   triggersInAtom,
   workspaceFormKey,
 } from "../triggers-state.ts";
-import { emptyTriggerDraft, triggerNames, workspaceTriggersOf } from "../triggers.ts";
+import { emptyTriggerDraft, oneOrMany, triggerNames, workspaceTriggersOf } from "../triggers.ts";
 import { ConfirmField, Group, Pending, SettingsSection } from "./parts.tsx";
 import { browserZone, TriggerFormView } from "./triggers.tsx";
 
@@ -163,9 +163,9 @@ const RemoveWorkspaceDialog = ({
         </li>
         {triggers.length > 0 && (
           <li>
-            {triggers.length === 1 ? "Its trigger" : "Its triggers"}{" "}
+            {oneOrMany(triggers.length, "Its trigger", "Its triggers")}{" "}
             <span className="font-medium">{triggerNames(triggers)}</span>, with{" "}
-            {triggers.length === 1 ? "its fire log" : "their fire logs"}: nothing fires in it any
+            {oneOrMany(triggers.length, "its fire log", "their fire logs")}: nothing fires in it any
             more.
           </li>
         )}
@@ -385,7 +385,7 @@ const NewWorkspaceTrigger = ({ workspace }: { workspace: WorkspaceRecord }) => {
         className="max-w-xl"
       >
         {draft !== null && (
-          <TriggerFormView scope={key} draft={draft} editing={false} environments={[]} />
+          <TriggerFormView formKey={key} draft={draft} editing={false} environments={[]} />
         )}
       </Dialog>
     </>
@@ -445,7 +445,7 @@ const WorkspaceRow = ({
         )}
         {triggers.length > 0 && (
           <span className="text-xs text-muted-foreground">
-            Kept by {triggers.length === 1 ? "trigger" : "triggers"} {triggerNames(triggers)}
+            Kept by {oneOrMany(triggers.length, "trigger", "triggers")} {triggerNames(triggers)}
           </span>
         )}
       </span>

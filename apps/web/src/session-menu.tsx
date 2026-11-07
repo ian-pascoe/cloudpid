@@ -18,7 +18,7 @@ import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
 import { triggersInAtom } from "./triggers-state.ts";
-import { triggerNames, workspaceTriggersOf } from "./triggers.ts";
+import { oneOrMany, triggerNames, workspaceTriggersOf } from "./triggers.ts";
 import type { SessionActions as AllSessionActions } from "./session-actions.ts";
 import {
   describeWorkspaceWork,
@@ -167,9 +167,9 @@ export const WorkspaceFate = ({
       <>
         It is the last session in its{" "}
         <span className="font-medium text-foreground">{environmentName}</span> environment
-        workspace. The workspace stays: {kept.length === 1 ? "trigger" : "triggers"}{" "}
+        workspace. The workspace stays: {oneOrMany(kept.length, "trigger", "triggers")}{" "}
         <span className="font-medium text-foreground">{triggerNames(kept)}</span>{" "}
-        {kept.length === 1 ? "keeps" : "keep"} it, with its files, and the next fire starts a new
+        {oneOrMany(kept.length, "keeps", "keep")} it, with its files, and the next fire starts a new
         session in it.
       </>
     );

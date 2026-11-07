@@ -291,6 +291,19 @@ export const sourceWords = (fire: FireRecord, zone: string): string => {
   }
 };
 
+/** What a Workspace trigger's waiting Fire says of itself: since when it waits, and how many more were merged into it. */
+export const waitingWords = (
+  waiting: { readonly since: number; readonly merged: number },
+  zone: string,
+): string =>
+  `Waiting for the Workspace to be idle (since ${fireTimeWords(waiting.since, zone)}${
+    waiting.merged === 0 ? "" : `, ${String(waiting.merged)} more merged`
+  })`;
+
+/** `one` for a count of 1, else `many`: "trigger" or "triggers", "keeps" or "keep". */
+export const oneOrMany = (count: number, one: string, many: string): string =>
+  count === 1 ? one : many;
+
 /** The names of `triggers`, quoted: "“A”", "“A” and “B”" or "“A”, “B” and “C”". */
 export const triggerNames = (triggers: ReadonlyArray<{ readonly name: string }>): string => {
   const names = Arr.map(triggers, (trigger) => `“${trigger.name}”`);

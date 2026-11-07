@@ -50,7 +50,7 @@ import { failureOf, settledFailureOf } from "../registry.ts";
 import { navigate, settingsPath } from "../router.ts";
 import { sessionListAtom } from "../sessions.ts";
 import { triggersInAtom } from "../triggers-state.ts";
-import { triggerNames } from "../triggers.ts";
+import { oneOrMany, triggerNames } from "../triggers.ts";
 import { environmentNameForm } from "./forms.ts";
 import { ConfirmField, Field, Group, SectionFormView, SettingsSection } from "./parts.tsx";
 import { sessionCount } from "./workspaces.tsx";
@@ -291,12 +291,12 @@ const DeleteEnvironmentDialog = ({
         <li>Its repos, Container settings, secrets and build.</li>
         {triggers.length > 0 && (
           <li>
-            {triggers.length === 1 ? "Its trigger" : "Its triggers"}{" "}
+            {oneOrMany(triggers.length, "Its trigger", "Its triggers")}{" "}
             <span className="font-medium">
               {triggerNames(triggers.map((overview) => overview.definition))}
             </span>
             , workspace triggers included, with{" "}
-            {triggers.length === 1 ? "its fire log" : "their fire logs"}.
+            {oneOrMany(triggers.length, "its fire log", "their fire logs")}.
           </li>
         )}
       </ul>

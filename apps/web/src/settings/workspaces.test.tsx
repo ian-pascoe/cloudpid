@@ -109,6 +109,18 @@ describe("the Workspaces section's Workspace triggers", () => {
     }),
   );
 
+  it.effect(
+    "still lists a Workspace no session or trigger is left in, for the owner to remove",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render();
+
+        // w2 has neither: its row is there, with no "Kept by", and can be removed.
+        expect(markup).toContain('aria-label="Remove the feature/b workspace"');
+        expect(markup).toContain("feature/b");
+      }),
+  );
+
   it.effect("shows the Workspace trigger form of a row that opened it, without a base", () =>
     Effect.gen(function* () {
       const key = workspaceFormKey("w2");

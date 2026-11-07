@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- expected times, read as ISO strings.
-import type { TriggerDefinition } from "@cloudpid/protocol";
+import { fireTimeWords, type TriggerDefinition } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   emptyTriggerDraft,
@@ -14,6 +14,7 @@ import {
   triggerInput,
   triggerNames,
   triggerPatch,
+  waitingWords,
   whenBusyChoices,
   whenBusyOfText,
   workspaceTriggersOf,
@@ -204,6 +205,19 @@ const NIGHTLY: TriggerDefinition = {
   name: "Nightly check",
   whenBusy: "wait",
 };
+
+describe("a waiting Fire", () => {
+  it("says since when it waits, and how many more Fires were merged into it", () => {
+    const since = Date.parse("2025-01-06T15:00:00Z");
+
+    expect(waitingWords({ since, merged: 0 }, "UTC")).toBe(
+      `Waiting for the Workspace to be idle (since ${fireTimeWords(since, "UTC")})`,
+    );
+    expect(waitingWords({ since, merged: 3 }, "UTC")).toBe(
+      `Waiting for the Workspace to be idle (since ${fireTimeWords(since, "UTC")}, 3 more merged)`,
+    );
+  });
+});
 
 describe("the Workspace trigger form", () => {
   it("starts waiting when busy, for the Workspace it names", () => {
