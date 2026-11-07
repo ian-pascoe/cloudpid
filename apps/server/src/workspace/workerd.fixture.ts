@@ -628,16 +628,14 @@ export class TestWorkspace extends Workspace {
     }
 
     if (github.status !== undefined) {
-      return Promise.resolve(Response.json({ message: "no" }, { status: github.status }));
+      return Response.json({ message: "no" }, { status: github.status });
     }
 
     const answer = github.answers[`${pathname}${search}`] ?? github.answers[pathname];
 
-    return Promise.resolve(
-      answer === undefined
-        ? Response.json({ message: "Not Found" }, { status: 404 })
-        : Response.json(answer),
-    );
+    return answer === undefined
+      ? Response.json({ message: "Not Found" }, { status: 404 })
+      : Response.json(answer);
   }
 
   /** The test's clock, which the pull request list's 60 s are counted by; the real one until set. */

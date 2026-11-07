@@ -107,7 +107,7 @@ export default defineConfig({
               // The key the Workspace DO seals its copy of the Environment's Secrets under.
               bindings: {
                 SECRETS_ENCRYPTION_KEY: "test-master-key-0123456789abcdef0123456789",
-                // The GitHub App of a Workspace named `github-app-…` (`TestWorkspace`); no other Workspace has one.
+                // The GitHub App of a Workspace named with `GITHUB_APP_WORKSPACE` (`TestWorkspace`); no other Workspace has one.
                 TEST_GITHUB_APP_ID: "123456",
                 TEST_GITHUB_APP_PRIVATE_KEY: githubAppKey,
               },

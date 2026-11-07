@@ -3,6 +3,7 @@
 // which keeps the installations it found and the tokens it minted.
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
 
+import type { GitHubPermissions } from "@cloudpid/config";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -100,7 +101,7 @@ export type GitHubAppOptions = {
   /** The time in ms. */
   readonly now: () => number;
   /** The permissions its tokens ask for (a subset of the app's); absent, all of the installation's. */
-  readonly permissions?: Readonly<Record<string, "read" | "write">> | undefined;
+  readonly permissions?: GitHubPermissions | undefined;
   /**
    * Where the tokens minted are kept until they expire, so an object made again (a Workspace DO after its eviction,
    * while its Container runs on) still hands out the latest one and still takes them all out of output. Absent, in

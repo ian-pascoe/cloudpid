@@ -6,6 +6,9 @@
 /** A permission's level on a repository. */
 export type GitHubPermissionLevel = "read" | "write";
 
+/** A set of GitHub permissions: each permission's name and its level. */
+export type GitHubPermissions = Readonly<Record<string, GitHubPermissionLevel>>;
+
 /** The permissions the GitHub App asks for (ADR-0025): what the agent's git and gh need, and CI's state to read. */
 export const GITHUB_APP_PERMISSIONS = {
   contents: "write",
@@ -16,7 +19,7 @@ export const GITHUB_APP_PERMISSIONS = {
   checks: "read",
   statuses: "read",
   metadata: "read",
-} as const satisfies Readonly<Record<string, GitHubPermissionLevel>>;
+} as const satisfies GitHubPermissions;
 
 /**
  * The permissions of the tokens a Container's commands and the Diff pane's GitHub calls get: asked for explicitly, since
@@ -32,4 +35,4 @@ export const CONTAINER_GITHUB_PERMISSIONS = {
   checks: "read",
   statuses: "read",
   metadata: "read",
-} as const satisfies Readonly<Record<string, GitHubPermissionLevel>>;
+} as const satisfies GitHubPermissions;

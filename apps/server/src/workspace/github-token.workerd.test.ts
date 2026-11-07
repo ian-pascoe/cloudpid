@@ -1,20 +1,20 @@
-// The GitHub tokens the Workspace DO mints (docs/architecture/workspace.md → Git, ADR-0025 and ADR-0049): each request for
-// an installation's token names the Containers' permissions, never leaving GitHub to read an absent list as all of the
+// The GitHub tokens the Workspace DO mints (docs/architecture/workspace.md → Git, ADR-0025 and ADR-0049): each GitHub token
+// request names the Containers' permissions, never leaving GitHub to read an absent list as all of the
 // installation's. The test Worker holds a GitHub App (an RSA key made for the test, `vitest.config.ts`) for the Workspaces
-// named `github-app-…`, and GitHub's API is stubbed, as the pull request tests have it (`comparison-pull.workerd.test.ts`).
+// named with `GITHUB_APP_WORKSPACE`, and GitHub's API is stubbed, as the pull request tests have it (`comparison-pull.workerd.test.ts`).
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off
 import { CONTAINER_GITHUB_PERMISSIONS } from "@cloudpid/config";
 import { env } from "cloudflare:workers";
 import { describe, expect, inject, it } from "vitest";
 import { graphqlList } from "./github-pulls.fixtures.ts";
-import type { TestWorkspace } from "./workerd.fixture.ts";
+import { GITHUB_APP_WORKSPACE, type TestWorkspace } from "./workerd.fixture.ts";
 
 const repos = inject("comparisonRepos");
 
 const bytesOf = (base64: string) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 
 /** `name`'s config: its remote is `owner`'s `name` on GitHub. */
-const config = (owner: string, name: string) =>
+const gitConfig = (owner: string, name: string) =>
   `[core]\n\trepositoryformatversion = 0\n[remote "origin"]\n\turl = https://github.com/${owner}/${name}.git\n`;
 
 let made = 0;
@@ -22,7 +22,7 @@ let made = 0;
 describe("the GitHub tokens of the Workspace DO", () => {
   it("are asked for with the Containers' permissions, for every installation it mints for", async () => {
     const stub: DurableObjectStub<TestWorkspace> = env.WORKSPACES.getByName(
-      `github-app-${Date.now()}-${made++}`,
+      `${GITHUB_APP_WORKSPACE}${Date.now()}-${made++}`,
     );
 
     // Two repos, on two accounts, each with an installation of the app.
@@ -37,7 +37,10 @@ describe("the GitHub tokens of the Workspace DO", () => {
         ]),
       );
       await stub.putFiles([
-        [`/workspace/${directory}/.git/config`, new TextEncoder().encode(config(owner, directory))],
+        [
+          `/workspace/${directory}/.git/config`,
+          new TextEncoder().encode(gitConfig(owner, directory)),
+        ],
       ]);
     }
 
