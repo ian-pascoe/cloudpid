@@ -1,9 +1,18 @@
+// @effect-diagnostics nodeBuiltinImport:off -- node:crypto makes the test GitHub App's key; this config runs in Node.
+import { generateKeyPairSync } from "node:crypto";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import config, { testTimeout } from "@cloudpid/config/vitest";
 import { WEB_NOT_FOUND_HANDLING } from "./src/assets-config.ts";
 import { configDefaults, defineConfig, defineProject, mergeConfig } from "vitest/config";
 
 const workerd = "src/**/*.workerd.test.ts";
+
+/** A GitHub App's private key (PKCS#1 PEM, as GitHub hands it out) for the Workspaces that mint tokens in a test. */
+const githubAppKey = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: "pkcs1", format: "pem" },
+  publicKeyEncoding: { type: "spki", format: "pem" },
+}).privateKey;
 
 /** The asset tests need the `ASSETS` binding, which only their own test Worker has. */
 const webAssets = "src/assets.workerd.test.ts";
@@ -25,6 +34,7 @@ const workspaceOnly = [
   "src/workspace/mcp-bridge.workerd.test.ts",
   "src/workspace/changes*.workerd.test.ts",
   "src/workspace/comparison*.workerd.test.ts",
+  "src/workspace/github-token*.workerd.test.ts",
   "src/workspace/runs*.workerd.test.ts",
   "src/workspace/work-state*.workerd.test.ts",
   "src/workspace/notify.workerd.test.ts",
@@ -95,7 +105,12 @@ export default defineConfig({
               },
               workerLoaders: { LOADER: {} },
               // The key the Workspace DO seals its copy of the Environment's Secrets under.
-              bindings: { SECRETS_ENCRYPTION_KEY: "test-master-key-0123456789abcdef0123456789" },
+              bindings: {
+                SECRETS_ENCRYPTION_KEY: "test-master-key-0123456789abcdef0123456789",
+                // The GitHub App of a Workspace named `github-app-…` (`TestWorkspace`); no other Workspace has one.
+                TEST_GITHUB_APP_ID: "123456",
+                TEST_GITHUB_APP_PRIVATE_KEY: githubAppKey,
+              },
             },
           }),
         ],

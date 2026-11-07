@@ -18,7 +18,7 @@ import type { Answers } from "./github-pulls.fixtures.ts";
 import { MCP_BRIDGE_HEALTH_PATH, MCP_BRIDGE_PORT } from "@cloudpid/sandbox-image/mcp-bridge";
 import type { ContainerActivity } from "./idle.ts";
 import type { McpBridgeHealthPoll } from "./mcp-bridge.ts";
-import { CONTAINER_BACKEND_ID, Workspace } from "./Workspace.ts";
+import { CONTAINER_BACKEND_ID, Workspace, type WorkspaceEnv } from "./Workspace.ts";
 import { GuardedFilesystem } from "./tracked.ts";
 import { currentRevision } from "./change-log.ts";
 import type { SkillSet } from "./skill-set-schema.ts";
@@ -244,7 +244,29 @@ class CountedWorkspaceStub extends WorkspaceStub {
   }
 }
 
+/** The start of the name of a Workspace that has the test Worker's GitHub App (`TEST_GITHUB_APP_*`); others have none. */
+export const GITHUB_APP_WORKSPACE = "github-app-";
+
+/** The GitHub App `vitest.config.ts` binds to the Workspaces named `GITHUB_APP_WORKSPACE…`. */
+type TestWorkspaceEnv = WorkspaceEnv & {
+  readonly TEST_GITHUB_APP_ID?: string;
+  readonly TEST_GITHUB_APP_PRIVATE_KEY?: string;
+};
+
 export class TestWorkspace extends Workspace {
+  constructor(ctx: DurableObjectState, env: TestWorkspaceEnv) {
+    super(
+      ctx,
+      ctx.id.name?.startsWith(GITHUB_APP_WORKSPACE) === true
+        ? {
+            ...env,
+            CLOUDPID_GITHUB_APP_ID: env.TEST_GITHUB_APP_ID ?? "",
+            CLOUDPID_GITHUB_APP_PRIVATE_KEY: env.TEST_GITHUB_APP_PRIVATE_KEY ?? "",
+          }
+        : env,
+    );
+  }
+
   readonly #counter: Counter = {
     started: 0,
     container: 0,
@@ -561,10 +583,27 @@ export class TestWorkspace extends Workspace {
    * answered 200 with its JSON (a path with no answer is a 404), or every request answered `status` when given; the
    * requests made are recorded. Without it the real API is asked, which this test Worker never should.
    */
-  #github: { answers: Answers; status: number | undefined; requests: string[] } | undefined;
+  #github:
+    | {
+        answers: Answers;
+        status: number | undefined;
+        requests: string[];
+        posts: Array<{ path: string; body: string | undefined }>;
+      }
+    | undefined;
 
   setGithub(answers: Answers, status?: number): void {
-    this.#github = { answers, status, requests: this.#github?.requests ?? [] };
+    this.#github = {
+      answers,
+      status,
+      requests: this.#github?.requests ?? [],
+      posts: this.#github?.posts ?? [],
+    };
+  }
+
+  /** The POST requests asked of the GitHub stub so far: their path (with its query) and body. */
+  githubPosts(): Array<{ path: string; body: string | undefined }> {
+    return [...(this.#github?.posts ?? [])];
   }
 
   /** The paths asked of the GitHub stub so far, with their query. */
@@ -572,7 +611,7 @@ export class TestWorkspace extends Workspace {
     return [...(this.#github?.requests ?? [])];
   }
 
-  protected override githubFetch(url: string, init: RequestInit): Promise<Response> {
+  protected override async githubFetch(url: string, init: RequestInit): Promise<Response> {
     const github = this.#github;
 
     if (github === undefined) return super.githubFetch(url, init);
@@ -580,6 +619,13 @@ export class TestWorkspace extends Workspace {
     const { pathname, search } = new URL(url);
 
     github.requests.push(`${pathname}${search}`);
+
+    if (init.method === "POST") {
+      github.posts.push({
+        path: `${pathname}${search}`,
+        body: init.body == null ? undefined : await new Response(init.body).text(),
+      });
+    }
 
     if (github.status !== undefined) {
       return Promise.resolve(Response.json({ message: "no" }, { status: github.status }));
