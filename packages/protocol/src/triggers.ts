@@ -106,33 +106,51 @@ export const TriggerDefinition = Schema.Struct({
 export type TriggerDefinition = typeof TriggerDefinition.Type;
 
 /** A new Environment trigger, as the owner's form or `trigger_create` gives it. */
-export type EnvironmentTriggerInput = {
-  readonly kind: "environment";
-  readonly environment: string;
-  readonly name: string;
-  readonly message: string;
-  readonly source: ScheduleSource;
+export const EnvironmentTriggerInput = Schema.Struct({
+  kind: Schema.Literal("environment"),
+  environment: Schema.String,
+  name: Schema.String,
+  message: Schema.String,
+  source: ScheduleSource,
   /** `skip` when absent, a Schedule's default (`triggers.md` → Overlap). */
-  readonly whenBusy?: TriggerWhenBusy | undefined;
-  readonly base?: string | undefined;
-  readonly model?: string | undefined;
-  readonly thinking?: ThinkingLevel | undefined;
-  readonly paused?: boolean | undefined;
-};
+  whenBusy: TriggerWhenBusy.pipe(Schema.optional),
+  base: Schema.String.pipe(Schema.optional),
+  model: Schema.String.pipe(Schema.optional),
+  thinking: ThinkingLevel.pipe(Schema.optional),
+  paused: Schema.Boolean.pipe(Schema.optional),
+});
+
+export type EnvironmentTriggerInput = typeof EnvironmentTriggerInput.Type;
 
 /**
  * A change of a Trigger's fields: each absent field is kept, and an option set to null goes back to its default. A
  * Trigger's kind and Environment are fixed at creation, so no change names them.
  */
-export type TriggerPatch = {
-  readonly name?: string | undefined;
-  readonly message?: string | undefined;
-  readonly source?: ScheduleSource | undefined;
-  readonly whenBusy?: TriggerWhenBusy | undefined;
-  readonly base?: string | null | undefined;
-  readonly model?: string | null | undefined;
-  readonly thinking?: ThinkingLevel | null | undefined;
-};
+export const TriggerPatch = Schema.Struct({
+  name: Schema.String.pipe(Schema.optional),
+  message: Schema.String.pipe(Schema.optional),
+  source: ScheduleSource.pipe(Schema.optional),
+  whenBusy: TriggerWhenBusy.pipe(Schema.optional),
+  base: Schema.NullOr(Schema.String).pipe(Schema.optional),
+  model: Schema.NullOr(Schema.String).pipe(Schema.optional),
+  thinking: Schema.NullOr(ThinkingLevel).pipe(Schema.optional),
+});
+
+export type TriggerPatch = typeof TriggerPatch.Type;
+
+/** An id or key a client draws for a Trigger or a Fire now (a UUID, say): what makes its retry one call. */
+export const TriggerKey = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9-]{1,64}$/));
+
+/**
+ * The owner's Trigger was saved (made, resumed), but its object never answered, so it isn't scheduled yet: pausing and
+ * resuming it tries again.
+ */
+export class TriggerUnscheduled extends Schema.TaggedError<
+  TriggerUnscheduled,
+  { readonly brand: unique symbol }
+>()("TriggerUnscheduled", {
+  message: Schema.String,
+}) {}
 
 const TRIGGER_FIELD = "triggers.";
 
@@ -170,6 +188,21 @@ export const triggerChangeValue = ({
   updatedAt: _updatedAt,
   ...value
 }: TriggerDefinition): TriggerChangeValue => value;
+
+const sameChangeValue = Schema.toEquivalence(TriggerChangeValue);
+
+/**
+ * Whether `definition` still has the fields an editor opened on (`expected`), whether it is paused aside: a pause or
+ * resume meanwhile is not a change of what the editor edits.
+ */
+export const holdsEditedFields = (
+  definition: TriggerDefinition,
+  expected: TriggerChangeValue,
+): boolean =>
+  sameChangeValue(
+    { ...triggerChangeValue(definition), paused: false },
+    { ...expected, paused: false },
+  );
 
 /** `definition` as its Agent changes record it, as JSON (null: none, before its creation or after its removal). */
 export const triggerChangeJson = (definition: TriggerDefinition | null): Schema.Json | null =>
@@ -254,6 +287,23 @@ export const FireRecord = Schema.Struct({
 });
 
 export type FireRecord = typeof FireRecord.Type;
+
+/**
+ * A Trigger as the owner's Settings list it: its definition, and its last Fire as its object records it (`reached`
+ * false: the object didn't answer, so its last Fire is unknown rather than none).
+ */
+export const TriggerOverview = Schema.Struct({
+  definition: TriggerDefinition,
+  lastFire: Schema.NullOr(FireRecord),
+  reached: Schema.Boolean,
+});
+
+export type TriggerOverview = typeof TriggerOverview.Type;
+
+/** What the owner's Fire now answers: the Fire's key, which its fire log records once it went out. */
+export const FireNowQueued = Schema.Struct({ key: Schema.String });
+
+export type FireNowQueued = typeof FireNowQueued.Type;
 
 /**
  * A Fire's key, the `requestId` of its Session's `createSession` and `fire`: `<trigger>:<scheduled time>` for a

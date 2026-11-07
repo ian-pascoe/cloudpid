@@ -12,6 +12,7 @@ import {
   type EnvironmentRepo,
   type EnvironmentSecretRecord,
   type EnvironmentTriggerInput,
+  holdsEditedFields,
   type PushSubscription,
   SETTINGS_SCOPE,
   type MarkedOrigin,
@@ -275,8 +276,18 @@ export class TestRegistry extends DurableObject {
     return this.#triggers.list(environment);
   }
 
-  updateTrigger(id: string, patch: TriggerPatch, now: number): TriggerWrite {
-    return this.#triggers.update(id, patch, now);
+  updateTrigger(
+    id: string,
+    patch: TriggerPatch,
+    now: number,
+    expected?: TriggerChangeValue,
+  ): TriggerWrite {
+    return this.#triggers.update(
+      id,
+      patch,
+      now,
+      expected === undefined ? undefined : (current) => holdsEditedFields(current, expected),
+    );
   }
 
   setTriggerPaused(id: string, paused: boolean, now: number): TriggerWrite {

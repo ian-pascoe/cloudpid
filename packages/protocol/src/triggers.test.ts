@@ -14,6 +14,7 @@ import {
   TriggerDefinition,
   fieldTrigger,
   fireTimeWords,
+  holdsEditedFields,
   MAX_TRIGGER_MESSAGE_BYTES,
   triggerChangeJson,
   triggerChangeValue,
@@ -184,6 +185,14 @@ describe("a Trigger's Agent changes", () => {
       model: "anthropic/claude-sonnet-4-5",
       paused: false,
     });
+  });
+
+  it("hold an editor's fields while only the pause changed", () => {
+    const opened = triggerChangeValue(definition);
+
+    expect(holdsEditedFields({ ...definition, paused: true, revision: 4 }, opened)).toBe(true);
+    expect(holdsEditedFields({ ...definition, message: "Other words" }, opened)).toBe(false);
+    expect(holdsEditedFields({ ...definition, model: "openai/gpt-5" }, opened)).toBe(false);
   });
 
   it("arm a Trigger when they leave an active one that was none or paused", () => {

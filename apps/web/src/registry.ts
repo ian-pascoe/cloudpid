@@ -16,7 +16,7 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 /**
  * What a query listens to and a mutation invalidates: the Session list, the Environment list (with each one's Repos),
  * the Workspaces, an Environment's own Container settings and Agent changes by id, the settings kept
- * Global, the owner's MCP sign-ins (`mcp-sign-ins`: a sign-out, or a sign-in made in another tab), the queries whose rows say where a Skill is installed (`skill-badges`: the Skill directory's, and a repo's and a Skill's pages), the kept Secrets (names only), the Environments' Builds, the settings, and this browser's push
+ * Global, the owner's MCP sign-ins (`mcp-sign-ins`: a sign-out, or a sign-in made in another tab), the queries whose rows say where a Skill is installed (`skill-badges`: the Skill directory's, and a repo's and a Skill's pages), the kept Secrets (names only), the Environments' Builds, the settings, the Triggers and each one's fire log, and this browser's push
  * subscription.
  */
 export type RegistryKey =
@@ -33,6 +33,8 @@ export type RegistryKey =
   | "settings"
   | "settings-changes"
   | "mcp-sign-ins"
+  | "triggers"
+  | `trigger-fires:${string}`
   | "push";
 
 /** The main Worker's Registry, at `RPC_PATH` of the page's origin. */

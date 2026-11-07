@@ -156,6 +156,17 @@ export const openTriggerStore = (storage: MigrationStorage) => {
       );
     },
 
+    /** Whether a Fire of `key` is pending, or in the fire log. */
+    holds: (key: string): boolean =>
+      sql
+        .exec<{ found: number }>(
+          `SELECT EXISTS (SELECT 1 FROM trigger_pending WHERE key = ?)
+             OR EXISTS (SELECT 1 FROM trigger_fires WHERE key = ?) AS found`,
+          key,
+          key,
+        )
+        .one().found === 1,
+
     /** Try pending Fire `key` again at `at`, one more attempt counted. */
     retry: (key: string, at: number): void => {
       sql.exec(

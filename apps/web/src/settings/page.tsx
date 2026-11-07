@@ -33,6 +33,7 @@ import {
   ToolsSection,
 } from "./settings-sections.tsx";
 import { SkillsSettingsSection } from "./skills.tsx";
+import { TriggersSection } from "./triggers.tsx";
 import { VariablesSection } from "./variables.tsx";
 import { WorkspacesSection } from "./workspaces.tsx";
 
@@ -88,6 +89,8 @@ const SharedSection = ({ slug, scope }: { slug: SectionSlug; scope: string }) =>
       return <SetupSection scope={scope} />;
     case "workspaces":
       return <WorkspacesSection scope={scope} />;
+    case "triggers":
+      return <TriggersSection scope={scope} />;
     case "skills":
       return <SkillsSettingsSection />;
     case "variables":

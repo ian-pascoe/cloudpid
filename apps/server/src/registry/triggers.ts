@@ -27,6 +27,7 @@ import type {
   RegistryStore,
   SessionRefusal,
 } from "./store.ts";
+import { triggerIdTaken } from "./messages.ts";
 
 /** What a write of a Trigger answers: the definition as kept, or why nothing was kept. */
 export type TriggerWrite =
@@ -239,6 +240,11 @@ export const openTriggers = (
   };
 
   return {
+    /**
+     * Keep Trigger `id` made of `input`, at revision 1. Made again under the same id (a retry) with the same input, it
+     * is `unchanged`; with other input it is refused, and so is the id of a Trigger the agent removed, whose row is kept
+     * for a revert. The owner's removal deletes the row, so its id could be used again.
+     */
     create: (id: string, input: EnvironmentTriggerInput, now: number): TriggerWrite =>
       storage.transactionSync((): TriggerWrite => {
         if (store.getEnvironment(input.environment) === null) {
@@ -250,27 +256,55 @@ export const openTriggers = (
 
         if (problem !== undefined) return { status: "invalid", problem };
 
+        const made: TriggerRow = {
+          id,
+          revision: 1,
+          kind: input.kind,
+          environment: input.environment,
+          name: input.name.trim(),
+          message: input.message,
+          source: sourceText(input.source),
+          when_busy: input.whenBusy ?? "skip",
+          base: base?.trim() ?? null,
+          model: input.model ?? null,
+          thinking: input.thinking ?? null,
+          paused: input.paused === true ? 1 : 0,
+          created_at: now,
+          updated_at: now,
+          removed_at: null,
+          last_session: null,
+        };
+
+        const [known] = sql.exec<TriggerRow>("SELECT * FROM triggers WHERE id = ?", id).toArray();
+
+        if (known !== undefined) {
+          return known.removed_at === null &&
+            known.kind === made.kind &&
+            known.environment === made.environment &&
+            sameFields(known, made)
+            ? { status: "unchanged", definition: toDefinition(known) }
+            : { status: "invalid", problem: triggerIdTaken };
+        }
+
         sql.exec(
           `INSERT INTO triggers (id, revision, kind, environment, name, message, source, when_busy, base, model, thinking,
              paused, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
-          input.kind,
-          input.environment,
-          input.name.trim(),
-          input.message,
-          sourceText(input.source),
-          input.whenBusy ?? "skip",
-          base?.trim() ?? null,
-          input.model ?? null,
-          input.thinking ?? null,
-          input.paused === true ? 1 : 0,
+          made.kind,
+          made.environment,
+          made.name,
+          made.message,
+          made.source,
+          made.when_busy,
+          made.base,
+          made.model,
+          made.thinking,
+          made.paused,
           now,
           now,
         );
 
-        const made = definition(id);
-
-        return made === null ? { status: "missing" } : { status: "ok", definition: made };
+        return { status: "ok", definition: toDefinition(made) };
       }),
 
     get: definition,

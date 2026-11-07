@@ -39,8 +39,16 @@ import {
   type SkillFile,
   type SkillInstallation,
   skillField,
+  type FireRecord,
+  MAX_FIRE_LOG,
+  scheduleProblem,
   type TriggerChangeValue,
+  triggerChangeValue,
+  holdsEditedFields,
+  type TriggerDefinition,
   triggerField,
+  triggerNameProblem,
+  TriggerUnscheduled,
   workspaceDirectory,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -90,6 +98,7 @@ import { buildMovedRepos } from "./mcp-repo-files.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
 import { TriggerUnreachable } from "../trigger/object.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
+import type { TriggerWrite } from "./triggers.ts";
 import { pageSessions } from "./session-page.ts";
 import { SettingsUpdate } from "./settings.ts";
 import type {
@@ -641,8 +650,65 @@ const fakeRegistries = () => {
   /** The Trigger objects whose wake fails, as objects that never answer. */
   const unreachableTriggers = new Set<string>();
 
+  /** The Triggers the Registry keeps, by id: made `t1`, `t2`, … in turn. */
+  const triggersHeld = new Map<string, TriggerDefinition>();
+
+  /** Each Trigger object's fire log, newest first. */
+  const triggerFires = new Map<string, Array<FireRecord>>();
+
+  /** Call Trigger `id`'s object, failing as one that never answers when it is unreachable. */
+  const reachTrigger = <A>(id: string, answer: () => A) =>
+    Effect.suspend(() =>
+      unreachableTriggers.has(id)
+        ? Effect.fail(TriggerUnreachable.make({ message: "no answer" }))
+        : Effect.sync(answer),
+    );
+
+  /** Trigger `id` changed by `change`, at its next revision, while it holds the fields `expected` has; or missing. */
+  const changeTrigger = (
+    id: string,
+    change: (held: TriggerDefinition) => TriggerDefinition,
+    expected?: TriggerChangeValue,
+  ) =>
+    Effect.sync((): TriggerWrite => {
+      const held = triggersHeld.get(id);
+
+      if (held === undefined) return { status: "missing" };
+
+      if (expected !== undefined && !holdsEditedFields(held, expected)) {
+        return { status: "changed-since", definition: held };
+      }
+
+      const definition = { ...change(held), revision: held.revision + 1 };
+
+      triggersHeld.set(id, definition);
+
+      return { status: "ok", definition };
+    });
+
   /** The Trigger objects: what was asked of each, in `calls`. */
-  const triggerObjects: Pick<TriggerObjects, "wake" | "sync" | "remove"> = {
+  const triggerObjects: TriggerObjects = {
+    fireNow: (id, key) =>
+      reachTrigger(id, () => {
+        calls.push(`fireTriggerObject:${id}:${key}`);
+
+        const held = triggersHeld.get(id);
+
+        if (held === undefined) return { status: "removed" as const };
+
+        return held.paused
+          ? { status: "paused" as const }
+          : { status: "queued" as const, key: `${id}:manual:${key}` };
+      }),
+    fireLog: (id, limit) =>
+      reachTrigger(id, () => (triggerFires.get(id) ?? []).slice(0, limit ?? MAX_FIRE_LOG)),
+    state: (id) =>
+      reachTrigger(id, () => ({
+        definition: triggersHeld.get(id) ?? null,
+        nextFireAt: null,
+        lastFire: triggerFires.get(id)?.[0] ?? null,
+        pending: 0,
+      })),
     wake: (id) =>
       Effect.suspend(() => {
         calls.push(`wakeTriggerObject:${id}`);
@@ -1449,15 +1515,68 @@ const fakeRegistries = () => {
         pushes.delete(endpoint);
       }),
     notify: () => Effect.void,
-    createTrigger: () => Effect.succeed({ status: "missing" as const }),
-    updateTrigger: () => Effect.succeed({ status: "missing" as const }),
-    setTriggerPaused: () => Effect.succeed({ status: "missing" as const }),
-    removeTrigger: () => Effect.succeed(false),
+    createTrigger: ({ id = `t${String(triggersHeld.size + 1)}`, trigger }) =>
+      Effect.sync((): TriggerWrite => {
+        calls.push("createTrigger");
+
+        const known = triggersHeld.get(id);
+
+        // A retry under its id: the same Trigger, or refused for other values.
+        if (known !== undefined) {
+          return known.name === trigger.name && known.message === trigger.message
+            ? { status: "unchanged", definition: known }
+            : { status: "invalid", problem: "taken" };
+        }
+
+        if (!Arr.some(environments, (item) => item.id === trigger.environment)) {
+          return { status: "missing" };
+        }
+
+        const problem = triggerNameProblem(trigger.name) ?? scheduleProblem(trigger.source);
+
+        if (problem !== undefined) return { status: "invalid", problem };
+
+        const definition: TriggerDefinition = {
+          id,
+          revision: 1,
+          kind: "environment",
+          environment: trigger.environment,
+          name: trigger.name,
+          message: trigger.message,
+          source: trigger.source,
+          whenBusy: trigger.whenBusy ?? "skip",
+          paused: trigger.paused ?? false,
+          createdAt: 1,
+          updatedAt: 1,
+        };
+
+        triggersHeld.set(id, definition);
+
+        return { status: "ok", definition };
+      }),
+    updateTrigger: ({ id, patch, expected }) =>
+      changeTrigger(
+        id,
+        (held) => ({
+          ...held,
+          name: patch.name ?? held.name,
+          message: patch.message ?? held.message,
+        }),
+        expected,
+      ),
+    setTriggerPaused: ({ id, paused }) => changeTrigger(id, (held) => ({ ...held, paused })),
+    removeTrigger: ({ id }) => Effect.sync(() => triggersHeld.delete(id)),
     agentCreateTrigger: () => Effect.succeed({ status: "missing" as const }),
     agentUpdateTrigger: () => Effect.succeed({ status: "missing" as const }),
     agentSetTriggerPaused: () => Effect.succeed({ status: "missing" as const }),
     agentRemoveTrigger: () => Effect.succeed({ status: "missing" as const }),
-    listTriggers: () => Effect.succeed([]),
+    listTriggers: ({ environment }) =>
+      Effect.sync(() =>
+        Arr.filter(
+          [...triggersHeld.values()],
+          (held) => environment === undefined || held.environment === environment,
+        ),
+      ),
     triggerDefinition: () => Effect.succeed(null),
     admitFire: () => Effect.succeed({ status: "removed" as const }),
     notifyTriggerFailed: () => Effect.void,
@@ -1569,6 +1688,8 @@ const fakeRegistries = () => {
     environmentTriggers,
     triggerObjects,
     unreachableTriggers,
+    triggersHeld,
+    triggerFires,
     breakSession: (id: string, message: string) => {
       brokenSessions.set(id, message);
     },
@@ -3668,7 +3789,7 @@ it("wakes the object of a Trigger a revert brought back now, and tells the owner
   );
 
   expect(unscheduled).toBeInstanceOf(EnvironmentError);
-  expect(unscheduled.message).toContain("reverted, but Trigger t2's object didn't answer");
+  expect(unscheduled.message).toContain("reverted, but the trigger's object didn't answer");
   expect(unscheduled.message).toContain("pause and resume it");
   // The revert stays made.
   expect(Arr.map(fake.agentChanges, (change) => change.reverts)).toEqual([null, null, 1, 2]);
@@ -3677,6 +3798,230 @@ it("wakes the object of a Trigger a revert brought back now, and tells the owner
   await fake.runBackground();
 
   expect(fake.calls).not.toContain("syncTriggerObject:t1");
+});
+
+describe("the owner's Triggers", () => {
+  const WEEKLY = {
+    kind: "environment" as const,
+    environment: DEFAULT_ENVIRONMENT,
+    name: "Weekly report",
+    message: "Summarize last week's PRs.",
+    source: { type: "schedule" as const, cron: "0 9 * * 1", zone: "America/Chicago" },
+  };
+
+  /** Make Trigger `id` of `trigger` as the owner's form does. */
+  const create = (fake: ReturnType<typeof fakeRegistries>, id: string, trigger = WEEKLY) =>
+    call(fake, (registry) => registry.createTrigger({ id, trigger }));
+
+  it("makes a Trigger under the form's id, and once only when the form sends it again", async () => {
+    const fake = fakeRegistries();
+
+    const made = await create(fake, "t1");
+    const again = await create(fake, "t1");
+
+    expect(made).toMatchObject({ id: "t1", name: "Weekly report", paused: false });
+    expect(again).toEqual(made);
+    expect(fake.triggersHeld.size).toBe(1);
+    expect(Arr.filter(fake.calls, (entry) => entry === "wakeTriggerObject:t1")).toHaveLength(2);
+
+    const other = await call(fake, (registry) =>
+      Effect.flip(registry.createTrigger({ id: "t1", trigger: { ...WEEKLY, message: "Other" } })),
+    );
+
+    expect(other).toBeInstanceOf(EnvironmentError);
+    expect(fake.triggersHeld.get("t1")?.message).toBe(WEEKLY.message);
+  });
+
+  it("says a Trigger whose object never answers is saved but not scheduled, in an error of its own", async () => {
+    const fake = fakeRegistries();
+
+    fake.unreachableTriggers.add("t2");
+
+    const unscheduled = await call(fake, (registry) =>
+      Effect.flip(registry.createTrigger({ id: "t2", trigger: WEEKLY })),
+    );
+
+    expect(unscheduled).toBeInstanceOf(TriggerUnscheduled);
+    expect(unscheduled.message).toBe(
+      "The trigger is saved, but the trigger's object didn't answer, so it isn't scheduled yet: pause and resume it to schedule it.",
+    );
+    expect(fake.triggersHeld.has("t2")).toBe(true);
+  });
+
+  it("refuses a Trigger the Registry refuses, and one of an Environment that does not exist", async () => {
+    const fake = fakeRegistries();
+
+    const invalid = await call(fake, (registry) =>
+      Effect.flip(
+        registry.createTrigger({
+          id: "t1",
+          trigger: { ...WEEKLY, source: { ...WEEKLY.source, zone: "" } },
+        }),
+      ),
+    );
+
+    const unknown = await call(fake, (registry) =>
+      Effect.flip(
+        registry.createTrigger({ id: "t1", trigger: { ...WEEKLY, environment: "gone" } }),
+      ),
+    );
+
+    expect(invalid).toBeInstanceOf(EnvironmentError);
+    expect(unknown.message).toBe('Environment "gone" does not exist');
+    expect(fake.triggersHeld.size).toBe(0);
+    expect(fake.calls).not.toContain("wakeTriggerObject:t1");
+  });
+
+  it("lists each Trigger with its last Fire, and one whose object doesn't answer as unknown", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+    await create(fake, "t2", { ...WEEKLY, name: "Other" });
+
+    const fire: FireRecord = {
+      key: "t1:1",
+      at: 5,
+      source: { type: "schedule", scheduledAt: 5 },
+      outcome: { type: "started", session: "s-1" },
+    };
+
+    fake.triggerFires.set("t1", [fire]);
+    fake.unreachableTriggers.add("t2");
+
+    const listed = await call(fake, (registry) =>
+      registry.listTriggers({ environment: DEFAULT_ENVIRONMENT }),
+    );
+
+    expect(
+      Arr.map(listed, ({ definition, lastFire, reached }) => [definition.id, lastFire, reached]),
+    ).toEqual([
+      ["t1", fire, true],
+      ["t2", null, false],
+    ]);
+    expect(await call(fake, (registry) => registry.listTriggers({ environment: "other" }))).toEqual(
+      [],
+    );
+  });
+
+  it("changes a Trigger only while it has the fields the form opened on, a pause aside", async () => {
+    const fake = fakeRegistries();
+
+    const opened = triggerChangeValue(await create(fake, "t1"));
+
+    // Paused from its row while the form was open.
+    await call(fake, (registry) => registry.setTriggerPaused({ id: "t1", paused: true }));
+
+    const edited = await call(fake, (registry) =>
+      registry.updateTrigger({ id: "t1", patch: { message: "Mine" }, expected: opened }),
+    );
+
+    const stale = await call(fake, (registry) =>
+      Effect.flip(registry.updateTrigger({ id: "t1", patch: { name: "Stale" }, expected: opened })),
+    );
+
+    const removed = await call(fake, (registry) =>
+      Effect.flip(registry.updateTrigger({ id: "t9", patch: { name: "x" }, expected: opened })),
+    );
+
+    expect(edited).toMatchObject({ revision: 3, message: "Mine", paused: true });
+    expect(stale.message).toBe("The trigger changed since you opened it: reopen the form");
+    expect(fake.triggersHeld.get("t1")?.name).toBe("Weekly report");
+    expect(removed.message).toBe("This trigger was removed");
+  });
+
+  it("wakes a resumed Trigger's object now, and leaves a paused or edited one's to the background", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+
+    fake.calls.length = 0;
+
+    const paused = await call(fake, (registry) =>
+      registry.setTriggerPaused({ id: "t1", paused: true }),
+    );
+
+    const edited = await call(fake, (registry) =>
+      registry.updateTrigger({ id: "t1", patch: { message: "Another message." } }),
+    );
+
+    expect(paused.paused).toBe(true);
+    expect(edited.message).toBe("Another message.");
+    expect(fake.calls).not.toContain("wakeTriggerObject:t1");
+
+    await fake.runBackground();
+
+    expect(Arr.filter(fake.calls, (entry) => entry === "syncTriggerObject:t1")).toHaveLength(2);
+
+    fake.unreachableTriggers.add("t1");
+
+    const unscheduled = await call(fake, (registry) =>
+      Effect.flip(registry.setTriggerPaused({ id: "t1", paused: false })),
+    );
+
+    expect(unscheduled).toBeInstanceOf(TriggerUnscheduled);
+    expect(unscheduled.message).toContain(
+      "The trigger is resumed, but the trigger's object didn't answer",
+    );
+    expect(fake.triggersHeld.get("t1")?.paused).toBe(false);
+  });
+
+  it("removes a Trigger with its object, and refuses one that is not there", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+    await call(fake, (registry) => registry.removeTrigger({ id: "t1" }));
+
+    const missing = await call(fake, (registry) =>
+      Effect.flip(registry.removeTrigger({ id: "t1" })),
+    );
+
+    expect(fake.triggersHeld.size).toBe(0);
+    expect(fake.calls).toContain("removeTriggerObject:t1");
+    expect(missing.message).toBe("This trigger was removed");
+  });
+
+  it("fires a Trigger now under the page's key, refuses a paused one, and reads its fire log", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+
+    expect(await call(fake, (registry) => registry.fireTrigger({ id: "t1", key: "k1" }))).toEqual({
+      key: "t1:manual:k1",
+    });
+    expect(fake.calls).toContain("fireTriggerObject:t1:k1");
+
+    await call(fake, (registry) => registry.setTriggerPaused({ id: "t1", paused: true }));
+
+    const paused = await call(fake, (registry) =>
+      Effect.flip(registry.fireTrigger({ id: "t1", key: "k2" })),
+    );
+
+    expect(paused.message).toBe("The trigger is paused: resume it to fire it");
+
+    const fires: Array<FireRecord> = [
+      {
+        key: "t1:manual:1",
+        at: 9,
+        source: { type: "manual" },
+        outcome: { type: "skipped", reason: "overlap" },
+      },
+      { key: "t1:1", at: 5, source: { type: "manual" }, outcome: { type: "failed", reason: "no" } },
+    ];
+
+    fake.triggerFires.set("t1", fires);
+
+    expect(await call(fake, (registry) => registry.triggerFireLog({ id: "t1", limit: 1 }))).toEqual(
+      [fires[0]],
+    );
+
+    fake.unreachableTriggers.add("t1");
+
+    const unreachable = await call(fake, (registry) =>
+      Effect.flip(registry.triggerFireLog({ id: "t1" })),
+    );
+
+    expect(unreachable.message).toBe("The trigger's object didn't answer: try again");
+  });
 });
 
 it("leaves the spare Workspace alone after a revert of a variable", async () => {

@@ -1,6 +1,10 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
-import { DEFAULT_ENVIRONMENT, type EnvironmentTriggerInput } from "@cloudpid/protocol";
+import {
+  DEFAULT_ENVIRONMENT,
+  type EnvironmentTriggerInput,
+  triggerChangeValue,
+} from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { TestRegistry } from "./store.fixture.ts";
@@ -61,6 +65,42 @@ describe("a Trigger's definition", () => {
     }
 
     expect(await registry.listTriggers()).toEqual([]);
+  });
+
+  it("makes one Trigger of a create retried under its id, and refuses the id with other values", async () => {
+    const registry = fresh();
+
+    expect(await registry.createTrigger("t1", weekly, 1_000)).toMatchObject({ status: "ok" });
+    expect(
+      await registry.createTrigger("t1", { ...weekly, name: " Weekly report " }, 2_000),
+    ).toMatchObject({
+      status: "unchanged",
+      definition: { id: "t1", revision: 1, createdAt: 1_000 },
+    });
+    expect(
+      await registry.createTrigger("t1", { ...weekly, message: "Other words" }, 2_000),
+    ).toMatchObject({
+      status: "invalid",
+    });
+    expect(await registry.listTriggers()).toHaveLength(1);
+  });
+
+  it("changes a Trigger only while it has the fields its editor opened on, a pause aside", async () => {
+    const registry = fresh();
+
+    const made = await registry.createTrigger("t1", weekly, 1_000);
+    const opened = made.status === "ok" ? triggerChangeValue(made.definition) : undefined;
+
+    await registry.setTriggerPaused("t1", true, 1_500);
+
+    expect(await registry.updateTrigger("t1", { message: "Mine" }, 2_000, opened)).toMatchObject({
+      status: "ok",
+      definition: { revision: 3, message: "Mine", paused: true },
+    });
+    expect(await registry.updateTrigger("t1", { name: "Stale" }, 3_000, opened)).toMatchObject({
+      status: "changed-since",
+      definition: { revision: 3, name: "Weekly report" },
+    });
   });
 
   it("rises a revision with each change, and keeps its kind and Environment", async () => {

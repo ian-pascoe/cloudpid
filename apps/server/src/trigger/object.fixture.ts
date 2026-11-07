@@ -236,8 +236,8 @@ export class TestTrigger extends DurableObject {
     return this.#run(this.#handlers.remove());
   }
 
-  fireNow(): Promise<FireNowAnswer> {
-    return this.#run(this.#handlers.fireNow());
+  fireNow(key?: string): Promise<FireNowAnswer> {
+    return this.#run(this.#handlers.fireNow({ key }));
   }
 
   fireLog(limit?: number) {

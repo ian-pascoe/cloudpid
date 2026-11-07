@@ -84,8 +84,13 @@ export type TriggerHandlers = {
   readonly sync: () => Effect.Effect<TriggerState, TriggerUnreachable>;
   /** Its Trigger is gone: complete its admitted Fires, as far as they can be now, then delete its alarm and storage. */
   readonly remove: () => Effect.Effect<void>;
-  /** The owner's Fire now: a Fire recorded `manual`, drained by the alarm at once. */
-  readonly fireNow: () => Effect.Effect<FireNowAnswer, TriggerUnreachable>;
+  /**
+   * The owner's Fire now: a Fire recorded `manual`, drained by the alarm at once. A caller's `key` makes it one Fire
+   * however often it is asked (`<trigger>:manual:<key>`): a key pending or in the fire log answers it again.
+   */
+  readonly fireNow: (input?: {
+    readonly key?: string | undefined;
+  }) => Effect.Effect<FireNowAnswer, TriggerUnreachable>;
   /** The fire log, newest first. */
   readonly fireLog: (input?: {
     readonly limit?: number;
@@ -544,9 +549,14 @@ export const triggerHandlers = (options: {
 
     remove: () => serially(Effect.flatMap(now, retire)),
 
-    fireNow: () =>
+    fireNow: (input) =>
       Effect.gen(function* () {
         const at = yield* now;
+        const key = `${id}:manual:${input?.key ?? newManualId()}`;
+
+        // Asked again: the Fire is already pending or settled.
+        if (existing()?.holds(key) === true) return { status: "queued", key } as const;
+
         const definition = yield* ports.definition(id);
 
         if (!(yield* adopt(definition, at)) || definition === null) {
@@ -554,8 +564,6 @@ export const triggerHandlers = (options: {
         }
 
         if (definition.paused) return { status: "paused" } as const;
-
-        const key = `${id}:manual:${newManualId()}`;
 
         store().enqueue(key, { type: "manual" }, at);
         yield* Effect.promise(() => storage.setAlarm(at));

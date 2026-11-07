@@ -109,7 +109,7 @@ export const TriggerLive = Trigger.make(
         return {
           sync: () => traced(handlers.sync()),
           remove: () => traced(handlers.remove()),
-          fireNow: () => traced(handlers.fireNow()),
+          fireNow: (input) => traced(handlers.fireNow(input)),
           fireLog: (input) => traced(handlers.fireLog(input)),
           state: () => traced(handlers.state()),
           alarm: (info) => traced(handlers.alarm(info)),

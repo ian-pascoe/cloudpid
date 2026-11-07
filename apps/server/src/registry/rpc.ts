@@ -14,6 +14,8 @@ import {
   fieldSecret,
   fieldSkill,
   armsTrigger,
+  type TriggerDefinition,
+  TriggerUnscheduled,
   fieldTrigger,
   MAX_ENVIRONMENT_SECRETS,
   type McpAppCopy,
@@ -58,13 +60,24 @@ import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
+import type { TriggerWrite } from "./triggers.ts";
 import type { DraftBranches } from "./draft-branches.ts";
 import { withInstalled } from "./skill-badges.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
 import { skillOwnersOver } from "./skill-owner.ts";
 import { joinRepoSkills, joinSkillView, repoSearchQuery, type SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
-import { noEnvironment, noRepo, nameTaken, repoTaken } from "./messages.ts";
+import {
+  nameTaken,
+  noEnvironment,
+  noRepo,
+  repoTaken,
+  triggerChangedSince,
+  triggerPaused,
+  triggerRemoved,
+  triggerUnreachable,
+  triggerUnscheduled,
+} from "./messages.ts";
 import type { McpPushes } from "../mcp/push.ts";
 import type { McpSignInManage } from "../mcp/sign-in-manage.ts";
 import type { McpStatus } from "../mcp/status.ts";
@@ -132,10 +145,10 @@ export type RegistryRpcObjects<R = never> = {
   /** Stops a Session when it is archived, and wipes it when it is deleted. */
   readonly sessions: SessionObjects;
   /**
-   * Wipes the objects of the Triggers that went with a deleted Environment, and wakes the object of one a revert put
-   * back.
+   * The Trigger objects: woken after the owner's change of a Trigger, or a revert, wiped with their Trigger or its
+   * Environment, and asked for their last Fire, fire log and Fire now.
    */
-  readonly triggers: Pick<TriggerObjects, "wake" | "sync" | "remove">;
+  readonly triggers: TriggerObjects;
   /** Wipes what is left from before Environments, a few objects at a time (`legacyCleanup`), after the answer. */
   readonly legacy: Effect.Effect<void>;
   /** Keeps each Environment's spare Workspace current (`spareUpkeep`), after the answer. */
@@ -184,6 +197,9 @@ export const upkeepAfterStart = (
 
 /** How many legacy objects one cleanup wipes. */
 const LEGACY_BATCH = 10;
+
+/** How many Trigger objects `listTriggers` asks for their last Fire at once. */
+const TRIGGER_READS = 8;
 
 /**
  * The wipe of what the Registry kept from before Environments (ADR-0016): the Session DOs and Machine Workspace DOs
@@ -410,6 +426,42 @@ export const serveRegistryRpc = <R = never>(
     const registry = registries.getByName(REGISTRY_NAME);
 
     const failed = (message: string) => EnvironmentError.make({ message });
+
+    /**
+     * Wake Trigger `id`'s object to schedule it, after the owner's call did `done`: a Trigger left active with no alarm
+     * (made, resumed, brought back) has nothing else to schedule it, so an object that never answers fails the call.
+     */
+    const scheduling = (id: string, done: string) =>
+      triggers
+        .wake(id)
+        .pipe(
+          Effect.mapError(() => TriggerUnscheduled.make({ message: triggerUnscheduled(done) })),
+        );
+
+    /**
+     * The definition an owner's write of a Trigger left (or found, for a create sent again), or why it made none:
+     * `missing` says `missing`.
+     */
+    const triggerWritten = (write: TriggerWrite, missing: string) => {
+      switch (write.status) {
+        case "ok":
+        case "unchanged":
+          return Effect.succeed(write.definition);
+        case "changed-since":
+          return Effect.fail(failed(triggerChangedSince));
+        case "invalid":
+          return Effect.fail(failed(write.problem));
+        case "missing":
+          return Effect.fail(failed(missing));
+      }
+    };
+
+    /** Trigger `id`'s object woken after the owner's write, as `paused` leaves the Trigger, answering `definition`. */
+    const afterWrite = (definition: TriggerDefinition, done: string) =>
+      (definition.paused
+        ? background(triggers.sync(definition.id))
+        : scheduling(definition.id, done)
+      ).pipe(Effect.as(definition));
 
     // The deletes, shared with a Session's `environment_delete` (`removal.ts`).
     const {
@@ -894,12 +946,9 @@ export const serveRegistryRpc = <R = never>(
 
                 if (trigger !== null) {
                   return armsTrigger(revert.change.before, revert.change.after)
-                    ? triggers.wake(trigger).pipe(
-                        Effect.mapError(() =>
-                          failed(
-                            `The change is reverted, but Trigger ${trigger}'s object didn't answer, so it isn't scheduled yet: pause and resume it to schedule it.`,
-                          ),
-                        ),
+                    ? scheduling(trigger, "The change is reverted").pipe(
+                        // The revert's own error: it stays made.
+                        Effect.mapError(({ message }) => failed(message)),
                         Effect.as(revert.change),
                       )
                     : background(triggers.sync(trigger)).pipe(Effect.as(revert.change));
@@ -950,6 +999,58 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
+      listTriggers: ({ environment }) =>
+        registry.listTriggers({ environment }).pipe(
+          Effect.flatMap((definitions) =>
+            Effect.forEach(
+              definitions,
+              (definition) =>
+                triggers.state(definition.id).pipe(
+                  Effect.map(({ lastFire }) => ({ definition, lastFire, reached: true })),
+                  // Its last Fire unknown: the list still shows the Trigger.
+                  Effect.orElseSucceed(() => ({ definition, lastFire: null, reached: false })),
+                ),
+              { concurrency: TRIGGER_READS },
+            ),
+          ),
+        ),
+      createTrigger: ({ id, trigger }) =>
+        registry.createTrigger({ id, trigger }).pipe(
+          Effect.flatMap((write) => triggerWritten(write, noEnvironment(trigger.environment))),
+          Effect.flatMap((definition) => afterWrite(definition, "The trigger is saved")),
+        ),
+      updateTrigger: ({ id, patch, expected }) =>
+        registry.updateTrigger({ id, patch, expected }).pipe(
+          Effect.flatMap((write) => triggerWritten(write, triggerRemoved)),
+          // A change keeps an active Trigger's alarm, which heals from what the object reads.
+          Effect.tap(() => background(triggers.sync(id))),
+        ),
+      setTriggerPaused: ({ id, paused }) =>
+        registry.setTriggerPaused({ id, paused }).pipe(
+          Effect.flatMap((write) => triggerWritten(write, triggerRemoved)),
+          Effect.flatMap((definition) => afterWrite(definition, "The trigger is resumed")),
+        ),
+      removeTrigger: ({ id }) =>
+        registry.removeTrigger({ id }).pipe(
+          Effect.filterOrFail(Predicate.isTruthy, () => failed(triggerRemoved)),
+          Effect.andThen(triggers.remove(id)),
+        ),
+      fireTrigger: ({ id, key }) =>
+        triggers.fireNow(id, key).pipe(
+          Effect.mapError(() => failed(triggerUnreachable)),
+          Effect.flatMap((answer) => {
+            switch (answer.status) {
+              case "queued":
+                return Effect.succeed({ key: answer.key });
+              case "paused":
+                return Effect.fail(failed(triggerPaused));
+              case "removed":
+                return Effect.fail(failed(triggerRemoved));
+            }
+          }),
+        ),
+      triggerFireLog: ({ id, limit }) =>
+        triggers.fireLog(id, limit).pipe(Effect.mapError(() => failed(triggerUnreachable))),
       dismissAgentChange: ({ environment, change }) =>
         registry.dismissAgentChange({ environment, change }).pipe(
           Effect.filterOrFail(Predicate.isTruthy, () =>

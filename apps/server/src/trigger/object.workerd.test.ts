@@ -479,6 +479,21 @@ describe("a Trigger's object", () => {
     expect(await trigger.alarmAt()).toBe(nine);
   });
 
+  it("makes one Fire of a Fire now asked again with its key, pending or settled", async () => {
+    const { id, trigger } = await made();
+
+    await trigger.setNow(start + 1_000);
+
+    expect(await trigger.fireNow("k1")).toEqual({ status: "queued", key: `${id}:manual:k1` });
+    expect(await trigger.fireNow("k1")).toEqual({ status: "queued", key: `${id}:manual:k1` });
+
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.fireNow("k1")).toEqual({ status: "queued", key: `${id}:manual:k1` });
+    expect(await trigger.sent()).toHaveLength(1);
+    expect(await trigger.fireLog()).toHaveLength(1);
+  });
+
   it("refuses a Fire now while paused", async () => {
     const { id, registry, trigger } = await made();
 
