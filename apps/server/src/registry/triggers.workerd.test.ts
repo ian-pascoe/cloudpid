@@ -1,6 +1,10 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
-import { DEFAULT_ENVIRONMENT, type EnvironmentTriggerInput } from "@cloudpid/protocol";
+import {
+  DEFAULT_ENVIRONMENT,
+  type EnvironmentTriggerInput,
+  triggerChangeValue,
+} from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { TestRegistry } from "./store.fixture.ts";
@@ -81,18 +85,21 @@ describe("a Trigger's definition", () => {
     expect(await registry.listTriggers()).toHaveLength(1);
   });
 
-  it("changes a Trigger only while it is at the revision its editor opened", async () => {
+  it("changes a Trigger only while it has the fields its editor opened on, a pause aside", async () => {
     const registry = fresh();
 
-    await registry.createTrigger("t1", weekly, 1_000);
+    const made = await registry.createTrigger("t1", weekly, 1_000);
+    const opened = made.status === "ok" ? triggerChangeValue(made.definition) : undefined;
 
-    expect(await registry.updateTrigger("t1", { message: "Mine" }, 2_000, 1)).toMatchObject({
+    await registry.setTriggerPaused("t1", true, 1_500);
+
+    expect(await registry.updateTrigger("t1", { message: "Mine" }, 2_000, opened)).toMatchObject({
       status: "ok",
-      definition: { revision: 2, message: "Mine" },
+      definition: { revision: 3, message: "Mine", paused: true },
     });
-    expect(await registry.updateTrigger("t1", { name: "Stale" }, 3_000, 1)).toMatchObject({
+    expect(await registry.updateTrigger("t1", { name: "Stale" }, 3_000, opened)).toMatchObject({
       status: "changed-since",
-      definition: { revision: 2, name: "Weekly report" },
+      definition: { revision: 3, name: "Weekly report" },
     });
   });
 

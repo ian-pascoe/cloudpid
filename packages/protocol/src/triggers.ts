@@ -189,6 +189,21 @@ export const triggerChangeValue = ({
   ...value
 }: TriggerDefinition): TriggerChangeValue => value;
 
+const sameChangeValue = Schema.toEquivalence(TriggerChangeValue);
+
+/**
+ * Whether `definition` still has the fields an editor opened on (`expected`), whether it is paused aside: a pause or
+ * resume meanwhile is not a change of what the editor edits.
+ */
+export const holdsEditedFields = (
+  definition: TriggerDefinition,
+  expected: TriggerChangeValue,
+): boolean =>
+  sameChangeValue(
+    { ...triggerChangeValue(definition), paused: false },
+    { ...expected, paused: false },
+  );
+
 /** `definition` as its Agent changes record it, as JSON (null: none, before its creation or after its removal). */
 export const triggerChangeJson = (definition: TriggerDefinition | null): Schema.Json | null =>
   definition === null ? null : asChangeJson(triggerChangeValue(definition));

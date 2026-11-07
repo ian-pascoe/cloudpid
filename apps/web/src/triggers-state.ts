@@ -4,7 +4,7 @@
 // of the owner's own changes waits for Approval. A new Trigger's id is drawn when its form opens, and a Fire now's key
 // at each press, so a call sent again makes no second one.
 
-import { GLOBAL_SCOPE, type TriggerDefinition } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, triggerChangeValue, type TriggerDefinition } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -58,7 +58,7 @@ export const triggerNoticeAtom = Atom.family((_scope: string) => Atom.make<strin
 
 /**
  * Save Scope `scope`'s form: make the Trigger under the form's id, or change the one it edits by what was edited since
- * it opened, while it is still at the revision it opened on. Once saved the form closes; one saved but not scheduled
+ * it opened, while it still has the fields it opened on (a pause or resume meanwhile aside). Once saved the form closes; one saved but not scheduled
  * closes too, saying so; a refusal keeps it open with what was typed.
  */
 export const saveTriggerAtom = Atom.family((scope: string) =>
@@ -89,7 +89,7 @@ export const saveTriggerAtom = Atom.family((scope: string) =>
             registry("updateTrigger", {
               id: opened.id,
               patch: triggerPatch(opened, draft),
-              revision: opened.revision,
+              expected: triggerChangeValue(opened),
             }),
           );
         }

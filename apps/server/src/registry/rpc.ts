@@ -438,8 +438,11 @@ export const serveRegistryRpc = <R = never>(
           Effect.mapError(() => TriggerUnscheduled.make({ message: triggerUnscheduled(done) })),
         );
 
-    /** The definition an owner's change of Trigger `id` left, or why it made none. */
-    const changedTrigger = (write: TriggerWrite) => {
+    /**
+     * The definition an owner's write of a Trigger left (or found, for a create sent again), or why it made none:
+     * `missing` says `missing`.
+     */
+    const triggerWritten = (write: TriggerWrite, missing: string) => {
       switch (write.status) {
         case "ok":
         case "unchanged":
@@ -449,21 +452,7 @@ export const serveRegistryRpc = <R = never>(
         case "invalid":
           return Effect.fail(failed(write.problem));
         case "missing":
-          return Effect.fail(failed(triggerRemoved));
-      }
-    };
-
-    /** The Trigger the owner's create made (or made before, under its id), or why it made none. */
-    const madeTrigger = (write: TriggerWrite, environment: string) => {
-      switch (write.status) {
-        case "ok":
-        case "unchanged":
-        case "changed-since":
-          return Effect.succeed(write.definition);
-        case "invalid":
-          return Effect.fail(failed(write.problem));
-        case "missing":
-          return Effect.fail(failed(noEnvironment(environment)));
+          return Effect.fail(failed(missing));
       }
     };
 
@@ -1027,18 +1016,18 @@ export const serveRegistryRpc = <R = never>(
         ),
       createTrigger: ({ id, trigger }) =>
         registry.createTrigger({ id, trigger }).pipe(
-          Effect.flatMap((write) => madeTrigger(write, trigger.environment)),
+          Effect.flatMap((write) => triggerWritten(write, noEnvironment(trigger.environment))),
           Effect.flatMap((definition) => afterWrite(definition, "The trigger is saved")),
         ),
-      updateTrigger: ({ id, patch, revision }) =>
-        registry.updateTrigger({ id, patch, revision }).pipe(
-          Effect.flatMap(changedTrigger),
+      updateTrigger: ({ id, patch, expected }) =>
+        registry.updateTrigger({ id, patch, expected }).pipe(
+          Effect.flatMap((write) => triggerWritten(write, triggerRemoved)),
           // A change keeps an active Trigger's alarm, which heals from what the object reads.
           Effect.tap(() => background(triggers.sync(id))),
         ),
       setTriggerPaused: ({ id, paused }) =>
         registry.setTriggerPaused({ id, paused }).pipe(
-          Effect.flatMap(changedTrigger),
+          Effect.flatMap((write) => triggerWritten(write, triggerRemoved)),
           Effect.flatMap((definition) => afterWrite(definition, "The trigger is resumed")),
         ),
       removeTrigger: ({ id }) =>

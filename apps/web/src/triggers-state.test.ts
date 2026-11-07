@@ -2,6 +2,8 @@
 
 import {
   EnvironmentError,
+  type TriggerChangeValue,
+  triggerChangeValue,
   type TriggerDefinition,
   type TriggerPatch,
   TriggerUnscheduled,
@@ -100,10 +102,10 @@ describe("saving the Trigger form", () => {
   );
 
   it.effect(
-    "changes only what was edited, at the revision the form opened on, then closes the form",
+    "changes only what was edited, while the trigger has the fields the form opened on, then closes the form",
     () =>
       Effect.gen(function* () {
-        const asked: Array<{ id: string; patch: TriggerPatch; revision?: number }> = [];
+        const asked: Array<{ id: string; patch: TriggerPatch; expected?: TriggerChangeValue }> = [];
 
         const { registry } = yield* save(
           {
@@ -118,7 +120,9 @@ describe("saving the Trigger form", () => {
           { ...triggerDraftOf(DEFINITION), message: "Mine" },
         );
 
-        expect(asked).toEqual([{ id: "t1", patch: { message: "Mine" }, revision: 3 }]);
+        expect(asked).toEqual([
+          { id: "t1", patch: { message: "Mine" }, expected: triggerChangeValue(DEFINITION) },
+        ]);
         expect(registry.get(triggerFormAtom("work"))).toBeNull();
         registry.dispose();
       }),

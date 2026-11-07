@@ -86,6 +86,7 @@ import {
   updateSkills,
 } from "./skill-updates.ts";
 import {
+  holdsEditedFields,
   SETTINGS_SCOPE,
   type McpChangeGuard,
   type McpFieldChange,
@@ -1037,13 +1038,14 @@ export type RegistryMethods = {
     readonly trigger: EnvironmentTriggerInput;
   }) => Effect.Effect<TriggerWrite>;
   /**
-   * Change a Trigger's fields at its next revision; its kind and Environment never change. With `revision`, only while
-   * the Trigger is still at it (`changed-since` otherwise). The caller wakes its object.
+   * Change a Trigger's fields at its next revision; its kind and Environment never change. With `expected`, only while
+   * the fields an editor edits are still those (`holdsEditedFields`; `changed-since` otherwise). The caller wakes its
+   * object.
    */
   readonly updateTrigger: (input: {
     readonly id: string;
     readonly patch: TriggerPatch;
-    readonly revision?: number | undefined;
+    readonly expected?: TriggerChangeValue | undefined;
   }) => Effect.Effect<TriggerWrite>;
   /** Pause or resume a Trigger, at its next revision. The caller wakes its object. */
   readonly setTriggerPaused: (input: {
@@ -2161,14 +2163,16 @@ export const RegistryLive = Registry.make(
 
               return triggers.create(made, trigger, yield* Clock.currentTimeMillis);
             }),
-          updateTrigger: ({ id, patch, revision }) =>
+          updateTrigger: ({ id, patch, expected }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
                 triggers.update(
                   id,
                   patch,
                   now,
-                  revision === undefined ? undefined : (current) => current.revision === revision,
+                  expected === undefined
+                    ? undefined
+                    : (current) => holdsEditedFields(current, expected),
                 ),
               ),
             ),

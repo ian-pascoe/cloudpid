@@ -43,6 +43,8 @@ import {
   MAX_FIRE_LOG,
   scheduleProblem,
   type TriggerChangeValue,
+  triggerChangeValue,
+  holdsEditedFields,
   type TriggerDefinition,
   triggerField,
   triggerNameProblem,
@@ -662,18 +664,18 @@ const fakeRegistries = () => {
         : Effect.sync(answer),
     );
 
-  /** Trigger `id` changed by `change`, at its next revision, while it is at `revision`; or missing. */
+  /** Trigger `id` changed by `change`, at its next revision, while it holds the fields `expected` has; or missing. */
   const changeTrigger = (
     id: string,
     change: (held: TriggerDefinition) => TriggerDefinition,
-    revision?: number,
+    expected?: TriggerChangeValue,
   ) =>
     Effect.sync((): TriggerWrite => {
       const held = triggersHeld.get(id);
 
       if (held === undefined) return { status: "missing" };
 
-      if (revision !== undefined && held.revision !== revision) {
+      if (expected !== undefined && !holdsEditedFields(held, expected)) {
         return { status: "changed-since", definition: held };
       }
 
@@ -1552,7 +1554,7 @@ const fakeRegistries = () => {
 
         return { status: "ok", definition };
       }),
-    updateTrigger: ({ id, patch, revision }) =>
+    updateTrigger: ({ id, patch, expected }) =>
       changeTrigger(
         id,
         (held) => ({
@@ -1560,7 +1562,7 @@ const fakeRegistries = () => {
           name: patch.name ?? held.name,
           message: patch.message ?? held.message,
         }),
-        revision,
+        expected,
       ),
     setTriggerPaused: ({ id, paused }) => changeTrigger(id, (held) => ({ ...held, paused })),
     removeTrigger: ({ id }) => Effect.sync(() => triggersHeld.delete(id)),
@@ -3901,24 +3903,27 @@ describe("the owner's Triggers", () => {
     );
   });
 
-  it("changes a Trigger only while it is at the revision the form opened on", async () => {
+  it("changes a Trigger only while it has the fields the form opened on, a pause aside", async () => {
     const fake = fakeRegistries();
 
-    await create(fake, "t1");
+    const opened = triggerChangeValue(await create(fake, "t1"));
+
+    // Paused from its row while the form was open.
+    await call(fake, (registry) => registry.setTriggerPaused({ id: "t1", paused: true }));
 
     const edited = await call(fake, (registry) =>
-      registry.updateTrigger({ id: "t1", patch: { message: "Mine" }, revision: 1 }),
+      registry.updateTrigger({ id: "t1", patch: { message: "Mine" }, expected: opened }),
     );
 
     const stale = await call(fake, (registry) =>
-      Effect.flip(registry.updateTrigger({ id: "t1", patch: { name: "Stale" }, revision: 1 })),
+      Effect.flip(registry.updateTrigger({ id: "t1", patch: { name: "Stale" }, expected: opened })),
     );
 
     const removed = await call(fake, (registry) =>
-      Effect.flip(registry.updateTrigger({ id: "t9", patch: { name: "x" }, revision: 1 })),
+      Effect.flip(registry.updateTrigger({ id: "t9", patch: { name: "x" }, expected: opened })),
     );
 
-    expect(edited).toMatchObject({ revision: 2, message: "Mine" });
+    expect(edited).toMatchObject({ revision: 3, message: "Mine", paused: true });
     expect(stale.message).toBe("The trigger changed since you opened it: reopen the form");
     expect(fake.triggersHeld.get("t1")?.name).toBe("Weekly report");
     expect(removed.message).toBe("This trigger was removed");

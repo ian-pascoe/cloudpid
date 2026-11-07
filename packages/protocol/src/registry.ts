@@ -32,6 +32,7 @@ import {
   FireNowQueued,
   FireRecord,
   MAX_FIRE_LOG,
+  TriggerChangeValue,
   TriggerDefinition,
   TriggerOverview,
   TriggerKey,
@@ -1273,10 +1274,15 @@ export class RegistryRpcs extends RpcGroup.make(
   }),
   /**
    * Change a Trigger's fields as the owner (its kind and Environment are fixed); its object reads it again. With
-   * `revision`, the one the form opened on, it is refused once the Trigger changed since.
+   * `expected`, the Trigger as the form opened on it, it is refused once a field the form edits changed since (a pause
+   * or resume meanwhile is not one).
    */
   Rpc.make("updateTrigger", {
-    payload: { id: Schema.String, patch: TriggerPatch, revision: Schema.optionalKey(Schema.Int) },
+    payload: {
+      id: Schema.String,
+      patch: TriggerPatch,
+      expected: Schema.optionalKey(TriggerChangeValue),
+    },
     success: TriggerDefinition,
     error: EnvironmentError,
   }),

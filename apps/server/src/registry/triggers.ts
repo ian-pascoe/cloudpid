@@ -27,6 +27,7 @@ import type {
   RegistryStore,
   SessionRefusal,
 } from "./store.ts";
+import { triggerIdTaken } from "./messages.ts";
 
 /** What a write of a Trigger answers: the definition as kept, or why nothing was kept. */
 export type TriggerWrite =
@@ -150,10 +151,6 @@ const refusalReason = (refusal: SessionRefusal): string => {
   }
 };
 
-/** Why a Trigger made under an id another Trigger has, or had, is refused. */
-const TAKEN_ID =
-  "A trigger was already saved under this id with other values: close the form, and edit the trigger it saved";
-
 /** The fields of a Trigger a change can give it. */
 const CHANGEABLE = [
   "name",
@@ -245,7 +242,8 @@ export const openTriggers = (
   return {
     /**
      * Keep Trigger `id` made of `input`, at revision 1. Made again under the same id (a retry) with the same input, it
-     * is `unchanged`; with other input, or once removed, it is refused.
+     * is `unchanged`; with other input it is refused, and so is the id of a Trigger the agent removed, whose row is kept
+     * for a revert. The owner's removal deletes the row, so its id could be used again.
      */
     create: (id: string, input: EnvironmentTriggerInput, now: number): TriggerWrite =>
       storage.transactionSync((): TriggerWrite => {
@@ -285,7 +283,7 @@ export const openTriggers = (
             known.environment === made.environment &&
             sameFields(known, made)
             ? { status: "unchanged", definition: toDefinition(known) }
-            : { status: "invalid", problem: TAKEN_ID };
+            : { status: "invalid", problem: triggerIdTaken };
         }
 
         sql.exec(

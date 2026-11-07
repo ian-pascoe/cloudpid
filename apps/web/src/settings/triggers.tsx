@@ -110,6 +110,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
   const [logOpen, setLogOpen] = useAtom(fireLogOpenAtom(definition.id));
   const setForm = useAtomSet(triggerFormAtom(scope));
   const setDraft = useAtomSet(triggerDraftAtom(scope));
+  const setNotice = useAtomSet(triggerNoticeAtom(scope));
   const setRemoving = useAtomSet(removeTriggerDialogAtom(scope));
   const forgetRemove = useAtomSet(removeTriggerAtom(scope));
 
@@ -151,6 +152,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             size="sm"
             variant="ghost"
             onClick={() => {
+              setNotice(null);
               setDraft(triggerDraftOf(definition));
               setForm({ kind: "edit", opened: definition });
             }}
@@ -164,6 +166,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             variant="ghost"
             disabled={paused.waiting}
             onClick={() => {
+              setNotice(null);
               setPaused(!definition.paused);
             }}
           >
