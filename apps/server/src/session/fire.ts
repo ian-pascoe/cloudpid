@@ -8,6 +8,7 @@ import { isModelId } from "@cloudpid/config";
 import {
   type ApiResult,
   apiFailure,
+  cleanPayload,
   type ConfigureRequest,
   type FireRequest,
   fireText,
@@ -44,15 +45,19 @@ export const sessionFire =
 
     if (request.thinking !== undefined) pick.thinkingLevel = request.thinking;
 
+    // The sender's own words are made plain here, once: the header, the block, the chip and the file's name say them as
+    // they are after this.
+    const payload = request.payload === undefined ? undefined : cleanPayload(request.payload);
+
     const prompt: Types.Mutable<Prompt> = {
-      input: fireText(request.header, request.message, request.payload),
+      input: fireText(request.header, request.message, payload),
       via: { auth: "trigger", trigger: request.trigger },
       requestId: request.requestId,
     };
 
     // A webhook's body goes after the message, fenced as untrusted, with the whole body in a file (`host.ts`).
-    if (request.payload !== undefined) {
-      prompt.payload = { payload: request.payload, key: request.requestId, redact };
+    if (payload !== undefined) {
+      prompt.delivery = { payload, fireKey: request.requestId, redact };
     }
 
     return deliver({

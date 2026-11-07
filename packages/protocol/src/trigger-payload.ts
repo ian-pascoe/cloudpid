@@ -4,6 +4,7 @@
 // the Workspace that the block names. The chip in the transcript is what the owner's entry keeps of it
 // (`UserEntryData.trigger`). Pure: the Session writes the file and redacts the Secrets it holds.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off -- plain string functions and Schemas.
+import { sha256Hex } from "@cloudpid/config/sha256";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { cleanText, escapePageText } from "./attached-pages.ts";
@@ -25,7 +26,9 @@ export type WebhookFormat = typeof WebhookFormat.Type;
 
 /**
  * What a delivery gave a Fire, as the Trigger object sends it to the Session's `fire`: where it came from, and its body
- * (`body` absent when it was over `MAX_KEPT_BODY_BYTES`, so none was kept). `size` is what was received, in bytes.
+ * (`body` absent when it was over `MAX_KEPT_BODY_BYTES`, so none was kept). `size` is what was received, in bytes. The
+ * sender's own words (`event`, `action`, `delivery`, `contentType`) are as it sent them: `cleanPayload` makes them plain
+ * once, where the Session takes the payload in, and everything after it says them as they are.
  */
 export const FirePayload = Schema.Struct({
   format: WebhookFormat,
@@ -69,20 +72,43 @@ export const payloadChipLabel = (
   return `${source} · ${chip.event}${chip.action === undefined ? "" : `.${chip.action}`}`;
 };
 
-/** A value from a delivery's headers or body, as cloudpid's own header may say it: plain characters, on one line, bounded. */
-export const headerValue = (value: string): string =>
+/**
+ * A value from a delivery's headers or body, as cloudpid's own header, title and chip may say it: plain characters, on one
+ * line, bounded. The sender chooses these words, so nothing it sends is said as it is.
+ */
+export const senderText = (value: string): string =>
   Array.from(value.replace(/[^\w.:/@+ -]/gu, "_"))
     .slice(0, 100)
     .join("");
 
+/** `payload` with the sender's own words made plain (`senderText`): the one place they are cleaned on the Session's side. */
+export const cleanPayload = (payload: FirePayload): FirePayload => {
+  const cleaned: Types.Mutable<FirePayload> = {
+    ...payload,
+    delivery: senderText(payload.delivery),
+  };
+
+  if (payload.event !== undefined) cleaned.event = senderText(payload.event);
+
+  if (payload.action !== undefined) cleaned.action = senderText(payload.action);
+
+  if (payload.contentType !== undefined) cleaned.contentType = senderText(payload.contentType);
+
+  return cleaned;
+};
+
 /**
- * Where a Fire's whole body is kept in its Workspace: `.cloudpid/triggers/<fire id>.json`. The Fire's key is made from
- * the sender's delivery id, so the name is cut to plain characters and a length (never a path).
+ * Where a Fire's whole body is kept in its Workspace: `.cloudpid/triggers/<fire key>.json`. The fire key is made from
+ * the sender's delivery id, so the name is the key cut to plain characters and 150 of them (never a path), then a short
+ * hash of the whole key, so two keys that clean or cut to the same name still have files of their own.
  */
-export const payloadFilePath = (fireKey: string): string =>
-  `${WORKSPACE_ROOT}/.cloudpid/triggers/${Array.from(fireKey.replace(/[^\w.-]/gu, "_"))
+export const payloadFilePath = (fireKey: string): string => {
+  const name = Array.from(fireKey.replace(/[^\w.-]/gu, "_"))
     .slice(0, 150)
-    .join("")}.json`;
+    .join("");
+
+  return `${WORKSPACE_ROOT}/.cloudpid/triggers/${name}-${sha256Hex(fireKey).slice(0, 8)}.json`;
+};
 
 /** What starts and ends the block of a Fire's payload in the message. */
 export const PAYLOAD_BLOCK_OPEN = "<trigger_payload>";
@@ -113,43 +139,41 @@ const cutBytes = (text: string, max: number): string => {
 /** What a payload became in the message: its block, and the chip its entry keeps. */
 export type PayloadMade = { readonly block: string; readonly chip: TriggerPayloadChip };
 
+/** `<name>="<value>"` for a value that is there, else nothing; the value escaped. */
+const attribute = (name: string, value: string | undefined): ReadonlyArray<string> =>
+  value === undefined ? [] : [`${name}="${escapePageText(value)}"`];
+
+/** A flag attribute, `<name>="true"`, when `on`. */
+const flag = (name: string, on: boolean): ReadonlyArray<string> => (on ? [`${name}="true"`] : []);
+
 /**
- * The block and chip of `payload`. The body is cleaned, redacted of the Secrets the Session holds (`redact`), and only
- * then cut to `MAX_INLINE_PAYLOAD_BYTES` and escaped, so a Secret a dropped character split is whole when it is
- * redacted, and nothing the sender wrote can close the block or open another. `path` is the file the whole body was
- * written to (none when the body was not kept).
+ * The block and chip of `payload`, whose sender's words were made plain (`cleanPayload`). The body is cleaned, redacted
+ * of the Secrets the Session holds (`redact`), and only then cut to `MAX_INLINE_PAYLOAD_BYTES` and escaped, so a Secret
+ * a dropped character split is whole when it is redacted, and nothing the sender wrote can close the block or open
+ * another. `path` is the file the whole body was written to (none when the body was not kept); `truncated` says the
+ * text shown is only the start of what the file holds.
  */
-export const triggerPayload = (input: {
+export const fencePayload = (input: {
   readonly payload: FirePayload;
   readonly path: string | undefined;
   readonly redact: (text: string) => string;
 }): PayloadMade => {
   const { payload, path } = input;
   const kept = payload.body !== undefined;
-
-  const text = kept
-    ? cutBytes(input.redact(cleanText(payload.body)), MAX_INLINE_PAYLOAD_BYTES)
-    : "";
-
+  const whole = kept ? input.redact(cleanText(payload.body)) : "";
+  const text = cutBytes(whole, MAX_INLINE_PAYLOAD_BYTES);
   const shown = new TextEncoder().encode(text).length;
-  const truncated = kept && shown < payload.size;
 
   const attributes = [
-    `format="${payload.format}"`,
-    ...(payload.event === undefined
-      ? []
-      : [`event="${escapePageText(headerValue(payload.event))}"`]),
-    ...(payload.action === undefined
-      ? []
-      : [`action="${escapePageText(headerValue(payload.action))}"`]),
-    `delivery="${escapePageText(headerValue(payload.delivery))}"`,
-    ...(payload.contentType === undefined
-      ? []
-      : [`content_type="${escapePageText(headerValue(payload.contentType))}"`]),
-    `size="${String(payload.size)}"`,
-    ...(path === undefined ? [] : [`path="${escapePageText(path)}"`]),
-    ...(truncated ? ['truncated="true"'] : []),
-    ...(kept ? [] : ['not_kept="true"']),
+    ...attribute("format", payload.format),
+    ...attribute("event", payload.event),
+    ...attribute("action", payload.action),
+    ...attribute("delivery", payload.delivery),
+    ...attribute("content_type", payload.contentType),
+    ...attribute("size", String(payload.size)),
+    ...attribute("path", path),
+    ...flag("truncated", text !== whole),
+    ...flag("not_kept", !kept),
   ].join(" ");
 
   const element = kept
@@ -158,16 +182,20 @@ export const triggerPayload = (input: {
 
   const chip: Types.Mutable<TriggerPayloadChip> = {
     format: payload.format,
-    delivery: headerValue(payload.delivery),
+    delivery: payload.delivery,
     size: payload.size,
     shown,
   };
 
-  if (payload.event !== undefined) chip.event = headerValue(payload.event);
+  if (payload.event !== undefined) chip.event = payload.event;
 
-  if (payload.action !== undefined) chip.action = headerValue(payload.action);
+  if (payload.action !== undefined) chip.action = payload.action;
 
   if (path !== undefined) chip.path = path;
 
   return { block: [PAYLOAD_BLOCK_OPEN, NOTICE, element, PAYLOAD_BLOCK_CLOSE].join("\n"), chip };
 };
+
+/** Whether `text` is a block `fencePayload` made (or one the owner typed to look like it). */
+export const isPayloadBlock = (text: string): boolean =>
+  text.startsWith(`${PAYLOAD_BLOCK_OPEN}\n`) && text.endsWith(`\n${PAYLOAD_BLOCK_CLOSE}`);

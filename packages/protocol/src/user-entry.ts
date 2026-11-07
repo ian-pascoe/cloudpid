@@ -52,7 +52,7 @@ export const UserEntryData = Schema.Struct({
   // A prompt this version cannot read leaves the entry readable, without it.
   mcpPrompt: Schema.optionalKey(McpPromptData).pipe(Schema.catchDecoding(() => Effect.succeedNone)),
   // The webhook payload of a Trigger's Fire, for its chip (`trigger-payload.ts`): one this version cannot read leaves the entry readable, without the chip.
-  trigger: Schema.optionalKey(TriggerPayloadChip).pipe(
+  triggerPayload: Schema.optionalKey(TriggerPayloadChip).pipe(
     Schema.catchDecoding(() => Effect.succeedNone),
   ),
   // A mark this version cannot read leaves the entry readable, without the mark.

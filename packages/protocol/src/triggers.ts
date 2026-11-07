@@ -13,7 +13,7 @@ import type { AgentChange, EnvironmentRef } from "./registry.ts";
 import { openLiterals } from "./open-literals.ts";
 import { scheduleProblem } from "./trigger-schedule.ts";
 import { matchProblem, TriggerMatch } from "./trigger-match.ts";
-import { FirePayload, headerValue, WebhookFormat } from "./trigger-payload.ts";
+import { FirePayload, WebhookFormat } from "./trigger-payload.ts";
 
 /** The longest Trigger name, in characters after trimming. */
 export const MAX_TRIGGER_NAME_LENGTH = 80;
@@ -103,7 +103,7 @@ export const webhookOf = (
 ): WebhookSource | undefined => (holder?.source.type === "webhook" ? holder.source : undefined);
 
 /** The `when_busy` a Trigger of `source` has when none is given: `skip` for a Schedule, `start` for a webhook. */
-export const defaultWhenBusy = (source: { readonly type: string }): TriggerWhenBusy =>
+export const defaultWhenBusy = (source: TriggerSourceInput): TriggerWhenBusy =>
   source.type === "webhook" ? "start" : "skip";
 
 /** The Schedule `holder` fires on, or undefined for none (a source this version doesn't know). */
@@ -379,15 +379,17 @@ const DATE_TIME: Intl.DateTimeFormatOptions = {
 export const fireTimeWords = (at: number, zone: string): string =>
   formatIn(zone, at, { ...DATE_TIME, timeZoneName: "short" });
 
+/** The title of the Session a Fire starts, "`<name>` · `<date, time>`" in the Trigger's zone: never generated. */
+export const fireTitle = (name: string, at: number, zone: string): string =>
+  `${name.trim()} · ${formatIn(zone, at, DATE_TIME)}`;
+
 /**
- * The title of the Session a Fire starts, "`<name>` · `<date, time>`" in the Trigger's zone: never generated. A webhook's
- * carries its event, "`<name>` · `<event>` · `<date, time>`" (the sender's own word, so it is cleaned), and
- * the time in UTC, which it names, since a webhook has no zone.
+ * The title of the Session a webhook's Fire starts, "`<name>` · `<event>` · `<date, time> UTC`": never generated. A
+ * webhook has no zone, so the time is UTC, which the title says. `event` is the sender's word, made plain by the
+ * caller (`senderText`).
  */
-export const fireTitle = (name: string, at: number, zone: string, event?: string): string =>
-  event === undefined
-    ? `${name.trim()} · ${formatIn(zone, at, DATE_TIME)}`
-    : `${name.trim()} · ${headerValue(event)} · ${formatIn(zone, at, { ...DATE_TIME, timeZoneName: "short" })}`;
+export const webhookFireTitle = (name: string, at: number, event: string): string =>
+  `${name.trim()} · ${event} · ${formatIn("UTC", at, { ...DATE_TIME, timeZoneName: "short" })}`;
 
 /** What cloudpid's header of a Fire's message says: the Trigger's name, and its scheduled (if any) and actual time. */
 export const FireHeader = Schema.Struct({
@@ -402,22 +404,20 @@ export const FireHeader = Schema.Struct({
 
 export type FireHeader = typeof FireHeader.Type;
 
-/**
- * The line of a webhook Fire's header that says where it came from: the format, the event (and its action) and the
- * delivery id, each as the sender gave it but cut to plain characters.
- */
+/** The line of a webhook Fire's header that says where it came from: the format, the event (and its action) and the delivery id. */
 const webhookLine = (payload: FirePayload, again: boolean): string => {
   const event =
     payload.event === undefined
       ? ""
-      : `, event ${headerValue(payload.event)}${payload.action === undefined ? "" : ` (action ${headerValue(payload.action)})`}`;
+      : `, event ${payload.event}${payload.action === undefined ? "" : ` (action ${payload.action})`}`;
 
-  return `Source: a ${payload.format} webhook${event}, delivery ${headerValue(payload.delivery)}${again ? ", sent again by the owner from the last delivery" : ""}.`;
+  return `Source: a ${payload.format} webhook${event}, delivery ${payload.delivery}${again ? ", sent again by the owner from the last delivery" : ""}.`;
 };
 
 /**
  * cloudpid's header of a Fire's message, before the Trigger message (`triggers.md` → Payload and untrusted content).
- * With a `payload` it says where the delivery came from; its body is not here but in a block after the message.
+ * With a `payload` (its sender's words made plain: `cleanPayload`) it says where the delivery came from; its body is not
+ * here but in a block after the message.
  */
 export const renderFireHeader = (header: FireHeader, payload?: FirePayload): string => {
   const at = (time: number) => fireTimeWords(time, header.zone);

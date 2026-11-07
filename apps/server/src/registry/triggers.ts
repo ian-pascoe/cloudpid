@@ -9,6 +9,9 @@ import {
   defaultWhenBusy,
   type EnvironmentTriggerInput,
   fireTitle,
+  senderText,
+  type TriggerSource,
+  webhookFireTitle,
   sourceProblem,
   TriggerDefinition,
   triggerMessageProblem,
@@ -152,9 +155,33 @@ const sourceText = (source: TriggerSourceInput): string => {
   });
 };
 
-/** The source `definition` fires on, as one a change may keep; undefined for one this version doesn't know. */
-const sourceOf = (definition: TriggerDefinition): TriggerSourceInput | undefined =>
-  definition.source.type === "unknown" ? undefined : definition.source;
+/** The source `holder` (a definition, or a change's value) fires on, as one a change may keep; undefined for one this version doesn't know. */
+const sourceOf = (holder: { readonly source: TriggerSource }): TriggerSourceInput | undefined =>
+  holder.source.type === "unknown" ? undefined : holder.source;
+
+/**
+ * The source a patch's `requested` source leaves a Trigger that has `kept`: a Trigger's source type and format are fixed
+ * at creation (a Schedule never becomes a webhook, which has secrets only its creation makes, nor the reverse), so a
+ * request that names another is refused. A Schedule is replaced by the request; a webhook is changed only through
+ * `patch.match`, so a request for one leaves it as it is, its stored `match` with it.
+ */
+const changedSource = (
+  kept: TriggerSourceInput,
+  requested: TriggerSourceInput | undefined,
+): { readonly source: TriggerSourceInput } | { readonly problem: string } => {
+  if (
+    requested !== undefined &&
+    (requested.type !== kept.type ||
+      (requested.type === "webhook" && kept.type === "webhook" && requested.format !== kept.format))
+  ) {
+    return {
+      problem:
+        "A Trigger's source type and format are fixed when it is made: remove it and make another to change them",
+    };
+  }
+
+  return { source: requested !== undefined && kept.type === "schedule" ? requested : kept };
+};
 
 /** Why `fields` can't be a Trigger's, or undefined when they can. */
 const fieldsProblem = (fields: {
@@ -389,14 +416,17 @@ export const openTriggers = (
         if (known === undefined) return { status: "missing" };
 
         const kept = sourceOf(toDefinition(known));
-        const changed = patch.source ?? kept;
 
-        if (changed === undefined) {
+        if (kept === undefined) {
           return { status: "invalid", problem: "This version can't change the Trigger's source" };
         }
 
+        const changed = changedSource(kept, patch.source);
+
+        if ("problem" in changed) return { status: "invalid", problem: changed.problem };
+
         // A `match` alone changes a webhook's filter and nothing else of its source.
-        const matched = withMatch(changed, patch.match);
+        const matched = withMatch(changed.source, patch.match);
 
         if ("problem" in matched) return { status: "invalid", problem: matched.problem };
 
@@ -501,7 +531,7 @@ export const openTriggers = (
 
       if (known === undefined) return null;
 
-      const source = value.source.type === "unknown" ? undefined : value.source;
+      const source = sourceOf(value);
 
       sql.exec("UPDATE triggers SET removed_at = NULL WHERE id = ?", id);
 
@@ -580,7 +610,7 @@ export const openTriggers = (
         const title =
           current.source.type === "schedule"
             ? fireTitle(current.name, fire.scheduledAt ?? now, current.source.zone)
-            : fireTitle(current.name, now, "UTC", fire.event ?? "webhook");
+            : webhookFireTitle(current.name, now, senderText(fire.event ?? "webhook"));
 
         const created = store.createSession(
           {

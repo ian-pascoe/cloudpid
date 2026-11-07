@@ -106,7 +106,7 @@ import {
   type FirePayload,
   type PayloadMade,
   payloadFilePath,
-  triggerPayload,
+  fencePayload,
   type TriggerPayloadChip,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
@@ -728,16 +728,16 @@ export type Prompt = {
     readonly redact: Effect.Effect<<A>(value: A) => A, SessionError>;
   };
   /**
-   * A Trigger's webhook delivery (`fire`): its body reaches the model as an untrusted `<trigger_payload>` block after the
-   * message, at most 16 KiB of it inline, and the whole body is written to `.cloudpid/triggers/<key>.json` in the
-   * Workspace first (`docs/architecture/triggers.md` → Payload and untrusted content), once and not again for a
-   * `requestId` that was admitted. The owner's entry keeps what it became for the chip. `redact` takes the held Secrets out
-   * of what goes inline.
+   * What a Trigger's webhook delivery gave its Fire (`fire`): its body reaches the model as an untrusted
+   * `<trigger_payload>` block after the message, at most 16 KiB of it inline, and the whole body is written to
+   * `.cloudpid/triggers/<fire key>.json` in the Workspace first (`docs/architecture/triggers.md` → Payload and untrusted
+   * content), once and not again for a `requestId` that was admitted. The owner's entry keeps what it became for the
+   * chip. `redact` takes the held Secrets out of what goes inline.
    */
-  readonly payload?: {
+  readonly delivery?: {
     readonly payload: FirePayload;
-    /** The Fire's key, which names the file. */
-    readonly key: string;
+    /** The Fire's key (`requestId`), which names the file. */
+    readonly fireKey: string;
     readonly redact: Effect.Effect<(text: string) => string, SessionError>;
   };
   /**
@@ -2643,7 +2643,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       readonly pages?: ReadonlyArray<AttachedPage>;
       readonly resources?: ReadonlyArray<AttachedResource>;
       readonly app?: ReadonlyArray<SentAppMessage>;
-      readonly trigger?: TriggerPayloadChip;
+      readonly triggerPayload?: TriggerPayloadChip;
     } = {},
   ) => {
     const data = userEntryData({ kind: draft.entry?.kind ?? "", data: draft.entry?.data });
@@ -2656,7 +2656,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       mcpPrompt: data?.mcpPrompt,
       resources: changes.resources ?? data?.resources,
       app: changes.app ?? data?.app,
-      trigger: changes.trigger ?? data?.trigger,
+      triggerPayload: changes.triggerPayload ?? data?.triggerPayload,
     });
   };
 
@@ -2689,7 +2689,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     mcpPrompt?: JsonValue;
     resources?: Array<AttachedResource>;
     app?: Array<SentAppMessage>;
-    trigger?: TriggerPayloadChip;
+    triggerPayload?: TriggerPayloadChip;
   };
 
   /**
@@ -2704,7 +2704,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     readonly mcpPrompt?: McpPromptData | undefined;
     readonly resources?: ReadonlyArray<AttachedResource> | undefined;
     readonly app?: ReadonlyArray<SentAppMessage> | undefined;
-    readonly trigger?: TriggerPayloadChip | undefined;
+    readonly triggerPayload?: TriggerPayloadChip | undefined;
   }) => {
     const data: OwnerEntryData = { display: kept.display, skills: [...kept.skills] };
 
@@ -2718,7 +2718,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
     if (kept.app !== undefined) data.app = [...kept.app];
 
-    if (kept.trigger !== undefined) data.trigger = kept.trigger;
+    if (kept.triggerPayload !== undefined) data.triggerPayload = kept.triggerPayload;
 
     return { kind: USER_ENTRY_KIND, data };
   };
@@ -2758,7 +2758,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       via: _via,
       mcpPrompt: _mcpPrompt,
       resources: _resources,
-      payload: _payload,
+      delivery: _delivery,
       ...rest
     } = prompt;
 
@@ -2961,7 +2961,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         via: _via,
         mcpPrompt: _mcpPrompt,
         resources: _resources,
-        payload: _payload,
+        delivery: _delivery,
         ...rest
       } = prompt;
 
@@ -3303,23 +3303,21 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
     });
 
   /**
-   * The payload `prompt` carries, made into its block and chip: its whole body written to the Workspace first, through
+   * The payload `prompt`'s delivery carries, made into its block and chip: its whole body written to the Workspace first, through
    * the lookup environment, which never starts the Container (ADR-0018). Not made for a `requestId` the conversation has
    * already admitted: a resend finds the first submission. A Workspace that cannot be written fails the send as an
    * unavailable Session, which a Fire tries again.
    */
   const firePayload = (prompt: Prompt): Effect.Effect<PayloadMade | undefined, SessionError> =>
     Effect.gen(function* () {
-      const { payload } = prompt;
+      const { delivery } = prompt;
 
-      if (payload === undefined || (yield* wasAdmitted(prompt))) return undefined;
+      if (delivery === undefined || (yield* wasAdmitted(prompt))) return undefined;
 
-      const redact = yield* payload.redact;
-      const { body } = payload.payload;
+      const { payload } = delivery;
+      const redact = yield* delivery.redact;
 
-      if (body === undefined) {
-        return triggerPayload({ payload: payload.payload, path: undefined, redact });
-      }
+      if (payload.body === undefined) return fencePayload({ payload, path: undefined, redact });
 
       const conversation = yield* addressed(prompt.conversationId);
       const env = yield* environment(conversation, { lookup: true });
@@ -3331,17 +3329,16 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
         });
       }
 
-      const path = payloadFilePath(payload.key);
+      const path = payloadFilePath(delivery.fireKey);
+      const body = new TextEncoder().encode(payload.body);
 
-      const written = yield* attempt("payload", () =>
-        env.writeFile(path, new TextEncoder().encode(body), context),
-      );
+      const written = yield* attempt("payload", () => env.writeFile(path, body, context));
 
       if (!written.ok) {
         return yield* SessionError.make({ operation: "payload", message: written.error.message });
       }
 
-      return triggerPayload({ payload: payload.payload, path, redact });
+      return fencePayload({ payload, path, redact });
     });
 
   /**
@@ -3356,7 +3353,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   ): InputSubmissionDraft => ({
     ...draft,
     content: withBlockBefore(draft, from, [{ type: "text" as const, text: made.block }]),
-    entry: entryKeeping(draft, input, { trigger: made.chip }),
+    entry: entryKeeping(draft, input, { triggerPayload: made.chip }),
   });
 
   /** The refusal of a send whose resource `ref` is gone, with `why` redacted. */

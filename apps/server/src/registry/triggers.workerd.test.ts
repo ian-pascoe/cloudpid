@@ -200,7 +200,7 @@ const fireOf = (revision = 1, requestId = `t1:${new Date(monday).toISOString()}`
 });
 
 describe("a webhook Trigger's definition", () => {
-  const hook: EnvironmentTriggerInput = {
+  const webhookTrigger: EnvironmentTriggerInput = {
     ...weekly,
     name: "CI failed",
     source: {
@@ -213,12 +213,16 @@ describe("a webhook Trigger's definition", () => {
   it("is kept with its format and match, and starts a Session when busy by default", async () => {
     const registry = fresh();
 
-    expect(await registry.createTrigger("t1", hook, 1_000)).toMatchObject({ status: "ok" });
+    expect(await registry.createTrigger("t1", webhookTrigger, 1_000)).toMatchObject({
+      status: "ok",
+    });
     expect(await registry.triggerDefinition("t1")).toMatchObject({
-      source: hook.source,
+      source: webhookTrigger.source,
       whenBusy: "start",
     });
-    expect(await registry.createTrigger("t2", { ...hook, whenBusy: "skip" }, 1_000)).toMatchObject({
+    expect(
+      await registry.createTrigger("t2", { ...webhookTrigger, whenBusy: "skip" }, 1_000),
+    ).toMatchObject({
       definition: { whenBusy: "skip" },
     });
   });
@@ -226,13 +230,13 @@ describe("a webhook Trigger's definition", () => {
   it("is made once by a create retried with its match written in another order", async () => {
     const registry = fresh();
 
-    await registry.createTrigger("t1", hook, 1_000);
+    await registry.createTrigger("t1", webhookTrigger, 1_000);
 
     expect(
       await registry.createTrigger(
         "t1",
         {
-          ...hook,
+          ...webhookTrigger,
           source: {
             type: "webhook",
             format: "github",
@@ -251,7 +255,7 @@ describe("a webhook Trigger's definition", () => {
       expect(
         await registry.createTrigger(
           "t1",
-          { ...hook, source: { type: "webhook", format: "standard", match } },
+          { ...webhookTrigger, source: { type: "webhook", format: "standard", match } },
           1_000,
         ),
       ).toMatchObject({ status: "invalid" });
@@ -263,7 +267,7 @@ describe("a webhook Trigger's definition", () => {
   it("changes its match alone, and takes it away with null", async () => {
     const registry = fresh();
 
-    await registry.createTrigger("t1", hook, 1_000);
+    await registry.createTrigger("t1", webhookTrigger, 1_000);
 
     expect(await registry.updateTrigger("t1", { match: { event: ["push"] } }, 2_000)).toMatchObject(
       {
@@ -286,11 +290,71 @@ describe("a webhook Trigger's definition", () => {
     expect((await registry.triggerDefinition("t1"))?.source).not.toHaveProperty("match");
   });
 
+  it("keeps its source type and format as made: a patch that names another is refused", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", weekly, 1_000);
+    await registry.createTrigger("t2", webhookTrigger, 1_000);
+
+    const refused = {
+      status: "invalid",
+      problem: expect.stringContaining("fixed when it is made"),
+    };
+
+    expect(
+      await registry.updateTrigger("t1", { source: { type: "webhook", format: "github" } }, 2_000),
+    ).toMatchObject(refused);
+    expect(
+      await registry.updateTrigger(
+        "t2",
+        { source: { type: "schedule", cron: "@daily", zone: "UTC" } },
+        2_000,
+      ),
+    ).toMatchObject(refused);
+    expect(
+      await registry.updateTrigger(
+        "t2",
+        { source: { type: "webhook", format: "standard" } },
+        2_000,
+      ),
+    ).toMatchObject(refused);
+    expect(await registry.triggerDefinition("t1")).toMatchObject({ revision: 1 });
+    expect(await registry.triggerDefinition("t2")).toMatchObject({
+      revision: 1,
+      source: webhookTrigger.source,
+    });
+  });
+
+  it("keeps the match a patch that names the same webhook source doesn't mention", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", webhookTrigger, 1_000);
+
+    expect(
+      await registry.updateTrigger(
+        "t1",
+        { name: "CI broke", source: { type: "webhook", format: "github" } },
+        2_000,
+      ),
+    ).toMatchObject({
+      status: "ok",
+      definition: { name: "CI broke", source: webhookTrigger.source },
+    });
+    // Another match inside the source is no way to change it either: `match` is the patch's own field.
+    expect(
+      await registry.updateTrigger(
+        "t1",
+        { source: { type: "webhook", format: "github", match: { event: ["push"] } } },
+        3_000,
+      ),
+    ).toMatchObject({ status: "unchanged" });
+  });
+
   it("refuses a match for a Trigger on a Schedule, and one that can't filter", async () => {
     const registry = fresh();
 
     await registry.createTrigger("t1", weekly, 1_000);
-    await registry.createTrigger("t2", hook, 1_000);
+    await registry.createTrigger("t2", webhookTrigger, 1_000);
 
     expect(await registry.updateTrigger("t1", { match: { event: ["push"] } }, 2_000)).toMatchObject(
       {
@@ -557,7 +621,7 @@ describe("deleting an Environment", () => {
 });
 
 describe("admitFire for a webhook Trigger", () => {
-  const hook: EnvironmentTriggerInput = {
+  const webhookTrigger: EnvironmentTriggerInput = {
     ...weekly,
     name: "CI failed",
     source: { type: "webhook", format: "github" },
@@ -566,7 +630,7 @@ describe("admitFire for a webhook Trigger", () => {
   it("starts a Session titled with the event and the time in UTC", async () => {
     const registry = fresh();
 
-    await registry.createTrigger("t1", hook, 1_000);
+    await registry.createTrigger("t1", webhookTrigger, 1_000);
 
     expect(
       await registry.admitFire(
@@ -584,8 +648,8 @@ describe("admitFire for a webhook Trigger", () => {
   it("starts a Session for each delivery while the last one's runs, and skips when told to", async () => {
     const registry = fresh();
 
-    await registry.createTrigger("t1", hook, 1_000);
-    await registry.createTrigger("t2", { ...hook, whenBusy: "skip" }, 1_000);
+    await registry.createTrigger("t1", webhookTrigger, 1_000);
+    await registry.createTrigger("t2", { ...webhookTrigger, whenBusy: "skip" }, 1_000);
 
     const at = (trigger: string, n: number) => ({
       trigger,

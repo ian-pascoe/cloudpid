@@ -41,6 +41,7 @@ import { type PageCrop, PageCropType } from "./annotations.ts";
 import type { McpPromptData } from "./mcp-prompts.ts";
 import { type AttachedPage, isPageBlock } from "./attached-pages.ts";
 import { type AttachedResource, isResourcesBlock } from "./attached-resources.ts";
+import { isPayloadBlock, type TriggerPayloadChip } from "./trigger-payload.ts";
 import type { SessionVia } from "./mcp-api.ts";
 import type { SentAppMessage } from "./mcp-apps.ts";
 import { reviewTitle, type ShownReviewAnnotation, shownReview } from "./review.ts";
@@ -96,6 +97,8 @@ export type TranscriptMessage = {
   readonly pages?: readonly AttachedPage[];
   /** The MCP resources attached to an owner's message, which shows a chip for each instead of the block the model got. */
   readonly resources?: readonly AttachedResource[];
+  /** The webhook delivery a Trigger's Fire carried, which shows a chip instead of the block the model got. */
+  readonly triggerPayload?: TriggerPayloadChip;
   /** The App messages an owner's message sent (`submit.app`), which the message shows as "sent from the <server> app" blocks, not as text of the owner's. */
   readonly app?: readonly SentAppMessage[];
   /** A Review's Annotations, each with its quote and the owner's text: the message shows its summary instead. */
@@ -227,6 +230,13 @@ const withoutResourcesBlock = (
   });
 };
 
+/** `parts` without the block of a Trigger's webhook payload the Session added (the last text part shaped like one): the chip shows it instead. */
+const withoutPayloadBlock = (parts: readonly TranscriptPart[]): TranscriptPart[] => {
+  const at = parts.findLastIndex((part) => part.type === "text" && isPayloadBlock(part.text));
+
+  return parts.filter((_, index) => index !== at);
+};
+
 /**
  * `parts` without the text parts of the App messages the owner sent (each the last text part with its text, from the last
  * message back, so a typed text equal to one stays): the message shows them as blocks of their own.
@@ -317,7 +327,9 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
   const unsourced =
     data.resources === undefined ? unpaged : withoutResourcesBlock(unpaged, data.resources);
 
-  const parts = data.app === undefined ? unsourced : withoutAppParts(unsourced, data.app);
+  const delivered = data.triggerPayload === undefined ? unsourced : withoutPayloadBlock(unsourced);
+
+  const parts = data.app === undefined ? delivered : withoutAppParts(delivered, data.app);
 
   const first = parts.findIndex((part) => part.type === "text");
   const expanded = parts[first];
@@ -362,8 +374,13 @@ const typedMessage = (entry: EntryRecord): TranscriptMessage | undefined => {
       ? paged
       : { ...paged, resources: data.resources };
 
+  const chipped =
+    data.triggerPayload === undefined
+      ? sourced
+      : { ...sourced, triggerPayload: data.triggerPayload };
+
   const messaged =
-    data.app === undefined || data.app.length === 0 ? sourced : { ...sourced, app: data.app };
+    data.app === undefined || data.app.length === 0 ? chipped : { ...chipped, app: data.app };
 
   const reviewed = review === undefined ? messaged : { ...messaged, review };
 

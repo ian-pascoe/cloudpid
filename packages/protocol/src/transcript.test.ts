@@ -3,6 +3,7 @@ import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import type { Annotation, PageAnnotation } from "./annotations.ts";
 import { cropLabel, renderReview, reviewMessage } from "./review.ts";
+import { fencePayload } from "./trigger-payload.ts";
 import { projectEntry } from "./transcript.ts";
 import { USER_ENTRY_KIND } from "./user-entry.ts";
 
@@ -150,5 +151,54 @@ describe("App messages in the transcript", () => {
     ]);
 
     expect(projectEntry(entryWith("nonsense", "Do it"))?.app).toBeUndefined();
+  });
+});
+
+describe("a Trigger's webhook payload in the transcript", () => {
+  const made = fencePayload({
+    payload: {
+      format: "github",
+      event: "issues",
+      action: "opened",
+      delivery: "d-1",
+      size: 2,
+      body: "{}",
+    },
+    path: "/workspace/.cloudpid/triggers/t1_d-1.json",
+    redact: (text) => text,
+  });
+
+  const entry = (data: { readonly triggerPayload: unknown }): EntryRecord =>
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- SAFETY: the fields of an entry the projection reads.
+    ({
+      id: 3,
+      kind: USER_ENTRY_KIND,
+      data: { display: "[cloudpid] Trigger fired.\n\nTriage it.", skills: [], ...data },
+      model: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "[cloudpid] Trigger fired.\n\nTriage it." },
+            { type: "text", text: made.block },
+          ],
+          timestamp: 9,
+        },
+      ],
+    }) as unknown as EntryRecord;
+
+  it("takes its block out of the message and carries its chip data", () => {
+    const message = projectEntry(entry({ triggerPayload: made.chip }));
+
+    expect(message?.parts).toEqual([
+      { type: "text", text: "[cloudpid] Trigger fired.\n\nTriage it." },
+    ]);
+    expect(message?.triggerPayload).toEqual(made.chip);
+  });
+
+  it("leaves the block alone in an entry whose chip it cannot read", () => {
+    const message = projectEntry(entry({ triggerPayload: { format: "later" } }));
+
+    expect(message?.parts).toHaveLength(2);
+    expect(message?.triggerPayload).toBeUndefined();
   });
 });
