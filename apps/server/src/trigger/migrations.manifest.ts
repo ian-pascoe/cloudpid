@@ -5,6 +5,7 @@
 // that does. A revert keeps the migration and adds one that undoes it (`docs/development/workers.md` → Deploys and
 // Durable Object code updates → Reverts).
 export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
-  // 1: `trigger_meta` (the definition and the cursor), `trigger_pending` and `trigger_fires`, the fire log.
-  "9174c27b35a055a3",
+  // 1: `trigger_meta` (the definition and the cursor), `trigger_pending` (with its admitted Session) and
+  // `trigger_fires`, the fire log.
+  "a8419e2c21873eff",
 ];

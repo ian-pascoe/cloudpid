@@ -7,6 +7,7 @@
 import { ThinkingLevel } from "@cloudpid/config";
 import {
   fireTitle,
+  scheduleOf,
   type ScheduleSource,
   scheduleProblem,
   TriggerDefinition,
@@ -144,13 +145,6 @@ const toDefinition = (row: TriggerRow): TriggerDefinition => {
   return definition;
 };
 
-/** The Schedule kept in `row`, or undefined for a source this version doesn't know. */
-const scheduleOf = (row: TriggerRow): ScheduleSource | undefined => {
-  const { source } = toDefinition(row);
-
-  return source.type === "schedule" ? source : undefined;
-};
-
 /** Why `fields` can't be a Trigger's, or undefined when they can. */
 const fieldsProblem = (fields: {
   readonly name: string;
@@ -180,7 +174,7 @@ export const openTriggers = (
   storage: RegistryStorage,
   store: Pick<
     RegistryStore,
-    "getEnvironment" | "getSession" | "createSession" | "requestedSession"
+    "getEnvironment" | "getSession" | "createSession" | "requestedSession" | "deleteEnvironment"
   >,
 ) => {
   const { sql } = storage;
@@ -295,7 +289,7 @@ export const openTriggers = (
 
         if (known === undefined) return { status: "missing" };
 
-        const source = patch.source ?? scheduleOf(known);
+        const source = patch.source ?? scheduleOf(toDefinition(known));
 
         if (source === undefined) {
           return { status: "invalid", problem: "This version can't change the Trigger's source" };
@@ -352,19 +346,11 @@ export const openTriggers = (
         return removed;
       }),
 
-    /** The ids of `environment`'s Triggers. */
-    ofEnvironment: (environment: string): Array<string> =>
-      Arr.map(
-        sql
-          .exec<{ id: string }>("SELECT id FROM triggers WHERE environment = ?", environment)
-          .toArray(),
-        (found) => found.id,
-      ),
-
     /**
-     * Let a Fire through, or say why not (`docs/architecture/triggers.md` → `admitFire`), in one transaction: the Trigger
-     * is there and active, the caller's revision is current (else `stale` with the definition), and, unless the Fire was
-     * let through before (its `requestId`), the overlap; then its Session is registered in a new Workspace of the
+     * Let a Fire through, or say why not (`docs/architecture/triggers.md` → `admitFire`), in one transaction. A Fire let
+     * through before (its `requestId`) is answered its Session again, whatever came since (a pause, a removal, a change,
+     * the overlap), so a retried Fire completes the Session it registered. Otherwise the Trigger is there and active,
+     * the caller's revision is current (else `stale` with the definition), and the overlap; then its Session is registered in a new Workspace of the
      * Environment (the spare when current), titled by cloudpid and marked with the Trigger, under `ids.session` (and
      * `ids.workspace`, unless the spare is taken). It counts nothing and caps nothing.
      */
@@ -375,17 +361,8 @@ export const openTriggers = (
       startingMs: number,
     ): FireAdmitted =>
       storage.transactionSync((): FireAdmitted => {
-        const known = row(fire.trigger);
-
-        if (known === undefined) return { status: "removed" };
-
-        if (known.paused === 1) return { status: "paused" };
-
-        const current = toDefinition(known);
-
-        if (known.revision !== fire.revision) return { status: "stale", definition: current };
-
-        // A Fire let through before (a retried alarm) is answered its Session again, whatever the overlap says now.
+        // A Fire let through before (a retried alarm) is answered its Session again, whatever came since: its Session
+        // is registered, and an empty one would be left if it were abandoned now.
         const earlier = store.requestedSession(fire.requestId, now);
 
         if (earlier !== null) {
@@ -396,6 +373,16 @@ export const openTriggers = (
             repeated: true,
           };
         }
+
+        const known = row(fire.trigger);
+
+        if (known === undefined) return { status: "removed" };
+
+        if (known.paused === 1) return { status: "paused" };
+
+        const current = toDefinition(known);
+
+        if (known.revision !== fire.revision) return { status: "stale", definition: current };
 
         if (current.whenBusy === "skip" && busy(known.last_session, now, startingMs)) {
           return { status: "skipped", reason: "overlap" };
@@ -432,6 +419,22 @@ export const openTriggers = (
 
         return { status: "started", session: created.id, environment: created.environment };
       }),
+
+    /**
+     * Delete Environment `id` (`store.deleteEnvironment`, which deletes its Triggers in the same transaction) and answer
+     * the ids of the Triggers that went with it (`docs/architecture/triggers.md` → Cascades).
+     */
+    deleteEnvironment: (id: string): EnvironmentRemoval =>
+      storage.transactionSync((): EnvironmentRemoval => {
+        const held = Arr.map(
+          sql.exec<{ id: string }>("SELECT id FROM triggers WHERE environment = ?", id).toArray(),
+          (found) => found.id,
+        );
+
+        const deletion = store.deleteEnvironment(id);
+
+        return { deletion, triggers: deletion === "deleted" ? held : [] };
+      }),
   };
 };
 
@@ -443,20 +446,3 @@ export type EnvironmentRemoval = {
   readonly deletion: EnvironmentDeletion;
   readonly triggers: ReadonlyArray<string>;
 };
-
-/**
- * Delete Environment `id` (`store.deleteEnvironment`, which deletes its Triggers in the same transaction) and answer the
- * ids of the Triggers that went with it (`docs/architecture/triggers.md` → Cascades).
- */
-export const deleteEnvironmentWithTriggers = (
-  storage: RegistryStorage,
-  store: Pick<RegistryStore, "deleteEnvironment">,
-  triggers: Pick<Triggers, "ofEnvironment">,
-  id: string,
-): EnvironmentRemoval =>
-  storage.transactionSync((): EnvironmentRemoval => {
-    const held = triggers.ofEnvironment(id);
-    const deletion = store.deleteEnvironment(id);
-
-    return { deletion, triggers: deletion === "deleted" ? held : [] };
-  });

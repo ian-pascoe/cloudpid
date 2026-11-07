@@ -14,20 +14,21 @@ import {
   type FireRequest,
   type FireSource,
   nextFires,
-  type ScheduleSource,
   scheduledFireKey,
+  scheduleOf,
   type SubmitResult,
-  type TriggerDefinition,
+  TriggerDefinition,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type * as Types from "effect/Types";
 import type { FireAdmission, FireAdmitted } from "../registry/triggers.ts";
-import { openTriggerStore, type PendingFire, type TriggerStore } from "./store.ts";
+import { hasTriggerStore, openTriggerStore, type PendingFire, type TriggerStore } from "./store.ts";
 
 /** The Registry or a Session could not be reached: the Fire is tried again later. */
 export class TriggerUnreachable extends Schema.TaggedError<
@@ -77,7 +78,7 @@ export type FireNowAnswer =
 export type TriggerHandlers = {
   /** Read the definition again and act on it: wipe, disarm or re-arm. What callers call after a change. */
   readonly sync: () => Effect.Effect<TriggerState, TriggerUnreachable>;
-  /** Delete the object's alarm and storage: its Trigger is gone. */
+  /** Its Trigger is gone: complete its admitted Fires, as far as they can be now, then delete its alarm and storage. */
   readonly remove: () => Effect.Effect<void>;
   /** The owner's Fire now: a Fire recorded `manual`, drained by the alarm at once. */
   readonly fireNow: () => Effect.Effect<FireNowAnswer, TriggerUnreachable>;
@@ -108,15 +109,21 @@ const newManualId = (): string => crypto.randomUUID();
 
 const backoff = (attempts: number): number => Math.min(RETRY_MS * 2 ** attempts, MAX_RETRY_MS);
 
-const sameSchedule = (a: TriggerDefinition | undefined, b: TriggerDefinition): boolean =>
-  a !== undefined &&
-  a.source.type === "schedule" &&
-  b.source.type === "schedule" &&
-  a.source.cron === b.source.cron &&
-  a.source.zone === b.source.zone;
+const sameSchedule = (a: TriggerDefinition | undefined, b: TriggerDefinition): boolean => {
+  const before = scheduleOf(a);
+  const after = scheduleOf(b);
 
-const scheduleOf = (definition: TriggerDefinition | undefined): ScheduleSource | undefined =>
-  definition !== undefined && definition.source.type === "schedule" ? definition.source : undefined;
+  return (
+    before !== undefined &&
+    after !== undefined &&
+    before.cron === after.cron &&
+    before.zone === after.zone
+  );
+};
+
+const decodeDefinition = Schema.decodeUnknownOption(TriggerDefinition);
+
+const NO_STATE: TriggerState = { definition: null, nextFireAt: null, lastFire: null, pending: 0 };
 
 /** The outcome a span and its readers name: `started`, `skipped:<why>` or `failed`. */
 const outcomeName = (outcome: FireOutcome): string =>
@@ -145,23 +152,51 @@ export const triggerHandlers = (options: {
     return opened;
   };
 
-  const wipe = Effect.promise(async () => {
-    await storage.deleteAlarm();
-    await storage.deleteAll();
-    opened = undefined;
+  /** The store, when the object has one: a read of an object never synced, or wiped, makes no tables. */
+  const existing = (): TriggerStore | undefined =>
+    opened ?? (hasTriggerStore(storage) ? store() : undefined);
+
+  /**
+   * Delete the object's alarm and storage. Its pending Fires go with its fire log, so each is logged as it goes
+   * (`failed: removed`); one already admitted was completed first, as far as it could be (`retire`).
+   */
+  const wipe = Effect.gen(function* () {
+    for (const pending of existing()?.pending() ?? []) {
+      yield* Effect.logWarning("A removed Trigger dropped a pending Fire").pipe(
+        Effect.annotateLogs({
+          "trigger.id": id,
+          "trigger.fire": pending.key,
+          outcome: "failed: removed",
+        }),
+      );
+    }
+
+    yield* Effect.promise(async () => {
+      await storage.deleteAlarm();
+      await storage.deleteAll();
+      opened = undefined;
+    });
   });
 
-  /** The time the next Fire is due: the Schedule's next after the cursor, or a pending Fire's next try. */
+  /**
+   * The time the next Fire is due: the Schedule's next after the cursor, or a pending Fire's next try. A paused Trigger
+   * has only its admitted Fires to complete.
+   */
   const nextAt = (): number | undefined => {
     const definition = store().definition();
 
-    if (definition === undefined || definition.paused) return undefined;
+    if (definition === undefined) return undefined;
 
+    const pending = Arr.filter(
+      store().pending(),
+      (fire) => !definition.paused || fire.session !== undefined,
+    );
+
+    const times = Arr.map(pending, (fire) => fire.nextTryAt);
     const schedule = scheduleOf(definition);
     const cursor = store().cursor();
-    const times = Arr.map(store().pending(), (pending) => pending.nextTryAt);
 
-    if (schedule !== undefined && cursor !== undefined) {
+    if (!definition.paused && schedule !== undefined && cursor !== undefined) {
       times.push(...nextFires(schedule, cursor, 1));
     }
 
@@ -175,15 +210,15 @@ export const triggerHandlers = (options: {
   });
 
   /**
-   * Act on `definition`, as read from the Registry at `at`: none wipes the object; a paused one is kept, its pending Fires
-   * dropped and its alarm disarmed (it never catches up on resume); an active one is kept with its cursor, which a new
-   * or changed Schedule (or a resume) starts at `at`, and the alarm is armed for its next Fire. Answers whether the
-   * object still holds a Trigger.
+   * Act on `definition`, as read from the Registry at `at`: none retires the object (`retire`); a paused one is kept,
+   * its pending Fires not yet admitted recorded `skipped: paused` and dropped, and its alarm armed only for the admitted
+   * ones (it never catches up on resume); an active one is kept with its cursor, which a new or changed Schedule (or a
+   * resume) starts at `at`, and the alarm is armed for its next Fire. Answers whether the object still holds a Trigger.
    */
   const adopt = (definition: TriggerDefinition | null, at: number): Effect.Effect<boolean> =>
     Effect.gen(function* () {
       if (definition === null) {
-        yield* wipe;
+        yield* retire(at);
 
         return false;
       }
@@ -191,7 +226,17 @@ export const triggerHandlers = (options: {
       const before = store().definition();
 
       if (definition.paused) {
-        store().clearPending();
+        for (const pending of store().pending()) {
+          if (pending.session === undefined) {
+            store().record({
+              key: pending.key,
+              at,
+              source: pending.source,
+              outcome: { type: "skipped", reason: "paused" },
+            });
+          }
+        }
+
         store().keep(definition, undefined);
       } else {
         const cursor = store().cursor();
@@ -208,13 +253,15 @@ export const triggerHandlers = (options: {
     });
 
   const state = (): TriggerState => {
-    const fires = store().fires(1);
+    const kept = existing();
+
+    if (kept === undefined) return NO_STATE;
 
     return {
-      definition: store().definition() ?? null,
+      definition: kept.definition() ?? null,
       nextFireAt: nextAt() ?? null,
-      lastFire: fires[0] ?? null,
-      pending: store().pending().length,
+      lastFire: kept.fires(1)[0] ?? null,
+      pending: kept.pending().length,
     };
   };
 
@@ -265,15 +312,18 @@ export const triggerHandlers = (options: {
 
   /**
    * Drain one pending Fire at `at`: let it through (`admitFire`, adopting a `stale` answer's definition and asking again),
-   * then send it to its Session (`fire`). A Fire that can't reach either waits for a later try. Answers whether the
-   * object still holds a Trigger.
+   * then send it to its Session (`fire`). A Fire that can't reach either waits for a later try. One already admitted
+   * goes on while its Trigger is paused (the Registry answers it its Session again). Answers whether the object still
+   * holds a Trigger.
    */
   const drain = (pending: PendingFire, at: number, retryCount: number): Effect.Effect<boolean> =>
     Effect.gen(function* () {
       for (let refresh = 0; refresh < MAX_STALE_REFRESHES; refresh++) {
         const definition = store().definition();
 
-        if (definition === undefined || definition.paused) return true;
+        if (definition === undefined) return true;
+
+        if (definition.paused && pending.session === undefined) return true;
 
         const admission: Types.Mutable<FireAdmission> = {
           trigger: id,
@@ -294,10 +344,21 @@ export const triggerHandlers = (options: {
         const answer = admitted.success;
 
         switch (answer.status) {
-          case "stale":
-            if (!(yield* adopt(answer.definition, at))) return false;
+          case "stale": {
+            // The answer crossed RPC: a definition this version can't read waits for a later try.
+            const current = decodeDefinition(answer.definition);
+
+            if (Option.isNone(current)) {
+              yield* later(pending, at, "its definition could not be read");
+
+              return true;
+            }
+
+            if (!(yield* adopt(current.value, at))) return false;
 
             continue;
+          }
+
           case "removed":
             yield* wipe;
 
@@ -309,6 +370,8 @@ export const triggerHandlers = (options: {
 
             return true;
           case "started": {
+            store().admitted(pending.key, answer.session);
+
             // The Fire took the Environment's spare or made a Workspace: the next spare is made ahead, whatever the
             // Session answers (a Fire let through before took nothing new).
             if (answer.repeated !== true) yield* ports.afterStart(answer.environment);
@@ -402,6 +465,21 @@ export const triggerHandlers = (options: {
     store().keep(definition, due.fire);
   };
 
+  /**
+   * The Trigger is gone: its admitted Fires are completed first, as far as their Sessions can be reached now (the
+   * Registry answers each its Session again), so none is left registered and empty; then the object is wiped.
+   */
+  const retire = (at: number): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      for (const pending of existing()?.pending() ?? []) {
+        if (pending.session === undefined) continue;
+
+        if (!(yield* drain(pending, at, 0))) return;
+      }
+
+      yield* wipe;
+    });
+
   const alarm = (info?: { readonly retryCount?: number }) =>
     Effect.gen(function* () {
       const at = yield* now;
@@ -445,12 +523,10 @@ export const triggerHandlers = (options: {
 
         yield* adopt(definition, yield* now);
 
-        return definition === null
-          ? { definition: null, nextFireAt: null, lastFire: null, pending: 0 }
-          : state();
+        return definition === null ? NO_STATE : state();
       }).pipe(serially),
 
-    remove: () => serially(wipe),
+    remove: () => serially(Effect.flatMap(now, retire)),
 
     fireNow: () =>
       Effect.gen(function* () {
@@ -471,7 +547,7 @@ export const triggerHandlers = (options: {
         return { status: "queued", key } as const;
       }).pipe(serially),
 
-    fireLog: (input) => Effect.sync(() => store().fires(input?.limit)),
+    fireLog: (input) => Effect.sync(() => existing()?.fires(input?.limit) ?? []),
 
     state: () => Effect.sync(state),
 

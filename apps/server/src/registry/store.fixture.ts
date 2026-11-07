@@ -77,7 +77,6 @@ import {
   STARTING_MS,
 } from "./store.ts";
 import {
-  deleteEnvironmentWithTriggers,
   type EnvironmentRemoval,
   type EnvironmentTriggerInput,
   type FireAdmission,
@@ -209,7 +208,7 @@ export class TestRegistry extends DurableObject {
   }
 
   deleteEnvironmentWithTriggers(id: string): EnvironmentRemoval {
-    return deleteEnvironmentWithTriggers(this.ctx.storage, this.#store, this.#triggers, id);
+    return this.#triggers.deleteEnvironment(id);
   }
 
   createTrigger(id: string, input: EnvironmentTriggerInput, now: number): TriggerWrite {

@@ -1,7 +1,9 @@
 // The `Trigger` object's storage (`docs/architecture/triggers.md` → The Trigger object and the Registry): the definition
 // it caches at a revision, how far its Schedule was handled, its pending Fires and its fire log (the last
 // `MAX_FIRE_LOG`). Synchronous over the object's SQLite. Migrations only add, and each shipped one has its digest in
-// `migrations.manifest.ts`.
+// `migrations.manifest.ts`. The object opens it at its first use (`object.ts`), and a read of an object that has no
+// storage (never synced, or wiped) answers empty without opening it (`hasTriggerStore`), so a read never makes the
+// tables of a removed Trigger again.
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- store operations over SQLite and JSON text.
 import { type Migration, migrate, type MigrationStorage } from "@cloudpid/effect-durable/sqlite";
 import {
@@ -18,7 +20,8 @@ import * as Schema from "effect/Schema";
 export const MIGRATIONS: ReadonlyArray<Migration> = [
   // 1: the object's one row (`trigger_meta`: the definition as last read, JSON `TriggerDefinition`, and `cursor`, the
   // time the Schedule was handled up to, null while none is), its pending Fires (`trigger_pending`, by the Fire's key,
-  // with when to try each next and how many times it was tried) and its fire log (`trigger_fires`, in order).
+  // with when to try each next, how many times it was tried, and `session`, the Session `admitFire` registered for it,
+  // null until then) and its fire log (`trigger_fires`, in order).
   (sql) => {
     sql.exec(`CREATE TABLE trigger_meta (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -30,7 +33,8 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       source TEXT NOT NULL,
       queued_at INTEGER NOT NULL,
       next_try_at INTEGER NOT NULL,
-      attempts INTEGER NOT NULL DEFAULT 0
+      attempts INTEGER NOT NULL DEFAULT 0,
+      session TEXT
     ) STRICT`);
     sql.exec(`CREATE TABLE trigger_fires (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,13 +46,17 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   },
 ];
 
-/** A Fire waiting in the object: its key, what made it, and when to try it next. */
+/**
+ * A Fire waiting in the object: its key, what made it, when to try it next, and the Session `admitFire` registered for
+ * it, once it did (an admitted Fire is completed whatever comes after: a pause, a removal).
+ */
 export type PendingFire = {
   readonly key: string;
   readonly source: FireSource;
   readonly queuedAt: number;
   readonly nextTryAt: number;
   readonly attempts: number;
+  readonly session: string | undefined;
 };
 
 type MetaRow = { readonly definition: string; readonly cursor: number | null };
@@ -59,6 +67,7 @@ type PendingRow = {
   readonly queued_at: number;
   readonly next_try_at: number;
   readonly attempts: number;
+  readonly session: string | null;
 };
 
 type FireRow = {
@@ -74,15 +83,29 @@ const decodeSource = Schema.decodeUnknownOption(Schema.fromJsonString(FireSource
 
 const decodeOutcome = Schema.decodeUnknownOption(Schema.fromJsonString(FireOutcome));
 
+/** A kept source as it reads, or `unknown` for one that no longer does. */
+const sourceOf = (text: string): FireSource =>
+  Option.getOrElse(decodeSource(text), () => ({ type: "unknown" as const }));
+
 const toPending = (row: PendingRow): PendingFire => ({
   key: row.key,
-  source: Option.getOrElse(decodeSource(row.source), () => ({ type: "unknown" as const })),
+  source: sourceOf(row.source),
   queuedAt: row.queued_at,
   nextTryAt: row.next_try_at,
   attempts: row.attempts,
+  session: row.session ?? undefined,
 });
 
-/** The store over a Trigger object's storage, its tables migrated first. Open it from the object's constructor. */
+/**
+ * Whether the object's storage holds its tables: false for one never synced, or wiped. Reads nothing but the schema,
+ * and writes nothing.
+ */
+export const hasTriggerStore = (storage: MigrationStorage): boolean =>
+  storage.sql
+    .exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'trigger_meta'")
+    .toArray().length > 0;
+
+/** The store over a Trigger object's storage, its tables migrated first. */
 export const openTriggerStore = (storage: MigrationStorage) => {
   migrate(storage, MIGRATIONS);
 
@@ -142,9 +165,9 @@ export const openTriggerStore = (storage: MigrationStorage) => {
       );
     },
 
-    /** Drop every pending Fire. */
-    clearPending: (): void => {
-      sql.exec("DELETE FROM trigger_pending");
+    /** Pending Fire `key` was let through to `session`: it is completed whatever comes after. */
+    admitted: (key: string, session: string): void => {
+      sql.exec("UPDATE trigger_pending SET session = ? WHERE key = ?", session, key);
     },
 
     /** Record what came of a Fire, dropping it from the pending ones, and keep the last `MAX_FIRE_LOG` records. */
@@ -177,7 +200,7 @@ export const openTriggerStore = (storage: MigrationStorage) => {
         (row) => ({
           key: row.key,
           at: row.at,
-          source: Option.getOrElse(decodeSource(row.source), () => ({ type: "unknown" as const })),
+          source: sourceOf(row.source),
           outcome: Option.getOrElse(decodeOutcome(row.outcome), () => ({
             type: "unknown" as const,
           })),

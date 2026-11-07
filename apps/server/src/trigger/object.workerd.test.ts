@@ -311,6 +311,103 @@ describe("a Trigger's object", () => {
     });
   });
 
+  describe("a Fire already admitted", () => {
+    it("is completed after its Trigger was paused, and its Session gets the message", async () => {
+      const { id, registry, trigger } = await made();
+
+      await trigger.scriptFires(["unreachable"]);
+      await trigger.setNow(nine);
+      await runDurableObjectAlarm(trigger);
+      await registry.setTriggerPaused(id, true, nine + 1_000);
+      await trigger.setNow(nine + 1_000);
+
+      expect(await trigger.sync()).toMatchObject({
+        definition: { paused: true },
+        pending: 1,
+        nextFireAt: nine + RETRY_MS,
+      });
+      expect(await trigger.alarmAt()).toBe(nine + RETRY_MS);
+
+      await trigger.setNow(nine + RETRY_MS);
+      await runDurableObjectAlarm(trigger);
+
+      expect((await trigger.sent()).map((fire) => [fire.session, fire.request.requestId])).toEqual([
+        ["s-1", keyAt(id, nine)],
+        ["s-1", keyAt(id, nine)],
+      ]);
+      expect(await trigger.fireLog()).toMatchObject([
+        { key: keyAt(id, nine), outcome: { type: "started", session: "s-1" } },
+      ]);
+      expect(await trigger.state()).toMatchObject({ pending: 0, nextFireAt: null });
+      expect(await trigger.alarmAt()).toBeNull();
+    });
+
+    it("is completed before the object of a removed Trigger is wiped", async () => {
+      const { id, registry, trigger } = await made();
+
+      await trigger.scriptFires(["unreachable"]);
+      await trigger.setNow(nine);
+      await runDurableObjectAlarm(trigger);
+      await registry.removeTrigger(id);
+      await trigger.remove();
+
+      expect((await trigger.sent()).map((fire) => fire.session)).toEqual(["s-1", "s-1"]);
+      expect(await trigger.state()).toEqual({
+        definition: null,
+        nextFireAt: null,
+        lastFire: null,
+        pending: 0,
+      });
+    });
+  });
+
+  it("records a Fire not yet admitted skipped when its Trigger is paused", async () => {
+    const { id, registry, trigger } = await made();
+
+    await trigger.setNow(start + 1_000);
+    await trigger.fireNow();
+    await registry.setTriggerPaused(id, true, start + 2_000);
+    await trigger.setNow(start + 2_000);
+    await trigger.sync();
+
+    expect(await trigger.fireLog()).toMatchObject([
+      {
+        at: start + 2_000,
+        source: { type: "manual" },
+        outcome: { type: "skipped", reason: "paused" },
+      },
+    ]);
+    expect(await trigger.state()).toMatchObject({ pending: 0, nextFireAt: null });
+    expect(await trigger.sent()).toEqual([]);
+  });
+
+  it("answers reads of an object with no storage empty, and makes none", async () => {
+    const { trigger } = await made();
+    const never = env.TRIGGERS.getByName("trigger:never-synced");
+
+    await trigger.remove();
+
+    for (const object of [trigger, never]) {
+      expect(await object.state()).toEqual({
+        definition: null,
+        nextFireAt: null,
+        lastFire: null,
+        pending: 0,
+      });
+      expect(await object.fireLog()).toEqual([]);
+
+      const tables = await runInDurableObject(object, (_instance, state) =>
+        state.storage.sql
+          .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'")
+          .toArray()
+          .map((row) => row.name)
+          .filter((name) => !name.startsWith("_cf_")),
+      );
+
+      expect(tables).toEqual([]);
+    }
+  });
+
   it("sends a Fire the owner asked for now, at once, recorded manual", async () => {
     const { id, trigger } = await made();
 

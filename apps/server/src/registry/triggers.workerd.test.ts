@@ -226,6 +226,32 @@ describe("admitFire", () => {
     expect((await registry.listSessions()).map((session) => session.id)).toEqual(["s-1"]);
   });
 
+  it("answers a Fire let through before its Session again after a pause, a change or a removal", async () => {
+    const registry = fresh();
+
+    const repeated = {
+      status: "started",
+      session: "s-1",
+      environment: DEFAULT_ENVIRONMENT,
+      repeated: true,
+    };
+
+    await registry.createTrigger("t1", weekly, 1_000);
+    await registry.admitFire(fireOf(), ids(1), monday);
+    await registry.setTriggerPaused("t1", true, monday + 1_000);
+
+    expect(await registry.admitFire(fireOf(), ids(2), monday + 2_000)).toEqual(repeated);
+
+    await registry.updateTrigger("t1", { message: "Newer words" }, monday + 3_000);
+
+    expect(await registry.admitFire(fireOf(), ids(2), monday + 4_000)).toEqual(repeated);
+
+    await registry.removeTrigger("t1");
+
+    expect(await registry.admitFire(fireOf(), ids(2), monday + 5_000)).toEqual(repeated);
+    expect((await registry.listSessions()).map((session) => session.id)).toEqual(["s-1"]);
+  });
+
   it("answers stale with the current definition for an old revision", async () => {
     const registry = fresh();
 

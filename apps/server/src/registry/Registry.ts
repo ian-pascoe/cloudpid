@@ -145,7 +145,6 @@ import { pushNotifier, pushToAll } from "../push/notify.ts";
 import { describeTriggerFailure, type PushEvent } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newTriggerId, newWorkspaceId, shortId } from "./ids.ts";
 import {
-  deleteEnvironmentWithTriggers,
   type EnvironmentRemoval,
   type EnvironmentTriggerInput,
   type FireAdmission,
@@ -2151,12 +2150,7 @@ export const RegistryLive = Registry.make(
           deleteEnvironmentWithTriggers: ({ id }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => {
-                const removal = deleteEnvironmentWithTriggers(
-                  state.raw.storage,
-                  store,
-                  triggers,
-                  id,
-                );
+                const removal = triggers.deleteEnvironment(id);
 
                 // The host is wiped by the main Worker's next sync: the Registry never calls out.
                 if (removal.deletion === "deleted") recordMcpDeleted(store, id, now);
