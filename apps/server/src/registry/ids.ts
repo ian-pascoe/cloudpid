@@ -30,6 +30,9 @@ export const newSessionId: Effect.Effect<string> = Clock.currentTimeMillis.pipe(
   }),
 );
 
+/** A new Trigger ID: a UUIDv7, as a Session's (`docs/architecture/triggers.md` → The Trigger URL). */
+export const newTriggerId: Effect.Effect<string> = newSessionId;
+
 /** Eight random lowercase hex digits (`WorkspaceId`), for the store's own draws (`RegistryStore.upkeepSpares`). */
 export const shortId = (): string => hex(crypto.getRandomValues(new Uint8Array(4)));
 

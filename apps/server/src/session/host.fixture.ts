@@ -75,6 +75,7 @@ import type {
   CompareResult,
   Comparison,
   ConfigureRequest,
+  FireRequest,
   ConversationId,
   EntriesPage,
   FileMatches,
@@ -1626,6 +1627,11 @@ export class TestSession extends DurableObject {
     return Effect.runPromise(this.#mcp.configure(request));
   }
 
+  /** `SessionMethods.fire`. */
+  fire(request: FireRequest) {
+    return Effect.runPromise(this.#mcp.fire(request));
+  }
+
   /** `SessionMethods.stageImportBegin`. */
   stageBegin(request: StageImportBegin) {
     return Effect.runPromise(this.#imports.begin(request));
@@ -1999,6 +2005,7 @@ export class TestSession extends DurableObject {
             }),
         },
         sessions: { destroy: () => Effect.void },
+        triggers: { remove: () => Effect.void },
       });
 
       return removal

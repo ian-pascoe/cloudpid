@@ -10,6 +10,8 @@ export { TestSession } from "./session/host.fixture.ts";
 
 export { TestSubagentSession } from "./session/subagents.workerd.fixture.ts";
 
+export { TestTrigger } from "./trigger/object.fixture.ts";
+
 export default {
   fetch: () => new Response("cloudpid workerd test worker"),
 };

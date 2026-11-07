@@ -33,6 +33,7 @@ import type {
   SettingsMcpView,
   SkillChangeFiles,
   SkillFile,
+  TriggerDefinition,
 } from "@cloudpid/protocol";
 import { pageSessions, type SessionsResult } from "./session-page.ts";
 import {
@@ -140,9 +141,18 @@ import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.
 import { type BuildWork, buildView } from "./builds.ts";
 import { GitHubAppConfig } from "../github/config.ts";
 import { PushConfig } from "../push/config.ts";
-import { pushNotifier } from "../push/notify.ts";
-import type { PushEvent } from "../push/notification.ts";
-import { newEnvironmentId, newSessionId, newWorkspaceId, shortId } from "./ids.ts";
+import { pushNotifier, pushToAll } from "../push/notify.ts";
+import { describeTriggerFailure, type PushEvent } from "../push/notification.ts";
+import { newEnvironmentId, newSessionId, newTriggerId, newWorkspaceId, shortId } from "./ids.ts";
+import {
+  type EnvironmentRemoval,
+  type EnvironmentTriggerInput,
+  type FireAdmission,
+  type FireAdmitted,
+  openTriggers,
+  type TriggerPatch,
+  type TriggerWrite,
+} from "./triggers.ts";
 import {
   putEnvironmentInstructions,
   readSettings,
@@ -183,6 +193,7 @@ import {
   type LegacyObject,
   openRegistryStore,
   type RepoChange,
+  STARTING_MS,
   type SessionAgent,
   type SessionRecord,
   type CreatedSession,
@@ -1014,6 +1025,51 @@ export type RegistryMethods = {
     readonly event: PushEvent;
   }) => Effect.Effect<void>;
   /**
+   * Keep a new Trigger (`docs/architecture/triggers.md`, ADR-0047) under a fresh UUIDv7, at revision 1, or say why not.
+   * The caller wakes its object (`Trigger.sync`): the Registry never calls out.
+   */
+  readonly createTrigger: (input: {
+    readonly trigger: EnvironmentTriggerInput;
+  }) => Effect.Effect<TriggerWrite>;
+  /** Change a Trigger's fields at its next revision; its kind and Environment never change. The caller wakes its object. */
+  readonly updateTrigger: (input: {
+    readonly id: string;
+    readonly patch: TriggerPatch;
+  }) => Effect.Effect<TriggerWrite>;
+  /** Pause or resume a Trigger, at its next revision. The caller wakes its object. */
+  readonly setTriggerPaused: (input: {
+    readonly id: string;
+    readonly paused: boolean;
+  }) => Effect.Effect<TriggerWrite>;
+  /** Forget a Trigger; says whether it was there. The caller wipes its object (`Trigger.remove`). */
+  readonly removeTrigger: (input: { readonly id: string }) => Effect.Effect<boolean>;
+  /** Every Trigger, or `environment`'s, newest first. */
+  readonly listTriggers: (input: {
+    readonly environment?: string | undefined;
+  }) => Effect.Effect<ReadonlyArray<TriggerDefinition>>;
+  /** A Trigger's definition, or null once it is gone: what its object reads at each touch (self-healing). */
+  readonly triggerDefinition: (input: {
+    readonly id: string;
+  }) => Effect.Effect<TriggerDefinition | null>;
+  /**
+   * The one place a Fire is let through (`docs/architecture/triggers.md` → `admitFire`): active, the revision current,
+   * the overlap, and the Fire's Session registered in the same transaction. A reader treats a status it does not know as
+   * `failed`.
+   */
+  readonly admitFire: (fire: FireAdmission) => Effect.Effect<FireAdmitted>;
+  /** A Trigger's Fire failed: tell the owner, naming the Trigger. A Trigger that is gone is ignored. Never fails. */
+  readonly notifyTriggerFailed: (input: {
+    readonly trigger: string;
+    readonly reason: string;
+  }) => Effect.Effect<void>;
+  /**
+   * `deleteEnvironment`, answering the ids of the Triggers that went with the Environment (deleted in the same
+   * transaction), whose objects the caller wipes (`docs/architecture/triggers.md` → Cascades).
+   */
+  readonly deleteEnvironmentWithTriggers: (input: {
+    readonly id: string;
+  }) => Effect.Effect<EnvironmentRemoval>;
+  /**
    * The host's ask for the access token of `server` in `environment`'s MCP set (`docs/architecture/mcp-sign-in.md` →
    * Tokens reach the host object): `ok` with the token and the resource it is bound to, or why there is none. The
    * Registry works out the sign-in from the Environment's own set. Only the Registry holds tokens at rest; the host keeps
@@ -1097,9 +1153,21 @@ export const RegistryLive = Registry.make(
       Effect.gen(function* () {
         const store = openRegistryStore(state.raw.storage);
         const changes = openAgentChanges(state.raw.storage);
+        const triggers = openTriggers(state.raw.storage, store);
         const skills = openSkills(state.raw.storage);
         const mcpSignIns = openMcpSignIns(state.raw.storage, store);
         const notify = pushNotifier({ store, vapid: push.vapid });
+        const pushAll = pushToAll({ store, vapid: push.vapid });
+
+        // Eight hex digits rarely collide; one that does (a spare's too, which only its set-up shows) is drawn again.
+        const freshWorkspaceId = Effect.gen(function* () {
+          let id = yield* newWorkspaceId;
+
+          while (store.getWorkspaceSetup(id) !== null) id = yield* newWorkspaceId;
+
+          return id;
+        });
+
         // Skills are fetched here, in the main Worker, which holds the GitHub App's key: read-only tokens (contents).
         const skillReader = githubSkillReader(github);
         // The Repos' `.pi/mcp.json` are read through the same reader (one token), and kept in the Registry.
@@ -1328,12 +1396,7 @@ export const RegistryLive = Registry.make(
                 );
               }
 
-              // Eight hex digits rarely collide; one that does (a spare's too, which only its set-up shows) is drawn again.
-              let workspaceId = yield* newWorkspaceId;
-
-              while (store.getWorkspaceSetup(workspaceId) !== null) {
-                workspaceId = yield* newWorkspaceId;
-              }
+              const workspaceId = yield* freshWorkspaceId;
 
               return store.createSession(
                 {
@@ -1772,10 +1835,7 @@ export const RegistryLive = Registry.make(
           createSubagentWorkspace: (input) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
-              // Eight hex digits rarely collide; one that does (a spare's too) is drawn again.
-              let id = yield* newWorkspaceId;
-
-              while (store.getWorkspaceSetup(id) !== null) id = yield* newWorkspaceId;
+              const id = yield* freshWorkspaceId;
 
               return store.createSubagentWorkspace({ ...input, id }, now);
             }),
@@ -2057,6 +2117,45 @@ export const RegistryLive = Registry.make(
           unsubscribePush: ({ endpoint }) =>
             Effect.sync(() => store.deletePushSubscription(endpoint)),
           notify: ({ sessionId, event }) => notify(sessionId, event),
+          createTrigger: ({ trigger }) =>
+            Effect.gen(function* () {
+              const id = yield* newTriggerId;
+
+              return triggers.create(id, trigger, yield* Clock.currentTimeMillis);
+            }),
+          updateTrigger: ({ id, patch }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.update(id, patch, now))),
+          setTriggerPaused: ({ id, paused }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.setPaused(id, paused, now))),
+          removeTrigger: ({ id }) => Effect.sync(() => triggers.remove(id)),
+          listTriggers: ({ environment }) => Effect.sync(() => triggers.list(environment)),
+          triggerDefinition: ({ id }) => Effect.sync(() => triggers.get(id)),
+          admitFire: (fire) =>
+            Effect.gen(function* () {
+              const session = yield* newSessionId;
+              const workspace = yield* freshWorkspaceId;
+
+              const now = yield* Clock.currentTimeMillis;
+
+              return triggers.admit(fire, { session, workspace }, now, STARTING_MS);
+            }),
+          notifyTriggerFailed: ({ trigger, reason }) =>
+            Effect.suspend(() => {
+              const known = triggers.get(trigger);
+
+              return known === null ? Effect.void : pushAll(describeTriggerFailure(known, reason));
+            }),
+          deleteEnvironmentWithTriggers: ({ id }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => {
+                const removal = triggers.deleteEnvironment(id);
+
+                // The host is wiped by the main Worker's next sync: the Registry never calls out.
+                if (removal.deletion === "deleted") recordMcpDeleted(store, id, now);
+
+                return removal;
+              }),
+            ),
           mcpAccessToken: (input) =>
             Clock.currentTimeMillis.pipe(
               Effect.flatMap((now) => mcpAccessToken(tokenDeps, input, now)),

@@ -1,10 +1,12 @@
 // @effect-diagnostics globalJsonInEffect:off -- the payload is JSON text for the service worker, not a parsed value.
-// Sending a Session's notification to every subscribed browser (`docs/architecture/client-and-protocol.md` → Notifications).
+// Sending a notification to every subscribed browser (`docs/architecture/client-and-protocol.md` → Notifications →
+// Sending): a Session's (`pushNotifier`), or any payload (`pushToAll`), such as a Trigger's failed Fire, which opens its
+// Environment's Triggers section (`describeTriggerFailure`).
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { RegistryStore } from "../registry/store.ts";
-import { describeEvent, type PushEvent } from "./notification.ts";
+import { describeEvent, type PushEvent, type PushPayload } from "./notification.ts";
 import { type PushResult, sendPush, type Vapid } from "./webpush.ts";
 
 /** A push could not be made at all: the request failed or timed out. */
@@ -34,20 +36,19 @@ export type NotifierOptions = {
 };
 
 /**
- * Tell every subscribed browser that Session `sessionId` has `event`. A Session the Registry does not know is ignored.
- * A subscription the push service reports gone (404, 410) is deleted; any other refusal or failure is logged and the
- * subscription kept, so one bad push service never stops the rest. This never fails.
+ * Send `payload` to every subscribed browser. A subscription the push service reports gone (404, 410) is deleted; any
+ * other refusal or failure is logged and the subscription kept, so one bad push service never stops the rest. This
+ * never fails.
  */
-export const pushNotifier =
+export const pushToAll =
   ({ store, vapid, fetch }: NotifierOptions) =>
-  (sessionId: string, event: PushEvent): Effect.Effect<void> =>
+  (payload: PushPayload): Effect.Effect<void> =>
     Effect.gen(function* () {
-      const session = store.getSession(sessionId);
       const subscriptions = store.listPushSubscriptions();
 
-      if (session === null || subscriptions.length === 0) return;
+      if (subscriptions.length === 0) return;
 
-      const payload = JSON.stringify(describeEvent(event, session));
+      const text = JSON.stringify(payload);
       const now = yield* Clock.currentTimeMillis;
 
       yield* Effect.forEach(
@@ -55,7 +56,7 @@ export const pushNotifier =
         (subscription) =>
           Effect.tryPromise({
             try: () =>
-              sendPush(subscription, payload, vapid, { now, fetch, timeoutMs: PUSH_TIMEOUT_MS }),
+              sendPush(subscription, text, vapid, { now, fetch, timeoutMs: PUSH_TIMEOUT_MS }),
             catch: (cause) => PushError.make({ message: String(cause) }),
           }).pipe(
             Effect.flatMap((result: PushResult) => {
@@ -79,3 +80,13 @@ export const pushNotifier =
         { concurrency: CONCURRENCY, discard: true },
       );
     }).pipe(Effect.asVoid);
+
+/** Tell every subscribed browser that Session `sessionId` has `event` (`pushToAll`). A Session the Registry does not know is ignored. */
+export const pushNotifier =
+  (options: NotifierOptions) =>
+  (sessionId: string, event: PushEvent): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const session = options.store.getSession(sessionId);
+
+      return session === null ? Effect.void : pushToAll(options)(describeEvent(event, session));
+    });

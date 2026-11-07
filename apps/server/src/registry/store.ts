@@ -251,6 +251,8 @@ export type RegistryStore = {
   readonly endSessionImport: (id: string) => void;
   /** The Session registered under `id`, or null. */
   readonly getSession: (id: string) => SessionRecord | null;
+  /** The Session registered for `requestId` less than `REQUEST_MEMORY_MS` ago, if it is still there. */
+  readonly requestedSession: (requestId: string, now: number) => SessionRecord | null;
   /**
    * Register a Subagent Workspace for subagent `agent` of Session `session`, in the Session's Environment, as
    * `createSession` registers a new Workspace (taking the Environment's spare when its Repos are the Environment's), in
@@ -561,7 +563,11 @@ const isForkKind = Schema.is(ForkKind);
 
 const decodeMarks = Schema.decodeUnknownOption(
   Schema.fromJsonString(
-    Schema.Struct({ client: MarkedOrigin.fields.client, auth: MarkedOrigin.fields.auth }),
+    Schema.Struct({
+      client: MarkedOrigin.fields.client,
+      auth: MarkedOrigin.fields.auth,
+      trigger: MarkedOrigin.fields.trigger,
+    }),
   ),
 );
 
@@ -583,7 +589,10 @@ export const STARTING_MS = 2 * 60 * 1000;
  */
 const STILL_STARTING = "status = 'idle' AND updated_at = created_at";
 
-/** The two columns that keep a Session's origin: a Fork or Clone's source, or the endpoint's marks as JSON. */
+/**
+ * The two columns that keep a Session's origin: a Fork or Clone's source, or the marks of the endpoint or a Trigger as
+ * JSON.
+ */
 const originColumns = (
   origin: SessionOrigin | null,
   marks: MarkedOrigin | null,
@@ -591,7 +600,10 @@ const originColumns = (
   if (origin !== null) return [origin.session, origin.kind];
 
   if (marks !== null)
-    return [JSON.stringify({ client: marks.client, auth: marks.auth }), marks.kind];
+    return [
+      JSON.stringify({ client: marks.client, auth: marks.auth, trigger: marks.trigger }),
+      marks.kind,
+    ];
 
   return [null, null];
 };
@@ -610,7 +622,7 @@ const readOrigins = (row: Pick<SessionRow, "origin" | "origin_kind">): Origins =
 
   if (isForkKind(kind)) return { origin: { session: origin, kind } };
 
-  if (kind !== "mcp" && kind !== "import") return {};
+  if (kind !== "mcp" && kind !== "import" && kind !== "trigger") return {};
 
   const marks = Option.getOrUndefined(decodeMarks(origin));
 
@@ -1155,6 +1167,32 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   (sql) => {
     sql.exec("ALTER TABLE sessions ADD COLUMN mcp_tasks INTEGER");
   },
+  // 34: Triggers (`docs/architecture/triggers.md` → The Trigger object and the Registry, ADR-0047), each a definition at a
+  // `revision` every change raises: its `kind` and the Environment it belongs to (fixed at creation), its name, Trigger
+  // message, `source` (JSON `TriggerSource`), `when_busy`, the options `base`, `model` and `thinking` (null: the
+  // default), and `paused`. `removed_at` keeps a removal the agent made, while its Agent change can bring it back;
+  // `last_session` is the last Fire's Session, which overlap looks at. A Trigger goes with its Environment. None before.
+  (sql) => {
+    sql.exec(`CREATE TABLE triggers (
+      id TEXT PRIMARY KEY,
+      revision INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      environment TEXT NOT NULL,
+      name TEXT NOT NULL,
+      message TEXT NOT NULL,
+      source TEXT NOT NULL,
+      when_busy TEXT NOT NULL,
+      base TEXT,
+      model TEXT,
+      thinking TEXT,
+      paused INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      removed_at INTEGER,
+      last_session TEXT
+    ) STRICT`);
+    sql.exec("CREATE INDEX triggers_by_environment ON triggers (environment)");
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */
@@ -1327,6 +1365,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
   };
 
   return {
+    requestedSession,
+
     createSession: (input, now) =>
       storage.transactionSync((): CreatedSession | SessionRefusal => {
         const { requestId } = input;
@@ -1582,6 +1622,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       sql.exec("DELETE FROM agent_changes WHERE scope = ?", id);
       sql.exec("DELETE FROM skills WHERE scope = ?", id);
       sql.exec("DELETE FROM mcp_repo_files WHERE environment = ?", id);
+      // Its Triggers go with it; their objects heal at their next touch (`docs/architecture/triggers.md` → Cascades).
+      sql.exec("DELETE FROM triggers WHERE environment = ?", id);
       dropUnreferencedSkillFiles(sql);
 
       return "deleted";

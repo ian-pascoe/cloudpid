@@ -63,6 +63,7 @@ export default defineConfig({
                 SUBAGENT_SESSIONS: { className: "TestSubagentSession", useSQLite: true },
                 REGISTRIES: { className: "TestRegistry", useSQLite: true },
                 MCP_HOSTS: { className: "TestMcpHost", useSQLite: true },
+                TRIGGERS: { className: "TestTrigger", useSQLite: true },
               },
             },
           }),

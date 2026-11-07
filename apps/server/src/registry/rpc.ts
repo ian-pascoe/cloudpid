@@ -55,6 +55,7 @@ import type { LookupPlace, WorkspaceLookups } from "../session/lookups.ts";
 import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
+import type { TriggerObjects } from "../trigger/objects.ts";
 import type { DraftBranches } from "./draft-branches.ts";
 import { withInstalled } from "./skill-badges.ts";
 import type { SkillDirectory } from "./skill-directory.ts";
@@ -128,6 +129,8 @@ export type RegistryRpcObjects<R = never> = {
   readonly workspaces: WorkspaceObjects;
   /** Stops a Session when it is archived, and wipes it when it is deleted. */
   readonly sessions: SessionObjects;
+  /** Wipes the objects of the Triggers that went with a deleted Environment. */
+  readonly triggers: TriggerObjects;
   /** Wipes what is left from before Environments, a few objects at a time (`legacyCleanup`), after the answer. */
   readonly legacy: Effect.Effect<void>;
   /** Keeps each Environment's spare Workspace current (`spareUpkeep`), after the answer. */
@@ -383,6 +386,7 @@ export const serveRegistryRpc = <R = never>(
   {
     workspaces,
     sessions,
+    triggers,
     legacy,
     spares,
     builds,
@@ -411,7 +415,7 @@ export const serveRegistryRpc = <R = never>(
       deleteEnvironment,
       inWorkspace,
       onSession,
-    } = removals(registry, { workspaces, sessions });
+    } = removals(registry, { workspaces, sessions, triggers });
 
     const notFound = (id: string) => SessionNotFound.make({ message: `No session "${id}"` });
 

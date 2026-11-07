@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MAX_PAYLOAD_BYTES } from "./webpush.ts";
-import { describeEvent } from "./notification.ts";
+import { describeEvent, describeTriggerFailure } from "./notification.ts";
 
 const session = { id: "0190f3a0-1111-7000-8000-000000000001", title: "Fix the build" };
 
@@ -166,5 +166,21 @@ describe("describeEvent", () => {
     expect(
       describeEvent({ kind: "finished" }, { ...session, title: "t".repeat(300) }).title,
     ).toHaveLength(80);
+  });
+});
+
+describe("describeTriggerFailure", () => {
+  it("names the Trigger and why its Fire failed, linking to the Triggers section of its Environment", () => {
+    expect(
+      describeTriggerFailure(
+        { id: "t1", name: "Weekly report", environment: "0000abcd" },
+        "its Environment is gone",
+      ),
+    ).toEqual({
+      title: "Weekly report",
+      body: "Trigger failed: its Environment is gone",
+      url: "/settings/0000abcd/triggers",
+      tag: "trigger:t1:failed",
+    });
   });
 });

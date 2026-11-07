@@ -83,15 +83,24 @@ export const PI_SESSION_FORMAT = "pi-session-jsonl";
 /**
  * How the caller got in: an Access OAuth grant (the owner), or `local` (a stage under `alchemy dev`, which has no
  * Access: the loopback rule). `service_token` is the Local agent's old Access service token, which the server no longer
- * produces (#636) but records written before it still hold, so it stays here to decode and display. A member this version
- * does not know reads as `unknown`.
+ * produces (#636) but records written before it still hold, so it stays here to decode and display. `trigger` is a
+ * Trigger's Fire (`docs/architecture/triggers.md` → Fire records, origin marks and notifications), whose mark names the
+ * Trigger. A member this version does not know reads as `unknown`.
  */
 export const McpAuth = openLiterals(
-  Schema.Literals(["oauth", "service_token", "local", "unknown"]),
+  Schema.Literals(["oauth", "service_token", "local", "trigger", "unknown"]),
   "unknown",
 );
 
 export type McpAuth = typeof McpAuth.Type;
+
+/** The mark of a Trigger on what it started or sent: its id and name, kept as they were at the Fire. */
+export const TriggerMark = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+});
+
+export type TriggerMark = typeof TriggerMark.Type;
 
 /** The MCP generation the caller spoke. */
 export const McpEra = openLiterals(Schema.Literals(["legacy", "modern", "unknown"]), "unknown");
@@ -134,28 +143,40 @@ export const SessionVia = Schema.Struct({
    * for the old service token, for local dev, and for a version that predates it. Kept in the input's entry; never displayed.
    */
   clientId: Schema.optionalKey(Schema.String),
+  /** The Trigger that sent the input (`auth: "trigger"`): its id and name at the Fire. */
+  trigger: Schema.optionalKey(TriggerMark),
 });
 
 export type SessionVia = typeof SessionVia.Type;
 
-const VIA_PREFIX = { mcp: "MCP", import: "Imported", unknown: "Via" } as const;
+const VIA_PREFIX = { mcp: "MCP", import: "Imported", trigger: "Trigger", unknown: "Via" } as const;
 
 /**
  * The words that say where a Session came from (its origin chip): "MCP · pi", or "MCP" when the caller gave no name;
- * "Via · pi" for a kind this version does not know. An input's chip is {@link inputViaChipLabel}.
+ * "Trigger · <name>" for a Trigger's Fire; "Via · pi" for a kind this version does not know. An input's chip is
+ * {@link inputViaChipLabel}.
  */
 export const sessionOriginLabel = (
-  via: Pick<SessionVia, "client">,
-  kind: "mcp" | "import" | "unknown" = "mcp",
+  via: Pick<SessionVia, "client" | "trigger">,
+  kind: "mcp" | "import" | "trigger" | "unknown" = "mcp",
 ): string => {
   const prefix = VIA_PREFIX[kind];
+
+  if (kind === "trigger" && via.trigger !== undefined) return `${prefix} · ${via.trigger.name}`;
 
   return via.client === undefined ? prefix : `${prefix} · ${via.client.name}`;
 };
 
-/** The words that mark an input sent over the endpoint (its chip; a Session's is {@link sessionOriginLabel}): "via pi (MCP)", or "via MCP" when the caller gave no name. */
-export const inputViaChipLabel = (via: Pick<SessionVia, "client">): string =>
-  via.client === undefined ? "via MCP" : `via ${via.client.name} (MCP)`;
+/**
+ * The words that mark an input sent over the endpoint (its chip; a Session's is {@link sessionOriginLabel}): "via pi
+ * (MCP)", or "via MCP" when the caller gave no name; "via <name> (Trigger)" for a Trigger's Fire.
+ */
+export const inputViaChipLabel = (via: Pick<SessionVia, "client" | "auth" | "trigger">): string => {
+  if (via.auth === "trigger" && via.trigger !== undefined)
+    return `via ${via.trigger.name} (Trigger)`;
+
+  return via.client === undefined ? "via MCP" : `via ${via.client.name} (MCP)`;
+};
 
 /**
  * Domain failures (`isError` results); the endpoint's `unsupported` and `unavailable` end the list. A code this version
@@ -624,11 +645,15 @@ export const EnvironmentsResult = Schema.Struct({
 
 export type EnvironmentsResult = typeof EnvironmentsResult.Type;
 
-/** A Session the endpoint made or imported: the audit mark of how its caller got in, never the owner's email. */
+/**
+ * A Session the endpoint made or imported, or a Trigger's Fire started (`kind` and `auth` `trigger`, with the Trigger's
+ * id and name): the audit mark of how its caller got in, never the owner's email.
+ */
 export const MarkedOrigin = Schema.Struct({
-  kind: openLiterals(Schema.Literals(["mcp", "import", "unknown"]), "unknown"),
+  kind: openLiterals(Schema.Literals(["mcp", "import", "trigger", "unknown"]), "unknown"),
   client: Schema.optionalKey(McpClient),
   auth: McpAuth,
+  trigger: Schema.optionalKey(TriggerMark),
 });
 
 export type MarkedOrigin = typeof MarkedOrigin.Type;

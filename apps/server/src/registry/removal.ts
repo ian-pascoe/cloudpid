@@ -13,6 +13,7 @@ import { noEnvironment, reason, thenSaying } from "./messages.ts";
 import type { RegistryMethods } from "./Registry.ts";
 import type { SessionObjects } from "./rpc.ts";
 import type { SessionRecord, WorkspaceRecord } from "./store.ts";
+import type { TriggerObjects } from "../trigger/objects.ts";
 
 /** What the deletes read and change in the Registry. */
 export type RemovalRegistry = Pick<
@@ -26,13 +27,17 @@ export type RemovalRegistry = Pick<
   | "listSubagentWorkspaces"
   | "getSpare"
   | "forgetSpare"
-  | "deleteEnvironment"
+  | "deleteEnvironmentWithTriggers"
 >;
 
-/** What the deletes wipe besides the records: the Workspaces' objects (and Build objects), and the Sessions'. */
+/**
+ * What the deletes wipe besides the records: the Workspaces' objects (and Build objects), the Sessions', and the
+ * objects of the Triggers that went with an Environment.
+ */
 export type RemovalObjects = {
   readonly workspaces: Pick<WorkspaceObjects, "destroy">;
   readonly sessions: Pick<SessionObjects, "destroy">;
+  readonly triggers: TriggerObjects;
 };
 
 /** Why the default Environment is not deleted. */
@@ -45,7 +50,10 @@ const SWEEP_ROUNDS = 3;
 type SweepWords = { readonly kept: string; readonly busy: string };
 
 /** The deletes over `registry` and `objects`. */
-export const removals = (registry: RemovalRegistry, { workspaces, sessions }: RemovalObjects) => {
+export const removals = (
+  registry: RemovalRegistry,
+  { workspaces, sessions, triggers }: RemovalObjects,
+) => {
   const failed = (message: string) => EnvironmentError.make({ message });
 
   /** A failure partway through deleting an Environment, saying what is left. */
@@ -231,8 +239,9 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
 
   /**
    * Delete Environment `environment` with everything made from it: its Workspaces with their Sessions (archived ones
-   * too), its spare Workspace and its Build object, then its record, which takes its kept Secrets and Agent changes. A
-   * Workspace made meanwhile is removed the same way, a few rounds; a failure says what is left. The default
+   * too), its spare Workspace and its Build object, then its record, which takes its kept Secrets, Agent changes and
+   * Triggers (`docs/architecture/triggers.md` → Cascades), whose objects are wiped after it. A Workspace made
+   * meanwhile is removed the same way, a few rounds; a failure says what is left. The default
    * Environment is never deleted.
    */
   const deleteEnvironment = (environment: string) =>
@@ -258,11 +267,15 @@ export const removals = (registry: RemovalRegistry, { workspaces, sessions }: Re
         yield* removeBuild(environment).pipe(Effect.mapError(environmentKept));
 
         // The record goes only once no Workspace is made from it.
-        const deleted = yield* registry.deleteEnvironment({ id: environment });
+        const removal = yield* registry.deleteEnvironmentWithTriggers({ id: environment });
+        const deleted = removal.deletion;
 
         if (deleted === "refused") return yield* failed(DEFAULT_KEPT);
 
         if (deleted === "deleted") {
+          // Its Triggers went with the record: their objects are wiped, or wipe themselves at their next alarm.
+          yield* Effect.forEach(removal.triggers, triggers.remove, { discard: true });
+
           // A Build upkeep that asked the Build object for a Build after its wipe made it anew; one that asks
           // after this finds the Environment gone (`buildUpkeep`).
           yield* removeBuild(environment).pipe(

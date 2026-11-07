@@ -7,6 +7,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import {
   DEFAULT_TRANSCRIPT_CHARS,
+  inputViaChipLabel,
   MAX_TRANSCRIPT_CHARS,
   MAX_TRANSCRIPT_ENTRIES,
   MIN_TRANSCRIPT_CHARS,
@@ -168,7 +169,7 @@ const header = (message: TranscriptMessage): string => {
       ? (message.parts.find((part) => part.type === "tool-result")?.name ?? "tool")
       : undefined,
     clock(message.timestamp) || undefined,
-    message.via === undefined ? undefined : `via ${message.via.client?.name ?? "MCP"} (MCP)`,
+    message.via === undefined ? undefined : inputViaChipLabel(message.via),
   ].filter(Predicate.isNotUndefined);
 
   return `### ${[message.role, ...marks].join(" · ")}`;

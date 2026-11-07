@@ -1,6 +1,7 @@
 // The Session object's RPC for the MCP endpoint (`docs/architecture/mcp-endpoint.md` → The `api` target, Following a
-// Run, Transcripts, Starting, sending and stopping): `status`, `waitForChange`, `transcriptPage`, `submit` and `stop`.
-// Every answer is an `ApiResult`, so a refusal travels as a value; what the host failed at is `unavailable`. Waiting
+// Run, Transcripts, Starting, sending and stopping): `status`, `waitForChange`, `transcriptPage`, `submit`, `stop` and
+// `configure`, and a Trigger's `fire` (`fire.ts`), which goes in through the same send as `submit` (`deliver`). Every
+// answer is an `ApiResult`, so a refusal travels as a value; what the host failed at is `unavailable`. Waiting
 // requests, the transcript and the answers are redacted here, before they leave the object.
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
@@ -11,6 +12,7 @@ import {
   apiFailure,
   apiOk,
   type ConfigureRequest,
+  type FireRequest,
   type CursorState,
   decodeCursor,
   encodeCursor,
@@ -53,6 +55,7 @@ import type * as Types from "effect/Types";
 import * as Record from "effect/Record";
 import { CONVERSATION_MISSING, isWithdrawn, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
+import { sessionFire } from "./fire.ts";
 import { agentChange } from "./sockets.ts";
 import { cursorOf, endedBy, statusOf, type Snapshot, waitingMark } from "./mcp-follow.ts";
 import type { FollowState, SettledInput } from "./mcp-reads.ts";
@@ -69,6 +72,8 @@ export type SessionMcpService = {
   readonly stop: (request: StopRequest) => Effect.Effect<ApiResult<StopResult>>;
   /** Pick the model and thinking level a started Session runs with, as the socket's `configure` does. */
   readonly configure: (request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
+  /** A Trigger's Fire (`fire.ts`). */
+  readonly fire: (request: FireRequest) => Effect.Effect<ApiResult<SubmitResult>>;
 };
 
 export class SessionMcp extends Context.Service<SessionMcp, SessionMcpService>()(
@@ -93,6 +98,23 @@ export type SessionMcpOptions = {
 
 /** How often a wait looks at the Session again. */
 export const WAIT_POLL_MS = 500;
+
+/** One input the Session takes from outside its sockets: the endpoint's `submit`, or a Trigger's `fire`. */
+export type Delivery = {
+  /** The send's request id: a repeat is answered as its first send was, and sends nothing. */
+  readonly requestId: string | undefined;
+  readonly prompt: Prompt;
+  /** Why a first send is refused, given the Session as it is now, or undefined to send it. */
+  readonly refuse?: (before: FollowState) => ApiResult<SubmitResult> | undefined;
+  /** What runs before a first send only: the Trigger's model and thinking level. */
+  readonly first?: Effect.Effect<void, SessionError> | undefined;
+};
+
+/**
+ * Send `delivery` as the endpoint's sends go: refused while the Session is archived or importing (unless its request id
+ * was admitted before), answered with its delivery and the cursor its Run's end is waited from. Never fails.
+ */
+export type Deliver = (delivery: Delivery) => Effect.Effect<ApiResult<SubmitResult>>;
 
 /** Where the time each waiting request was first seen is kept (a request has no time of its own), and the newest. */
 const SEEN_KEY = "mcp-waiting-seen";
@@ -703,21 +725,14 @@ const sessionMcp = (options: SessionMcpOptions) =>
       return delivery;
     };
 
-    const submit: SessionMcpService["submit"] = (request) =>
+    const deliver: Deliver = (delivery) =>
       guarded(
         Effect.gen(function* () {
-          if (new TextEncoder().encode(request.input).length > MAX_MCP_INPUT_BYTES) {
-            return apiFailure(
-              "input_too_large",
-              `Input is over ${String(MAX_MCP_INPUT_BYTES)} bytes: send less text, or put it in a file in the Workspace.`,
-            );
-          }
+          const { requestId, prompt } = delivery;
+          const earlier = requestId === undefined ? undefined : yield* host.admitted(requestId);
 
-          const earlier =
-            request.requestId === undefined ? undefined : yield* host.admitted(request.requestId);
-
-          // A request id that was admitted before is answered with the first send's result: a repeated start finds its
-          // Session as it was left, even archived since.
+          // A request id that was admitted before is answered with the first send's result: a repeated start (or Fire)
+          // finds its Session as it was left, even archived since.
           if (earlier === undefined && (yield* options.archived)) {
             return apiFailure(
               "session_archived",
@@ -735,31 +750,20 @@ const sessionMcp = (options: SessionMcpOptions) =>
             );
           }
 
-          if (earlier === undefined && request.whenBusy === "reject" && before.unsettled) {
-            return apiFailure(
-              "session_busy",
-              "The Run is busy: send with when_busy queue or steer, or wait.",
-            );
+          if (earlier === undefined) {
+            const refused = delivery.refuse?.(before);
+
+            if (refused !== undefined) return refused;
+
+            if (delivery.first !== undefined) yield* delivery.first;
           }
-
-          const prompt: Types.Mutable<Prompt> = { input: request.input, via: request.via };
-
-          if (request.whenBusy !== undefined) prompt.whenBusy = request.whenBusy;
-
-          if (request.requestId !== undefined) prompt.requestId = request.requestId;
 
           const id = earlier?.id ?? (yield* host.submit(prompt));
           const after = yield* host.follow();
           const mark = waitingMark(yield* waiting(seam, after));
+          const sent = delivered(requestId, prompt.whenBusy, earlier, before.unsettled);
 
-          const delivery = delivered(
-            request.requestId,
-            request.whenBusy,
-            earlier,
-            before.unsettled,
-          );
-
-          return apiOk<SubmitResult>({ delivery, cursor: submitCursor(after, id, mark) });
+          return apiOk<SubmitResult>({ delivery: sent, cursor: submitCursor(after, id, mark) });
         }).pipe(
           Effect.catchTag("SessionError", (error) => {
             // A message Stop withdrew before it was placed has no submission to follow. It is `stopped` and not
@@ -777,6 +781,35 @@ const sessionMcp = (options: SessionMcpOptions) =>
           }),
         ),
       );
+
+    const submit: SessionMcpService["submit"] = (request) => {
+      if (new TextEncoder().encode(request.input).length > MAX_MCP_INPUT_BYTES) {
+        return Effect.succeed(
+          apiFailure(
+            "input_too_large",
+            `Input is over ${String(MAX_MCP_INPUT_BYTES)} bytes: send less text, or put it in a file in the Workspace.`,
+          ),
+        );
+      }
+
+      const prompt: Types.Mutable<Prompt> = { input: request.input, via: request.via };
+
+      if (request.whenBusy !== undefined) prompt.whenBusy = request.whenBusy;
+
+      if (request.requestId !== undefined) prompt.requestId = request.requestId;
+
+      return deliver({
+        requestId: request.requestId,
+        prompt,
+        refuse: (before) =>
+          request.whenBusy === "reject" && before.unsettled
+            ? apiFailure(
+                "session_busy",
+                "The Run is busy: send with when_busy queue or steer, or wait.",
+              )
+            : undefined,
+      });
+    };
 
     const stop: SessionMcpService["stop"] = (request) =>
       guarded(
@@ -815,6 +848,11 @@ const sessionMcp = (options: SessionMcpOptions) =>
     const configure: SessionMcpService["configure"] = (request) =>
       guarded(host.configure(agentChange(request)).pipe(Effect.as(apiOk(null))));
 
+    const fire = sessionFire({
+      deliver,
+      configure: (pick) => host.configure(agentChange(pick)),
+    });
+
     return {
       status,
       waitForChange,
@@ -822,6 +860,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
       submit,
       stop,
       configure,
+      fire,
     } satisfies SessionMcpService;
   });
 

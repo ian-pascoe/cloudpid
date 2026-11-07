@@ -28,6 +28,8 @@ import {
   runOutcome,
   SubmitRequest,
   sessionOriginLabel,
+  MarkedOrigin,
+  inputViaChipLabel,
   whenBusyOf,
 } from "./mcp-api.ts";
 
@@ -103,6 +105,24 @@ describe("marks", () => {
     expect(sessionOriginLabel({ client: { name: "pi" } })).toBe("MCP · pi");
     expect(sessionOriginLabel({})).toBe("MCP");
     expect(sessionOriginLabel({ client: { name: "pi" } }, "import")).toBe("Imported · pi");
+  });
+
+  it("name the Trigger a Fire came from, on its Session and on its input", () => {
+    const trigger = { id: "t1", name: "Weekly report" };
+
+    expect(sessionOriginLabel({ trigger }, "trigger")).toBe("Trigger · Weekly report");
+    expect(inputViaChipLabel({ auth: "trigger", trigger })).toBe("via Weekly report (Trigger)");
+    expect(inputViaChipLabel({ auth: "oauth", client: { name: "pi" } })).toBe("via pi (MCP)");
+  });
+
+  it("keep a Trigger's mark, which an older reader reads as an unknown way in", () => {
+    const marks = { kind: "trigger", auth: "trigger", trigger: { id: "t1", name: "Nightly" } };
+
+    expect(read(MarkedOrigin, marks)).toEqual(marks);
+    expect(read(SessionVia, { auth: "trigger", trigger: { id: "t1", name: "Nightly" } })).toEqual({
+      auth: "trigger",
+      trigger: { id: "t1", name: "Nightly" },
+    });
   });
 
   it("map the tool's when_busy onto the socket's", () => {
