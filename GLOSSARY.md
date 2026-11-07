@@ -325,7 +325,7 @@ The single index of Environments, Workspaces, Sessions, settings overrides, and 
 _Avoid_: Catalog, directory
 
 **Notification**:
-A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), linking to the Session.
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session; and when a Trigger's Fire fails.
 _Avoid_: Alert, push message (for the user-facing thing), MCP notification (a message an MCP server sends, such as a progress report or a list change)
 
 **Settings**:
@@ -369,6 +369,48 @@ _Avoid_: Guardrail, ceiling, cap, quota
 **Approval**:
 The owner's yes or no to an Agent change that waits for it: a change to a Limit, to the Global Skills, to Instructions or to an MCP server definition; making an MCP server that is switched off, or a tool that is hidden, reachable; or one no revert can undo (deleting an Environment or a kept Secret).
 _Avoid_: Confirmation, permission, consent
+
+## Triggers
+
+**Trigger**:
+Something the owner, or the agent for the owner, sets up to send a message on its own when something happens: its Schedule comes due, or its Trigger URL gets a delivery. An Environment trigger starts a new Session in a new Workspace, a Workspace trigger a new Session in its Workspace, and a Session trigger sends to its Session. A Session it starts, and each message it sends, is marked as coming from it.
+_Avoid_: Automation, Subscription, Hook, Cron job, Routine
+
+**Environment trigger**:
+A Trigger kept for an Environment. Each Fire starts a new Session, in a new Workspace, with its Trigger message.
+_Avoid_: Automation, Global trigger
+
+**Workspace trigger**:
+A Trigger kept for one Workspace. Each Fire starts a new Session there, on its files, branch and Container. It keeps the Workspace when its last Session goes, and goes when the Workspace is removed.
+_Avoid_: Workspace schedule, branch trigger
+
+**Session trigger**:
+A Trigger kept by one Session. Each Fire sends its Trigger message to that Session, which goes on from where it was; it goes with its Session.
+_Avoid_: Subscription, wake-up, follow, conversation trigger
+
+**Schedule**:
+When a Trigger fires on time: a cron expression read in a time zone.
+_Avoid_: Cron (alone), timer, interval
+
+**Trigger URL**:
+The secret address, outside Cloudflare Access, at which a Trigger receives deliveries. A delivery counts only when it is also signed with the Trigger's Signing secret.
+_Avoid_: Endpoint (the MCP endpoint is one), hook URL, callback
+
+**Signing secret**:
+The secret a Trigger's sender signs each delivery with. cloudpid makes it, and only the owner sees it.
+_Avoid_: Secret (alone: a Secret is a value the agent uses), webhook token, key
+
+**Fire**:
+One time a Trigger acts: its Schedule came due, or a delivery passed its checks and filters. It starts a Session, sends a message, or is skipped, and always leaves a record.
+_Avoid_: Run (the agent's turns), event, delivery (the HTTP request, which may be refused before it is a Fire), invocation
+
+**Trigger message**:
+The text a Trigger sends at each Fire. It is kept as written and sent as the owner's words; anything a delivery carried follows it as untrusted content.
+_Avoid_: Prompt (alone), template, Instructions, payload
+
+**Paused trigger**:
+A Trigger that keeps everything it holds but does not fire until it is resumed.
+_Avoid_: Disabled, off, archived
 
 ## Credentials and the browser
 

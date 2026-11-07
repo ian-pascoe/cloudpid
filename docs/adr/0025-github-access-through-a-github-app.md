@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (webhooks, as repo webhooks the App makes, and Container tokens minted with an explicit list of permissions: amended by ADR-0049)
 ---
 
 # GitHub access through a GitHub App
