@@ -1,4 +1,9 @@
-import { MAX_TITLE_LENGTH, type SessionRecord, type WorkspaceRecord } from "@cloudpid/protocol";
+import {
+  GLOBAL_SCOPE,
+  MAX_TITLE_LENGTH,
+  type SessionRecord,
+  type WorkspaceRecord,
+} from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Arr from "effect/Array";
@@ -12,6 +17,8 @@ import { Input } from "./components/ui/input.tsx";
 import { Menu, MenuItem } from "./components/ui/menu.tsx";
 import { settledFailureOf } from "./registry.ts";
 import { sessionTitle } from "./sidebar.tsx";
+import { triggersInAtom } from "./triggers-state.ts";
+import { triggerNames, workspaceTriggersOf } from "./triggers.ts";
 import type { SessionActions as AllSessionActions } from "./session-actions.ts";
 import {
   describeWorkspaceWork,
@@ -142,9 +149,46 @@ const SubagentWorkspacesLost = ({ session }: { session: SessionRecord }) => {
 };
 
 /**
+ * What deleting the last Session of its Workspace does to the Workspace: it is removed with it, or stays when a
+ * Workspace trigger keeps it. Read only while the dialog is open, since it asks for the Triggers.
+ */
+export const WorkspaceFate = ({
+  session,
+  environmentName,
+}: {
+  session: SessionRecord;
+  environmentName: string;
+}) => {
+  // A list that has not answered counts as no trigger, so the dialog never promises files that may go.
+  const kept = workspaceTriggersOf(useAtomValue(triggersInAtom(GLOBAL_SCOPE)), session.workspace);
+
+  if (kept.length > 0) {
+    return (
+      <>
+        It is the last session in its{" "}
+        <span className="font-medium text-foreground">{environmentName}</span> environment
+        workspace. The workspace stays: {kept.length === 1 ? "trigger" : "triggers"}{" "}
+        <span className="font-medium text-foreground">{triggerNames(kept)}</span>{" "}
+        {kept.length === 1 ? "keeps" : "keep"} it, with its files, and the next fire starts a new
+        session in it.
+      </>
+    );
+  }
+
+  return (
+    <>
+      It is the last session in its{" "}
+      <span className="font-medium text-foreground">{environmentName}</span> environment workspace,
+      which is removed with it: uncommitted changes and unpushed commits are lost.
+    </>
+  );
+};
+
+/**
  * Confirm deleting a Session: what goes (its conversations and history) and what stays (its files), or, for the last
- * Session in its Workspace, that the Workspace goes too. Deleting a running Session stops it first, which the dialog
- * says. A list that has not answered counts as the last, so the dialog never promises files that may go.
+ * Session in its Workspace, that the Workspace goes too, unless a Workspace trigger keeps it. Deleting a running
+ * Session stops it first, which the dialog says. A list that has not answered counts as the last, so the dialog never
+ * promises files that may go.
  */
 const DeleteSessionDialog = ({
   session,
@@ -175,12 +219,7 @@ const DeleteSessionDialog = ({
           <span className="font-medium text-foreground">{sessionTitle(session)}</span> and its
           conversation, subagents and history are deleted for good.{" "}
           {last ? (
-            <>
-              It is the last session in its{" "}
-              <span className="font-medium text-foreground">{environmentName}</span> environment
-              workspace, which is removed with it: uncommitted changes and unpushed commits are
-              lost.
-            </>
+            <WorkspaceFate session={session} environmentName={environmentName} />
           ) : (
             <>
               Files it wrote in the{" "}

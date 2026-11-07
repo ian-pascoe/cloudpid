@@ -14,6 +14,13 @@ import { appRuntime } from "./runtime.ts";
 import { visibleTickAtom } from "./sessions.ts";
 import { type TriggerDraft, triggerInput, triggerPatch } from "./triggers.ts";
 
+/**
+ * The key of the form atoms (`triggerFormAtom`, `triggerDraftAtom`, `triggerNoticeAtom`, `saveTriggerAtom`) of the
+ * Workspace trigger made from Workspace `id`'s row in the Workspaces section: the atoms are keyed by Scope otherwise, and
+ * the Triggers section's own form stays as it is.
+ */
+export const workspaceFormKey = (id: string): string => `workspace:${id}`;
+
 /** A new id for a Trigger or a Fire now, drawn by the page. */
 // @effect-diagnostics-next-line cryptoRandomUUID:off -- an id, not a secret: what makes a call sent again the same.
 export const newTriggerKey = (): string => crypto.randomUUID();

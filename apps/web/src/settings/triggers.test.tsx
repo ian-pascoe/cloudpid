@@ -20,6 +20,7 @@ import {
   fireLogOpenAtom,
   triggerDraftAtom,
   triggerFormAtom,
+  removeTriggerDialogAtom,
   triggerNoticeAtom,
   triggersAtom,
 } from "../triggers-state.ts";
@@ -70,13 +71,19 @@ const TRIGGERS: ReadonlyArray<TriggerOverview> = [
   { definition: WEBHOOK_TRIGGER, lastFire: null, reached: true },
 ];
 
+const WORKSPACE_TRIGGER: TriggerDefinition = {
+  ...definition("t3", "work", "Lint sweep"),
+  workspace: { id: "ab12cd34", branch: "feature/lint" },
+  whenBusy: "wait",
+};
+
 const HANDLERS: Partial<RegistryHandlers> = {
   listEnvironments: () =>
     Effect.succeed([environment("work", "Work"), environment("home", "Home")]),
   listTriggers: ({ environment }) =>
     Effect.succeed(
       Arr.filter(
-        TRIGGERS,
+        [...TRIGGERS, { definition: WORKSPACE_TRIGGER, lastFire: null, reached: true }],
         (trigger) => environment === undefined || trigger.definition.environment === environment,
       ),
     ),
@@ -237,5 +244,67 @@ describe("the Triggers section", () => {
       expect(markup).not.toContain("5-field cron");
       expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Save/);
     }),
+  );
+
+  it.effect(
+    "lists a Workspace trigger under its Workspace's branch, apart from the Environment's",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work");
+
+        expect(markup).toContain("Lint sweep");
+        expect(markup).toMatch(/Workspace <span[^>]*>feature\/lint<\/span>/);
+        expect(markup.indexOf("Weekly report")).toBeLessThan(markup.indexOf("feature/lint"));
+        expect(markup.indexOf("feature/lint")).toBeLessThan(markup.indexOf("Lint sweep"));
+      }),
+  );
+
+  it.effect(
+    "says a removed Workspace trigger leaves its Workspace, which nothing keeps any more",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", (registry) => {
+          registry.set(removeTriggerDialogAtom("work"), "t3");
+        });
+
+        expect(markup).toContain("Remove Lint sweep?");
+        expect(markup).toContain("feature/lint</span> stays, with");
+        expect(markup).toContain("deleting its last session removes it");
+
+        const environment = yield* render("work", (registry) => {
+          registry.set(removeTriggerDialogAtom("work"), "t1");
+        });
+
+        expect(environment).toContain("Remove Weekly report?");
+        expect(environment).not.toContain("stays, with");
+      }),
+  );
+
+  it.effect(
+    "shows a Workspace trigger's form without a base or an Environment, offering to wait",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("*", (registry) => {
+          registry.set(triggerFormAtom("*"), { kind: "create", id: "0190-new" });
+          registry.set(
+            triggerDraftAtom("*"),
+            emptyTriggerDraft("work", "America/Chicago", "ab12cd34"),
+          );
+        });
+
+        expect(markup).toContain("When the workspace is busy");
+        expect(markup).toContain("Wait until the workspace is idle");
+        expect(markup).not.toContain("Start from");
+        expect(markup).not.toContain('id="trigger-environment-*"');
+
+        const environment = yield* render("*", (registry) => {
+          registry.set(triggerFormAtom("*"), { kind: "create", id: "0190-new" });
+          registry.set(triggerDraftAtom("*"), emptyTriggerDraft("work", "America/Chicago"));
+        });
+
+        expect(environment).toContain("Start from");
+        expect(environment).toContain('id="trigger-environment-*"');
+        expect(environment).not.toContain("Wait until the workspace is idle");
+      }),
   );
 });

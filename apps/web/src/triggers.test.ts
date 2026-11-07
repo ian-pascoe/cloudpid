@@ -12,7 +12,11 @@ import {
   triggerDraftProblems,
   triggerDraftReady,
   triggerInput,
+  triggerNames,
   triggerPatch,
+  whenBusyChoices,
+  whenBusyOfText,
+  workspaceTriggersOf,
 } from "./triggers.ts";
 
 const DEFINITION: TriggerDefinition = {
@@ -189,5 +193,90 @@ describe("editing a webhook Trigger", () => {
       cron: "@daily",
       zone: "America/Chicago",
     });
+  });
+});
+
+const NIGHTLY: TriggerDefinition = {
+  ...DEFINITION,
+  id: "w1",
+  kind: "workspace",
+  workspace: { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f" },
+  name: "Nightly check",
+  whenBusy: "wait",
+};
+
+describe("the Workspace trigger form", () => {
+  it("starts waiting when busy, for the Workspace it names", () => {
+    const draft = emptyTriggerDraft("default", "UTC", "0f0f0f0f");
+
+    expect(draft).toMatchObject({ workspace: "0f0f0f0f", whenBusy: "wait" });
+    expect(emptyTriggerDraft("default", "UTC")).toMatchObject({
+      workspace: null,
+      whenBusy: "skip",
+    });
+  });
+
+  it("makes a Workspace trigger with no base, whatever the form held", () => {
+    const draft = {
+      ...emptyTriggerDraft("default", "UTC", "0f0f0f0f"),
+      name: "Nightly check",
+      message: "Check the build.",
+      cron: "@daily",
+      base: "develop",
+      model: "anthropic/claude-sonnet-5-5",
+    };
+
+    expect(triggerInput(draft)).toEqual({
+      kind: "workspace",
+      workspace: "0f0f0f0f",
+      name: "Nightly check",
+      message: "Check the build.",
+      source: { type: "schedule", cron: "@daily", zone: "UTC" },
+      whenBusy: "wait",
+      model: "anthropic/claude-sonnet-5-5",
+    });
+  });
+
+  it("edits a Workspace trigger as opened, changing only the fields edited and never a base", () => {
+    const draft = triggerDraftOf(NIGHTLY);
+
+    expect(draft).toMatchObject({ workspace: "0f0f0f0f", whenBusy: "wait", base: "" });
+    expect(triggerPatch(NIGHTLY, draft)).toEqual({});
+    expect(triggerPatch(NIGHTLY, { ...draft, whenBusy: "skip", base: "develop" })).toEqual({
+      whenBusy: "skip",
+    });
+  });
+
+  it("offers wait only to a Workspace trigger", () => {
+    expect(whenBusyChoices("workspace").map((choice) => choice.value)).toEqual([
+      "wait",
+      "skip",
+      "start",
+    ]);
+    expect(whenBusyChoices("environment").map((choice) => choice.value)).toEqual(["skip", "start"]);
+    expect(whenBusyOfText("environment", "wait")).toBe("skip");
+    expect(whenBusyOfText("workspace", "wait")).toBe("wait");
+    expect(whenBusyOfText("workspace", "nonsense")).toBe("wait");
+  });
+
+  it("names the Triggers that keep a Workspace", () => {
+    const listed = [
+      { definition: DEFINITION },
+      { definition: NIGHTLY },
+      { definition: { ...NIGHTLY, id: "w2", name: "Weekly sweep" } },
+      {
+        definition: { ...NIGHTLY, id: "w3", workspace: { id: "other", branch: "cloudpid/other" } },
+      },
+    ];
+
+    expect(workspaceTriggersOf(listed, "0f0f0f0f").map((trigger) => trigger.id)).toEqual([
+      "w1",
+      "w2",
+    ]);
+    expect(workspaceTriggersOf(null, "0f0f0f0f")).toEqual([]);
+    expect(triggerNames([{ name: "A" }])).toBe("“A”");
+    expect(triggerNames([{ name: "A" }, { name: "B" }])).toBe("“A” and “B”");
+    expect(triggerNames([{ name: "A" }, { name: "B" }, { name: "C" }])).toBe("“A”, “B” and “C”");
+    expect(triggerNames([])).toBe("");
   });
 });

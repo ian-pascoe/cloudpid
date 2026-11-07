@@ -1,10 +1,11 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over a Trigger and its form, not combinators.
 
 // The Settings page's Triggers section, as values (`docs/architecture/triggers.md` → The owner's UI): the form that makes
-// or edits an Environment trigger (its name, message, Schedule with the next Fires it gives, and options), what it sends
-// the Registry, and the words a Trigger's row and its fire log show.
+// or edits an Environment trigger, or a Workspace trigger (its name, message, Schedule with the next Fires it gives,
+// and options), what it sends the Registry, and the words a Trigger's row and its fire log show.
 
 import {
+  defaultWhenBusy,
   type EnvironmentTriggerInput,
   type FireOutcome,
   type FireRecord,
@@ -15,12 +16,17 @@ import {
   webhookOf,
   scheduleProblem,
   type TriggerDefinition,
+  type TriggerInput,
+  type TriggerKind,
   triggerMessageProblem,
   triggerNameProblem,
   type TriggerPatch,
   type TriggerWhenBusy,
+  type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import { ThinkingLevel } from "@cloudpid/config";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 
@@ -30,11 +36,14 @@ export const PREVIEWED_FIRES = 5;
 /**
  * What is typed in the Trigger form. An option left empty is the Environment's own (`base`: each Repo's default).
  * `scheduled` says the Trigger fires on a Schedule (a new one does), so the form asks for `cron` and `zone`; a webhook
- * Trigger has none, and its source is fixed at creation, so editing it never sends one.
+ * Trigger has none, and its source is fixed at creation, so editing it never sends one. A Workspace trigger's form names
+ * its Workspace (`workspace`, by id) and has no `base`.
  */
 export type TriggerDraft = {
   readonly environment: string;
   readonly scheduled: boolean;
+  /** The Workspace a Workspace trigger is kept for; null for an Environment trigger. */
+  readonly workspace: string | null;
   readonly name: string;
   readonly message: string;
   readonly cron: string;
@@ -45,15 +54,23 @@ export type TriggerDraft = {
   readonly thinking: string;
 };
 
-/** An empty form for a Trigger of `environment`, its zone `zone` (the browser's). */
-export const emptyTriggerDraft = (environment: string, zone: string): TriggerDraft => ({
+/**
+ * An empty form for a Trigger of `environment`, its zone `zone` (the browser's): a Workspace trigger's when `workspace`
+ * names its Workspace, which waits when busy by default.
+ */
+export const emptyTriggerDraft = (
+  environment: string,
+  zone: string,
+  workspace: string | null = null,
+): TriggerDraft => ({
   environment,
   scheduled: true,
+  workspace,
   name: "",
   message: "",
   cron: "",
   zone,
-  whenBusy: "skip",
+  whenBusy: defaultWhenBusy(workspace === null ? "environment" : "workspace"),
   base: "",
   model: "",
   thinking: "",
@@ -66,6 +83,7 @@ export const triggerDraftOf = (definition: TriggerDefinition): TriggerDraft => {
   return {
     environment: definition.environment,
     scheduled: definition.source.type !== "webhook",
+    workspace: definition.workspace?.id ?? null,
     name: definition.name,
     message: definition.message,
     cron: schedule?.cron ?? "",
@@ -119,19 +137,38 @@ const thinkingOf = (text: string): ThinkingLevel | undefined =>
 /** The new Trigger `draft` makes: the owner's own, active. */
 export const triggerInput = (
   draft: TriggerDraft,
-): EnvironmentTriggerInput & { readonly source: ScheduleSource } => {
+): TriggerInput & { readonly source: ScheduleSource } => {
+  const model = optional(draft.model);
+  const thinking = thinkingOf(draft.thinking);
+  const source = { type: "schedule", cron: draft.cron.trim(), zone: draft.zone.trim() } as const;
+
+  if (draft.workspace !== null) {
+    const input: Types.Mutable<WorkspaceTriggerInput & { source: ScheduleSource }> = {
+      kind: "workspace",
+      workspace: draft.workspace,
+      name: draft.name.trim(),
+      message: draft.message,
+      source,
+      whenBusy: draft.whenBusy,
+    };
+
+    if (model !== undefined) input.model = model;
+
+    if (thinking !== undefined) input.thinking = thinking;
+
+    return input;
+  }
+
   const input: Types.Mutable<EnvironmentTriggerInput & { source: ScheduleSource }> = {
     kind: "environment",
     environment: draft.environment,
     name: draft.name.trim(),
     message: draft.message,
-    source: { type: "schedule", cron: draft.cron.trim(), zone: draft.zone.trim() },
+    source,
     whenBusy: draft.whenBusy,
   };
 
   const base = optional(draft.base);
-  const model = optional(draft.model);
-  const thinking = thinkingOf(draft.thinking);
 
   if (base !== undefined) input.base = base;
 
@@ -142,6 +179,31 @@ export const triggerInput = (
   return input;
 };
 
+/** A Schedule, whose defaults the form's choices lead with. */
+const SCHEDULE_DEFAULT: ScheduleSource = { type: "schedule", cron: "", zone: "" };
+
+/** What a Trigger of `kind` does while busy, as the form offers it: its value and the words for it. */
+export const whenBusyChoices = (
+  kind: TriggerKind,
+): ReadonlyArray<{ readonly value: TriggerWhenBusy; readonly label: string }> =>
+  kind === "workspace"
+    ? [
+        { value: "wait", label: "Wait until the workspace is idle" },
+        { value: "skip", label: "Skip this fire" },
+        { value: "start", label: "Start another session" },
+      ]
+    : [
+        { value: "skip", label: "Skip this fire" },
+        { value: "start", label: "Start another session" },
+      ];
+
+/** The `when_busy` a select's text names; unknown text is the first choice, the kind's default for a Schedule. */
+export const whenBusyOfText = (kind: TriggerKind, text: string): TriggerWhenBusy =>
+  Arr.findFirst(whenBusyChoices(kind), (choice) => choice.value === text).pipe(
+    Option.map((choice) => choice.value),
+    Option.getOrElse(() => defaultWhenBusy(kind, SCHEDULE_DEFAULT)),
+  );
+
 /**
  * The change `draft` makes to `definition`: each field it changed, an option emptied set to null (back to the
  * Environment's own). Nothing changed is an empty change.
@@ -150,6 +212,7 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
   const input = triggerInput(draft);
   const schedule = scheduleOf(definition);
   const patch: Types.Mutable<TriggerPatch> = {};
+  const base = input.kind === "environment" ? input.base : undefined;
 
   if (input.name !== definition.name) patch.name = input.name;
 
@@ -165,7 +228,8 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
 
   if (input.whenBusy !== definition.whenBusy) patch.whenBusy = input.whenBusy;
 
-  if (input.base !== definition.base) patch.base = input.base ?? null;
+  // A Workspace trigger has no base to change.
+  if (input.kind === "environment" && base !== definition.base) patch.base = base ?? null;
 
   if (input.model !== definition.model) patch.model = input.model ?? null;
 
@@ -226,3 +290,25 @@ export const sourceWords = (fire: FireRecord, zone: string): string => {
       return "A source this version can't read";
   }
 };
+
+/** The names of `triggers`, quoted: "“A”", "“A” and “B”" or "“A”, “B” and “C”". */
+export const triggerNames = (triggers: ReadonlyArray<{ readonly name: string }>): string => {
+  const names = Arr.map(triggers, (trigger) => `“${trigger.name}”`);
+  const last = Arr.last(names);
+
+  if (Option.isNone(last)) return "";
+
+  const rest = Arr.dropRight(names, 1);
+
+  return rest.length === 0 ? last.value : `${Arr.join(rest, ", ")} and ${last.value}`;
+};
+
+/** The Workspace triggers kept for Workspace `workspace`, among `triggers` as last listed (none until they are). */
+export const workspaceTriggersOf = (
+  triggers: ReadonlyArray<{ readonly definition: TriggerDefinition }> | null,
+  workspace: string,
+): Array<TriggerDefinition> =>
+  Arr.filter(
+    Arr.map(triggers ?? [], (overview) => overview.definition),
+    (definition) => definition.workspace?.id === workspace,
+  );
