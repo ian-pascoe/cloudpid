@@ -1,7 +1,8 @@
 // The two signatures a webhook delivery may carry (`docs/architecture/triggers.md` → Formats): GitHub's
 // `X-Hub-Signature-256` and Standard Webhooks' `webhook-id`, `webhook-timestamp` and `webhook-signature`. Each is an
-// HMAC-SHA256 over the bytes received, checked before anything is parsed, with the Trigger's Signing secret; a
-// signature is compared by `crypto.subtle.verify`, which does not leak where it differs. Pure over Web Crypto, so it
+// HMAC-SHA256 over the bytes received, checked before anything is parsed, with the Trigger's Signing secret. GitHub's
+// is compared by `crypto.subtle.verify`, which does not leak where it differs, and a `standard` one, which may
+// list several, by a comparison of the one digest made that takes as long whatever it finds. Pure over Web Crypto, so it
 // runs in Node tests as in workerd.
 // @effect-diagnostics asyncFunction:off globalDate:off missingPipeableSignature:off -- Web Crypto is Promise-native.
 
@@ -16,6 +17,11 @@ const encoder = new TextEncoder();
 const hmacKey = (secret: string) =>
   crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
     "verify",
+  ]);
+
+const signingKey = (secret: string) =>
+  crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
   ]);
 
 /** The bytes `hex` spells, or undefined when it is not an even number of hex digits. */
@@ -43,6 +49,17 @@ const verifies = async (
   signature: Uint8Array<ArrayBuffer>,
   message: Uint8Array<ArrayBuffer>,
 ): Promise<boolean> => crypto.subtle.verify("HMAC", await hmacKey(secret), signature, message);
+
+/** Whether `a` and `b` hold the same bytes, taking as long whatever they hold when their lengths are equal. */
+const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
+  if (a.length !== b.length) return false;
+
+  let difference = 0;
+
+  for (let at = 0; at < a.length; at++) difference |= (a[at] ?? 0) ^ (b[at] ?? 0);
+
+  return difference === 0;
+};
 
 /**
  * GitHub's check: `signature` is the `X-Hub-Signature-256` header, `sha256=` and the hex HMAC-SHA256 of `body` keyed with
@@ -89,6 +106,14 @@ export const checkStandardSignature = async (input: {
     await new Blob([encoder.encode(`${id}.${timestamp}.`), input.body]).arrayBuffer(),
   );
 
+  // One pass over the body, however many entries the header lists: the digest is made once, and each `v1` entry is
+  // compared with it. (A header of thousands of entries must not make thousands of passes over 25 MiB.)
+  const expected = new Uint8Array(
+    await crypto.subtle.sign("HMAC", await signingKey(input.secret), message),
+  );
+
+  let found = false;
+
   for (const entry of signature.split(" ")) {
     const [version, encoded, ...rest] = entry.split(",");
 
@@ -96,10 +121,11 @@ export const checkStandardSignature = async (input: {
 
     const bytes = fromBase64(encoded);
 
-    if (bytes !== undefined && (await verifies(input.secret, bytes, message))) return "valid";
+    // No early return: the time taken does not say which entry matched.
+    if (bytes !== undefined && sameBytes(bytes, expected)) found = true;
   }
 
-  return "invalid";
+  return found ? "valid" : "invalid";
 };
 
 /**

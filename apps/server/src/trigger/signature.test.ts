@@ -1,7 +1,7 @@
 // The checks are Promise-based (Web Crypto), so this test is too.
-// @effect-diagnostics asyncFunction:off globalDate:off nodeBuiltinImport:off
+// @effect-diagnostics asyncFunction:off globalDate:off nodeBuiltinImport:off preferEffectArray:off
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   checkGitHubSignature,
   checkStandardSignature,
@@ -81,6 +81,28 @@ describe("checkStandardSignature", () => {
 
     expect(await check({ signature })).toBe("valid");
     expect(await check({ signature: `v2,abc ${sign(secret, "msg_1", seconds)}` })).toBe("valid");
+  });
+
+  it("makes one pass over the body however many entries the header lists", async () => {
+    const entries = Array.from(
+      { length: 5000 },
+      (_, at) => `v1,${Buffer.from(`junk-${String(at)}`).toString("base64")}`,
+    );
+
+    const signature = [...entries, sign(secret, "msg_1", seconds)].join(" ");
+    const sign$ = vi.spyOn(crypto.subtle, "sign");
+    const verify = vi.spyOn(crypto.subtle, "verify");
+    const importKey = vi.spyOn(crypto.subtle, "importKey");
+
+    try {
+      expect(await check({ signature })).toBe("valid");
+      expect(await check({ signature: entries.join(" ") })).toBe("invalid");
+      expect(sign$).toHaveBeenCalledTimes(2);
+      expect(importKey).toHaveBeenCalledTimes(2);
+      expect(verify).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("is the signature a Standard Webhooks library makes from the secret as whsec_ text", async () => {
