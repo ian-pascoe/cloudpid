@@ -30,10 +30,16 @@ export const selfUseRedirectUri = (stage: string): string =>
   dcrRedirectUri({ origin: appOrigin(stage), issuer: ACCESS_ISSUER, advertisesIss: false });
 
 /**
+ * The redirect URI executor.sh registers over DCR when the owner adds the MCP endpoint to it as an Executor app
+ * (`mcp-endpoint.md` → Access and identity).
+ */
+export const EXECUTOR_REDIRECT_URI = "https://executor.sh/api/oauth/callback";
+
+/**
  * Managed OAuth (docs/architecture/mcp-endpoint.md → Access and identity): Access is the authorization server. Access
  * tokens last 5 minutes and the grant 14 days (both clients refresh on their own), and dynamic client registration
- * accepts the loopback and localhost redirects pi and Claude Code use, and the stage's own Self-use redirect, listed
- * exactly (Access matches an allowed URI exactly unless it ends in `/*`).
+ * accepts the loopback and localhost redirects pi and Claude Code use, the stage's own Self-use redirect, and
+ * executor.sh's callback, listed exactly (Access matches an allowed URI exactly unless it ends in `/*`).
  */
 export const mcpOauthConfiguration = (stage: string) =>
   ({
@@ -43,7 +49,7 @@ export const mcpOauthConfiguration = (stage: string) =>
       enabled: true,
       allowAnyOnLocalhost: true,
       allowAnyOnLoopback: true,
-      allowedUris: [selfUseRedirectUri(stage)],
+      allowedUris: [selfUseRedirectUri(stage), EXECUTOR_REDIRECT_URI],
     },
   }) as const;
 

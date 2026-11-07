@@ -24,7 +24,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it } from "vitest";
-import { ACCESS_ISSUER, mcpApplicationProps } from "../mcp-access.ts";
+import { ACCESS_ISSUER, selfUseRedirectUri } from "../mcp-access.ts";
 import { guardedOAuthFetch } from "../mcp/oauth-fetch.ts";
 import { ownHostRouted } from "../mcp/own-host-transport.ts";
 import { pkceChallenge } from "../mcp/sign-in-client.ts";
@@ -704,8 +704,7 @@ describe("Self-use: a sign-in to the stage's own MCP endpoint", () => {
     const registration = calls.find(({ url: called }) => called === registrationEndpoint);
 
     expect(registration?.json).toMatchObject({
-      redirect_uris: mcpApplicationProps(STAGE.label).oauthConfiguration.dynamicClientRegistration
-        .allowedUris,
+      redirect_uris: [selfUseRedirectUri(STAGE.label)],
       token_endpoint_auth_method: "none",
     });
     expect(url.searchParams.get("client_id")).toBe("access-client-1");
