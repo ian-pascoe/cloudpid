@@ -29,3 +29,5 @@ export * from "./mcp-tool-names.ts";
 export * from "./tool-pattern.ts";
 
 export * from "./mcp-credentials.ts";
+
+export * from "./github-permissions.ts";

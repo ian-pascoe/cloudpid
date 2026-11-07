@@ -1,0 +1,35 @@
+// The GitHub permissions cloudpid asks for (docs/architecture/workspace.md → Git, ADR-0025; docs/architecture/triggers.md →
+// GitHub-managed hooks, ADR-0049): the App's, which its registration (`infra`) lists, and the Containers', which the
+// Workspace DO mints every token with. Two lists, so a permission the App gains reaches a Container only by being added
+// to the Containers' list on purpose.
+
+/** A permission's level on a repository. */
+export type GitHubPermissionLevel = "read" | "write";
+
+/** The permissions the GitHub App asks for (ADR-0025): what the agent's git and gh need, and CI's state to read. */
+export const GITHUB_APP_PERMISSIONS = {
+  contents: "write",
+  pull_requests: "write",
+  issues: "write",
+  workflows: "write",
+  actions: "read",
+  checks: "read",
+  statuses: "read",
+  metadata: "read",
+} as const satisfies Readonly<Record<string, GitHubPermissionLevel>>;
+
+/**
+ * The permissions of the tokens a Container's commands and the Diff pane's GitHub calls get: asked for explicitly, since
+ * GitHub reads a request with none as all of the installation's. The same values as the App's until the App gains
+ * `repository_hooks` (ADR-0049); that permission is never listed here.
+ */
+export const CONTAINER_GITHUB_PERMISSIONS = {
+  contents: "write",
+  pull_requests: "write",
+  issues: "write",
+  workflows: "write",
+  actions: "read",
+  checks: "read",
+  statuses: "read",
+  metadata: "read",
+} as const satisfies Readonly<Record<string, GitHubPermissionLevel>>;
