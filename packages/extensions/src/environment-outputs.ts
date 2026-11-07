@@ -35,7 +35,7 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import type {
-  AppliedChange,
+  ChangedSetting,
   ChangedEnvironment,
   EnvironmentDetails,
   EnvironmentListing,
@@ -618,7 +618,7 @@ const globalReach = (global: GlobalChanged) => {
  * change that waited for it.
  */
 export const changeOutput = (
-  applied: Extract<AppliedChange, { readonly status: "changed" }>,
+  applied: ChangedSetting,
   own: boolean,
   approval: Approval = null,
 ): EnvironmentChange =>
@@ -627,7 +627,7 @@ export const changeOutput = (
     change: applied.change,
     approval,
     own: applied.global?.own ?? own,
-    newBuild: applied.newBuild,
+    newBuild: applied.newBuild ?? false,
     global: applied.global ?? null,
   });
 

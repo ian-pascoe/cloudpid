@@ -200,6 +200,18 @@ export type AppliedChange =
   | { readonly status: "changed-since"; readonly current: Schema.Json | null }
   | { readonly status: "missing" };
 
+/**
+ * A setting changed, as a result is made of it: `newBuild` is known only to the write that made it (the Build upkeep's),
+ * so a change rebuilt from the Agent changes the Registry recorded has none, and its result leaves the Build to
+ * `environment_get`.
+ */
+export type ChangedSetting = Omit<
+  Extract<AppliedChange, { readonly status: "changed" }>,
+  "newBuild"
+> & {
+  readonly newBuild?: boolean | undefined;
+};
+
 /** Why a text that holds a Secret Reference is refused: these tools resolve none, so it would be saved as written. */
 const PLACEHOLDER_REFUSAL =
   "Nothing was saved: a text of the call holds a Secret Reference, which these tools do not resolve, so what they save would hold the reference's text, not the Secret. A credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.";
@@ -310,8 +322,8 @@ export const MAX_CHANGE_REASON = 500;
 const shownValue = (value: Schema.Json | null): string =>
   value === null ? "not set" : JSON.stringify(value);
 
-/** When a change applies, and whether a Build was asked for. */
-export const describeApplied = (own: boolean, newBuild: boolean): string =>
+/** When a change applies, and whether a Build was asked for (`newBuild` undefined: not known, so look at the Build). */
+export const describeApplied = (own: boolean, newBuild: boolean | undefined): string =>
   Arr.join(
     [
       "It applies at the next Container start of each of the Environment's Workspaces: a Container that runs keeps what it started with.",
@@ -320,11 +332,13 @@ export const describeApplied = (own: boolean, newBuild: boolean): string =>
             "This is this Session's own Environment, and its Workspace has the change already: container_restart applies it to this Workspace's Container now.",
           ]
         : []),
-      ...(newBuild
-        ? [
-            "The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes; environment_rebuild asks for another now, such as after it failed).",
-          ]
-        : []),
+      ...(newBuild === undefined
+        ? ["environment_get shows the Build."]
+        : newBuild
+          ? [
+              "The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes; environment_rebuild asks for another now, such as after it failed).",
+            ]
+          : []),
     ],
     " ",
   );
