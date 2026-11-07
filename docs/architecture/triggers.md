@@ -39,7 +39,7 @@ _Built in S1._
 
 ## Webhooks
 
-_Built in S2, in four parts ([#679](https://github.com/ian-pascoe/cloudpid/issues/679)): the source, the pure checks and the Session's payload (part 1); the delivery path, Trigger URLs and secrets (part 2); the agent's tools (part 3); the owner's form (part 4). Notes marked "part 1" are built; the rest of this section is not yet._
+_Built in S2, in four parts ([#679](https://github.com/ian-pascoe/cloudpid/issues/679)): the source, the pure checks and the Session's payload (part 1); the delivery path, Trigger URLs and secrets (part 2); the agent's tools (part 3); the owner's form (part 4). Notes marked "part 1" and "part 2" are built; the rest of this section is not yet._
 
 ### The Trigger URL
 
@@ -56,11 +56,13 @@ Each webhook Trigger names one format. Every delivery must be signed; there is n
 
 - **As built, part 1:** the router (`apps/server/src/hooks-routes.ts`, its constants in the light `hooks-path.ts`) matches the exact shape, `/hooks/<UUIDv7 in lowercase>/<43 base64url characters>`, case-sensitively against the path as it was sent; it answers `refused` (a 404) for every other form a lenient router would read as under `/hooks` (it reuses the sign-in router's `canonicalPath`) and leaves the bare `/hooks` to the guard. The signature checks (`apps/server/src/trigger/signature.ts`, over Web Crypto; GitHub's is compared by `verify`, which doesn't leak where it differs, and a `standard` header that lists several entries makes one HMAC over the body and compares each entry with that digest, so a header of thousands of entries costs one pass over a 25 MiB body): `github` is `sha256=<hex>` over the bytes received, keyed with the Signing secret as UTF-8; `standard` is any `v1,<base64>` entry of `webhook-signature` over `<id>.<timestamp>.<body>`, and a timestamp more than 5 minutes either way is `stale` whatever its signature, so a replay never looks signed. A `standard` Trigger shows its Signing secret as `whsec_<base64>` (`standardSecretText`), the form Standard Webhooks' libraries decode back to the same bytes.
 
+- **As built, part 2:** `serveHooks` (`apps/server/src/hooks-serve.ts`) runs between the Access guard and the sign-in router (`guardedRoutes`'s third argument): a POST to the exact shape is read, at most 25 MiB (a body declared larger, or that goes over while read, is not held: the object gets its size and no bytes), and handed to `trigger:<id>`'s `deliver`, whose status (and no body, `Cache-Control: no-store`) is the answer; any other method is a 405, every other form under `/hooks` a 404, and an object that doesn't answer a 503. An unknown id reaches an object with no storage (`hasTriggerStore`), which answers 404 and writes nothing.
+
 ### Checks and answers
 
 The Trigger object checks, in order, on the whole body in memory:
 
-1. the token, by comparing its SHA-256 hash with the kept one in constant time;
+1. the token, by comparing its keyed hash with the kept one in constant time;
 2. the signature, an HMAC over the bytes received, before anything is parsed (and, for `standard`, the timestamp window);
 3. the size and content type;
 4. the `match` filter ([_Filters_](#filters)) and, for `github`, the bot-loop guard.
@@ -75,20 +77,24 @@ The Trigger object checks, in order, on the whole body in memory:
 | filtered out (by `match`, or the bot-loop guard)                              | 2xx    | counted per day                                |
 | accepted                                                                      | 2xx    | a pending Fire, once it is stored              |
 
+- **As built, part 2** (`deliver`, `apps/server/src/trigger/object.ts`; the pure reads in `delivery.ts`): the object never calls the Registry for a delivery it refuses or filters, and answers from the definition it caches. The token's hash is the vault's keyed digest (HMAC-SHA-256 under the key of the purpose `trigger:<id>`), compared in constant time. A body over 25 MiB was not read, so it gets the token check and then a 413: its signature cannot be checked. A GitHub `ping` is answered once its signature is good (before the content type is looked at), and its time kept; it never fires. The content types taken are `application/json` (and `application/*+json`), `application/x-www-form-urlencoded` and `text/*`; a body that is not JSON still fires (only a `match` path can then fail it). The sender's delivery id keyed the Fire (`<trigger id>:<delivery id>`, a hash of it when over 200 characters; a GitHub delivery with no `X-GitHub-Delivery` gets a random one), a repeat of one pending or in the fire log is answered 200 and makes no second Fire, and the Registry remembers the key 24 hours more. A delivery to a paused Trigger is recorded `skipped: paused` at once. The answer comes after the pending Fire is stored; the object then sets its alarm for now.
 - **25 MiB** is GitHub's own payload cap, so cloudpid never refuses a GitHub delivery for its size, and it fits one RPC call to the object (32 MiB).
 - **The answer comes once the pending Fire is stored**, never after the Fire's Session starts: GitHub gives a delivery 10 s and does not redeliver on its own.
 - **Refused and filtered deliveries are only counted per day**, never kept as rows, since anyone can make them; the counts are kept for 30 days. Only an accepted, matching delivery reaches the Registry, through `admitFire`.
 
 ### Secrets
 
-- **Made by the Trigger object**, at creation: the token and the Signing secret, 256 bits each. They are sealed with the vault bound to the object's own id (as the Workspace DO seals its Secrets) and kept **only in the Trigger object**; the token is also kept as its SHA-256 hash, which is what a delivery is compared with.
+- **Made by the Trigger object**, at creation: the token and the Signing secret, 256 bits each. They are sealed with the vault bound to the object's own id (as the Workspace DO seals its Secrets) and kept **only in the Trigger object**; the token is also kept as its keyed hash (the vault's HMAC-SHA-256 digest), which is what a delivery is compared with.
 - **The agent never sees either**, as with Secrets. A tool result about a webhook Trigger points the owner to its page.
 - **The owner reveals them** on the Trigger's page at any time (a pasted hook may need pasting again), and copies them.
 - **Rotation:** the owner's **New URL** and **New signing secret** each apply at once; the old value stops working at that moment, with no window where both work. A hook cloudpid made on GitHub is updated in the same action ([_GitHub-managed hooks_](#github-managed-hooks)).
 - **A reverted removal** brings the definition back with a new Trigger URL and Signing secret, and its Agent change says so. A GitHub-managed hook is made again on its own; a pasted URL must be pasted again, accepted because removal is a narrowing, as a kept Secret's deletion is.
 
+- **As built, part 2:** the object makes both at its first adopt of a webhook definition that has none (`ensureSecrets`: a Schedule's object never does), as 43 base64url characters each, sealed with `openKeptVault(<master key>, "trigger:<id>")` bound to `{owner: <id>, name: "token" | "secret"}`, so one Trigger's sealed values open in no other. `trigger_secrets` holds the two sealed values and the token's keyed hash. A reverted removal wipes the object, so the Trigger it brings back makes new ones. The object's `reveal` and `rotate("url" | "secret")` serve the owner's RPCs (`revealTrigger`, `rotateTrigger`: the path `/hooks/<id>/<token>`, the stage's origin when it has one, and the secret, `whsec_<base64>` for a `standard` Trigger); a rotation replaces the row at once, so the old value stops at that moment. A Trigger that is no webhook's has none, and the RPCs refuse it. The reverted removal's Agent change says so: "It has a new Trigger URL and Signing secret: paste them again where the old ones were used." The Agent tools (part 3) never carry either.
+
 ### Access
 
+- **As built, part 2:** `hooksApplicationProps` (`apps/server/src/hooks-access.ts`), declared in `worker.ts` as `Server/Hooks` only while the Worker is live; the Worker's own server span is turned off for requests under `/hooks` (`hooksTracing`, which sets Effect's `TracerDisabledWhen`), since it records the whole URL, and the one span made records `/hooks/:id/:token` and the status.
 - **`Server/Hooks`**, a fourth Access application on each deployed stage, has the one destination `<host>/hooks/*` and a Bypass/Everyone policy, with `domain` set to it and `adopt: true`, declared only while the Worker is live, as `Server/Bypass` is ([`infra.md`](../development/infra.md) → _Stages and Access_). ADR-0035's application stays as recorded.
 - **Bare `/hooks`** stays behind Access (a `/hooks/*` path doesn't cover it), which is fine since nothing is served there.
 - **`alchemy dev`** serves the route with no Access, so it can be tested with curl.
@@ -100,10 +106,11 @@ The Trigger object checks, in order, on the whole body in memory:
 - **cloudpid's own spans and logs** record only the route template, `/hooks/:id/:token`, never the path.
 - **Access logs nothing** on a bypassed path, so cloudpid's spans and the per-day counts are the only record of deliveries.
 - **Rotation is the remedy** for a leaked URL.
+- **Not verified in a test:** that the Worker's init Layer reaches the request fiber (so `TracerDisabledWhen` applies there as it does under `toHandled` in the unit test); S6 checks it on a deployed stage with the other items.
 
 ## Payload and untrusted content
 
-_The message's parts: S1 (header and Trigger message) and S2 (the body). GitHub trimming: S5._
+_The message's parts: S1 (header and Trigger message) and S2 (the body; part 2 builds what the object keeps and sends). GitHub trimming: S5._
 
 A Fire's message has four parts, in order (the header comes first, as the S1 code writes it, so the message that follows is read as under it):
 
@@ -113,6 +120,7 @@ A Fire's message has four parts, in order (the header comes first, as the S1 cod
 4. **The whole body, as a file:** the Session saves it to `.cloudpid/triggers/<fire key>.json` in its Workspace (the key made filename-safe, with a short hash of the whole key after it, so two keys never share a file) and names the path inside the fence, so the agent can run `jq` on it. _For part 2 to settle:_ what the file holds. It holds the body **as received**, byte for byte, which the signature was made over and nothing of which is lost. A GitHub delivery with the content type `application/x-www-form-urlencoded` is `payload=<URL-encoded JSON>`: the file keeps that form, the fence's `content_type` says so, and `match` reads such a body as the JSON inside its `payload` field. The file is named `.json` whatever the content type.
 
 - **Bodies up to 1 MiB are kept** whole, each pending Fire's in its own SQLite row (a Durable Object's row holds at most 2 MB). A larger body (up to 25 MiB) still makes a Fire, but its body isn't kept: the message says so, with its size, the event and the delivery id, and the agent reads the event through `gh` instead. Chunking and R2 were rejected for a rare case, and refusing with 413 would drop a real GitHub event, which GitHub doesn't send again.
+- **As built, part 2:** the object keeps the body as the text it decodes to (UTF-8; a body of invalid bytes decodes longer than it came, so the 1 MiB bound is on the decoded text and not only on the bytes received) in the pending row's `body` column, with the rest of the payload as JSON; a body over the bound is not kept, and its Fire carries `size` and no `body`. The last accepted delivery is kept in `trigger_hook`, and **Fire again** (`fireAgain`) enqueues `<trigger>:manual:<key>` with it, a manual Fire whose header says it was sent again. The Registry titles the Session with the event (`admitFire`'s `event`).
 - **The last delivered body** (at most 1 MiB) is kept apart, for **Fire again** ([_The owner's UI_](#the-owners-ui)).
 - **GitHub trimming** (S5, for the `github` format): `*_url` API links are dropped, except `html_url`, and the `repository`, `sender`, `organization` and `installation` objects shrink to their names. GitHub's payloads are mostly links.
 - **As built, part 1:** the Session's `fire` takes the delivery as `FireRequest.payload` (`FirePayload`: format, event, action, delivery id, content type, size, and the body unless it was over 1 MiB). The block (`fencePayload`, `packages/protocol/src/trigger-payload.ts`) is `<trigger_payload>`, a notice that the body is untrusted, and one `<payload>` element with the sender's facts as attributes; the body is cleaned, redacted of the Secrets the Session holds, cut to 16 KiB at a character boundary and escaped, in that order, as an Attached resource's content is, and a sender's event, action, delivery id and content type are cut to plain characters once, where the Session's `fire` takes the payload in (`cleanPayload`), and the Registry does the same for the event its title carries; `truncated` is set only when the text shown is shorter than the body after cleaning and redaction. The Session writes the whole body to `/workspace/.cloudpid/triggers/<fire key>-<hash>.json` first (`host.ts`, `firePayload`, through the lookup environment, which never starts the Container), once and not again for a Fire it admitted before; a Workspace that can't be written fails the Fire as unavailable, which the object tries again. The block is a text part of its own after the message and the owner's entry keeps `trigger` (`TriggerPayloadChip`: where it came from, its size, how much went inline, its path) for the transcript's chip: the transcript takes the block out of the owner's message (`isPayloadBlock`) and carries the chip data as `triggerPayload`, as Attached resources are carried, and part 4 draws it. A body that was not kept has the block with `not_kept` and no file. A webhook's Session is titled "`<name>` · `<event>` · `<date, time> UTC`": a webhook has no zone, so the time is UTC and says so.
@@ -124,6 +132,7 @@ _Built in S2._ _As built, part 1:_ `match` lives on the webhook source, `{type: 
 
 - **`match`:** a webhook Trigger may hold a `match`, a map from dotted paths in the body to lists of allowed values. Paths are ANDed; the values of one path are ORed. The event's name is the path `event`. For example: `{ event: ["workflow_run"], action: ["completed"], "workflow_run.conclusion": ["failure"], "workflow_run.head_branch": ["main"] }`.
 - **A delivery that doesn't match** is answered 2xx, counted as `filtered` for the day, and never becomes a Fire. A Fire costs a Session and a Container, so filtering is not left to the agent; a generic dotted-path match covers GitHub, Linear and the rest without code for each. JSONPath and CEL were rejected as more than this needs.
+- **As built, part 2:** the guard compares the body's `sender.login` with the App's bot login, `<slug>[bot]`, which the object asks of GitHub once as the App (`GET /app`, `GitHubApp.botLogin`) and only for a sender whose login ends `[bot]`; while GitHub can't say, any `[bot]` sender is dropped (a warning is logged), since a loop costs more than a missed bot event.
 - **The bot-loop guard:** in the `github` format, a delivery whose `sender` is the GitHub App's own bot is always dropped, so "on an issue comment" can't be answered by the agent's own comment, again and again. It has no switch; one could be added later.
 - **The cached definition:** the object checks `match` against the definition it caches at a revision number, and `admitFire` refuses a stale revision (`stale`) and answers the current definition, which the object checks again. A cached `match` is never acted on wrongly.
 
@@ -156,7 +165,7 @@ _Built in S1, with the hook in S5._
 ### Where it lives
 
 - **`Trigger`**, keyed `trigger:<id>`, is in the `Server` Worker beside Session, Registry and `McpHost` (`SERVER_DURABLE_OBJECTS`, `worker-init.ts`'s `durableObjects`, and its code in the lazily loaded graph). Its class name can't be renamed once deployed.
-- **It binds** the Registry and Session namespaces (same script), `GitHubAppConfig`, `SecretsConfig` (the vault) and telemetry. _As built in S1_ (`apps/server/src/trigger/Trigger.ts`): the Registry, the Sessions, the Workspace namespace (a Fire that took the spare runs the spare and Build upkeep, as the owner's start does) and telemetry; the App's config and the vault come with S2 and S5. `TriggerLive` needs `SessionLive`, so the Session reaches the Trigger namespace from the Worker's environment instead (`triggersOfEnvironment`, `trigger/objects.ts`), its stubs made as `yield* Trigger` makes them. The Session (for the tools) and the main Worker (for deliveries and the owner's UI) bind the Trigger namespace. A Worker of its own was rejected: it would duplicate the App's key and the vault, and add a step to the deploy order.
+- **It binds** the Registry and Session namespaces (same script), `GitHubAppConfig`, `SecretsConfig` (the vault) and telemetry. _As built in S2, part 2:_ it also takes `SecretsConfig` (the vault) and `GitHubAppConfig` (the App's bot login). _As built in S1_ (`apps/server/src/trigger/Trigger.ts`): the Registry, the Sessions, the Workspace namespace (a Fire that took the spare runs the spare and Build upkeep, as the owner's start does) and telemetry; the App's config and the vault come with S2 and S5. `TriggerLive` needs `SessionLive`, so the Session reaches the Trigger namespace from the Worker's environment instead (`triggersOfEnvironment`, `trigger/objects.ts`), its stubs made as `yield* Trigger` makes them. The Session (for the tools) and the main Worker (for deliveries and the owner's UI) bind the Trigger namespace. A Worker of its own was rejected: it would duplicate the App's key and the vault, and add a step to the deploy order.
 - **It follows `workers.md`:** its own migration manifest and shipped-migration test; tests with `refusingStorage` for a replaced instance; and an alarm that catches its own errors and re-arms, since the platform gives up after 6 retries.
 - **Every edge only gains** ([`workers.md`](../development/workers.md) → _Deploys and Durable Object code updates_): main Worker → Trigger, Session → Trigger, Trigger → Registry (`admitFire`, `triggerDefinition`, `notifyTriggerFailed`, `knownTriggers`) and Trigger → Session (`fire`) are all new.
 
@@ -265,7 +274,7 @@ _The Settings section: built in S1, with the webhook parts in S2 and the Workspa
 
 ## Fire records, origin marks and notifications
 
-_Built in S1, the delivery counts in S2._
+_Built in S1, the delivery counts in S2 (part 2 keeps them; the owner's page shows them in part 4)._
 
 - **The fire log** is a row per Fire in its Trigger object: when, the source (the scheduled time; the delivery id and event; or `manual`), and the outcome: `started <session>`, `sent (queued)`, `sent (steered)`, `skipped: overlap | coalesced | archived | importing | missed | paused` (S1 adds `paused`: a Fire not yet admitted when its Trigger was paused), or `failed: <reason>`. The last 1,000 Fires are kept, and the per-day counts of refused and filtered deliveries for 30 days; both go with the Trigger.
 - **Origin marks.** `MarkedOrigin`'s `auth` gains the member `trigger`, holding the Trigger's id and name; an older reader decodes it as `unknown` rather than failing. _As built:_ its `kind` gains `trigger` too, and `trigger: {id, name}` sits beside them (`packages/protocol/src/mcp-api.ts`); an input a Fire sent carries `via: {auth: "trigger", trigger}`. A Session a Trigger started shows the chip "Trigger · `<name>`", and each input a Trigger sent shows "via `<name>` (Trigger)".
@@ -277,7 +286,7 @@ _Each span with the slice that builds its code._
 
 Attributes are fixed values and counts only: never the token, the Signing secret, the body, or a header's value other than the event's name and the delivery id. Paths are recorded as the route template, `/hooks/:id/:token`.
 
-- **`trigger.delivery`:** format, outcome (`accepted`, `filtered`, `unauthorized`, `too_large`, `unsupported`, `not_found`, `ping`), byte count, event.
+- **`trigger.delivery`** (built in part 2; the Worker's `hooks.delivery` span, with the route template and the status, is its parent): format, outcome (`accepted`, `filtered`, `unauthorized`, `too_large`, `unsupported`, `not_found`, `ping`), byte count, event.
 - **`trigger.fire`:** Trigger id, kind (`environment`, `workspace` or `session`), source (`schedule`, `webhook`, `manual`), outcome (`started`, `sent`, `skipped:<why>`, `failed`), lag behind the scheduled time in ms, the alarm's retry count.
 - **`trigger.alarm`.**
 - **As built in S1** (`trigger/object.ts`): `trigger.fire` also records `trigger.attempts`, the tries the pending Fire had before this one, and its outcome may be `retry` (the Fire waits for a later try: what most often follows an outage, which `failed` alone would hide); `trigger.alarm` records `trigger.id`. Both are custom spans of the Worker's trace, under the object's own tracer (`Trigger.ts`).
