@@ -9,6 +9,7 @@ import type {
 } from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -19,6 +20,7 @@ import {
   fireLogOpenAtom,
   triggerDraftAtom,
   triggerFormAtom,
+  triggerNoticeAtom,
   triggersAtom,
 } from "../triggers-state.ts";
 import { emptyTriggerDraft } from "../triggers.ts";
@@ -64,7 +66,13 @@ const TRIGGERS: ReadonlyArray<TriggerOverview> = [
 const HANDLERS: Partial<RegistryHandlers> = {
   listEnvironments: () =>
     Effect.succeed([environment("work", "Work"), environment("home", "Home")]),
-  listTriggers: () => Effect.succeed(TRIGGERS),
+  listTriggers: ({ environment }) =>
+    Effect.succeed(
+      Arr.filter(
+        TRIGGERS,
+        (trigger) => environment === undefined || trigger.definition.environment === environment,
+      ),
+    ),
   triggerFireLog: () =>
     Effect.succeed([
       STARTED,
@@ -85,10 +93,10 @@ const render = (scope: string, before?: (registry: AtomRegistry.AtomRegistry) =>
     before?.(registry);
 
     // Kept mounted, so the render reads their answers.
-    registry.mount(triggersAtom);
+    registry.mount(triggersAtom(scope));
     registry.mount(environmentsAtom);
     registry.mount(fireLogAtom("t1"));
-    yield* settled(registry, triggersAtom);
+    yield* settled(registry, triggersAtom(scope));
     yield* settled(registry, environmentsAtom);
     yield* settled(registry, fireLogAtom("t1"));
 
@@ -104,6 +112,34 @@ const render = (scope: string, before?: (registry: AtomRegistry.AtomRegistry) =>
   });
 
 describe("the Triggers section", () => {
+  it("keeps its description while it loads", () => {
+    const registry = registryWith({ ...HANDLERS, listTriggers: () => Effect.never });
+
+    const markup = renderToStaticMarkup(
+      <RegistryContext.Provider value={registry}>
+        <TriggersSection scope="work" />
+      </RegistryContext.Provider>,
+    );
+
+    registry.dispose();
+
+    expect(markup).toContain(">Triggers</h1>");
+    expect(markup).toContain("Each of this environment&#x27;s triggers");
+    expect(markup).toContain("Loading…");
+  });
+
+  it.effect("shows a notice once a trigger was saved but not scheduled", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", (registry) => {
+        registry.set(triggerNoticeAtom("work"), "The trigger is saved, but …");
+      });
+
+      expect(markup).toContain('role="status"');
+      expect(markup).toContain("The trigger is saved, but …");
+      expect(markup).toContain("New trigger");
+    }),
+  );
+
   it.effect("lists every Environment's Triggers at Global, under its name, with their Fires", () =>
     Effect.gen(function* () {
       const markup = yield* render("*");
@@ -112,12 +148,12 @@ describe("the Triggers section", () => {
       expect(markup).toContain('<section aria-label="Home"');
       expect(markup).toContain("Weekly report");
       expect(markup).toContain("0 9 * * 1 · America/Chicago");
-      expect(markup).toContain("Last Fire: ");
+      expect(markup).toContain("Last fire: ");
       expect(markup).toContain("Started a session");
-      expect(markup).toContain("Next Fire: ");
+      expect(markup).toContain("Next fire: ");
       expect(markup).toContain("Paused");
-      expect(markup).toContain("Last Fire: unknown, its object didn&#x27;t answer");
-      expect(markup).toContain("No next Fire");
+      expect(markup).toContain("Last fire: unknown, its object didn&#x27;t answer");
+      expect(markup).toContain("No next fire");
       expect(markup).toContain("Resume");
       expect(markup).toContain("New trigger");
     }),
@@ -152,18 +188,18 @@ describe("the Triggers section", () => {
         const draft = { ...emptyTriggerDraft("work", "America/Chicago"), cron: "0 9 * * 1" };
 
         const markup = yield* render("work", (registry) => {
-          registry.set(triggerFormAtom("work"), { kind: "create" });
+          registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
           registry.set(triggerDraftAtom("work"), draft);
         });
 
         expect(markup).toContain('aria-label="New trigger"');
         expect(
-          markup.match(/<ol aria-label="Next Fires"[^]*?<\/ol>/)?.[0].match(/<li>/g),
+          markup.match(/<ol aria-label="Next fires"[^]*?<\/ol>/)?.[0].match(/<li>/g),
         ).toHaveLength(5);
         expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
 
         const ready = yield* render("work", (registry) => {
-          registry.set(triggerFormAtom("work"), { kind: "create" });
+          registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
           registry.set(triggerDraftAtom("work"), { ...draft, name: "Weekly", message: "Go." });
         });
 

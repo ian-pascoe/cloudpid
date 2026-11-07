@@ -1,10 +1,10 @@
-// The Settings page's Triggers section, as atoms (`docs/architecture/triggers.md` → The owner's UI): every Trigger with
-// its last Fire, asked again while the page is visible (the agent makes and changes Triggers too); the form that makes
-// or edits one; Pause, Resume, Remove and Fire now; and each Trigger's fire log, asked for while it is open. None of the
-// owner's own changes waits for Approval.
+// The Settings page's Triggers section, as atoms (`docs/architecture/triggers.md` → The owner's UI): a Scope's Triggers
+// with their last Fire, asked again while the page is visible (the agent makes and changes Triggers too); the form that
+// makes or edits one; Pause, Resume, Remove and Fire now; and each Trigger's fire log, asked for while it is open. None
+// of the owner's own changes waits for Approval. A new Trigger's id is drawn when its form opens, and a Fire now's key
+// at each press, so a call sent again makes no second one.
 
-import { GLOBAL_SCOPE, type TriggerOverview } from "@cloudpid/protocol";
-import * as Arr from "effect/Array";
+import { GLOBAL_SCOPE, type TriggerDefinition } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -14,35 +14,37 @@ import { appRuntime } from "./runtime.ts";
 import { visibleTickAtom } from "./sessions.ts";
 import { type TriggerDraft, triggerInput, triggerPatch } from "./triggers.ts";
 
-/** Every Trigger, newest first, each with its last Fire. */
-export const triggersAtom = RegistryClient.query(
-  "listTriggers",
-  {},
-  { reactivityKeys: ["triggers"] },
-).pipe(Atom.makeRefreshOnSignal(visibleTickAtom));
+/** A new id for a Trigger or a Fire now, drawn by the page. */
+// @effect-diagnostics-next-line cryptoRandomUUID:off -- an id, not a secret: what makes a call sent again the same.
+export const newTriggerKey = (): string => crypto.randomUUID();
 
-/** Why the Triggers could not load, or null. */
-export const triggersErrorAtom = Atom.map(triggersAtom, failureOf);
-
-/** The Triggers Scope `scope` shows, as of the last answer: every one at Global, else its own; null until the first. */
-export const triggersInAtom = Atom.family((scope: string) =>
-  Atom.map(triggersAtom, (result) =>
-    result.pipe(
-      AsyncResult.value,
-      Option.map((all): ReadonlyArray<TriggerOverview> =>
-        scope === GLOBAL_SCOPE
-          ? all
-          : Arr.filter(all, (trigger) => trigger.definition.environment === scope),
-      ),
-      Option.getOrNull,
-    ),
-  ),
+/**
+ * Scope `scope`'s Triggers, newest first, each with its last Fire: every one at Global, else the Environment's own,
+ * whose objects alone are asked.
+ */
+export const triggersAtom = Atom.family((scope: string) =>
+  RegistryClient.query("listTriggers", scope === GLOBAL_SCOPE ? {} : { environment: scope }, {
+    reactivityKeys: ["triggers"],
+  }).pipe(Atom.makeRefreshOnSignal(visibleTickAtom)),
 );
 
-/** The form open at Scope `scope`: a new Trigger's, or the edit of Trigger `id`; null when it is closed. */
+/** Why Scope `scope`'s Triggers could not load, or null. */
+export const triggersErrorAtom = Atom.family((scope: string) =>
+  Atom.map(triggersAtom(scope), failureOf),
+);
+
+/** Scope `scope`'s Triggers, as of the last answer; null until the first. */
+export const triggersInAtom = Atom.family((scope: string) =>
+  Atom.map(triggersAtom(scope), (result) => result.pipe(AsyncResult.value, Option.getOrNull)),
+);
+
+/**
+ * The form open at Scope `scope`: a new Trigger's, under the id drawn when it opened, or the edit of the Trigger as it
+ * was when the form opened; null when it is closed.
+ */
 export type TriggerForm =
-  | { readonly kind: "create" }
-  | { readonly kind: "edit"; readonly id: string };
+  | { readonly kind: "create"; readonly id: string }
+  | { readonly kind: "edit"; readonly opened: TriggerDefinition };
 
 export const triggerFormAtom = Atom.family((_scope: string) => Atom.make<TriggerForm | null>(null));
 
@@ -51,9 +53,13 @@ export const triggerDraftAtom = Atom.family((_scope: string) =>
   Atom.make<TriggerDraft | null>(null),
 );
 
+/** What Scope `scope`'s section says after its form closed: a Trigger saved but not scheduled yet; null for nothing. */
+export const triggerNoticeAtom = Atom.family((_scope: string) => Atom.make<string | null>(null));
+
 /**
- * Save Scope `scope`'s form: make the Trigger, or change the one it edits by what was edited. Once saved the form
- * closes; a refusal keeps it open with what was typed.
+ * Save Scope `scope`'s form: make the Trigger under the form's id, or change the one it edits by what was edited since
+ * it opened, while it is still at the revision it opened on. Once saved the form closes; one saved but not scheduled
+ * closes too, saying so; a refusal keeps it open with what was typed.
  */
 export const saveTriggerAtom = Atom.family((scope: string) =>
   appRuntime.fn(
@@ -64,24 +70,28 @@ export const saveTriggerAtom = Atom.family((scope: string) =>
 
         if (form === null || draft === null) return;
 
+        get.set(triggerNoticeAtom(scope), null);
+
         if (form.kind === "create") {
           yield* RegistryClient.use((registry) =>
-            registry("createTrigger", { trigger: triggerInput(draft) }),
+            registry("createTrigger", { id: form.id, trigger: triggerInput(draft) }),
+          ).pipe(
+            Effect.catchTag("TriggerUnscheduled", ({ message }) =>
+              Effect.sync(() => {
+                get.set(triggerNoticeAtom(scope), message);
+              }),
+            ),
           );
         } else {
-          const held = Arr.findFirst(
-            get.registry.get(triggersInAtom(scope)) ?? [],
-            (trigger) => trigger.definition.id === form.id,
-          );
+          const { opened } = form;
 
-          if (Option.isSome(held)) {
-            yield* RegistryClient.use((registry) =>
-              registry("updateTrigger", {
-                id: form.id,
-                patch: triggerPatch(held.value.definition, draft),
-              }),
-            );
-          }
+          yield* RegistryClient.use((registry) =>
+            registry("updateTrigger", {
+              id: opened.id,
+              patch: triggerPatch(opened, draft),
+              revision: opened.revision,
+            }),
+          );
         }
 
         get.set(triggerFormAtom(scope), null);
@@ -102,28 +112,35 @@ export const setTriggerPausedAtom = Atom.family((id: string) =>
   ),
 );
 
-/** The Trigger whose Remove dialog is open: null when none is. */
-export const removeTriggerDialogAtom = Atom.make<TriggerOverview | null>(null);
-
-/** Remove a Trigger for good, with its fire log. Once it is removed, its dialog closes. */
-export const removeTriggerAtom = appRuntime.fn(
-  (id: string, get) =>
-    RegistryClient.use((registry) => registry("removeTrigger", { id })).pipe(
-      changing(["triggers"]),
-      Effect.tap(() =>
-        Effect.sync(() => {
-          get.set(removeTriggerDialogAtom, null);
-        }),
-      ),
-    ),
-  { concurrent: true },
+/** The Trigger of Scope `scope` whose Remove dialog is open, by id: null when none is. */
+export const removeTriggerDialogAtom = Atom.family((_scope: string) =>
+  Atom.make<string | null>(null),
 );
 
-/** The owner's Fire now of Trigger `id`: a Fire recorded `manual`, which its fire log shows once it went out. */
+/** Remove a Trigger of Scope `scope` for good, with its fire log. Once it is removed, its dialog closes. */
+export const removeTriggerAtom = Atom.family((scope: string) =>
+  appRuntime.fn(
+    (id: string, get) =>
+      RegistryClient.use((registry) => registry("removeTrigger", { id })).pipe(
+        changing(["triggers"]),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            get.set(removeTriggerDialogAtom(scope), null);
+          }),
+        ),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/**
+ * The owner's Fire now of Trigger `id`, under `key` (drawn at the press): a Fire recorded `manual`, which its fire log
+ * shows once it went out.
+ */
 export const fireTriggerAtom = Atom.family((id: string) =>
   appRuntime.fn(
-    () =>
-      RegistryClient.use((registry) => registry("fireTrigger", { id })).pipe(
+    (key: string) =>
+      RegistryClient.use((registry) => registry("fireTrigger", { id, key })).pipe(
         changing(["triggers", `trigger-fires:${id}`]),
       ),
     { concurrent: true },

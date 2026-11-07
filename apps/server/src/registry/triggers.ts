@@ -150,6 +150,10 @@ const refusalReason = (refusal: SessionRefusal): string => {
   }
 };
 
+/** Why a Trigger made under an id another Trigger has, or had, is refused. */
+const TAKEN_ID =
+  "A trigger was already saved under this id with other values: close the form, and edit the trigger it saved";
+
 /** The fields of a Trigger a change can give it. */
 const CHANGEABLE = [
   "name",
@@ -239,6 +243,10 @@ export const openTriggers = (
   };
 
   return {
+    /**
+     * Keep Trigger `id` made of `input`, at revision 1. Made again under the same id (a retry) with the same input, it
+     * is `unchanged`; with other input, or once removed, it is refused.
+     */
     create: (id: string, input: EnvironmentTriggerInput, now: number): TriggerWrite =>
       storage.transactionSync((): TriggerWrite => {
         if (store.getEnvironment(input.environment) === null) {
@@ -250,27 +258,55 @@ export const openTriggers = (
 
         if (problem !== undefined) return { status: "invalid", problem };
 
+        const made: TriggerRow = {
+          id,
+          revision: 1,
+          kind: input.kind,
+          environment: input.environment,
+          name: input.name.trim(),
+          message: input.message,
+          source: sourceText(input.source),
+          when_busy: input.whenBusy ?? "skip",
+          base: base?.trim() ?? null,
+          model: input.model ?? null,
+          thinking: input.thinking ?? null,
+          paused: input.paused === true ? 1 : 0,
+          created_at: now,
+          updated_at: now,
+          removed_at: null,
+          last_session: null,
+        };
+
+        const [known] = sql.exec<TriggerRow>("SELECT * FROM triggers WHERE id = ?", id).toArray();
+
+        if (known !== undefined) {
+          return known.removed_at === null &&
+            known.kind === made.kind &&
+            known.environment === made.environment &&
+            sameFields(known, made)
+            ? { status: "unchanged", definition: toDefinition(known) }
+            : { status: "invalid", problem: TAKEN_ID };
+        }
+
         sql.exec(
           `INSERT INTO triggers (id, revision, kind, environment, name, message, source, when_busy, base, model, thinking,
              paused, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
-          input.kind,
-          input.environment,
-          input.name.trim(),
-          input.message,
-          sourceText(input.source),
-          input.whenBusy ?? "skip",
-          base?.trim() ?? null,
-          input.model ?? null,
-          input.thinking ?? null,
-          input.paused === true ? 1 : 0,
+          made.kind,
+          made.environment,
+          made.name,
+          made.message,
+          made.source,
+          made.when_busy,
+          made.base,
+          made.model,
+          made.thinking,
+          made.paused,
           now,
           now,
         );
 
-        const made = definition(id);
-
-        return made === null ? { status: "missing" } : { status: "ok", definition: made };
+        return { status: "ok", definition: toDefinition(made) };
       }),
 
     get: definition,

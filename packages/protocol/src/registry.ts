@@ -34,7 +34,9 @@ import {
   MAX_FIRE_LOG,
   TriggerDefinition,
   TriggerOverview,
+  TriggerKey,
   TriggerPatch,
+  TriggerUnscheduled,
 } from "./triggers.ts";
 import {
   DirectorySkill,
@@ -1259,38 +1261,45 @@ export class RegistryRpcs extends RpcGroup.make(
     success: Schema.Array(TriggerOverview),
   }),
   /**
-   * Make an Environment trigger as the owner: no Approval, and no Agent change. Its object is woken to schedule it; one
-   * that never answers fails the call with an `EnvironmentError` saying the Trigger is saved but not yet scheduled.
-   * A Schedule, name or message the Registry refuses, or an Environment that does not exist, fails with its reason.
+   * Make an Environment trigger as the owner, under `id`, which the form draws when it opens: a retry with the same
+   * input answers the Trigger made, and one with other input is refused. No Approval, and no Agent change. Its object is
+   * woken to schedule it; one that never answers fails the call with `TriggerUnscheduled`, the Trigger saved. A
+   * Schedule, name or message the Registry refuses, or an Environment that does not exist, fails with its reason.
    */
   Rpc.make("createTrigger", {
-    payload: { trigger: EnvironmentTriggerInput },
+    payload: { id: TriggerKey, trigger: EnvironmentTriggerInput },
     success: TriggerDefinition,
-    error: EnvironmentError,
+    error: Schema.Union([EnvironmentError, TriggerUnscheduled]),
   }),
-  /** Change a Trigger's fields as the owner (its kind and Environment are fixed); its object reads it again. */
+  /**
+   * Change a Trigger's fields as the owner (its kind and Environment are fixed); its object reads it again. With
+   * `revision`, the one the form opened on, it is refused once the Trigger changed since.
+   */
   Rpc.make("updateTrigger", {
-    payload: { id: Schema.String, patch: TriggerPatch },
+    payload: { id: Schema.String, patch: TriggerPatch, revision: Schema.optionalKey(Schema.Int) },
     success: TriggerDefinition,
     error: EnvironmentError,
   }),
   /**
-   * Pause or resume a Trigger as the owner. A resumed Trigger's object is woken to schedule it, as on `createTrigger`;
-   * it does not catch up on the Fires it missed while paused.
+   * Pause or resume a Trigger as the owner. A resumed Trigger's object is woken to schedule it, as on `createTrigger`
+   * (`TriggerUnscheduled` when it never answers); it does not catch up on the Fires it missed while paused.
    */
   Rpc.make("setTriggerPaused", {
     payload: { id: Schema.String, paused: Schema.Boolean },
     success: TriggerDefinition,
-    error: EnvironmentError,
+    error: Schema.Union([EnvironmentError, TriggerUnscheduled]),
   }),
   /** Remove a Trigger for good, as the owner, with its object and fire log. */
   Rpc.make("removeTrigger", {
     payload: { id: Schema.String },
     error: EnvironmentError,
   }),
-  /** Fire a Trigger now (the owner's Fire now, recorded `manual`); a paused or removed Trigger is refused. */
+  /**
+   * Fire a Trigger now (the owner's Fire now, recorded `manual`), one Fire per `key`, which the page draws for each
+   * press; a paused or removed Trigger is refused.
+   */
   Rpc.make("fireTrigger", {
-    payload: { id: Schema.String },
+    payload: { id: Schema.String, key: TriggerKey },
     success: FireNowQueued,
     error: EnvironmentError,
   }),

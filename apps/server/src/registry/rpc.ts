@@ -15,6 +15,7 @@ import {
   fieldSkill,
   armsTrigger,
   type TriggerDefinition,
+  TriggerUnscheduled,
   fieldTrigger,
   MAX_ENVIRONMENT_SECRETS,
   type McpAppCopy,
@@ -66,7 +67,17 @@ import type { SkillDirectory } from "./skill-directory.ts";
 import { skillOwnersOver } from "./skill-owner.ts";
 import { joinRepoSkills, joinSkillView, repoSearchQuery, type SkillRepos } from "./skill-repo.ts";
 import type { SkillSearcher } from "./skill-search.ts";
-import { noEnvironment, noRepo, nameTaken, noTrigger, repoTaken } from "./messages.ts";
+import {
+  nameTaken,
+  noEnvironment,
+  noRepo,
+  repoTaken,
+  triggerChangedSince,
+  triggerPaused,
+  triggerRemoved,
+  triggerUnreachable,
+  triggerUnscheduled,
+} from "./messages.ts";
 import type { McpPushes } from "../mcp/push.ts";
 import type { McpSignInManage } from "../mcp/sign-in-manage.ts";
 import type { McpStatus } from "../mcp/status.ts";
@@ -424,15 +435,26 @@ export const serveRegistryRpc = <R = never>(
       triggers
         .wake(id)
         .pipe(
-          Effect.mapError(() =>
-            failed(
-              `${done}, but Trigger ${id}'s object didn't answer, so it isn't scheduled yet: pause and resume it to schedule it.`,
-            ),
-          ),
+          Effect.mapError(() => TriggerUnscheduled.make({ message: triggerUnscheduled(done) })),
         );
 
-    /** The definition an owner's write of Trigger `id` left, or why it made none. */
-    const written = (write: TriggerWrite, id: string) => {
+    /** The definition an owner's change of Trigger `id` left, or why it made none. */
+    const changedTrigger = (write: TriggerWrite) => {
+      switch (write.status) {
+        case "ok":
+        case "unchanged":
+          return Effect.succeed(write.definition);
+        case "changed-since":
+          return Effect.fail(failed(triggerChangedSince));
+        case "invalid":
+          return Effect.fail(failed(write.problem));
+        case "missing":
+          return Effect.fail(failed(triggerRemoved));
+      }
+    };
+
+    /** The Trigger the owner's create made (or made before, under its id), or why it made none. */
+    const madeTrigger = (write: TriggerWrite, environment: string) => {
       switch (write.status) {
         case "ok":
         case "unchanged":
@@ -441,7 +463,7 @@ export const serveRegistryRpc = <R = never>(
         case "invalid":
           return Effect.fail(failed(write.problem));
         case "missing":
-          return Effect.fail(failed(noTrigger(id)));
+          return Effect.fail(failed(noEnvironment(environment)));
       }
     };
 
@@ -935,7 +957,11 @@ export const serveRegistryRpc = <R = never>(
 
                 if (trigger !== null) {
                   return armsTrigger(revert.change.before, revert.change.after)
-                    ? scheduling(trigger, "The change is reverted").pipe(Effect.as(revert.change))
+                    ? scheduling(trigger, "The change is reverted").pipe(
+                        // The revert's own error: it stays made.
+                        Effect.mapError(({ message }) => failed(message)),
+                        Effect.as(revert.change),
+                      )
                     : background(triggers.sync(trigger)).pipe(Effect.as(revert.change));
                 }
 
@@ -999,53 +1025,43 @@ export const serveRegistryRpc = <R = never>(
             ),
           ),
         ),
-      createTrigger: ({ trigger }) =>
-        registry.createTrigger({ trigger }).pipe(
-          Effect.flatMap((write) =>
-            write.status === "missing"
-              ? Effect.fail(failed(noEnvironment(trigger.environment)))
-              : written(write, ""),
-          ),
-          Effect.flatMap((definition) =>
-            afterWrite(definition, `Trigger "${definition.name}" is saved`),
-          ),
+      createTrigger: ({ id, trigger }) =>
+        registry.createTrigger({ id, trigger }).pipe(
+          Effect.flatMap((write) => madeTrigger(write, trigger.environment)),
+          Effect.flatMap((definition) => afterWrite(definition, "The trigger is saved")),
         ),
-      updateTrigger: ({ id, patch }) =>
-        registry.updateTrigger({ id, patch }).pipe(
-          Effect.flatMap((write) => written(write, id)),
+      updateTrigger: ({ id, patch, revision }) =>
+        registry.updateTrigger({ id, patch, revision }).pipe(
+          Effect.flatMap(changedTrigger),
           // A change keeps an active Trigger's alarm, which heals from what the object reads.
           Effect.tap(() => background(triggers.sync(id))),
         ),
       setTriggerPaused: ({ id, paused }) =>
         registry.setTriggerPaused({ id, paused }).pipe(
-          Effect.flatMap((write) => written(write, id)),
-          Effect.flatMap((definition) =>
-            afterWrite(definition, `Trigger "${definition.name}" is resumed`),
-          ),
+          Effect.flatMap(changedTrigger),
+          Effect.flatMap((definition) => afterWrite(definition, "The trigger is resumed")),
         ),
       removeTrigger: ({ id }) =>
         registry.removeTrigger({ id }).pipe(
-          Effect.filterOrFail(Predicate.isTruthy, () => failed(noTrigger(id))),
+          Effect.filterOrFail(Predicate.isTruthy, () => failed(triggerRemoved)),
           Effect.andThen(triggers.remove(id)),
         ),
-      fireTrigger: ({ id }) =>
-        triggers.fireNow(id).pipe(
-          Effect.mapError(() => failed(`Trigger ${id}'s object didn't answer: try again`)),
+      fireTrigger: ({ id, key }) =>
+        triggers.fireNow(id, key).pipe(
+          Effect.mapError(() => failed(triggerUnreachable)),
           Effect.flatMap((answer) => {
             switch (answer.status) {
               case "queued":
                 return Effect.succeed({ key: answer.key });
               case "paused":
-                return Effect.fail(failed("The Trigger is paused: resume it to fire it"));
+                return Effect.fail(failed(triggerPaused));
               case "removed":
-                return Effect.fail(failed(noTrigger(id)));
+                return Effect.fail(failed(triggerRemoved));
             }
           }),
         ),
       triggerFireLog: ({ id, limit }) =>
-        triggers
-          .fireLog(id, limit)
-          .pipe(Effect.mapError(() => failed(`Trigger ${id}'s object didn't answer: try again`))),
+        triggers.fireLog(id, limit).pipe(Effect.mapError(() => failed(triggerUnreachable))),
       dismissAgentChange: ({ environment, change }) =>
         registry.dismissAgentChange({ environment, change }).pipe(
           Effect.filterOrFail(Predicate.isTruthy, () =>

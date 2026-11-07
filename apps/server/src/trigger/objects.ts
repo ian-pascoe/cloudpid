@@ -25,8 +25,8 @@ export type TriggerObjects = {
   readonly sync: (id: string) => Effect.Effect<void>;
   /** Wipe Trigger `id`'s object: its alarm and its storage. Never fails. */
   readonly remove: (id: string) => Effect.Effect<void>;
-  /** The owner's Fire now of Trigger `id`: a Fire recorded `manual`, or why there is none. */
-  readonly fireNow: (id: string) => Effect.Effect<FireNowAnswer, TriggerUnreachable>;
+  /** The owner's Fire now of Trigger `id`, one Fire per `key`: a Fire recorded `manual`, or why there is none. */
+  readonly fireNow: (id: string, key: string) => Effect.Effect<FireNowAnswer, TriggerUnreachable>;
   /** Trigger `id`'s fire log, newest first: at most `limit` Fires. */
   readonly fireLog: (
     id: string,
@@ -76,7 +76,7 @@ export const triggerObjects = (
           Effect.logWarning("A Trigger's object could not be wiped", cause),
         ),
       ),
-    fireNow: (id) => reach(id, (stub) => stub.fireNow()),
+    fireNow: (id, key) => reach(id, (stub) => stub.fireNow({ key })),
     fireLog: (id, limit) => reach(id, (stub) => stub.fireLog(limit === undefined ? {} : { limit })),
     state: (id) => reach(id, (stub) => stub.state()),
   };

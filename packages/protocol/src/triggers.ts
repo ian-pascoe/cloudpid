@@ -113,11 +113,11 @@ export const EnvironmentTriggerInput = Schema.Struct({
   message: Schema.String,
   source: ScheduleSource,
   /** `skip` when absent, a Schedule's default (`triggers.md` → Overlap). */
-  whenBusy: Schema.optional(TriggerWhenBusy),
-  base: Schema.optional(Schema.String),
-  model: Schema.optional(Schema.String),
-  thinking: Schema.optional(ThinkingLevel),
-  paused: Schema.optional(Schema.Boolean),
+  whenBusy: TriggerWhenBusy.pipe(Schema.optional),
+  base: Schema.String.pipe(Schema.optional),
+  model: Schema.String.pipe(Schema.optional),
+  thinking: ThinkingLevel.pipe(Schema.optional),
+  paused: Schema.Boolean.pipe(Schema.optional),
 });
 
 export type EnvironmentTriggerInput = typeof EnvironmentTriggerInput.Type;
@@ -127,16 +127,30 @@ export type EnvironmentTriggerInput = typeof EnvironmentTriggerInput.Type;
  * Trigger's kind and Environment are fixed at creation, so no change names them.
  */
 export const TriggerPatch = Schema.Struct({
-  name: Schema.optional(Schema.String),
-  message: Schema.optional(Schema.String),
-  source: Schema.optional(ScheduleSource),
-  whenBusy: Schema.optional(TriggerWhenBusy),
+  name: Schema.String.pipe(Schema.optional),
+  message: Schema.String.pipe(Schema.optional),
+  source: ScheduleSource.pipe(Schema.optional),
+  whenBusy: TriggerWhenBusy.pipe(Schema.optional),
   base: Schema.NullOr(Schema.String).pipe(Schema.optional),
   model: Schema.NullOr(Schema.String).pipe(Schema.optional),
   thinking: Schema.NullOr(ThinkingLevel).pipe(Schema.optional),
 });
 
 export type TriggerPatch = typeof TriggerPatch.Type;
+
+/** An id or key a client draws for a Trigger or a Fire now (a UUID, say): what makes its retry one call. */
+export const TriggerKey = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9-]{1,64}$/));
+
+/**
+ * The owner's Trigger was saved (made, resumed), but its object never answered, so it isn't scheduled yet: pausing and
+ * resuming it tries again.
+ */
+export class TriggerUnscheduled extends Schema.TaggedError<
+  TriggerUnscheduled,
+  { readonly brand: unique symbol }
+>()("TriggerUnscheduled", {
+  message: Schema.String,
+}) {}
 
 const TRIGGER_FIELD = "triggers.";
 

@@ -63,6 +63,39 @@ describe("a Trigger's definition", () => {
     expect(await registry.listTriggers()).toEqual([]);
   });
 
+  it("makes one Trigger of a create retried under its id, and refuses the id with other values", async () => {
+    const registry = fresh();
+
+    expect(await registry.createTrigger("t1", weekly, 1_000)).toMatchObject({ status: "ok" });
+    expect(
+      await registry.createTrigger("t1", { ...weekly, name: " Weekly report " }, 2_000),
+    ).toMatchObject({
+      status: "unchanged",
+      definition: { id: "t1", revision: 1, createdAt: 1_000 },
+    });
+    expect(
+      await registry.createTrigger("t1", { ...weekly, message: "Other words" }, 2_000),
+    ).toMatchObject({
+      status: "invalid",
+    });
+    expect(await registry.listTriggers()).toHaveLength(1);
+  });
+
+  it("changes a Trigger only while it is at the revision its editor opened", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", weekly, 1_000);
+
+    expect(await registry.updateTrigger("t1", { message: "Mine" }, 2_000, 1)).toMatchObject({
+      status: "ok",
+      definition: { revision: 2, message: "Mine" },
+    });
+    expect(await registry.updateTrigger("t1", { name: "Stale" }, 3_000, 1)).toMatchObject({
+      status: "changed-since",
+      definition: { revision: 2, name: "Weekly report" },
+    });
+  });
+
   it("rises a revision with each change, and keeps its kind and Environment", async () => {
     const registry = fresh();
 

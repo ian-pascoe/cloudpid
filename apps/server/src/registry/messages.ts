@@ -12,9 +12,21 @@ export const reason = (cause: Cause.Cause<unknown>): string => {
 /** That no Environment is registered under `id`. */
 export const noEnvironment = (id: string): string => `Environment "${id}" does not exist`;
 
-/** That no Trigger has the id: never made, or removed. */
-export const noTrigger = (id: string): string =>
-  `There is no Trigger ${id}: it may have been removed`;
+/** That the Trigger asked for is gone: never made, or removed. */
+export const triggerRemoved = "This trigger was removed";
+
+/** That a Trigger's object didn't answer a read or a Fire now, which may be asked again. */
+export const triggerUnreachable = "The trigger's object didn't answer: try again";
+
+/** That Fire now was asked of a paused Trigger. */
+export const triggerPaused = "The trigger is paused: resume it to fire it";
+
+/** That the Trigger an edit was opened on has changed since. */
+export const triggerChangedSince = "The trigger changed since you opened it: reopen the form";
+
+/** That what `done` saved left a Trigger whose object never answered, so nothing schedules it yet. */
+export const triggerUnscheduled = (done: string): string =>
+  `${done}, but the trigger's object didn't answer, so it isn't scheduled yet: pause and resume it to schedule it.`;
 
 /** That another Environment has the name, whatever the case. */
 export const nameTaken = (name: string): string => `Another environment is already named "${name}"`;

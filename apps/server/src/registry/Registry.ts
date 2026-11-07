@@ -1028,16 +1028,22 @@ export type RegistryMethods = {
     readonly event: PushEvent;
   }) => Effect.Effect<void>;
   /**
-   * Keep a new Trigger (`docs/architecture/triggers.md`, ADR-0047) under a fresh UUIDv7, at revision 1, or say why not.
-   * The caller wakes its object (`Trigger.sync`): the Registry never calls out.
+   * Keep a new Trigger (`docs/architecture/triggers.md`, ADR-0047) at revision 1 under `id` (the owner's form draws it,
+   * so a retry makes no second one: `unchanged` with the same input, refused with other input), or under a fresh
+   * UUIDv7 without one; or say why not. The caller wakes its object (`Trigger.sync`): the Registry never calls out.
    */
   readonly createTrigger: (input: {
+    readonly id?: string | undefined;
     readonly trigger: EnvironmentTriggerInput;
   }) => Effect.Effect<TriggerWrite>;
-  /** Change a Trigger's fields at its next revision; its kind and Environment never change. The caller wakes its object. */
+  /**
+   * Change a Trigger's fields at its next revision; its kind and Environment never change. With `revision`, only while
+   * the Trigger is still at it (`changed-since` otherwise). The caller wakes its object.
+   */
   readonly updateTrigger: (input: {
     readonly id: string;
     readonly patch: TriggerPatch;
+    readonly revision?: number | undefined;
   }) => Effect.Effect<TriggerWrite>;
   /** Pause or resume a Trigger, at its next revision. The caller wakes its object. */
   readonly setTriggerPaused: (input: {
@@ -2149,14 +2155,23 @@ export const RegistryLive = Registry.make(
           unsubscribePush: ({ endpoint }) =>
             Effect.sync(() => store.deletePushSubscription(endpoint)),
           notify: ({ sessionId, event }) => notify(sessionId, event),
-          createTrigger: ({ trigger }) =>
+          createTrigger: ({ id, trigger }) =>
             Effect.gen(function* () {
-              const id = yield* newTriggerId;
+              const made = id ?? (yield* newTriggerId);
 
-              return triggers.create(id, trigger, yield* Clock.currentTimeMillis);
+              return triggers.create(made, trigger, yield* Clock.currentTimeMillis);
             }),
-          updateTrigger: ({ id, patch }) =>
-            Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.update(id, patch, now))),
+          updateTrigger: ({ id, patch, revision }) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) =>
+                triggers.update(
+                  id,
+                  patch,
+                  now,
+                  revision === undefined ? undefined : (current) => current.revision === revision,
+                ),
+              ),
+            ),
           setTriggerPaused: ({ id, paused }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.setPaused(id, paused, now))),
           removeTrigger: ({ id }) => Effect.sync(() => triggers.remove(id)),

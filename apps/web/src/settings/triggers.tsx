@@ -32,12 +32,14 @@ import {
   fireLogAtom,
   fireLogOpenAtom,
   fireTriggerAtom,
+  newTriggerKey,
   removeTriggerAtom,
   removeTriggerDialogAtom,
   saveTriggerAtom,
   setTriggerPausedAtom,
   triggerDraftAtom,
   triggerFormAtom,
+  triggerNoticeAtom,
   triggersErrorAtom,
   triggersInAtom,
 } from "../triggers-state.ts";
@@ -66,7 +68,7 @@ const FireLog = ({ id, zone }: { id: string; zone: string }) => {
 
   if (fires === null) return <Pending problem={failureOf(log)} />;
 
-  if (fires.length === 0) return <p className="text-xs text-muted-foreground">No Fires yet.</p>;
+  if (fires.length === 0) return <p className="text-xs text-muted-foreground">No fires yet.</p>;
 
   return (
     <ol aria-label="Fire log" className="flex flex-col gap-1 text-xs">
@@ -91,11 +93,11 @@ const FireLog = ({ id, zone }: { id: string; zone: string }) => {
 
 /** What a row says of a Trigger's last Fire. */
 const lastFireWords = (overview: TriggerOverview, zone: string): string => {
-  if (!overview.reached) return "Last Fire: unknown, its object didn't answer";
+  if (!overview.reached) return "Last fire: unknown, its object didn't answer";
 
   return overview.lastFire === null
-    ? "No Fires yet"
-    : `Last Fire: ${fireTimeWords(overview.lastFire.at, zone)} · ${outcomeWords(overview.lastFire.outcome)}`;
+    ? "No fires yet"
+    : `Last fire: ${fireTimeWords(overview.lastFire.at, zone)} · ${outcomeWords(overview.lastFire.outcome)}`;
 };
 
 /** A Trigger: its name, Schedule and Fires, and its actions. */
@@ -108,8 +110,8 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
   const [logOpen, setLogOpen] = useAtom(fireLogOpenAtom(definition.id));
   const setForm = useAtomSet(triggerFormAtom(scope));
   const setDraft = useAtomSet(triggerDraftAtom(scope));
-  const setRemoving = useAtomSet(removeTriggerDialogAtom);
-  const forgetRemove = useAtomSet(removeTriggerAtom);
+  const setRemoving = useAtomSet(removeTriggerDialogAtom(scope));
+  const forgetRemove = useAtomSet(removeTriggerAtom(scope));
 
   return (
     <li className="flex flex-col gap-2 py-3">
@@ -128,7 +130,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
           </span>
           <span className="text-xs text-muted-foreground">{lastFireWords(overview, zone)}</span>
           <span className="text-xs text-muted-foreground">
-            {next === null ? "No next Fire" : `Next Fire: ${fireTimeWords(next, zone)}`}
+            {next === null ? "No next fire" : `Next fire: ${fireTimeWords(next, zone)}`}
           </span>
         </span>
         <span className="flex shrink-0 flex-wrap items-center gap-1">
@@ -138,7 +140,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             variant="outline"
             disabled={definition.paused || fired.waiting}
             onClick={() => {
-              fire();
+              fire(newTriggerKey());
             }}
           >
             <Zap />
@@ -150,7 +152,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             variant="ghost"
             onClick={() => {
               setDraft(triggerDraftOf(definition));
-              setForm({ kind: "edit", id: definition.id });
+              setForm({ kind: "edit", opened: definition });
             }}
           >
             <Pencil />
@@ -176,7 +178,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             title={`Remove ${definition.name}`}
             onClick={() => {
               forgetRemove(Atom.Reset);
-              setRemoving(overview);
+              setRemoving(definition.id);
             }}
           >
             <Trash2 />
@@ -185,7 +187,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
       </div>
       {AsyncResult.isSuccess(fired) && !fired.waiting && (
         <p className="text-xs text-muted-foreground">
-          Fired: its Fire shows in the log once it went out.
+          Fired: the fire shows in its log once it went out.
         </p>
       )}
       <DialogProblem problem={settledFailureOf(paused)} />
@@ -198,7 +200,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
           setLogOpen(!logOpen);
         }}
       >
-        {logOpen ? "Hide the fire log" : "Show the fire log"}
+        {logOpen ? "Hide fire log" : "Show fire log"}
       </button>
       {logOpen && <FireLog id={definition.id} zone={zone} />}
     </li>
@@ -209,14 +211,12 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
 const TriggerList = ({
   scope,
   triggers,
-  none,
 }: {
   scope: string;
   triggers: ReadonlyArray<TriggerOverview>;
-  none: string;
 }) =>
   triggers.length === 0 ? (
-    <p className="text-sm text-muted-foreground">{none}</p>
+    <p className="text-sm text-muted-foreground">No triggers yet.</p>
   ) : (
     <ul className="flex flex-col divide-y">
       {triggers.map((overview) => (
@@ -298,7 +298,7 @@ const TriggerFormView = ({
       <Field
         label="Message"
         htmlFor={id("message")}
-        hint="What each Fire sends a new session, under a header with the Trigger's name and the time."
+        hint="What each fire sends a new session, under a header with the trigger's name and the time."
         problem={draft.message === "" ? null : problems.message}
       >
         <textarea
@@ -348,8 +348,8 @@ const TriggerFormView = ({
       </div>
       {preview.length > 0 && (
         <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">Next Fires</span>
-          <ol aria-label="Next Fires" className={`${CODE_AREA} flex flex-col gap-0.5 text-xs`}>
+          <span className="font-medium text-foreground">Next fires</span>
+          <ol aria-label="Next fires" className={`${CODE_AREA} flex flex-col gap-0.5 text-xs`}>
             {preview.map((at) => (
               <li key={at}>{fireTimeWords(at, draft.zone.trim())}</li>
             ))}
@@ -358,7 +358,7 @@ const TriggerFormView = ({
       )}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field
-          label="When the last Fire's session is busy"
+          label="When the last fire's session is busy"
           htmlFor={id("when-busy")}
           hint="Busy: still running, or waiting for you."
         >
@@ -370,7 +370,7 @@ const TriggerFormView = ({
               change({ whenBusy: event.target.value === "start" ? "start" : "skip" });
             }}
           >
-            <option value="skip">Skip this Fire</option>
+            <option value="skip">Skip this fire</option>
             <option value="start">Start another session</option>
           </NativeSelect>
         </Field>
@@ -447,10 +447,10 @@ const TriggerFormView = ({
   );
 };
 
-/** Confirm removing a Trigger, saying what goes with it. */
-const RemoveTriggerDialog = ({ overview }: { overview: TriggerOverview }) => {
-  const [removed, remove] = useAtom(removeTriggerAtom);
-  const setRemoving = useAtomSet(removeTriggerDialogAtom);
+/** Confirm removing a Trigger of Scope `scope`, saying what goes with it. */
+const RemoveTriggerDialog = ({ scope, id }: { scope: string; id: string }) => {
+  const [removed, remove] = useAtom(removeTriggerAtom(scope));
+  const setRemoving = useAtomSet(removeTriggerDialogAtom(scope));
   const busy = removed.waiting;
 
   const submit = (event: FormEvent) => {
@@ -458,7 +458,7 @@ const RemoveTriggerDialog = ({ overview }: { overview: TriggerOverview }) => {
 
     if (busy) return;
 
-    remove(overview.definition.id);
+    remove(id);
   };
 
   return (
@@ -486,65 +486,85 @@ const RemoveTriggerDialog = ({ overview }: { overview: TriggerOverview }) => {
   );
 };
 
+/** What the section says it is for, at Scope `scope`. */
+const description = (scope: string): string =>
+  scope === GLOBAL_SCOPE
+    ? "Each trigger starts a new session in a new workspace of its environment when its schedule comes due. Your changes here apply at once; the agent's wait for your approval."
+    : "Each of this environment's triggers starts a new session in a new workspace of it when its schedule comes due. Your changes here apply at once; the agent's wait for your approval.";
+
+/** The Triggers, under each Environment's name at Global, or the Environment's own. */
+const TriggerLists = ({
+  scope,
+  triggers,
+  environments,
+}: {
+  scope: string;
+  triggers: ReadonlyArray<TriggerOverview>;
+  environments: ReadonlyArray<EnvironmentRecord>;
+}) =>
+  scope === GLOBAL_SCOPE ? (
+    environments.map((environment) => (
+      <Group key={environment.id} title={environment.name}>
+        <TriggerList
+          scope={scope}
+          triggers={triggers.filter((trigger) => trigger.definition.environment === environment.id)}
+        />
+        <InAppLink
+          href={settingsPath(environment.id, "triggers")}
+          className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+        >
+          {environment.name}'s settings
+        </InAppLink>
+      </Group>
+    ))
+  ) : (
+    <Group>
+      <TriggerList scope={scope} triggers={triggers} />
+    </Group>
+  );
+
 /** The Triggers section at Scope `scope`. */
 export const TriggersSection = ({ scope }: { scope: string }) => {
   const triggers = useAtomValue(triggersInAtom(scope));
-  const loadError = useAtomValue(triggersErrorAtom);
+  const loadError = useAtomValue(triggersErrorAtom(scope));
   const environments = useAtomValue(environmentsInOrderAtom);
   const environmentsError = useAtomValue(environmentsErrorAtom);
   const [form, setForm] = useAtom(triggerFormAtom(scope));
   const [draft, setDraft] = useAtom(triggerDraftAtom(scope));
-  const [removing, setRemoving] = useAtom(removeTriggerDialogAtom);
-  const removed = useAtomValue(removeTriggerAtom);
+  const [notice, setNotice] = useAtom(triggerNoticeAtom(scope));
+  const [removing, setRemoving] = useAtom(removeTriggerDialogAtom(scope));
+  const removed = useAtomValue(removeTriggerAtom(scope));
   const atGlobal = scope === GLOBAL_SCOPE;
 
   if (triggers === null || environments === null) {
     return (
-      <SettingsSection title="Triggers" description="">
-        <Pending problem={loadError ?? environmentsError} />
+      <SettingsSection title="Triggers" description={description(scope)}>
+        <Group>
+          <Pending problem={loadError ?? environmentsError} />
+        </Group>
       </SettingsSection>
     );
   }
 
+  // Looked up in the list as it is now: a Trigger removed meanwhile closes its dialog.
+  const removingTrigger = triggers.find((trigger) => trigger.definition.id === removing);
+
   const create = () => {
+    setNotice(null);
     setDraft(emptyTriggerDraft(atGlobal ? (environments[0]?.id ?? "") : scope, browserZone()));
-    setForm({ kind: "create" });
+    setForm({ kind: "create", id: newTriggerKey() });
   };
 
   return (
-    <SettingsSection
-      title="Triggers"
-      description={
-        atGlobal
-          ? "Each Trigger starts a new session in a new workspace of its environment when its Schedule comes due. Your changes here apply at once; the agent's wait for your approval."
-          : "Each of this environment's Triggers starts a new session in a new workspace of it when its Schedule comes due. Your changes here apply at once; the agent's wait for your approval."
-      }
-    >
+    <SettingsSection title="Triggers" description={description(scope)}>
       <DialogProblem problem={loadError} />
-      {atGlobal ? (
-        environments.map((environment) => (
-          <Group key={environment.id} title={environment.name}>
-            <TriggerList
-              scope={scope}
-              triggers={triggers.filter(
-                (trigger) => trigger.definition.environment === environment.id,
-              )}
-              none="No triggers."
-            />
-            <InAppLink
-              href={settingsPath(environment.id, "triggers")}
-              className="self-start text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
-            >
-              {environment.name}'s settings
-            </InAppLink>
-          </Group>
-        ))
-      ) : (
-        <Group>
-          <TriggerList scope={scope} triggers={triggers} none="No triggers for this environment." />
-        </Group>
-      )}
+      <TriggerLists scope={scope} triggers={triggers} environments={environments} />
       <Group>
+        {notice !== null && (
+          <p role="status" className="text-sm text-muted-foreground">
+            {notice}
+          </p>
+        )}
         {form !== null && draft !== null ? (
           <TriggerFormView
             scope={scope}
@@ -560,14 +580,16 @@ export const TriggersSection = ({ scope }: { scope: string }) => {
         )}
       </Group>
       <Dialog
-        open={removing !== null}
+        open={removingTrigger !== undefined}
         onClose={() => {
           setRemoving(null);
         }}
         dismissible={!removed.waiting}
-        title={`Remove ${removing?.definition.name ?? ""}?`}
+        title={`Remove ${removingTrigger?.definition.name ?? ""}?`}
       >
-        {removing !== null && <RemoveTriggerDialog overview={removing} />}
+        {removingTrigger !== undefined && (
+          <RemoveTriggerDialog scope={scope} id={removingTrigger.definition.id} />
+        )}
       </Dialog>
     </SettingsSection>
   );

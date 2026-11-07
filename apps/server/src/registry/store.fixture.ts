@@ -275,8 +275,13 @@ export class TestRegistry extends DurableObject {
     return this.#triggers.list(environment);
   }
 
-  updateTrigger(id: string, patch: TriggerPatch, now: number): TriggerWrite {
-    return this.#triggers.update(id, patch, now);
+  updateTrigger(id: string, patch: TriggerPatch, now: number, revision?: number): TriggerWrite {
+    return this.#triggers.update(
+      id,
+      patch,
+      now,
+      revision === undefined ? undefined : (current) => current.revision === revision,
+    );
   }
 
   setTriggerPaused(id: string, paused: boolean, now: number): TriggerWrite {
