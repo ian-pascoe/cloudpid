@@ -12,6 +12,10 @@ export const reason = (cause: Cause.Cause<unknown>): string => {
 /** That no Environment is registered under `id`. */
 export const noEnvironment = (id: string): string => `Environment "${id}" does not exist`;
 
+/** That no Trigger has the id: never made, or removed. */
+export const noTrigger = (id: string): string =>
+  `There is no Trigger ${id}: it may have been removed`;
+
 /** That another Environment has the name, whatever the case. */
 export const nameTaken = (name: string): string => `Another environment is already named "${name}"`;
 

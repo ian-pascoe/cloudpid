@@ -4,11 +4,12 @@
 // see a Trigger with no alarm scheduled (one made, brought back or resumed), tries again and then fails; `sync` and
 // `remove` log a failure and leave it to the object, which reads its definition again at its next alarm.
 import * as Cloudflare from "@alchemy.run/cloudflare";
+import type { FireRecord } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
 import { TRIGGER_CLASS, triggerObjectName } from "./name.ts";
-import { TriggerUnreachable } from "./object.ts";
+import { type FireNowAnswer, type TriggerState, TriggerUnreachable } from "./object.ts";
 import type { Trigger } from "./Trigger.ts";
 
 /** The `Trigger` namespace, as far as its callers use it. */
@@ -24,6 +25,15 @@ export type TriggerObjects = {
   readonly sync: (id: string) => Effect.Effect<void>;
   /** Wipe Trigger `id`'s object: its alarm and its storage. Never fails. */
   readonly remove: (id: string) => Effect.Effect<void>;
+  /** The owner's Fire now of Trigger `id`: a Fire recorded `manual`, or why there is none. */
+  readonly fireNow: (id: string) => Effect.Effect<FireNowAnswer, TriggerUnreachable>;
+  /** Trigger `id`'s fire log, newest first: at most `limit` Fires. */
+  readonly fireLog: (
+    id: string,
+    limit?: number,
+  ) => Effect.Effect<ReadonlyArray<FireRecord>, TriggerUnreachable>;
+  /** What Trigger `id`'s object says of itself. */
+  readonly state: (id: string) => Effect.Effect<TriggerState, TriggerUnreachable>;
 };
 
 /** How many more times `wake` tries an object that doesn't answer. */
@@ -38,9 +48,9 @@ export const triggerObjects = (
   triggers: TriggerNamespace,
   wakeSchedule: Schedule.Schedule<unknown, unknown> = Schedule.exponential("200 millis"),
 ): TriggerObjects => {
-  const once = (id: string) =>
-    Effect.suspend(() => triggers.getByName(triggerObjectName(id)).sync()).pipe(
-      Effect.asVoid,
+  /** Call Trigger `id`'s object, any failure its `TriggerUnreachable`. */
+  const reach = <A, E>(id: string, call: (stub: TriggerStub) => Effect.Effect<A, E>) =>
+    Effect.suspend(() => call(triggers.getByName(triggerObjectName(id)))).pipe(
       Effect.catchCause((cause) =>
         Effect.fail(
           TriggerUnreachable.make({
@@ -49,6 +59,8 @@ export const triggerObjects = (
         ),
       ),
     );
+
+  const once = (id: string) => reach(id, (stub) => stub.sync()).pipe(Effect.asVoid);
 
   return {
     wake: (id) => once(id).pipe(Effect.retry({ schedule: wakeSchedule, times: WAKE_RETRIES })),
@@ -64,6 +76,9 @@ export const triggerObjects = (
           Effect.logWarning("A Trigger's object could not be wiped", cause),
         ),
       ),
+    fireNow: (id) => reach(id, (stub) => stub.fireNow()),
+    fireLog: (id, limit) => reach(id, (stub) => stub.fireLog(limit === undefined ? {} : { limit })),
+    state: (id) => reach(id, (stub) => stub.state()),
   };
 };
 

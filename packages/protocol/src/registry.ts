@@ -28,6 +28,15 @@ import { McpReconnectView, McpServerLogView, McpServersView } from "./mcp-status
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
 import {
+  EnvironmentTriggerInput,
+  FireNowQueued,
+  FireRecord,
+  MAX_FIRE_LOG,
+  TriggerDefinition,
+  TriggerOverview,
+  TriggerPatch,
+} from "./triggers.ts";
+import {
   DirectorySkill,
   EnvironmentSkill,
   SkillChangeFiles,
@@ -1240,6 +1249,61 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("getPush", {
     payload: { endpoint: Schema.optionalKey(Schema.String) },
     success: PushState,
+  }),
+  /**
+   * The Triggers (`docs/architecture/triggers.md` → The owner's UI), every Environment's or `environment`'s, newest
+   * first, each with its last Fire.
+   */
+  Rpc.make("listTriggers", {
+    payload: { environment: Schema.optionalKey(Schema.String) },
+    success: Schema.Array(TriggerOverview),
+  }),
+  /**
+   * Make an Environment trigger as the owner: no Approval, and no Agent change. Its object is woken to schedule it; one
+   * that never answers fails the call with an `EnvironmentError` saying the Trigger is saved but not yet scheduled.
+   * A Schedule, name or message the Registry refuses, or an Environment that does not exist, fails with its reason.
+   */
+  Rpc.make("createTrigger", {
+    payload: { trigger: EnvironmentTriggerInput },
+    success: TriggerDefinition,
+    error: EnvironmentError,
+  }),
+  /** Change a Trigger's fields as the owner (its kind and Environment are fixed); its object reads it again. */
+  Rpc.make("updateTrigger", {
+    payload: { id: Schema.String, patch: TriggerPatch },
+    success: TriggerDefinition,
+    error: EnvironmentError,
+  }),
+  /**
+   * Pause or resume a Trigger as the owner. A resumed Trigger's object is woken to schedule it, as on `createTrigger`;
+   * it does not catch up on the Fires it missed while paused.
+   */
+  Rpc.make("setTriggerPaused", {
+    payload: { id: Schema.String, paused: Schema.Boolean },
+    success: TriggerDefinition,
+    error: EnvironmentError,
+  }),
+  /** Remove a Trigger for good, as the owner, with its object and fire log. */
+  Rpc.make("removeTrigger", {
+    payload: { id: Schema.String },
+    error: EnvironmentError,
+  }),
+  /** Fire a Trigger now (the owner's Fire now, recorded `manual`); a paused or removed Trigger is refused. */
+  Rpc.make("fireTrigger", {
+    payload: { id: Schema.String },
+    success: FireNowQueued,
+    error: EnvironmentError,
+  }),
+  /** A Trigger's fire log, newest first: at most `limit` Fires (by default all it keeps, `MAX_FIRE_LOG`). */
+  Rpc.make("triggerFireLog", {
+    payload: {
+      id: Schema.String,
+      limit: Schema.optionalKey(
+        Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: MAX_FIRE_LOG })),
+      ),
+    },
+    success: Schema.Array(FireRecord),
+    error: EnvironmentError,
   }),
   /** Keep a browser's subscription, so Sessions notify it; one with the same endpoint is replaced. */
   Rpc.make("subscribePush", { payload: { subscription: PushSubscription } }),

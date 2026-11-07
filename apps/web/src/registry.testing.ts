@@ -83,6 +83,13 @@ const UNEXPECTED: Handlers = {
   revertSettingsChange: unexpected("revertSettingsChange"),
   dismissSettingsChange: unexpected("dismissSettingsChange"),
   getPush: unexpected("getPush"),
+  listTriggers: unexpected("listTriggers"),
+  createTrigger: unexpected("createTrigger"),
+  updateTrigger: unexpected("updateTrigger"),
+  setTriggerPaused: unexpected("setTriggerPaused"),
+  removeTrigger: unexpected("removeTrigger"),
+  fireTrigger: unexpected("fireTrigger"),
+  triggerFireLog: unexpected("triggerFireLog"),
   subscribePush: unexpected("subscribePush"),
   unsubscribePush: unexpected("unsubscribePush"),
 };
