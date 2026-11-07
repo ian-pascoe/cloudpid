@@ -350,9 +350,9 @@ export const openTriggers = (
      * Let a Fire through, or say why not (`docs/architecture/triggers.md` → `admitFire`), in one transaction. A Fire let
      * through before (its `requestId`) is answered its Session again, whatever came since (a pause, a removal, a change,
      * the overlap), so a retried Fire completes the Session it registered. Otherwise the Trigger is there and active,
-     * the caller's revision is current (else `stale` with the definition), and the overlap; then its Session is registered in a new Workspace of the
-     * Environment (the spare when current), titled by cloudpid and marked with the Trigger, under `ids.session` (and
-     * `ids.workspace`, unless the spare is taken). It counts nothing and caps nothing.
+     * the caller's revision is current (else `stale` with the definition), and the overlap; then its Session is
+     * registered in a new Workspace of the Environment (the spare when current), titled by cloudpid and marked with the
+     * Trigger, under `ids.session` (and `ids.workspace`, unless the spare is taken). It counts nothing and caps nothing.
      */
     admit: (
       fire: FireAdmission,

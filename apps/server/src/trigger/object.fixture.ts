@@ -8,7 +8,9 @@
 import type { ApiResult, FireRequest, SubmitResult, TriggerDefinition } from "@cloudpid/protocol";
 import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import { DurableObject } from "cloudflare:workers";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Logger from "effect/Logger";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { FireAdmitted } from "../registry/triggers.ts";
 import { triggerOfObject } from "./name.ts";
@@ -132,6 +134,33 @@ export class TestTrigger extends DurableObject {
     },
   });
 
+  /** What the object logged at warning level or above, in order: its level and message. */
+  readonly #logged: Array<{ readonly level: string; readonly message: string }> = [];
+
+  readonly #logger = Logger.make((options) => {
+    if (
+      options.logLevel === "Warn" ||
+      options.logLevel === "Error" ||
+      options.logLevel === "Fatal"
+    ) {
+      this.#logged.push({
+        level: options.logLevel,
+        message: String(Arr.ensure(options.message)[0]),
+      });
+    }
+  });
+
+  /** `effect` run as the object runs its calls, its logs kept for `logged()`. */
+  #run<A, E>(effect: Effect.Effect<A, E>): Promise<A> {
+    return Effect.runPromise(
+      effect.pipe(Effect.provideService(Logger.CurrentLoggers, new Set([this.#logger]))),
+    );
+  }
+
+  logged(): ReadonlyArray<{ readonly level: string; readonly message: string }> {
+    return this.#logged;
+  }
+
   #registryStub() {
     if (this.#registry === undefined) throw new Error("No TestRegistry: call use() first");
 
@@ -200,26 +229,26 @@ export class TestTrigger extends DurableObject {
   }
 
   sync(): Promise<TriggerState> {
-    return Effect.runPromise(this.#handlers.sync());
+    return this.#run(this.#handlers.sync());
   }
 
   remove(): Promise<void> {
-    return Effect.runPromise(this.#handlers.remove());
+    return this.#run(this.#handlers.remove());
   }
 
   fireNow(): Promise<FireNowAnswer> {
-    return Effect.runPromise(this.#handlers.fireNow());
+    return this.#run(this.#handlers.fireNow());
   }
 
   fireLog(limit?: number) {
-    return Effect.runPromise(this.#handlers.fireLog(limit === undefined ? undefined : { limit }));
+    return this.#run(this.#handlers.fireLog(limit === undefined ? undefined : { limit }));
   }
 
   state(): Promise<TriggerState> {
-    return Effect.runPromise(this.#handlers.state());
+    return this.#run(this.#handlers.state());
   }
 
   override alarm(info?: AlarmInvocationInfo): Promise<void> {
-    return Effect.runPromise(this.#handlers.alarm(info));
+    return this.#run(this.#handlers.alarm(info));
   }
 }

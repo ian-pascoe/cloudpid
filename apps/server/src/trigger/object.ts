@@ -1,8 +1,9 @@
 // What a `Trigger` object does (`docs/architecture/triggers.md` → The Trigger object and the Registry, ADR-0047): _how_
 // a Trigger is reached and _when_ it fires. A Schedule coming due becomes a pending Fire, which the alarm drains through
 // the Registry's `admitFire` and then the Session's `fire`, both keyed by the Fire's key, so a retried alarm never starts
-// a second Session. At each touch the object reads its definition again (`triggerDefinition`) and wipes itself
-// (removed), disarms (paused) or re-arms (a changed Schedule): a lost message from a caller heals at its next touch. The
+// a second Session. At each touch the object reads its definition again (`triggerDefinition`) and retires (removed:
+// its admitted Fires get a last try, then it wipes itself), drops its Fires not yet admitted and arms only for the
+// admitted ones (paused), or re-arms (a changed Schedule): a lost message from a caller heals at its next touch. The
 // alarm catches its own errors and re-arms, since the platform gives up after 6 retries. The ports keep the object
 // testable: the real ones are RPC to the Registry and the Sessions (`Trigger.ts`).
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- the object's methods, over a Promise-based alarm.
@@ -76,7 +77,10 @@ export type FireNowAnswer =
 
 /** The object's RPC methods and its alarm. */
 export type TriggerHandlers = {
-  /** Read the definition again and act on it: wipe, disarm or re-arm. What callers call after a change. */
+  /**
+   * Read the definition again and act on it: retire (removed), keep only the admitted Fires (paused) or re-arm. What
+   * callers call after a change.
+   */
   readonly sync: () => Effect.Effect<TriggerState, TriggerUnreachable>;
   /** Its Trigger is gone: complete its admitted Fires, as far as they can be now, then delete its alarm and storage. */
   readonly remove: () => Effect.Effect<void>;
@@ -145,6 +149,9 @@ export const triggerHandlers = (options: {
 
   // Opened at the first use, and again after a wipe, so a Trigger that comes back (a reverted removal) has its tables.
   let opened: TriggerStore | undefined;
+
+  // Set while the object retires (`retire`): a `removed` answer to one of its admitted Fires then only wipes.
+  let retiring = false;
 
   const store = (): TriggerStore => {
     opened ??= openTriggerStore(storage);
@@ -360,7 +367,8 @@ export const triggerHandlers = (options: {
           }
 
           case "removed":
-            yield* wipe;
+            // The Fires already admitted get their last try, unless this is one of them, retiring already.
+            yield* retiring ? wipe : retire(at);
 
             return false;
           case "paused":
@@ -471,6 +479,8 @@ export const triggerHandlers = (options: {
    */
   const retire = (at: number): Effect.Effect<void> =>
     Effect.gen(function* () {
+      retiring = true;
+
       for (const pending of existing()?.pending() ?? []) {
         if (pending.session === undefined) continue;
 
@@ -478,7 +488,13 @@ export const triggerHandlers = (options: {
       }
 
       yield* wipe;
-    });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          retiring = false;
+        }),
+      ),
+    );
 
   const alarm = (info?: { readonly retryCount?: number }) =>
     Effect.gen(function* () {

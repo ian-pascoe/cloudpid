@@ -361,6 +361,47 @@ describe("a Trigger's object", () => {
     });
   });
 
+  it("gives the Fires already admitted a last try when admitFire answers another removed", async () => {
+    const { id, registry, trigger } = await made();
+
+    await trigger.scriptFires(["unreachable"]);
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+    // The object reads the definition as it was: only `admitFire` sees the removal.
+    await trigger.freezeReads();
+    await trigger.setNow(nine + 1_000);
+    await trigger.fireNow();
+    await registry.removeTrigger(id);
+    await runDurableObjectAlarm(trigger);
+
+    expect((await trigger.sent()).map((fire) => [fire.session, fire.request.requestId])).toEqual([
+      ["s-1", keyAt(id, nine)],
+      ["s-1", keyAt(id, nine)],
+    ]);
+    expect(await trigger.state()).toMatchObject({ definition: null, pending: 0 });
+    expect(await trigger.alarmAt()).toBeNull();
+  });
+
+  it("drops a Fire not yet admitted when its Trigger is removed, logging it and sending nothing", async () => {
+    const { id, registry, trigger } = await made();
+
+    await trigger.setNow(start + 1_000);
+    await trigger.fireNow();
+    await registry.removeTrigger(id);
+    await trigger.remove();
+
+    expect(await trigger.sent()).toEqual([]);
+    expect(await trigger.logged()).toEqual([
+      { level: "Warn", message: "A removed Trigger dropped a pending Fire" },
+    ]);
+    expect(await trigger.state()).toEqual({
+      definition: null,
+      nextFireAt: null,
+      lastFire: null,
+      pending: 0,
+    });
+  });
+
   it("records a Fire not yet admitted skipped when its Trigger is paused", async () => {
     const { id, registry, trigger } = await made();
 
