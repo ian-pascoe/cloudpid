@@ -1,6 +1,8 @@
 // docs/architecture/client-and-protocol.md → Same-origin check: `/rpc` and the Session socket answer only the web app's own
 // page, so a site the owner visits cannot drive them with the owner's cookie (or, under `alchemy dev`, with nothing at all:
 // the guard admits every loopback request there).
+// This module also owns the dispatch of the two routes (`serveOwnerCalls`). `mcp/sign-in-http.ts` has its own `Sec-Fetch-Site`
+// check for `/oauth/mcp/start`, a sibling rule.
 // @effect-diagnostics missingPipeableSignature:off -- `crossOriginReason` is called with its two arguments, not piped.
 
 import * as Arr from "effect/Array";
