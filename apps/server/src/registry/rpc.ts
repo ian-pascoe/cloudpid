@@ -34,6 +34,7 @@ import {
   ownBranchProblem,
   SessionNotFound,
   type SettingsOverridesState,
+  type TriggerHook,
   forkTitle,
   workspaceDirectory,
 } from "@cloudpid/protocol";
@@ -60,6 +61,8 @@ import type { LookupPlace, WorkspaceLookups } from "../session/lookups.ts";
 import { workspaceObjectName } from "../workspace/binding.ts";
 import type { WorkspaceObjects } from "../workspace/lifecycle.ts";
 import type { Builds } from "./builds.ts";
+import { hookPath } from "../hooks-path.ts";
+import type { HookSecrets } from "../trigger/object.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
 import type { TriggerWrite } from "./triggers.ts";
 import type { DraftBranches } from "./draft-branches.ts";
@@ -75,6 +78,8 @@ import {
   noWorkspace,
   repoTaken,
   triggerChangedSince,
+  triggerNoDelivery,
+  triggerNoWebhook,
   triggerPaused,
   triggerRemoved,
   triggerUnreachable,
@@ -151,6 +156,11 @@ export type RegistryRpcObjects<R = never> = {
    * Environment, and asked for their last Fire, fire log and Fire now.
    */
   readonly triggers: TriggerObjects;
+  /**
+   * The origin a live stage's Trigger URLs start with (`CLOUDPID_APP_ORIGIN`), absent under `alchemy dev`, where the page's
+   * own origin is the one: what `revealTrigger` and `rotateTrigger` answer before the path.
+   */
+  readonly appOrigin?: string | undefined;
   /** Wipes what is left from before Environments, a few objects at a time (`legacyCleanup`), after the answer. */
   readonly legacy: Effect.Effect<void>;
   /** Keeps each Environment's spare Workspace current (`spareUpkeep`), after the answer. */
@@ -196,6 +206,26 @@ export const upkeepAfterStart = (
   environment: string,
 ): Effect.Effect<void> =>
   Effect.all([spares.of(environment), builds.of(environment)], { discard: true });
+
+/**
+ * A webhook Trigger's URL and Signing secret as the owner reads them, or a refusal for one that has none.
+ */
+const triggerHook = (
+  id: string,
+  secrets: HookSecrets | null,
+  origin: string | undefined,
+): Effect.Effect<TriggerHook, EnvironmentError> => {
+  if (secrets === null) return Effect.fail(EnvironmentError.make({ message: triggerNoWebhook }));
+
+  const hook: Mutable<TriggerHook> = {
+    path: hookPath(id, secrets.token),
+    secret: secrets.secret,
+  };
+
+  if (origin !== undefined && origin !== "") hook.origin = origin;
+
+  return Effect.succeed(hook);
+};
 
 /** How many legacy objects one cleanup wipes. */
 const LEGACY_BATCH = 10;
@@ -410,6 +440,7 @@ export const serveRegistryRpc = <R = never>(
     workspaces,
     sessions,
     triggers,
+    appOrigin,
     legacy,
     spares,
     builds,
@@ -1069,6 +1100,34 @@ export const serveRegistryRpc = <R = never>(
             }
           }),
         ),
+      fireTriggerAgain: ({ id, key }) =>
+        triggers.fireAgain(id, key).pipe(
+          Effect.mapError(() => failed(triggerUnreachable)),
+          Effect.flatMap((answer) => {
+            switch (answer.status) {
+              case "queued":
+                return Effect.succeed({ key: answer.key });
+              case "paused":
+                return Effect.fail(failed(triggerPaused));
+              case "removed":
+                return Effect.fail(failed(triggerRemoved));
+              case "none":
+                return Effect.fail(failed(triggerNoDelivery));
+            }
+          }),
+        ),
+      revealTrigger: ({ id }) =>
+        triggers.reveal(id).pipe(
+          Effect.mapError(() => failed(triggerUnreachable)),
+          Effect.flatMap((secrets) => triggerHook(id, secrets, appOrigin)),
+        ),
+      rotateTrigger: ({ id, what }) =>
+        triggers.rotate(id, what).pipe(
+          Effect.mapError(() => failed(triggerUnreachable)),
+          Effect.flatMap((secrets) => triggerHook(id, secrets, appOrigin)),
+        ),
+      triggerDeliveries: ({ id }) =>
+        triggers.deliveries(id).pipe(Effect.mapError(() => failed(triggerUnreachable))),
       triggerFireLog: ({ id, limit }) =>
         triggers.fireLog(id, limit).pipe(Effect.mapError(() => failed(triggerUnreachable))),
       dismissAgentChange: ({ environment, change }) =>

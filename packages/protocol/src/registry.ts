@@ -34,9 +34,12 @@ import {
   MAX_FIRE_LOG,
   TriggerChangeValue,
   TriggerDefinition,
+  TriggerDeliveries,
+  TriggerHook,
   TriggerOverview,
   TriggerKey,
   TriggerPatch,
+  TriggerRotation,
   TriggerUnscheduled,
 } from "./triggers.ts";
 import {
@@ -1307,6 +1310,40 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("fireTrigger", {
     payload: { id: Schema.String, key: TriggerKey },
     success: FireNowQueued,
+    error: EnvironmentError,
+  }),
+  /**
+   * Fire a webhook Trigger again with its last accepted delivery (the owner's **Fire again**, recorded `manual`), one
+   * Fire per `key`, which the page draws for each press; a paused or removed Trigger, one that accepted no delivery
+   * yet, and a Schedule's are refused.
+   */
+  Rpc.make("fireTriggerAgain", {
+    payload: { id: Schema.String, key: TriggerKey },
+    success: FireNowQueued,
+    error: EnvironmentError,
+  }),
+  /**
+   * A webhook Trigger's URL and Signing secret, for the owner to reveal and copy (`triggers.md` → Secrets). Never an
+   * agent's: no tool reads them. A Trigger that is no webhook's has none (refused).
+   */
+  Rpc.make("revealTrigger", {
+    payload: { id: Schema.String },
+    success: TriggerHook,
+    error: EnvironmentError,
+  }),
+  /**
+   * Replace a webhook Trigger's URL (`url`) or Signing secret (`secret`): the old one stops working at once, and the new
+   * one is answered, as `revealTrigger` answers.
+   */
+  Rpc.make("rotateTrigger", {
+    payload: { id: Schema.String, what: TriggerRotation },
+    success: TriggerHook,
+    error: EnvironmentError,
+  }),
+  /** What a webhook Trigger says of its deliveries: the counts of the last 30 days, its last delivery and its ping. */
+  Rpc.make("triggerDeliveries", {
+    payload: { id: Schema.String },
+    success: TriggerDeliveries,
     error: EnvironmentError,
   }),
   /** A Trigger's fire log, newest first: at most `limit` Fires (by default all it keeps, `MAX_FIRE_LOG`). */

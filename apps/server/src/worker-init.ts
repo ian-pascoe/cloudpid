@@ -184,10 +184,12 @@ export const serverInit = Effect.gen(function* () {
   const registry = () => registries.getByName(REGISTRY_NAME);
 
   // The owner's sign-ins for Settings: the Registry's list with the stage, and a sign-out carried to the hosts.
+  const signInStage = signInStageView(signInEnv);
+
   const mcpSignIns = mcpSignInManage({
     registry,
     carry: signInCarry,
-    stage: signInStageView(signInEnv),
+    stage: signInStage,
   });
 
   // SAFETY: the deploy sets these vars as strings (`guardVars`), and nothing else puts a value under their names.
@@ -240,6 +242,8 @@ export const serverInit = Effect.gen(function* () {
               workspaces,
               sessions: sessionObjects,
               triggers,
+              // A live stage's Trigger URLs start with its origin; under `alchemy dev` the page's own is the one.
+              appOrigin: signInStage.origin,
               legacy,
               spares,
               builds,

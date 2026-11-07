@@ -422,6 +422,49 @@ export const FireNowQueued = Schema.Struct({ key: Schema.String });
 export type FireNowQueued = typeof FireNowQueued.Type;
 
 /**
+ * A webhook Trigger's URL and Signing secret, as the owner reveals them (`triggers.md` → Secrets): the URL's `path`
+ * (`/hooks/<id>/<token>`), and the stage's `origin` before it, absent where the page's own is the one (`alchemy dev`).
+ * The `secret` is as the sender is given it: `whsec_<base64>` for a `standard` Trigger, else the key itself. The agent
+ * never reads this.
+ */
+export const TriggerHook = Schema.Struct({
+  origin: Schema.optionalKey(Schema.String),
+  path: Schema.String,
+  secret: Schema.String,
+});
+
+export type TriggerHook = typeof TriggerHook.Type;
+
+/** Which of a webhook Trigger's two secrets the owner replaces: its URL's token, or its Signing secret. */
+export const TriggerRotation = Schema.Literals(["url", "secret"]);
+
+export type TriggerRotation = typeof TriggerRotation.Type;
+
+/**
+ * How many deliveries a Trigger refused or filtered on one UTC `day` (`YYYY-MM-DD`), by `outcome`: one of
+ * `DELIVERY_OUTCOMES` but `accepted` and `ping`, or one a later version names.
+ */
+export const TriggerDeliveryCount = Schema.Struct({
+  day: Schema.String,
+  outcome: Schema.String,
+  n: Schema.Int,
+});
+
+export type TriggerDeliveryCount = typeof TriggerDeliveryCount.Type;
+
+/**
+ * What a webhook Trigger says of its deliveries (`triggers.md` → The owner's UI): the counts of the last 30 days, the
+ * time of the last authentic delivery, and GitHub's last ping.
+ */
+export const TriggerDeliveries = Schema.Struct({
+  counts: Schema.Array(TriggerDeliveryCount),
+  lastDeliveryAt: Schema.NullOr(Schema.Finite),
+  pingAt: Schema.NullOr(Schema.Finite),
+});
+
+export type TriggerDeliveries = typeof TriggerDeliveries.Type;
+
+/**
  * A Fire's key, the `requestId` of its Session's `createSession` and `fire`: `<trigger>:<scheduled time>` for a
  * Schedule, so a retried alarm never starts a second Session (`triggers.md` → Pending Fires).
  */

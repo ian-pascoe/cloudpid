@@ -24,6 +24,14 @@ export const triggerUnreachable = "The trigger's object didn't answer: try again
 /** That Fire now was asked of a paused Trigger. */
 export const triggerPaused = "The trigger is paused: resume it to fire it";
 
+/** That a Trigger's URL or Signing secret was asked of one that has none: only a webhook Trigger does. */
+export const triggerNoWebhook =
+  "This trigger has no URL or signing secret: only a webhook trigger does";
+
+/** That Fire again was asked of a Trigger that has accepted no delivery yet. */
+export const triggerNoDelivery =
+  "No delivery has been accepted yet: there is nothing to send again";
+
 /** That a Trigger was made under an id another Trigger has, or had, with other values. */
 export const triggerIdTaken = "A trigger was already saved under this id with other values";
 
