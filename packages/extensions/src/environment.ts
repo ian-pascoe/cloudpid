@@ -35,58 +35,58 @@ import {
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
+  environmentId,
+  GLOBAL_ID,
+  GLOBAL_NAME,
+  HARNESS_TOOLS,
+  idDescription,
+  idOrGlobal,
+} from "@cloudpid/protocol/harness-tools";
+import {
   type AgentChange,
   type BuildView,
   type EnvironmentRef,
   type EnvironmentRepo,
   type EnvironmentSkill,
-  SKILLS_ROOT,
-  skillSourceText,
   variableField,
 } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
-import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
-import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { Approvals } from "./approvals.ts";
 import { SIZE_LINES } from "./container.ts";
 import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
-import {
-  changeOutput,
-  EnvironmentGetOutput,
-  EnvironmentListOutput,
-  environmentGetOutput,
-  environmentListOutput,
-  FAILED_REASON_TAIL,
-  globalGetOutput,
-  unchangedOutput,
-} from "./environment-outputs.ts";
+import { changeOutput, unchangedOutput } from "./environment-outputs.ts";
+import { EnvironmentsError, namedEnvironment, notFound } from "./environment-describe.ts";
+import { environmentGetRead, environmentListRead } from "./environment-reads.ts";
 import { resetTool } from "./environment-reset.ts";
-import {
-  GLOBAL_ID,
-  GLOBAL_NAME,
-  type SecretMarks,
-  secretMarkTools,
-} from "./environment-secret-marks.ts";
+import { type SecretMarks, secretMarkTools } from "./environment-secret-marks.ts";
 import { type EnvironmentSkills, skillTools } from "./environment-skills.ts";
 import { holdsGitHubToken } from "./github-tokens.ts";
+import { toolResult } from "./harness.ts";
 import { asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
 import { Redactions } from "./secrets/redaction.ts";
-import { holdsPlaceholder, secretEnvName } from "./secrets/references.ts";
+import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 
+export { type SecretMarked, type SecretMarks } from "./environment-secret-marks.ts";
+
+// The supported import path for these, `apps/server` included, is this module: the leaf is an internal split.
 export {
-  GLOBAL_ID,
-  GLOBAL_NAME,
-  type SecretMarked,
-  type SecretMarks,
-} from "./environment-secret-marks.ts";
+  describeBuild,
+  describeEnvironment,
+  describeGlobal,
+  EnvironmentsError,
+  listingLine,
+  namedEnvironment,
+  notFound,
+  reposLine,
+} from "./environment-describe.ts";
 
 export type { EnvironmentSkills, SkillRemoved, SkillSaved } from "./environment-skills.ts";
 
@@ -200,12 +200,6 @@ export type AppliedChange =
   | { readonly status: "changed-since"; readonly current: Schema.Json | null }
   | { readonly status: "missing" };
 
-/** Reaching the Environments failed; its message is what the model sees. */
-export class EnvironmentsError extends Schema.TaggedError<
-  EnvironmentsError,
-  { readonly brand: unique symbol }
->()("EnvironmentsError", { message: Schema.String }) {}
-
 /** Why a text that holds a Secret Reference is refused: these tools resolve none, so it would be saved as written. */
 const PLACEHOLDER_REFUSAL =
   "Nothing was saved: a text of the call holds a Secret Reference, which these tools do not resolve, so what they save would hold the reference's text, not the Secret. A credential belongs in a Secret kept for the Environment, which the user keeps on the Environments page: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.";
@@ -312,188 +306,9 @@ export const plainTextCheck: Effect.Effect<
 /** The longest reason a change may give. */
 export const MAX_CHANGE_REASON = 500;
 
-const iso = (time: number): string => DateTime.formatIso(DateTime.makeUnsafe(time));
-
-/** Where a Build stands, in a line. */
-export const describeBuild = (build: BuildView): string => {
-  const meanwhile = (lastGoodAt: number | null) =>
-    lastGoodAt === null
-      ? "new Workspaces start from the image meanwhile"
-      : `new Workspaces start from the last good Build, of ${iso(lastGoodAt)}, meanwhile`;
-
-  switch (build.status) {
-    case "none":
-      return "none (no Repo, Setup Script or Toolchains to build, or none made yet)";
-    case "building":
-      return `building since ${iso(build.since)}; ${meanwhile(build.lastGoodAt)}`;
-    case "ready":
-      return `ready, made ${iso(build.at)}`;
-    case "failed": {
-      const reason =
-        build.reason.length > FAILED_REASON_TAIL
-          ? `…${build.reason.slice(-FAILED_REASON_TAIL)}`
-          : build.reason;
-
-      return `failed at ${iso(build.at)}; ${meanwhile(build.lastGoodAt)}. Its reason ends: ${reason}`;
-    }
-  }
-};
-
-const reposLine = (repos: ReadonlyArray<EnvironmentRepo>): string =>
-  repos.length === 0
-    ? "none"
-    : Arr.join(
-        Arr.map(repos, (repo) => `${repo.name} (${repo.url})`),
-        ", ",
-      );
-
-/** `text` as a fenced block, or `none` when it is empty. */
-const block = (text: string, language: string): string =>
-  text === "" ? "none" : `\n\`\`\`${language}\n${text}\n\`\`\``;
-
-const describeSecret = (secret: KeptSecretListing): string =>
-  `${secret.name} (${secret.scope === "environment" ? "kept for this Environment" : "kept Global"}${secret.build ? ", reaches the Build" : ""}; commands get it as $${secretEnvName(secret.name)})`;
-
-/** Variables as `environment_get` lists them, one a line. */
-const variableLines = (variables: Readonly<Record<string, string>>): string =>
-  Arr.join(
-    Arr.map(Record.toEntries(variables), ([name, value]) => `\n  ${name}=${value}`),
-    "",
-  );
-
-/** Skills as `environment_get` lists them, one a line, or `none`. */
-const skillLines = (skills: ReadonlyArray<EnvironmentSkill>): string =>
-  skills.length === 0
-    ? "none"
-    : Arr.join(
-        Arr.map(
-          skills,
-          (skill) =>
-            `\n  ${skill.name} (saved ${iso(skill.savedAt)}${
-              skill.source === undefined ? "" : `, installed from ${skillSourceText(skill.source)}`
-            }${skill.modified === true ? ", modified since installed" : ""}${
-              skill.updateAvailable === true ? ", update available" : ""
-            }): ${skill.description}`,
-        ),
-        "",
-      );
-
-/** What `environment_get` says of an Environment. */
-export const describeEnvironment = (details: EnvironmentDetails, current: boolean): string => {
-  const { settings, overrides, global } = details;
-  const own = overrides.variables ?? {};
-  const inherited = Record.filter(global.variables, (_, name) => !Record.has(own, name));
-  const overridden = Arr.filter(Record.keys(global.variables), (name) => Record.has(own, name));
-
-  /** Where a setting comes from: the Environment's own Override, or Global's. */
-  const from = (field: Exclude<keyof ContainerSettings, "variables">): string =>
-    overrides[field] === undefined ? "inherited from Global" : "overridden here";
-
-  const ownSkills = new Set(Arr.map(details.skills, (skill) => skill.name));
-  const inheritedSkills = Arr.filter(details.globalSkills, (skill) => !ownSkills.has(skill.name));
-
-  const overriddenSkills = Arr.filterMap(details.globalSkills, (skill) =>
-    ownSkills.has(skill.name) ? Result.succeed(skill.name) : Result.failVoid,
-  );
-
-  return Arr.join(
-    [
-      `Environment ${JSON.stringify(details.name)} (id ${details.id}${current ? ", the Environment of this Session" : ""})`,
-      `Repos: ${reposLine(details.repos)}`,
-      `Container settings: each is the Environment's own (overridden here) or Global's (inherited from Global, environment_get with id "${GLOBAL_ID}"). A set tool makes a field its own; environment_setting_reset makes it inherit Global's again.`,
-      `Container size (${from("instance")}): ${settings.instance}`,
-      `Size limit (the largest size, container_resize's too; the user sets it on the Environments page; ${from("maxInstance")}): ${settings.maxInstance}`,
-      `Idle time (${from("idleMinutes")}): ${settings.idleMinutes} minute${settings.idleMinutes === 1 ? "" : "s"}`,
-      `Container-only paths (ignore; ${from("ignore")}): ${settings.ignore.length === 0 ? "none" : Arr.join(settings.ignore, ", ")}`,
-      `Variables of its own (plain, in every command's environment): ${
-        Record.isEmptyRecord(own) ? "none" : variableLines(own)
-      }`,
-      `Variables at Global (id "${GLOBAL_ID}"; the Environment's own of the same name win): ${
-        Record.isEmptyRecord(global.variables)
-          ? "none"
-          : `${variableLines(inherited)}${overridden.length === 0 ? "" : `\n  overridden here: ${Arr.join(overridden, ", ")}`}`
-      }`,
-      `Setup Script (${from("setupScript")}): ${block(settings.setupScript, "bash")}`,
-      `Start Script (${from("startScript")}): ${block(settings.startScript, "bash")}`,
-      `Toolchains (mise.toml; ${from("toolchains")}): ${settings.toolchains === "" ? "none: the image's base Toolchains" : block(settings.toolchains, "toml")}`,
-      `Spare Workspace (${from("spareWorkspace")}): ${settings.spareWorkspace ? "on (a Workspace kept made ahead, so a new Session starts without waiting for the clones and the Setup Scripts)" : "off (a new Session's Workspace is made when the Session starts)"}`,
-      `Kept Secrets (values never shown): ${
-        details.secrets.length === 0
-          ? "none"
-          : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
-      }`,
-      `Skills (its own, served read-only at ${SKILLS_ROOT}/<name> over those kept Global of the same name; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove change them): ${skillLines(details.skills)}`,
-      `Skills at Global (id "${GLOBAL_ID}"; the Environment's own of the same name win): ${
-        details.globalSkills.length === 0
-          ? "none"
-          : `${skillLines(inheritedSkills)}${overriddenSkills.length === 0 ? "" : `\n  overridden here: ${Arr.join(overriddenSkills, ", ")}`}`
-      }`,
-      `Build: ${describeBuild(details.build)}`,
-      ...(details.problem === undefined
-        ? []
-        : [`Saved settings left out, as they no longer apply: ${details.problem}`]),
-    ],
-    "\n",
-  );
-};
-
-/** What `environment_get` says of what is kept Global (id `*`). */
-const describeGlobal = (details: GlobalDetails): string => {
-  const { settings, overriddenIn } = details;
-
-  /** The Environments that override the field at `path`, if any, so a change here does not reach them. */
-  const overriding = (path: string): string => {
-    const environments = overriddenIn[path] ?? [];
-
-    return environments.length === 0
-      ? ""
-      : ` (overridden in ${Arr.join(Arr.map(environments, namedEnvironment), ", ")})`;
-  };
-
-  const variables = Arr.join(
-    Arr.map(
-      Record.toEntries(settings.variables),
-      ([name, value]) => `\n  ${name}=${value}${overriding(variableField(name))}`,
-    ),
-    "",
-  );
-
-  return Arr.join(
-    [
-      `Kept at Global (id "${GLOBAL_ID}"): what every Environment inherits where it has no Override of its own. The set tools change them with id "${GLOBAL_ID}".`,
-      `Container size${overriding("instance")}: ${settings.instance}`,
-      `Size limit (the largest size, container_resize's too)${overriding("maxInstance")}: ${settings.maxInstance}`,
-      `Idle time${overriding("idleMinutes")}: ${settings.idleMinutes} minute${settings.idleMinutes === 1 ? "" : "s"}`,
-      `Container-only paths (ignore)${overriding("ignore")}: ${settings.ignore.length === 0 ? "none" : Arr.join(settings.ignore, ", ")}`,
-      `Variables (plain, in every command's environment, in any Environment; an Environment's own of the same name wins): ${
-        Record.isEmptyRecord(settings.variables) ? "none" : variables
-      }`,
-      `Setup Script${overriding("setupScript")}: ${block(settings.setupScript, "bash")}`,
-      `Start Script${overriding("startScript")}: ${block(settings.startScript, "bash")}`,
-      `Toolchains (mise.toml)${overriding("toolchains")}: ${settings.toolchains === "" ? "none: the image's base Toolchains" : block(settings.toolchains, "toml")}`,
-      `Spare Workspace${overriding("spareWorkspace")}: ${settings.spareWorkspace ? "on" : "off"}`,
-      `Kept Secrets (values never shown): ${
-        details.secrets.length === 0
-          ? "none"
-          : Arr.join(Arr.map(details.secrets, describeSecret), "; ")
-      }`,
-      `Skills (served read-only at ${SKILLS_ROOT}/<name> in each Environment's Workspaces; an Environment's own of the same name wins there; environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove with id "${GLOBAL_ID}" change them, and wait for the user's Approval): ${skillLines(details.skills)}`,
-    ],
-    "\n",
-  );
-};
-
-/** What `environment_list` says of an Environment. */
-const listingLine = (environment: EnvironmentListing, current: boolean): string =>
-  `- ${environment.id}: ${JSON.stringify(environment.name)}${current ? " (this Session's)" : ""}; repos: ${reposLine(environment.repos)}; Build: ${describeBuild(environment.build)}`;
-
 /** A variable's value as the result shows it: plain, in full. */
 const shownValue = (value: Schema.Json | null): string =>
   value === null ? "not set" : JSON.stringify(value);
-
-/** An Environment as a result names it: its name in quotes, then its id; or Global. */
-const namedEnvironment = ({ id, name }: { readonly id: string; readonly name: string }): string =>
-  id === GLOBAL_ID ? GLOBAL_NAME : `Environment ${JSON.stringify(name)} (${id})`;
 
 /** When a change applies, and whether a Build was asked for. */
 export const describeApplied = (own: boolean, newBuild: boolean): string =>
@@ -582,31 +397,13 @@ export const plainValue = (value: Schema.Json | null): string =>
 export const pathsLine = (value: Schema.Json | null): string =>
   Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
 
-/** Where a tool's `id` description says to find this Session's own Environment: it is named like any other. */
-const FIND_OWN = "environment_list marks this Session's own";
-
-/** What a tool's `id` description says: where to find the id, and that none is assumed; `more` follows the id's own words. */
-const idDescription = (more = "") =>
-  `The id of the Environment, as environment_list shows it (${FIND_OWN})${more}. Name it on purpose: there is no default`;
-
 /** A tool's required `id`: one Environment, named even when it is this Session's own. */
-export const Id = Schema.String.check(Schema.isMinLength(1)).annotate({
-  description: idDescription(),
-});
+export const Id = environmentId();
 
 /** The `id` of `environment_setting_reset`: an Environment's, never `*`, since Global inherits nothing. */
 export const IdNotGlobal = Id.annotate({
   description: `${idDescription()}. Not "*": Global's settings are not reset here`,
 });
-
-/**
- * The `id` of a tool that also takes `*`, `kept` saying what that addresses. Built when used: the constant is not there
- * when this module loads first.
- */
-export const idOrGlobal = (kept: string) =>
-  Schema.String.check(Schema.isMinLength(1)).annotate({
-    description: idDescription(`, or "${GLOBAL_ID}" for ${kept}`),
-  });
 
 /**
  * Fails when `id` is `*`, which only the tools that keep something at Global take: the others change one
@@ -654,12 +451,6 @@ const PLAIN_VALUES =
 /** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
 // SAFETY: the two types describe the same values; the details are never mutated.
 const asJsonValue = (value: Schema.Json): JsonValue => value as JsonValue;
-
-/** The refusal for an `id` that names no Environment. */
-export const notFound = (id: string) =>
-  EnvironmentsError.make({
-    message: `No Environment has the id ${JSON.stringify(id)}. Call environment_list for the Environments and their ids.`,
-  });
 
 /**
  * The `environment` extension: its tools over the Session's `Environments`, refusing values that hold a Secret
@@ -937,80 +728,25 @@ export const EnvironmentTools: Effect.Effect<
         `${text === "" ? `Removed the ${what}` : `Set the ${what}`} of ${where}: it was ${textSize(change.before)}, and is ${textSize(change.after)} now (the user sees the difference on the Environments page). ${note} ${applies}${newBuild || global !== undefined ? "" : " No new Build was asked for."}`,
     });
 
-  const list = yield* defineEffectTool({
-    name: "environment_list",
-    description:
-      "List the Environments: each one's id, name, Repos and Build, marking this Session's own, and how many variables are kept Global. An Environment is what a Workspace is made from: its Repos and its Container settings. Use environment_get with an id to see an Environment's settings.",
-    parameters: Schema.Struct({}),
-    structuredOutputSchema: outputSchema(EnvironmentListOutput),
-    replay: "safe",
-    execute: () =>
-      Effect.gen(function* () {
-        const current = yield* environments.current;
-        const listed = yield* environments.list;
-        const globalDetails = yield* environments.global;
+  const listRead = environmentListRead(environments);
+  const getRead = environmentGetRead(environments);
 
-        return {
-          output: [
-            {
-              type: "text" as const,
-              text:
-                listed.length === 0
-                  ? "There are no Environments."
-                  : `Environments (id: name):\n${Arr.join(
-                      Arr.map(listed, (environment) =>
-                        listingLine(environment, environment.id === current),
-                      ),
-                      "\n",
-                    )}\nVariables at Global: ${Record.size(globalDetails.settings.variables)} (environment_get with id "${GLOBAL_ID}" shows them and the other Container settings at Global)`,
-            },
-          ],
-          structuredOutput: asOutput(
-            EnvironmentListOutput,
-            environmentListOutput(listed, current, Record.size(globalDetails.settings.variables)),
-          ),
-          details: { current, environments: Arr.map(listed, ({ id, name }) => ({ id, name })) },
-        };
-      }),
+  const list = yield* defineEffectTool({
+    name: HARNESS_TOOLS.environment_list.name,
+    description: HARNESS_TOOLS.environment_list.session.description,
+    parameters: HARNESS_TOOLS.environment_list.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_list.session.output),
+    replay: "safe",
+    execute: () => Effect.map(listRead({}, "session"), toolResult),
   });
 
   const get = yield* defineEffectTool({
-    name: "environment_get",
-    description: `Show an Environment (the one id names; environment_list marks this Session's own): its name and Repos, every Container setting (size, size limit, idle time, Container-only paths, variables, Setup and Start Scripts, Toolchains, Spare Workspace) in force, each marked as its own (overridden here) or inherited from Global, the variables kept Global that its own do not override, the names of the Secrets kept for it and Global (never their values), its own Skills (name, description, when saved) and the Skills kept Global that its own do not override, and how its Build stands, with the end of the last failed Build's reason. With id "${GLOBAL_ID}", show what is kept Global instead: its Container settings with the Environments that override each, the names of its Secrets and its Skills.`,
-    parameters: Schema.Struct({
-      id: idOrGlobal("the Container settings, Secrets and Skills kept Global"),
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentGetOutput),
+    name: HARNESS_TOOLS.environment_get.name,
+    description: HARNESS_TOOLS.environment_get.session.description,
+    parameters: HARNESS_TOOLS.environment_get.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_get.session.output),
     replay: "safe",
-    execute: ({ id }) =>
-      Effect.gen(function* () {
-        if (id === GLOBAL_ID) {
-          const kept = yield* environments.global;
-
-          return {
-            output: [{ type: "text" as const, text: describeGlobal(kept) }],
-            structuredOutput: asOutput(
-              EnvironmentGetOutput,
-              globalGetOutput(kept, { id: GLOBAL_ID, name: GLOBAL_NAME }),
-            ),
-            details: {
-              environment: { id: GLOBAL_ID, name: GLOBAL_NAME },
-              current: false,
-            },
-          };
-        }
-
-        const { environment, own } = yield* target(id);
-        const details = yield* environments.get(environment);
-
-        if (details === null) return yield* notFound(environment);
-
-        return {
-          output: [{ type: "text" as const, text: describeEnvironment(details, own) }],
-          structuredOutput: asOutput(EnvironmentGetOutput, environmentGetOutput(details, own)),
-          details: { environment: { id: details.id, name: details.name }, current: own },
-        };
-      }),
+    execute: (args) => Effect.map(getRead(args, "session"), toolResult),
   });
 
   const set = yield* defineEffectTool({

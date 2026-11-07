@@ -13,6 +13,7 @@ import {
   resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
 import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
+import { EnvironmentGetOutput, EnvironmentListOutput } from "@cloudpid/protocol/harness-tools";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type JsonObject,
@@ -41,7 +42,6 @@ import {
 import { Approvals } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
-import { EnvironmentGetOutput, EnvironmentListOutput } from "./environment-outputs.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
 import { EnvironmentChangeOutput } from "./outputs.ts";

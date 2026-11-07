@@ -32,9 +32,9 @@ import {
   declinedWith,
   withApproval,
 } from "./approvals.ts";
-import { type ChangedEnvironment, EnvironmentsError, idOrGlobal, Reason } from "./environment.ts";
+import { GLOBAL_ID, idOrGlobal } from "@cloudpid/protocol/harness-tools";
+import { type ChangedEnvironment, EnvironmentsError, Reason } from "./environment.ts";
 import { SkillUpdateOutput, skillUpdatedOutput } from "./environment-lifecycle-outputs.ts";
-import { GLOBAL_ID } from "./environment-secret-marks.ts";
 import {
   asJsonValue,
   named,

@@ -5,7 +5,8 @@ import { secretBuildField } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { GLOBAL_ID, GLOBAL_NAME, type SecretMarks } from "./environment-secret-marks.ts";
+import { GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/protocol/harness-tools";
+import type { SecretMarks } from "./environment-secret-marks.ts";
 
 /** A mark that fails when called, for a fake that serves the other tools only. */
 export const unusedSecretMarks: SecretMarks = {

@@ -24,6 +24,7 @@ import {
 import type { JsonValue } from "@earendil-works/chord";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import { GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/protocol/harness-tools";
 import type { ApprovalsService } from "./approvals.ts";
 import { approvedAlready } from "./approvals.ts";
 import {
@@ -39,7 +40,6 @@ import {
   skillRemovedOutput,
   skillSavedOutput,
 } from "./environment-lifecycle-outputs.ts";
-import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
 import { APPROVED } from "./outputs.ts";
 
 /** How the save of a Skill went. */

@@ -114,7 +114,17 @@ The endpoint serves the tools a Session's agent has for Environments and Setting
 - **Approval still applies.** The caller is the owner's model, never the owner's yes ([ADR-0041](../adr/0041-an-mcp-servers-elicitation-request-is-answered-only-by-the-owner-its-answer-is-never-kept-and-a-form-that-asks-for-a-credential-is-declined-unseen.md)). A change that waits for Approval in a Session waits for it over the endpoint, kept by the Registry ([ADR-0050](../adr/0050-an-approval-asked-through-the-mcp-endpoint-is-kept-by-the-registry-and-applied-by-the-owners-approve.md); [_Approvals with no Session_](#approvals-with-no-session)).
 - **What the agent changes through the endpoint is an Agent change** ([`agent-changes.md`](agent-changes.md)), recorded with who made it, listed under the Scope and revertible there.
 
-The stages below are not built yet; until a stage lands, its tools are not served (`describe().harness`). What differs from the in-session tools is stated here; everything else is as [`agent-changes.md`](agent-changes.md), [`mcp-configuration.md`](mcp-configuration.md) and [`agent-capabilities.md`](agent-capabilities.md) say.
+The stages below are built in order, and no stage serves its tools yet: until one does, `describe().harness` does not list them and the endpoint does not offer them. [_Built so far_](#built-so-far-s1b) says what exists. What differs from the in-session tools is stated here; everything else is as [`agent-changes.md`](agent-changes.md), [`mcp-configuration.md`](mcp-configuration.md) and [`agent-capabilities.md`](agent-capabilities.md) say.
+
+### Built so far: S1b
+
+The read tools are split into shared definitions and cores; the endpoint does not serve them yet (S1d wires the dispatcher, so none of the five tool names is in `MCP_TOOL_NAMES`).
+
+- **Definitions** are in `packages/protocol/src/harness-tools/` (`@cloudpid/protocol/harness-tools`): `environment_list`, `environment_get`, `settings_get`, `settings_mcp_list` and `settings_mcp_get`, with their input and output schemas, annotations and surface-dependent descriptions. An oxlint override in `packages/protocol/.oxlintrc.json` limits the folder's imports to `effect`, `@cloudpid/config` and its own files.
+- **Cores** are `packages/extensions/src/environment-reads.ts`, `settings-reads.ts` and `settings-mcp-reads.ts`, with shared helpers in `harness.ts` (`HarnessRead`, text cutting, field pages). Each core takes a `surface` and bounds; the in-session `defineEffectTool` wrappers call them with the session surface and the in-session bounds, and the session text and `tool_search` snapshot are unchanged. The in-session words, the Settings view and the error classes are in the leaves `environment-describe.ts` and `settings-describe.ts`, which the cores and the wrappers both import, so the two never import each other.
+- **Reads without a Session** are `environmentReads`, `settingsReads` and `settingsMcpReads` in `apps/server/src/session/`; the Session builders spread them, so the same reads serve a caller with no Session.
+- **Errors** carry an optional `code` (`not_found`, `invalid_argument`) for the dispatcher to map.
+- **Endpoint output** is built from the endpoint's structured value, not from the in-session text: flat objects with optional keys, `_truncated` flags, and a field page whose text ends in a `[Characters a-b of N …]` footer. `settings_mcp_get` leaves an entry or the layers out when they pass 4 KiB (`entry_truncated`, `layers.truncated`), and sheds parts until the answer fits 56 KiB.
 
 ### Shared definitions and the core/wrapper split
 

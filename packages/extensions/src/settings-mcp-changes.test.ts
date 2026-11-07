@@ -6,10 +6,10 @@
 // set resolved by the owner's resolver, the real widening check and the in-memory fake host, so what the tools find is what
 // the Registry would.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import type { FakeMcpServer } from "./mcp.testing.ts";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
-import { GLOBAL_SETTINGS_SCOPE } from "./settings.ts";
 import { nextToolKeys } from "./settings-mcp-changes.ts";
 import {
   DEFAULT,

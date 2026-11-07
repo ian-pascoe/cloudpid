@@ -6,7 +6,8 @@ import type {
   EnvironmentFootprint,
   EnvironmentRemovalService,
 } from "@cloudpid/extensions/approval-tools";
-import { EnvironmentsError, GLOBAL_ID } from "@cloudpid/extensions/environment";
+import { EnvironmentsError } from "@cloudpid/extensions/environment";
+import { GLOBAL_ID } from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type { Builds } from "../registry/builds.ts";

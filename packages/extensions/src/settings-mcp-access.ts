@@ -15,8 +15,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import type { Mutable } from "effect/Types";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import type { McpHostClientService } from "./mcp/client.ts";
-import { GLOBAL_SETTINGS_SCOPE, type SettingsAccessError } from "./settings.ts";
+import { type SettingsAccessError } from "./settings.ts";
 import { type Inventory, notRead } from "./settings-mcp-values.ts";
 
 /**
@@ -72,7 +73,7 @@ export class SettingsMcpAccess extends Context.Service<
  * nothing and has the host start no discovery (`demand: false`): it reads what the host holds, and starts no Container.
  */
 export const readInventory = (
-  access: SettingsMcpAccessService,
+  access: Pick<SettingsMcpAccessService, "host">,
   input: {
     readonly view: SettingsMcpView;
     readonly names?: ReadonlyArray<string>;

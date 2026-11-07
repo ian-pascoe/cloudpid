@@ -17,7 +17,8 @@ import type {
   EnvironmentsService,
   KeptSecretListing,
 } from "@cloudpid/extensions/environment";
-import { EnvironmentsError, GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/extensions/environment";
+import { EnvironmentsError } from "@cloudpid/extensions/environment";
+import { GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/protocol/harness-tools";
 import { containerOverridesFrom, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
 import type { BuildView } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -77,25 +78,6 @@ export type SessionEnvironmentsOptions = {
   readonly spares: Pick<Spares, "of">;
   /** What the agent does to an Environment's own record: make, rename, Repos, Build (`sessionLifecycle`). */
   readonly lifecycle: EnvironmentLifecycle;
-};
-
-const NO_BUILD: BuildView = { status: "none" };
-
-/** The Secrets `environment` uses, by name: its own, then those kept Global that it does not override. */
-const keptFor = (
-  environment: string,
-  records: Effect.Success<ReturnType<RegistryMethods["listEnvironmentSecrets"]>>,
-): ReadonlyArray<KeptSecretListing> => {
-  const own = Arr.filter(records, (record) => record.environment === environment);
-  const names = new Set(Arr.map(own, (record) => record.name));
-
-  return [
-    ...Arr.map(own, ({ name, build }) => ({ name, scope: "environment" as const, build })),
-    ...Arr.map(
-      Arr.filter(records, (record) => record.environment === null && !names.has(record.name)),
-      ({ name, build }) => ({ name, scope: "every" as const, build }),
-    ),
-  ];
 };
 
 /** An Environment as a change names it: its id and name. */
@@ -161,6 +143,107 @@ export const buildsAfterScope = (
 /** The error of a failed call to the Registry or the Workspace, as the model sees it. */
 const failedCall = (what: string) => (cause: unknown) =>
   EnvironmentsError.make({ message: `${what} failed: ${String(cause)}. Try again.` });
+
+/** What the Environments' reads use of the Registry: the endpoint's Registry stub fits it, as the Session's does. */
+export type EnvironmentReadsRegistry = Pick<
+  RegistryMethods,
+  | "listEnvironments"
+  | "listBuilds"
+  | "getEnvironment"
+  | "getEnvironmentSettings"
+  | "listEnvironmentSecrets"
+  | "listSkills"
+  | "getGlobalContainerSettings"
+>;
+
+const NO_BUILD: BuildView = { status: "none" };
+
+/** The Secrets `environment` uses, by name: its own, then those kept Global that it does not override. */
+const keptFor = (
+  environment: string,
+  records: Effect.Success<ReturnType<RegistryMethods["listEnvironmentSecrets"]>>,
+): ReadonlyArray<KeptSecretListing> => {
+  const own = Arr.filter(records, (record) => record.environment === environment);
+  const names = new Set(Arr.map(own, (record) => record.name));
+
+  return [
+    ...Arr.map(own, ({ name, build }) => ({ name, scope: "environment" as const, build })),
+    ...Arr.map(
+      Arr.filter(records, (record) => record.environment === null && !names.has(record.name)),
+      ({ name, build }) => ({ name, scope: "every" as const, build }),
+    ),
+  ];
+};
+
+/**
+ * The reads of the Session's `Environments`, which need no Session: the list of Environments with their Builds, one
+ * Environment's details, and what is kept Global, all the Registry's (`docs/architecture/mcp-endpoint.md` → Environment and
+ * Settings tools → Shared definitions: No Session). The Session spreads them into its service, adding `current`; the MCP
+ * endpoint builds them from its Registry alone.
+ */
+export const environmentReads = (
+  registry: EnvironmentReadsRegistry,
+): Pick<EnvironmentsService, "list" | "get" | "global"> => {
+  const buildsById = Effect.map(
+    registry.listBuilds(),
+    (builds) => new Map(Arr.map(builds, ({ environment, build }) => [environment, build] as const)),
+  );
+
+  return {
+    list: Effect.gen(function* () {
+      const environments = yield* registry.listEnvironments();
+      const byId = yield* buildsById;
+
+      return Arr.map(environments, ({ id, name, repos }): EnvironmentListing => ({
+        id,
+        name,
+        repos,
+        build: byId.get(id) ?? NO_BUILD,
+      }));
+    }),
+    get: (id) =>
+      Effect.gen(function* () {
+        const environment = yield* registry.getEnvironment({ id });
+        const state = yield* registry.getEnvironmentSettings({ environment: id });
+
+        if (environment === null || state === null) return null;
+
+        const byId = yield* buildsById;
+        const secrets = yield* registry.listEnvironmentSecrets();
+        const skills = yield* registry.listSkills({ environment: id });
+        const globalSkills = yield* registry.listSkills({ environment: GLOBAL_ID });
+
+        return {
+          id,
+          name: environment.name,
+          repos: environment.repos,
+          build: byId.get(id) ?? NO_BUILD,
+          settings: state.settings,
+          overrides: state.overrides,
+          global: state.global,
+          problem: state.problem,
+          secrets: keptFor(id, secrets),
+          skills: skills ?? [],
+          globalSkills: globalSkills ?? [],
+        } satisfies EnvironmentDetails;
+      }),
+    global: Effect.gen(function* () {
+      const { settings, overriddenIn } = yield* registry.getGlobalContainerSettings();
+      const secrets = yield* registry.listEnvironmentSecrets();
+      const skills = yield* registry.listSkills({ environment: GLOBAL_ID });
+
+      return {
+        settings,
+        overriddenIn,
+        skills: skills ?? [],
+        secrets: Arr.map(
+          Arr.filter(secrets, (record) => record.environment === null),
+          ({ name, build }): KeptSecretListing => ({ name, scope: "every", build }),
+        ),
+      };
+    }),
+  };
+};
 
 export const sessionEnvironments = ({
   registry,
@@ -284,66 +367,10 @@ export const sessionEnvironments = ({
     }),
   );
 
-  const buildsById = Effect.map(
-    registry.listBuilds(),
-    (builds) => new Map(Arr.map(builds, ({ environment, build }) => [environment, build] as const)),
-  );
-
   return {
     ...lifecycle,
+    ...environmentReads(registry),
     current: Effect.map(where, (known) => known?.environment ?? null),
-    list: Effect.gen(function* () {
-      const environments = yield* registry.listEnvironments();
-      const byId = yield* buildsById;
-
-      return Arr.map(environments, ({ id, name, repos }): EnvironmentListing => ({
-        id,
-        name,
-        repos,
-        build: byId.get(id) ?? NO_BUILD,
-      }));
-    }),
-    get: (id) =>
-      Effect.gen(function* () {
-        const environment = yield* registry.getEnvironment({ id });
-        const state = yield* registry.getEnvironmentSettings({ environment: id });
-
-        if (environment === null || state === null) return null;
-
-        const byId = yield* buildsById;
-        const secrets = yield* registry.listEnvironmentSecrets();
-        const skills = yield* registry.listSkills({ environment: id });
-        const globalSkills = yield* registry.listSkills({ environment: GLOBAL_ID });
-
-        return {
-          id,
-          name: environment.name,
-          repos: environment.repos,
-          build: byId.get(id) ?? NO_BUILD,
-          settings: state.settings,
-          overrides: state.overrides,
-          global: state.global,
-          problem: state.problem,
-          secrets: keptFor(id, secrets),
-          skills: skills ?? [],
-          globalSkills: globalSkills ?? [],
-        } satisfies EnvironmentDetails;
-      }),
-    global: Effect.gen(function* () {
-      const { settings, overriddenIn } = yield* registry.getGlobalContainerSettings();
-      const secrets = yield* registry.listEnvironmentSecrets();
-      const skills = yield* registry.listSkills({ environment: GLOBAL_ID });
-
-      return {
-        settings,
-        overriddenIn,
-        skills: skills ?? [],
-        secrets: Arr.map(
-          Arr.filter(secrets, (record) => record.environment === null),
-          ({ name, build }): KeptSecretListing => ({ name, scope: "every", build }),
-        ),
-      };
-    }),
     saveSkill: ({ environment, folder, files, expected, author }) =>
       Effect.gen(function* () {
         if (session === undefined) return yield* unlisted;

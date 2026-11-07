@@ -5,11 +5,11 @@
 // admit input, as after the owner's save.
 import {
   type AppliedSettingsChange,
-  GLOBAL_SETTINGS_SCOPE,
   SettingsAccessError,
   type SettingsAccessService,
   type SettingsView,
 } from "@cloudpid/extensions/settings";
+import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import type { RegistryMethods } from "../registry/Registry.ts";
@@ -35,12 +35,24 @@ export type SessionSettingsAccessOptions = {
 export const noEnvironment = (id: string) =>
   SettingsAccessError.make({
     message: `No Environment has the id ${JSON.stringify(id)}. Give scope "*" for Global, or an Environment's id as environment_list shows it.`,
+    code: "not_found",
   });
 
-export const sessionSettingsAccess = ({
-  registry,
-  session,
-}: SessionSettingsAccessOptions): SettingsAccessService => ({
+/** What the Settings' read uses of the Registry: the endpoint's Registry stub fits it, as the Session's does. */
+export type SettingsReadsRegistry = Pick<
+  RegistryMethods,
+  "getSettings" | "getSettingsOverrides" | "getEnvironment" | "mcpServerNames"
+>;
+
+/**
+ * The read of the Session's `SettingsAccess`, which needs no Session: the Settings of Global or of an Environment, with the
+ * count of MCP servers at the Scope (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → Shared
+ * definitions: No Session). The Session spreads it into its service, adding `own` and `change`; the MCP endpoint builds it
+ * from its Registry alone.
+ */
+export const settingsReads = (
+  registry: SettingsReadsRegistry,
+): Pick<SettingsAccessService, "get"> => ({
   get: (scope) =>
     scope === GLOBAL_SETTINGS_SCOPE
       ? Effect.suspend(() => registry.getSettings()).pipe(
@@ -78,6 +90,13 @@ export const sessionSettingsAccess = ({
                 }),
           ),
         ),
+});
+
+export const sessionSettingsAccess = ({
+  registry,
+  session,
+}: SessionSettingsAccessOptions): SettingsAccessService => ({
+  ...settingsReads(registry),
   own:
     session === undefined
       ? Effect.succeed(null)

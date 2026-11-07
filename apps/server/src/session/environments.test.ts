@@ -1,6 +1,6 @@
 // The Session's Environments over a fake Registry: what they read, and what follows a change (the handover to the
 // Session's own Workspace, and the Builds' upkeep).
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectRecord:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -10,7 +10,12 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { SecretBuildMark } from "../registry/secret-changes.ts";
 import { unusedLifecycle } from "./environments.fixture.ts";
-import { type EnvironmentsRegistry, sessionEnvironments } from "./environments.ts";
+import {
+  type EnvironmentReadsRegistry,
+  environmentReads,
+  type EnvironmentsRegistry,
+  sessionEnvironments,
+} from "./environments.ts";
 import { workspacePlacement } from "./workspace.ts";
 
 const DEFAULT = { id: "default", name: "Default", repos: [], createdAt: 0 };
@@ -955,5 +960,83 @@ describe("the Session's Environments", () => {
       expect(handedOver).toEqual([]);
       expect(upkept).toEqual([]);
     }
+  });
+});
+
+describe("the Environments' reads", () => {
+  /** A Registry that answers the reads and nothing else: all the endpoint has, with no Session. */
+  const readsRegistry = () =>
+    // SAFETY: the reads call these seven methods only; any other call fails the test.
+    ({
+      listEnvironments: () => Effect.succeed([DEFAULT, OTHER]),
+      listBuilds: () =>
+        Effect.succeed([{ environment: "default", build: { status: "ready", at: 5 } as const }]),
+      getEnvironment: ({ id }: { readonly id: string }) =>
+        Effect.succeed(
+          Arr.findFirst([DEFAULT, OTHER], (each) => each.id === id).pipe(Option.getOrNull),
+        ),
+      getEnvironmentSettings: ({ environment }: { readonly environment: string }) =>
+        Effect.succeed(
+          environment === "default"
+            ? {
+                settings: { ...GLOBAL_SETTINGS, idleMinutes: 30 },
+                global: GLOBAL_SETTINGS,
+                overrides: { idleMinutes: 30 },
+              }
+            : null,
+        ),
+      listEnvironmentSecrets: () =>
+        Effect.succeed([
+          { environment: "default", name: "API_KEY", build: true, updatedAt: 0 },
+          { environment: null, name: "NPM_TOKEN", build: false, updatedAt: 0 },
+        ]),
+      listSkills: ({ environment }: { readonly environment: string }) =>
+        Effect.succeed(SKILLS_KEPT.get(environment) ?? []),
+      getGlobalContainerSettings: () =>
+        Effect.succeed({
+          settings: GLOBAL_SETTINGS,
+          overrides: { variables: GLOBAL_VARIABLES },
+          overriddenIn: { idleMinutes: [{ id: "default", name: "Default" }] },
+        }),
+    }) as EnvironmentReadsRegistry;
+
+  it("are built from a Registry alone: a list, details and what is kept Global, and nothing of a Session", async () => {
+    const reads = environmentReads(readsRegistry());
+
+    expect(Object.keys(reads).sort()).toEqual(["get", "global", "list"]);
+
+    expect(await Effect.runPromise(reads.list)).toEqual([
+      { id: "default", name: "Default", repos: [], build: { status: "ready", at: 5 } },
+      { id: "0000abcd", name: "Other", repos: [], build: { status: "none" } },
+    ]);
+
+    expect(await Effect.runPromise(reads.get("default"))).toMatchObject({
+      id: "default",
+      settings: { idleMinutes: 30 },
+      overrides: { idleMinutes: 30 },
+      secrets: [
+        { name: "API_KEY", scope: "environment", build: true },
+        { name: "NPM_TOKEN", scope: "every", build: false },
+      ],
+      skills: [{ name: "release" }],
+      globalSkills: [{ name: "shared" }],
+    });
+
+    expect(await Effect.runPromise(reads.get("ghost"))).toBeNull();
+
+    expect(await Effect.runPromise(reads.global)).toMatchObject({
+      settings: GLOBAL_SETTINGS,
+      overriddenIn: { idleMinutes: [{ id: "default", name: "Default" }] },
+    });
+  });
+
+  it("answer a Session's Environments the same as they answer without it", async () => {
+    const { environments } = open();
+    const reads = environmentReads(readsRegistry());
+
+    expect(await Effect.runPromise(reads.list)).toEqual(await Effect.runPromise(environments.list));
+    expect(await Effect.runPromise(reads.get("default"))).toEqual(
+      await Effect.runPromise(environments.get("default")),
+    );
   });
 });

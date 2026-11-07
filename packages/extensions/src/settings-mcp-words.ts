@@ -4,15 +4,15 @@
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off globalJsonInEffect:off globalDate:off -- text built from plain values.
 import * as Arr from "effect/Array";
 import type * as Schema from "effect/Schema";
-import { GLOBAL_SETTINGS_SCOPE } from "./settings.ts";
-import type {
-  InventoryRead,
-  ListServerOutput,
-  McpSourceOutput,
-  SettingsMcpGetOutput,
-  SettingsMcpListOutput,
-  SettingsMcpReloadOutput,
-} from "./settings-mcp-outputs.ts";
+import {
+  GLOBAL_SETTINGS_SCOPE,
+  type InventoryRead,
+  type ListServerOutput,
+  type McpSourceOutput,
+  type SettingsMcpGetOutput,
+  type SettingsMcpListOutput,
+} from "@cloudpid/protocol/harness-tools";
+import type { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
 
 const INVENTORY_WORDS: Readonly<Record<typeof InventoryRead.Type, string>> = {
   read: "State, counts and tools are what the Environment's MCP host already holds; nothing was connected, discovered or started to read them.",
@@ -153,7 +153,8 @@ const cutNote = (value: Schema.Json): string | null => {
     : `Cut to fit: ${Arr.join(Arr.fromIterable(cut), ", ")} (the value's *_truncated flags say which).`;
 };
 
-export const describeList = (out: typeof SettingsMcpListOutput.Type): string => {
+/** A list's value, whichever surface gave it: only the Session's marks its own Scope. */
+export const describeList = (out: Omit<typeof SettingsMcpListOutput.Type, "is_own">): string => {
   const lines = [
     `MCP servers of ${scopeWords(out.scope)}: ${out.servers.length}${out.servers_truncated ? "+ (the list was cut)" : ""}. ${out.scope.id === GLOBAL_SETTINGS_SCOPE ? "Global's own entries only: an Environment's set adds its own entries and its Repos'. " : ""}${INVENTORY_WORDS[out.inventory]}`,
   ];
@@ -208,11 +209,20 @@ const decidedWords = (decided: { readonly kind: string; readonly key: string | n
   }
 };
 
-export const describeGet = (out: typeof SettingsMcpGetOutput.Type): string => {
+/**
+ * A server's value, whichever surface gave it: only the Session's marks its own Scope; the endpoint's leaves out the entry
+ * and the layers as written when they are too large.
+ */
+type GetShown = Omit<typeof SettingsMcpGetOutput.Type, "is_own" | "entry" | "layers"> & {
+  readonly entry: Schema.Json | null;
+  readonly layers: typeof SettingsMcpGetOutput.Type.layers & { readonly truncated?: boolean };
+};
+
+export const describeGet = (out: GetShown): string => {
   const lines = [
     `MCP server ${JSON.stringify(out.server.name)} of ${scopeWords(out.scope)}. ${INVENTORY_WORDS[out.inventory]}`,
     ...serverLines(out.server),
-    `Entry in force (every default and adjustment applied, \${NAME} unresolved):\n${json(out.entry)}`,
+    `Entry in force (every default and adjustment applied, \${NAME} unresolved):\n${out.entry === null ? "too large to show here" : json(out.entry)}`,
     "Layers as written:",
   ];
 
@@ -232,10 +242,13 @@ export const describeGet = (out: typeof SettingsMcpGetOutput.Type): string => {
     );
   }
 
+  if (out.layers.truncated === true) lines.push("- a layer as written was too large to show here");
+
   if (
     out.layers.global === null &&
     out.layers.environment === null &&
-    out.layers.repos.length === 0
+    out.layers.repos.length === 0 &&
+    out.layers.truncated !== true
   ) {
     lines.push("- none");
   }
