@@ -1,5 +1,7 @@
 // @effect-diagnostics globalJsonInEffect:off -- the payload is JSON text for the service worker, not a parsed value.
-// Sending a Session's notification to every subscribed browser (`docs/architecture/client-and-protocol.md` → Notifications).
+// Sending a notification to every subscribed browser (`docs/architecture/client-and-protocol.md` → Notifications →
+// Sending): a Session's (`pushNotifier`), or any payload (`pushToAll`), such as a Trigger's failed Fire, which opens its
+// Environment's Triggers section (`describeTriggerFailure`).
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
