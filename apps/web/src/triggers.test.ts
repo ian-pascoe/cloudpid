@@ -6,6 +6,7 @@ import {
   nextFireOf,
   outcomeWords,
   previewFires,
+  scheduleWords,
   sourceWords,
   triggerDraftOf,
   triggerDraftProblems,
@@ -134,5 +135,26 @@ describe("a Trigger's row and fire log", () => {
         "UTC",
       ),
     ).toBe("Fire now");
+    expect(
+      sourceWords(
+        {
+          key: "t1:d-1",
+          at: MONDAY,
+          source: { type: "webhook", delivery: "d-1", event: "push" },
+          outcome: { type: "unknown" },
+        },
+        "UTC",
+      ),
+    ).toBe("Webhook delivery d-1");
+  });
+
+  it("names a webhook Trigger's format where a Schedule's cron goes, and gives it no next Fire", () => {
+    const hook: TriggerDefinition = {
+      ...DEFINITION,
+      source: { type: "webhook", format: "github" },
+    };
+
+    expect(scheduleWords(hook)).toBe("Webhook · github");
+    expect(nextFireOf(hook, MONDAY)).toBeNull();
   });
 });

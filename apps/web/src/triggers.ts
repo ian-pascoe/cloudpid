@@ -11,6 +11,8 @@ import {
   fireTimeWords,
   nextFires,
   scheduleOf,
+  type ScheduleSource,
+  webhookOf,
   scheduleProblem,
   type TriggerDefinition,
   triggerMessageProblem,
@@ -106,8 +108,10 @@ const thinkingOf = (text: string): ThinkingLevel | undefined =>
   isThinkingLevel(text) ? text : undefined;
 
 /** The new Trigger `draft` makes: the owner's own, active. */
-export const triggerInput = (draft: TriggerDraft): EnvironmentTriggerInput => {
-  const input: Types.Mutable<EnvironmentTriggerInput> = {
+export const triggerInput = (
+  draft: TriggerDraft,
+): EnvironmentTriggerInput & { readonly source: ScheduleSource } => {
+  const input: Types.Mutable<EnvironmentTriggerInput & { source: ScheduleSource }> = {
     kind: "environment",
     environment: draft.environment,
     name: draft.name.trim(),
@@ -160,6 +164,9 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
 /** A Trigger's Schedule as its row says it: "0 9 * * 1 · America/Chicago". */
 export const scheduleWords = (definition: TriggerDefinition): string => {
   const schedule = scheduleOf(definition);
+  const webhook = webhookOf(definition);
+
+  if (webhook !== undefined) return `Webhook · ${webhook.format}`;
 
   return schedule === undefined
     ? "A source this version can't read"
@@ -198,6 +205,8 @@ export const sourceWords = (fire: FireRecord, zone: string): string => {
   switch (fire.source.type) {
     case "schedule":
       return `Scheduled for ${fireTimeWords(fire.source.scheduledAt, zone)}`;
+    case "webhook":
+      return `Webhook delivery ${fire.source.delivery}`;
     case "manual":
       return "Fire now";
     case "unknown":
