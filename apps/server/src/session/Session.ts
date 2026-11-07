@@ -44,7 +44,7 @@ import * as Redacted from "effect/Redacted";
 import * as Tracer from "effect/Tracer";
 import { githubAppKeyForms } from "../github/app.ts";
 import { GitHubAppConfig } from "../github/config.ts";
-import { LOCAL_MODE_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
+import { APP_ORIGIN_VAR, LOCAL_MODE_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
 import { viewOrigin } from "../view-host.ts";
 import { visualViewHash } from "../view-hash.ts";
 import { sessionVisuals, sessionVisualsLayer } from "./visuals-store.ts";
@@ -612,10 +612,16 @@ export const SessionLive = Session.make(
         // SAFETY: the Server Worker binds the Images binding as `IMAGES` (`worker.ts`).
         const images = worker[IMAGES_BINDING] as ImagesBinding;
 
+        // The Self-use rule's origin: set on live stages only, never taken from a request.
+        const appOrigin = Predicate.isString(worker[APP_ORIGIN_VAR])
+          ? worker[APP_ORIGIN_VAR]
+          : undefined;
+
         // The `settings_mcp_*` tools' read of the Registry, and their pushes of a changed set.
         const settingsMcp = sessionSettingsMcpAccess({
           registry: registries.getByName(REGISTRY_NAME),
           session: name,
+          appOrigin,
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
           workspace: Effect.tryPromise(() => placement()).pipe(
             Effect.map(({ workspace: id, object }) => (id === null ? null : object)),
@@ -718,6 +724,7 @@ export const SessionLive = Session.make(
           sampling: mcpSampling.service,
           signIns: mcpSignIns.service,
           session: name,
+          appOrigin,
           run: (effect) => runtime.runPromise(effect),
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
           kv,

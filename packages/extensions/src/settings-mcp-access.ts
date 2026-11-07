@@ -60,6 +60,11 @@ export type SettingsMcpAccessService = {
    * it ran; null with none, and absent from a fake that never asks.
    */
   readonly workspace?: Effect.Effect<string | null> | undefined;
+  /**
+   * This stage's app origin, the Session's Self-use rule's (`docs/architecture/mcp-endpoint.md` → Self-use): a server at its
+   * `/mcp` is shown with the tools Self-use hides as `model_visible: false`, not counted as `direct`. Absent: no rule.
+   */
+  readonly appOrigin?: string | undefined;
 };
 
 export class SettingsMcpAccess extends Context.Service<

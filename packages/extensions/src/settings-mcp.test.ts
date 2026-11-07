@@ -37,6 +37,7 @@ import { Approvals } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
 import { AgentChangeLog, DeployCredentials } from "./environment.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
+import { serverStatus } from "./settings-mcp-status.ts";
 import { SettingsAccess, SettingsAccessError, SettingsReload } from "./settings.ts";
 import {
   SETTINGS_MCP_READ_TOOLS,
@@ -1150,6 +1151,101 @@ describe("settings_mcp_get", () => {
     });
     expect(text(result)).toContain("Tools: not given");
     expect(host.calls).toEqual([]);
+  });
+});
+
+describe("the Session's own endpoint (Self-use)", () => {
+  const ORIGIN = "https://cloudpid.test";
+
+  // The fake host names a server's URL `https://<name>.test/mcp`, so `cloudpid` is the endpoint at `ORIGIN`.
+  const endpoint: FakeMcpServer = {
+    name: "cloudpid",
+    exposure: "direct",
+    tools: [
+      { name: "environment_list" },
+      { name: "settings_mcp_get" },
+      { name: "session_get" },
+      { name: "sessions_list" },
+    ],
+  };
+
+  const endpointView = viewOf([
+    served(resolved("cloudpid", { exposure: "direct", url: `${ORIGIN}/mcp` })),
+  ]);
+
+  const get = async (appOrigin: string | undefined) => {
+    const access = fakeAccess({ views: { [ENV]: endpointView } });
+    const host = fakeMcpHost([endpoint]);
+    const tool = await toolsOver({ ...access.service, appOrigin }, host.client);
+
+    return run(tool("settings_mcp_get"), { scope: ENV, name: "cloudpid" });
+  };
+
+  it("shows the tools it hides as model_visible: false, and counts none of them as direct", async () => {
+    const result = await get(ORIGIN);
+
+    expect(result.structuredOutput).toMatchObject({
+      server: { inventory: { tools: 4, direct: 2 } },
+      tool_count: 4,
+      tools: [
+        { name: "environment_list", exposure: "direct", model_visible: false },
+        { name: "settings_mcp_get", exposure: "direct", model_visible: false },
+        { name: "session_get", exposure: "direct", model_visible: true },
+        { name: "sessions_list", exposure: "direct", model_visible: true },
+      ],
+    });
+  });
+
+  it("counts them in settings_mcp_list the same way", async () => {
+    const access = fakeAccess({ views: { [ENV]: endpointView } });
+    const host = fakeMcpHost([endpoint]);
+    const tool = await toolsOver({ ...access.service, appOrigin: ORIGIN }, host.client);
+
+    const result = await run(tool("settings_mcp_list"), { scope: ENV });
+
+    expect(result.structuredOutput).toMatchObject({
+      servers: [{ name: "cloudpid", inventory: { tools: 4, direct: 2 } }],
+    });
+  });
+
+  it("leaves them out of the direct count of the status after a change", async () => {
+    const access = fakeAccess({ views: { [ENV]: endpointView } });
+    const host = fakeMcpHost([endpoint]);
+
+    const entry = Option.getOrThrow(Arr.head(endpointView.servers));
+
+    const status = (appOrigin: string | undefined) =>
+      Effect.runPromise(
+        serverStatus(
+          { ...access.service, host: () => host.client, appOrigin },
+          {
+            own: ENV,
+            entry,
+            offered: [],
+            waitMs: 0,
+            before: () => Effect.void,
+          },
+        ),
+      );
+
+    expect(await status(ORIGIN)).toMatchObject({ status: "connected", tools: 4, direct: 2 });
+    expect(await status(undefined)).toMatchObject({ status: "connected", tools: 4, direct: 4 });
+  });
+
+  it("shows every tool as visible and direct from another origin, and with no appOrigin", async () => {
+    for (const appOrigin of ["https://other.test", undefined]) {
+      const result = await get(appOrigin);
+
+      expect(result.structuredOutput).toMatchObject({
+        server: { inventory: { tools: 4, direct: 4 } },
+        tools: [
+          { model_visible: true },
+          { model_visible: true },
+          { model_visible: true },
+          { model_visible: true },
+        ],
+      });
+    }
   });
 });
 

@@ -1,3 +1,4 @@
+import { MCP_ROUTE } from "@cloudpid/protocol/mcp-api";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { expect, it } from "vitest";
 import {
@@ -76,4 +77,8 @@ it("knows the MCP endpoint by exactly /mcp, whatever the method", () => {
   expect(isMcpRoute(request("POST", "/MCP"))).toBe(false);
   expect(isMcpRoute(request("POST", "/mcp/sub"))).toBe(false);
   expect(isMcpRoute(request("POST", "/rpc"))).toBe(false);
+});
+
+it("serves the path @cloudpid/protocol names for the endpoint", () => {
+  expect(isMcpRoute(request("POST", MCP_ROUTE))).toBe(true);
 });

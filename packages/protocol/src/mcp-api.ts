@@ -59,6 +59,12 @@ export const DEFAULT_TRANSCRIPT_CHARS = 12_000;
 /** The most entries one transcript page holds. */
 export const MAX_TRANSCRIPT_ENTRIES = 200;
 
+/**
+ * The MCP endpoint's path (`docs/architecture/mcp-endpoint.md` → The handler, Self-use): exactly this, every method. The
+ * main Worker routes it and the Session's Self-use rule (`isOwnEndpoint`) matches it.
+ */
+export const MCP_ROUTE = "/mcp";
+
 /** The twelve tools, snake_case, no prefix (clients add `mcp__cloudpid__`). */
 export const MCP_TOOL_NAMES = [
   "environments_list",

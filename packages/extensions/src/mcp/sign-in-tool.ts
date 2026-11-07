@@ -7,7 +7,7 @@
 // owner signs in from the card (`./sign-in.ts` keeps the request, durably).
 import { mcpServerNamespace, signsInOnItsOwn } from "@cloudpid/config";
 import { ChordContext, reachedWait } from "@cloudpid/effect-durable";
-import { isJsonObject, type JsonObject } from "@cloudpid/mcp/types";
+import { isJsonObject, type JsonObject, type McpServerInventory } from "@cloudpid/mcp/types";
 import { MAX_SIGN_IN_REASON } from "@cloudpid/protocol";
 import type { JsonValue } from "@earendil-works/chord";
 import type {
@@ -24,7 +24,7 @@ import type { McpHostClientService } from "./client.ts";
 import type { McpDetails } from "./details.ts";
 import { failedWith } from "./result.ts";
 import { MCP_SIGN_IN_TOOL, type McpSignInOutcome, type McpSignInsService } from "./sign-in.ts";
-import type { McpBuildServer } from "./tools.ts";
+import { listedTools, type McpBuildServer } from "./tools.ts";
 
 /** How long a sign-in's server is waited for to connect before the answer says it is still connecting, in ms. */
 export const MCP_SIGN_IN_CONNECT_WAIT_MS = 10_000;
@@ -224,7 +224,8 @@ export const signInTool = (
       const waited = await Effect.runPromise(
         client.servers({
           names: [name],
-          parts: [],
+          // The own endpoint's tools are named, so the count leaves out the ones Self-use hides (`listedTools`).
+          parts: named.ownEndpoint === true ? ["tools"] : [],
           waitMs: options.connectWaitMs ?? MCP_SIGN_IN_CONNECT_WAIT_MS,
         }),
       );
@@ -236,9 +237,16 @@ export const signInTool = (
 
       const kept: McpDetails = { ...details, sign_in_request: "signed_in" };
 
+      const countOf = (found: McpServerInventory): number =>
+        named.ownEndpoint === true
+          ? listedTools({ tools: found.tools ?? [], ownEndpoint: true }).length
+          : found.counts.tools;
+
+      const arriving = server === undefined ? 0 : countOf(server);
+
       const text =
         server?.state === "connected"
-          ? `Signed in to ${name}. ${String(server.counts.tools)} tools from your next request.`
+          ? `Signed in to ${name}. ${String(arriving)} tools from your next request.`
           : `Signed in to ${name}; it is still connecting, so its tools will arrive from a later request.`;
 
       return { output: [{ type: "text", text }], details: kept };

@@ -65,7 +65,7 @@ import { withElicitation } from "./elicit.ts";
 import { MCP_SCRIPT_TIMED_OUT_REASON } from "./question-records.ts";
 import type { McpQuestionsService } from "./questions.ts";
 import { withSampling } from "./sample.ts";
-import { exposureKeys, flagsOf, isReachable, reachesModel } from "./exposure.ts";
+import { exposureKeys, flagsOf, isReachable, reachesModel, selfUseHides } from "./exposure.ts";
 import { taskFollower } from "./task-follow.ts";
 import type { TaskAsking } from "./task-questions.ts";
 import { resultPool } from "./task-results.ts";
@@ -134,6 +134,11 @@ export const McpBuildServer = Schema.Struct({
   completions: Schema.optionalKey(Schema.Boolean),
   /** Whether the entry can need an owner's sign-in (`signsIn`): `mcp_sign_in_ask` is registered when one can. */
   signIn: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Whether the entry's URL is this stage's own MCP endpoint (`isOwnEndpoint`): the Self-use rule then lists none of the
+   * tools the Session has in-session twins of (`listedTools`). Computed where the entry is in hand, since this drops the URL.
+   */
+  ownEndpoint: Schema.optionalKey(Schema.Boolean),
 });
 
 export type McpBuildServer = typeof McpBuildServer.Type;
@@ -153,11 +158,19 @@ type ToolDeclaration = typeof ToolDeclaration.Type;
 
 const decodeTool = Schema.decodeUnknownOption(ToolDeclaration);
 
-/** The tools of `server`'s inventory that this build can read, in the server's order. */
+/**
+ * The tools of `server`'s inventory that this build can read, in the server's order. The Session's own endpoint lists none
+ * that Self-use hides (`selfUseHides`), so no registration, section line or MCP App request reaches one.
+ */
 export const listedTools = (
-  server: Pick<McpBuildServer, "tools">,
+  server: Pick<McpBuildServer, "tools" | "ownEndpoint">,
 ): ReadonlyArray<ToolDeclaration> =>
-  Arr.filterMap(server.tools ?? [], (tool) => Result.fromOption(decodeTool(tool), () => undefined));
+  Arr.filter(
+    Arr.filterMap(server.tools ?? [], (tool) =>
+      Result.fromOption(decodeTool(tool), () => undefined),
+    ),
+    (tool) => server.ownEndpoint !== true || !selfUseHides(tool.name),
+  );
 
 /** A tool's `inputSchema` as its parameters: an object schema, or a loose object for anything else. */
 const parametersOf = (tool: ToolDeclaration): JsonObject => {

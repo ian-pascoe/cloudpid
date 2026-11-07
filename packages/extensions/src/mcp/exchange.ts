@@ -139,6 +139,12 @@ export type McpToolOptions = {
    */
   readonly signIns?: McpSignInsService | undefined;
   readonly environment?: string | undefined;
+  /**
+   * This stage's app origin (`CLOUDPID_APP_ORIGIN`): a server whose URL is its `/mcp` is the Session's own endpoint
+   * (`isOwnEndpoint`), which lists none of the tools the Session has in-session twins of. Absent (`alchemy dev`): the rule
+   * is off.
+   */
+  readonly appOrigin?: string | undefined;
   /** How long a signed-in server is waited for to connect, `MCP_SIGN_IN_CONNECT_WAIT_MS` unless a test shortens it. */
   readonly connectWaitMs?: number | undefined;
   /** The extension's system prompt sections: the `mcp_servers` section (`./servers.ts`). */

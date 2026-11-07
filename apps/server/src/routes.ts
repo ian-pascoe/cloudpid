@@ -1,4 +1,5 @@
 import { RPC_PATH } from "@cloudpid/protocol";
+import { MCP_ROUTE } from "@cloudpid/protocol/mcp-api";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 
 // The main Worker's routes (`docs/architecture/client-and-protocol.md`). Every one sits behind the Access guard (`access.ts`),
@@ -16,9 +17,6 @@ const ASSETS_PREFIX = "/assets/";
 // are matched on the path as it was sent instead (`rawPathOf`, sign-in-routes.ts); do not unify the two.
 const pathOf = (request: HttpServerRequest.HttpServerRequest) =>
   new URL(request.url, "http://localhost").pathname;
-
-/** The MCP endpoint's path (`docs/architecture/mcp-endpoint.md` → The handler): exactly this, every method. */
-export const MCP_ROUTE = "/mcp";
 
 /**
  * Whether `request` is for the MCP endpoint: its path, normalised as the router reads every path, is exactly `/mcp`. The
