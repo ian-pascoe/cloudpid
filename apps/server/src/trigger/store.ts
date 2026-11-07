@@ -1,13 +1,17 @@
 // The `Trigger` object's storage (`docs/architecture/triggers.md` → The Trigger object and the Registry): the definition
 // it caches at a revision, how far its Schedule was handled, its pending Fires and its fire log (the last
 // `MAX_FIRE_LOG`). Synchronous over the object's SQLite. Migrations only add, and each shipped one has its digest in
-// `migrations.manifest.ts`. The object opens it at its first use (`object.ts`), and a read of an object that has no
+// `migrations.manifest.ts`. The webhook parts (migration 2): the token and Signing secret, sealed, with the token's
+// keyed hash; the per-day counts of refused and filtered deliveries (kept `COUNT_DAYS`); the time of the last delivery
+// and of GitHub's ping; the last delivered body, for Fire again; and the payload a pending Fire carries. The object opens it at its first use (`object.ts`), and a read of an object that has no
 // storage (never synced, or wiped) answers empty without opening it (`hasTriggerStore`), so a read never makes the
 // tables of a removed Trigger again.
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- store operations over SQLite and JSON text.
 import { type Migration, migrate, type MigrationStorage } from "@cloudpid/effect-durable/sqlite";
+import { SealedValue } from "@cloudpid/extensions/secrets/core";
 import {
   FireOutcome,
+  FirePayload,
   type FireRecord,
   FireSource,
   MAX_FIRE_LOG,
@@ -50,7 +54,54 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   (sql) => {
     sql.exec("ALTER TABLE trigger_pending ADD COLUMN coalesced INTEGER");
   },
+  // 3: the webhook parts, all additive: a pending Fire's `payload` (JSON `FirePayload` without its body) and `body`
+  // (the body, when it was kept); `trigger_secrets`, the one row of the sealed token and Signing secret (JSON
+  // `SealedValue`s) with the token's keyed hash; `trigger_counts`, the deliveries refused or filtered, per UTC day and
+  // outcome; `trigger_hook`, the one row with the time of the last authentic delivery, of GitHub's last ping, and the
+  // last accepted delivery's payload and body (what Fire again sends).
+  (sql) => {
+    sql.exec("ALTER TABLE trigger_pending ADD COLUMN payload TEXT");
+    sql.exec("ALTER TABLE trigger_pending ADD COLUMN body TEXT");
+    sql.exec(`CREATE TABLE trigger_secrets (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      token TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      token_hash TEXT NOT NULL
+    ) STRICT`);
+    sql.exec(`CREATE TABLE trigger_counts (
+      day TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      n INTEGER NOT NULL,
+      PRIMARY KEY (day, outcome)
+    ) STRICT`);
+    sql.exec(`CREATE TABLE trigger_hook (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      last_delivery_at INTEGER,
+      ping_at INTEGER,
+      last_payload TEXT,
+      last_body TEXT
+    ) STRICT`);
+  },
 ];
+
+/** How many UTC days the per-day counts of refused and filtered deliveries are kept, today's included. */
+export const COUNT_DAYS = 30;
+
+/** What the object keeps of a Trigger's token and Signing secret: both sealed, and the token's keyed hash. */
+export type KeptSecrets = {
+  readonly token: SealedValue;
+  readonly secret: SealedValue;
+  readonly tokenHash: string;
+};
+
+/** The deliveries refused or filtered on one UTC day (`day`, `YYYY-MM-DD`), by outcome. */
+export type DayCount = { readonly day: string; readonly outcome: string; readonly n: number };
+
+/** What the object says of the deliveries it took: its last authentic delivery's time, and GitHub's last ping's. */
+export type HookState = {
+  readonly lastDeliveryAt: number | undefined;
+  readonly pingAt: number | undefined;
+};
 
 /**
  * A Fire waiting in the object: its key, what made it, when to try it next, and the Session `admitFire` registered for
@@ -69,6 +120,8 @@ export type PendingFire = {
    * while it does not wait.
    */
   readonly waiting: { readonly merged: number } | undefined;
+  /** What the delivery gave a webhook Fire (and Fire again's), with its body when it was kept. */
+  readonly payload: FirePayload | undefined;
 };
 
 type MetaRow = { readonly definition: string; readonly cursor: number | null };
@@ -81,6 +134,8 @@ type PendingRow = {
   readonly attempts: number;
   readonly session: string | null;
   readonly coalesced: number | null;
+  readonly payload: string | null;
+  readonly body: string | null;
 };
 
 type FireRow = {
@@ -100,6 +155,31 @@ const decodeOutcome = Schema.decodeUnknownOption(Schema.fromJsonString(FireOutco
 const sourceOf = (text: string): FireSource =>
   Option.getOrElse(decodeSource(text), () => ({ type: "unknown" as const }));
 
+const decodePayload = Schema.decodeUnknownOption(Schema.fromJsonString(FirePayload));
+
+const decodeSealed = Schema.decodeUnknownOption(Schema.fromJsonString(SealedValue));
+
+/** A kept payload and its body as the Fire's `FirePayload`, or undefined when there is none or it no longer reads. */
+const payloadOf = (payload: string | null, body: string | null): FirePayload | undefined => {
+  const read = payload === null ? undefined : Option.getOrUndefined(decodePayload(payload));
+
+  if (read === undefined) return undefined;
+
+  return body === null ? read : { ...read, body };
+};
+
+/** `payload` as its row keeps it: the JSON without the body, and the body apart. */
+const payloadRow = (payload: FirePayload | undefined): [string | null, string | null] => {
+  if (payload === undefined) return [null, null];
+
+  const { body, ...rest } = payload;
+
+  return [JSON.stringify(rest), body ?? null];
+};
+
+/** The UTC day of `at` (ms), `YYYY-MM-DD`. */
+export const dayOf = (at: number): string => new Date(at).toISOString().slice(0, 10);
+
 const toPending = (row: PendingRow): PendingFire => ({
   key: row.key,
   source: sourceOf(row.source),
@@ -108,6 +188,7 @@ const toPending = (row: PendingRow): PendingFire => ({
   attempts: row.attempts,
   session: row.session ?? undefined,
   waiting: row.coalesced === null ? undefined : { merged: row.coalesced },
+  payload: payloadOf(row.payload, row.body),
 });
 
 /**
@@ -158,15 +239,19 @@ export const openTriggerStore = (storage: MigrationStorage) => {
         toPending,
       ),
 
-    /** Keep a pending Fire, unless one of its key is pending already. */
-    enqueue: (key: string, source: FireSource, now: number): void => {
+    /** Keep a pending Fire (with a webhook's `payload`), unless one of its key is pending already. */
+    enqueue: (key: string, source: FireSource, now: number, payload?: FirePayload): void => {
+      const [kept, body] = payloadRow(payload);
+
       sql.exec(
-        `INSERT INTO trigger_pending (key, source, queued_at, next_try_at) VALUES (?, ?, ?, ?)
+        `INSERT INTO trigger_pending (key, source, queued_at, next_try_at, payload, body) VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (key) DO NOTHING`,
         key,
         JSON.stringify(source),
         now,
         now,
+        kept,
+        body,
       );
     },
 
@@ -231,6 +316,105 @@ export const openTriggerStore = (storage: MigrationStorage) => {
           MAX_FIRE_LOG,
         );
       });
+    },
+
+    /** The sealed token and Signing secret, or undefined while the object holds none (or they no longer read). */
+    secrets: (): KeptSecrets | undefined => {
+      const row = sql
+        .exec<{ token: string; secret: string; token_hash: string }>(
+          "SELECT token, secret, token_hash FROM trigger_secrets WHERE id = 1",
+        )
+        .toArray()[0];
+
+      if (row === undefined) return undefined;
+
+      const token = decodeSealed(row.token);
+      const secret = decodeSealed(row.secret);
+
+      return Option.isSome(token) && Option.isSome(secret)
+        ? { token: token.value, secret: secret.value, tokenHash: row.token_hash }
+        : undefined;
+    },
+
+    /** Keep `secrets` as the object's token and Signing secret, in place of any it held. */
+    keepSecrets: (secrets: KeptSecrets): void => {
+      sql.exec(
+        `INSERT INTO trigger_secrets (id, token, secret, token_hash) VALUES (1, ?, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET token = excluded.token, secret = excluded.secret, token_hash = excluded.token_hash`,
+        JSON.stringify(secrets.token),
+        JSON.stringify(secrets.secret),
+        secrets.tokenHash,
+      );
+    },
+
+    /** Count a delivery refused or filtered, on the UTC day of `at`; days older than `COUNT_DAYS` are dropped. */
+    count: (outcome: string, at: number): void => {
+      storage.transactionSync(() => {
+        sql.exec(
+          `INSERT INTO trigger_counts (day, outcome, n) VALUES (?, ?, 1)
+             ON CONFLICT (day, outcome) DO UPDATE SET n = n + 1`,
+          dayOf(at),
+          outcome,
+        );
+        sql.exec("DELETE FROM trigger_counts WHERE day <= ?", dayOf(at - COUNT_DAYS * 86_400_000));
+      });
+    },
+
+    /** The counts of the last `COUNT_DAYS` days before `at`, oldest day first. */
+    counts: (at: number): Array<DayCount> =>
+      sql
+        .exec<DayCount>(
+          "SELECT day, outcome, n FROM trigger_counts WHERE day > ? ORDER BY day, outcome",
+          dayOf(at - COUNT_DAYS * 86_400_000),
+        )
+        .toArray(),
+
+    /** The time of the last authentic delivery and of GitHub's last ping. */
+    hook: (): HookState => {
+      const row = sql
+        .exec<{ last_delivery_at: number | null; ping_at: number | null }>(
+          "SELECT last_delivery_at, ping_at FROM trigger_hook WHERE id = 1",
+        )
+        .toArray()[0];
+
+      return {
+        lastDeliveryAt: row?.last_delivery_at ?? undefined,
+        pingAt: row?.ping_at ?? undefined,
+      };
+    },
+
+    /** Note an authentic delivery at `at`, and, for GitHub's `ping`, the ping's time. */
+    delivered: (at: number, ping: boolean): void => {
+      sql.exec(
+        `INSERT INTO trigger_hook (id, last_delivery_at, ping_at) VALUES (1, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET last_delivery_at = excluded.last_delivery_at,
+             ping_at = COALESCE(excluded.ping_at, trigger_hook.ping_at)`,
+        at,
+        ping ? at : null,
+      );
+    },
+
+    /** Keep `payload` (and its body, when it has one) as the last accepted delivery, for Fire again. */
+    keepLast: (payload: FirePayload): void => {
+      const [kept, body] = payloadRow(payload);
+
+      sql.exec(
+        `INSERT INTO trigger_hook (id, last_payload, last_body) VALUES (1, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET last_payload = excluded.last_payload, last_body = excluded.last_body`,
+        kept,
+        body,
+      );
+    },
+
+    /** The last accepted delivery's payload, or undefined while none was accepted. */
+    last: (): FirePayload | undefined => {
+      const row = sql
+        .exec<{ last_payload: string | null; last_body: string | null }>(
+          "SELECT last_payload, last_body FROM trigger_hook WHERE id = 1",
+        )
+        .toArray()[0];
+
+      return row === undefined ? undefined : payloadOf(row.last_payload, row.last_body);
     },
 
     /** The fire log, newest first, at most `limit` records. */

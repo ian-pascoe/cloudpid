@@ -10,4 +10,6 @@ export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
   "a8419e2c21873eff",
   // 2: how many later Fires were merged into a pending Fire that waits for its Workspace (`trigger_pending.coalesced`).
   "8904eb7c72eaa105",
+  // 3: the webhook parts: `trigger_pending`'s `payload` and `body`, `trigger_secrets`, `trigger_counts`, `trigger_hook`.
+  "c31fd1d6c710f334",
 ];
