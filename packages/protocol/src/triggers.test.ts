@@ -11,7 +11,10 @@ import {
   scheduledFireKey,
   scheduleOf,
   TriggerDefinition,
+  fieldTrigger,
   MAX_TRIGGER_MESSAGE_BYTES,
+  triggerChangeValue,
+  triggerField,
   triggerMessageProblem,
   triggerNameProblem,
 } from "./triggers.ts";
@@ -135,5 +138,40 @@ describe("a value a later slice added", () => {
     expect(scheduleOf(known)).toEqual({ type: "schedule", cron: "@daily", zone: "UTC" });
     expect(scheduleOf(later)).toBeUndefined();
     expect(scheduleOf(undefined)).toBeUndefined();
+  });
+});
+
+describe("a Trigger's Agent changes", () => {
+  const definition: TriggerDefinition = {
+    id: "0190-trigger",
+    revision: 3,
+    kind: "environment",
+    environment: "default",
+    name: "Weekly report",
+    message: "Summarize last week's PRs.",
+    source: { type: "schedule", cron: "0 9 * * 1", zone: "America/Chicago" },
+    whenBusy: "skip",
+    model: "anthropic/claude-sonnet-4-5",
+    paused: false,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+
+  it("are recorded under the field triggers.<id>", () => {
+    expect(triggerField("0190-trigger")).toBe("triggers.0190-trigger");
+    expect(fieldTrigger("triggers.0190-trigger")).toBe("0190-trigger");
+    expect(fieldTrigger("skills.triggers")).toBeNull();
+  });
+
+  it("record what the owner can change, without the revision or the times", () => {
+    expect(triggerChangeValue(definition)).toEqual({
+      kind: "environment",
+      name: "Weekly report",
+      message: "Summarize last week's PRs.",
+      source: { type: "schedule", cron: "0 9 * * 1", zone: "America/Chicago" },
+      whenBusy: "skip",
+      model: "anthropic/claude-sonnet-4-5",
+      paused: false,
+    });
   });
 });

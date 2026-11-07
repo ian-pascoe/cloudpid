@@ -103,6 +103,72 @@ export const TriggerDefinition = Schema.Struct({
 
 export type TriggerDefinition = typeof TriggerDefinition.Type;
 
+/** A new Environment trigger, as the owner's form or `trigger_create` gives it. */
+export type EnvironmentTriggerInput = {
+  readonly kind: "environment";
+  readonly environment: string;
+  readonly name: string;
+  readonly message: string;
+  readonly source: ScheduleSource;
+  /** `skip` when absent, a Schedule's default (`triggers.md` → Overlap). */
+  readonly whenBusy?: TriggerWhenBusy | undefined;
+  readonly base?: string | undefined;
+  readonly model?: string | undefined;
+  readonly thinking?: ThinkingLevel | undefined;
+  readonly paused?: boolean | undefined;
+};
+
+/**
+ * A change of a Trigger's fields: each absent field is kept, and an option set to null goes back to its default. A
+ * Trigger's kind and Environment are fixed at creation, so no change names them.
+ */
+export type TriggerPatch = {
+  readonly name?: string | undefined;
+  readonly message?: string | undefined;
+  readonly source?: ScheduleSource | undefined;
+  readonly whenBusy?: TriggerWhenBusy | undefined;
+  readonly base?: string | null | undefined;
+  readonly model?: string | null | undefined;
+  readonly thinking?: ThinkingLevel | null | undefined;
+};
+
+const TRIGGER_FIELD = "triggers.";
+
+/** The field of Trigger `id`'s Agent changes, recorded under its Environment's Scope (`triggers.md` → Agent tools). */
+export const triggerField = (id: string): string => `${TRIGGER_FIELD}${id}`;
+
+/** The Trigger an Agent change's `field` is of, or null for a field that is not a Trigger's. */
+export const fieldTrigger = (field: string): string | null =>
+  field.startsWith(TRIGGER_FIELD) ? field.slice(TRIGGER_FIELD.length) : null;
+
+/**
+ * A Trigger as its Agent changes record it, before and after (null: none, as before its creation or after its
+ * removal): what the owner reads and a revert puts back, without its id, Environment, revision or times.
+ */
+export const TriggerChangeValue = Schema.Struct({
+  kind: TriggerKind,
+  name: Schema.String,
+  message: Schema.String,
+  source: TriggerSource,
+  whenBusy: TriggerWhenBusy,
+  base: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  thinking: Schema.optionalKey(ThinkingLevel),
+  paused: Schema.Boolean,
+});
+
+export type TriggerChangeValue = typeof TriggerChangeValue.Type;
+
+/** `definition` as its Agent changes record it. */
+export const triggerChangeValue = ({
+  id: _id,
+  revision: _revision,
+  environment: _environment,
+  createdAt: _createdAt,
+  updatedAt: _updatedAt,
+  ...value
+}: TriggerDefinition): TriggerChangeValue => value;
+
 /** What made a Fire: a Schedule's time coming due, or the owner's **Fire now** (`manual`). */
 export const FireSource = Schema.Union([
   Schema.Struct({ type: Schema.Literal("schedule"), scheduledAt: Schema.Finite }),

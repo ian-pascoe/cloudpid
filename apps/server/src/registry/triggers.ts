@@ -6,6 +6,7 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over SQLite.
 import { ThinkingLevel } from "@cloudpid/config";
 import {
+  type EnvironmentTriggerInput,
   fireTitle,
   scheduleOf,
   type ScheduleSource,
@@ -13,7 +14,7 @@ import {
   TriggerDefinition,
   triggerMessageProblem,
   triggerNameProblem,
-  type TriggerWhenBusy,
+  type TriggerPatch,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -25,35 +26,6 @@ import type {
   RegistryStore,
   SessionRefusal,
 } from "./store.ts";
-
-/** A new Environment trigger, as the owner's form or `trigger_create` gives it. */
-export type EnvironmentTriggerInput = {
-  readonly kind: "environment";
-  readonly environment: string;
-  readonly name: string;
-  readonly message: string;
-  readonly source: ScheduleSource;
-  /** `skip` when absent, a Schedule's default (`triggers.md` → Overlap). */
-  readonly whenBusy?: TriggerWhenBusy | undefined;
-  readonly base?: string | undefined;
-  readonly model?: string | undefined;
-  readonly thinking?: ThinkingLevel | undefined;
-  readonly paused?: boolean | undefined;
-};
-
-/**
- * A change of a Trigger's fields: each absent field is kept, and an option set to null goes back to its default. A
- * Trigger's kind and Environment are fixed at creation, so no change names them.
- */
-export type TriggerPatch = {
-  readonly name?: string | undefined;
-  readonly message?: string | undefined;
-  readonly source?: ScheduleSource | undefined;
-  readonly whenBusy?: TriggerWhenBusy | undefined;
-  readonly base?: string | null | undefined;
-  readonly model?: string | null | undefined;
-  readonly thinking?: ThinkingLevel | null | undefined;
-};
 
 /** What a write of a Trigger answers: the definition as kept, or why nothing was kept. */
 export type TriggerWrite =

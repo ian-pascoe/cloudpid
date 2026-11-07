@@ -3,12 +3,15 @@
 // The Trigger object over real storage and alarms (`docs/architecture/triggers.md` → Testing): a `TestTrigger`
 // (`object.fixture.ts`) reads its definitions from, and admits its Fires through, a real `TestRegistry`; the Sessions'
 // `fire` is scripted.
-import { DEFAULT_ENVIRONMENT, MAX_FIRE_LOG } from "@cloudpid/protocol";
+import {
+  DEFAULT_ENVIRONMENT,
+  type EnvironmentTriggerInput,
+  MAX_FIRE_LOG,
+} from "@cloudpid/protocol";
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
-import type { EnvironmentTriggerInput } from "../registry/triggers.ts";
 import type { TestTrigger } from "./object.fixture.ts";
 import { MAX_FIRE_ATTEMPTS, RETRY_MS } from "./object.ts";
 import { openTriggerStore } from "./store.ts";
