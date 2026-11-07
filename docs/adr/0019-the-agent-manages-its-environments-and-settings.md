@@ -1,5 +1,5 @@
 ---
-status: accepted (Approval: more kinds since, listed in docs/architecture/agent-changes.md → Approval)
+status: accepted (Approval: more kinds since, listed in docs/architecture/agent-changes.md → Approval; making or widening a Trigger: amended by ADR-0047)
 ---
 
 # The agent manages its Environments and Settings
