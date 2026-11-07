@@ -284,6 +284,11 @@ const abortedBy = (signal: AbortSignal) =>
 export type SessionMcpOptions = {
   /** The Session's name, its ID in the Registry; undefined when unknown, and then it has no MCP tools. */
   readonly session: string | undefined;
+  /**
+   * This stage's app origin (`APP_ORIGIN_VAR`): a server at its `/mcp` is the Session's own endpoint, whose tools with
+   * in-session twins are not registered (`docs/architecture/mcp-endpoint.md` → Self-use). Undefined (`alchemy dev`): no rule.
+   */
+  readonly appOrigin?: string | undefined;
   /** How long the Session waits for the host's answer to a prompt get: `PROMPT_GET_WAIT_MS` unless a test shortens it. */
   readonly promptGetWaitMs?: number | undefined;
   /** The `McpHostClient` of Environment `environment`'s host. */
@@ -407,6 +412,8 @@ export const sessionMcp = (options: SessionMcpOptions): SessionMcp => {
     if (options.watches !== undefined) toolOptions.watches = options.watches;
 
     if (options.session !== undefined) toolOptions.session = options.session;
+
+    if (options.appOrigin !== undefined) toolOptions.appOrigin = options.appOrigin;
 
     if (options.run !== undefined) toolOptions.run = options.run;
 

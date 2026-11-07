@@ -24,12 +24,21 @@ import { cutNote, cutText, fitted, type HarnessRead, NOT_FOUND } from "./harness
 import { asOutput } from "./outputs.ts";
 import { SettingsAccessError } from "./settings-describe.ts";
 import { readInventory, type SettingsMcpAccessService } from "./settings-mcp-access.ts";
-import { ENDPOINT_BOUNDS, getOutput, listOutput, scopeOutput } from "./settings-mcp-values.ts";
+import {
+  BOUNDS,
+  ENDPOINT_BOUNDS,
+  getOutput,
+  listOutput,
+  scopeOutput,
+} from "./settings-mcp-values.ts";
 import { describeGet, describeList, scopeWords } from "./settings-mcp-words.ts";
 import { storedBytes } from "./stored-bytes.ts";
 
 /** What the cores read: the Registry's MCP read, the hosts' held inventory, and the Session's own Environment. */
-export type SettingsMcpReadServices = Pick<SettingsMcpAccessService, "view" | "own" | "host">;
+export type SettingsMcpReadServices = Pick<
+  SettingsMcpAccessService,
+  "view" | "own" | "host" | "appOrigin"
+>;
 
 type ListArgs = typeof HARNESS_TOOLS.settings_mcp_list.endpoint.input.Type;
 
@@ -69,7 +78,7 @@ export const settingsMcpListRead =
         };
       }
 
-      const out = listOutput(view, own, inventory);
+      const out = listOutput(view, own, inventory, BOUNDS, access.appOrigin);
 
       return {
         text: describeList(out),
@@ -110,7 +119,15 @@ export const settingsMcpGetRead =
       const details = { scope: view.scope, server: entry.value.server.name };
 
       if (surface === "session") {
-        const out = getOutput(view, entry.value, view.layers, own, inventory);
+        const out = getOutput(
+          view,
+          entry.value,
+          view.layers,
+          own,
+          inventory,
+          BOUNDS,
+          access.appOrigin,
+        );
 
         return { text: describeGet(out), structured: asOutput(SettingsMcpGetOutput, out), details };
       }

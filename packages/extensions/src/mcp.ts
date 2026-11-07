@@ -57,7 +57,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { Mutable } from "effect/Types";
 import { McpHostClient, type McpHostClientService } from "./mcp/client.ts";
-import { isReachable, mayBeDirect } from "./mcp/exposure.ts";
+import { isOwnEntry, isReachable, mayBeDirect } from "./mcp/exposure.ts";
 import { lookAtRounds } from "./mcp/round-look.ts";
 import type { McpQuestionsService } from "./mcp/questions.ts";
 import { type McpNotices } from "./mcp/notices.ts";
@@ -920,6 +920,8 @@ export const makeMcpTools = (
       servers: Arr.map(inventory.servers, (server) => ({
         ...server,
         signIn: signsIn(server.server),
+        // Self-use (`docs/architecture/mcp-endpoint.md` → Self-use): the build drops the URL, so it is read here too.
+        ownEndpoint: isOwnEntry(server.server, options.appOrigin),
       })),
       origin,
     });

@@ -36,7 +36,7 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { reachesModel } from "./mcp/exposure.ts";
+import { isOwnEndpoint, reachesModel, selfUseHides } from "./mcp/exposure.ts";
 import { boundItems, boundText, scopeRef } from "./outputs.ts";
 import type { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
 
@@ -189,18 +189,35 @@ const decide = (
     offered,
   });
 
+/**
+ * Whether the Session's model is shown none of an entry's tools that Self-use hides: its URL is this stage's own endpoint
+ * (`appOrigin`, the Session's; absent with no rule). The tools stay in the listing, as `model_visible: false`.
+ */
+const hidesHarnessTools = (entry: SettingsMcpServer, appOrigin: string | undefined): boolean => {
+  const { server } = entry.server;
+
+  return server.type !== "stdio" && isOwnEndpoint(server.url, appOrigin);
+};
+
+/** Whether the Session's model is shown `tool` of `entry`: its `_meta` lets it, and Self-use does not hide it. */
+const modelSees = (entry: SettingsMcpServer, appOrigin: string | undefined, tool: Tool): boolean =>
+  reachesModel(tool._meta) && !(hidesHarnessTools(entry, appOrigin) && selfUseHides(tool.name));
+
 /** The server's inventory as a value gives it: from the host's row, or what the entry alone says when it has none. */
 export const inventoryOutput = (
   entry: SettingsMcpServer,
   offered: ReadonlyArray<string>,
   inventory: McpServerInventory | undefined,
+  appOrigin?: string,
 ) => {
   const tools = toolsOf(inventory);
   const names = namesOf(entry.server, tools);
 
   const direct = Arr.filter(
     tools,
-    (tool) => reachesModel(tool._meta) && decide(entry, offered, names, tool).exposure === "direct",
+    (tool) =>
+      modelSees(entry, appOrigin, tool) &&
+      decide(entry, offered, names, tool).exposure === "direct",
   ).length;
 
   const error =
@@ -245,6 +262,7 @@ const listServerOutput = (
   offered: ReadonlyArray<string>,
   inventory: McpServerInventory | undefined | null,
   bounds: McpBounds = BOUNDS,
+  appOrigin?: string,
 ): typeof ListServerOutput.Type => {
   const { server } = entry.server;
 
@@ -294,7 +312,7 @@ const listServerOutput = (
     reads: reads.items,
     reads_truncated: reads.truncated,
     reset_fields: entry.resetFields,
-    inventory: inventory === null ? null : inventoryOutput(entry, offered, inventory),
+    inventory: inventory === null ? null : inventoryOutput(entry, offered, inventory, appOrigin),
     sign_in:
       entry.signIn === null
         ? null
@@ -323,6 +341,7 @@ export const listOutput = (
   own: string | null,
   inventory: Inventory,
   bounds: McpBounds = BOUNDS,
+  appOrigin?: string,
 ) => {
   const servers = boundItems(
     Arr.map(view.servers, (entry) =>
@@ -331,6 +350,7 @@ export const listOutput = (
         view.offered,
         inventory.read === "read" ? inventory.byName.get(entry.server.name) : null,
         bounds,
+        appOrigin,
       ),
     ),
     bounds.servers,
@@ -409,6 +429,7 @@ const toolOutput = (
   names: ReadonlyMap<string, string>,
   inventory: McpServerInventory | undefined,
   tool: Tool,
+  appOrigin: string | undefined,
 ) => {
   const decision = decide(entry, offered, names, tool);
   const { reason } = decision;
@@ -424,7 +445,7 @@ const toolOutput = (
     title: tool.title ?? annotationTitle,
     exposure: decision.exposure,
     decided_by: decidedBy(reason),
-    model_visible: reachesModel(tool._meta),
+    model_visible: modelSees(entry, appOrigin, tool),
     hints: {
       read_only: hintOf(tool.annotations, "readOnlyHint"),
       destructive: hintOf(tool.annotations, "destructiveHint"),
@@ -458,6 +479,7 @@ export const getOutput = (
   own: string | null,
   inventory: Inventory,
   bounds: McpBounds = BOUNDS,
+  appOrigin?: string,
 ): typeof SettingsMcpGetOutput.Type => {
   const row = inventory.read === "read" ? inventory.byName.get(entry.server.name) : undefined;
   const tools = toolsOf(row);
@@ -466,7 +488,7 @@ export const getOutput = (
   // At most MAX_GET_TOOLS, and as many of them as weigh bounds.tools stored.
   const listed = boundItems(
     Arr.map(Arr.take(tools, MAX_GET_TOOLS), (tool) =>
-      toolOutput(entry, view.offered, names, row, tool),
+      toolOutput(entry, view.offered, names, row, tool, appOrigin),
     ),
     bounds.tools,
   );
@@ -501,7 +523,13 @@ export const getOutput = (
     scope: scopeOutput(view),
     is_own: view.scope === own,
     inventory: inventory.read,
-    server: listServerOutput(entry, view.offered, inventory.read === "read" ? row : null, bounds),
+    server: listServerOutput(
+      entry,
+      view.offered,
+      inventory.read === "read" ? row : null,
+      bounds,
+      appOrigin,
+    ),
     // SAFETY: the entry in force is plain data; only its top-level optional keys may hold undefined, which are left out.
     entry: Record.filter(
       // SAFETY: the same entry, read as the record of its keys.

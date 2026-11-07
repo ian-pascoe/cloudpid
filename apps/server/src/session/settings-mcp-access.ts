@@ -37,6 +37,8 @@ export type SessionSettingsMcpAccessOptions = {
   readonly host: (environment: string) => McpHostClientService;
   /** The object of the Session's Workspace (`ws:<id>`), which the status wait names; null with none. */
   readonly workspace?: Effect.Effect<string | null, Cause.UnknownError> | undefined;
+  /** This stage's app origin (`APP_ORIGIN_VAR`), for the Self-use rule's `model_visible` and `direct`; undefined for none. */
+  readonly appOrigin?: string | undefined;
 };
 
 /**
@@ -70,8 +72,10 @@ export const sessionSettingsMcpAccess = ({
   session,
   host,
   workspace,
+  appOrigin,
 }: SessionSettingsMcpAccessOptions): SettingsMcpAccessService => ({
   ...settingsMcpReads(registry, host),
+  appOrigin,
   own:
     session === undefined
       ? Effect.succeed(null)

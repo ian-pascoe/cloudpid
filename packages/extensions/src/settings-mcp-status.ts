@@ -149,7 +149,7 @@ export const serverStatus = (
         "the host does not hold the server yet: it takes the set at its next pull",
       );
 
-    const found = inventoryOutput(entry, input.offered, row);
+    const found = inventoryOutput(entry, input.offered, row, access.appOrigin);
 
     const status = {
       server: name,
