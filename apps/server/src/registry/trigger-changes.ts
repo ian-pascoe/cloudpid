@@ -205,6 +205,10 @@ export const openTriggerChanges = (
 /** The agent's changes of the Registry's Triggers. */
 export type TriggerChanges = ReturnType<typeof openTriggerChanges>;
 
+/** What a revert of a webhook Trigger's removal adds to its Agent change: the Trigger URL and Signing secret are new. */
+const NEW_SECRETS_NOTE =
+  ". It has a new Trigger URL and Signing secret: paste them again where the old ones were used.";
+
 /**
  * Revert `change` (the agent's, not reverted yet, of Trigger `id`: the caller checked) of `environment`: a Trigger made
  * is removed, one removed is brought back, and a change's values are put back, at the Trigger's next revision, recorded
@@ -228,6 +232,9 @@ export const revertTriggerChange = (
 
   let definition: TriggerDefinition | null = null;
 
+  // A webhook Trigger brought back has no secrets: its object was wiped with it, so it makes new ones.
+  let broughtBack = false;
+
   if (change.before === null) {
     // A Trigger made: out it goes, kept for a revert of this revert's own record.
     triggers.retire(id, now);
@@ -239,6 +246,7 @@ export const revertTriggerChange = (
     }
 
     definition = triggers.restore(id, before.value, now);
+    broughtBack = active === null && before.value.source.type === "webhook";
 
     if (definition === null) {
       return { status: "refused", message: "The Trigger was deleted for good" };
@@ -252,7 +260,7 @@ export const revertTriggerChange = (
     session: null,
     conversation: null,
     tool: null,
-    reason: `Reverted change ${change.id}${Predicate.isNotNull(change.tool) ? ` (${change.tool})` : ""}`,
+    reason: `Reverted change ${change.id}${Predicate.isNotNull(change.tool) ? ` (${change.tool})` : ""}${broughtBack ? NEW_SECRETS_NOTE : ""}`,
     field: change.field,
     before: current,
     after: valueOf(definition),
