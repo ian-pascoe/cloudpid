@@ -59,22 +59,23 @@ const session = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
 const answer = (label: string) => HttpServerResponse.text("", { headers: { "x-branch": label } });
 
 // What a call gets: the branch it reached (`socket:<id>`, `rpc`), the refusal, or `undefined` for a request for neither.
-const route = async (method: string, url: string, headers: Record<string, string>) => {
-  const request = HttpServerRequest.fromWeb(new Request(url, { method, headers }));
-
-  const response = await Effect.runPromise(
-    serveOwnerCalls({
-      socket: (id) => Effect.succeed(answer(`socket:${id}`)),
-      rpc: () => Effect.succeed(answer("rpc")),
-    }).pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, request)),
+const route = (method: string, url: string, headers: Record<string, string>) =>
+  serveOwnerCalls({
+    socket: (id) => Effect.succeed(answer(`socket:${id}`)),
+    rpc: () => Effect.succeed(answer("rpc")),
+  }).pipe(
+    Effect.provideService(
+      HttpServerRequest.HttpServerRequest,
+      HttpServerRequest.fromWeb(new Request(url, { method, headers })),
+    ),
+    Effect.map((response) =>
+      response === undefined
+        ? undefined
+        : response.status === 403
+          ? { status: 403, cache: response.headers["cache-control"] }
+          : { reached: response.headers["x-branch"] },
+    ),
   );
-
-  return response === undefined
-    ? undefined
-    : response.status === 403
-      ? { status: 403, cache: response.headers["cache-control"] }
-      : { reached: response.headers["x-branch"] };
-};
 
 const rpc = (headers: Record<string, string>) =>
   route("POST", "http://localhost:1337/rpc", headers);
@@ -92,69 +93,91 @@ const refusedOutright = { status: 403, cache: "no-store" };
 
 describe("serveOwnerCalls", () => {
   // Vite proxies `/rpc` with `changeOrigin`: the Worker's Host is the proxy target's, the page's Origin is Vite's.
-  it("admits Vite dev's /rpc: Origin :5173, Host :1337, same-origin", async () => {
-    const headers = {
-      host: "localhost:1337",
-      origin: "http://localhost:5173",
-      "sec-fetch-site": "same-origin",
-    };
-
-    expect(await rpc(headers)).toEqual(reachedRpc);
-  });
-
-  it("admits plain alchemy dev, with or without the fetch metadata", async () => {
-    const headers = { host: "localhost:1337", origin: "http://localhost:1337" };
-
-    expect(await rpc({ ...headers, "sec-fetch-site": "same-origin" })).toEqual(reachedRpc);
-    expect(await rpc(headers)).toEqual(reachedRpc);
-    expect(await socket(headers)).toEqual(reachedSocket);
-  });
-
-  it("admits a call with neither header", async () => {
-    expect(await rpc({})).toEqual(reachedRpc);
-    expect(await socket({})).toEqual(reachedSocket);
-  });
-
-  it("refuses a website's call to /rpc with a 403 cross_origin, not cached", async () => {
-    for (const site of ["same-site", "cross-site", "none"]) {
-      expect(
-        await rpc({
+  it("admits Vite dev's /rpc: Origin :5173, Host :1337, same-origin", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const headers = {
           host: "localhost:1337",
-          origin: "https://evil.test",
-          "sec-fetch-site": site,
-        }),
-      ).toEqual(refusedOutright);
-    }
+          origin: "http://localhost:5173",
+          "sec-fetch-site": "same-origin",
+        };
 
-    expect(await rpc({ host: "localhost:1337", origin: "https://evil.test" })).toEqual(
-      refusedOutright,
-    );
-  });
-
-  it("holds the Session socket upgrade to the same rule", async () => {
-    expect(
-      await socket({
-        host: "localhost:1337",
-        origin: "https://evil.test",
-        "sec-fetch-site": "cross-site",
+        expect(yield* rpc(headers)).toEqual(reachedRpc);
       }),
-    ).toEqual(refusedOutright);
-    expect(await socket({ host: "localhost:1337", origin: "https://evil.test" })).toEqual(
-      refusedOutright,
-    );
-    // The socket proxy of Vite keeps the Host, so the page's Origin names it.
-    expect(await socket({ host: "localhost:5173", origin: "http://localhost:5173" })).toEqual(
-      reachedSocket,
-    );
-  });
+    ));
 
-  it("leaves every other request alone, whatever its headers", async () => {
-    const foreign = { origin: "https://evil.test", "sec-fetch-site": "cross-site" };
+  it("admits plain alchemy dev, with or without the fetch metadata", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const headers = { host: "localhost:1337", origin: "http://localhost:1337" };
 
-    expect(await route("GET", "http://localhost:1337/rpc", foreign)).toBeUndefined();
-    expect(await route("GET", "http://localhost:1337/", foreign)).toBeUndefined();
-    expect(
-      await route("PUT", `http://localhost:1337/sessions/${session}/attachments/a.png`, foreign),
-    ).toBeUndefined();
-  });
+        expect(yield* rpc({ ...headers, "sec-fetch-site": "same-origin" })).toEqual(reachedRpc);
+        expect(yield* rpc(headers)).toEqual(reachedRpc);
+        expect(yield* socket(headers)).toEqual(reachedSocket);
+      }),
+    ));
+
+  it("admits a call with neither header", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        expect(yield* rpc({})).toEqual(reachedRpc);
+        expect(yield* socket({})).toEqual(reachedSocket);
+      }),
+    ));
+
+  it("refuses a website's call to /rpc with a 403 cross_origin, not cached", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        for (const site of ["same-site", "cross-site", "none"]) {
+          expect(
+            yield* rpc({
+              host: "localhost:1337",
+              origin: "https://evil.test",
+              "sec-fetch-site": site,
+            }),
+          ).toEqual(refusedOutright);
+        }
+
+        expect(yield* rpc({ host: "localhost:1337", origin: "https://evil.test" })).toEqual(
+          refusedOutright,
+        );
+      }),
+    ));
+
+  it("holds the Session socket upgrade to the same rule", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        expect(
+          yield* socket({
+            host: "localhost:1337",
+            origin: "https://evil.test",
+            "sec-fetch-site": "cross-site",
+          }),
+        ).toEqual(refusedOutright);
+        expect(yield* socket({ host: "localhost:1337", origin: "https://evil.test" })).toEqual(
+          refusedOutright,
+        );
+        // The socket proxy of Vite keeps the Host, so the page's Origin names it.
+        expect(yield* socket({ host: "localhost:5173", origin: "http://localhost:5173" })).toEqual(
+          reachedSocket,
+        );
+      }),
+    ));
+
+  it("leaves every other request alone, whatever its headers", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const foreign = { origin: "https://evil.test", "sec-fetch-site": "cross-site" };
+
+        expect(yield* route("GET", "http://localhost:1337/rpc", foreign)).toBeUndefined();
+        expect(yield* route("GET", "http://localhost:1337/", foreign)).toBeUndefined();
+        expect(
+          yield* route(
+            "PUT",
+            `http://localhost:1337/sessions/${session}/attachments/a.png`,
+            foreign,
+          ),
+        ).toBeUndefined();
+      }),
+    ));
 });
