@@ -1,6 +1,6 @@
 # Triggers
 
-Settled in [#191](https://github.com/ian-pascoe/cloudpid/issues/191); not built yet. Each section says which slice builds it ([_Slices_](#slices)).
+Settled in [#191](https://github.com/ian-pascoe/cloudpid/issues/191). Each section says which slice builds it ([_Slices_](#slices)). S1 ([#678](https://github.com/ian-pascoe/cloudpid/issues/678)) lands in three parts: the engine (the Schedules, the Registry's definitions and `admitFire`, the Session's `fire`, the Trigger object and the Environment cascade) is built; the tools with Approval, then the Settings section with Fire now and the chips, follow. _As built_ notes say where the engine differs from the design.
 
 A **Trigger** sends a message on its own when something happens: its Schedule comes due, or its Trigger URL gets a delivery. The owner sets one up, or the agent does for the owner. Triggers fire from a Durable Object of their own, the Registry keeps their definitions, and making or widening one waits for Approval ([ADR-0047](../adr/0047-triggers-fire-from-a-durable-object-of-their-own-the-registry-keeps-their-definitions-and-making-or-widening-one-waits-for-approval.md)). Trigger URLs sit outside Access behind a secret token and a required signature ([ADR-0048](../adr/0048-trigger-urls-sit-outside-access-behind-a-secret-token-and-a-required-signature.md)). GitHub triggers are repo webhooks the GitHub App makes ([ADR-0049](../adr/0049-github-triggers-are-repo-webhooks-the-github-app-makes.md)). The platform facts behind the design (GitHub's deliveries, Durable Object alarms, Access bypass, cron libraries, size limits) are in [`docs/research/triggers.md`](../research/triggers.md).
 
@@ -35,6 +35,7 @@ _Built in S1._
 - **Interval:** no minimum beyond cron's own minute. Overlap, `wait` and coalescing bound what each Fire starts ([_Overlap_](#overlap)).
 - **Missed Fires** (an outage, alarms that came late): one catch-up Fire, for the latest missed time, however late; any other missed times are recorded `missed`. The Fire's header shows the scheduled and the actual time. A Paused trigger never catches up on resume.
 - **The alarm** is armed for the next Fire after each one. Alarms are at-least-once and their lateness is undocumented, so a Fire is not promised to the second; S6 measures it on a deployed stage.
+- **As built** (`packages/protocol/src/trigger-schedule.ts`, over croner 11 in its 5-field mode): `cronProblem`, `zoneProblem` and `scheduleProblem` say why a Schedule is refused, `nextFires` lists the next times and `dueFires` what is due since the object's cursor (the catch-up Fire and the `missed` times, at most `MAX_MISSED_LISTED` of them). Besides `L`, `W` and `#`, croner's `?` and `+` are refused too. Its Node tests pin the DST rules above; the Trigger object's workerd tests show croner loads and fires there.
 
 ## Webhooks
 
@@ -148,9 +149,9 @@ _Built in S1, with the hook in S5._
 ### Where it lives
 
 - **`Trigger`**, keyed `trigger:<id>`, is in the `Server` Worker beside Session, Registry and `McpHost` (`SERVER_DURABLE_OBJECTS`, `worker-init.ts`'s `durableObjects`, and its code in the lazily loaded graph). Its class name can't be renamed once deployed.
-- **It binds** the Registry and Session namespaces (same script), `GitHubAppConfig`, `SecretsConfig` (the vault) and telemetry. The Session (for the tools) and the main Worker (for deliveries and the owner's UI) bind the Trigger namespace. A Worker of its own was rejected: it would duplicate the App's key and the vault, and add a step to the deploy order.
+- **It binds** the Registry and Session namespaces (same script), `GitHubAppConfig`, `SecretsConfig` (the vault) and telemetry. _As built in S1_ (`apps/server/src/trigger/Trigger.ts`): the Registry, the Sessions, the Workspace namespace (a Fire that took the spare runs the spare and Build upkeep, as the owner's start does) and telemetry; the App's config and the vault come with S2 and S5. `TriggerLive` needs `SessionLive`, so the Session reaches the Trigger namespace from the Worker's environment instead (`triggersOfEnvironment`, `trigger/objects.ts`), its stubs made as `yield* Trigger` makes them. The Session (for the tools) and the main Worker (for deliveries and the owner's UI) bind the Trigger namespace. A Worker of its own was rejected: it would duplicate the App's key and the vault, and add a step to the deploy order.
 - **It follows `workers.md`:** its own migration manifest and shipped-migration test; tests with `refusingStorage` for a replaced instance; and an alarm that catches its own errors and re-arms, since the platform gives up after 6 retries.
-- **Every edge only gains** ([`workers.md`](../development/workers.md) → _Deploys and Durable Object code updates_): main Worker → Trigger, Session → Trigger, Trigger → Registry (`admitFire`, `triggerDefinition`, `knownTriggers`) and Trigger → Session (`fire`) are all new.
+- **Every edge only gains** ([`workers.md`](../development/workers.md) → _Deploys and Durable Object code updates_): main Worker → Trigger, Session → Trigger, Trigger → Registry (`admitFire`, `triggerDefinition`, `notifyTriggerFailed`, `knownTriggers`) and Trigger → Session (`fire`) are all new.
 
 ### Division of truth
 
@@ -170,6 +171,8 @@ The Registry's `admitFire` is the one place a Fire is let through. In one transa
 - **One path for both sources.** A Schedule coming due and an accepted delivery both become a pending Fire in the object's storage, which its alarm drains: `admitFire`, then the Session's `fire`. There is no cap on pending Fires; coalescing bounds what waits, and `start` drains at once.
 - **The Fire's key** is `<trigger>:<scheduled time>` for a Schedule, or the delivery's id, and is the `requestId` of `createSession` and of `fire`. `createSession` remembers a `requestId` for 24 hours (`REQUEST_MEMORY_MS`) and the Session dedupes its `fire`, so a retried alarm never starts a second Session or sends twice. A redelivery GitHub is asked for a day later fires again, which is right.
 - **`fire`** is a new Session method, never an optional field on `submit`: a Session still on old code (for up to 300 s after a deploy) drops fields it doesn't know and would take a payload as the owner's own words, unfenced. With a new method an old Session fails loudly, and the alarm retries until the new code is there.
+- **Retries, as built** (`apps/server/src/trigger/object.ts`): a Fire whose `admitFire` or `fire` can't be reached, or whose `fire` answers a retryable error, is tried again a minute later, the wait doubling to at most an hour; after 12 tries (some 7 hours) it is recorded `failed` and pushed. A `fire` refused for good is recorded `failed` and pushed at once. An alarm that can't read its definition re-arms a minute later and touches nothing. A `stale` answer is adopted and admitted again, at most 3 times in one alarm. The spare and Build upkeep run at a first `started` admission, before the Session's `fire`, since the spare was taken then.
+- **Fire now, as built:** the object's `fireNow` keeps a pending Fire keyed `<trigger>:manual:<uuid>`, recorded `manual`, and sets its alarm for now; a paused Trigger refuses it (`paused`). The Schedule's cursor is untouched.
 
 ### Self-healing
 
@@ -177,6 +180,7 @@ At each alarm the object reads its definition again (`triggerDefinition`). A Tri
 
 ### Cascades
 
+- **As built in S1:** deleting an Environment runs the Registry's `deleteEnvironmentWithTriggers`, which deletes its Triggers in the same transaction and answers their ids; `removals` (`registry/removal.ts`, which the owner's delete and `environment_delete` both run) then wipes each object (`TriggerObjects.remove`, `trigger/objects.ts`), logging a wipe that fails. The owner's removal deletes the definition outright; keeping an agent's removal for a revert comes with the tools.
 - **Deleting a Session, removing a Workspace or deleting an Environment:** the Registry deletes the Triggers it holds (a Session's Session triggers; a Workspace's Workspace triggers; an Environment's all three kinds, through its Workspaces and Sessions) in the same transaction, and returns their ids. The caller (the main Worker's `deleteSession` and `removals`, which `environment_delete` runs too) then calls each object's `remove()`, which deletes its GitHub hook, its alarm and its storage.
 - **A failed hook delete** re-arms the alarm, with backoff, for up to a day, then logs a warning.
 - **A lost `remove()`** heals at the object's next touch ([_Self-healing_](#self-healing)).
@@ -231,7 +235,7 @@ _The Settings section: S1, with the webhook parts in S2 and the Workspace row's 
 _Built in S1, the delivery counts in S2._
 
 - **The fire log** is a row per Fire in its Trigger object: when, the source (the scheduled time; the delivery id and event; or `manual`), and the outcome: `started <session>`, `sent (queued)`, `sent (steered)`, `skipped: overlap | coalesced | archived | importing | missed`, or `failed: <reason>`. The last 1,000 Fires are kept, and the per-day counts of refused and filtered deliveries for 30 days; both go with the Trigger.
-- **Origin marks.** `MarkedOrigin`'s `auth` gains the member `trigger`, holding the Trigger's id and name; an older reader decodes it as `unknown` rather than failing. A Session a Trigger started shows the chip "Trigger · `<name>`", and each input a Trigger sent shows "via `<name>` (Trigger)".
+- **Origin marks.** `MarkedOrigin`'s `auth` gains the member `trigger`, holding the Trigger's id and name; an older reader decodes it as `unknown` rather than failing. _As built:_ its `kind` gains `trigger` too, and `trigger: {id, name}` sits beside them (`packages/protocol/src/mcp-api.ts`); an input a Fire sent carries `via: {auth: "trigger", trigger}`. A Session a Trigger started shows the chip "Trigger · `<name>`", and each input a Trigger sent shows "via `<name>` (Trigger)".
 - **Notifications.** A Run a Trigger started pushes `finished` or `failed` at its end, as the owner's submissions do: `fire` records its submission in `notify-submissions`, as MCP task follow-ups are. A Fire that fails pushes. Overlap and coalesced skips, filtered deliveries and refused ones never push. `client-and-protocol.md` → Notifications' **Triggers** bullet is renamed **When they go out**, so the word means one thing.
 
 ## Observability
