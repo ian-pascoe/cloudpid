@@ -51,7 +51,7 @@ const verifies = async (
 ): Promise<boolean> => crypto.subtle.verify("HMAC", await hmacKey(secret), signature, message);
 
 /** Whether `a` and `b` hold the same bytes, taking as long whatever they hold when their lengths are equal. */
-const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
+export const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
   if (a.length !== b.length) return false;
 
   let difference = 0;

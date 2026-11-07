@@ -6,7 +6,7 @@
 // and of GitHub's ping; the last delivered body, for Fire again; and the payload a pending Fire carries. The object opens it at its first use (`object.ts`), and a read of an object that has no
 // storage (never synced, or wiped) answers empty without opening it (`hasTriggerStore`), so a read never makes the
 // tables of a removed Trigger again.
-// @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- store operations over SQLite and JSON text.
+// @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off globalDate:off -- store operations over SQLite and JSON text.
 import { type Migration, migrate, type MigrationStorage } from "@cloudpid/effect-durable/sqlite";
 import { SealedValue } from "@cloudpid/extensions/secrets/core";
 import {

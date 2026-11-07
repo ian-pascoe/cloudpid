@@ -5,6 +5,7 @@
 // `TestRegistry`'s (`use`), the Sessions' `fire` is scripted and recorded, and so are the owner's Notifications and the
 // upkeep after a start. The clock is the test's (`setNow`), and `replace()` makes its storage refuse, as a replaced
 // instance's does.
+import { openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type { ApiResult, FireRequest, SubmitResult, TriggerDefinition } from "@cloudpid/protocol";
 import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import { DurableObject } from "cloudflare:workers";
@@ -15,7 +16,12 @@ import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { FireAdmitted } from "../registry/triggers.ts";
 import { triggerOfObject } from "./name.ts";
 import {
+  type Delivery,
+  type DeliveryAnswer,
+  type DeliveryStats,
+  type FireAgainAnswer,
   type FireNowAnswer,
+  type HookSecrets,
   type TriggerHandlers,
   triggerHandlers,
   type TriggerState,
@@ -36,6 +42,9 @@ export type FireScript = ApiResult<SubmitResult> | "unreachable";
 
 /** A `fire` the object sent: to which Session, with what. */
 export type FireSent = { readonly session: string; readonly request: FireRequest };
+
+/** The master key the test object's token and Signing secret are sealed under. */
+const TEST_MASTER_KEY = "test-master-key-0123456789abcdef0123456789";
 
 const OK: FireScript = { ok: true, value: { delivery: "started", cursor: "c-1" } };
 
@@ -65,6 +74,12 @@ export class TestTrigger extends DurableObject {
   /** How many Sessions `admitFire` was handed ids for. */
   #admitted = 0;
 
+  /** How many times the object asked the Registry for a definition, and to admit a Fire. */
+  #asked = { definition: 0, admit: 0 };
+
+  /** The login the App's own bot account has (`setBot`), or undefined while GitHub can't say. */
+  #bot: string | undefined = "cloudpid-app[bot]";
+
   readonly #scripts: Array<FireScript> = [];
 
   readonly #sent: Array<FireSent> = [];
@@ -80,6 +95,8 @@ export class TestTrigger extends DurableObject {
     ports: {
       definition: (id) =>
         Effect.suspend(() => {
+          this.#asked.definition++;
+
           if (this.#registryDown) {
             return Effect.fail(TriggerUnreachable.make({ message: "The Registry is down" }));
           }
@@ -90,6 +107,8 @@ export class TestTrigger extends DurableObject {
         }),
       admit: (fire) =>
         Effect.suspend(() => {
+          this.#asked.admit++;
+
           if (this.#registryDown) {
             return Effect.fail(TriggerUnreachable.make({ message: "The Registry is down" }));
           }
@@ -131,6 +150,11 @@ export class TestTrigger extends DurableObject {
         Effect.sync(() => {
           this.#upkeep.push(environment);
         }),
+      vault: openKeptVault(
+        TEST_MASTER_KEY,
+        `trigger:${triggerOfObject(this.ctx.id.name) ?? ""}`,
+      ).pipe(Effect.mapError((error) => TriggerUnreachable.make({ message: error.message }))),
+      botLogin: Effect.sync(() => this.#bot),
     },
   });
 
@@ -208,6 +232,16 @@ export class TestTrigger extends DurableObject {
     return this.#upkeep;
   }
 
+  /** Set the App's own bot account's login (any case), or undefined for GitHub being unable to say. */
+  setBot(login: string | undefined): void {
+    this.#bot = login?.toLowerCase();
+  }
+
+  /** How many times the object asked the Registry for a definition, and to admit a Fire. */
+  registryCalls() {
+    return { ...this.#asked };
+  }
+
   /** The time the object's alarm is set for, read past the gate. */
   alarmAt(): Promise<number | null> {
     return this.ctx.storage.getAlarm();
@@ -238,6 +272,26 @@ export class TestTrigger extends DurableObject {
 
   fireNow(key?: string): Promise<FireNowAnswer> {
     return this.#run(this.#handlers.fireNow({ key }));
+  }
+
+  fireAgain(key?: string): Promise<FireAgainAnswer> {
+    return this.#run(this.#handlers.fireAgain({ key }));
+  }
+
+  deliver(delivery: Delivery): Promise<DeliveryAnswer> {
+    return this.#run(this.#handlers.deliver(delivery));
+  }
+
+  deliveries(): Promise<DeliveryStats> {
+    return this.#run(this.#handlers.deliveries());
+  }
+
+  reveal(): Promise<HookSecrets | null> {
+    return this.#run(this.#handlers.reveal());
+  }
+
+  rotate(what: "url" | "secret"): Promise<HookSecrets | null> {
+    return this.#run(this.#handlers.rotate(what));
   }
 
   fireLog(limit?: number) {
