@@ -1,17 +1,19 @@
 // The tools the `environment`, `settings`, `settings_mcp` and `approval-tools` extensions register, and what the five
 // read-only ones (`environment_list`, `environment_get`, `settings_get`, `settings_mcp_list`, `settings_mcp_get`) answer
-// over fixed fixtures, written to `__snapshots__/harness-session.json` (#686 S1a; `docs/architecture/mcp-endpoint.md` →
+// over fixed fixtures, kept in `__snapshots__/harness-session.json` (#686 S1a; `docs/architecture/mcp-endpoint.md` →
 // Environment and Settings tools). The snapshot is what the in-session tools give today. The tools are later split into
 // cores shared with the MCP endpoint and thin Session wrappers, and the split must leave this file unchanged.
-// @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off globalJsonInEffect:off missedPipeableOpportunity:off
-import {
-  DEFAULT_CONTAINER_SETTINGS,
-  type McpExposure,
-  type McpResolvedServer,
-  overridesFrom,
-  resolveEnvironmentContainerSettings,
-  resolveOverridesLeniently,
-} from "@cloudpid/config";
+//
+// Every fixture value is pinned here, so a change of a default elsewhere does not move the snapshot. The test compares
+// the file structurally (`JSON.parse`), so how it is formatted does not matter. To keep the file small, a string over
+// `LONG_STRING` characters, each tool's description and each JSON Schema (parameters, structured output) are kept as their
+// length, their SHA-256 and their start (a parameters schema also by its properties' names), so a changed character still shows. Run with
+// `UPDATE_SNAPSHOT=1` to write the file again; a missing file is written too, except in CI.
+// @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off globalJsonInEffect:off missedPipeableOpportunity:off globalDate:off nodeBuiltinImport:off processEnv:off
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { ContainerSettings, McpExposure, McpResolvedServer, Settings } from "@cloudpid/config";
 import type { SettingsMcpServer, SettingsMcpView } from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -24,6 +26,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
@@ -35,6 +38,7 @@ import {
   DeployCredentials,
   type EnvironmentDetails,
   Environments,
+  EnvironmentsError,
   type EnvironmentsService,
   EnvironmentTools,
 } from "./environment.ts";
@@ -54,30 +58,68 @@ import {
 } from "./settings.ts";
 import { SettingsMcpAccess, type SettingsMcpAccessService } from "./settings-mcp-access.ts";
 import { SettingsMcpTools } from "./settings-mcp.ts";
-import { resolvedGlobal } from "./settings.fixture.ts";
 
-const SNAPSHOT = "./__snapshots__/harness-session.json";
+const SNAPSHOT = join(import.meta.dirname, "__snapshots__", "harness-session.json");
 
 /** The extensions whose tools the snapshot holds, in the order it lists them. */
 const EXTENSIONS = ["environment", "settings", "settings_mcp", "approval-tools"] as const;
 
-/** The most `environment_get` lists of the variables kept, in stored bytes (`MAX_VARIABLES_BYTES`). */
+/** A string longer than this is kept in the snapshot as its length, its SHA-256 and its start. */
+const LONG_STRING = 2_000;
+
+/** The start of a long string the snapshot keeps. */
+const HEAD = 80;
+
+/** The most `environment_get` lists of the variables, in stored bytes (`MAX_VARIABLES_BYTES`). */
 const VARIABLES_BYTES = 160 * 1024;
+
+/** The longest value `environment_variable_set` takes, and the most variables an Environment has. */
+const VARIABLE_VALUE = 4_096;
+
+/** What a stand-in service says of something the snapshot never does. */
+const nothing = (what: string) => Effect.die(`The snapshot ${what} nothing`);
+
+/** The refusal of an id that names no Environment, as the Registry's stand-ins say it. */
+const noEnvironment = (id: string) =>
+  `No Environment has the id ${JSON.stringify(id)}. Call environment_list for the Environments and their ids.`;
+
+// --- Container settings and the Environments -------------------------------------------------------------------
+
+const GLOBAL_VARIABLES = { SHARED: "all", NODE_ENV: "prod" };
+
+/** The Container settings at Global, every field spelled. */
+const GLOBAL_CONTAINER: ContainerSettings = {
+  instance: "cpu-1",
+  maxInstance: "cpu-2",
+  idleMinutes: 2,
+  ignore: ["node_modules"],
+  variables: GLOBAL_VARIABLES,
+  setupScript: "bun install",
+  startScript: "",
+  toolchains: "",
+  spareWorkspace: true,
+};
+
+/** Many variables, each as long as one may be: together more than `environment_get` lists. */
+const MANY_VARIABLES: Readonly<Record<string, string>> = Object.fromEntries(
+  Arr.makeBy(46, (index) => {
+    const name = `VAR_${String(index + 1).padStart(2, "0")}`;
+
+    return [name, `${name}=`.padEnd(VARIABLE_VALUE, "v")];
+  }),
+);
 
 const DEFAULT: EnvironmentDetails = {
   id: "default",
   name: "Default",
   repos: [{ name: "app", url: "https://github.com/o/app.git" }],
   build: { status: "ready", at: Date.UTC(2026, 9, 20) },
-  overrides: {
-    variables: {
-      NODE_ENV: "test",
-      // One more than fits: the variables are cut after the first (`variables_truncated`).
-      NOTES: "n".repeat(VARIABLES_BYTES),
-    },
+  overrides: { variables: { NODE_ENV: "test", ...MANY_VARIABLES } },
+  settings: {
+    ...GLOBAL_CONTAINER,
+    variables: { ...GLOBAL_VARIABLES, NODE_ENV: "test", ...MANY_VARIABLES },
   },
-  settings: DEFAULT_CONTAINER_SETTINGS,
-  global: DEFAULT_CONTAINER_SETTINGS,
+  global: GLOBAL_CONTAINER,
   secrets: [
     { name: "API_KEY", scope: "environment", build: true },
     { name: "NPM_TOKEN", scope: "every", build: false },
@@ -86,110 +128,175 @@ const DEFAULT: EnvironmentDetails = {
   globalSkills: [],
 };
 
+/** An Environment that is not this Session's, whose saved settings partly no longer apply. */
 const OTHER: EnvironmentDetails = {
   id: "0000abcd",
   name: "Other",
   repos: [],
   build: { status: "failed", reason: "npm ERR! missing script: build", at: 0, lastGoodAt: null },
-  overrides: {},
-  settings: DEFAULT_CONTAINER_SETTINGS,
-  global: DEFAULT_CONTAINER_SETTINGS,
+  overrides: { idleMinutes: 10 },
+  settings: { ...GLOBAL_CONTAINER, idleMinutes: 10 },
+  global: GLOBAL_CONTAINER,
+  problem: "maxInstance: no longer a size the Containers have",
   secrets: [],
   skills: [],
   globalSkills: [],
 };
 
-const GLOBAL_VARIABLES = { SHARED: "all", NODE_ENV: "prod" };
+const ENVIRONMENTS: ReadonlyArray<EnvironmentDetails> = [DEFAULT, OTHER];
 
-/** An Environment as `get` shows it: its Overrides resolved over Global's settings. */
-const detailed = (each: EnvironmentDetails): EnvironmentDetails => {
-  const global = { ...DEFAULT_CONTAINER_SETTINGS, variables: GLOBAL_VARIABLES };
-
-  return {
-    ...each,
-    global,
-    settings: resolveEnvironmentContainerSettings(global, each.overrides),
-  };
-};
-
-const environments: EnvironmentsService = {
+const environmentsOf = (list: EnvironmentsService["list"]): EnvironmentsService => ({
   ...unusedLifecycle,
   ...unusedSecretMarks,
   ...unusedSkills,
   current: Effect.succeed("default"),
-  list: Effect.succeed(
-    Arr.map([DEFAULT, OTHER], ({ id, name, repos, build }) => ({ id, name, repos, build })),
-  ),
+  list,
   get: (id) =>
     Effect.succeed(
       Option.getOrNull(
-        Option.map(
-          Arr.findFirst([DEFAULT, OTHER], (each) => each.id === id),
-          detailed,
-        ),
-      ),
+        Arr.findFirst(ENVIRONMENTS, (each) => each.id === id),
+      ) satisfies EnvironmentDetails | null,
     ),
   global: Effect.succeed({
-    settings: { ...DEFAULT_CONTAINER_SETTINGS, variables: GLOBAL_VARIABLES },
-    overriddenIn: { "variables.NODE_ENV": [{ id: "default", name: "Default" }] },
-    secrets: [{ name: "NPM_TOKEN", scope: "every" as const, build: false }],
+    settings: GLOBAL_CONTAINER,
+    overriddenIn: {
+      "variables.NODE_ENV": [{ id: "default", name: "Default" }],
+      idleMinutes: [{ id: "0000abcd", name: "Other" }],
+    },
+    secrets: [{ name: "NPM_TOKEN", scope: "every", build: false }],
     skills: [],
   }),
-  change: () => Effect.die("The snapshot changes nothing"),
+  change: () => nothing("changes"),
+});
+
+const environments = environmentsOf(
+  Effect.succeed(
+    Arr.map(ENVIRONMENTS, ({ id, name, repos, build }) => ({ id, name, repos, build })),
+  ),
+);
+
+/** Environments whose list cannot be read. */
+const unlistable = environmentsOf(
+  Effect.fail(EnvironmentsError.make({ message: "The Registry did not answer." })),
+);
+
+// --- Settings ----------------------------------------------------------------------------------------------------
+
+/** The Settings at Global, every field spelled. */
+const GLOBAL_SETTINGS: Settings = {
+  model: "anthropic/claude-opus-5-5",
+  thinkingLevel: "high",
+  roles: {
+    small: { model: "anthropic/claude-haiku-5-5", hint: "Cheap and fast." },
+    medium: { model: "anthropic/claude-sonnet-5-5", hint: "The workhorse." },
+    large: { model: "anthropic/claude-opus-5-5", hint: "Planning and review." },
+    xlarge: { model: "anthropic/claude-fable-5-1", hint: "Only when large has failed." },
+  },
+  compaction: {
+    enabled: true,
+    reserveTokens: 16_384,
+    keepRecentTokens: 20_000,
+    backgroundTokens: 32_768,
+  },
+  tools: { offered: ["read", "write", "edit", "bash", "tool_search", "context_rollover"] },
+  spendLimit: { perSession: 5 },
+  branchSummary: { skipPrompt: false },
+  instructions: "Prefer small commits.",
+  mcp: { servers: {} },
+  extensions: { subagents: { maxSubagentDepth: 1, maxSubagentWorkspaces: 3 } },
 };
 
-const GLOBAL_OVERRIDES = { spendLimit: { perSession: 5 }, instructions: "Prefer small commits." };
-const ENVIRONMENT_OVERRIDES = { spendLimit: { perSession: 2 } };
+/** What Global saved: the fields that are not the defaults. */
+const GLOBAL_OVERRIDES = {
+  spendLimit: { perSession: 5 },
+  instructions: "Prefer small commits.",
+  extensions: { subagents: { maxSubagentDepth: 1, maxSubagentWorkspaces: 3 } },
+} satisfies Schema.Json;
 
-/** The Settings at Global and at Environment `default`, which has its own Instructions. */
+/** An Environment's settings as the Registry shows them: what it overrides, over Global's. */
+type FakeEnvironment = {
+  readonly name: string;
+  readonly settings: Settings;
+  readonly overrides: Schema.Json;
+  readonly instructions: string;
+  readonly mcpServers: number;
+};
+
+/** A setting too long to show (`MAX_VALUE_BYTES`, 32 KiB), and Instructions too long for a result (128 KiB). */
+const OVER_VALUE = "b".repeat(40_000);
+const OVER_INSTRUCTIONS = "Keep functions small.\n".repeat(7_000);
+
+const SETTINGS_ENVIRONMENTS = new Map<string, FakeEnvironment>([
+  [
+    "default",
+    {
+      name: "Default",
+      settings: { ...GLOBAL_SETTINGS, spendLimit: { perSession: 2 } },
+      overrides: { spendLimit: { perSession: 2 } },
+      instructions: "Run the tests with bun.",
+      mcpServers: 2,
+    },
+  ],
+  [
+    "big",
+    {
+      name: "Big",
+      settings: {
+        ...GLOBAL_SETTINGS,
+        extensions: { ...GLOBAL_SETTINGS.extensions, big: { blob: OVER_VALUE } },
+      },
+      overrides: { extensions: { big: { blob: OVER_VALUE } } },
+      instructions: OVER_INSTRUCTIONS,
+      mcpServers: 0,
+    },
+  ],
+]);
+
+const unknownScope = (scope: string) => SettingsAccessError.make({ message: noEnvironment(scope) });
+
+/** The Settings at Global and at two Environments, one of them with values and Instructions too long to show. */
 const settings: SettingsAccessService = {
   get: (scope) =>
     Effect.suspend((): Effect.Effect<SettingsView, SettingsAccessError> => {
       if (scope === GLOBAL_SETTINGS_SCOPE) {
-        const global = resolvedGlobal(GLOBAL_OVERRIDES);
-
         return Effect.succeed({
           scope: GLOBAL_SETTINGS_SCOPE,
-          settings: global,
-          overrides: overridesFrom(global),
+          settings: GLOBAL_SETTINGS,
+          overrides: GLOBAL_OVERRIDES,
           overriddenIn: { "spendLimit.perSession": [{ id: "default", name: "Default" }] },
           problem: undefined,
           mcpServers: 1,
         });
       }
 
-      if (scope !== "default") {
-        return Effect.fail(
-          SettingsAccessError.make({
-            message: `No Environment has the id ${JSON.stringify(scope)}.`,
-          }),
-        );
-      }
+      const environment = SETTINGS_ENVIRONMENTS.get(scope);
 
-      const lenient = resolveOverridesLeniently(GLOBAL_OVERRIDES, ENVIRONMENT_OVERRIDES);
+      if (environment === undefined) return Effect.fail(unknownScope(scope));
 
       return Effect.succeed({
         scope,
-        name: "Default",
-        settings: lenient.settings,
-        overrides: lenient.overrides,
-        global: lenient.global,
+        name: environment.name,
+        settings: environment.settings,
+        overrides: environment.overrides,
+        global: GLOBAL_SETTINGS,
         problem: undefined,
-        instructions: "Run the tests with bun.",
-        mcpServers: 2,
+        instructions: environment.instructions,
+        mcpServers: environment.mcpServers,
       });
     }),
   own: Effect.succeed("default"),
-  change: () => Effect.die("The snapshot changes nothing"),
+  change: () => nothing("changes"),
 };
 
+// --- MCP servers -------------------------------------------------------------------------------------------------
+
 /** A server as the Registry resolves it: an HTTP entry in force, `${NAME}` unresolved. */
-const resolved = (name: string): McpResolvedServer => {
+const resolved = (name: string, source: McpResolvedServer["source"]): McpResolvedServer => {
   const exposure: McpExposure = "codemode";
 
   return {
     name,
-    source: { kind: "environment" },
+    source,
     server: {
       enabled: true,
       exposure,
@@ -206,36 +313,66 @@ const resolved = (name: string): McpResolvedServer => {
   };
 };
 
-const SERVERS: ReadonlyArray<SettingsMcpServer> = [
-  {
-    server: resolved("docs"),
-    origins: { enabled: "default", exposure: "default", toolExposure: "default" },
-    reads: [{ name: "API_TOKEN", kind: "secret", where: ["headers.Authorization"] }],
-    resetFields: [],
-    signIn: null,
-    hints: [],
-    problems: [],
-  },
-];
-
-const mcpView = (name: string | undefined): SettingsMcpView => ({
-  scope: "default",
-  name: "Default",
-  servers: SERVERS,
-  names: Arr.map(SERVERS, (each) => each.server.name),
-  layers:
-    name === undefined
-      ? null
-      : { global: null, environment: { kind: "entry", value: {} }, repos: [] },
-  repos: [],
-  orphans: [],
+const server = (name: string, source: McpResolvedServer["source"]): SettingsMcpServer => ({
+  server: resolved(name, source),
+  origins: { enabled: "default", exposure: "default", toolExposure: "default" },
+  reads: [{ name: "API_TOKEN", kind: "secret", where: ["headers.Authorization"] }],
+  resetFields: [],
+  signIn: null,
+  hints: [],
   problems: [],
-  offered: [],
-  warnings: [],
 });
 
-/** The host of every Environment: one connected server with two tools. */
+const SHARED = server("shared", { kind: "global" });
+const DOCS = server("docs", { kind: "environment" });
+
+/** The MCP servers of the Scopes: Global's own entry, and an Environment's whole set. */
+const MCP_SCOPES = new Map<
+  string,
+  { readonly name: string; readonly servers: ReadonlyArray<SettingsMcpServer> }
+>([
+  [GLOBAL_SETTINGS_SCOPE, { name: "Global", servers: [SHARED] }],
+  ["default", { name: "Default", servers: [SHARED, DOCS] }],
+]);
+
+const mcpView = (scope: string, name: string | undefined): SettingsMcpView | null => {
+  const found = MCP_SCOPES.get(scope);
+
+  if (found === undefined) return null;
+
+  const chosen = Arr.filter(
+    found.servers,
+    (each) => name === undefined || each.server.name === name,
+  );
+
+  return {
+    scope,
+    name: found.name,
+    servers: chosen,
+    names: Arr.map(found.servers, (each) => each.server.name),
+    layers:
+      name === undefined || chosen.length === 0
+        ? null
+        : {
+            global: scope === GLOBAL_SETTINGS_SCOPE ? { kind: "entry", value: {} } : null,
+            environment: scope === GLOBAL_SETTINGS_SCOPE ? null : { kind: "entry", value: {} },
+            repos: [],
+          },
+    repos: [],
+    orphans: [],
+    problems: [],
+    offered: [],
+    warnings: [],
+  };
+};
+
+/** The host of every Environment: both servers connected, with their tools. */
 const host = fakeMcpHost([
+  {
+    name: "shared",
+    tools: [{ name: "lookup", description: "Look a name up", annotations: { readOnlyHint: true } }],
+    protocolVersion: "2025-06-18",
+  },
   {
     name: "docs",
     tools: [
@@ -248,172 +385,263 @@ const host = fakeMcpHost([
 ]);
 
 const mcp: SettingsMcpAccessService = {
-  view: ({ scope, name }) =>
-    scope === "default"
-      ? Effect.succeed(mcpView(name))
-      : Effect.fail(
-          SettingsAccessError.make({
-            message: `No Environment has the id ${JSON.stringify(scope)}.`,
-          }),
-        ),
+  view: ({ scope, name }) => {
+    const view = mcpView(scope, name);
+
+    return view === null ? Effect.fail(unknownScope(scope)) : Effect.succeed(view);
+  },
   own: Effect.succeed("default"),
-  check: () => Effect.die("The snapshot changes nothing"),
-  reload: () => Effect.die("The snapshot reloads nothing"),
-  pushes: () => Effect.die("The snapshot pushes nothing"),
-  pushed: () => Effect.die("The snapshot pushes nothing"),
+  check: () => nothing("changes"),
+  reload: () => nothing("reloads"),
+  pushes: () => nothing("pushes"),
+  pushed: () => nothing("pushes"),
   host: () => host.client,
 };
+
+// --- The extensions ----------------------------------------------------------------------------------------------
 
 // SAFETY: the tools use only `refresh` and `redact` of the Secrets.
 const secrets = { refresh: Effect.void, redact: (value: string) => value } as SecretsService;
 
 /** The four extensions over the stand-in services, by name. */
-const extensionsOver = Effect.gen(function* () {
-  const built: Record<(typeof EXTENSIONS)[number], Extension> = {
-    environment: yield* EnvironmentTools,
-    settings: yield* SettingsTools,
-    settings_mcp: yield* SettingsMcpTools,
-    "approval-tools": yield* ApprovalTools,
-  };
+const extensionsOver = (over: EnvironmentsService) =>
+  Effect.gen(function* () {
+    const built: Record<(typeof EXTENSIONS)[number], Extension> = {
+      environment: yield* EnvironmentTools,
+      settings: yield* SettingsTools,
+      settings_mcp: yield* SettingsMcpTools,
+      "approval-tools": yield* ApprovalTools,
+    };
 
-  return built;
-}).pipe(
-  Effect.provideService(Environments, environments),
-  Effect.provideService(EnvironmentRemoval, {
-    footprint: () => Effect.die("The snapshot deletes nothing"),
-    deleteEnvironment: () => Effect.die("The snapshot deletes nothing"),
-    keptSecrets: () => Effect.die("The snapshot deletes nothing"),
-    deleteSecret: () => Effect.die("The snapshot deletes nothing"),
-  }),
-  Effect.provideService(SettingsAccess, settings),
-  Effect.provideService(SettingsMcpAccess, mcp),
-  Effect.provideService(SettingsReload, { apply: Effect.die("The snapshot reloads nothing") }),
-  Effect.provideService(AgentChangeLog, { record: () => Effect.die("The snapshot logs nothing") }),
-  Effect.provideService(DeployCredentials, { values: [] }),
-  Effect.provideService(Secrets, secrets),
-  Effect.provideService(Approvals, unusedApprovals),
-);
+    return built;
+  }).pipe(
+    Effect.provideService(Environments, over),
+    Effect.provideService(EnvironmentRemoval, {
+      footprint: () => nothing("deletes"),
+      deleteEnvironment: () => nothing("deletes"),
+      keptSecrets: () => nothing("deletes"),
+      deleteSecret: () => nothing("deletes"),
+    }),
+    Effect.provideService(SettingsAccess, settings),
+    Effect.provideService(SettingsMcpAccess, mcp),
+    Effect.provideService(SettingsReload, { apply: nothing("reloads") }),
+    Effect.provideService(AgentChangeLog, { record: () => nothing("logs") }),
+    Effect.provideService(DeployCredentials, { values: [] }),
+    Effect.provideService(Secrets, secrets),
+    Effect.provideService(Approvals, unusedApprovals),
+  );
+
+const toolOf = (built: Record<(typeof EXTENSIONS)[number], Extension>, name: string) =>
+  Option.getOrThrowWith(
+    Arr.findFirst(
+      Arr.flatMap(EXTENSIONS, (extension) => built[extension].tools ?? []),
+      (tool) => tool.name === name,
+    ),
+    () => new Error(`no tool ${name}`),
+  );
 
 // SAFETY: the tools read only the calling conversation from the invocation's API.
 const api = { conversationId: ROOT_CONVERSATION_ID } as ToolExecutionApi;
 
-/** The widest line oxfmt leaves a list on. */
-const PRINT_WIDTH = 100;
+/** What a call answered, as it is: whether it failed, each part of its output, its structured output and its details. */
+const answer = (tool: ToolRegistration, args: JsonObject) =>
+  Effect.promise(() =>
+    // SAFETY: the arguments are the tool's JSON parameters.
+    tool.execute(args as never, api, BACKGROUND_CONTEXT),
+  ).pipe(
+    Effect.map((result) => ({
+      isError: result.isError === true,
+      output: result.output ?? [],
+      structured: result.structuredOutput ?? null,
+      details: result.details ?? null,
+    })),
+  );
 
-/**
- * `value` as JSON as `oxfmt` lays it out, so the snapshot passes `format:check` as written: objects and the lists that
- * hold them one entry a line, and a list of plain values on one line when it fits. `trailing` is the width of what
- * follows the value on its line.
- */
-const formatted = (value: Schema.Json, indent: number, trailing = 0, head = 0): string => {
-  const pad = " ".repeat(indent);
-  const inner = " ".repeat(indent + 2);
+// --- The snapshot ------------------------------------------------------------------------------------------------
 
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "[]";
+/** `value` as JSON with its keys in order, so the same schema hashes the same however its keys were written. */
+const canonical = (value: Schema.Json): string => {
+  if (Arr.isArray(value)) {
+    // SAFETY: an array of a JSON value holds JSON values.
+    const items = value as ReadonlyArray<Schema.Json>;
 
-    const flat = `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
-    const plain = value.every((item) => !Predicate.isObject(item));
-
-    if (plain && indent + head + flat.length + trailing <= PRINT_WIDTH) return flat;
-
-    const items = value.map(
-      (item, index) => `${inner}${formatted(item, indent + 2, index < value.length - 1 ? 1 : 0)}`,
-    );
-
-    return `[\n${items.join(",\n")}\n${pad}]`;
+    return `[${Arr.join(Arr.map(items, canonical), ",")}]`;
   }
 
   if (Predicate.isObject(value)) {
     // SAFETY: an object of a JSON value holds JSON values.
-    const entries = Object.entries(value as { readonly [key: string]: Schema.Json }).filter(
-      ([, item]) => item !== undefined,
-    );
+    const entries = Object.entries(value as { readonly [key: string]: Schema.Json });
 
-    if (entries.length === 0) return "{}";
-
-    const lines = entries.map(([key, item], index) => {
-      const name = `${JSON.stringify(key)}: `;
-      const trailing = index < entries.length - 1 ? 1 : 0;
-
-      return `${inner}${name}${formatted(item, indent + 2, trailing, name.length)}`;
-    });
-
-    return `{\n${lines.join(",\n")}\n${pad}}`;
+    return `{${Arr.join(
+      Arr.map(
+        Arr.sort(
+          entries,
+          Order.mapInput(Order.String, ([key]: readonly [string, Schema.Json]) => key),
+        ),
+        ([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`,
+      ),
+      ",",
+    )}}`;
   }
 
   return JSON.stringify(value);
 };
 
-/** What a read answered: its text, its structured output and its details. */
-const read = (tool: ToolRegistration, args: JsonObject) =>
-  Effect.promise(() =>
-    // SAFETY: the arguments are the tool's JSON parameters.
-    tool.execute(args as never, api, BACKGROUND_CONTEXT),
-  ).pipe(
-    Effect.map((result) => {
-      expect(result.isError).not.toBe(true);
+const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
-      return {
-        text: Arr.join(
-          Arr.map(result.output ?? [], (part) => (part.type === "text" ? part.text : "")),
-          "",
-        ),
-        structured: result.structuredOutput ?? null,
-        details: result.details ?? null,
-      };
-    }),
-  );
+/** `text` as the snapshot keeps a long one, on one line: its length, its SHA-256 and its start. */
+const marked = (text: string): string =>
+  `<${text.length} characters, sha256 ${sha256(text)}, starting ${JSON.stringify(text.slice(0, HEAD))}>`;
+
+/**
+ * A JSON Schema document as the snapshot keeps it, on one line: its top-level properties by name when `named`, and the
+ * SHA-256 of its whole document, which is large (the parameters and structured output schemas of 48 tools weigh about 230 KB) and
+ * changes when any character of it does.
+ */
+const digested = (schema: Schema.Json, named: boolean): string => {
+  const text = canonical(schema);
+  // SAFETY: a JSON Schema document is an object whose `properties`, when it has them, is an object.
+  const properties = Predicate.isObject(schema) ? (schema as JsonObject).properties : undefined;
+  const names = named && Predicate.isObject(properties) ? Object.keys(properties) : [];
+
+  return `<schema${named ? ` of ${Arr.join(names, ", ")}` : ""}: ${text.length} characters, sha256 ${sha256(text)}>`;
+};
+
+/** `value` with each string over `LONG_STRING` characters as its length, its SHA-256 and its start. */
+const shortened = (value: Schema.Json): Schema.Json => {
+  if (Predicate.isString(value)) {
+    return value.length <= LONG_STRING ? value : marked(value);
+  }
+
+  if (Arr.isArray(value)) {
+    // SAFETY: an array of a JSON value holds JSON values.
+    const items = value as ReadonlyArray<Schema.Json>;
+
+    return Arr.map(items, shortened);
+  }
+
+  if (Predicate.isObject(value)) {
+    // SAFETY: an object of a JSON value holds JSON values.
+    const entries = Object.entries(value as { readonly [key: string]: Schema.Json });
+
+    return Object.fromEntries(Arr.map(entries, ([key, item]) => [key, shortened(item)]));
+  }
+
+  return value;
+};
+
+/** Whether the file is to be written: asked for, or missing outside CI (where a missing file is a failure). */
+const writing = (): boolean => {
+  if (process.env.UPDATE_SNAPSHOT === "1") return true;
+
+  if (existsSync(SNAPSHOT)) return false;
+
+  if (process.env.CI !== undefined) throw new Error(`${SNAPSHOT} is missing`);
+
+  return true;
+};
+
+/** Compare `actual` with the file, or write it. */
+const settle = (actual: Schema.Json) => {
+  if (writing()) {
+    mkdirSync(dirname(SNAPSHOT), { recursive: true });
+    writeFileSync(SNAPSHOT, `${JSON.stringify(actual, null, 2)}\n`);
+
+    return;
+  }
+
+  // SAFETY: the file is what this test wrote, then `oxfmt` laid out.
+  const recorded = JSON.parse(readFileSync(SNAPSHOT, "utf8")) as {
+    readonly tools: Schema.Json;
+    readonly reads: Schema.Json;
+  };
+
+  // SAFETY: the snapshot is an object of its two parts.
+  const { tools, reads } = actual as { readonly tools: Schema.Json; readonly reads: Schema.Json };
+
+  expect(tools).toEqual(recorded.tools);
+  expect(reads).toEqual(recorded.reads);
+};
 
 describe("the Session's Environment and Settings tools", () => {
-  it("are the ones the snapshot lists, with the answers of the five reads", () =>
+  it("register as, and the five reads answer as, __snapshots__/harness-session.json records", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const built = yield* extensionsOver;
-
-        const tools = Arr.flatMap(EXTENSIONS, (extension) =>
-          Arr.map(built[extension].tools ?? [], (tool) => ({ extension, tool })),
-        );
-
-        const named = (name: string): ToolRegistration =>
-          Option.getOrThrowWith(
-            Arr.findFirst(tools, (each) => each.tool.name === name),
-            () => new Error(`no tool ${name}`),
-          ).tool;
+        const built = yield* extensionsOver(environments);
+        const failing = yield* extensionsOver(unlistable);
+        const tool = (name: string) => toolOf(built, name);
 
         const reads = {
-          environment_list: yield* read(named("environment_list"), {}),
-          environment_get: yield* read(named("environment_get"), { id: "default" }),
-          settings_get_global: yield* read(named("settings_get"), { scope: "*" }),
-          settings_get_environment: yield* read(named("settings_get"), { scope: "default" }),
-          settings_mcp_list: yield* read(named("settings_mcp_list"), { scope: "default" }),
-          settings_mcp_get: yield* read(named("settings_mcp_get"), {
+          environment_list: yield* answer(tool("environment_list"), {}),
+          environment_list_unreadable: yield* answer(toolOf(failing, "environment_list"), {}),
+          // This Session's own Environment, with variables cut.
+          environment_get_own: yield* answer(tool("environment_get"), { id: "default" }),
+          // Another Environment, with a problem and a failed Build.
+          environment_get_other: yield* answer(tool("environment_get"), { id: "0000abcd" }),
+          environment_get_global: yield* answer(tool("environment_get"), { id: "*" }),
+          environment_get_unknown: yield* answer(tool("environment_get"), { id: "nope" }),
+          settings_get_global: yield* answer(tool("settings_get"), { scope: "*" }),
+          settings_get_environment: yield* answer(tool("settings_get"), { scope: "default" }),
+          // A setting over `MAX_VALUE_BYTES` and Instructions over the result's limit.
+          settings_get_too_long: yield* answer(tool("settings_get"), { scope: "big" }),
+          settings_get_unknown: yield* answer(tool("settings_get"), { scope: "nope" }),
+          settings_mcp_list_global: yield* answer(tool("settings_mcp_list"), { scope: "*" }),
+          settings_mcp_list_environment: yield* answer(tool("settings_mcp_list"), {
+            scope: "default",
+          }),
+          settings_mcp_list_unknown: yield* answer(tool("settings_mcp_list"), { scope: "nope" }),
+          settings_mcp_get_global: yield* answer(tool("settings_mcp_get"), {
+            scope: "*",
+            name: "shared",
+          }),
+          settings_mcp_get_environment: yield* answer(tool("settings_mcp_get"), {
             scope: "default",
             name: "docs",
           }),
+          settings_mcp_get_unknown_scope: yield* answer(tool("settings_mcp_get"), {
+            scope: "nope",
+            name: "docs",
+          }),
+          settings_mcp_get_unknown_server: yield* answer(tool("settings_mcp_get"), {
+            scope: "default",
+            name: "ghost",
+          }),
         };
 
-        const registered = Arr.map(tools, ({ extension, tool }) => ({
-          extension,
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters,
-          structuredOutputSchema: tool.structuredOutputSchema ?? null,
-          replay: tool.replay ?? null,
-          executionMode: tool.executionMode ?? null,
-        }));
-
-        // SAFETY: the registrations and the answers are JSON; undefined keys are left out by the writer.
-        const snapshot = { tools: registered, reads } as Schema.Json;
-
-        // The variables are cut: the one that fits is listed, and the one that does not is not.
-        expect(reads.environment_get.structured).toMatchObject({
-          variables_truncated: true,
-        });
-
-        yield* Effect.promise(() =>
-          expect(`${formatted(snapshot, 0)}\n`).toMatchFileSnapshot(SNAPSHOT),
+        const registered = Arr.flatMap(EXTENSIONS, (extension) =>
+          Arr.map(built[extension].tools ?? [], (each) => ({
+            extension,
+            name: each.name,
+            // The description is the model's: kept as its start and its hash, so a changed word shows.
+            description: marked(each.description ?? ""),
+            // SAFETY: the parameters are a JSON Schema document.
+            parameters: digested(each.parameters as Schema.Json, true),
+            // SAFETY: a structured output schema is a JSON Schema document.
+            structuredOutputSchema: digested(
+              (each.structuredOutputSchema ?? null) as Schema.Json,
+              false,
+            ),
+            replay: each.replay ?? null,
+            executionMode: each.executionMode ?? null,
+          })),
         );
+
+        // The Environment's variables are cut after the ones that fit.
+        expect(reads.environment_get_own.structured).toMatchObject({ variables_truncated: true });
+        expect(reads.environment_get_other.structured).toMatchObject({ current: false });
+
+        for (const [name, each] of Object.entries(reads)) {
+          expect(each.isError, name).toBe(/unknown|unreadable/.test(name));
+        }
+
+        expect(VARIABLES_BYTES).toBeLessThan(
+          Object.values(MANY_VARIABLES).reduce((total, value) => total + value.length, 0),
+        );
+
+        // SAFETY: the registrations and the answers are JSON; undefined keys are left out by the round trip.
+        const whole = JSON.parse(JSON.stringify({ tools: registered, reads })) as Schema.Json;
+
+        settle(shortened(whole));
       }),
     ));
 });
