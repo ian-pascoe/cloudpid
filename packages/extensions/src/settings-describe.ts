@@ -1,7 +1,8 @@
-// The words and the value of `settings_get` in a Session, the Settings' view the Registry gives, and the refusal for
-// Settings that cannot be reached (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → Shared
-// definitions and the core/wrapper split). This is a leaf of the extension: `settings.ts` re-exports it, and the read
-// cores (`settings-reads.ts`, `settings-mcp-reads.ts`) and the wrappers both import it, so neither imports the other.
+// Holds: the Settings view the Registry gives (`SettingsView`, `isGlobalView`), `SettingsAccessError`, the in-session
+// describers (`describeSettings`, `scopeName`, `shown`) and `settingsOutput`, the value `settings_get` gives programs
+// (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → Shared definitions and the core/wrapper split).
+// A leaf of the extension: `settings.ts` re-exports it, and the read cores (`settings-reads.ts`, `settings-mcp-reads.ts`)
+// and the wrappers both import it, so neither imports the other.
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,

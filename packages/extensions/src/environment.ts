@@ -76,6 +76,7 @@ import { Secrets } from "./secrets/store.ts";
 
 export { type SecretMarked, type SecretMarks } from "./environment-secret-marks.ts";
 
+// The supported import path for these, `apps/server` included, is this module: the leaf is an internal split.
 export {
   describeBuild,
   describeEnvironment,

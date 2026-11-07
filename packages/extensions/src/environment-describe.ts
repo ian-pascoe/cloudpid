@@ -1,7 +1,8 @@
-// The words of `environment_list` and `environment_get` in a Session, and the refusal for an Environment that does not
-// exist (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → Shared definitions and the core/wrapper
-// split). This is a leaf of the extension: `environment.ts` re-exports it, and the read cores (`environment-reads.ts`) and
-// the wrappers both import it, so neither imports the other.
+// Holds: the in-session describers of `environment_list` and `environment_get` (`describeEnvironment`, `describeGlobal`,
+// `listingLine`, `describeBuild`, `reposLine`, `namedEnvironment`), `EnvironmentsError` and `notFound`
+// (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → Shared definitions and the core/wrapper split).
+// A leaf of the extension: `environment.ts` re-exports it, and the read cores (`environment-reads.ts`) and the wrappers
+// both import it, so neither imports the other.
 // @effect-diagnostics missingPipeableSignature:off
 import type { ContainerSettings } from "@cloudpid/config";
 import {

@@ -553,6 +553,7 @@ export const globalGetEndpointOutput = (
     ENDPOINT_GET_BOUNDS,
   );
 
+  // Every variable at Global has source "global", so neither set is picked by it: both are the same cuts.
   return endpointGetOutput(base, { own: variables.cut, inherited: variables.cut });
 };
 

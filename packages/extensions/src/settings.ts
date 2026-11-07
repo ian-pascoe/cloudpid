@@ -69,6 +69,7 @@ export const extensionName = "settings";
 /** The prefix of every tool of the extension: all of them are the root conversation's only. */
 export const SETTINGS_TOOL_PREFIX = "settings_";
 
+// The supported import path for these, `apps/server` included, is this module: the leaf is an internal split.
 export {
   describeSettings,
   type EnvironmentSettingsView,
