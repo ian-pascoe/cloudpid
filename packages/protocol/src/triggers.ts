@@ -66,6 +66,11 @@ export const TriggerSource = Schema.Union([ScheduleSource, UnknownSource]).pipe(
 
 export type TriggerSource = typeof TriggerSource.Type;
 
+/** The Schedule `holder` fires on, or undefined for none (a source this version doesn't know). */
+export const scheduleOf = (
+  holder: { readonly source: TriggerSource } | undefined,
+): ScheduleSource | undefined => (holder?.source.type === "schedule" ? holder.source : undefined);
+
 /**
  * What a Fire does while the last Fire's Session is still running or waiting for the owner (`triggers.md` → Overlap):
  * `skip` records it `skipped: overlap`, `start` starts its Session anyway. A value a later kind adds reads as `skip`.
@@ -107,8 +112,14 @@ export const FireSource = Schema.Union([
 
 export type FireSource = typeof FireSource.Type;
 
-/** Why a Fire was skipped; a later slice adds `coalesced`, `archived` and `importing`. */
-export const FireSkip = openLiterals(Schema.Literals(["overlap", "missed", "unknown"]), "unknown");
+/**
+ * Why a Fire was skipped: `overlap`, `missed`, or `paused` (its Trigger was paused before it went out); a later slice
+ * adds `coalesced`, `archived` and `importing`.
+ */
+export const FireSkip = openLiterals(
+  Schema.Literals(["overlap", "missed", "paused", "unknown"]),
+  "unknown",
+);
 
 export type FireSkip = typeof FireSkip.Type;
 

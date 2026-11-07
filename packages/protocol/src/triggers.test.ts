@@ -9,6 +9,7 @@ import {
   fireTitle,
   renderFireHeader,
   scheduledFireKey,
+  scheduleOf,
   TriggerDefinition,
   MAX_TRIGGER_MESSAGE_BYTES,
   triggerMessageProblem,
@@ -125,5 +126,14 @@ describe("a value a later slice added", () => {
       type: "skipped",
       reason: "unknown",
     });
+  });
+
+  it("has no Schedule for a source it doesn't know", () => {
+    const known = read(TriggerDefinition, definition);
+    const later = read(TriggerDefinition, { ...definition, source: { type: "webhook" } });
+
+    expect(scheduleOf(known)).toEqual({ type: "schedule", cron: "@daily", zone: "UTC" });
+    expect(scheduleOf(later)).toBeUndefined();
+    expect(scheduleOf(undefined)).toBeUndefined();
   });
 });

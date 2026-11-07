@@ -3,6 +3,7 @@
 // the Trigger object, the agent's tools and the owner's form (its preview of the next Fires) all read a Schedule alike.
 // @effect-diagnostics missingPipeableSignature:off globalDate:off preferEffectArray:off -- plain functions over croner, which reads and answers Dates.
 import { Cron } from "croner";
+import { MAX_FIRE_LOG } from "./triggers.ts";
 
 /** The shortcuts a Schedule takes besides 5-field cron. */
 export const SCHEDULE_SHORTCUTS = ["@hourly", "@daily", "@weekly"] as const;
@@ -110,9 +111,6 @@ export type DueFires = {
   readonly missed: ReadonlyArray<number>;
 };
 
-/** How many missed Fire times {@link dueFires} lists by default: a fire log's worth. */
-export const MAX_MISSED_LISTED = 1000;
-
 /** croner's reading of a valid `schedule`; it never runs anything. */
 const cronOf = (schedule: Schedule): Cron => {
   const expression = schedule.cron.trim();
@@ -133,11 +131,12 @@ export const nextFires = (schedule: Schedule, after: number, count: number): Arr
 /**
  * What is due of a valid `schedule` at `now`, for a Trigger whose Fires were handled up to `after` (epoch ms): one Fire,
  * for the latest time due, however late (the catch-up Fire), and the earlier times due, which are recorded `missed`
- * (`docs/architecture/triggers.md` → Schedules), oldest first and at most `keep` of them, the latest ones.
+ * (`docs/architecture/triggers.md` → Schedules), oldest first and at most `keep` of them (a fire log's worth,
+ * `MAX_FIRE_LOG`), the latest ones.
  */
 export const dueFires = (
   schedule: Schedule,
-  { after, now, keep = MAX_MISSED_LISTED }: { after: number; now: number; keep?: number },
+  { after, now, keep = MAX_FIRE_LOG }: { after: number; now: number; keep?: number },
 ): DueFires => {
   if (now <= after) return { fire: undefined, missed: [] };
 
