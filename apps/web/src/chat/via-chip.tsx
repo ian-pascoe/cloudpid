@@ -1,6 +1,6 @@
 // Who sent an owner's message over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → Access and identity, Marks): a
-// chip under the message, "via pi (MCP)". The client's name is the caller's own word, shown as text; the owner's email and
-// the grant behind the input are never shown.
+// chip under the message, "via pi (MCP)", or "via <name> (Trigger)" for one a Trigger's Fire sent. The client's name is
+// the caller's own word, shown as text; the owner's email and the grant behind the input are never shown.
 import { inputViaChipLabel, type SessionVia } from "@cloudpid/protocol";
 
 export const ViaChip = ({ via }: { via: SessionVia }) => (

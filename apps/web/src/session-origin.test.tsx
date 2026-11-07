@@ -1,5 +1,5 @@
 // What a Session came from, under its title: the chip of a Session the MCP endpoint started or imported, rendered with
-// `react-dom/server`.
+// `react-dom/server`; or Trigger · <name> for one a Trigger's Fire started.
 import type { SessionRecord } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -43,5 +43,21 @@ describe("the Session's origin chip", () => {
       renderToStaticMarkup(<Origin session={session({ marks: { kind: "mcp", auth: "local" } })} />),
     ).toBe("MCP");
     expect(renderToStaticMarkup(<Origin session={session({})} />)).toBe("");
+  });
+
+  it("is Trigger · <name> for a Session a Trigger's Fire started", () => {
+    expect(
+      renderToStaticMarkup(
+        <Origin
+          session={session({
+            marks: {
+              kind: "trigger",
+              auth: "trigger",
+              trigger: { id: "t1", name: "Weekly report" },
+            },
+          })}
+        />,
+      ),
+    ).toBe("Trigger · Weekly report");
   });
 });

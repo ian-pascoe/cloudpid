@@ -40,4 +40,13 @@ describe("the input's via chip", () => {
     expect(markup).not.toContain("<img");
     expect(markup).toContain("&lt;img");
   });
+
+  it("names the Trigger for an input a Fire sent: via <name> (Trigger)", () => {
+    const markup = renderToStaticMarkup(
+      <ViaChip via={{ auth: "trigger", trigger: { id: "t1", name: "Weekly report" } }} />,
+    );
+
+    expect(markup).toContain("via Weekly report (Trigger)");
+    expect(markup).not.toContain("t1");
+  });
 });

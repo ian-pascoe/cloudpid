@@ -1,5 +1,6 @@
 // What a Session came from, under its title (`docs/architecture/mcp-endpoint.md` → Access and identity, Marks): a Fork or
-// Clone's source, or "MCP · pi" / "Imported · pi" for a Session the MCP endpoint started or imported.
+// Clone's source, "MCP · pi" / "Imported · pi" for a Session the MCP endpoint started or imported, or "Trigger · <name>"
+// for one a Trigger's Fire started (`docs/architecture/triggers.md` → Fire records, origin marks and notifications).
 import { type SessionOrigin, type SessionRecord, sessionOriginLabel } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";

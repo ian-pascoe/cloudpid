@@ -9,6 +9,7 @@
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import {
+  AlarmClock,
   Bell,
   Box,
   Brain,
@@ -46,6 +47,7 @@ export type SectionSlug =
   | "setup"
   | "environments"
   | "workspaces"
+  | "triggers"
   | "skills"
   | "variables"
   | "secrets"
@@ -77,6 +79,7 @@ const SECTIONS: Readonly<Record<SectionSlug, SectionLook>> = {
   // At Global the list of Environments; at an Environment its own name, Repos and deletion.
   environments: { global: "Environments", environment: "Environment", icon: FolderGit2 },
   workspaces: named("Workspaces", GitFork),
+  triggers: named("Triggers", AlarmClock),
   skills: named("Skills", Sparkles),
   variables: named("Variables", Braces),
   secrets: named("Secrets", KeyRound),
@@ -96,6 +99,7 @@ const GLOBAL_SECTIONS: readonly SectionSlug[] = [
   "setup",
   "environments",
   "workspaces",
+  "triggers",
   "skills",
   "variables",
   "secrets",

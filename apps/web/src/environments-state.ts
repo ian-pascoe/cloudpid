@@ -410,6 +410,8 @@ export const revertAgentChangeAtom = Atom.family((id: string) =>
           "environment-secrets",
           "builds",
           "environments",
+          // A Trigger's changes are among them too (`triggers.<id>`).
+          "triggers",
         ]),
       ),
     { concurrent: true },

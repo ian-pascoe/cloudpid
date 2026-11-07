@@ -384,6 +384,7 @@ describe("every section", () => {
       listBuilds: () => Effect.succeed([]),
       listEnvironmentSecrets: () => Effect.succeed([]),
       listAgentChanges: () => Effect.succeed([]),
+      listTriggers: () => Effect.succeed([]),
       listSettingsChanges: () => Effect.succeed([]),
       listEnvironmentSkills: () => Effect.succeed([]),
       listSkillDirectory: () => Effect.succeed({ total: 0, hasMore: false, skills: [] }),
