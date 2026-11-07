@@ -6,9 +6,9 @@
 //
 // Every fixture value is pinned here, so a change of a default elsewhere does not move the snapshot. The test compares
 // the file structurally (`JSON.parse`), so how it is formatted does not matter. To keep the file small, a string over
-// `LONG_STRING` characters, each tool's description and each JSON Schema (parameters, structured output) are kept as their
-// length, their SHA-256 and their start (a parameters schema also by its properties' names), so a changed character still shows. Run with
-// `UPDATE_SNAPSHOT=1` to write the file again; a missing file is written too, except in CI.
+// `LONG_STRING` characters in an answer is kept as its length, its SHA-256 and its start, so a changed character still
+// shows. The registrations (descriptions, parameters, structured output schemas) are kept whole, so a diff shows what
+// moved. Run with `UPDATE_SNAPSHOT=1` to write the file again; a missing file is written too, except in CI.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off strictEffectProvide:off globalJsonInEffect:off missedPipeableOpportunity:off globalDate:off nodeBuiltinImport:off processEnv:off
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -26,7 +26,6 @@ import {
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
@@ -459,53 +458,11 @@ const answer = (tool: ToolRegistration, args: JsonObject) =>
 
 // --- The snapshot ------------------------------------------------------------------------------------------------
 
-/** `value` as JSON with its keys in order, so the same schema hashes the same however its keys were written. */
-const canonical = (value: Schema.Json): string => {
-  if (Arr.isArray(value)) {
-    // SAFETY: an array of a JSON value holds JSON values.
-    const items = value as ReadonlyArray<Schema.Json>;
-
-    return `[${Arr.join(Arr.map(items, canonical), ",")}]`;
-  }
-
-  if (Predicate.isObject(value)) {
-    // SAFETY: an object of a JSON value holds JSON values.
-    const entries = Object.entries(value as { readonly [key: string]: Schema.Json });
-
-    return `{${Arr.join(
-      Arr.map(
-        Arr.sort(
-          entries,
-          Order.mapInput(Order.String, ([key]: readonly [string, Schema.Json]) => key),
-        ),
-        ([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`,
-      ),
-      ",",
-    )}}`;
-  }
-
-  return JSON.stringify(value);
-};
-
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
-/** `text` as the snapshot keeps a long one, on one line: its length, its SHA-256 and its start. */
+/** `text` as the snapshot keeps a long one of an answer, on one line: its length, its SHA-256 and its start. */
 const marked = (text: string): string =>
   `<${text.length} characters, sha256 ${sha256(text)}, starting ${JSON.stringify(text.slice(0, HEAD))}>`;
-
-/**
- * A JSON Schema document as the snapshot keeps it, on one line: its top-level properties by name when `named`, and the
- * SHA-256 of its whole document, which is large (the parameters and structured output schemas of 48 tools weigh about 230 KB) and
- * changes when any character of it does.
- */
-const digested = (schema: Schema.Json, named: boolean): string => {
-  const text = canonical(schema);
-  // SAFETY: a JSON Schema document is an object whose `properties`, when it has them, is an object.
-  const properties = Predicate.isObject(schema) ? (schema as JsonObject).properties : undefined;
-  const names = named && Predicate.isObject(properties) ? Object.keys(properties) : [];
-
-  return `<schema${named ? ` of ${Arr.join(names, ", ")}` : ""}: ${text.length} characters, sha256 ${sha256(text)}>`;
-};
 
 /** `value` with each string over `LONG_STRING` characters as its length, its SHA-256 and its start. */
 const shortened = (value: Schema.Json): Schema.Json => {
@@ -612,15 +569,9 @@ describe("the Session's Environment and Settings tools", () => {
           Arr.map(built[extension].tools ?? [], (each) => ({
             extension,
             name: each.name,
-            // The description is the model's: kept as its start and its hash, so a changed word shows.
-            description: marked(each.description ?? ""),
-            // SAFETY: the parameters are a JSON Schema document.
-            parameters: digested(each.parameters as Schema.Json, true),
-            // SAFETY: a structured output schema is a JSON Schema document.
-            structuredOutputSchema: digested(
-              (each.structuredOutputSchema ?? null) as Schema.Json,
-              false,
-            ),
+            description: each.description,
+            parameters: each.parameters,
+            structuredOutputSchema: each.structuredOutputSchema ?? null,
             replay: each.replay ?? null,
             executionMode: each.executionMode ?? null,
           })),
@@ -639,9 +590,13 @@ describe("the Session's Environment and Settings tools", () => {
         );
 
         // SAFETY: the registrations and the answers are JSON; undefined keys are left out by the round trip.
-        const whole = JSON.parse(JSON.stringify({ tools: registered, reads })) as Schema.Json;
+        const whole = JSON.parse(JSON.stringify({ tools: registered, reads })) as {
+          readonly tools: Schema.Json;
+          readonly reads: Schema.Json;
+        };
 
-        settle(shortened(whole));
+        // The registrations are kept whole, so a change to one shows; the answers' long strings are shortened.
+        settle({ tools: whole.tools, reads: shortened(whole.reads) });
       }),
     ));
 });
