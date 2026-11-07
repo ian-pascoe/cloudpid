@@ -67,7 +67,7 @@ describe("the MCP endpoint's Access application", () => {
   });
 
   it.each(["prod", "pr-438", "dev_ian"])(
-    "turns managed OAuth on for %s: 5 minute access tokens, a 14 day grant, loopback, localhost and Self-use DCR",
+    "turns managed OAuth on for %s: 5 minute access tokens, a 14 day grant, loopback, localhost, Self-use and executor.sh DCR",
     (stage) => {
       expect(mcpApplicationProps(stage).oauthConfiguration).toEqual(mcpOauthConfiguration(stage));
       expect(mcpOauthConfiguration(stage)).toEqual({
@@ -77,7 +77,7 @@ describe("the MCP endpoint's Access application", () => {
           enabled: true,
           allowAnyOnLocalhost: true,
           allowAnyOnLoopback: true,
-          allowedUris: [selfUseRedirectUri(stage)],
+          allowedUris: [selfUseRedirectUri(stage), "https://executor.sh/api/oauth/callback"],
         },
       });
     },
