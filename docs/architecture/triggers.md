@@ -39,7 +39,7 @@ _Built in S1._
 
 ## Webhooks
 
-_Built in S2._
+_Built in S2, in four parts ([#679](https://github.com/ian-pascoe/cloudpid/issues/679)): the source, the pure checks and the Session's payload (part 1); the delivery path, Trigger URLs and secrets (part 2); the agent's tools (part 3); the owner's form (part 4). Notes marked "part 1" are built; the rest of this section is not yet._
 
 ### The Trigger URL
 
@@ -53,6 +53,8 @@ Each webhook Trigger names one format. Every delivery must be signed; there is n
 
 - **`github`:** `X-Hub-Signature-256`, `sha256=` and the HMAC-SHA256 hex digest of the body, keyed with the Signing secret. The event is `X-GitHub-Event` (and the body's `action`); repeats are deduped by `X-GitHub-Delivery`. A `ping` is answered and shown on the Trigger's page as "GitHub reached this trigger"; it never fires.
 - **`standard`:** [Standard Webhooks](https://www.standardwebhooks.com/)' `webhook-id`, `webhook-timestamp` and `webhook-signature`, with the spec's 5-minute timestamp window; repeats are deduped by `webhook-id`.
+
+- **As built, part 1:** the router (`apps/server/src/hooks-routes.ts`, its constants in the light `hooks-path.ts`) matches the exact shape, `/hooks/<UUIDv7 in lowercase>/<43 base64url characters>`, case-sensitively against the path as it was sent; it answers `refused` (a 404) for every other form a lenient router would read as under `/hooks` (it reuses the sign-in router's `canonicalPath`) and leaves the bare `/hooks` to the guard. The signature checks (`apps/server/src/trigger/signature.ts`, over Web Crypto, whose `verify` compares without leaking where it differs): `github` is `sha256=<hex>` over the bytes received, keyed with the Signing secret as UTF-8; `standard` is any `v1,<base64>` entry of `webhook-signature` over `<id>.<timestamp>.<body>`, and a timestamp more than 5 minutes either way is `stale` whatever its signature, so a replay never looks signed. A `standard` Trigger shows its Signing secret as `whsec_<base64>` (`standardSecretText`), the form Standard Webhooks' libraries decode back to the same bytes.
 
 ### Checks and answers
 
@@ -113,11 +115,12 @@ A Fire's message has four parts, in order:
 - **Bodies up to 1 MiB are kept** whole, each pending Fire's in its own SQLite row (a Durable Object's row holds at most 2 MB). A larger body (up to 25 MiB) still makes a Fire, but its body isn't kept: the message says so, with its size, the event and the delivery id, and the agent reads the event through `gh` instead. Chunking and R2 were rejected for a rare case, and refusing with 413 would drop a real GitHub event, which GitHub doesn't send again.
 - **The last delivered body** (at most 1 MiB) is kept apart, for **Fire again** ([_The owner's UI_](#the-owners-ui)).
 - **GitHub trimming** (S5, for the `github` format): `*_url` API links are dropped, except `html_url`, and the `repository`, `sender`, `organization` and `installation` objects shrink to their names. GitHub's payloads are mostly links.
+- **As built, part 1:** the Session's `fire` takes the delivery as `FireRequest.payload` (`FirePayload`: format, event, action, delivery id, content type, size, and the body unless it was over 1 MiB). The block (`triggerPayload`, `packages/protocol/src/trigger-payload.ts`) is `<trigger_payload>`, a notice that the body is untrusted, and one `<payload>` element with the sender's facts as attributes; the body is cleaned, redacted of the Secrets the Session holds, cut to 16 KiB at a character boundary and escaped, in that order, as an Attached resource's content is, and a sender's event, action and delivery id are cut to plain characters wherever they are said (the header, the attributes, the chip, the Session's title). The Session writes the whole body to `/workspace/.cloudpid/triggers/<fire key>.json` first (`host.ts`, `firePayload`, through the lookup environment, which never starts the Container), once and not again for a Fire it admitted before; a Workspace that can't be written fails the Fire as unavailable, which the object tries again. The block is a text part of its own after the message and the owner's entry keeps `trigger` (`TriggerPayloadChip`: where it came from, its size, how much went inline, its path) for the transcript's chip. A body that was not kept has the block with `not_kept` and no file. A webhook's Session is titled "`<name>` · `<event>` · `<date, time> UTC`": a webhook has no zone, so the time is UTC and says so.
 - **Rejected:** the whole body inline (it blows up the context and gives injected text the most room), and field templates in the Trigger message (they mix the payload into the trusted part, which is the injection hole).
 
 ## Filters
 
-_Built in S2._
+_Built in S2._ _As built, part 1:_ `match` lives on the webhook source, `{type: "webhook", format, match?}`, so it needs no column of its own and is part of what an Agent change records; `TriggerPatch.match` changes it alone (null takes it away; a Schedule's Trigger refuses one). The evaluator is `matchesDelivery` (`packages/protocol/src/trigger-match.ts`), over the parsed body as JSON: a path is own keys joined by dots (an array's index too, `commits.0.message`), numbers and booleans compare as their text, an object, an array or nothing never matches, `event` is the delivery's event name before any body field of that name, and there is no cap on paths or values. `matchProblem` refuses a path with an empty part and a path that lists no values.
 
 - **`match`:** a webhook Trigger may hold a `match`, a map from dotted paths in the body to lists of allowed values. Paths are ANDed; the values of one path are ORed. The event's name is the path `event`. For example: `{ event: ["workflow_run"], action: ["completed"], "workflow_run.conclusion": ["failure"], "workflow_run.head_branch": ["main"] }`.
 - **A delivery that doesn't match** is answered 2xx, counted as `filtered` for the day, and never becomes a Fire. A Fire costs a Session and a Container, so filtering is not left to the agent; a generic dotted-path match covers GitHub, Linear and the rest without code for each. JSONPath and CEL were rejected as more than this needs.
