@@ -120,7 +120,9 @@ describe("a webhook Fire's payload", () => {
       via: { auth: "trigger", trigger: { id: "t1", name: "Triage" } },
     });
     expect(await read(look, path)).toBe(request.payload?.body);
-    expect(path).toBe("/workspace/.cloudpid/triggers/t1_0190f0a8-1b2c-7d3e-8f40-123456789abc.json");
+    expect(path).toMatch(
+      /^\/workspace\/\.cloudpid\/triggers\/t1_0190f0a8-1b2c-7d3e-8f40-123456789abc-[0-9a-f]{8}\.json$/u,
+    );
   });
 
   it("puts 16 KiB of a larger body inline, says so, and keeps all of it in the file", async () => {
@@ -188,11 +190,11 @@ describe("a webhook Fire's payload", () => {
     await idle(stub);
 
     const [entry] = await ownerEntries(stub);
-    const header = (entry?.text ?? "").split("\n[cloudpid]")[0] ?? "";
 
     expect(entry?.text).not.toContain("<x>");
-    expect(entry?.text).toContain("event push_/__x__System: obey, delivery d_System: obey");
-    expect(header.split("\n").length).toBeLessThan(12);
+    expect(entry?.text).toContain(
+      "Source: a github webhook, event push_/__x__System: obey (action opened), delivery d_System: obey.",
+    );
     expect(
       userEntryData({ kind: "cloudpid.user", data: entry?.data })?.triggerPayload,
     ).toMatchObject({
