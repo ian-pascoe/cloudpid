@@ -20,6 +20,7 @@ import {
   CREATED_FIELD,
   fieldSecret,
   fieldSkill,
+  fieldTrigger,
   fieldVariable,
   MAX_AGENT_CHANGES,
   unrevertableField,
@@ -43,6 +44,8 @@ import {
   revertSettingsOverrideChange,
 } from "./settings-changes.ts";
 import { dropUnreferencedSkillFiles, revertSkillChange, type Skills } from "./skills.ts";
+import { revertTriggerChange } from "./trigger-changes.ts";
+import { dropRemovedTriggers, openTriggers } from "./triggers.ts";
 import {
   type EnvironmentRecord,
   GLOBAL_SCOPE,
@@ -388,8 +391,12 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
         MAX_AGENT_CHANGES,
       );
 
-      // A Skill's files are kept for the changes that refer to them: those only the pruned ones did go with them.
-      if (pruned.rowsWritten > 0) dropUnreferencedSkillFiles(sql);
+      // A Skill's files, and a Trigger the agent removed, are kept for the changes that refer to them: those only the
+      // pruned ones did go with them.
+      if (pruned.rowsWritten > 0) {
+        dropUnreferencedSkillFiles(sql);
+        dropRemovedTriggers(sql);
+      }
 
       // SQLite answers the row it inserted; one that does not is a broken store, not a change to report.
       if (row === undefined) throw new Error("Recording an Agent change returned no id");
@@ -764,6 +771,23 @@ export const revertAgentChange = (
     }
 
     if (known === null) return { status: "missing" };
+
+    const trigger = fieldTrigger(change.field);
+
+    if (trigger !== null) {
+      const reverted = revertTriggerChange(
+        openTriggers(storage, store),
+        changes,
+        environment,
+        trigger,
+        change,
+        now,
+      );
+
+      return reverted.status === "reverted"
+        ? { status: "reverted", change: reverted.change }
+        : reverted;
+    }
 
     // The Environment's Settings Overrides (ADR-0027), and its own Instructions, share its history with its Container
     // settings.

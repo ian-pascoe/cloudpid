@@ -6,16 +6,21 @@ import {
   openKeptVault,
   type SealedValue,
 } from "@cloudpid/extensions/secrets/core";
+import * as Arr from "effect/Array";
 import {
   type AgentChange,
   type EnvironmentRepo,
   type EnvironmentSecretRecord,
+  type EnvironmentTriggerInput,
   type PushSubscription,
   SETTINGS_SCOPE,
   type MarkedOrigin,
   type SessionOrigin,
   type SettingsOverridesState,
+  type TriggerChanged,
+  type TriggerChangeValue,
   type TriggerDefinition,
+  type TriggerPatch,
 } from "@cloudpid/protocol";
 import { DurableObject } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
@@ -76,13 +81,12 @@ import {
   type WorkspaceSetup,
   STARTING_MS,
 } from "./store.ts";
+import { openTriggerChanges, type TriggerChanges } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
-  type EnvironmentTriggerInput,
   type FireAdmission,
   type FireAdmitted,
   openTriggers,
-  type TriggerPatch,
   type Triggers,
   type TriggerWrite,
 } from "./triggers.ts";
@@ -96,12 +100,19 @@ export class TestRegistry extends DurableObject {
   readonly #store: RegistryStore;
   readonly #changes: AgentChanges;
   readonly #triggers: Triggers;
+  readonly #triggerChanges: TriggerChanges;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
     this.#store = openRegistryStore(ctx.storage);
     this.#changes = openAgentChanges(ctx.storage);
     this.#triggers = openTriggers(ctx.storage, this.#store);
+    this.#triggerChanges = openTriggerChanges(
+      ctx.storage,
+      this.#store,
+      this.#triggers,
+      this.#changes,
+    );
   }
 
   createSession(
@@ -209,6 +220,47 @@ export class TestRegistry extends DurableObject {
 
   deleteEnvironmentWithTriggers(id: string): EnvironmentRemoval {
     return this.#triggers.deleteEnvironment(id);
+  }
+
+  agentCreateTrigger(
+    id: string,
+    input: EnvironmentTriggerInput,
+    author: AgentChangeAuthor,
+    now: number,
+  ): TriggerChanged {
+    return this.#triggerChanges.create(id, input, author, now);
+  }
+
+  agentUpdateTrigger(
+    id: string,
+    patch: TriggerPatch,
+    expected: TriggerChangeValue | undefined,
+    author: AgentChangeAuthor,
+    now: number,
+  ): TriggerChanged {
+    return this.#triggerChanges.update(id, patch, expected, author, now);
+  }
+
+  agentSetTriggerPaused(
+    id: string,
+    paused: boolean,
+    expected: TriggerChangeValue | undefined,
+    author: AgentChangeAuthor,
+    now: number,
+  ): TriggerChanged {
+    return this.#triggerChanges.setPaused(id, paused, expected, author, now);
+  }
+
+  agentRemoveTrigger(id: string, author: AgentChangeAuthor, now: number): TriggerChanged {
+    return this.#triggerChanges.remove(id, author, now);
+  }
+
+  /** The ids of every Trigger row kept, removed ones too, in order. */
+  storedTriggerIds(): Array<string> {
+    return Arr.map(
+      this.ctx.storage.sql.exec<{ id: string }>("SELECT id FROM triggers ORDER BY id").toArray(),
+      ({ id }) => id,
+    );
   }
 
   createTrigger(id: string, input: EnvironmentTriggerInput, now: number): TriggerWrite {

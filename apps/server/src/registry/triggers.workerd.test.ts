@@ -1,10 +1,9 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
-import { DEFAULT_ENVIRONMENT } from "@cloudpid/protocol";
+import { DEFAULT_ENVIRONMENT, type EnvironmentTriggerInput } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { TestRegistry } from "./store.fixture.ts";
-import type { EnvironmentTriggerInput } from "./triggers.ts";
 
 declare global {
   namespace Cloudflare {

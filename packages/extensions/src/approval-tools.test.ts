@@ -168,7 +168,7 @@ const setUp = async ({
   extensions = {},
   instructions = "",
   held = { default: details("default", "Default"), "0000abcd": details("0000abcd", "Other") },
-  footprint = { workspaces: 2, sessions: 3, secrets: 1 },
+  footprint = { workspaces: 2, sessions: 3, secrets: 1, triggers: 2 },
   kept = { default: [{ name: "API_KEY", build: true, updatedAt: 1 }], "*": [] },
   overrides = {
     default: { name: "Default", overrides: {} },
@@ -1609,7 +1609,7 @@ describe("environment_delete", () => {
       target: 'Environment "Other"',
       change: "Delete the Environment",
       before:
-        'Environment "Other" (0000abcd): 2 Workspaces with 3 Sessions (archived ones too), its spare Workspace and Build, 1 kept Secret and its Agent changes',
+        'Environment "Other" (0000abcd): 2 Workspaces with 3 Sessions (archived ones too), its spare Workspace and Build, 1 kept Secret, 2 Triggers and its Agent changes',
     });
     expect(calls.deleted).toEqual(["0000abcd"]);
     expect(text).toContain("The user approved: deleted");
@@ -1617,6 +1617,40 @@ describe("environment_delete", () => {
     expect(logged).toEqual([
       { tool: "environment_delete", environmentName: "Other", field: "deleted" },
     ]);
+  });
+
+  it("deletes nothing when a Trigger was made in it between the request and the answer", async () => {
+    const { call, calls, state } = await setUp();
+
+    const { text } = await call(
+      "environment_delete",
+      { id: "0000abcd", reason: "The experiment is over" },
+      {
+        approve: true,
+        meanwhile: () => {
+          state.footprint = { workspaces: 2, sessions: 3, secrets: 1, triggers: 3 };
+        },
+      },
+    );
+
+    expect(text).toContain("changed since they were asked");
+    expect(calls.deleted).toEqual([]);
+  });
+
+  it("takes an Approval asked before Triggers were counted, while the Environment has none", async () => {
+    const { call, calls, answeredEarlier, state } = await setUp();
+
+    await answeredEarlier(4, { workspaces: 2, sessions: 3, secrets: 1 });
+    state.footprint = { workspaces: 2, sessions: 3, secrets: 1, triggers: 0 };
+
+    const { text } = await call(
+      "environment_delete",
+      { id: "0000abcd", reason: "The experiment is over" },
+      { approve: true, task: 4 },
+    );
+
+    expect(text).toContain("The user approved: deleted");
+    expect(calls.deleted).toEqual(["0000abcd"]);
   });
 
   it("deletes nothing when a Session started in it between the request and the answer", async () => {
@@ -1628,7 +1662,7 @@ describe("environment_delete", () => {
       {
         approve: true,
         meanwhile: () => {
-          state.footprint = { workspaces: 3, sessions: 4, secrets: 1 };
+          state.footprint = { workspaces: 3, sessions: 4, secrets: 1, triggers: 2 };
         },
       },
     );
@@ -1641,8 +1675,8 @@ describe("environment_delete", () => {
   it("finishes on a rerun a delete an eviction cut off, which took part of it already", async () => {
     const { call, calls, answeredEarlier, state } = await setUp();
 
-    await answeredEarlier(3, { workspaces: 2, sessions: 3, secrets: 1 });
-    state.footprint = { workspaces: 1, sessions: 1, secrets: 1 };
+    await answeredEarlier(3, { workspaces: 2, sessions: 3, secrets: 1, triggers: 2 });
+    state.footprint = { workspaces: 1, sessions: 1, secrets: 1, triggers: 0 };
 
     const { result, text } = await call(
       "environment_delete",
@@ -1916,7 +1950,7 @@ describe("the tools that wait for Approval, from a program", () => {
     expect(deleted).toEqual({
       environment: { id: "0000abcd", name: "Other" },
       deleted: true,
-      footprint: { workspaces: 2, sessions: 3, secrets: 1 },
+      footprint: { workspaces: 2, sessions: 3, secrets: 1, triggers: 2 },
       approval: { approved: true, reason: null },
     });
     expect(deleteDeclined).toEqual({

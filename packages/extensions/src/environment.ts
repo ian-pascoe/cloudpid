@@ -37,6 +37,7 @@ import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
   type AgentChange,
   type BuildView,
+  type EnvironmentRef,
   type EnvironmentRepo,
   type EnvironmentSkill,
   SKILLS_ROOT,
@@ -163,7 +164,7 @@ export type ChangeAuthor = {
 };
 
 /** The Environment a change was made to, by id and name. */
-export type ChangedEnvironment = { readonly id: string; readonly name: string };
+export type ChangedEnvironment = EnvironmentRef;
 
 /** How a change of a Container setting at Global reached the Environments. */
 export type GlobalChanged = {
@@ -276,6 +277,37 @@ export const credentialCheck: Effect.Effect<(text: string) => boolean, never, De
 
     return (text: string) => credentials.redact(text) !== text || holdsGitHubToken(text);
   });
+
+/**
+ * The check of a text a tool that waits for the owner's Approval (or a `trigger_*` tool) keeps or shows on the card: it fails, asking nothing,
+ * when `text` (`what`: the reason, the Instructions' text, a Trigger message) holds a Secret the Session holds, a
+ * deploy-time credential, or a Secret Reference's placeholder, which these tools do not resolve (the card and the
+ * history would show the reference's text); `fix` says what to do instead.
+ */
+export const plainTextCheck: Effect.Effect<
+  (text: string, what: string, fix: string) => Effect.Effect<void, EnvironmentsError>,
+  never,
+  Secrets | DeployCredentials
+> = Effect.gen(function* () {
+  const secrets = yield* Secrets;
+
+  const holdsCredential = yield* credentialCheck;
+
+  return (text: string, what: string, fix: string) =>
+    holdsPlaceholder(text)
+      ? Effect.fail(
+          EnvironmentsError.make({
+            message: `Nothing was asked or saved: ${what} holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. ${fix}`,
+          }),
+        )
+      : Effect.flatMap(secrets.refresh, () =>
+          secrets.redact(text) === text && !holdsCredential(text)
+            ? Effect.void
+            : EnvironmentsError.make({
+                message: `Nothing was asked or saved: ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. ${fix}`,
+              }),
+        );
+});
 
 /** The longest reason a change may give. */
 export const MAX_CHANGE_REASON = 500;

@@ -6,8 +6,10 @@
 import { ThinkingLevel } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { MAX_MCP_INPUT_BYTES, TriggerMark } from "./mcp-api.ts";
+import type { AgentChange, EnvironmentRef } from "./registry.ts";
 import { openLiterals } from "./open-literals.ts";
 
 /** The longest Trigger name, in characters after trimming. */
@@ -103,6 +105,116 @@ export const TriggerDefinition = Schema.Struct({
 
 export type TriggerDefinition = typeof TriggerDefinition.Type;
 
+/** A new Environment trigger, as the owner's form or `trigger_create` gives it. */
+export type EnvironmentTriggerInput = {
+  readonly kind: "environment";
+  readonly environment: string;
+  readonly name: string;
+  readonly message: string;
+  readonly source: ScheduleSource;
+  /** `skip` when absent, a Schedule's default (`triggers.md` → Overlap). */
+  readonly whenBusy?: TriggerWhenBusy | undefined;
+  readonly base?: string | undefined;
+  readonly model?: string | undefined;
+  readonly thinking?: ThinkingLevel | undefined;
+  readonly paused?: boolean | undefined;
+};
+
+/**
+ * A change of a Trigger's fields: each absent field is kept, and an option set to null goes back to its default. A
+ * Trigger's kind and Environment are fixed at creation, so no change names them.
+ */
+export type TriggerPatch = {
+  readonly name?: string | undefined;
+  readonly message?: string | undefined;
+  readonly source?: ScheduleSource | undefined;
+  readonly whenBusy?: TriggerWhenBusy | undefined;
+  readonly base?: string | null | undefined;
+  readonly model?: string | null | undefined;
+  readonly thinking?: ThinkingLevel | null | undefined;
+};
+
+const TRIGGER_FIELD = "triggers.";
+
+/** The field of Trigger `id`'s Agent changes, recorded under its Environment's Scope (`triggers.md` → Agent tools). */
+export const triggerField = (id: string): string => `${TRIGGER_FIELD}${id}`;
+
+/** The Trigger an Agent change's `field` is of, or null for a field that is not a Trigger's. */
+export const fieldTrigger = (field: string): string | null =>
+  field.startsWith(TRIGGER_FIELD) ? field.slice(TRIGGER_FIELD.length) : null;
+
+/**
+ * A Trigger as its Agent changes record it, before and after (null: none, as before its creation or after its
+ * removal): what the owner reads and a revert puts back, without its id, Environment, revision or times.
+ */
+export const TriggerChangeValue = Schema.Struct({
+  kind: TriggerKind,
+  name: Schema.String,
+  message: Schema.String,
+  source: TriggerSource,
+  whenBusy: TriggerWhenBusy,
+  base: Schema.optionalKey(Schema.String),
+  model: Schema.optionalKey(Schema.String),
+  thinking: Schema.optionalKey(ThinkingLevel),
+  paused: Schema.Boolean,
+});
+
+export type TriggerChangeValue = typeof TriggerChangeValue.Type;
+
+/** `definition` as its Agent changes record it. */
+export const triggerChangeValue = ({
+  id: _id,
+  revision: _revision,
+  environment: _environment,
+  createdAt: _createdAt,
+  updatedAt: _updatedAt,
+  ...value
+}: TriggerDefinition): TriggerChangeValue => value;
+
+/** `definition` as its Agent changes record it, as JSON (null: none, before its creation or after its removal). */
+export const triggerChangeJson = (definition: TriggerDefinition | null): Schema.Json | null =>
+  definition === null ? null : asChangeJson(triggerChangeValue(definition));
+
+/** A Trigger's value as the JSON its Agent change records and its Approval request keeps. */
+// SAFETY: a Trigger's value is plain JSON, its optional keys left out when absent.
+export const asChangeJson = (value: TriggerChangeValue): Schema.Json => value as Schema.Json;
+
+const decodeChangeValue = Schema.decodeUnknownOption(TriggerChangeValue);
+
+/**
+ * Whether a Trigger change from `before` to `after` (as its Agent change records them) leaves an active Trigger that had
+ * no alarm: one made, brought back or resumed. Its object must be woken to schedule it, since nothing else will.
+ */
+export const armsTrigger = (before: Schema.Json | null, after: Schema.Json | null): boolean => {
+  const now = decodeChangeValue(after);
+
+  if (Option.isNone(now) || now.value.paused) return false;
+
+  return Option.match(decodeChangeValue(before), {
+    onNone: () => true,
+    onSome: (was) => was.paused,
+  });
+};
+
+/** How the agent's change of a Trigger went, as the Registry answers it. */
+export type TriggerChanged =
+  | {
+      readonly status: "changed";
+      /** The Trigger after the change; null once removed. */
+      readonly definition: TriggerDefinition | null;
+      /** Its Environment, whose history records the change. */
+      readonly environment: EnvironmentRef;
+      readonly change: AgentChange;
+    }
+  /** It already was as asked: nothing was saved or recorded. */
+  | { readonly status: "unchanged"; readonly definition: TriggerDefinition }
+  /** It is no longer as the owner saw it (`current`; null once gone): nothing was saved. */
+  | { readonly status: "changed-since"; readonly current: TriggerDefinition | null }
+  /** Not allowed, said as the owner's form says it: nothing was saved. */
+  | { readonly status: "invalid"; readonly problem: string }
+  /** No such Trigger, or (for a new one) no such Environment. */
+  | { readonly status: "missing" };
+
 /** What made a Fire: a Schedule's time coming due, or the owner's **Fire now** (`manual`). */
 export const FireSource = Schema.Union([
   Schema.Struct({ type: Schema.Literal("schedule"), scheduledAt: Schema.Finite }),
@@ -165,6 +277,10 @@ const DATE_TIME: Intl.DateTimeFormatOptions = {
   minute: "2-digit",
 };
 
+/** A Fire's time as the owner reads it in `zone`, with the zone's short name: "Mon, Nov 9, 2026, 9:00 AM CST". */
+export const fireTimeWords = (at: number, zone: string): string =>
+  formatIn(zone, at, { ...DATE_TIME, timeZoneName: "short" });
+
 /** The title of the Session a Fire starts, "`<name>` · `<date, time>`" in the Trigger's zone: never generated. */
 export const fireTitle = (name: string, at: number, zone: string): string =>
   `${name.trim()} · ${formatIn(zone, at, DATE_TIME)}`;
@@ -182,7 +298,7 @@ export type FireHeader = typeof FireHeader.Type;
 
 /** cloudpid's header of a Fire's message, before the Trigger message (`triggers.md` → Payload and untrusted content). */
 export const renderFireHeader = (header: FireHeader): string => {
-  const at = (time: number) => formatIn(header.zone, time, { ...DATE_TIME, timeZoneName: "short" });
+  const at = (time: number) => fireTimeWords(time, header.zone);
 
   return Arr.join(
     [

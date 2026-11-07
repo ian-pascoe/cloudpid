@@ -58,7 +58,6 @@ import {
   AgentChangeLog,
   type ChangeAuthor,
   type ChangedEnvironment,
-  credentialCheck,
   type DeployCredentials,
   describeApplied,
   describeAppliedGlobal,
@@ -69,6 +68,7 @@ import {
   idOrGlobal,
   MAX_CHANGE_REASON,
   notFound,
+  plainTextCheck,
   sizeWords,
 } from "./environment.ts";
 import { GLOBAL_ID, GLOBAL_NAME } from "./environment-secret-marks.ts";
@@ -87,7 +87,6 @@ import {
   outputSchema,
   scopeRef,
 } from "./outputs.ts";
-import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import {
   agentChangeDetails,
@@ -127,6 +126,8 @@ export const EnvironmentFootprint = Schema.Struct({
   sessions: Schema.Int,
   /** The Secrets kept for it alone. */
   secrets: Schema.Int,
+  /** Its Triggers; none in an Approval asked before they were counted. */
+  triggers: Schema.Int.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
 });
 
 export type EnvironmentFootprint = typeof EnvironmentFootprint.Type;
@@ -300,11 +301,12 @@ const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" :
 const within = (now: EnvironmentFootprint, approved: EnvironmentFootprint): boolean =>
   now.workspaces <= approved.workspaces &&
   now.sessions <= approved.sessions &&
-  now.secrets <= approved.secrets;
+  now.secrets <= approved.secrets &&
+  now.triggers <= approved.triggers;
 
 /** What deleting an Environment takes with it, as the card says it: what the owner approves. */
 const footprintWords = (footprint: EnvironmentFootprint): string =>
-  `${count(footprint.workspaces, "Workspace")} with ${count(footprint.sessions, "Session")} (archived ones too), its spare Workspace and Build, ${count(footprint.secrets, "kept Secret")} and its Agent changes`;
+  `${count(footprint.workspaces, "Workspace")} with ${count(footprint.sessions, "Session")} (archived ones too), its spare Workspace and Build, ${count(footprint.secrets, "kept Secret")}, ${count(footprint.triggers, "Trigger")} and its Agent changes`;
 
 /** What a change the owner approved says when the target changed between the request and the answer. */
 const changedSince = (what: string, now: string) =>
@@ -361,31 +363,10 @@ export const ApprovalTools: Effect.Effect<
   const access = yield* SettingsAccess;
   const reload = yield* SettingsReload;
   const log = yield* AgentChangeLog;
-  const secrets = yield* Secrets;
 
-  const holdsCredential = yield* credentialCheck;
+  const plainText = yield* plainTextCheck;
   const { apply: applySettings, reach } = yield* SettingsChanges;
   const mcp = yield* McpChanges;
-
-  /**
-   * Fails, asking nothing, when `text` (`what`: the reason, or the Instructions' text) holds a Secret the Session holds,
-   * a deploy-time credential, or a Secret Reference's placeholder, which these tools do not resolve (the card and the
-   * history would show the reference's text); `fix` says what to do instead.
-   */
-  const plainText = (text: string, what: string, fix: string) =>
-    holdsPlaceholder(text)
-      ? Effect.fail(
-          EnvironmentsError.make({
-            message: `Nothing was asked or saved: ${what} holds a Secret Reference, which these tools do not resolve, so it would hold the reference's text, not the Secret. ${fix}`,
-          }),
-        )
-      : Effect.flatMap(secrets.refresh, () =>
-          secrets.redact(text) === text && !holdsCredential(text)
-            ? Effect.void
-            : EnvironmentsError.make({
-                message: `Nothing was asked or saved: ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. ${fix}`,
-              }),
-        );
 
   const plainReason = (reason: string) => plainText(reason, "the reason", "Say why without it.");
 
@@ -1199,7 +1180,7 @@ export const ApprovalTools: Effect.Effect<
     name: "environment_delete",
     description: Arr.join(
       [
-        "Delete an Environment, as the user's delete on the Environments page does: its Workspaces with their Sessions (archived ones too) and everything not pushed in them, its spare Workspace, its Build, the Secrets kept for it and its Agent changes. No revert can bring it back, so the user must approve it. The default Environment and this Session's own Environment cannot be deleted.",
+        "Delete an Environment, as the user's delete on the Environments page does: its Workspaces with their Sessions (archived ones too) and everything not pushed in them, its spare Workspace, its Build, the Secrets kept for it, its Triggers and its Agent changes. No revert can bring it back, so the user must approve it. The default Environment and this Session's own Environment cannot be deleted.",
         APPROVAL,
       ],
       "\n\n",

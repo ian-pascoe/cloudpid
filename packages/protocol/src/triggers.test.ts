@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
+  armsTrigger,
   FireOutcome,
   FireSource,
   fireText,
@@ -11,7 +12,12 @@ import {
   scheduledFireKey,
   scheduleOf,
   TriggerDefinition,
+  fieldTrigger,
+  fireTimeWords,
   MAX_TRIGGER_MESSAGE_BYTES,
+  triggerChangeJson,
+  triggerChangeValue,
+  triggerField,
   triggerMessageProblem,
   triggerNameProblem,
 } from "./triggers.ts";
@@ -135,5 +141,61 @@ describe("a value a later slice added", () => {
     expect(scheduleOf(known)).toEqual({ type: "schedule", cron: "@daily", zone: "UTC" });
     expect(scheduleOf(later)).toBeUndefined();
     expect(scheduleOf(undefined)).toBeUndefined();
+  });
+});
+
+describe("fireTimeWords", () => {
+  it("says a time in the Trigger's zone, with the zone's short name", () => {
+    expect(fireTimeWords(at("2026-11-09T15:00:00Z"), "America/Chicago")).toBe(
+      "Mon, Nov 9, 2026, 9:00 AM CST",
+    );
+  });
+});
+
+describe("a Trigger's Agent changes", () => {
+  const definition: TriggerDefinition = {
+    id: "0190-trigger",
+    revision: 3,
+    kind: "environment",
+    environment: "default",
+    name: "Weekly report",
+    message: "Summarize last week's PRs.",
+    source: { type: "schedule", cron: "0 9 * * 1", zone: "America/Chicago" },
+    whenBusy: "skip",
+    model: "anthropic/claude-sonnet-4-5",
+    paused: false,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+
+  it("are recorded under the field triggers.<id>", () => {
+    expect(triggerField("0190-trigger")).toBe("triggers.0190-trigger");
+    expect(fieldTrigger("triggers.0190-trigger")).toBe("0190-trigger");
+    expect(fieldTrigger("skills.triggers")).toBeNull();
+  });
+
+  it("record what the owner can change, without the revision or the times", () => {
+    expect(triggerChangeValue(definition)).toEqual({
+      kind: "environment",
+      name: "Weekly report",
+      message: "Summarize last week's PRs.",
+      source: { type: "schedule", cron: "0 9 * * 1", zone: "America/Chicago" },
+      whenBusy: "skip",
+      model: "anthropic/claude-sonnet-4-5",
+      paused: false,
+    });
+  });
+
+  it("arm a Trigger when they leave an active one that was none or paused", () => {
+    const active = triggerChangeJson(definition);
+    const paused = triggerChangeJson({ ...definition, paused: true });
+    const renamed = triggerChangeJson({ ...definition, name: "Daily report" });
+
+    expect(armsTrigger(null, active)).toBe(true);
+    expect(armsTrigger(paused, active)).toBe(true);
+    expect(armsTrigger(active, renamed)).toBe(false);
+    expect(armsTrigger(active, paused)).toBe(false);
+    expect(armsTrigger(active, null)).toBe(false);
+    expect(armsTrigger(null, { kind: "a later kind" })).toBe(false);
   });
 });

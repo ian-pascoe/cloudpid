@@ -12,6 +12,7 @@ import type { SettingsChangeRevert } from "./settings-changes.ts";
 import type { KeptSecret } from "@cloudpid/extensions/secrets/core";
 import {
   type AgentChange,
+  asChangeJson,
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   type EnvironmentSecretRecord,
@@ -19,6 +20,7 @@ import {
   GLOBAL_SCOPE,
   fieldRepo,
   fieldSkill,
+  fieldTrigger,
   fieldVariable,
   forkTitle,
   MAX_ENVIRONMENT_SECRETS,
@@ -37,6 +39,8 @@ import {
   type SkillFile,
   type SkillInstallation,
   skillField,
+  type TriggerChangeValue,
+  triggerField,
   workspaceDirectory,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -84,6 +88,7 @@ import { mcpStatus } from "../mcp/status.ts";
 import type { McpHostMethods } from "../mcp/host.ts";
 import { buildMovedRepos } from "./mcp-repo-files.ts";
 import { legacyCleanup, serveRegistryRpc, type SessionObjects, spareUpkeep } from "./rpc.ts";
+import { TriggerUnreachable } from "../trigger/object.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
 import { pageSessions } from "./session-page.ts";
 import { SettingsUpdate } from "./settings.ts";
@@ -633,8 +638,23 @@ const fakeRegistries = () => {
   /** The Triggers of each Environment, by its id: what deleting it answers, for the caller to wipe their objects. */
   const environmentTriggers = new Map<string, Array<string>>();
 
+  /** The Trigger objects whose wake fails, as objects that never answer. */
+  const unreachableTriggers = new Set<string>();
+
   /** The Trigger objects: what was asked of each, in `calls`. */
-  const triggerObjects: TriggerObjects = {
+  const triggerObjects: Pick<TriggerObjects, "wake" | "sync" | "remove"> = {
+    wake: (id) =>
+      Effect.suspend(() => {
+        calls.push(`wakeTriggerObject:${id}`);
+
+        return unreachableTriggers.has(id)
+          ? Effect.fail(TriggerUnreachable.make({ message: "no answer" }))
+          : Effect.void;
+      }),
+    sync: (id) =>
+      Effect.sync(() => {
+        calls.push(`syncTriggerObject:${id}`);
+      }),
     remove: (id) =>
       Effect.sync(() => {
         calls.push(`removeTriggerObject:${id}`);
@@ -1013,6 +1033,7 @@ const fakeRegistries = () => {
         if (
           fieldRepo(found.value.field) !== null ||
           fieldSkill(found.value.field) !== null ||
+          fieldTrigger(found.value.field) !== null ||
           parseMcpField(found.value.field) !== null ||
           found.value.field === "spareWorkspace"
         ) {
@@ -1432,6 +1453,10 @@ const fakeRegistries = () => {
     updateTrigger: () => Effect.succeed({ status: "missing" as const }),
     setTriggerPaused: () => Effect.succeed({ status: "missing" as const }),
     removeTrigger: () => Effect.succeed(false),
+    agentCreateTrigger: () => Effect.succeed({ status: "missing" as const }),
+    agentUpdateTrigger: () => Effect.succeed({ status: "missing" as const }),
+    agentSetTriggerPaused: () => Effect.succeed({ status: "missing" as const }),
+    agentRemoveTrigger: () => Effect.succeed({ status: "missing" as const }),
     listTriggers: () => Effect.succeed([]),
     triggerDefinition: () => Effect.succeed(null),
     admitFire: () => Effect.succeed({ status: "removed" as const }),
@@ -1543,6 +1568,7 @@ const fakeRegistries = () => {
     workspaceObjects,
     environmentTriggers,
     triggerObjects,
+    unreachableTriggers,
     breakSession: (id: string, message: string) => {
       brokenSessions.set(id, message);
     },
@@ -3584,6 +3610,73 @@ it("hands the Environment's MCP host its set after a revert of an MCP server's k
 
   expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT]);
   expect(fake.calls).not.toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("wakes a Trigger's object after a revert of its change, and builds nothing", async () => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "trigger_remove",
+    field: "triggers.t1",
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).toContain("syncTriggerObject:t1");
+  expect(fake.calls).not.toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+  expect(fake.calls).not.toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
+});
+
+it("wakes the object of a Trigger a revert brought back now, and tells the owner when it never answers", async () => {
+  const value: TriggerChangeValue = {
+    kind: "environment",
+    name: "Weekly report",
+    message: "Summarize last week's PRs.",
+    source: { type: "schedule", cron: "0 9 * * 1", zone: "America/Chicago" },
+    whenBusy: "skip",
+    paused: false,
+  };
+
+  const removal = (id: number, trigger: string): AgentChange => ({
+    ...agentChange(id, "A", null, null),
+    tool: "trigger_remove",
+    field: triggerField(trigger),
+    before: asChangeJson(value),
+    after: null,
+  });
+
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push(removal(1, "t1"), removal(2, "t2"));
+  fake.unreachableTriggers.add("t2");
+
+  const reverted = await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  expect(reverted.after).toEqual(asChangeJson(value));
+  expect(fake.calls).toContain("wakeTriggerObject:t1");
+
+  const unscheduled = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 2 })),
+  );
+
+  expect(unscheduled).toBeInstanceOf(EnvironmentError);
+  expect(unscheduled.message).toContain("reverted, but Trigger t2's object didn't answer");
+  expect(unscheduled.message).toContain("pause and resume it");
+  // The revert stays made.
+  expect(Arr.map(fake.agentChanges, (change) => change.reverts)).toEqual([null, null, 1, 2]);
+
+  fake.calls.length = 0;
+  await fake.runBackground();
+
+  expect(fake.calls).not.toContain("syncTriggerObject:t1");
 });
 
 it("leaves the spare Workspace alone after a revert of a variable", async () => {

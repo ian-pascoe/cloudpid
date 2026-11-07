@@ -8,6 +8,7 @@ import { matchesToolPattern } from "@cloudpid/config";
 import { ENVIRONMENT_TOOL_PREFIX } from "../environment.ts";
 import { SKILL_SEARCH_TOOL } from "../skill-search-tool.ts";
 import { SETTINGS_TOOL_PREFIX } from "../settings.ts";
+import { TRIGGER_TOOL_PREFIX } from "../triggers.ts";
 import { MCP_SIGN_IN_TOOL } from "../mcp/sign-in.ts";
 import { PARENT_ONLY_SECRET_TOOLS } from "../secrets/extension.ts";
 import type { Toolsets } from "./options.ts";
@@ -38,10 +39,14 @@ export const PARENT_ONLY_TOOLS = [
 ] as const;
 
 /**
- * The prefixes of the families of tools a child is never granted: the `environment_*` and `settings_*` tools change the
- * harness itself (ADR-0019), which only the root conversation does, as only it asks for Secrets.
+ * The prefixes of the families of tools a child is never granted: the `environment_*`, `settings_*` and `trigger_*`
+ * tools change the harness itself (ADR-0019), which only the root conversation does, as only it asks for Secrets.
  */
-export const PARENT_ONLY_TOOL_PREFIXES = [ENVIRONMENT_TOOL_PREFIX, SETTINGS_TOOL_PREFIX] as const;
+export const PARENT_ONLY_TOOL_PREFIXES = [
+  ENVIRONMENT_TOOL_PREFIX,
+  SETTINGS_TOOL_PREFIX,
+  TRIGGER_TOOL_PREFIX,
+] as const;
 
 const PARENT_ONLY: ReadonlySet<string> = new Set(PARENT_ONLY_TOOLS);
 

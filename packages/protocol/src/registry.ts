@@ -487,6 +487,9 @@ export const MAX_AGENT_CHANGES = 200;
  */
 export const SETTINGS_SCOPE = "settings";
 
+/** An Environment, or Global (id `*`), as a change, a result or a card names it: its id and name. */
+export type EnvironmentRef = { readonly id: string; readonly name: string };
+
 /**
  * One Agent change (GLOSSARY.md → Agent change; `docs/architecture/agent-changes.md`): a change the agent made to an
  * Environment or to the Settings, or the owner's revert of one. `field` names what changed (`variableField` for a variable), and `before`

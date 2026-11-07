@@ -657,6 +657,7 @@ export const FootprintOutput = Schema.Struct({
   workspaces: Schema.Finite.annotate({ description: "Its Workspaces, but its spare" }),
   sessions: Schema.Finite.annotate({ description: "The Sessions in them, archived ones too" }),
   secrets: Schema.Finite.annotate({ description: "The Secrets kept for it alone" }),
+  triggers: Schema.Finite.annotate({ description: "Its Triggers" }),
 });
 
 /** `environment_delete`: whether the Environment was deleted, and what that took. */

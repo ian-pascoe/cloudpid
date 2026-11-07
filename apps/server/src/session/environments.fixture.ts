@@ -6,6 +6,7 @@ import type { EnvironmentRemovalService } from "@cloudpid/extensions/approval-to
 import type { EnvironmentsService } from "@cloudpid/extensions/environment";
 import type { EnvironmentSkills, SecretMarks } from "@cloudpid/extensions/environment";
 import type { EnvironmentLifecycle } from "@cloudpid/extensions/environment-lifecycle";
+import type { TriggerAccessService } from "@cloudpid/extensions/triggers";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import type { SettingsKv } from "./settings.ts";
@@ -113,4 +114,17 @@ export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
         };
       }),
   };
+};
+
+const untriggered = () => Effect.die("the test Sessions change no Trigger");
+
+/** Triggers that die when changed, and none to read, for Sessions whose tests call no `trigger_*` tool. */
+export const unusedTriggers: TriggerAccessService = {
+  list: () => Effect.succeed([]),
+  get: () => Effect.succeed(null),
+  newId: Effect.die("the test Sessions make no Trigger"),
+  create: untriggered,
+  update: untriggered,
+  setPaused: untriggered,
+  remove: untriggered,
 };

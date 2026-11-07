@@ -5,6 +5,7 @@ import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/c
 import type { CodemodeSandboxBase } from "@earendil-works/pi-codemode/portable";
 import { type Harness, makeToolSpans, ToolSpans } from "@cloudpid/effect-durable";
 import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
+import { TriggerAccess } from "@cloudpid/extensions/triggers";
 import type { Approvals } from "@cloudpid/extensions/approvals";
 import {
   BrowserHost,
@@ -40,7 +41,11 @@ import type { Extension, HarnessOptions } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { CodemodeSandbox, remoteSandbox } from "../session/codemode.ts";
-import { testEnvironments, unusedRemoval } from "../session/environments.fixture.ts";
+import {
+  testEnvironments,
+  unusedRemoval,
+  unusedTriggers,
+} from "../session/environments.fixture.ts";
 import { sessionExtensions } from "../session/extensions.ts";
 import { TestSession } from "../session/host.fixture.ts";
 import { type Placement, sessionWorkspace } from "../session/workspace.ts";
@@ -127,6 +132,8 @@ export class TestWorkspaceSession extends TestSession {
     return sessionExtensions.pipe(
       // The tests of the Workspace delete nothing.
       Effect.provideService(EnvironmentRemoval, unusedRemoval),
+      // Nor a Trigger.
+      Effect.provideService(TriggerAccess, unusedTriggers),
       Effect.provideService(Environments, testEnvironments(this.ctx.storage.kv)),
       // The tests of the Workspace call no `settings_*` tool.
       Effect.provideService(SettingsAccess, {
