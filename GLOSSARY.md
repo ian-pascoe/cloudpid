@@ -381,7 +381,7 @@ A Trigger kept for an Environment. Each Fire starts a new Session, in a new Work
 _Avoid_: Automation, Global trigger
 
 **Workspace trigger**:
-A Trigger kept for one Workspace. Each Fire starts a new Session there, on its files, branch and Container. It keeps the Workspace when its last Session goes, and goes when the Workspace is removed.
+A Trigger kept for one Workspace. Each Fire starts a new Session there, on its files, branch and Container. It keeps the Workspace when its last Session goes, and goes when the Workspace is removed; removing the Trigger alone leaves the Workspace.
 _Avoid_: Workspace schedule, branch trigger
 
 **Session trigger**:

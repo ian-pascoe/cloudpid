@@ -1015,7 +1015,8 @@ export const serveRegistryRpc = <R = never>(
                       reached: true,
                     };
 
-                    if (waiting !== null) overview.waiting = waiting;
+                    // An object older than this Worker says nothing of it.
+                    if (Predicate.isNotNullish(waiting)) overview.waiting = waiting;
 
                     return overview;
                   }),
