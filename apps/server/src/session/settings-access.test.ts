@@ -1,13 +1,18 @@
 // The Session's Settings read and its MCP read of the Registry (`./settings-access.ts`, `./settings-mcp-access.ts`): the count
 // of MCP servers a failed read leaves out without failing the read, and the one answer for an id no Environment has.
-// @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off
+// @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off preferEffectRecord:off
 import { SettingsAccessError } from "@cloudpid/extensions/settings";
 import type { McpChangeGuard } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vitest";
-import { sessionSettingsAccess, type SettingsRegistry } from "./settings-access.ts";
-import { sessionSettingsMcpAccess } from "./settings-mcp-access.ts";
+import {
+  sessionSettingsAccess,
+  settingsReads,
+  type SettingsReadsRegistry,
+  type SettingsRegistry,
+} from "./settings-access.ts";
+import { sessionSettingsMcpAccess, settingsMcpReads } from "./settings-mcp-access.ts";
 
 /** A Registry that answers one Environment's Settings, and whose count of MCP servers the test makes fail or answer. */
 const settingsRegistry = (
@@ -148,5 +153,69 @@ describe("what a Session hands the Registry for an agent's MCP change", () => {
 
     expect(sent[0]).toMatchObject({ guard: { name: "files", widening: true } });
     expect(sent[1]).toMatchObject({ environment: "env-a", name: "files", reads: ["TOKEN"] });
+  });
+});
+
+describe("the reads of the Settings and of the MCP servers", () => {
+  it("are built from a Registry alone: the Settings of Global, and of an Environment with its count of MCP servers", async () => {
+    // SAFETY: the Settings read uses these four methods only; the answers are what each returns.
+    const registry: SettingsReadsRegistry = {
+      getSettings: () =>
+        Effect.succeed({
+          settings: { model: "anthropic/claude-opus-5-5", mcp: { servers: { a: {}, b: {} } } },
+          overrides: {},
+          problem: undefined,
+          overriddenIn: {},
+        }),
+      getSettingsOverrides: () =>
+        Effect.succeed({
+          settings: { model: "anthropic/claude-opus-5-5" },
+          overrides: {},
+          global: {},
+          problem: undefined,
+          instructions: { global: "", environment: "own words" },
+        }),
+      getEnvironment: ({ id }: { readonly id: string }) =>
+        Effect.succeed(id === "env-a" ? { id, name: "A", repos: [], createdAt: 0 } : null),
+      mcpServerNames: () => Effect.succeed(["x"]),
+    } as never;
+
+    const reads = settingsReads(registry);
+
+    expect(Object.keys(reads)).toEqual(["get"]);
+
+    expect(await Effect.runPromise(reads.get("*"))).toMatchObject({ scope: "*", mcpServers: 2 });
+    expect(await Effect.runPromise(reads.get("env-a"))).toMatchObject({
+      scope: "env-a",
+      name: "A",
+      mcpServers: 1,
+    });
+  });
+
+  it("refuse an id no Environment has with the code not_found", async () => {
+    // SAFETY: the read asks for the Environment's overrides and the Environment, both of which answer none.
+    const registry: SettingsReadsRegistry = {
+      getSettingsOverrides: () => Effect.succeed(null),
+      getEnvironment: () => Effect.succeed(null),
+      mcpServerNames: () => Effect.succeed(null),
+    } as never;
+
+    const failure = await Effect.runPromise(Effect.flip(settingsReads(registry).get("nope")));
+
+    expect(failure.code).toBe("not_found");
+    expect(failure.message).toContain("No Environment has the id");
+  });
+
+  it("give the MCP read from a Registry and the hosts alone, whose refusal of an id is not_found", async () => {
+    // SAFETY: the MCP read asks the one method, which answers that no Environment has the id.
+    const registry = { mcpSettingsView: () => Effect.succeed(null) } as never;
+    const reads = settingsMcpReads(registry, () => NO_HOST);
+
+    expect(Object.keys(reads).sort()).toEqual(["host", "view"]);
+    expect(reads.host("env-a")).toBe(NO_HOST);
+
+    const failure = await Effect.runPromise(Effect.flip(reads.view({ scope: "nope" })));
+
+    expect(failure.code).toBe("not_found");
   });
 });
