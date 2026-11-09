@@ -274,7 +274,7 @@ The Skill tools' changes at Global are Approvals the Registry keeps ([#693](http
 
 ### The tools
 
-Stage: the PR that serves it ([_Stages_](#stages-and-pull-requests)). Approval: when the tool waits ("always", or only for the named case; "–" never). Session need → endpoint: what the in-session tool does that the endpoint replaces. Tools not listed here (`container_*`, `secret_ask`, `trigger_*`, the `mcp__` tools) stay in a Session only.
+Stage: the PR that serves it ([_Stages_](#stages-and-pull-requests)). Approval: when the tool waits ("always", or only for the named case; "–" never). Session need → endpoint: what the in-session tool does that the endpoint replaces. Tools not listed here (`container_*`, `secret_ask`, `trigger_*`, `cloudpid_report`, the `mcp__` tools) stay in a Session only.
 
 | Tool                                   | Stage                        | Ann.         | Approval                    | Session need → endpoint                                       |
 | -------------------------------------- | ---------------------------- | ------------ | --------------------------- | ------------------------------------------------------------- |

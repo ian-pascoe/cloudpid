@@ -277,7 +277,7 @@ What the owner opened, collapsed and picked on a Session's page (its Panes, the 
 _Avoid_: View state, UI state
 
 **Offered tool**:
-A tool in the model's tool list: one the settings' offered set names (the core coding tools, `codemode`, `tool_search`, the context tools, and `secret_ask` by default; `tool_search` and `context_rollover` always), or a deferred tool `tool_search` loaded on that branch.
+A tool in the model's tool list: one the settings' offered set names (the core coding tools, `codemode`, `tool_search`, the context tools, `secret_ask` and `cloudpid_report` by default; `tool_search` and `context_rollover` always), or a deferred tool `tool_search` loaded on that branch.
 _Avoid_: Enabled tool, active tool
 
 **Deferred tool**:
@@ -325,7 +325,7 @@ The single index of Environments, Workspaces, Sessions, settings overrides, and 
 _Avoid_: Catalog, directory
 
 **Notification**:
-A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session; when a Trigger's Fire fails; and, with no Session, when an agent changes Environments or Settings through the MCP endpoint (one for each call, listing its changes) or asks for an Approval there, linking to the Scope's Settings page.
+A Web Push to the owner's subscribed devices when a Session's Run ends, fails, or needs input (a Secret, an Approval, a Sign-in request, a Sampling request, an Elicitation request), a Run a Trigger started included, linking to the Session, with one more at a Run's end listing the Agent changes it made and the cloudpid reports it filed; when a Trigger's Fire fails; and, with no Session, when an agent changes Environments or Settings through the MCP endpoint (one for each call, listing its changes) or asks for an Approval there, linking to the Scope's Settings page.
 _Avoid_: Alert, push message (for the user-facing thing), MCP notification (a message an MCP server sends, such as a progress report or a list change)
 
 **Settings**:

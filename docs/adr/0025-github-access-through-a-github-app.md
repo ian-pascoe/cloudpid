@@ -11,6 +11,7 @@ cloudpid reached GitHub with a personal access token, `CLOUDPID_GITHUB_TOKEN`: o
 - **Minting.** A Worker signs a JWT with the private key (RS256 through WebCrypto; GitHub's PKCS#1 key is wrapped as PKCS#8 in code) and exchanges it for a GitHub token for an installation. The token lasts an hour. It is cached and minted again once less than about 45 minutes are left, when something asks for it; nothing runs on a timer. A 401 drops the cached token, mints a new one and retries once.
   - The Workspace DO mints with each installation's full permissions on all its repositories, for its Container's commands (each gets the current tokens in its environment at its start) and for the Diff pane's GitHub calls.
   - The main Worker mints read-only tokens (contents, pull requests) for the draft's Start from menu.
+  - The Registry DO mints an issues-only token on the one repository `cloudpid` of the installation on `ian-pascoe`, to post cloudpid reports (ADR-0051).
   - The private key never reaches a Container.
 - **Masking and refusals.**
   - Output masking and the snapshot scan match every token the Workspace DO minted that has not expired, not one fixed string. The DO keeps them in its storage until they expire, since its Container, and a command holding a token, can outlive the instance that minted it. An expired token in a snapshot is harmless.

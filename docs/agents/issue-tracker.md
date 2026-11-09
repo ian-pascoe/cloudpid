@@ -12,6 +12,8 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
+Issues labelled `cloudpid-report` were filed by a cloudpid agent through the GitHub App about cloudpid itself (the `cloudpid_report` tool, ADR-0051); their footer, after the last `---`, names the stage, version, model and Session they came from. Triage them like any `needs-triage` issue (`docs/agents/triage-labels.md`).
+
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
 ## Pull requests as a triage surface
