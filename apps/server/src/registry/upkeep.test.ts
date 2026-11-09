@@ -3,7 +3,7 @@
 // one row per kind of change, each step handed to `background` and nothing run before it is.
 // @effect-diagnostics missedPipeableOpportunity:off
 import { SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, SETTINGS_SCOPE } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { type UpkeepChange, type UpkeepDeps, upkeepFor } from "./upkeep.ts";
@@ -73,6 +73,13 @@ describe("the upkeep after a recorded change", () => {
       SPARE_WORKSPACE_FIELD,
       ["spares.all", "builds.of:default", "builds.of:other"],
     ],
+    [
+      "an MCP server's key at Global's Settings",
+      SETTINGS_SCOPE,
+      "mcp.servers.docs",
+      ["mcp.sync:all"],
+    ],
+    ["a setting at Global's Settings", SETTINGS_SCOPE, "roles.small", []],
     ["a Skill", "default", "skills.release", []],
     ["a Trigger", "default", "triggers.nightly", []],
   ] as const)("of %s runs its steps in the background only", (_, scope, field, steps) => {

@@ -14,9 +14,17 @@ import {
   type EnvironmentChangeToolName,
   environmentChangeCores,
   REPLAYED,
+  type Replayed,
 } from "@cloudpid/extensions/environment-changes";
 import { environmentGetRead, environmentListRead } from "@cloudpid/extensions/environment-reads";
 import type { HarnessRead, HarnessWrite } from "@cloudpid/extensions/harness";
+import {
+  SETTINGS_REPLAYED,
+  type SettingsEndpointCores,
+  type SettingsEndpointToolName,
+  settingsEndpointCores,
+  settingsMcpReloadRead,
+} from "@cloudpid/extensions/settings-endpoint";
 import { settingsGetRead } from "@cloudpid/extensions/settings-reads";
 import { settingsMcpGetRead, settingsMcpListRead } from "@cloudpid/extensions/settings-mcp-reads";
 import type { AgentChangeVia } from "@cloudpid/protocol";
@@ -39,12 +47,13 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { ChangeClaim, ChangeRequest } from "../registry/change-requests.ts";
+import type { AuthorSource } from "../session/change-author.ts";
 import type { HarnessServices } from "./services.ts";
 
 /** What a core's refusal carries that the dispatcher reads: the message the model sees, and the code that maps. */
 type CoreError = {
   readonly message: string;
-  readonly code?: "not_found" | "invalid_argument" | "unavailable";
+  readonly code?: "not_found" | "invalid_argument" | "unsupported" | "unavailable";
 };
 
 /** The answer of a failure no code names: fixed, so a service's own message (a Registry's, a host's) is never relayed. */
@@ -137,6 +146,21 @@ const otherArguments = (id: string) =>
     `The request_id ${JSON.stringify(id)} was used by an earlier call with other arguments: use a new request_id for a new change.`,
   );
 
+/** The changing tools the dispatcher serves: the Environments', and the Settings' and MCP servers'. */
+type ChangeToolName = EnvironmentChangeToolName | SettingsEndpointToolName;
+
+/** What a family of changing tools is served over: its cores for an author, where its scope is named, and its replays. */
+type ChangeFamily<Cores, Args> = {
+  /** The family's cores over the services of a call made by `source`: the verified caller and its `request_id`'s claim. */
+  readonly cores: (source: AuthorSource) => Cores;
+  /** The answer built from the Agent changes an earlier call with the same `request_id` recorded. */
+  readonly replay: Replayed;
+  /** The Scope a call's arguments name (an Environment's id, or `*`). */
+  readonly scope: (args: Args) => string;
+  /** What runs after the answer of a call that recorded a change, besides the notice. */
+  readonly after?: ((args: Args) => Effect.Effect<void>) | undefined;
+};
+
 /**
  * A change tool's served form. In order: the input read again; a `request_id` beginning `approval:` refused; the probe
  * (an older Registry, or one that cannot answer, fails it, and nothing is written); a `request_id` looked up, and a repeat
@@ -146,10 +170,11 @@ const otherArguments = (id: string) =>
  * calls for runs after the answer too (`./services.ts`). A failure before the write says nothing was changed; one after
  * it, that whether the change was made is not known.
  */
-const serveChange = <Name extends EnvironmentChangeToolName>(
+const serveChange = <Name extends ChangeToolName, Cores>(
   services: HarnessServices,
   tool: Name,
-  coreOf: (cores: EnvironmentChangeCores) => HarnessWrite<InputOf<Name>, CoreError>,
+  family: ChangeFamily<Cores, InputOf<Name>>,
+  coreOf: (cores: Cores) => HarnessWrite<InputOf<Name>, CoreError>,
   newAttempt: () => string,
 ): Served => {
   const decode = decoder(tool);
@@ -173,7 +198,7 @@ const serveChange = <Name extends EnvironmentChangeToolName>(
 
       // The earlier call was cut after its write and before its settle: its changes stand, so the answer is built from
       // them, and the upkeep and the notice it may not have run are run again (both are idempotent).
-      const built = REPLAYED[tool](found.changes, scope);
+      const built = family.replay(found.changes, scope);
 
       yield* services.background(services.upkeep(found.changes));
       yield* notice(caller);
@@ -239,9 +264,7 @@ const serveChange = <Name extends EnvironmentChangeToolName>(
     caller: AgentChangeVia,
   ) =>
     Effect.gen(function* () {
-      const core = coreOf(
-        environmentChangeCores(services.changes({ kind: "endpoint", via: caller, request: claim })),
-      );
+      const core = coreOf(family.cores({ kind: "endpoint", via: caller, request: claim }));
 
       const outcome = yield* core(args, "endpoint").pipe(
         Effect.map((answer) => Result.succeed(answer)),
@@ -260,7 +283,7 @@ const serveChange = <Name extends EnvironmentChangeToolName>(
           : yield* answerFromClaim({
               claim,
               digest,
-              scope: args.id,
+              scope: family.scope(args),
               caller,
               otherwise: outcome.failure,
               ownClaimApplied: true,
@@ -278,7 +301,7 @@ const serveChange = <Name extends EnvironmentChangeToolName>(
           : yield* answerFromClaim({
               claim,
               digest,
-              scope: args.id,
+              scope: family.scope(args),
               caller,
               otherwise: reply,
               ownClaimApplied: false,
@@ -301,6 +324,8 @@ const serveChange = <Name extends EnvironmentChangeToolName>(
       }
 
       yield* notice(caller);
+
+      if (family.after !== undefined) yield* family.after(args);
 
       return reply;
     }).pipe(Effect.catchCause(() => Effect.succeed(unfinished)));
@@ -329,9 +354,13 @@ const serveChange = <Name extends EnvironmentChangeToolName>(
 
       // A repeat: the earlier call's change stands, so a failure answering it says whether it was made is not known.
       if (requestId !== undefined && lookedUp.success !== null) {
-        return yield* repeated(requestId, digest, lookedUp.success, args.id, caller).pipe(
-          Effect.catchCause(() => Effect.succeed(unfinished)),
-        );
+        return yield* repeated(
+          requestId,
+          digest,
+          lookedUp.success,
+          family.scope(args),
+          caller,
+        ).pipe(Effect.catchCause(() => Effect.succeed(unfinished)));
       }
 
       const claim =
@@ -359,7 +388,39 @@ export const harnessDispatch = (
   const change = <Name extends EnvironmentChangeToolName>(
     tool: Name,
     coreOf: (cores: EnvironmentChangeCores) => HarnessWrite<InputOf<Name>, CoreError>,
-  ) => serveChange(services, tool, coreOf, newAttempt);
+  ) =>
+    serveChange(
+      services,
+      tool,
+      {
+        cores: (source) => environmentChangeCores(services.changes(source)),
+        replay: REPLAYED[tool],
+        scope: (args) => args.id,
+      },
+      coreOf,
+      newAttempt,
+    );
+
+  // The Settings' and the MCP servers' tools: their scope is `scope`, and one that touches an MCP server's key hands the sets
+  // not yet sent to their hosts once the answer is out.
+  const settingsChange = <Name extends SettingsEndpointToolName>(
+    tool: Name,
+    coreOf: (cores: SettingsEndpointCores) => HarnessWrite<InputOf<Name>, CoreError>,
+    touchesServers: (args: InputOf<Name>) => boolean = () => false,
+  ) =>
+    serveChange(
+      services,
+      tool,
+      {
+        cores: (source) => settingsEndpointCores(services.settingsChanges(source)),
+        replay: SETTINGS_REPLAYED[tool],
+        scope: (args) => args.scope,
+        after: (args) =>
+          touchesServers(args) ? services.background(services.syncMcp) : Effect.void,
+      },
+      coreOf,
+      newAttempt,
+    );
 
   // The tools `harness` serves: the same names as `HARNESS_TOOLS_SERVED` (`../mcp/api.ts`), which `dispatch.test.ts` checks.
   const table: Record<HarnessToolName, Served> = {
@@ -407,6 +468,57 @@ export const harnessDispatch = (
     environment_secret_build: change(
       "environment_secret_build",
       (cores) => cores.environment_secret_build,
+    ),
+    settings_model_set: settingsChange("settings_model_set", (cores) => cores.settings_model_set),
+    settings_role_set: settingsChange("settings_role_set", (cores) => cores.settings_role_set),
+    settings_tool_offer: settingsChange(
+      "settings_tool_offer",
+      (cores) => cores.settings_tool_offer,
+    ),
+    settings_tool_defer: settingsChange(
+      "settings_tool_defer",
+      (cores) => cores.settings_tool_defer,
+    ),
+    settings_compaction_set: settingsChange(
+      "settings_compaction_set",
+      (cores) => cores.settings_compaction_set,
+    ),
+    settings_branch_summary_set: settingsChange(
+      "settings_branch_summary_set",
+      (cores) => cores.settings_branch_summary_set,
+    ),
+    settings_extension_set: settingsChange(
+      "settings_extension_set",
+      (cores) => cores.settings_extension_set,
+    ),
+    settings_reset: settingsChange(
+      "settings_reset",
+      (cores) => cores.settings_reset,
+      ({ field }) => field.startsWith("mcp."),
+    ),
+    settings_mcp_reload: serveRead(
+      "settings_mcp_reload",
+      settingsMcpReloadRead(services.settingsMcpReload),
+    ),
+    settings_mcp_disable: settingsChange(
+      "settings_mcp_disable",
+      (cores) => cores.settings_mcp_disable,
+      () => true,
+    ),
+    settings_mcp_exposure_set: settingsChange(
+      "settings_mcp_exposure_set",
+      (cores) => cores.settings_mcp_exposure_set,
+      () => true,
+    ),
+    settings_mcp_tool_exposure_set: settingsChange(
+      "settings_mcp_tool_exposure_set",
+      (cores) => cores.settings_mcp_tool_exposure_set,
+      () => true,
+    ),
+    settings_mcp_remove: settingsChange(
+      "settings_mcp_remove",
+      (cores) => cores.settings_mcp_remove,
+      () => true,
     ),
   };
 

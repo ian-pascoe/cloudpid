@@ -6,7 +6,13 @@
 // Registry is cut down to the methods the tools use, and each call to it, to a host or to the upkeep is noted.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS } from "@cloudpid/config";
-import type { AgentChange, SettingsMcpServer, SettingsMcpView } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  SETTINGS_SCOPE,
+  type SettingsMcpServer,
+  type SettingsMcpView,
+} from "@cloudpid/protocol";
+import { McpApplied } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type { AgentChangeAuthor } from "../registry/agent-changes.ts";
@@ -390,6 +396,64 @@ export const changingRegistry = (
           change: record(environment, `secrets.${name}.build`, before, build, author),
         };
       }),
+    changeSettings: ({
+      environment,
+      changes,
+      author,
+    }: {
+      readonly environment?: string | undefined;
+      readonly changes: ReadonlyArray<{
+        readonly field: string;
+        readonly value: Schema.Json | null;
+      }>;
+      readonly author: AgentChangeAuthor;
+    }) =>
+      written("changeSettings", () => {
+        if (environment !== undefined && environment !== DEFAULT.id) return { status: "missing" };
+
+        const scope = environment ?? SETTINGS_SCOPE;
+        const made: Array<AgentChange> = [];
+
+        for (const change of changes) {
+          const applied = settingChange(scope, change, author);
+
+          if (applied.status === "rejected") return applied;
+
+          if (applied.status === "changed") made.push(applied.change);
+        }
+
+        return made.length === 0
+          ? { status: "unchanged" }
+          : {
+              status: "changed",
+              changes: made,
+              // The tools read the changes only; the state is the Registry's own record of the Settings after.
+              state: { settings: DEFAULT_SETTINGS, overrides: {}, overriddenIn: {} },
+            };
+      }),
+    // A server's change reaches Environment `default` alone, and widens nothing.
+    mcpChangeCheck: () =>
+      noted("mcpChangeCheck", () => ({
+        environments: [
+          {
+            environment: { id: DEFAULT.id, name: DEFAULT.name },
+            reads: [],
+            reached: true,
+            widening: [],
+          },
+        ],
+      })),
+    mcpPending: () =>
+      noted("mcpPending", () => ({
+        pushes: [
+          {
+            environment: DEFAULT.id,
+            set: { kind: "set" as const, hash: "hash-1", revision: 1, entries: [] },
+          },
+        ],
+        wipes: [],
+      })),
+    mcpPushed: () => noted("mcpPushed", () => undefined),
     changeRequest: ({ id }: { readonly id: string }) =>
       noted("changeRequest", () => {
         const held = ledger.claims.get(id);
@@ -487,11 +551,20 @@ export const harnessUpkeep = (calls: UpkeepCalls = []) => {
 /** What the McpHost stand-in was asked: the Environment's host by its object name, and the method. */
 export type HostCalls = Array<{ readonly host: string; readonly method: string }>;
 
-/** The McpHost namespace's stand-in: each Environment's host answers `servers` with `docs` and one tool, and notes the call. */
+/**
+ * The McpHost namespace's stand-in: each Environment's host answers `servers` with `docs` and one tool, takes any set it is
+ * handed, and notes the call.
+ */
 export const harnessHosts = (calls: HostCalls = []): HarnessDeps["mcpHosts"] => ({
   getByName: (host: string) =>
     // SAFETY: the reads ask a host for `servers` only; the answer is what a host holding one connected server gives.
     ({
+      apply: () =>
+        Effect.sync(() => {
+          calls.push({ host, method: "apply" });
+
+          return McpApplied.make({ hash: "hash-1", changed: true });
+        }),
       servers: () =>
         Effect.sync(() => {
           calls.push({ host, method: "servers" });

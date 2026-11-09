@@ -170,6 +170,19 @@ describe("describe", () => {
       "environment_ignore_set",
       "environment_spare_workspace_set",
       "environment_secret_build",
+      "settings_model_set",
+      "settings_role_set",
+      "settings_tool_offer",
+      "settings_tool_defer",
+      "settings_compaction_set",
+      "settings_branch_summary_set",
+      "settings_extension_set",
+      "settings_reset",
+      "settings_mcp_reload",
+      "settings_mcp_disable",
+      "settings_mcp_exposure_set",
+      "settings_mcp_tool_exposure_set",
+      "settings_mcp_remove",
     ]);
   });
 });

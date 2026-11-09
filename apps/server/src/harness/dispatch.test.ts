@@ -9,6 +9,7 @@
 // the author recorded, and the upkeep and the notice after the answer.
 // @effect-diagnostics globalJsonInEffect:off preferEffectArray:off missedPipeableOpportunity:off preferTypedSchemaDecoder:off schemaSync:off schemaSyncInEffect:off
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
+import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { APPROVAL_REQUEST_PREFIX, HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
 import type { ApiResult, HarnessAnswer, HarnessRequest } from "@cloudpid/protocol/mcp-api";
 import * as Effect from "effect/Effect";
@@ -504,6 +505,178 @@ describe("a change", () => {
         expect(ledger.claims.size).toBe(0);
         expect(registryCalls).not.toContain("settleChangeRequest");
         expect(registryCalls).not.toContain("notifyMcpChanges");
+      }),
+    ));
+});
+
+describe("a change to the Settings or an MCP server", () => {
+  const reason = "The tests read it";
+
+  it.each([
+    ["settings_model_set", { scope: "default", thinking_level: "high", reason }, "default"],
+    ["settings_model_set", { scope: "*", thinking_level: "high", reason }, SETTINGS_SCOPE],
+    ["settings_compaction_set", { scope: "default", enabled: false, reason }, "default"],
+    ["settings_tool_offer", { scope: "*", pattern: "web_*", reason }, SETTINGS_SCOPE],
+  ] as const)(
+    "%s is recorded as the caller at %j, answered as its schema declares, and noticed after the answer",
+    (tool, input, recordedAt) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger, registryCalls, upkeep } = changing();
+
+          const result = yield* call(tool, input);
+
+          expect(result.ok, JSON.stringify(result)).toBe(true);
+
+          if (result.ok) {
+            const value = Schema.decodeUnknownSync(HARNESS_TOOLS[tool].endpoint.output)(
+              result.value.structured,
+            );
+
+            expect(value).toMatchObject({ scope: { id: input.scope }, unchanged: [] });
+            expect(result.value.text).not.toContain("this Session");
+          }
+
+          expect(ledger.changes).toHaveLength(1);
+          expect(ledger.changes[0]?.change.scope).toBe(recordedAt);
+          expect(ledger.changes[0]?.author).toEqual({ via: caller, tool, reason });
+          expect(registryCalls).not.toContain("notifyMcpChanges");
+
+          yield* upkeep.runBackground;
+
+          expect(registryCalls.filter((method) => method === "notifyMcpChanges")).toHaveLength(1);
+          // A Settings field makes no Build, no spare and no push of a server set.
+          expect(upkeep.calls).toEqual([]);
+        }),
+      ),
+  );
+
+  it("settings_mcp_disable is recorded and its set pushed to the host before the answer, the sets not yet sent handed on after it", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const hostCalls: HostCalls = [];
+        const registryCalls: RegistryCalls = [];
+        const { registry, ledger } = changingRegistry(registryCalls);
+        const upkeep = harnessUpkeep();
+
+        const dispatch = harnessDispatch(
+          harnessServices({
+            registry,
+            mcpHosts: harnessHosts(hostCalls),
+            appOrigin: "https://cloudpid.test",
+            ...upkeep.deps,
+          }),
+        );
+
+        const result = yield* dispatch(
+          {
+            tool: "settings_mcp_disable",
+            input: { scope: "default", name: "docs", reason },
+            via,
+          },
+          caller,
+        );
+
+        expect(result.ok, JSON.stringify(result)).toBe(true);
+
+        if (result.ok) {
+          Schema.decodeUnknownSync(HARNESS_TOOLS.settings_mcp_disable.endpoint.output)(
+            result.value.structured,
+          );
+          expect(result.value.text).toContain("owner");
+        }
+
+        expect(ledger.changes[0]?.change).toMatchObject({
+          scope: "default",
+          field: "mcp.servers.docs.enabled",
+          after: false,
+        });
+
+        expect(hostCalls).toContainEqual({ host: "mcp:default", method: "apply" });
+        // The push is before the answer: the notice and the sync are after it.
+        expect(registryCalls).toContain("mcpPushed");
+        expect(upkeep.calls).toEqual([]);
+
+        yield* upkeep.runBackground;
+
+        expect(upkeep.calls).toEqual(["mcp.sync:all"]);
+      }),
+    ));
+
+  it.each([
+    ["settings_reset", { scope: "*", field: "spendLimit.perSession", reason }],
+    ["settings_reset", { scope: "default", field: "instructions", reason }],
+    [
+      "settings_extension_set",
+      { scope: "*", extension: "subagents", key: "maxSubagentDepth", value: 2, reason },
+    ],
+  ] as const)(
+    "%s is unsupported for %j: nothing is recorded or noticed, and no unserved tool is named",
+    (tool, input) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger, registryCalls, upkeep } = changing();
+
+          const result = yield* call(tool, input);
+
+          expect(result).toMatchObject({ ok: false, error: { code: "unsupported" } });
+          expect(JSON.stringify(result)).not.toMatch(
+            /_limit_set|settings_instructions_set|settings_subagent_/,
+          );
+
+          yield* upkeep.runBackground;
+
+          expect(ledger.changes).toEqual([]);
+          expect(registryCalls).not.toContain("notifyMcpChanges");
+        }),
+      ),
+  );
+
+  it("settings_mcp_reload of Global is invalid_argument, asking the Registry nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { run, registryCalls } = dispatching();
+
+        const result = yield* Effect.promise(() => run("settings_mcp_reload", { scope: "*" }));
+
+        expect(result).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+        expect(registryCalls).toEqual([]);
+      }),
+    ));
+
+  it("is settled with its request_id, a repeat getting the same bytes, and a cut call answered from its records as Global's", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        let cut = false;
+
+        const { call, ledger } = changing({
+          beforeSettle: () => {
+            if (cut) return Effect.void;
+
+            cut = true;
+
+            return Effect.never;
+          },
+        });
+
+        const input = { scope: "*", thinking_level: "high", reason, request_id: "r-9" };
+
+        yield* Effect.exit(call("settings_model_set", input).pipe(Effect.timeout("20 millis")));
+
+        const repeat = yield* call("settings_model_set", input);
+
+        expect(repeat.ok).toBe(true);
+
+        if (repeat.ok) {
+          expect(
+            Schema.decodeUnknownSync(HARNESS_TOOLS.settings_model_set.endpoint.output)(
+              repeat.value.structured,
+            ),
+          ).toMatchObject({ scope: { id: "*", name: "Global" }, replayed: true });
+          expect(repeat.value.text).toContain("settings_get");
+        }
+
+        expect(ledger.changes).toHaveLength(1);
       }),
     ));
 });

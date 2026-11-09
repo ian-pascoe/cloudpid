@@ -13,6 +13,7 @@ import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import type { RegistryMethods } from "../registry/Registry.ts";
+import { healingRefusal } from "../registry/via-secrets.ts";
 import { type AuthorSource, authored, sessionOf, unlistedSession } from "./change-author.ts";
 
 /** What the Session's Settings read and change in the Registry. */
@@ -140,8 +141,12 @@ export const sessionSettingsAccess = ({
           } satisfies AppliedSettingsChange;
         case "missing":
           return yield* noEnvironment(scope);
-        case "unchanged":
         case "rejected":
+          // The endpoint's check of the kept Secrets heals by itself: the caller may try the same call again.
+          return source.kind === "endpoint" && healingRefusal(answer.message)
+            ? yield* SettingsAccessError.make({ message: answer.message, code: "unavailable" })
+            : answer;
+        case "unchanged":
         case "changed-since":
           return answer;
       }

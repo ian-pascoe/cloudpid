@@ -7,7 +7,14 @@
 // fails: what goes wrong is logged, and heals as after the owner's save.
 // @effect-diagnostics missingPipeableSignature:off
 import { isContainerField, parseMcpField, SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
-import { fieldRepo, fieldSecret, fieldSkill, fieldTrigger, GLOBAL_SCOPE } from "@cloudpid/protocol";
+import {
+  fieldRepo,
+  fieldSecret,
+  fieldSkill,
+  fieldTrigger,
+  GLOBAL_SCOPE,
+  SETTINGS_SCOPE,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import type { McpPushes } from "../mcp/push.ts";
@@ -69,6 +76,12 @@ const upkeepOf = <R>(
   { scope, field }: UpkeepChange,
 ): Effect.Effect<void, never, R> => {
   if (fieldSkill(field) !== null || fieldTrigger(field) !== null) return Effect.void;
+
+  // A Settings field at Global (the owner's save of the Settings page): no Environment's Build or spare is made of it, and an
+  // MCP server's key changes every Environment's set, as `updateSettings` pushes it.
+  if (scope === SETTINGS_SCOPE) {
+    return parseMcpField(field) === null ? Effect.void : deps.background(deps.mcp.sync(undefined));
+  }
 
   // A Container setting at Global: as after the owner's save, each Environment's Build is looked at again (and its
   // spare, for the Spare Workspace setting).
