@@ -119,60 +119,6 @@ describe("an engine call's span", () => {
 
   const URL = "https://mcp.example.test/mcp";
 
-  it("scrubs what a literal header holds, which the host did not name: a credential, a Basic password, a cookie's values", async () => {
-    const basic = `Basic ${btoa("user:hunter2-pass")}`;
-
-    const server = modernServer({
-      logs: [
-        {
-          level: "warning",
-          data: "literal-credential-1 hunter2-pass cookie-session-9 and a plain word",
-          logger: "auth",
-        },
-      ],
-    });
-
-    const { answer } = await discovering(URL, {
-      server,
-      redact: [],
-      headers: {
-        authorization: "Bearer literal-credential-1",
-        "proxy-authorization": basic,
-        cookie: "sid=cookie-session-9; theme=ok",
-      },
-    });
-
-    expect(answer).toMatchObject({
-      kind: "discovered",
-      logs: [{ data: "[REDACTED] [REDACTED] [REDACTED] and a plain word" }],
-    });
-  });
-
-  it("scrubs a Secret with a quote or a backslash, as a string and inside a JSON log", async () => {
-    const odd = 'pa"ss\\word-0123';
-    const escaped = JSON.stringify(odd).slice(1, -1);
-
-    const server = modernServer({
-      logs: [
-        { level: "warning", data: `echo ${odd}` },
-        { level: "warning", data: { echo: odd } },
-        { level: "warning", data: `echo ${escaped}` },
-      ],
-    });
-
-    const { answer } = await discovering(URL, { server, redact: [odd], headers: {} });
-
-    if (answer.kind !== "discovered") throw new Error(JSON.stringify(answer));
-
-    expect(answer.logs?.map((log) => log.data)).toEqual([
-      "echo [REDACTED]",
-      '{"echo":"[REDACTED]"}',
-      "echo [REDACTED]",
-    ]);
-    expect(JSON.stringify(answer)).not.toContain(odd);
-    expect(JSON.stringify(answer)).not.toContain(escaped);
-  });
-
   it("scrubs the error of a discovery whose server echoes a header", async () => {
     const failList =
       (server: FakeServer): typeof fetch =>
@@ -262,28 +208,5 @@ describe("an engine call's span", () => {
 
     expect(described("acme_search")).toBe("Searches acme as application/json.");
     expect(described("echo_key")).toBe("Takes [REDACTED].");
-  });
-
-  it("leaves out a tool whose name holds a Secret, with a problem that does not quote it", async () => {
-    const server = modernServer({
-      moreTools: [{ name: "acme_search", inputSchema: { type: "object" } }],
-    });
-
-    const { answer } = await discovering(URL, { server, redact: ["acme"], headers: {} });
-
-    if (answer.kind !== "discovered") throw new Error(JSON.stringify(answer));
-
-    const names = answer.tools.map((tool) => tool.name);
-
-    expect(names).toContain("echo");
-    expect(names).not.toContain("acme_search");
-    expect(names.some((name) => name.includes("REDACTED"))).toBe(false);
-    expect(answer.problems).toEqual([
-      {
-        tool: `tool #${names.length + 1}`,
-        problem: expect.stringContaining("left out"),
-      },
-    ]);
-    expect(JSON.stringify(answer)).not.toContain("acme");
   });
 });

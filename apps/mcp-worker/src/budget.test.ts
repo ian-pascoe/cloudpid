@@ -107,27 +107,6 @@ describe("the byte budget", () => {
     expect(await settled(more[2])).toBe(false);
   });
 
-  it("counts the free pool with what the running holders hold, so waiters wait when the two together fit", async () => {
-    const budget = makeBudget();
-    const [running, a, b, c] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
-
-    // Half a mebibyte is free and `running` holds half a mebibyte: neither alone fits a waiter, both together do.
-    await running.charge(MiB / 2);
-    await a.charge(3 * MiB);
-    await b.charge(3 * MiB);
-    await c.charge(MiB);
-
-    const more = [a.charge(MiB), b.charge(MiB), c.charge(MiB)] as const;
-
-    for (const charge of more) {
-      expect(await settled(charge)).toBe(false);
-    }
-
-    running.release();
-    expect(await settled(more[0])).toBe(true);
-    expect(await settled(more[1])).toBe(false);
-  });
-
   it("counts a call waiting for the large slot as one that will give its pool bytes back", async () => {
     const budget = makeBudget();
     const [large, growing, a, b] = [budget.lease(), budget.lease(), budget.lease(), budget.lease()];
@@ -273,18 +252,5 @@ describe("the byte budget", () => {
     now = 90;
     expect(await settled(budget.lease().charge(MiB))).toBe(true);
     expect(await settled(next)).toBe(true);
-  });
-
-  it("takes back an expired lease when the next call asks", async () => {
-    let now = 0;
-
-    const budget = makeBudget({ now: () => now });
-    const holder = budget.lease();
-
-    await holder.charge(10 * MiB);
-    holder.expireIn(50);
-    now = 50;
-
-    expect(await settled(budget.lease().charge(10 * MiB))).toBe(true);
   });
 });

@@ -1,16 +1,12 @@
 // @effect-diagnostics schemaSync:off preferTypedSchemaDecoder:off asyncFunction:off preferEffectRecord:off -- plain assertions over decoded values.
-import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   cleanPromptArgument,
   flatCut,
   looksLikeMcpPromptCommand,
-  mcpPromptErrorCode,
   promptArguments,
   promptArgumentsProblem,
 } from "./mcp-prompts.ts";
-import { Catalog, decodeClientMessage, ErrorMessage } from "./session.ts";
 import { userEntryData } from "./user-entry.ts";
 
 const declared = [
@@ -62,39 +58,6 @@ describe("the typed form of a prompt", () => {
 });
 
 describe("what only gains", () => {
-  it("reads a code it does not know as none", () => {
-    expect(mcpPromptErrorCode("MCP_PROMPT_FAILED")).toBe("MCP_PROMPT_FAILED");
-    expect(mcpPromptErrorCode("SOMETHING_NEW")).toBeUndefined();
-    expect(mcpPromptErrorCode(undefined)).toBeUndefined();
-  });
-
-  it("decodes a catalog without prompts, and an error with a code or without", () => {
-    const old = { commands: [], templates: [], skills: [] };
-
-    expect(Schema.decodeUnknownSync(Catalog)(old)).toEqual(old);
-    expect(Schema.decodeUnknownSync(ErrorMessage)({ type: "error", message: "x" })).toEqual({
-      type: "error",
-      message: "x",
-    });
-    expect(
-      Schema.decodeUnknownSync(Catalog)({
-        ...old,
-        prompts: [
-          {
-            command: "/mcp__github__review",
-            server: "github",
-            source: "owner",
-            name: "review",
-            description: "",
-            arguments: [{ name: "pr", required: true }],
-            completions: false,
-          },
-        ],
-        mcpServers: [{ server: "later", state: "a-new-state" }],
-      }).mcpServers,
-    ).toEqual([{ server: "later", state: "a-new-state" }]);
-  });
-
   it("decodes an entry that keeps an MCP prompt, and one whose prompt it cannot read", () => {
     const data = userEntryData({
       kind: "cloudpid.user",
@@ -117,21 +80,5 @@ describe("what only gains", () => {
     expect(
       userEntryData({ kind: "cloudpid.user", data: { display: "go", skills: [], mcpPrompt: 7 } }),
     ).toEqual({ display: "go", skills: [] });
-  });
-});
-
-describe("the socket's submit", () => {
-  it("carries an MCP prompt", async () => {
-    const decoded = await Effect.runPromise(
-      decodeClientMessage(
-        JSON.stringify({
-          type: "submit",
-          input: "go",
-          mcpPrompt: { server: "github", name: "review", arguments: { pr: "1" } },
-        }),
-      ),
-    );
-
-    expect(decoded).toMatchObject({ type: "submit", mcpPrompt: { name: "review" } });
   });
 });

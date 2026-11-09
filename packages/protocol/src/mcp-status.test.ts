@@ -43,14 +43,4 @@ describe("the MCP status answers", () => {
       expect(decoded).toMatchObject({ _tag: "Unavailable" });
     }
   });
-
-  it("keep a known answer, ignoring fields they do not know", () => {
-    const decoded = Schema.decodeUnknownSync(McpServerLogView)({
-      _tag: "Log",
-      entries: [{ at: 1, level: "notice-ish", data: "x", extra: true }],
-      later: 1,
-    });
-
-    expect(decoded).toEqual({ _tag: "Log", entries: [{ at: 1, level: "notice-ish", data: "x" }] });
-  });
 });

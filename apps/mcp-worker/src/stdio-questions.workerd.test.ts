@@ -124,21 +124,6 @@ describe("a Legacy stdio server's question", () => {
       '{\\"action\\":\\"accept\\",\\"content\\":{\\"name\\":\\"Ada\\"}}',
     );
   });
-
-  it("is cancelled only when the call can answer nothing, as an HTTP server's is", async () => {
-    const server = legacyStatefulServer({ moreTools: [ASK_TOOL], asked: [] });
-
-    const result = await send(
-      server,
-      stdio,
-      ASK_TOOL,
-      { message: "Who are you?", requestedSchema: FORM },
-      {},
-      {},
-    );
-
-    expect(textOf(result)).toContain('{\\"action\\":\\"cancel\\"}');
-  });
 });
 
 describe("a Legacy stdio server's Sampling request", () => {

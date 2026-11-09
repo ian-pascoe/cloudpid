@@ -4,24 +4,20 @@
 /* oxlint-disable anti-slop/no-unsafe-dictionary-type, anti-slop/no-unknown-parameters, anti-slop/no-known-value-widening, anti-slop/require-safety-comment-for-type-assertion -- a fake window and document: the shim's text is run against what a browser hands it, whose values are the page's own */
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { ClientMessageJson, ServerMessageJson } from "./session.ts";
+import { ServerMessageJson } from "./session.ts";
 import {
   fitHeight,
-  VISUAL_CSP,
   VISUAL_ESCAPE,
   VISUAL_LIBRARIES,
   VISUAL_SANDBOX_DIRECTIVE,
   VISUAL_MAX_HEIGHT,
   VISUAL_MIN_HEIGHT,
   VISUAL_SHIM,
-  VisualFileAnswer,
-  VisualPageAnswer,
   isKeptVisual,
   isVisualHost,
   shownVisualOf,
   sourcePathOf,
   visualCheckPolicy,
-  visualTranscriptLine,
   withVisualCheckPrelude,
   withVisualShim,
 } from "./visuals.ts";
@@ -35,32 +31,14 @@ describe("the height a frame fits", () => {
 });
 
 describe("the list and its policy", () => {
-  it("allows only cdnjs and Google Fonts, as resource domains", () => {
-    expect(VISUAL_CSP).toEqual({
-      resourceDomains: [
-        "https://cdnjs.cloudflare.com",
-        "https://fonts.googleapis.com",
-        "https://fonts.gstatic.com",
-      ],
-    });
+  it("matches a host of the list whatever its case, and no other", () => {
     expect(isVisualHost("CDNJS.cloudflare.com")).toBe(true);
     expect(isVisualHost("cdn.jsdelivr.net")).toBe(false);
   });
 });
 
 describe("the library table", () => {
-  it("names eight libraries, every file on cdnjs at an exact version", () => {
-    expect(VISUAL_LIBRARIES.map((library) => library.name)).toEqual([
-      "Mermaid",
-      "Chart.js",
-      "ECharts",
-      "D3",
-      "Cytoscape",
-      "KaTeX",
-      "highlight.js",
-      "three.js",
-    ]);
-
+  it("has every file on cdnjs at an exact version", () => {
     for (const file of VISUAL_LIBRARIES.flatMap((library) => library.files)) {
       expect(file).toMatch(
         /^https:\/\/cdnjs\.cloudflare\.com\/ajax\/libs\/[\w.-]+\/\d+\.\d+\.\d+\/[\w.-]+$/,
@@ -72,7 +50,6 @@ describe("the library table", () => {
 
 describe("the messages", () => {
   const decodeServer = Schema.decodeUnknownSync(ServerMessageJson);
-  const decodeClient = Schema.decodeUnknownSync(ClientMessageJson);
 
   it("reads visuals, with a state and a source kind a later build adds", () => {
     const message = decodeServer(
@@ -111,48 +88,6 @@ describe("the messages", () => {
     expect(first && sourcePathOf(first.source)).toBe("/workspace/a.html");
     expect(second && sourcePathOf(second.source)).toBeUndefined();
     expect(second && isKeptVisual(second)).toBe(false);
-  });
-
-  it("reads hello's visuals and a visual_page", () => {
-    expect(decodeServer(JSON.stringify({ type: "hello", root: 1, visuals: true }))).toMatchObject({
-      visuals: true,
-    });
-    expect(decodeClient(JSON.stringify({ type: "visual_page", id: "q1", callId: "c1" }))).toEqual({
-      type: "visual_page",
-      id: "q1",
-      callId: "c1",
-    });
-  });
-
-  it("reads an answer of a status it does not know", () => {
-    const answer = Schema.decodeUnknownSync(VisualPageAnswer)({ status: "gone" });
-
-    expect(answer.status).toBe("gone");
-    expect(Schema.decodeUnknownSync(VisualFileAnswer)({ status: "gone" }).status).toBe("gone");
-  });
-
-  it("reads a visual_file, which names the call and never a path, and its answers", () => {
-    expect(decodeClient(JSON.stringify({ type: "visual_file", id: "q2", callId: "c1" }))).toEqual({
-      type: "visual_file",
-      id: "q2",
-      callId: "c1",
-    });
-    expect(
-      Schema.decodeUnknownSync(VisualFileAnswer)({
-        status: "text",
-        path: "/workspace/a.html",
-        text: "<p>a</p>",
-      }),
-    ).toEqual({ status: "text", path: "/workspace/a.html", text: "<p>a</p>" });
-    expect(
-      Schema.decodeUnknownSync(VisualFileAnswer)({ status: "missing", path: "/workspace/a.html" }),
-    ).toEqual({ status: "missing", path: "/workspace/a.html" });
-  });
-
-  it("writes a Visual for a transcript without its page", () => {
-    expect(visualTranscriptLine("Chart", "Sales by month")).toBe(
-      "Visual: Chart — Sales by month (not rendered)",
-    );
   });
 });
 

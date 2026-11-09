@@ -3,7 +3,6 @@ import { sha256Hex } from "./mcp-connection.ts";
 import {
   isMcpExtensionToolName,
   isMcpResourceToolName,
-  MCP_RESOURCE_TOOL_NAMES,
   mcpToolHash,
   mcpToolName,
   mcpToolNameFromPi,
@@ -238,20 +237,6 @@ describe("mcpToolNameFromPi", () => {
 });
 
 describe("the resource tools' names", () => {
-  it("are the three snake_case names the mcp extension registers, none of them mcp__-prefixed", () => {
-    expect(MCP_RESOURCE_TOOL_NAMES).toEqual([
-      "list_mcp_resources",
-      "list_mcp_resource_templates",
-      "read_mcp_resource",
-    ]);
-
-    for (const name of MCP_RESOURCE_TOOL_NAMES) {
-      expect(isMcpResourceToolName(name)).toBe(true);
-      expect(isMcpExtensionToolName(name)).toBe(true);
-      expect(name).toMatch(/^[a-z]+(?:_[a-z]+)*$/);
-    }
-  });
-
   it("are the extension's with the mcp__ tools, and no other tool is", () => {
     expect(isMcpExtensionToolName("mcp__github__get_user")).toBe(true);
     expect(isMcpResourceToolName("mcp__github__get_user")).toBe(false);

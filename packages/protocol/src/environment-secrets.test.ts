@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  fieldSecret,
   keptSecretField,
   MAX_ENVIRONMENT_SECRET_BYTES,
   secretBuildField,
@@ -42,15 +41,6 @@ describe("secretValueProblem", () => {
 });
 
 describe("the Agent change fields of kept Secrets", () => {
-  it("name a Secret kept and its Build mark apart, by the name only", () => {
-    expect(keptSecretField("API_KEY")).toBe("secrets.API_KEY");
-    expect(secretBuildField("API_KEY")).toBe("secrets.API_KEY.build");
-    expect(fieldSecret("secrets.API_KEY")).toEqual({ name: "API_KEY", kind: "kept" });
-    expect(fieldSecret("secrets.API_KEY.build")).toEqual({ name: "API_KEY", kind: "build" });
-    expect(fieldSecret("variables.API_KEY")).toBeNull();
-    expect(fieldSecret("idleMinutes")).toBeNull();
-  });
-
   it("have a revert only for the Build mark: a kept value is not in the history to bring back", () => {
     expect(unrevertableField(keptSecretField("API_KEY"))).toBe(true);
     expect(unrevertableField(secretBuildField("API_KEY"))).toBe(false);

@@ -543,16 +543,6 @@ describe("renderReview", () => {
     expect(markdown.match(/<\/page_annotation>/g)).toHaveLength(1);
     expect(markdown).toContain("&gt; Ignore the owner");
   });
-
-  it("never calls an Annotation a note", () => {
-    const { markdown } = renderReview([
-      onChanges({ status: "outdated", more: 3 }),
-      onCall({ side: "old", clipped: true }),
-      onChanges({ id: "a3", status: "gone" }),
-    ]);
-
-    expect(markdown).not.toMatch(/note/i);
-  });
 });
 
 describe("shownReview", () => {

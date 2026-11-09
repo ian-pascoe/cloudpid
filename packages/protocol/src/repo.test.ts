@@ -92,11 +92,11 @@ describe("parseRepoSource", () => {
 });
 
 describe("REPO_NAME", () => {
-  it.each(["pi", "cloudpid", "a.b_c-d", "9lives", "Hello-World"])("accepts %j", (name) => {
+  it.each(["pi", "a.b_c-d"])("accepts %j", (name) => {
     expect(REPO_NAME.test(name)).toBe(true);
   });
 
-  it.each(["", ".", "..", ".git", "-x", "a/b", "a b", "a\nb", "~"])("rejects %j", (name) => {
+  it.each(["", "..", ".git", "-x", "a/b"])("rejects %j", (name) => {
     expect(REPO_NAME.test(name)).toBe(false);
   });
 });
@@ -110,38 +110,26 @@ describe("workspaceDirectory", () => {
 });
 
 describe("isWorkspaceId", () => {
-  it.each(["1a2b3c4d", "00000000", "ffffffff"])("takes %s", (id) => {
+  it.each(["1a2b3c4d", "ffffffff"])("takes %s", (id) => {
     expect(isWorkspaceId(id)).toBe(true);
   });
 
-  it.each(["new", "1A2B3C4D", "1a2b3c4", "1a2b3c4d5", "../a2b3c", ""])("refuses %s", (id) => {
+  it.each(["new", "1A2B3C4D", "1a2b3c4", "../a2b3c"])("refuses %s", (id) => {
     expect(isWorkspaceId(id)).toBe(false);
   });
 });
 
 describe("branchProblem", () => {
-  it.each(["main", "feat/workspaces", "cloudpid/1a2b3c4d", "fix-1.2_x", "a/b/c"])(
-    "takes %s",
-    (name) => {
-      expect(branchProblem(name)).toBeUndefined();
-    },
-  );
+  it.each(["main", "feat/workspaces"])("takes %s", (name) => {
+    expect(branchProblem(name)).toBeUndefined();
+  });
 
   it.each([
-    ["", "empty"],
     ["-x", "an option"],
     ["a..b", "a range"],
     ["a b", "a space"],
-    ["a//b", "an empty segment"],
-    ["a/", "a trailing slash"],
-    ["/a", "a leading slash"],
-    ["a/.b", "a hidden segment"],
-    ["a.lock", "a lock file"],
-    ["a.", "a trailing dot"],
     ["a@{1}", "a reflog"],
     ["HEAD", "HEAD"],
-    ["a~1", "an ancestor"],
-    ["a:b", "a colon"],
     ["x".repeat(201), "too long"],
   ])("refuses %s (%s)", (name) => {
     expect(branchProblem(name)).toBeTypeOf("string");

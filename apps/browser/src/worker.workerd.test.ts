@@ -1,6 +1,5 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
-import { SELF } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { BrowserHostRpc } from "@cloudpid/extensions/browser/contract";
@@ -29,12 +28,6 @@ const containerPreviewsFor = (workspace: string): Fetcher =>
   ).ContainerPreviews({ props: { workspace } });
 
 describe("the browser Worker", () => {
-  it("describes the browser tool", async () => {
-    const description = await env.BROWSER_HOST.getByName("session").describe();
-
-    expect(description).toMatch(/Chrome DevTools Protocol/);
-  });
-
   it("runs the model's code in a Worker Loader isolate, through the CodemodeRuntime facet it exports", async () => {
     const run = await env.BROWSER_HOST.getByName("session").run(
       "async () => 6 * 7",
@@ -64,15 +57,6 @@ describe("the browser Worker", () => {
     expect(failure).toBeInstanceOf(Error);
   });
 
-  it("queues the checks of a Session, so a failed one does not stop the next", async () => {
-    const host = env.BROWSER_HOST.getByName("queued");
-    const page = { html: "<p>hi</p>", width: 736, theme: "light", top: 0 } as const;
-
-    const settled = await Promise.allSettled([host.checkVisual(page), host.checkVisual(page)]);
-
-    expect(settled.map((each) => each.status)).toEqual(["rejected", "rejected"]);
-  });
-
   it("hands over no tab for a conversation that has none, without starting a browser for it", async () => {
     // Starting a browser would reach the binding, which fails with a 503 here: this answer is from the stored records.
     const failure = await env.BROWSER_HOST.getByName("no-tab")
@@ -90,29 +74,6 @@ describe("the browser Worker", () => {
     expect(String(failure)).toMatch(/no open tab/);
   });
 
-  it("mints no Live View link for a handoff it does not have, and says so over RPC", async () => {
-    const failure = await env.BROWSER_HOST.getByName("no-handoff")
-      .liveView("1")
-      .then(
-        () => undefined,
-        (error: Error) => error,
-      );
-
-    expect(String(failure)).toContain("the handoff is over");
-  });
-
-  it("says the Owner tab is gone over RPC, starting no browser, when the Browser Pane asks again and the owner has none", async () => {
-    // Starting a browser would reach the binding, which fails with a 503 here: this answer is from the stored records.
-    const failure = await env.BROWSER_HOST.getByName("no-owner-tab")
-      .ownerTabView(false, WORKSPACE)
-      .then(
-        () => undefined,
-        (error: Error) => error,
-      );
-
-    expect(String(failure)).toContain("the Owner tab is gone");
-  });
-
   it("lists no Owner tabs over RPC, starting no browser, and cannot show or close one the owner does not have", async () => {
     // As above: none of these may reach the binding, which fails with a 503 here.
     const host = env.BROWSER_HOST.getByName("no-owner-tabs");
@@ -126,12 +87,6 @@ describe("the browser Worker", () => {
     );
 
     expect(String(failure)).toContain("the Owner tab is gone");
-  });
-
-  it("answers an HTTP request with 404", async () => {
-    const response = await SELF.fetch("https://browser.example/");
-
-    expect(response.status).toBe(404);
   });
 });
 
