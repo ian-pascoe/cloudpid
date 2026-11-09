@@ -29,6 +29,7 @@
     "./coding-tools": "./src/coding-tools.ts",
     "./container": "./src/container.ts",
     "./environment": "./src/environment.ts",
+    "./environment-changes": "./src/environment-changes.ts",
     "./environment-lifecycle": "./src/environment-lifecycle.ts",
     "./environment-reads": "./src/environment-reads.ts",
     "./github-tokens": "./src/github-tokens.ts",

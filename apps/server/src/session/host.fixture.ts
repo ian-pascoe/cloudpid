@@ -168,6 +168,7 @@ import { type McpHostAnswers, type McpHostStub, mcpHostClient, sessionMcp } from
 import { testEnvironments, unusedRemoval } from "./environments.fixture.ts";
 import type { ToolCallTask } from "../durable-waits.fixture.ts";
 import type { SettingsChange } from "../registry/settings-changes.ts";
+import { sessionSource } from "./change-author.ts";
 import { type SettingsRegistry, sessionSettingsAccess } from "./settings-access.ts";
 import { sessionBrowserHandoffsLayer } from "./handoffs.ts";
 import type { HeldStop } from "../workspace/idle.ts";
@@ -776,14 +777,20 @@ export class TestSession extends DurableObject {
             yield* SettingsTools.pipe(
               Effect.provideService(
                 SettingsAccess,
-                sessionSettingsAccess({ registry: settingsRegistry, session }),
+                sessionSettingsAccess({
+                  registry: settingsRegistry,
+                  author: sessionSource(session),
+                }),
               ),
               Effect.provideService(DeployCredentials, { values: [] }),
             ),
             yield* ApprovalTools.pipe(
               Effect.provideService(
                 SettingsAccess,
-                sessionSettingsAccess({ registry: settingsRegistry, session }),
+                sessionSettingsAccess({
+                  registry: settingsRegistry,
+                  author: sessionSource(session),
+                }),
               ),
               Effect.provideService(Environments, testEnvironments(kv)),
               Effect.provideService(EnvironmentRemoval, unusedRemoval),
@@ -902,7 +909,7 @@ export class TestSession extends DurableObject {
       remember: rememberSampling({
         settings: sessionSettingsAccess({
           registry: this.#settingsRegistry("sampling-registry"),
-          session: this.ctx.id.name,
+          author: sessionSource(this.ctx.id.name),
         }),
         mcp: this.#samplingMcpAccess(),
       }),

@@ -4,7 +4,8 @@
  * offered only when `describe().harness` lists it. `McpServer` knows a tool's name, description, schemas and annotations;
  * the main Worker's `harness` operation runs its core and answers `{text, structured}`. This wraps them as the session tools'
  * are: the text is the core's (the same words as in a Session, cut for the endpoint) with the `next` sentence added as its
- * last paragraph, and `structuredContent` is the core's flat object with the same sentence as its optional `next`.
+ * last paragraph, and `structuredContent` is the core's flat object with the same sentence as its optional `next`. A
+ * write's `request_id` travels as the request's `requestId` too, so the dispatcher handles it in one place.
  */
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferTypedSchemaDecoder:off -- an answer is read for the keys `next` needs, whatever else it holds.
 import {
@@ -17,6 +18,7 @@ import { ApiResult, apiFailure, HarnessAnswer, harnessServed } from "@cloudpid/p
 import * as Arr from "effect/Array";
 import type * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type { Enabled, Tool, Wire } from "./tools.ts";
@@ -32,6 +34,16 @@ export const HARNESS_MAX_TEXT_CHARS = MAX_PAGE_CHARS + 1_000;
 const TITLES: Readonly<Record<HarnessToolName, string>> = {
   environment_list: "List Environments to manage",
   environment_get: "Show an Environment",
+  environment_variable_set: "Set an Environment variable",
+  environment_variable_unset: "Unset an Environment variable",
+  environment_container_resize: "Set an Environment's Container size",
+  environment_idle_time_set: "Set an Environment's idle time",
+  environment_setup_script_set: "Set an Environment's Setup Script",
+  environment_start_script_set: "Set an Environment's Start Script",
+  environment_toolchains_set: "Set an Environment's Toolchains",
+  environment_ignore_set: "Set an Environment's Container-only paths",
+  environment_spare_workspace_set: "Set an Environment's Spare Workspace",
+  environment_secret_build: "Mark a Secret for the Build",
   settings_get: "Show Settings",
   settings_mcp_list: "List MCP servers",
   settings_mcp_get: "Show an MCP server",
@@ -76,9 +88,37 @@ const nextPage = (
     ? undefined
     : `Call ${tool} with ${key}="${page.id}", field="${page.field}" and offset=${String(page.next_offset)} for the next page.`;
 
+/**
+ * What follows a change: `environment_get` shows the Scope as it is now, which a replayed answer (built from the records,
+ * with no Build state) sends the caller to.
+ */
+const afterChange = nextOf(
+  Schema.Struct({
+    scope: Schema.optionalKey(ScopeKey),
+    changes: Schema.Unknown.pipe(Schema.Array, Schema.optionalKey),
+    replayed: Schema.optionalKey(Schema.Boolean),
+  }),
+  (value, enabled) =>
+    enabled.has("environment_get") &&
+    value.scope !== undefined &&
+    (value.replayed === true || (value.changes?.length ?? 0) > 0)
+      ? `Call environment_get with id="${value.scope.id}" to see the settings and the Build as they are now.`
+      : undefined,
+);
+
 const NEXTS: Readonly<
   Record<HarnessToolName, (structured: Wire, enabled: Enabled) => string | undefined>
 > = {
+  environment_variable_set: afterChange,
+  environment_variable_unset: afterChange,
+  environment_container_resize: afterChange,
+  environment_idle_time_set: afterChange,
+  environment_setup_script_set: afterChange,
+  environment_start_script_set: afterChange,
+  environment_toolchains_set: afterChange,
+  environment_ignore_set: afterChange,
+  environment_spare_workspace_set: afterChange,
+  environment_secret_build: afterChange,
   environment_list: nextOf(
     Schema.Struct({ environments: Schema.Array(Schema.Unknown) }),
     ({ environments }, enabled) =>
@@ -169,12 +209,22 @@ const harnessTool = (name: HarnessToolName): Tool => {
     span: undefined,
     input: declaration.endpoint.input,
     output: declaration.endpoint.output,
-    call: (api, args, via) =>
-      api.harness === undefined
-        ? Promise.resolve(
-            apiFailure("unsupported", "The server does not support this yet: try again shortly."),
-          )
-        : api.harness({ tool: name, input: args, via }),
+    call: (api, args, via) => {
+      if (api.harness === undefined) {
+        return Promise.resolve(
+          apiFailure("unsupported", "The server does not support this yet: try again shortly."),
+        );
+      }
+
+      // A write's `request_id`, as the caller sent it: the dispatcher reads it from the request, not the input.
+      const requestId = Predicate.isReadonlyObject(args) ? args["request_id"] : undefined;
+
+      return api.harness(
+        Predicate.isString(requestId)
+          ? { tool: name, input: args, requestId, via }
+          : { tool: name, input: args, via },
+      );
+    },
     // SAFETY: the result's own type is erased here, as `Tool` says.
     read: (answered) => decode(answered) as Exit.Exit<ApiResult<Wire>, Schema.SchemaError>,
     present: (value, enabled) => {

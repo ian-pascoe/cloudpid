@@ -83,16 +83,59 @@ const PAGE: TranscriptPage = {
   newer: "newer-1",
 };
 
+/** A variable set at Environment Default, as the dispatcher answers it (`EnvironmentChangeEndpointOutput`). */
+const CHANGED = {
+  scope: { id: "default", name: "Default" },
+  changes: [
+    {
+      id: 7,
+      field: "variables.API_URL",
+      before: null,
+      before_truncated: false,
+      after: "https://a.test",
+      after_truncated: false,
+      before_inherited: false,
+      after_inherited: false,
+    },
+  ],
+  changes_truncated: false,
+  unchanged: [],
+  new_build: true,
+  global: null,
+};
+
 /** Canned answers for the `api` target of one request, as the main Worker's `McpApi` would give. */
 class FakeApi extends RpcTarget {
   readonly calls: Array<string> = [];
   /** What `limited` answers: over the rate when set. */
   over: { readonly retryAfterS: number } | undefined;
   // The Server's operations are read once per isolate (`toolGate`), so every case sees the same tools.
-  operations = ["environments", "sessions", "session", "transcript", "wait"];
+  operations = ["environments", "sessions", "session", "transcript", "wait", "harness"];
 
   describe() {
-    return { operations: this.operations, limits: MCP_API_LIMITS };
+    return {
+      operations: this.operations,
+      limits: MCP_API_LIMITS,
+      harness: ["environment_variable_set"],
+    };
+  }
+
+  /** What `harness` was asked, as it came over RPC. */
+  readonly harnessed: Array<unknown> = [];
+
+  /** The management tools' dispatcher: the change `CHANGED` describes, made. */
+  harness(request: {
+    readonly tool: string;
+    readonly input: unknown;
+    readonly requestId?: string;
+  }) {
+    this.calls.push(`harness ${request.tool}`);
+    this.harnessed.push(request);
+
+    return apiOk({
+      text: 'Variable API_URL is set for Environment "Default" (default) now (Agent change #7).',
+      structured: CHANGED,
+    });
   }
 
   environments(): ApiResult<EnvironmentsResult> {
@@ -195,9 +238,10 @@ describe("McpServer", () => {
         "session_get",
         "session_wait",
         "session_transcript",
+        "environment_variable_set",
       ]);
 
-      for (const tool of tools) {
+      for (const tool of tools.filter(({ name }) => name !== "environment_variable_set")) {
         expect(tool.annotations).toMatchObject({ readOnlyHint: true, idempotentHint: true });
         expect(tool.outputSchema).toBeDefined();
       }
@@ -309,7 +353,42 @@ describe("McpServer", () => {
       // The tool never ran.
       expect(api.calls).not.toContain("environments");
       // Listing is no call: it is not limited.
-      expect(await client.listTools()).toHaveLength(5);
+      expect(await client.listTools()).toHaveLength(6);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves a change: the dispatcher gets the tool, its input and its request_id, and the answer is the core's", async () => {
+    const api = new FakeApi();
+    const client = await connected(api);
+
+    try {
+      const [declared] = (await client.listTools()).filter(
+        ({ name }) => name === "environment_variable_set",
+      );
+
+      expect(declared?.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: true });
+
+      const input = {
+        id: "default",
+        name: "API_URL",
+        value: "https://a.test",
+        reason: "The tests read it",
+        request_id: "r-1",
+      };
+
+      const changed = await client.callTool("environment_variable_set", input);
+
+      expect(api.harnessed).toMatchObject([
+        { tool: "environment_variable_set", input, requestId: "r-1" },
+      ]);
+      expect(changed.isError).not.toBe(true);
+      expect(changed.structuredContent).toEqual(CHANGED);
+      expect(changed.content[0]).toMatchObject({
+        type: "text",
+        text: expect.stringContaining("Agent change #7"),
+      });
     } finally {
       await client.close();
     }

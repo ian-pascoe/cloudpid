@@ -8,6 +8,7 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off missingPipeableSignature:off -- epoch times said as ISO text; short native lists.
 import { isModelId, SUPPORTED_MODELS, ThinkingLevel, THINKING_LEVELS } from "@cloudpid/config";
 import {
+  type AgentChangeVia,
   type ApiDescription,
   type ApiError,
   type ApiResult,
@@ -119,6 +120,16 @@ export const HARNESS_TOOLS_SERVED = [
   "settings_get",
   "settings_mcp_list",
   "settings_mcp_get",
+  "environment_variable_set",
+  "environment_variable_unset",
+  "environment_container_resize",
+  "environment_idle_time_set",
+  "environment_setup_script_set",
+  "environment_start_script_set",
+  "environment_toolchains_set",
+  "environment_ignore_set",
+  "environment_spare_workspace_set",
+  "environment_secret_build",
 ] as const satisfies ReadonlyArray<HarnessToolName>;
 
 /** What the endpoint reads of the Registry and the Sessions. Each is one RPC; a failure of any is `unavailable`. */
@@ -187,10 +198,13 @@ export interface McpBackend {
    */
   readonly deleteSession: (id: string) => Effect.Effect<void>;
   /**
-   * The management tools' dispatcher (`../harness/dispatch.ts`) over the Registry and the McpHosts. Its failures are
-   * values; a defect is read as `unavailable`.
+   * The management tools' dispatcher (`../harness/dispatch.ts`) over the Registry and the McpHosts, with `caller` the
+   * verified caller a change is recorded as made by. Its failures are values; a defect is read as `unavailable`.
    */
-  readonly harness: (request: HarnessRequest) => Effect.Effect<ApiResult<HarnessAnswer>>;
+  readonly harness: (
+    request: HarnessRequest,
+    caller: AgentChangeVia,
+  ) => Effect.Effect<ApiResult<HarnessAnswer>>;
 }
 
 /** What one request adds: where the owner's pages are, who is calling, and the rate limit. */
@@ -358,6 +372,21 @@ const withinInput = (text: string): boolean =>
  */
 const sessionViaOf = (via: Via, caller: Caller, auth: McpAuth): SessionVia => {
   const marked: Types.Mutable<SessionVia> = { auth, era: via.era };
+
+  if (via.client !== undefined) marked.client = via.client;
+
+  if (caller.kind === "owner" && caller.clientId !== undefined) marked.clientId = caller.clientId;
+
+  return marked;
+};
+
+/**
+ * Who an Agent change made over the endpoint is recorded as made by (`docs/architecture/mcp-endpoint.md` → The recorded
+ * author): the client's name from `McpServer`, and from the verified caller, never from an argument, how it got in and,
+ * for the owner, which of their Access grants it came through. As `sessionViaOf`, with no era.
+ */
+const changeViaOf = (via: Via, caller: Caller, auth: McpAuth): AgentChangeVia => {
+  const marked: Types.Mutable<AgentChangeVia> = { auth };
 
   if (via.client !== undefined) marked.client = via.client;
 
@@ -1124,7 +1153,8 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
         }),
       ),
 
-    harness: (request) => guarded(backend.harness(request)),
+    harness: (request) =>
+      guarded(backend.harness(request, changeViaOf(request.via, context.caller, identity.auth))),
 
     limited: context.withinRate(identity.rateKey).pipe(
       // A limiter that cannot answer counts as within the rate: the endpoint fails open, the owner's own calls first.

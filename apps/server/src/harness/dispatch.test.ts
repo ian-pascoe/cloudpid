@@ -1,43 +1,97 @@
-// docs/architecture/mcp-endpoint.md → Environment and Settings tools → The dispatcher and `describe().harness`: the
-// `harness` operation's dispatcher over the Registry and the McpHosts alone (no Session): the five reads answered on the
-// endpoint's surface, `unsupported` for a tool it does not serve, `invalid_argument` for input the shared schema refuses,
-// the cores' `not_found` and `invalid_argument` mapped, and anything else `unavailable` with a fixed sentence.
+// docs/architecture/mcp-endpoint.md → Environment and Settings tools → The dispatcher and `describe().harness`, → Retries:
+// `request_id`, → After a change, and Notifications: the `harness` operation's dispatcher over the Registry and the
+// McpHosts alone (no Session): the five reads answered on the endpoint's surface, `unsupported` for a tool it does not
+// serve, `invalid_argument` for input the shared schema refuses, the cores' `not_found` and `invalid_argument` mapped,
+// and anything else `unavailable` with a fixed sentence; and the change tools' one path, over a Registry that records
+// and claims as the real one does: the probe, the `request_id` (a repeat, other arguments, a cut before the settle, an
+// answer lost after the commit, a claim another call took during the write or before a write that found the value set,
+// a lookup failing before any write, the `approval:` prefix), the Registry's refusals (one that heals is `unavailable`),
+// the author recorded, and the upkeep and the notice after the answer.
 // @effect-diagnostics globalJsonInEffect:off preferEffectArray:off missedPipeableOpportunity:off preferTypedSchemaDecoder:off schemaSync:off schemaSyncInEffect:off
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
-import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
+import { APPROVAL_REQUEST_PREFIX, HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
 import type { ApiResult, HarnessAnswer, HarnessRequest } from "@cloudpid/protocol/mcp-api";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { HARNESS_TOOLS_SERVED } from "../mcp/api.ts";
-import { harnessDispatch } from "./dispatch.ts";
+import type { ChangeAnswer } from "../registry/change-requests.ts";
+import { SECRETS_CHANGED } from "../registry/via-secrets.ts";
+import { harnessDispatch, requestDigest } from "./dispatch.ts";
 import {
+  type ChangeOptions,
+  changingRegistry,
+  HOLDS_KEPT_SECRET,
   type HostCalls,
   harnessHosts,
   harnessRegistry,
+  harnessUpkeep,
   type RegistryCalls,
 } from "./registry.fixture.ts";
 import { type HarnessRegistry, harnessServices } from "./services.ts";
 
 const via = { era: "modern" } as const;
 
+/** The verified caller a change is recorded as made by. */
+const caller = {
+  auth: "oauth",
+  client: { name: "pi", version: "1.0.0" },
+  clientId: "grant-1",
+} as const;
+
 /** The dispatcher over the stand-in Registry (or `registry`) and a host, with what each was asked noted. */
 const dispatching = (registry?: (calls: RegistryCalls) => HarnessRegistry) => {
   const registryCalls: RegistryCalls = [];
   const hostCalls: HostCalls = [];
+  const upkeep = harnessUpkeep();
 
   const dispatch = harnessDispatch(
     harnessServices({
       registry: registry === undefined ? harnessRegistry(registryCalls) : registry(registryCalls),
       mcpHosts: harnessHosts(hostCalls),
       appOrigin: "https://cloudpid.test",
+      ...upkeep.deps,
     }),
   );
 
   const run = (tool: string, input: HarnessRequest["input"]): Promise<ApiResult<HarnessAnswer>> =>
-    Effect.runPromise(dispatch({ tool, input, via }));
+    Effect.runPromise(dispatch({ tool, input, via }, caller));
 
   return { run, registryCalls, hostCalls };
+};
+
+/**
+ * The dispatcher over the writing stand-in: `call` runs one tool as `McpServer` sends it (the `request_id` in the input
+ * and on the request), each call's attempt numbered in order.
+ */
+const changing = (options: ChangeOptions = {}) => {
+  const registryCalls: RegistryCalls = [];
+  const { registry, ledger } = changingRegistry(registryCalls, options);
+  const upkeep = harnessUpkeep();
+  let attempts = 0;
+
+  const dispatch = harnessDispatch(
+    harnessServices({
+      registry,
+      mcpHosts: harnessHosts(),
+      appOrigin: "https://cloudpid.test",
+      ...upkeep.deps,
+    }),
+    { newAttempt: () => `attempt-${String(++attempts)}` },
+  );
+
+  const call = (tool: string, input: { readonly [key: string]: Schema.Json }) =>
+    dispatch(
+      // The input's `request_id` is the request's too, as `McpServer` copies it there.
+      Option.match(Schema.decodeUnknownOption(Schema.String)(input["request_id"]), {
+        onNone: (): HarnessRequest => ({ tool, input, via }),
+        onSome: (requestId): HarnessRequest => ({ tool, input, requestId, via }),
+      }),
+      caller,
+    );
+
+  return { call, registryCalls, ledger, upkeep };
 };
 
 /** The value of an answer that succeeded, read with the tool's own endpoint output schema: a wrong shape fails the test. */
@@ -156,7 +210,7 @@ describe("the five reads, over a Registry and hosts alone", () => {
 
 describe("a tool it does not serve", () => {
   it.each([
-    "environment_variable_set",
+    "environment_rename",
     "approval_wait",
     "environments_list",
     "no_such_tool",
@@ -289,6 +343,395 @@ describe("what fails without a code", () => {
 
         expect(result).toMatchObject({ ok: false, error: { code: "unavailable" } });
         expect(JSON.stringify(result)).not.toContain("10.0.0.3");
+      }),
+    ));
+});
+
+describe("a change", () => {
+  const reason = "The tests read it";
+
+  it.each([
+    [
+      "environment_variable_set",
+      { id: "default", name: "API_URL", value: "https://a.test", reason },
+    ],
+    ["environment_variable_unset", { id: "default", name: "TOKEN_URL", reason }],
+    ["environment_container_resize", { id: "default", size: "cpu-2", reason }],
+    ["environment_idle_time_set", { id: "default", minutes: 5, reason }],
+    ["environment_setup_script_set", { id: "default", script: "echo hi", reason }],
+    ["environment_start_script_set", { id: "*", script: "echo hi", reason }],
+    ["environment_toolchains_set", { id: "default", mise_toml: '[tools]\nnode = "22"', reason }],
+    ["environment_ignore_set", { id: "default", patterns: ["/data"], reason }],
+    ["environment_spare_workspace_set", { id: "*", enabled: false, reason }],
+    ["environment_secret_build", { id: "default", name: "API_KEY", build: false, reason }],
+  ] as const)(
+    "%s is made as the caller, answered as its schema declares, then upkept and noticed after the answer",
+    (tool, input) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger, registryCalls, upkeep } = changing();
+
+          // The variable the unset takes out is the Environment's own.
+          ledger.values.set("default:variables.TOKEN_URL", "https://example.test/token");
+
+          const result = yield* call(tool, input);
+
+          expect(result.ok, JSON.stringify(result)).toBe(true);
+
+          if (result.ok) {
+            Schema.decodeUnknownSync(HARNESS_TOOLS[tool].endpoint.output)(result.value.structured);
+          }
+
+          expect(ledger.changes).toHaveLength(1);
+          expect(ledger.changes[0]?.author).toEqual({ via: caller, tool, reason });
+          // Nothing runs after the change until the answer is sent.
+          expect(upkeep.calls).toEqual([]);
+          expect(registryCalls).not.toContain("notifyMcpChanges");
+
+          yield* upkeep.runBackground;
+
+          expect(upkeep.calls).toContain("builds.of:default");
+          expect(registryCalls.filter((method) => method === "notifyMcpChanges")).toHaveLength(1);
+        }),
+      ),
+  );
+
+  it("asks the probe before anything, and refuses while an older Registry answers it, writing nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        for (const features of [
+          Effect.succeed({ via: false }),
+          Effect.die("rpc: no such method"),
+        ]) {
+          const { call, ledger, registryCalls } = changing({ features });
+
+          const result = yield* call("environment_variable_set", {
+            id: "default",
+            name: "API_URL",
+            value: "https://a.test",
+            reason,
+          });
+
+          expect(result).toMatchObject({ ok: false, error: { code: "unavailable" } });
+          expect(registryCalls).toEqual(["agentChangeFeatures"]);
+          expect(ledger.changes).toEqual([]);
+        }
+      }),
+    ));
+
+  it("maps the Registry's refusal of a kept Secret to invalid_argument, with nothing recorded or noticed", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls, upkeep } = changing({ keptSecret: "s3cret-value" });
+
+        const result = yield* call("environment_variable_set", {
+          id: "*",
+          name: "API_URL",
+          value: "Bearer s3cret-value",
+          reason,
+        });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "invalid_argument", message: HOLDS_KEPT_SECRET },
+        });
+
+        yield* upkeep.runBackground;
+
+        expect(ledger.changes).toEqual([]);
+        expect(registryCalls).not.toContain("notifyMcpChanges");
+      }),
+    ));
+
+  it("maps the Registry's refusal of a mark whose reason holds a kept Secret to invalid_argument, in its words", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls } = changing({ keptSecret: "s3cret-value" });
+
+        const result = yield* call("environment_secret_build", {
+          id: "default",
+          name: "API_KEY",
+          build: false,
+          reason: "s3cret-value is the registry's",
+          request_id: "r-1",
+        });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "invalid_argument", message: HOLDS_KEPT_SECRET, retryable: false },
+        });
+        expect(ledger.changes).toEqual([]);
+        expect(registryCalls).not.toContain("notifyMcpChanges");
+      }),
+    ));
+
+  it("answers the Registry's refusal of a check that heals (the kept Secrets changed meanwhile) as unavailable, in its words", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger } = changing({ keptSecret: "s3cret-value", refusal: SECRETS_CHANGED });
+
+        const result = yield* call("environment_variable_set", {
+          id: "default",
+          name: "API_URL",
+          value: "Bearer s3cret-value",
+          reason,
+        });
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "unavailable", message: SECRETS_CHANGED, retryable: true },
+        });
+        expect(ledger.changes).toEqual([]);
+      }),
+    ));
+
+  it("that finds the value set already claims nothing and sends no notice", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls, upkeep } = changing();
+        const input = { id: "default", minutes: 5, reason, request_id: "r-1" };
+
+        ledger.values.set("default:idleMinutes", 5);
+
+        const result = yield* call("environment_idle_time_set", input);
+
+        yield* upkeep.runBackground;
+
+        expect(result).toMatchObject({
+          ok: true,
+          value: { structured: { unchanged: ["idleMinutes"] } },
+        });
+        expect(ledger.claims.size).toBe(0);
+        expect(registryCalls).not.toContain("settleChangeRequest");
+        expect(registryCalls).not.toContain("notifyMcpChanges");
+      }),
+    ));
+});
+
+describe("a request_id", () => {
+  const input = {
+    id: "default",
+    name: "API_URL",
+    value: "https://a.test",
+    reason: "The tests read it",
+    request_id: "r-1",
+  };
+
+  it("is settled with the answer before the answer is sent, and a repeat gets the same bytes and changes nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls } = changing();
+        const first = yield* call("environment_variable_set", input);
+
+        expect(ledger.claims.get("r-1")).toMatchObject({ attempt: "attempt-1", changes: [1] });
+        expect(ledger.claims.get("r-1")?.answer).toEqual(first.ok ? first.value : undefined);
+
+        const again = yield* call("environment_variable_set", input);
+
+        expect(again).toEqual(first);
+        expect(ledger.changes).toHaveLength(1);
+        expect(registryCalls.filter((method) => method === "changeEnvironment")).toHaveLength(1);
+      }),
+    ));
+
+  it.each([
+    ["other arguments", "environment_variable_set", { ...input, value: "https://b.test" }],
+    [
+      "another tool",
+      "environment_variable_unset",
+      { id: "default", name: "API_URL", reason: "r", request_id: "r-1" },
+    ],
+  ] as const)(
+    "used again with %s is invalid_argument, and nothing more is recorded",
+    (_, tool, again) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger } = changing();
+
+          yield* call("environment_variable_set", input);
+
+          const result = yield* call(tool, again);
+
+          expect(result).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+          expect(ledger.changes).toHaveLength(1);
+        }),
+      ),
+  );
+
+  it("beginning approval: is invalid_argument before the Registry is asked anything", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, registryCalls } = changing();
+
+        const result = yield* call("environment_variable_set", {
+          ...input,
+          request_id: `${APPROVAL_REQUEST_PREFIX}a-1`,
+        });
+
+        expect(result).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+        expect(registryCalls).toEqual([]);
+      }),
+    ));
+
+  // #687 → Ordering against `waitUntil`: a call cut between its write and its settle.
+  it("whose call was cut before its settle is answered from the recorded changes, upkept again, then with the first answer once it settles", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        let cut: ChangeAnswer | undefined;
+
+        const { call, ledger, upkeep } = changing({
+          beforeSettle: (answer) => {
+            if (cut !== undefined) return Effect.void;
+
+            cut = answer;
+
+            return Effect.never;
+          },
+        });
+
+        const first = yield* Effect.exit(
+          call("environment_variable_set", input).pipe(Effect.timeout("20 millis")),
+        );
+
+        expect(first._tag).toBe("Failure");
+        expect(ledger.claims.get("r-1")?.answer).toBeNull();
+
+        // The cut call's upkeep never ran; the repeat's does, after its answer.
+        upkeep.pending.length = 0;
+
+        const repeat = yield* call("environment_variable_set", input);
+
+        expect(repeat.ok).toBe(true);
+
+        if (repeat.ok) {
+          const value = Schema.decodeUnknownSync(
+            HARNESS_TOOLS.environment_variable_set.endpoint.output,
+          )(repeat.value.structured);
+
+          expect(value).toMatchObject({
+            scope: { id: "default", name: "Default" },
+            changes: [{ id: 1, field: "variables.API_URL", before: null, after: "https://a.test" }],
+            replayed: true,
+          });
+        }
+
+        expect(ledger.changes).toHaveLength(1);
+        expect(upkeep.calls).toEqual([]);
+
+        yield* upkeep.runBackground;
+
+        expect(upkeep.calls).toContain("builds.of:default");
+
+        // The cut call's settle lands late: the claim's first answer is kept from then on.
+        const held = ledger.claims.get("r-1");
+
+        if (held !== undefined && cut !== undefined) held.answer = cut;
+
+        const settled = yield* call("environment_variable_set", input);
+
+        expect(settled).toEqual({ ok: true, value: cut });
+      }),
+    ));
+
+  it("whose answer is lost after its write committed is answered from its own claim, upkept and noticed after the answer", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls, upkeep } = changing({
+          afterWrite: () => Effect.die("rpc cut after the commit"),
+        });
+
+        const result = yield* call("environment_variable_set", input);
+
+        expect(result).toMatchObject({ ok: true, value: { structured: { replayed: true } } });
+        expect(ledger.changes).toHaveLength(1);
+        expect(ledger.claims.get("r-1")).toMatchObject({ attempt: "attempt-1", answer: null });
+        expect(upkeep.calls).toEqual([]);
+
+        yield* upkeep.runBackground;
+
+        expect(upkeep.calls).toContain("builds.of:default");
+        expect(registryCalls.filter((method) => method === "notifyMcpChanges")).toHaveLength(1);
+      }),
+    ));
+
+  it("whose write found the change made by another call with the same request_id answers that call's answer", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls } = changing();
+        const first = yield* call("environment_variable_set", input);
+        const { claims } = ledger;
+        const held = claims.get.bind(claims);
+        let looked = false;
+
+        // This call looks the id up just before the first call's write commits: it finds none, then the value set.
+        claims.get = (id) => {
+          if (looked) return held(id);
+
+          looked = true;
+
+          return undefined;
+        };
+
+        const second = yield* call("environment_variable_set", input);
+
+        expect(second).toEqual(first);
+        expect(ledger.changes).toHaveLength(1);
+        expect(registryCalls.filter((method) => method === "changeRequest")).toHaveLength(3);
+      }),
+    ));
+
+  it("whose lookup fails before any write says nothing was changed, so a retry is safe", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger } = changing();
+        const { claims } = ledger;
+
+        claims.get = () => {
+          throw new Error("rpc cut");
+        };
+
+        const result = yield* call("environment_variable_set", input);
+
+        expect(result).toMatchObject({
+          ok: false,
+          error: { code: "unavailable", retryable: true },
+        });
+        // The sentence is the contract: it tells the caller whether the change may have been made.
+        expect(result.ok ? "" : result.error.message).toContain("nothing was changed");
+        expect(ledger.changes).toEqual([]);
+      }),
+    ));
+
+  it("that another call claims while this one writes is answered as that call's, with nothing recorded twice", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger } = changing();
+        const { claims } = ledger;
+        const held = claims.get.bind(claims);
+        let looked = false;
+
+        // Another call with the same request_id claims it just after this call's lookup found none.
+        claims.get = (id) => {
+          const found = held(id);
+
+          if (!looked) {
+            looked = true;
+            claims.set(id, {
+              tool: "environment_variable_set",
+              digest: requestDigest("environment_variable_set", input),
+              attempt: "the-other-call",
+              answer: null,
+              changes: [],
+            });
+          }
+
+          return found;
+        };
+
+        const result = yield* call("environment_variable_set", input);
+
+        expect(result).toMatchObject({ ok: true, value: { structured: { replayed: true } } });
+        expect(ledger.changes).toEqual([]);
       }),
     ));
 });

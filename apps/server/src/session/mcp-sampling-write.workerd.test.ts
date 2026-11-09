@@ -34,6 +34,7 @@ import {
 } from "../registry/settings-changes.ts";
 import { noSkills, type TestRegistry } from "../registry/store.fixture.ts";
 import { openRegistryStore } from "../registry/store.ts";
+import { sessionSource } from "./change-author.ts";
 import { sessionSettingsAccess } from "./settings-access.ts";
 import { sessionSettingsMcpAccess } from "./settings-mcp-access.ts";
 
@@ -127,10 +128,13 @@ const inRegistry = <A>(
     // SAFETY: the Session's access calls these methods only; each answers as the Registry DO's does.
     const remember = (session: string) =>
       rememberSampling({
-        settings: sessionSettingsAccess({ registry: registry as never, session }),
+        settings: sessionSettingsAccess({
+          registry: registry as never,
+          author: sessionSource(session),
+        }),
         mcp: sessionSettingsMcpAccess({
           registry: registry as never,
-          session,
+          author: sessionSource(session),
           host: () => host as never,
         }),
       });

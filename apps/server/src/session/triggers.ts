@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import { newTriggerId } from "../registry/ids.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
+import { sessionAuthor } from "./change-author.ts";
 
 /** What the Session's Triggers read and change in the Registry. */
 export type TriggersRegistry = Pick<
@@ -109,12 +110,12 @@ export const sessionTriggers = ({
           id,
           // A Session trigger is made for this Session.
           trigger: trigger.kind === "session" ? { ...trigger, session: by } : trigger,
-          author: { session: by, ...author },
+          author: sessionAuthor(by, author),
         }),
       ),
     update: ({ id, patch, expected, author }) =>
       changing(id, false, (by) =>
-        registry.agentUpdateTrigger({ id, patch, expected, author: { session: by, ...author } }),
+        registry.agentUpdateTrigger({ id, patch, expected, author: sessionAuthor(by, author) }),
       ),
     setPaused: ({ id, paused, expected, author }) =>
       changing(id, !paused, (by) =>
@@ -122,12 +123,12 @@ export const sessionTriggers = ({
           id,
           paused,
           expected,
-          author: { session: by, ...author },
+          author: sessionAuthor(by, author),
         }),
       ),
     remove: ({ id, author }) =>
       changing(id, false, (by) =>
-        registry.agentRemoveTrigger({ id, author: { session: by, ...author } }),
+        registry.agentRemoveTrigger({ id, author: sessionAuthor(by, author) }),
       ),
   };
 };

@@ -20,17 +20,28 @@ export interface RpcTargetBase {
 /** Loads {@link RpcTargetBase} when the first `/mcp` request needs it. */
 export const loadRpcTarget = (): Promise<RpcTargetBase> => import("./rpc-target.ts");
 
-/** The `api` target for one request. `load` is the Worker's own; a test under Node gives a plain class. */
+/**
+ * Keeps the Worker's request alive until `promise` is done (`waitUntil`): what a change's call registers, so it may
+ * finish (its settle) after `McpWorker` drops the call. Nothing relies on it (#687 → Ordering against `waitUntil`).
+ */
+export type KeepAlive = (promise: Promise<unknown>) => void;
+
+/**
+ * The `api` target for one request. `load` is the Worker's own; a test under Node gives a plain class. `keep` is the
+ * request's `waitUntil`; none keeps nothing alive.
+ */
 export const apiTarget = async (
   service: McpApiService,
   run: RunEffect,
   load: () => Promise<RpcTargetBase> = loadRpcTarget,
+  keep: KeepAlive = () => undefined,
 ) => {
   const { RpcTarget } = await load();
 
   class McpApiTarget extends RpcTarget {
     #service = service;
     #run = run;
+    #keep = keep;
 
     describe() {
       return this.#service.describe();
@@ -84,8 +95,13 @@ export const apiTarget = async (
       return this.#run(this.#service.importCancel(request));
     }
 
+    /** A change's call registers its own promise with `waitUntil` too, so its settle may finish if the call is dropped. */
     harness(request: Parameters<McpApi["harness"]>[0]) {
-      return this.#run(this.#service.harness(request));
+      const answer = this.#run(this.#service.harness(request));
+
+      this.#keep(answer);
+
+      return answer;
     }
 
     /** Over RPC `await api.limited`: counts the call, and is present only when the caller is over its rate. */

@@ -19,6 +19,7 @@ import { harnessDispatch } from "../harness/dispatch.ts";
 import { harnessServices } from "../harness/services.ts";
 import { mcpApiService, type McpBackend } from "./api.ts";
 import type { McpHost } from "./McpHost.ts";
+import type { McpPushes } from "./push.ts";
 import { apiTarget, type RpcTargetBase } from "./api-target.ts";
 
 /**
@@ -52,9 +53,17 @@ export interface McpEndpoint<R = never> {
   readonly objects: RemovalObjects;
   /** `McpWorker`'s `McpServer` entrypoint (`MCP_SERVER`). */
   readonly server: McpServerBinding;
-  /** The spare and Build upkeep a start runs after the answer, as the owner's start does (`registry/rpc.ts`). */
-  readonly spares: Pick<Spares, "of">;
-  readonly builds: Pick<Builds, "of">;
+  /**
+   * The spare and Build upkeep a start runs after the answer, as the owner's start does (`registry/rpc.ts`), and a change
+   * of the management tools after theirs (`harness/services.ts`); `all` for a change of the Spare Workspace setting at
+   * Global, and `rebuild` for the Build the agent asks for.
+   */
+  readonly spares: Pick<Spares, "of" | "all">;
+  readonly builds: Pick<Builds, "of" | "rebuild">;
+  /** The push of an Environment's MCP server set to its host after a change, as after the owner's save. */
+  readonly mcp: Pick<McpPushes, "sync">;
+  /** The deploy-time credentials no text a change keeps may hold (`DeployCredentials`): the GitHub App's key, in its forms. */
+  readonly credentials: ReadonlyArray<string>;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
   /** `MCP_CALLS`; absent where the runtime has none (`alchemy dev`), which is no limit. */
@@ -81,14 +90,31 @@ const forwardedRequest = (source: Request): Request => {
 const backendOf = (
   endpoint: Pick<
     McpEndpoint,
-    "registries" | "sessions" | "mcpHosts" | "appOrigin" | "spares" | "builds" | "objects"
+    | "registries"
+    | "sessions"
+    | "mcpHosts"
+    | "appOrigin"
+    | "spares"
+    | "builds"
+    | "mcp"
+    | "credentials"
+    | "objects"
   >,
   background: (effect: Effect.Effect<void>) => Effect.Effect<void>,
 ): McpBackend => {
   const registry = endpoint.registries.getByName(REGISTRY_NAME);
 
   const dispatch = harnessDispatch(
-    harnessServices({ registry, mcpHosts: endpoint.mcpHosts, appOrigin: endpoint.appOrigin }),
+    harnessServices({
+      registry,
+      mcpHosts: endpoint.mcpHosts,
+      appOrigin: endpoint.appOrigin,
+      builds: endpoint.builds,
+      spares: endpoint.spares,
+      mcp: endpoint.mcp,
+      background,
+      credentials: endpoint.credentials,
+    }),
   );
 
   // A failed RPC is a defect here: `McpApiService` answers every one as `unavailable`, which may heal.
@@ -156,8 +182,8 @@ const backendOf = (
       Effect.suspend(() => removals(registry, endpoint.objects).removeSession(id)).pipe(
         Effect.orDie,
       ),
-    // The management tools' reads over the Registry and the hosts, with no Session.
-    harness: (request) => dispatch(request),
+    // The management tools over the Registry and the hosts, with no Session.
+    harness: (request, caller) => dispatch(request, caller),
   };
 };
 
@@ -178,7 +204,8 @@ export const serveMcpRoute = <R = never>(endpoint: McpEndpoint<R>) =>
     const run = Effect.runPromiseWith(yield* Effect.context<never>());
     const services = yield* Effect.context<R>();
 
-    // The upkeep after a start is the Worker's own (`waitUntil`), which needs the request's services.
+    // The upkeep after a start or a change, and the notice of a change, are the Worker's own (`waitUntil`), which needs the
+    // request's services.
     const background = (effect: Effect.Effect<void>) =>
       Effect.provideContext(endpoint.background(effect), services);
 
@@ -199,7 +226,12 @@ export const serveMcpRoute = <R = never>(endpoint: McpEndpoint<R>) =>
       },
     });
 
-    const target = yield* Effect.promise(() => apiTarget(service, run, endpoint.loadRpcTarget));
+    const target = yield* Effect.promise(() =>
+      apiTarget(service, run, endpoint.loadRpcTarget, (promise) => {
+        // Its outcome is the call's own: here it is only waited for.
+        void Effect.tryPromise(() => promise).pipe(Effect.ignore, background, run);
+      }),
+    );
 
     const response = yield* Effect.tryPromise(() =>
       endpoint.server.serve(forwardedRequest(source), target),

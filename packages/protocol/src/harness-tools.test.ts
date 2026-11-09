@@ -1,7 +1,7 @@
 // The declarations of the harness tools (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → Shared
-// definitions, Names and surfaces): on both surfaces, every tool is read-only and holds no definitions, and its output
-// schema has the shape the endpoint needs on both MCP lanes (L12); the names are snake_case and none is the endpoint's own;
-// and the `field` paths a page can read.
+// definitions, Names and surfaces): on both surfaces, every tool holds no definitions and its output schema has the shape
+// the endpoint needs on both MCP lanes (L12); a read is read-only and a write takes `request_id` on the endpoint only; the
+// names are snake_case and none is the endpoint's own; and the `field` paths a page can read.
 // @effect-diagnostics preferEffectRecord:off preferEffectArray:off preferTypedSchemaDecoder:off schemaSync:off missedPipeableOpportunity:off
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
@@ -25,13 +25,53 @@ const SCHEMAS = Arr.flatMap(HARNESS_TOOL_NAMES, (name) =>
 /** `schema`'s JSON Schema, as MCP shows it to a client. */
 const jsonSchemaOf = (schema: Schema.Top) => Schema.toJsonSchemaDocument(schema).schema;
 
+/** The property names of an object schema's JSON Schema; none for an empty struct. */
+const propertyNames = (schema: Schema.Top): ReadonlyArray<string> =>
+  Object.keys(
+    Schema.decodeUnknownSync(
+      Schema.Struct({
+        properties: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+      }),
+    )(jsonSchemaOf(schema)).properties ?? {},
+  );
+
 describe("the harness tools' declarations", () => {
-  it("are all read-only", () => {
+  it("give a read no request_id, and a write one on the endpoint only, beside the Session's own keys", () => {
     for (const name of HARNESS_TOOL_NAMES) {
-      expect(HARNESS_TOOLS[name].annotations).toMatchObject({
-        readOnlyHint: true,
-        destructiveHint: false,
-      });
+      const tool = HARNESS_TOOLS[name];
+      const endpoint = propertyNames(tool.endpoint.input);
+      const session = propertyNames(tool.session.input);
+
+      expect(session, name).not.toContain("request_id");
+
+      if (tool.annotations.readOnlyHint) {
+        expect(endpoint, name).not.toContain("request_id");
+      } else {
+        expect(endpoint, name).toContain("request_id");
+        expect(jsonSchemaOf(tool.endpoint.input), name).not.toMatchObject({
+          required: expect.arrayContaining(["request_id"]),
+        });
+        expect(
+          Arr.filter(endpoint, (key) => key !== "request_id"),
+          name,
+        ).toEqual(session);
+        // A replayed answer is the endpoint's only; a Session's answer never is one.
+        expect(propertyNames(tool.endpoint.output), name).toContain("replayed");
+        expect(propertyNames(tool.session.output), name).not.toContain("replayed");
+      }
+    }
+  });
+
+  // The endpoint has an owner and no user (`mcp-endpoint.md` → Names and surfaces): its words are the contract here.
+  it("name the owner, never the user, in a change tool's endpoint description and input", () => {
+    for (const name of HARNESS_TOOL_NAMES) {
+      const tool = HARNESS_TOOLS[name];
+
+      if (tool.annotations.readOnlyHint) continue;
+
+      const shown = `${tool.endpoint.description}\n${JSON.stringify(jsonSchemaOf(tool.endpoint.input))}`;
+
+      expect(shown, name).not.toMatch(/\buser\b/);
     }
   });
 

@@ -1,6 +1,8 @@
 // The `environment` extension (docs/architecture/agent-changes.md), over fake Environments: what each tool shows and changes,
-// the refusal of values that hold a Secret, and the Run's record of the changes.
-// @effect-diagnostics asyncFunction:off schemaSync:off
+// the refusal of values that hold a Secret, and the Run's record of the changes; and the setters' cores on the endpoint's
+// surface (`docs/architecture/mcp-endpoint.md` → Names and surfaces): their shape, their refusals' codes, the tools their
+// words name, and the answer a `request_id` repeat builds from the recorded changes.
+// @effect-diagnostics asyncFunction:off schemaSync:off missedPipeableOpportunity:off
 import {
   compareInstances,
   type ContainerSettings,
@@ -13,7 +15,13 @@ import {
   resolveEnvironmentContainerSettings,
 } from "@cloudpid/config";
 import { type AgentChange, fieldVariable } from "@cloudpid/protocol";
-import { EnvironmentGetOutput, EnvironmentListOutput } from "@cloudpid/protocol/harness-tools";
+import {
+  ENDPOINT_STRUCTURED_BYTES,
+  EnvironmentGetOutput,
+  EnvironmentListOutput,
+  HARNESS_TOOL_NAMES,
+  HARNESS_TOOLS,
+} from "@cloudpid/protocol/harness-tools";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type JsonObject,
@@ -41,6 +49,7 @@ import {
 } from "./environment.ts";
 import { Approvals } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
+import { endpointTextCheck, environmentChangeCores, REPLAYED } from "./environment-changes.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
@@ -50,6 +59,7 @@ import { MAX_NESTED_STRUCTURED_OUTPUT_BYTES } from "./result-bounds.ts";
 import { Redactions } from "./secrets/redaction.ts";
 import { secretEnvName, secretReference } from "./secrets/references.ts";
 import { Secrets, type SecretsService } from "./secrets/store.ts";
+import { storedBytes } from "./stored-bytes.ts";
 import { DEFAULT_TOOLSETS } from "./subagents.ts";
 import { resolveTools } from "./subagents/toolsets.ts";
 
@@ -235,7 +245,7 @@ const fakeEnvironments = (
               at: 1_000,
               actor: "agent",
               session: "s-1",
-              conversation: author.conversation,
+              conversation: author.conversation ?? null,
               tool: author.tool,
               reason: author.reason,
               field: change.field,
@@ -316,7 +326,7 @@ const fakeEnvironments = (
           at: 1_000,
           actor: "agent",
           session: "s-1",
-          conversation: author.conversation,
+          conversation: author.conversation ?? null,
           tool: author.tool,
           reason: author.reason,
           field: change.field,
@@ -1641,5 +1651,176 @@ describe("the environment tools from a program", () => {
     const output = Schema.decodeUnknownSync(EnvironmentGetOutput)(result.structuredOutput);
 
     expect(output.settings).toMatchObject({ setup_script: { value_truncated: true } });
+  });
+});
+
+describe("the setters' cores on the endpoint", () => {
+  /** The cores over `environments` as the endpoint runs them: no Session, and a check that knows no Session's Secrets. */
+  const endpointCores = async (environments = fakeEnvironments(null)) => {
+    const holdsSecret = await Effect.runPromise(
+      endpointTextCheck.pipe(Effect.provideService(DeployCredentials, { values: [GITHUB_TOKEN] })),
+    );
+
+    return {
+      cores: environmentChangeCores({ environments: environments.service, holdsSecret }),
+      environments,
+    };
+  };
+
+  /**
+   * The tool names a text holds. Each must be one the endpoint can serve: a sentence that names another
+   * (`container_restart`, `secret_ask`, a Limit tool) sends the caller to a tool it does not have (`mcp-endpoint.md` →
+   * Names and surfaces).
+   */
+  const namedTools = (said: string): ReadonlyArray<string> =>
+    said.match(/\b(?:container|secret|environment|settings)_[a-z_]+\b/g) ?? [];
+
+  const served: ReadonlyArray<string> = HARNESS_TOOL_NAMES;
+
+  it.each([
+    ["environment_variable_set", { id: "default", name: "A", value: "1", reason: "r" }],
+    ["environment_variable_set", { id: "*", name: "A", value: "1", reason: "r" }],
+    ["environment_variable_unset", { id: "default", name: "NODE_ENV", reason: "r" }],
+    ["environment_container_resize", { id: "default", size: "cpu-2", reason: "r" }],
+    ["environment_idle_time_set", { id: "default", minutes: 5, reason: "r" }],
+    ["environment_setup_script_set", { id: "default", script: "echo", reason: "r" }],
+    ["environment_start_script_set", { id: "*", script: "echo", reason: "r" }],
+    ["environment_toolchains_set", { id: "default", mise_toml: "[tools]", reason: "r" }],
+    ["environment_ignore_set", { id: "default", patterns: ["/data"], reason: "r" }],
+    ["environment_spare_workspace_set", { id: "*", enabled: false, reason: "r" }],
+  ] as const)(
+    "%s answers the endpoint's shape, naming no tool it does not serve (%j)",
+    async (name, args) => {
+      const { cores } = await endpointCores();
+
+      // SAFETY: each row's arguments are its tool's.
+      const answer = await Effect.runPromise(cores[name](args as never, "endpoint"));
+
+      const output = Schema.decodeUnknownSync(HARNESS_TOOLS[name].endpoint.output)(
+        answer.structured,
+      );
+
+      expect(output.changes).toHaveLength(1);
+      expect(output).not.toHaveProperty("own");
+      expect(output).not.toHaveProperty("approval");
+      expect(Arr.filter(namedTools(answer.text), (named) => !served.includes(named))).toEqual([]);
+      // The words are the contract here: the endpoint has no Session, so no answer of its may speak of one.
+      expect(answer.text).not.toContain("this Session");
+      expect(answer.logged).toMatchObject({ tool: name });
+    },
+  );
+
+  it.each([
+    [
+      "a size above the limit",
+      "environment_container_resize",
+      { id: "default", size: "standard-3", reason: "r" },
+    ],
+    [
+      "a value holding a GitHub token",
+      "environment_variable_set",
+      { id: "*", name: "A", value: GITHUB_TOKEN, reason: "r" },
+    ],
+    [
+      "a Secret Reference",
+      "environment_setup_script_set",
+      { id: "default", script: secretReference("X"), reason: "r" },
+    ],
+    [
+      "a reason holding a GitHub token",
+      "environment_ignore_set",
+      { id: "default", patterns: [], reason: GITHUB_TOKEN },
+    ],
+  ] as const)(
+    "refuse %s as invalid_argument, naming no tool they do not serve, and change nothing",
+    async (_, name, args) => {
+      const { cores, environments } = await endpointCores();
+
+      // SAFETY: each row's arguments are its tool's.
+      const refused = await Effect.runPromise(Effect.flip(cores[name](args as never, "endpoint")));
+
+      expect(refused.code).toBe("invalid_argument");
+      expect(Arr.filter(namedTools(refused.message), (named) => !served.includes(named))).toEqual(
+        [],
+      );
+      // The words are the contract here: the endpoint has no Session, so no refusal of its may speak of one.
+      expect(refused.message).not.toContain("this Session");
+      expect(environments.changes).toEqual([]);
+    },
+  );
+
+  it("refuse an id no Environment has as not_found", async () => {
+    const { cores } = await endpointCores();
+
+    const refused = await Effect.runPromise(
+      Effect.flip(
+        cores.environment_variable_set(
+          { id: "ghost", name: "A", value: "1", reason: "r" },
+          "endpoint",
+        ),
+      ),
+    );
+
+    expect(refused.code).toBe("not_found");
+  });
+
+  it("leave a script's values out of the structured answer when they would pass what the endpoint holds", async () => {
+    const { cores } = await endpointCores();
+    const script = "x".repeat(60 * 1024);
+
+    const answer = await Effect.runPromise(
+      cores.environment_setup_script_set({ id: "default", script, reason: "r" }, "endpoint"),
+    );
+
+    const output = Schema.decodeUnknownSync(
+      HARNESS_TOOLS.environment_setup_script_set.endpoint.output,
+    )(answer.structured);
+
+    expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
+    expect(output.changes[0]).toMatchObject({ after: null, after_truncated: true });
+  });
+});
+
+describe("a replayed answer", () => {
+  const changes = [
+    {
+      id: 41,
+      scope: "default",
+      scopeName: "Default",
+      field: "variables.API_URL",
+      before: "a",
+      after: "b",
+    },
+  ];
+
+  it.each(["environment_variable_set", "environment_secret_build"] as const)(
+    "of %s is built from the recorded changes, valid against the endpoint's schema",
+    (name) => {
+      const answer = REPLAYED[name](changes, "default");
+
+      const output = Schema.decodeUnknownSync(HARNESS_TOOLS[name].endpoint.output)(
+        answer.structured,
+      );
+
+      expect(output).toMatchObject({
+        scope: { id: "default", name: "Default" },
+        changes: [{ id: 41, field: "variables.API_URL", before: "a", after: "b" }],
+        unchanged: [],
+        replayed: true,
+      });
+      expect(answer.text).toContain("#41");
+    },
+  );
+
+  it("names the call's Scope when the Registry keeps none of its changes", () => {
+    const output = Schema.decodeUnknownSync(HARNESS_TOOLS.environment_variable_set.endpoint.output)(
+      REPLAYED.environment_variable_set([], "*").structured,
+    );
+
+    expect(output).toMatchObject({
+      scope: { id: "*", name: "Global" },
+      changes: [],
+      replayed: true,
+    });
   });
 });

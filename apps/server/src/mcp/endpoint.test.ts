@@ -12,8 +12,9 @@ import { describe, expect, it } from "vitest";
 import { AccessCaller, type Caller } from "../access.ts";
 import {
   type HostCalls,
+  changingRegistry,
   harnessHosts,
-  harnessRegistry,
+  harnessUpkeep,
   type RegistryCalls,
 } from "../harness/registry.fixture.ts";
 import { serveMcpRoute, type McpEndpoint } from "./endpoint.ts";
@@ -137,13 +138,8 @@ describe("the request McpServer gets", () => {
         "importCancel",
         "harness",
       ],
-      harness: [
-        "environment_list",
-        "environment_get",
-        "settings_get",
-        "settings_mcp_list",
-        "settings_mcp_get",
-      ],
+      // The pass-through: the management tools `api.ts` serves reach `McpServer` through the target.
+      harness: expect.arrayContaining(["environment_get", "environment_variable_set"]),
     });
   });
 });
@@ -410,7 +406,8 @@ const harnessThrough = async () => {
     return Promise.resolve(new Response(null, { status: 202 }));
   });
 
-  const registry = harnessRegistry(registryCalls);
+  const { registry, ledger } = changingRegistry(registryCalls);
+  const upkeep = harnessUpkeep();
 
   // SAFETY: serving the route and calling `harness` read the Registry and the hosts through the stand-ins' methods only.
   // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- see above.
@@ -419,6 +416,7 @@ const harnessThrough = async () => {
     registries: { getByName: () => registry },
     mcpHosts: harnessHosts(hostCalls),
     appOrigin: "https://cloudpid.test",
+    ...upkeep.deps,
   } as unknown as McpEndpoint;
 
   await call(endpoint, mcpRequest(), { kind: "owner", clientId: "dcr-1" });
@@ -430,6 +428,8 @@ const harnessThrough = async () => {
   return {
     registryCalls,
     hostCalls,
+    ledger,
+    upkeep,
     ask: (tool: string, input: HarnessInput) =>
       target.harness({ tool, input, via: { client: { name: "pi" }, era: "modern" } }),
   };
@@ -478,10 +478,32 @@ describe("the management tools through the target", () => {
       ok: false,
       error: { code: "not_found" },
     });
-    expect(await ask("environment_variable_set", { id: "default" })).toMatchObject({
+    expect(await ask("environment_rename", { id: "default" })).toMatchObject({
       ok: false,
       error: { code: "unsupported" },
     });
+  });
+
+  it("makes a change as the verified caller, with its upkeep and notice in the route's background", async () => {
+    const { ask, ledger, registryCalls, upkeep } = await harnessThrough();
+
+    const answer = await ask("environment_variable_set", {
+      id: "default",
+      name: "API_URL",
+      value: "https://a.test",
+      reason: "The tests read it",
+    });
+
+    expect(answer.ok).toBe(true);
+    expect(ledger.changes[0]?.author).toMatchObject({
+      via: { auth: "oauth", client: { name: "pi" }, clientId: "dcr-1" },
+      tool: "environment_variable_set",
+    });
+
+    await Effect.runPromise(upkeep.runBackground);
+
+    expect(upkeep.calls).toEqual(["builds.of:default"]);
+    expect(registryCalls).toContain("notifyMcpChanges");
   });
 
   it("reads a page of a field, whole, with where the next begins", async () => {

@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
+import * as Redacted from "effect/Redacted";
 import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
@@ -41,6 +42,7 @@ import {
 import { PushConfigLive } from "./push/config.ts";
 import { APP_ORIGIN_VAR } from "./deployment.ts";
 import { attachmentRoute, isMcpRoute } from "./routes.ts";
+import { githubAppKeyForms } from "./github/app.ts";
 import { GitHubAppConfig, GitHubAppConfigLive } from "./github/config.ts";
 import { serveOwnerCalls } from "./same-origin.ts";
 import { serveAttachment } from "./serve-attachment.ts";
@@ -222,6 +224,9 @@ export const serverInit = Effect.gen(function* () {
     objects: { workspaces, sessions: sessionObjects, triggers },
     spares,
     builds,
+    mcp,
+    // A text a change over the endpoint keeps may not hold the GitHub App's key, as in a Session.
+    credentials: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
     background: (effect) => execution.waitUntil(effect),
     server: worker[MCP_SERVER_BINDING] as McpServerBinding,
     calls: worker[MCP_CALLS_BINDING] as RateLimiter | undefined,

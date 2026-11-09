@@ -35,8 +35,8 @@ export class EnvironmentsError extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("EnvironmentsError", {
   message: Schema.String,
-  /** Why a read was refused, for the endpoint's dispatcher; none for a refusal that is only a message. */
-  code: Schema.optionalKey(Schema.Literals(["not_found", "invalid_argument"])),
+  /** Why a call was refused, for the endpoint's dispatcher; none for a refusal that is only a message. */
+  code: Schema.optionalKey(Schema.Literals(["not_found", "invalid_argument", "unavailable"])),
 }) {}
 
 const iso = (time: number): string => DateTime.formatIso(DateTime.makeUnsafe(time));

@@ -1,7 +1,9 @@
-// The Session's Environments over a fake Registry: what they read, and what follows a change (the handover to the
-// Session's own Workspace, and the Builds' upkeep).
-// @effect-diagnostics asyncFunction:off preferEffectRecord:off
+// The Session's Environments over a fake Registry: what they read, what follows a change (the handover to the Session's
+// own Workspace, and the Builds' upkeep), and who a change is recorded as from each author source (a Session's, or the
+// endpoint's, which has no Workspace to hand a change to).
+// @effect-diagnostics asyncFunction:off preferEffectRecord:off missedPipeableOpportunity:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -9,6 +11,8 @@ import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { SecretBuildMark } from "../registry/secret-changes.ts";
+import { HOLDS_SECRET, SECRETS_CHANGED, SECRETS_UNCHECKABLE } from "../registry/via-secrets.ts";
+import { type AuthorSource, sessionSource } from "./change-author.ts";
 import { unusedLifecycle } from "./environments.fixture.ts";
 import {
   type EnvironmentReadsRegistry,
@@ -52,7 +56,7 @@ const CHANGE: AgentChange = {
 };
 
 /** What the fake Registry answers a mark with. */
-type MarkAnswers = { mark: SecretBuildMark };
+type MarkAnswers = { mark: SecretBuildMark; refusal: string };
 
 /** The variables kept Global in the fake Registry. */
 const GLOBAL_VARIABLES = { SHARED: "all" };
@@ -82,6 +86,8 @@ const open = (
   overridesHere = false,
   // Whether the Registry fails to say what the Session's Workspace is handed.
   overridesUnreadable = false,
+  // Who makes the changes: Session s-1, in its Workspace, unless the endpoint's caller.
+  source: AuthorSource = sessionSource("s-1"),
 ) => {
   const handedOver: Array<{ object: string; overrides: Schema.Json }> = [];
   const skillSetsHanded: Array<{ object: string; hash: string }> = [];
@@ -99,6 +105,7 @@ const open = (
       environment: { id: "default", name: "Default" },
       change: { ...CHANGE, field: "secrets.API_KEY.build", before: true, after: false },
     },
+    refusal: "no",
   };
 
   // SAFETY: the calls these tests make are answered; the rest are never reached.
@@ -147,7 +154,7 @@ const open = (
           case "unchanged":
             return { status: "unchanged" as const, value: "all" };
           case "rejected":
-            return { status: "rejected" as const, message: "no" };
+            return { status: "rejected" as const, message: answers.refusal };
           default:
             // SAFETY: a status a later Registry answers, which this build does not know: outside the union on purpose.
             return { status: globalAnswer } as never;
@@ -348,7 +355,7 @@ const open = (
           case "unchanged":
             return { status: "unchanged" as const, environment, value: null };
           case "rejected":
-            return { status: "rejected" as const, message: "no" };
+            return { status: "rejected" as const, message: answers.refusal };
           case "missing":
             return { status: "missing" as const };
           default:
@@ -360,18 +367,23 @@ const open = (
 
   const environments = sessionEnvironments({
     registry,
-    session: "s-1",
-    placement: () => Promise.resolve(workspacePlacement("0a1b2c3d", "/workspace")),
-    handOver: (object, overrides) => {
-      handedOver.push({ object, overrides });
+    author: source,
+    workspace:
+      source.kind === "endpoint"
+        ? undefined
+        : {
+            placement: () => Promise.resolve(workspacePlacement("0a1b2c3d", "/workspace")),
+            handOver: (object, overrides) => {
+              handedOver.push({ object, overrides });
 
-      return Promise.resolve({ ok: true });
-    },
-    handSkills: (object, set) => {
-      skillSetsHanded.push({ object, hash: set.hash });
+              return Promise.resolve({ ok: true });
+            },
+            handSkills: (object, set) => {
+              skillSetsHanded.push({ object, hash: set.hash });
 
-      return Promise.resolve({ ok: true });
-    },
+              return Promise.resolve({ ok: true });
+            },
+          },
     builds: {
       of: (environment) =>
         Effect.sync(() => {
@@ -399,6 +411,10 @@ const open = (
     markAsked,
     setMark: (next: SecretBuildMark) => {
       answers.mark = next;
+    },
+    /** The message the fake Registry refuses a change with. */
+    setRefusal: (message: string) => {
+      answers.refusal = message;
     },
   };
 };
@@ -879,6 +895,170 @@ describe("the Session's Environments", () => {
     ).toBe("missing");
     expect(handedOver).toEqual([]);
     expect(upkept).toEqual([]);
+  });
+});
+
+describe("the Environments from the endpoint", () => {
+  const via = { auth: "oauth" as const, client: { name: "pi", version: "1" }, clientId: "c-1" };
+  const request = { id: "req-1", tool: "environment_variable_set", digest: "d", attempt: "a" };
+
+  it("record a change with the caller and its claim, hand it to no Workspace, and keep the Build current", async () => {
+    const { environments, handedOver, upkept, asked } = open("changed", "changed", false, false, {
+      kind: "endpoint",
+      via,
+      request,
+    });
+
+    const applied = await Effect.runPromise(
+      environments.change({
+        environment: "default",
+        change,
+        author: { ...author, conversation: undefined },
+      }),
+    );
+
+    expect(asked).toEqual([
+      {
+        environment: "default",
+        change,
+        author: { via, tool: author.tool, reason: author.reason, request },
+      },
+    ]);
+    expect(applied).toMatchObject({ status: "changed", newBuild: true });
+    expect(await Effect.runPromise(environments.current)).toBeNull();
+    expect(handedOver).toEqual([]);
+    expect(upkept).toEqual(["default"]);
+  });
+
+  it("name no own Environment for a change at Global, and mark a Secret as the caller", async () => {
+    const { environments, globalAsked, markAsked, upkept } = open(
+      "changed",
+      "changed",
+      false,
+      false,
+      {
+        kind: "endpoint",
+        via,
+      },
+    );
+
+    const applied = await Effect.runPromise(
+      environments.change({ environment: "*", change, author }),
+    );
+
+    expect(globalAsked).toEqual([
+      { change, author: { via, tool: author.tool, reason: author.reason }, environment: undefined },
+    ]);
+    // No Environment is the caller's own, so no change is "its own": the Registry was asked without one.
+    expect(applied).toMatchObject({ status: "changed", global: { own: false } });
+
+    await Effect.runPromise(
+      environments.markSecret({
+        environment: "default",
+        name: "API_KEY",
+        build: false,
+        author: { tool: "environment_secret_build", reason: "r" },
+      }),
+    );
+
+    expect(markAsked).toEqual([
+      {
+        environment: "default",
+        name: "API_KEY",
+        build: false,
+        author: { via, tool: "environment_secret_build", reason: "r" },
+      },
+    ]);
+    expect(upkept).toEqual(["default", "0000abcd", "default"]);
+  });
+
+  it("refuse every change of a Session the Registry does not list, asking the Registry nothing", async () => {
+    const { environments, asked, markAsked } = open("changed", "changed", false, false, {
+      kind: "session",
+      id: undefined,
+    });
+
+    const refused = await Effect.runPromise(
+      Effect.flip(environments.change({ environment: "default", change, author })),
+    );
+
+    // A refusal with no code: the Session's own state, which the caller's arguments cannot mend.
+    expect(refused).toBeInstanceOf(EnvironmentsError);
+    expect(refused.code).toBeUndefined();
+    expect(asked).toEqual([]);
+
+    await Effect.runPromise(
+      Effect.flip(
+        environments.markSecret({
+          environment: "default",
+          name: "API_KEY",
+          build: false,
+          author: { tool: "environment_secret_build", reason: "r" },
+        }),
+      ),
+    );
+
+    expect(markAsked).toEqual([]);
+  });
+});
+
+describe("the Environments from the endpoint, refused", () => {
+  const via = { auth: "oauth" as const, client: { name: "pi", version: "1" }, clientId: "c-1" };
+  const endpoint: AuthorSource = { kind: "endpoint", via };
+  const mark = { environment: "default", name: "API_KEY", build: false, author };
+
+  it("fail a mark the Registry's check refuses with invalid_argument, or unavailable when it heals, in its own words", async () => {
+    for (const [message, code] of [
+      [HOLDS_SECRET, "invalid_argument"],
+      [SECRETS_CHANGED, "unavailable"],
+      [SECRETS_UNCHECKABLE, "unavailable"],
+    ] as const) {
+      const { environments, setMark, upkept } = open("changed", "changed", false, false, endpoint);
+
+      setMark({ status: "rejected", message });
+
+      expect(await Effect.runPromise(Effect.flip(environments.markSecret(mark)))).toMatchObject({
+        code,
+        message,
+      });
+      expect(upkept).toEqual([]);
+    }
+  });
+
+  it("fail a change the check refuses as one that heals with unavailable, and leave any other refusal to the core", async () => {
+    for (const environment of ["default", "*"]) {
+      const { environments, setRefusal } = open("rejected", "rejected", false, false, endpoint);
+
+      setRefusal(SECRETS_CHANGED);
+
+      expect(
+        await Effect.runPromise(Effect.flip(environments.change({ environment, change, author }))),
+      ).toMatchObject({ code: "unavailable", message: SECRETS_CHANGED });
+
+      setRefusal(HOLDS_SECRET);
+
+      expect(await Effect.runPromise(environments.change({ environment, change, author }))).toEqual(
+        { status: "rejected", message: HOLDS_SECRET },
+      );
+    }
+  });
+
+  it("fail with no code a change the Registry answered with a status this build does not know", async () => {
+    // SAFETY: a status outside the union, as a later Registry answers (`docs/development/workers.md` → Bindings).
+    const later = "later" as "changed";
+
+    for (const environment of ["default", "*"]) {
+      const { environments, upkept } = open(later, later, false, false, endpoint);
+
+      const failed = await Effect.runPromise(
+        Effect.flip(environments.change({ environment, change, author })),
+      );
+
+      // The dispatcher answers a failure with no code as one whose change is not known to be made or not.
+      expect(failed).toBeInstanceOf(EnvironmentsError);
+      expect(failed.code).toBeUndefined();
+      expect(upkept).toEqual([]);
+    }
   });
 });
 

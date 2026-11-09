@@ -13,6 +13,7 @@ import * as Effect from "effect/Effect";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import { type RemovalObjects, type RemovalRegistry, removals } from "../registry/removal.ts";
+import { sessionAuthor } from "./change-author.ts";
 import { buildsAfterScope } from "./environments.ts";
 
 /** What the deletes read and change in the Registry. */
@@ -101,7 +102,7 @@ export const sessionEnvironmentRemoval = ({
           environment,
           name,
           expected,
-          author: { session, ...author },
+          author: sessionAuthor(session, author),
         });
 
         // The Registry refuses only a write over the MCP endpoint (`via`), which a Session's is not.

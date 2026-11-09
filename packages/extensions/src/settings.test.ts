@@ -126,10 +126,14 @@ const fakeSettings = (
 
   const changeGlobal = (
     changes: ReadonlyArray<SettingsFieldChange>,
-    author: { conversation: number; tool: string; reason: string },
+    {
+      conversation,
+      tool,
+      reason,
+    }: { conversation?: number | undefined; tool: string; reason: string },
   ): AppliedSettingsChange => {
     const changed = changeGlobalSettings(overrides, changes, (made) =>
-      record({ ...made, ...author }),
+      record({ ...made, conversation: conversation ?? null, tool, reason }),
     );
 
     overrides = changed.global;
@@ -141,10 +145,14 @@ const fakeSettings = (
     id: string,
     environment: FakeEnvironment,
     changes: ReadonlyArray<SettingsFieldChange>,
-    author: { conversation: number; tool: string; reason: string },
+    {
+      conversation,
+      tool,
+      reason,
+    }: { conversation?: number | undefined; tool: string; reason: string },
   ): AppliedSettingsChange => {
     const changed = changeSettingsOverrides(overrides, environment.overrides, id, changes, (made) =>
-      record({ ...made, ...author }),
+      record({ ...made, conversation: conversation ?? null, tool, reason }),
     );
 
     environment.overrides = changed.overrides;

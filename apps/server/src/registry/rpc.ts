@@ -1,17 +1,9 @@
-import {
-  isContainerField,
-  parseMcpField,
-  SettingsError,
-  SPARE_WORKSPACE_FIELD,
-  textSize,
-} from "@cloudpid/config";
+import { SettingsError, textSize } from "@cloudpid/config";
 import type { McpQuestionCopy } from "@cloudpid/extensions/mcp";
 import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
-  fieldRepo,
-  fieldSecret,
   fieldSkill,
   armsTrigger,
   type TriggerDefinition,
@@ -93,8 +85,12 @@ import type { McpStatus } from "../mcp/status.ts";
 import { removals } from "./removal.ts";
 import { REGISTRY_NAME, type Registry, type SettingsOverridesUpdate } from "./Registry.ts";
 import {
+  globalChanged as globalUpkeep,
+  secretChanged as secretUpkeep,
+  upkeepFor,
+} from "./upkeep.ts";
+import {
   type EnvironmentNaming,
-  GLOBAL_SCOPE,
   type SessionRecord,
   type SessionRefusal,
   type SubagentOwner,
@@ -585,20 +581,15 @@ export const serveRegistryRpc = <R = never>(
      * covers the Secrets and settings a Build gets; one that overrides the setting keeps its key, and no Build is asked
      * for), and with `spareChanged`, a change of the Spare Workspace setting, each Environment's spare too.
      */
-    const globalChanged = (spareChanged = false) =>
-      (spareChanged ? background(spares.all) : Effect.void).pipe(
-        Effect.andThen(registry.listEnvironments()),
-        Effect.flatMap((all) =>
-          Effect.forEach(all, (item) => background(builds.of(item.id)), { discard: true }),
-        ),
-      );
+    const upkeep = { registry, builds, spares, mcp, background };
+
+    const globalChanged = (spareChanged = false) => globalUpkeep(upkeep, spareChanged);
 
     /**
      * After a kept Secret changed: the Builds it may reach are looked at again (their key covers the Secrets a Build
      * gets), each Environment's for one kept Global.
      */
-    const secretChanged = (environment: string | null) =>
-      environment === null ? globalChanged() : background(builds.of(environment));
+    const secretChanged = (environment: string | null) => secretUpkeep(upkeep, environment);
 
     /**
      * The Workspace whose files a Fork or Clone carries to a new one (`fresh`), after checking the Git branch asked for;
@@ -1017,38 +1008,9 @@ export const serveRegistryRpc = <R = never>(
                   );
                 }
 
-                // A Container setting at Global put back: as after the owner's save, each Environment's Build is looked
-                // at again (and its spare, for the Spare Workspace setting).
-                if (environment === GLOBAL_SCOPE && isContainerField(revert.change.field)) {
-                  return globalChanged(revert.change.field === SPARE_WORKSPACE_FIELD).pipe(
-                    Effect.as(revert.change),
-                  );
-                }
-
-                // A Build mark put back: as after the owner's switch, the Builds the Secret may reach are looked at
-                // again, each Environment's for one kept Global (scope `*`).
-                if (fieldSecret(revert.change.field) !== null) {
-                  return secretChanged(environment === GLOBAL_SCOPE ? null : environment).pipe(
-                    Effect.as(revert.change),
-                  );
-                }
-
-                // An MCP server's key put back changes the Environment's set: its host is handed it, as after the owner's
-                // save (the Global path does the same).
-                if (parseMcpField(revert.change.field) !== null) {
-                  return background(mcp.sync(environment)).pipe(Effect.as(revert.change));
-                }
-
-                // As after the owner's save: the variables are among what a Build is made with. A Repo put back or
-                // taken out also makes the spare stale, as the owner's \`addRepo\` and \`removeRepo\` do, and the Spare
-                // Workspace setting put back keeps or removes the spare.
-                return (
-                  fieldRepo(revert.change.field) === null &&
-                  revert.change.field !== SPARE_WORKSPACE_FIELD
-                    ? Effect.void
-                    : background(spares.of(environment))
-                ).pipe(
-                  Effect.andThen(background(builds.of(environment))),
+                // A setting, variable, Build mark, MCP server key or Repo put back: the upkeep its change calls for, as
+                // after the owner's save (`./upkeep.ts`).
+                return upkeepFor(upkeep, [{ scope: environment, field: revert.change.field }]).pipe(
                   Effect.as(revert.change),
                 );
               case "changed-since":

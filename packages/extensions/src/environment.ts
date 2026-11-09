@@ -15,32 +15,25 @@
 // `environment-secret-marks.ts` declares a `structuredOutputSchema` and returns a matching `structuredOutput`, built
 // from the same data as its text (`environment-outputs.ts`; `docs/architecture/agent-capabilities.md` → Values for
 // programs): `environment_list` and `environment_get` give the Environments and their settings, each setter the outcome
-// of the change (an unchanged field says so, as its text does). Every tool but `environment_list` and `environment_create`
+// of the change (an unchanged field says so, as its text does). The setters' and `environment_secret_build`'s checks and
+// words are cores the MCP endpoint serves too (`environment-changes.ts`; `docs/architecture/mcp-endpoint.md` → Environment
+// and Settings tools → Shared definitions and the core/wrapper split): the tools here are the Session's wrappers over them,
+// with their declarations from `@cloudpid/protocol/harness-tools`. Every tool but `environment_list` and `environment_create`
 // takes a required `id` and none defaults to the Session's own Environment (`docs/architecture/agent-changes.md` → The
 // Scope is named, never assumed; ADR-0027 → The agent names the Scope).
 // @effect-diagnostics missingPipeableSignature:off
 import {
   type ContainerSettings,
   type ContainerSettingsOverrides,
-  compareInstances,
-  containerRates,
   INSTANCE_DESCRIPTIONS,
-  INSTANCE_RESOURCES,
   InstanceType,
-  MAX_IDLE_MINUTES,
-  MAX_IGNORE_PATTERNS,
-  MAX_SCRIPT_BYTES,
-  MAX_TOOLCHAINS_BYTES,
-  SPARE_WORKSPACE_FIELD,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import {
   environmentId,
   GLOBAL_ID,
-  GLOBAL_NAME,
   HARNESS_TOOLS,
   idDescription,
-  idOrGlobal,
 } from "@cloudpid/protocol/harness-tools";
 import {
   type AgentChange,
@@ -48,29 +41,30 @@ import {
   type EnvironmentRef,
   type EnvironmentRepo,
   type EnvironmentSkill,
-  variableField,
 } from "@cloudpid/protocol";
-import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
-import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { Approvals } from "./approvals.ts";
-import { SIZE_LINES } from "./container.ts";
 import { type EnvironmentLifecycle, lifecycleTools } from "./environment-lifecycle.ts";
-import { changeOutput, unchangedOutput } from "./environment-outputs.ts";
-import { EnvironmentsError, namedEnvironment, notFound } from "./environment-describe.ts";
+import { EnvironmentsError, notFound } from "./environment-describe.ts";
 import { environmentGetRead, environmentListRead } from "./environment-reads.ts";
 import { resetTool } from "./environment-reset.ts";
 import { type SecretMarks, secretMarkTools } from "./environment-secret-marks.ts";
 import { type EnvironmentSkills, skillTools } from "./environment-skills.ts";
-import { holdsGitHubToken } from "./github-tokens.ts";
-import { toolResult } from "./harness.ts";
-import { asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
-import { Redactions } from "./secrets/redaction.ts";
+import { environmentChangeCores } from "./environment-changes.ts";
+import {
+  credentialCheck,
+  DeployCredentials,
+  describeApplied,
+  describeAppliedGlobal,
+  environmentTarget,
+} from "./environment-change-parts.ts";
+import { type HarnessWriteAnswer, toolResult } from "./harness.ts";
+import { outputSchema } from "./outputs.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 
@@ -89,6 +83,20 @@ export {
 } from "./environment-describe.ts";
 
 export type { EnvironmentSkills, SkillRemoved, SkillSaved } from "./environment-skills.ts";
+
+export {
+  credentialCheck,
+  DeployCredentials,
+  describeApplied,
+  describeAppliedGlobal,
+  describeIdleCost,
+  type EnvironmentTarget,
+  environmentTarget,
+  pathsLine,
+  plainValue,
+  refuseGlobal,
+  textSize,
+} from "./environment-change-parts.ts";
 
 export const extensionName = "environment";
 
@@ -149,9 +157,12 @@ export type SettingChange = {
   readonly value: Schema.Json | null;
 };
 
-/** Who makes an Agent change: the conversation that called the tool, the tool, and the agent's reason. */
+/**
+ * Who makes an Agent change: the conversation that called the tool (none where there is no Session: the endpoint's
+ * core, whose service knows the caller instead), the tool, and the agent's reason.
+ */
 export type ChangeAuthor = {
-  readonly conversation: number;
+  readonly conversation?: number | undefined;
   readonly tool: string;
   readonly reason: string;
   /** Set when the owner approved the change before it was made (`./approvals.ts`). */
@@ -261,30 +272,6 @@ export class AgentChangeLog extends Context.Service<
 >()("@cloudpid/extensions/environment/AgentChangeLog") {}
 
 /**
- * The deploy-time credentials no plain value may hold: the GitHub App's private key. The GitHub tokens minted from it
- * are never seen here; any text shaped like one is refused instead (`holdsGitHubToken`).
- */
-export class DeployCredentials extends Context.Service<
-  DeployCredentials,
-  { readonly values: ReadonlyArray<string> }
->()("@cloudpid/extensions/environment/DeployCredentials") {}
-
-/**
- * Whether a text holds a deploy-time credential, as written or in an encoding redaction knows, or anything shaped like
- * a GitHub token: what no plain value the agent saves may hold.
- */
-export const credentialCheck: Effect.Effect<(text: string) => boolean, never, DeployCredentials> =
-  Effect.gen(function* () {
-    const credentials = new Redactions();
-
-    for (const value of (yield* DeployCredentials).values) {
-      credentials.hold("GITHUB_APP_PRIVATE_KEY", value);
-    }
-
-    return (text: string) => credentials.redact(text) !== text || holdsGitHubToken(text);
-  });
-
-/**
  * The check of a text a tool that waits for the owner's Approval (or a `trigger_*` tool) keeps or shows on the card: it fails, asking nothing,
  * when `text` (`what`: the reason, the Instructions' text, a Trigger message) holds a Secret the Session holds, a
  * deploy-time credential, or a Secret Reference's placeholder, which these tools do not resolve (the card and the
@@ -318,66 +305,9 @@ export const plainTextCheck: Effect.Effect<
 /** The longest reason a change may give. */
 export const MAX_CHANGE_REASON = 500;
 
-/** A variable's value as the result shows it: plain, in full. */
-const shownValue = (value: Schema.Json | null): string =>
-  value === null ? "not set" : JSON.stringify(value);
-
 /** A stored value as a sentence says it: a text as it is, anything else as JSON (`null` when it was not set). */
 export const storedText = (value: Schema.Json | null): string =>
   Predicate.isString(value) ? value : JSON.stringify(value);
-
-/** When a change applies, and whether a Build was asked for (`newBuild` undefined: not known, so look at the Build). */
-export const describeApplied = (own: boolean, newBuild: boolean | undefined): string =>
-  Arr.join(
-    [
-      "It applies at the next Container start of each of the Environment's Workspaces: a Container that runs keeps what it started with.",
-      ...(own
-        ? [
-            "This is this Session's own Environment, and its Workspace has the change already: container_restart applies it to this Workspace's Container now.",
-          ]
-        : []),
-      ...(newBuild === undefined
-        ? ["environment_get shows the Build."]
-        : newBuild
-          ? [
-              "The Environment's Build is made with it, so a new Build was asked for (environment_get shows how it goes; environment_rebuild asks for another now, such as after it failed).",
-            ]
-          : []),
-    ],
-    " ",
-  );
-
-/**
- * When a change of a Container setting at Global (`field`) applies, whom it does not reach, and whose Build was asked
- * for.
- */
-export const describeAppliedGlobal = (
-  field: string,
-  { overriddenIn, newBuilds, own }: GlobalChanged,
-): string =>
-  Arr.join(
-    [
-      overriddenIn.length === 0
-        ? "No Environment overrides it, so it reaches them all."
-        : `An Environment's own value wins; it does not reach ${Arr.join(Arr.map(overriddenIn, namedEnvironment), ", ")}, which override it.`,
-      ...(field === SPARE_WORKSPACE_FIELD
-        ? ["It applies at once: no Container restarts."]
-        : [
-            "It applies at the next Container start of every Workspace that inherits it: a Container that runs keeps what it started with.",
-          ]),
-      ...(own && field !== SPARE_WORKSPACE_FIELD
-        ? [
-            "This Session's Workspace has the change already: container_restart applies it to its Container now.",
-          ]
-        : []),
-      ...(newBuilds.length === 0
-        ? []
-        : [
-            `The Builds are made with it, so a new Build was asked for in ${Arr.join(Arr.map(newBuilds, namedEnvironment), ", ")} (environment_get shows how each goes).`,
-          ]),
-    ],
-    " ",
-  );
 
 /**
  * What a change of the size limit (`maxInstance`) says of whom it reaches. A change from the Registry's write says it all;
@@ -415,41 +345,8 @@ export const recordContainerSettingChange =
           .pipe(Effect.as(undefined))
       : Effect.undefined;
 
-/** What a result says of a Container-setting change's recording, after the setting itself. */
-// The id is written out: `GLOBAL_ID` is not there yet when this module loads first (`idOrGlobal`).
-const RECORDED = `With id "*" the setting is changed at Global: every Environment that does not override it inherits it, and a new Build is asked for in each whose Build is made with it. Setting an Environment's value makes it the Environment's own (an Override), which a later change at Global does not reach; environment_setting_reset makes it inherit Global's again. The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.`;
-
-/** US dollars, to two significant digits. */
-const money = (dollars: number): string => `$${dollars.toPrecision(2)}`;
-
-/** The memory cost of idle time: a Container that sits unused is billed for its memory until the idle stop. */
-export const describeIdleCost = (minutes: number, instance: InstanceType): string => {
-  const { memoryMib } = INSTANCE_RESOURCES[instance];
-  const perMinute = containerRates(instance).memory * 60;
-
-  return `A Container that sits unused is billed for its memory until the idle stop: at ${instance} (${memoryMib / 1024} GiB) about ${money(perMinute)} a minute, so up to ${money(perMinute * minutes)} for each idle stretch of ${minutes} minute${minutes === 1 ? "" : "s"}, per Workspace. A shorter idle time costs less but loses the warm Container (the next command starts a new one from the snapshot, several seconds).`;
-};
-
 /** A size as the owner reads it on an Approval card: its name, with its resources. */
 export const sizeWords = (size: InstanceType): string => `${size} (${INSTANCE_DESCRIPTIONS[size]})`;
-
-/** A script or Toolchains value as a result sizes it: the card shows the user the difference. */
-export const textSize = (value: Schema.Json | null): string => {
-  const text = Predicate.isString(value) ? value : "";
-  const lines = text.replace(/\n$/, "").split("\n").length;
-
-  return text === ""
-    ? "none"
-    : `${lines} line${lines === 1 ? "" : "s"}, ${new TextEncoder().encode(text).length} bytes`;
-};
-
-/** A size or a number of minutes as a result says it: a text bare, a number as it is. */
-export const plainValue = (value: Schema.Json | null): string =>
-  Predicate.isString(value) ? value : JSON.stringify(value);
-
-/** A list of Container-only paths as a result says it. */
-export const pathsLine = (value: Schema.Json | null): string =>
-  Arr.isArray(value) && value.length > 0 ? Arr.join(Arr.map(value, String), ", ") : "none";
 
 /** A tool's required `id`: one Environment, named even when it is this Session's own. */
 export const Id = environmentId();
@@ -459,32 +356,6 @@ export const IdNotGlobal = Id.annotate({
   description: `${idDescription()}. Not "*": Global's settings are not reset here`,
 });
 
-/**
- * Fails when `id` is `*`, which only the tools that keep something at Global take: the others change one
- * Environment's own record, or (`environment_setting_reset`) make one Environment's field inherit Global's.
- */
-export const refuseGlobal = (id: string) =>
-  id === GLOBAL_ID
-    ? EnvironmentsError.make({
-        message: `The id "${GLOBAL_ID}" names what is kept Global (the Container settings, Secrets and Skills): only environment_get, the Container setting tools (environment_variable_set, environment_variable_unset, environment_container_resize, environment_container_size_limit_set, environment_idle_time_set, environment_ignore_set, environment_setup_script_set, environment_start_script_set, environment_toolchains_set, environment_spare_workspace_set), environment_secret_build, environment_secret_delete, environment_skill_save, environment_skill_install, environment_skill_update and environment_skill_remove take it. Name one Environment with its id (environment_list shows them).`,
-      })
-    : Effect.void;
-
-/** The Environment a tool's `id` names (never assumed: a call without one fails to decode), with whether it is the Session's. */
-export type EnvironmentTarget = (
-  id: string,
-) => Effect.Effect<{ readonly environment: string; readonly own: boolean }, EnvironmentsError>;
-
-/** The `EnvironmentTarget` over `environments`: it refuses `*`, and only compares the id with the Session's own. */
-export const environmentTarget =
-  (environments: Pick<EnvironmentsService, "current">): EnvironmentTarget =>
-  (id) =>
-    Effect.gen(function* () {
-      yield* refuseGlobal(id);
-
-      return { environment: id, own: id === (yield* environments.current) };
-    });
-
 /** A changing tool's required `reason`, 1 to `MAX_CHANGE_REASON` characters; a tool may annotate its own example. */
 export const Reason = Schema.String.check(
   Schema.isMinLength(1),
@@ -493,18 +364,6 @@ export const Reason = Schema.String.check(
   description:
     "Why you make the change, for the user to read in the Environment's Agent changes, such as 'the tests read the API address from API_URL'",
 });
-
-const VariableName = Schema.String.check(Schema.isMinLength(1)).annotate({
-  description:
-    "The variable's name, such as API_URL: letters, digits and _, not starting with a digit",
-});
-
-const PLAIN_VALUES =
-  "Variables are plain: every command, and you, can read them, and they are not taken out of output. Never put a credential in one: a value holding a Secret this Session holds, or a GitHub token, is refused, and so is a Secret Reference, which is not resolved here.";
-
-/** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
-// SAFETY: the two types describe the same values; the details are never mutated.
-const asJsonValue = (value: Schema.Json): JsonValue => value as JsonValue;
 
 /**
  * The `environment` extension: its tools over the Session's `Environments`, refusing values that hold a Secret
@@ -523,11 +382,6 @@ export const EnvironmentTools: Effect.Effect<
 
   const holdsCredential = yield* credentialCheck;
 
-  /** The `id` of a Container setting tool: one Environment, or `*` for Global's. */
-  const SettingId = idOrGlobal(
-    "the Container setting at Global, which each Environment that does not override it inherits",
-  );
-
   /**
    * Whether `value` holds a Secret's value or a credential, as written or in an encoding redaction knows: checked once
    * the Secrets are fresh, so one the owner has just kept for the Environment counts. A text these tools keep that holds
@@ -544,243 +398,15 @@ export const EnvironmentTools: Effect.Effect<
 
   const target = environmentTarget(environments);
 
-  /**
-   * Apply the change of `field` to `value` as `tool`, and say how it went: refused when any of `texts` holds a Secret
-   * (`refusal` says it) or the reason does, then `prepare`d with the Environment found (which may refuse it too, or hand
-   * `changed` what it read), then made by the Registry. `id` may be `*`: the change is then to the Container settings
-   * at Global; a `value` of null resets the field (an Environment's then inherits Global's).
-   */
-  const applyChange = <Prepared>({
-    tool,
-    id,
-    field,
-    value,
-    texts = [],
-    refusal = "",
-    reason,
-    conversation,
-    prepare,
-    unchanged,
-    changed,
-  }: {
-    readonly tool: string;
-    readonly id: string;
-    readonly field: string;
-    readonly value: Schema.Json | null;
-    /** The text the value is made of, kept as written: none holds a Secret's value or a credential. */
-    readonly texts?: ReadonlyArray<string>;
-    /** What a refusal for a text that holds a Secret says. */
-    readonly refusal?: string;
-    readonly reason: string;
-    readonly conversation: number;
-    readonly prepare: (environment: string) => Effect.Effect<Prepared, EnvironmentsError>;
-    /** The result for a field that already has the value, given the Environment named. */
-    readonly unchanged: (where: string) => string;
-    /** The result for a change made, given the Environment named. */
-    readonly changed: (made: {
-      readonly where: string;
-      readonly change: AgentChange;
-      readonly own: boolean;
-      readonly newBuild: boolean;
-      /** Set for a change at Global. */
-      readonly global: GlobalChanged | undefined;
-      /** When the change applies, whom it reaches, and whose Build was asked for. */
-      readonly applies: string;
-      readonly prepared: Prepared;
-    }) => string;
-  }) =>
-    Effect.gen(function* () {
-      if (texts.length > 0 && (yield* holdsSecret(Arr.join(texts, "\n")))) {
-        return yield* EnvironmentsError.make({ message: refusal });
-      }
+  // The cores the endpoint serves too (`./environment-changes.ts`), here on the session surface.
+  const cores = environmentChangeCores({ environments, holdsSecret });
 
-      // The reason is kept with the change as written, for the user to read.
-      if (yield* holdsSecret(reason)) {
-        return yield* EnvironmentsError.make({
-          message:
-            "Nothing was saved: the reason holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Say why without it.",
-        });
-      }
-
-      const { environment, own } =
-        id === GLOBAL_ID ? { environment: GLOBAL_ID, own: false } : yield* target(id);
-
-      const prepared = yield* prepare(environment);
-
-      const applied = yield* environments.change({
-        environment,
-        change: { field, value },
-        author: { conversation, tool, reason },
-      });
-
-      switch (applied.status) {
-        case "missing":
-          return yield* notFound(environment);
-        case "rejected":
-          return yield* EnvironmentsError.make({
-            message: `Nothing was saved: ${applied.message}`,
-          });
-        // Only a change made against an expected value, which these tools never give.
-        case "changed-since":
-          return yield* EnvironmentsError.make({
-            message: `Nothing was saved: ${field} changed meanwhile, to ${shownValue(applied.current)}`,
-          });
-        case "unchanged": {
-          const where = namedEnvironment(applied.environment);
-
-          return {
-            output: [
-              {
-                type: "text" as const,
-                text: unchanged(where),
-              },
-            ],
-            structuredOutput: asOutput(
-              EnvironmentChangeOutput,
-              unchangedOutput(applied.environment, field),
-            ),
-            details: { unchanged: { environment: applied.environment, field } },
-          };
-        }
-
-        case "changed": {
-          const { change } = applied;
-          // A change at Global reaches the Session's own Workspace unless its Environment overrides it.
-          const reaches = applied.global?.own ?? own;
-
-          yield* log.record({ tool, environmentName: applied.environment.name, field });
-
-          return {
-            output: [
-              {
-                type: "text" as const,
-                text: changed({
-                  where: namedEnvironment(applied.environment),
-                  change,
-                  own: reaches,
-                  newBuild: applied.newBuild,
-                  global: applied.global,
-                  applies:
-                    applied.global === undefined
-                      ? describeApplied(own, applied.newBuild)
-                      : describeAppliedGlobal(field, applied.global),
-                  prepared,
-                }),
-              },
-            ],
-            structuredOutput: asOutput(EnvironmentChangeOutput, changeOutput(applied, own)),
-            details: {
-              agentChange: {
-                id: change.id,
-                environment: applied.environment,
-                field,
-                before: asJsonValue(change.before),
-                after: asJsonValue(change.after),
-              },
-              own: reaches,
-              newBuild: applied.newBuild,
-            },
-          };
-        }
-      }
-    });
-
-  /**
-   * The Container settings in force where a change is made, with how a result names the place: Environment
-   * `environment`'s, or Global's (`GLOBAL_ID`).
-   */
-  const settingsAt = (environment: string) =>
-    Effect.gen(function* () {
-      if (environment === GLOBAL_ID) {
-        return { where: GLOBAL_NAME, settings: (yield* environments.global).settings };
-      }
-
-      const details = yield* environments.get(environment);
-
-      if (details === null) return yield* notFound(environment);
-
-      return { where: namedEnvironment(details), settings: details.settings };
-    });
-
-  /** Apply `change` of variable `name` as `tool`, and say how it went. */
-  const changeVariable = (
-    tool: string,
-    {
-      id,
-      name,
-      value,
-      reason,
-    }: {
-      readonly id: string;
-      readonly name: string;
-      readonly value: string | null;
-      readonly reason: string;
-    },
-    conversation: number,
-  ) => {
-    const atGlobal = id === GLOBAL_ID;
-    const preposition = atGlobal ? "for" : "in";
-
-    return applyChange({
-      tool,
-      id,
-      field: variableField(name),
-      value,
-      texts: value === null ? [] : [value],
-      refusal: `Nothing was saved: the value holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Variables are plain, so every command and the agent read them. Ask the user to keep the value as a Secret for the Environment on the Environments page instead: every command then gets it as $PI_SECRET_<NAME>, and it is taken out of their output.${atGlobal ? ` If the value is not secret (an email, a URL) and is kept as a Secret only so it is kept Global, ask the user to delete that Secret first (environment_secret_delete asks for their Approval, or they delete it on the Environments page): then this call saves it as a variable at Global.` : ""}`,
-      reason,
-      conversation,
-      prepare: () => Effect.void,
-      unchanged: (where) =>
-        value === null
-          ? `${name} is not set ${preposition} ${where}: nothing changed, and nothing was recorded.`
-          : `${name} already has that value ${preposition} ${where}: nothing changed, and nothing was recorded.`,
-      changed: ({ where, change, applies }) =>
-        `${value === null ? `Unset ${name}` : `Set ${name}`} ${preposition} ${where}: it was ${shownValue(change.before)}, and is ${shownValue(change.after)} now. ${applies}`,
-    });
-  };
-
-  /** The refusal of a script, Toolchains or path that holds a Secret's value: they are stored as written. */
-  const storedAsWritten = (what: string) =>
-    `Nothing was saved: the ${what} holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. It is stored as written, and every command and the agent can read it. Use the Secret's name instead: ask the user to keep the value as a Secret for the Environment on the Environments page, and a command or script then gets it as $PI_SECRET_<NAME> (a Setup Script too, when the user marks the Secret for the Build).`;
-
-  /** Apply a change of a text setting (a script or the Toolchains) as `tool`. */
-  const changeText = (
-    tool: string,
-    {
-      field,
-      what,
-      id,
-      text,
-      reason,
-      note,
-    }: {
-      readonly field: "setupScript" | "startScript" | "toolchains";
-      /** What the setting is called in a result. */
-      readonly what: string;
-      readonly id: string;
-      readonly text: string;
-      readonly reason: string;
-      /** What the result adds of when the setting runs or is used. */
-      readonly note: string;
-    },
-    conversation: number,
-  ) =>
-    applyChange({
-      tool,
-      id,
-      field,
-      value: text,
-      texts: [text],
-      refusal: storedAsWritten(what),
-      reason,
-      conversation,
-      prepare: () => Effect.void,
-      unchanged: (where) =>
-        `The ${what} of ${where} is that text already: nothing changed, and nothing was recorded.`,
-      changed: ({ where, change, newBuild, global, applies }) =>
-        `${text === "" ? `Removed the ${what}` : `Set the ${what}`} of ${where}: it was ${textSize(change.before)}, and is ${textSize(change.after)} now (the user sees the difference on the Environments page). ${note} ${applies}${newBuild || global !== undefined ? "" : " No new Build was asked for."}`,
-    });
+  /** A core's answer as the Session's tool returns it, once the Run's Notification is told of the change it made. */
+  const inSession = (answer: Effect.Effect<HarnessWriteAnswer, EnvironmentsError>) =>
+    answer.pipe(
+      Effect.tap(({ logged }) => (logged === undefined ? Effect.void : log.record(logged))),
+      Effect.map(toolResult),
+    );
 
   const listRead = environmentListRead(environments);
   const getRead = environmentGetRead(environments);
@@ -804,316 +430,105 @@ export const EnvironmentTools: Effect.Effect<
   });
 
   const set = yield* defineEffectTool({
-    name: "environment_variable_set",
-    description: Arr.join(
-      [
-        "Set one of an Environment's variables (the one id names): every command on its Workspaces' Containers, their Setup and Start Scripts and the Environment's Build get it. The same rules as the user's Edit dialog: at most 50 variables, values of at most 4096 characters, and names a shell can export, other than those the Container sets itself (PATH, HOME, GITHUB_TOKEN, CLOUDPID_…).",
-        `With id "${GLOBAL_ID}" the variable is kept Global, for a value that is shared and not secret (an email, a URL); an Environment's own variable of the same name wins, and the 50 counts an Environment's own and the ones it inherits together, so a call that would leave any Environment with more is refused. Each Environment's Build is made with it, so a new Build is asked for in each Environment that does not override it.`,
-        PLAIN_VALUES,
-        "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.",
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: idOrGlobal("a variable kept Global"),
-      name: VariableName,
-      value: Schema.String.annotate({ description: "The value, saved as written" }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_variable_set.name,
+    description: HARNESS_TOOLS.environment_variable_set.session.description,
+    parameters: HARNESS_TOOLS.environment_variable_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_variable_set.session.output),
     executionMode: "sequential",
     // A rerun after an eviction would record the change again, against the value it set.
     replay: "unsafe",
-    execute: (args, api) => changeVariable("environment_variable_set", args, api.conversationId),
+    execute: (args, api) =>
+      inSession(cores.environment_variable_set(args, "session", api.conversationId)),
   });
 
   const unset = yield* defineEffectTool({
-    name: "environment_variable_unset",
-    description: `Unset one of an Environment's variables (the one id names; id "${GLOBAL_ID}" is a variable kept Global, which no Environment inherits any more, and a new Build is asked for in each that did). The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now. A variable that is not set is left as it is, and nothing is recorded.`,
-    parameters: Schema.Struct({
-      id: idOrGlobal("a variable kept Global"),
-      name: VariableName,
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_variable_unset.name,
+    description: HARNESS_TOOLS.environment_variable_unset.session.description,
+    parameters: HARNESS_TOOLS.environment_variable_unset.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_variable_unset.session.output),
     executionMode: "sequential",
     replay: "unsafe",
     execute: (args, api) =>
-      changeVariable("environment_variable_unset", { ...args, value: null }, api.conversationId),
+      inSession(cores.environment_variable_unset(args, "session", api.conversationId)),
   });
 
   const resize = yield* defineEffectTool({
-    name: "environment_container_resize",
-    description: Arr.join(
-      [
-        "Set the Container size of an Environment (the one id names): the size the next Container of every one of its Workspaces starts on, and the size they keep after each idle stop.",
-        `Sizes, by memory, then vCPU:\n${SIZE_LINES}`,
-        "Memory is what a running Container costs, so a larger size costs more for every Workspace of the Environment. The Environment's size limit bounds the size: a larger one is refused, and the limit is a Limit that only the user can raise, with environment_container_size_limit_set, which asks for their Approval.",
-        "This changes the Environment, not a Container that runs: it keeps the size it started on, and a size container_resize gave it holds there until its idle stop. To restart only this Workspace's current Container at another size, for more memory now, use container_resize, which changes no Environment.",
-        RECORDED,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: SettingId,
-      size: InstanceType.annotate({ description: "The size of the Environment's next Containers" }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_container_resize.name,
+    description: HARNESS_TOOLS.environment_container_resize.session.description,
+    parameters: HARNESS_TOOLS.environment_container_resize.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_container_resize.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, size, reason }, api) =>
-      applyChange({
-        tool: "environment_container_resize",
-        id,
-        field: "instance",
-        value: size,
-        reason,
-        conversation: api.conversationId,
-        prepare: (environment) =>
-          Effect.gen(function* () {
-            const { where, settings } = yield* settingsAt(environment);
-            const limit = settings.maxInstance;
-
-            if (compareInstances(size, limit) > 0) {
-              return yield* EnvironmentsError.make({
-                message: `Nothing was saved: ${size} is above the size limit of ${where}, ${limit}. Pick a size up to ${limit}, or ask the user to raise the limit: environment_container_size_limit_set asks for their Approval to raise it.`,
-              });
-            }
-          }),
-        unchanged: (where) =>
-          `The Container size of ${where} is ${size} already: nothing changed, and nothing was recorded.`,
-        changed: ({ where, change, own, applies }) =>
-          `Set the Container size of ${where}: it was ${plainValue(change.before)}, and is ${plainValue(change.after)} now (${INSTANCE_DESCRIPTIONS[size]}). It is the size of the next Container of every Workspace it reaches, and of those after each idle stop; Containers that run keep their size, and container_resize changes only this Workspace's current Container, until its idle stop, and no Environment. ${applies}${own ? " If container_resize gave this Workspace's Container another size, that size holds through container_restart until the idle stop." : ""}`,
-      }),
+    execute: (args, api) =>
+      inSession(cores.environment_container_resize(args, "session", api.conversationId)),
   });
 
   const idleTime = yield* defineEffectTool({
-    name: "environment_idle_time_set",
-    description: Arr.join(
-      [
-        `Set an Environment's idle time (the one id names): the minutes a Container may sit without a command before its Workspace stops it, from 1 to ${MAX_IDLE_MINUTES}. A disk snapshot is taken first, so the next command starts a new Container from it in several seconds.`,
-        "A Container is billed for its memory for as long as it runs, idle or not, so a long idle time costs more; a short one stops a Container between a few minutes of thought and work. The result names the cost at the Environment's size.",
-        RECORDED,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: SettingId,
-      minutes: Schema.Finite.annotate({
-        description: `Minutes of idle time, a whole number from 1 to ${MAX_IDLE_MINUTES}`,
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_idle_time_set.name,
+    description: HARNESS_TOOLS.environment_idle_time_set.session.description,
+    parameters: HARNESS_TOOLS.environment_idle_time_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_idle_time_set.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, minutes, reason }, api) =>
-      applyChange({
-        tool: "environment_idle_time_set",
-        id,
-        field: "idleMinutes",
-        value: minutes,
-        reason,
-        conversation: api.conversationId,
-        prepare: settingsAt,
-        unchanged: (where) =>
-          `The idle time of ${where} is ${minutes} already: nothing changed, and nothing was recorded.`,
-        changed: ({ where, change, applies, prepared }) =>
-          `Set the idle time of ${where}: it was ${plainValue(change.before)} minutes, and is ${plainValue(change.after)} now. ${describeIdleCost(minutes, prepared.settings.instance)} ${applies}`,
-      }),
+    execute: (args, api) =>
+      inSession(cores.environment_idle_time_set(args, "session", api.conversationId)),
   });
 
   const setupScript = yield* defineEffectTool({
-    name: "environment_setup_script_set",
-    description: Arr.join(
-      [
-        `Set an Environment's own Setup Script (the one id names): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It prepares what the Environment's Workspaces need whatever their Repos (system packages, a Docker image), in /workspace.`,
-        "It runs once per content on each Container (when the content changes, or on a Container started from the image; one restored from a snapshot has run it already), before the Repos' own Setup Scripts, and in the Environment's Build. A Setup Script is part of what a Build is made with, so a changed one makes a new Build. It gets the Environment's variables and the Secrets marked for the Build, runs for 15 minutes at most, and a failure stops no command. Nothing validates the bash before it runs.",
-        "A step that belongs to one Repo (installing its dependencies) is usually better in that Repo's own .cloudpid/setup.sh, which is committed with the code; use this one for what is the Environment's.",
-        "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
-        RECORDED,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: SettingId,
-      script: Schema.String.annotate({
-        description: "The whole script, replacing the one there is; empty removes it",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_setup_script_set.name,
+    description: HARNESS_TOOLS.environment_setup_script_set.session.description,
+    parameters: HARNESS_TOOLS.environment_setup_script_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_setup_script_set.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, script, reason }, api) =>
-      changeText(
-        "environment_setup_script_set",
-        {
-          field: "setupScript",
-          what: "Setup Script",
-          id,
-          text: script,
-          reason,
-          note: "It runs once with this content on each Container: at each Workspace's next Container start (one restored from a snapshot has run the old script, not this one), and in the Environment's Build.",
-        },
-        api.conversationId,
-      ),
+    execute: (args, api) =>
+      inSession(cores.environment_setup_script_set(args, "session", api.conversationId)),
   });
 
   const startScript = yield* defineEffectTool({
-    name: "environment_start_script_set",
-    description: Arr.join(
-      [
-        `Set an Environment's own Start Script (the one id names): the whole bash text, at most ${MAX_SCRIPT_BYTES / 1024} KiB of UTF-8; an empty script removes it. It brings up what a snapshot cannot hold, such as a database or docker compose up, in /workspace.`,
-        "It runs at every Container start (a restored Container too), after the Setup Scripts and before the Repos' own Start Scripts, for 5 minutes at most; a failure stops no command. A service it starts must detach, or the script never ends: setsid nohup cmd >/tmp/cmd.log 2>&1 &. It may run again on a Container that already runs, so it should leave a service that is up alone. A Start Script is not part of the Build.",
-        "A step that belongs to one Repo is usually better in that Repo's own .cloudpid/start.sh, which is committed with the code; use this one for what is the Environment's.",
-        "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
-        RECORDED,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: SettingId,
-      script: Schema.String.annotate({
-        description: "The whole script, replacing the one there is; empty removes it",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_start_script_set.name,
+    description: HARNESS_TOOLS.environment_start_script_set.session.description,
+    parameters: HARNESS_TOOLS.environment_start_script_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_start_script_set.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, script, reason }, api) =>
-      changeText(
-        "environment_start_script_set",
-        {
-          field: "startScript",
-          what: "Start Script",
-          id,
-          text: script,
-          reason,
-          note: "It runs at every Container start of each Workspace, a restored one too; a service it starts must detach.",
-        },
-        api.conversationId,
-      ),
+    execute: (args, api) =>
+      inSession(cores.environment_start_script_set(args, "session", api.conversationId)),
   });
 
   const toolchains = yield* defineEffectTool({
-    name: "environment_toolchains_set",
-    description: Arr.join(
-      [
-        `Set an Environment's Toolchains (the one id names): the text of a mise.toml, at most ${MAX_TOOLCHAINS_BYTES / 1024} KiB of UTF-8 with no NUL; empty means the image's base Toolchains. mise reads it, not the save: a bad one fails the install at the next Container start.`,
-        "The bootstrap writes it as /workspace/mise.toml where a Workspace has none or still has the copy it wrote last, and installs from it; a Workspace whose own mise.toml was changed keeps that one. Toolchains are part of what a Build is made with, so a changed text makes a new Build.",
-        "The text is stored as written: a Secret this Session holds, or a GitHub token, in it is refused.",
-        RECORDED,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: SettingId,
-      mise_toml: Schema.String.annotate({
-        description:
-          "The whole mise.toml, replacing the one there is; empty means the base Toolchains",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_toolchains_set.name,
+    description: HARNESS_TOOLS.environment_toolchains_set.session.description,
+    parameters: HARNESS_TOOLS.environment_toolchains_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_toolchains_set.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, mise_toml, reason }, api) =>
-      changeText(
-        "environment_toolchains_set",
-        {
-          field: "toolchains",
-          what: "Toolchains",
-          id,
-          text: mise_toml,
-          reason,
-          note: "mise installs them at each Workspace's next Container start.",
-        },
-        api.conversationId,
-      ),
+    execute: (args, api) =>
+      inSession(cores.environment_toolchains_set(args, "session", api.conversationId)),
   });
 
   const ignore = yield* defineEffectTool({
-    name: "environment_ignore_set",
-    description: Arr.join(
-      [
-        `Set an Environment's extra Container-only paths (the one id names): the full list, replacing the one there is, of at most ${MAX_IGNORE_PATTERNS} patterns. A path matching one lives on the Container's disk only: it is not synced to the Workspace, so it is fast and kept out of its storage, and it is gone when the Workspace's Container is restarted fresh. The built-in list already covers node_modules, .venv, caches and build tools' output directories.`,
-        'A pattern starts with "/" (from /workspace: "/data" is /workspace/data) or "**/" (at any depth), may start with "!" to keep a path synced again, and has only "*" and "**" (a whole segment) as wildcards. The last pattern that matches a path wins. A bad pattern is refused as the user\'s save refuses it.',
-        "A changed list means the next Container of each Workspace starts without the Workspace's snapshot (a snapshot is tied to the list its Container launched with): from the Environment's Build once there is one for the new list, else from the image, so dependency directories, build output and caches are made again and the Setup Scripts run again, which takes minutes.",
-        "The patterns are stored as written: a Secret this Session holds, or a GitHub token, in one is refused.",
-        RECORDED,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: SettingId,
-      patterns: Schema.Array(Schema.String).annotate({
-        description: "The whole list of extra Container-only paths; empty removes them all",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_ignore_set.name,
+    description: HARNESS_TOOLS.environment_ignore_set.session.description,
+    parameters: HARNESS_TOOLS.environment_ignore_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_ignore_set.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, patterns, reason }, api) =>
-      applyChange({
-        tool: "environment_ignore_set",
-        id,
-        field: "ignore",
-        value: patterns,
-        texts: patterns,
-        refusal: storedAsWritten("list of patterns"),
-        reason,
-        conversation: api.conversationId,
-        prepare: () => Effect.void,
-        unchanged: (where) =>
-          `The extra Container-only paths of ${where} are that list already: nothing changed, and nothing was recorded.`,
-        changed: ({ where, change, applies }) =>
-          `Set the extra Container-only paths of ${where}: they were ${pathsLine(change.before)}, and are ${pathsLine(change.after)} now. Warning: the next Container of each Workspace it reaches starts without the Workspace's snapshot, from the Environment's Build once there is one for this list, else from the image: dependency directories, build output and caches are made again, and the Setup Scripts run again (minutes). ${applies}`,
-      }),
+    execute: (args, api) =>
+      inSession(cores.environment_ignore_set(args, "session", api.conversationId)),
   });
 
   const spareWorkspace = yield* defineEffectTool({
-    name: "environment_spare_workspace_set",
-    description: Arr.join(
-      [
-        "Turn an Environment's Spare Workspace on or off (the one id names). On (the default), the Environment keeps one Workspace made ahead from its last good Build while it had a Session in the last 3 days: cloned, its Setup Scripts run, its Container snapshotted and stopped, so a new Session takes it and starts without waiting for the clones and the Setup Scripts. Each spare prepared runs a Container for a minute or two and keeps a Snapshot, after every Session that takes one and every new Build.",
-        "Off: no spare is prepared, the one there is is removed with its Snapshot, and a new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts as the first Workspace after a Build does. Off saves that Container time for an Environment whose new Sessions can wait; on suits one whose new Sessions should start fast.",
-        `With id "${GLOBAL_ID}" the setting is changed at Global: every Environment that does not override it inherits it. Setting an Environment's value makes it the Environment's own, which a later change at Global does not reach; environment_setting_reset makes it inherit Global's again.`,
-        "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at once: no Container restarts, and no new Build is made.",
-      ],
-      "\n\n",
+    name: HARNESS_TOOLS.environment_spare_workspace_set.name,
+    description: HARNESS_TOOLS.environment_spare_workspace_set.session.description,
+    parameters: HARNESS_TOOLS.environment_spare_workspace_set.session.input,
+    structuredOutputSchema: outputSchema(
+      HARNESS_TOOLS.environment_spare_workspace_set.session.output,
     ),
-    parameters: Schema.Struct({
-      id: SettingId,
-      enabled: Schema.Boolean.annotate({
-        description: "true keeps a spare made ahead; false removes it and prepares none",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, enabled, reason }, api) =>
-      applyChange({
-        tool: "environment_spare_workspace_set",
-        id,
-        field: SPARE_WORKSPACE_FIELD,
-        value: enabled,
-        reason,
-        conversation: api.conversationId,
-        prepare: () => Effect.void,
-        unchanged: (where) =>
-          `The Spare Workspace of ${where} is ${enabled ? "on" : "off"} already: nothing changed, and nothing was recorded.`,
-        changed: ({ where, global }) =>
-          `${
-            enabled
-              ? `Turned the Spare Workspace of ${where} on: a spare is prepared now for each Environment it reaches that had a Session in the last 3 days, else after its next Session, and a new Session that takes it starts without waiting for the clones and the Setup Scripts.`
-              : `Turned the Spare Workspace of ${where} off: the spare of each Environment it reaches, if it had one, is removed with its Snapshot, and none is prepared. A new Session's Workspace is made when the Session starts, waiting for the clones and the Setup Scripts.`
-          }${global === undefined ? "" : ` ${describeAppliedGlobal(SPARE_WORKSPACE_FIELD, global)}`}`,
-      }),
+    execute: (args, api) =>
+      inSession(cores.environment_spare_workspace_set(args, "session", api.conversationId)),
   });
 
   /**
@@ -1145,7 +560,7 @@ export const EnvironmentTools: Effect.Effect<
     notFound,
   });
 
-  const secretMarks = yield* secretMarkTools({ environments, log, refuseSecrets, target });
+  const secretMarks = yield* secretMarkTools({ core: cores.environment_secret_build, log });
 
   const skills = yield* skillTools({
     environments,

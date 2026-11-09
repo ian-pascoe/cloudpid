@@ -20,7 +20,7 @@ import {
   validateHostHeader,
   validateOriginHeader,
 } from "@modelcontextprotocol/server";
-import { HARNESS_TOOL_NAMES } from "@cloudpid/protocol/harness-tools";
+import { HARNESS_TOOL_NAMES, HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
 import * as Exit from "effect/Exit";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
@@ -177,6 +177,9 @@ export const toolGate = (
 /** The management tools the "To manage" line names: the ones whose answer shows what is set. */
 const SETTING_READS = ["environment_list", "environment_get", "settings_get"] as const;
 
+/** The families of change tools the change clause may name, as it names them. */
+const CHANGE_FAMILIES = ["environment_*", "settings_*"] as const;
+
 /** "a, b and c". */
 const listed = (names: ReadonlyArray<string>): string =>
   names.length < 2
@@ -194,6 +197,18 @@ export const instructionsFor = (enabled: Enabled): string => {
   // A management tool served: line 1 says the endpoint manages Environments and Settings too.
   const manages = HARNESS_TOOL_NAMES.some(has);
 
+  // A management tool that changes something served: `request_id` and the change clause name it.
+  const changing = HARNESS_TOOL_NAMES.filter(
+    (name) => has(name) && !HARNESS_TOOLS[name].annotations.readOnlyHint,
+  );
+
+  const changes = changing.length > 0;
+
+  // The families the change clause names: only those with a change tool served (`settings_*` from S2b).
+  const changeFamilies = CHANGE_FAMILIES.filter((family) =>
+    changing.some((name) => name.startsWith(family.slice(0, -1))),
+  );
+
   const lines = [
     `cloudpid: the owner's hosted coding agent. Start or message its Sessions, wait for their Runs, read transcripts, ${manages ? "import a local pi Session, or manage its Environments and Settings." : "or import a local pi Session."}`,
   ];
@@ -210,9 +225,16 @@ export const instructionsFor = (enabled: Enabled): string => {
     lines.push("Start with environments_list to see the Environments and models.");
   }
 
-  if (has("session_start") || has("session_send")) {
+  // The tools that take `request_id`: the starts and sends, and every change.
+  const retried = [
+    ...(has("session_start") ? ["session_start"] : []),
+    ...(has("session_send") ? ["session_send"] : []),
+    ...(changes ? ["every change"] : []),
+  ];
+
+  if (retried.length > 0) {
     lines.push(
-      "Pass a request_id to session_start and session_send: a retry with the same one does not repeat the call.",
+      `Pass a request_id to ${listed(retried)}: a retry with the same one does not repeat the call.`,
     );
   }
 
@@ -238,7 +260,11 @@ export const instructionsFor = (enabled: Enabled): string => {
     const readsLongTexts = reads.some((name) => name !== "environment_list");
     const fieldHint = readsLongTexts ? " (pass field to read a long text whole)" : "";
 
-    lines.push(`To manage rather than start: ${listed(reads)} ${verb} what is set${fieldHint}.`);
+    lines.push(
+      changes
+        ? `To manage rather than start: ${listed(reads)} ${verb} what is set${fieldHint}; the other ${listed(changeFamilies)} tools change it, naming ${changeFamilies.includes("settings_*") ? "an id or scope" : "an id"} ("*" is Global) and a reason. The owner sees and can revert each change.`
+        : `To manage rather than start: ${listed(reads)} ${verb} what is set${fieldHint}.`,
+    );
   }
 
   if (has("session_get") || has("session_wait")) {
