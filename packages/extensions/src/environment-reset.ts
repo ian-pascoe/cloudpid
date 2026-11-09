@@ -36,8 +36,8 @@ import {
   MAX_CHANGE_REASON,
   pathsLine,
   plainValue,
-  recordSettingChange,
-  type SettingResult,
+  recordContainerSettingChange,
+  type ContainerSettingResult,
   sizeWords,
   storedText,
   textSize,
@@ -130,7 +130,7 @@ const resetAnswer = ({
 }: {
   readonly environment: string;
   readonly setting: ResettableSetting;
-  readonly result: SettingResult;
+  readonly result: ContainerSettingResult;
   readonly own: boolean;
   readonly approved: boolean;
 }): Effect.Effect<HarnessAnswer, EnvironmentsError> => {
@@ -202,7 +202,7 @@ export const resetLimitCore = ({
 }: ResetLimitServices): ApprovalCore<
   ResetLimitArgs,
   ResetLimitKnown,
-  SettingResult,
+  ContainerSettingResult,
   EnvironmentsError
 > => {
   /** The Environment `id` names, found, and whether it is the Session's own. */
@@ -256,7 +256,7 @@ export const resetLimitCore = ({
 
     apply: ({ id }, expected, author, known) =>
       Effect.gen(function* () {
-        const target_ = known ?? (yield* read(id));
+        const found = known ?? (yield* read(id));
 
         const result = yield* environments.change({
           environment: id,
@@ -265,7 +265,7 @@ export const resetLimitCore = ({
           author: { ...author, approved: true },
         });
 
-        return { known: target_, result };
+        return { known: found, result };
       }),
 
     render: ({ id }, _expected, { known, result }) =>
@@ -371,7 +371,7 @@ export const resetTool = ({ environments, approvals, log, refuseSecrets, target 
             api,
             limit,
             { id, reason },
-            recordSettingChange(log, RESET_TOOL, "maxInstance"),
+            recordContainerSettingChange(log, RESET_TOOL, "maxInstance"),
           );
         }
 

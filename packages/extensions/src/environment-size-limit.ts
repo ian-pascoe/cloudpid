@@ -14,7 +14,7 @@ import {
   type ChangedEnvironment,
   describeLimitReach,
   type EnvironmentsService,
-  type SettingResult,
+  type ContainerSettingResult,
   sizeWords,
   storedText,
 } from "./environment.ts";
@@ -64,7 +64,7 @@ export const sizeLimitCore = ({
 }: SizeLimitServices): ApprovalCore<
   SizeLimitArgs,
   SizeLimitKnown,
-  SettingResult,
+  ContainerSettingResult,
   EnvironmentsError
 > => {
   /**
@@ -179,7 +179,7 @@ export const sizeLimitCore = ({
 
     apply: ({ id, size }, expected, author, known) =>
       Effect.gen(function* () {
-        const target = known ?? (yield* read(id)).known;
+        const found = known ?? (yield* read(id)).known;
 
         const result = yield* environments.change({
           environment: id,
@@ -188,7 +188,7 @@ export const sizeLimitCore = ({
           author: { ...author, approved: true },
         });
 
-        return { known: target, result };
+        return { known: found, result };
       }),
 
     render: ({ id, size }, expected, { known, result }) => {

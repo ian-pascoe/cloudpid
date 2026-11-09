@@ -249,11 +249,14 @@ describe("the Settings Limit cores", () => {
         const core = spendLimitCore(settingsServices(newSeen(), VIEWS));
 
         const changes = [
+          // As an endpoint's record is: no Session, no conversation.
           recordedChange("tool", {
             field: "spendLimit.perSession",
             before: 5,
             after: 8,
             tool: "settings_spend_limit_set",
+            session: null,
+            conversation: null,
           }),
         ];
 

@@ -133,7 +133,10 @@ export type SettingsCore<Args> = ApprovalCore<
   AppliedSettingsChange,
   SettingsCoreFailure,
   SettingsHow
-> & { readonly limit?: SettingsLimit | undefined };
+> & {
+  /** The Limit a Limit core changes; absent for a core of no Limit (the Instructions), whose field no change reaches. */
+  readonly limit?: SettingsLimit | undefined;
+};
 
 // ─── Words ───────────────────────────────────────────────────────────────────
 
@@ -269,11 +272,15 @@ const limitNow = (view: SettingsView, limit: SettingsLimit) => ({
     : Option.isNone(overrideValue(view.overrides, limit.field)),
 });
 
-/** A Limit's value before, as the card and the results say it, from what the owner saw. */
-const beforeWords = (
-  limit: SettingsLimit,
-  seen: { readonly value: Schema.Json | null; readonly inherited?: boolean },
-) => `${limit.words(seen.value)}${inheritedWords(seen.inherited)}`;
+/**
+ * A Limit's value before, as the card and the results say it, from what the owner saw. An `expected` that is not what
+ * `prepare` gives (`apply` refuses it) is said as it is, so that words made after a write never fail.
+ */
+const beforeWords = (limit: SettingsLimit, view: SettingsView, expected: Schema.Json | null) =>
+  Option.match(seenOf(view, expected), {
+    onNone: () => storedText(expected),
+    onSome: (seen) => `${limit.words(seen.value)}${inheritedWords(seen.inherited)}`,
+  });
 
 // ─── The Limits ──────────────────────────────────────────────────────────────
 
@@ -388,8 +395,8 @@ const limitCore = <Args extends ScopedArgs>(
             details: { scope: view.scope, approval: { approved: true }, agentChanges: [] },
           });
         case "changed":
-          return Effect.map(limitSeen(view, expected), (seen) => ({
-            text: `The user approved: ${limit.name} ${where} was ${beforeWords(limit, seen)}, and is ${after} now. ${how.reach} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
+          return Effect.succeed({
+            text: `The user approved: ${limit.name} ${where} was ${beforeWords(limit, view, expected)}, and is ${after} now. ${how.reach} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
             structured: settingsChangeOutput({
               view,
               changes: result.changes,
@@ -401,19 +408,14 @@ const limitCore = <Args extends ScopedArgs>(
               approval: { approved: true },
               agentChanges: agentChangeDetails(view, result.changes),
             },
-          }));
+          });
       }
     },
 
     declined: (args, view, answer) =>
       declinedAnswer(
         answer,
-        // Only the words of a decline, which writes nothing: an `expected` that is not what `prepare` gives is said as it is
-        // (`apply` refuses it).
-        `${spec.change} ${scopeWhere(view)}, from ${Option.match(seenOf(view, answer.expected), {
-          onNone: () => storedText(answer.expected),
-          onSome: (seen) => beforeWords(limit, seen),
-        })} to ${spec.after(args, view)}`,
+        `${spec.change} ${scopeWhere(view)}, from ${beforeWords(limit, view, answer.expected)} to ${spec.after(args, view)}`,
         (approval) => settingsChangeOutput({ view, changes: [], unchanged: [], approval }),
       ),
   };

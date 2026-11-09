@@ -394,19 +394,21 @@ export const describeLimitReach = (result: ChangedSetting, own: boolean): string
 };
 
 /** How the write of one Container setting went: the Registry's answer, or one built from the Agent change it recorded. */
-export type SettingResult = Exclude<AppliedChange, { readonly status: "changed" }> | ChangedSetting;
+export type ContainerSettingResult =
+  | Exclude<AppliedChange, { readonly status: "changed" }>
+  | ChangedSetting;
 
 /**
  * The Session's after-step of a change of one Container setting: tell the Run's Notification of a change that was made
- * (`applied` of a core, whose `result` is `SettingResult`).
+ * (`applied` of a core, whose `result` is `ContainerSettingResult`).
  */
-export const recordSettingChange =
+export const recordContainerSettingChange =
   (
     log: { readonly record: (change: RunChange) => Effect.Effect<void> },
     tool: string,
     field: string,
   ) =>
-  ({ result }: { readonly result: SettingResult }): Effect.Effect<undefined> =>
+  ({ result }: { readonly result: ContainerSettingResult }): Effect.Effect<undefined> =>
     result.status === "changed"
       ? log
           .record({ tool, environmentName: result.environment.name, field })

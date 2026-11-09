@@ -81,7 +81,7 @@ import {
   Id,
   MAX_CHANGE_REASON,
   plainTextCheck,
-  recordSettingChange,
+  recordContainerSettingChange,
 } from "./environment.ts";
 import { EnvironmentDeleteOutput, EnvironmentSecretDeleteOutput } from "./environment-outputs.ts";
 import { EnvironmentsError, notFound } from "./environment-describe.ts";
@@ -515,7 +515,7 @@ export const ApprovalTools: Effect.Effect<
         api,
         sizeCore,
         args,
-        recordSettingChange(log, SIZE_LIMIT_TOOL, "maxInstance"),
+        recordContainerSettingChange(log, SIZE_LIMIT_TOOL, "maxInstance"),
       ),
   });
 
