@@ -84,6 +84,9 @@ const started = async (overrides: Overrides = () => ({})) => {
   /** The Environments whose Builds' upkeep ran, in order. */
   const built: Array<string> = [];
 
+  /** The Environments the main Worker pushed an MCP server set to (`mcp.sync`), in order. */
+  const synced: Array<string | undefined> = [];
+
   /** What wiping a Workspace's or Build's object does: a row sets it to see or break a delete's steps. */
   const objects = { destroy: (_name: string) => Promise.resolve() };
 
@@ -94,7 +97,7 @@ const started = async (overrides: Overrides = () => ({})) => {
       rebuild: () => Effect.die("no Build"),
     },
     spares: { of: () => Effect.void },
-    mcp: { sync: () => Effect.void },
+    mcp: { sync: (environment) => Effect.sync(() => void synced.push(environment)) },
     objects: {
       workspaces: { destroy: (name) => objects.destroy(name) },
       sessions: { destroy: () => Effect.void },
@@ -113,12 +116,14 @@ const started = async (overrides: Overrides = () => ({})) => {
     stub,
     call,
     built,
+    synced,
     objects,
     /** Ask for `tool`'s change with `args`, as the dispatcher hands it over. */
     ask: async (
       tool: ApprovalToolName,
       args: Readonly<Record<string, Schema.Json>>,
       requestId?: string,
+      narrowing?: Effect.Effect<ApiResult<HarnessAnswer>>,
     ): Promise<ApiResult<HarnessAnswer>> => {
       attempts += 1;
 
@@ -136,6 +141,7 @@ const started = async (overrides: Overrides = () => ({})) => {
           requestDigest: requestDigest(tool, json),
           digest: requestDigest(tool, withoutReason),
           attempt: `attempt-${attempts}`,
+          narrowing,
         }),
       );
     },
@@ -452,6 +458,250 @@ describe("the resets' Limit paths", () => {
         .maxInstance,
     ).toBeUndefined();
   });
+});
+
+describe("the MCP servers' tools", () => {
+  const ENTRY = { command: "node", args: ["files.js"] };
+
+  const ADD = {
+    scope: GLOBAL_SCOPE,
+    name: "files",
+    entry: ENTRY,
+    reason: "The project reads files",
+  };
+
+  /** What the tool's own change answers when the ask hands it on: the dispatcher's, stood in for. */
+  const NARROWED: ApiResult<HarnessAnswer> = { ok: true, value: { text: "made", structured: {} } };
+
+  /** Global's own entries of MCP servers, as the Registry keeps them. */
+  const serversOf = async (call: RegistryCall) => (await call("getSettings")).settings.mcp.servers;
+
+  it("asks for a definition on the MCP servers' section, whatever the check says", async () => {
+    const { ask, call } = await started();
+
+    const id = approvalIdOf(await ask("settings_mcp_add", ADD));
+
+    expect(await call("listApprovals", {})).toEqual([
+      expect.objectContaining({
+        id,
+        scope: GLOBAL_SCOPE,
+        section: "mcp",
+        tool: "settings_mcp_add",
+      }),
+    ]);
+    expect(await serversOf(call)).toEqual({});
+  });
+
+  it("writes exactly what the owner saw once approved, and has the main Worker push each Environment it reaches", async () => {
+    const { ask, call, apply, synced } = await started();
+    const id = approvalIdOf(await ask("settings_mcp_add", ADD));
+
+    await call("answerApproval", { id, approved: true });
+
+    const applied = await apply(id);
+
+    expect(applied).toMatchObject({
+      status: "finished",
+      result: { structured: { server_status: { state: "not_checked" } } },
+    });
+    expect(await serversOf(call)).toEqual({ files: ENTRY });
+    expect(await call("listSettingsChanges")).toEqual([
+      expect.objectContaining({ field: "mcp.servers.files", tool: "settings_mcp_add" }),
+    ]);
+    // Global's change reaches the Environment that exists, and the host is asked nothing by the apply.
+    expect(synced).toEqual([DEFAULT_ENVIRONMENT]);
+  });
+
+  it("changes nothing, and ends changed_since, when the server was defined since the ask", async () => {
+    const { ask, call, apply, synced } = await started();
+    const id = approvalIdOf(await ask("settings_mcp_add", ADD));
+    const other = { command: "node", args: ["other.js"] };
+
+    await call("updateSettings", { overrides: { mcp: { servers: { files: other } } } });
+    await call("answerApproval", { id, approved: true });
+
+    expect(await apply(id)).toMatchObject({ status: "changed_since" });
+    expect(await serversOf(call)).toEqual({ files: other });
+    expect(synced).toEqual([]);
+  });
+
+  it("finishes from the claim after a write that committed, worded over what the Registry says of it, and does not write again", async () => {
+    const { ask, call, apply } = await started();
+    const id = approvalIdOf(await ask("settings_mcp_add", ADD));
+    const approved = await call("answerApproval", { id, approved: true });
+
+    // The write of a run that was cut before it settled anything.
+    await call("changeSettings", {
+      changes: [{ field: "mcp.servers.files", value: ENTRY, expected: { value: null } }],
+      author: {
+        via: PI,
+        tool: "settings_mcp_add",
+        reason: ADD.reason,
+        approved: true,
+        request: approvalClaim(approved!),
+      },
+    });
+
+    expect(await apply(id)).toMatchObject({
+      status: "finished",
+      result: { structured: { server_status: { state: "not_checked" } } },
+    });
+    expect(await call("listSettingsChanges")).toHaveLength(1);
+  });
+
+  it("asks to reset an adjustment that would switch a server back on, and resets it once approved", async () => {
+    const { ask, call, apply, synced } = await started();
+
+    await call("updateSettings", { overrides: { mcp: { servers: { files: ENTRY } } } });
+    await call("changeSettings", {
+      environment: DEFAULT_ENVIRONMENT,
+      changes: [
+        {
+          field: "mcp.servers.files.enabled",
+          value: false,
+          expected: { value: null, inherited: true },
+        },
+      ],
+      author: { via: PI, tool: "settings_mcp_disable", reason: "Off here" },
+    });
+
+    const reset = {
+      scope: DEFAULT_ENVIRONMENT,
+      field: "mcp.servers.files.enabled",
+      reason: "On again",
+    };
+
+    const id = approvalIdOf(await ask("settings_reset", reset));
+
+    expect(await call("listApprovals", {})).toEqual([
+      expect.objectContaining({ id, section: "mcp", tool: "settings_reset" }),
+    ]);
+
+    await call("answerApproval", { id, approved: true });
+
+    expect(await apply(id)).toMatchObject({ status: "finished" });
+    expect(synced).toEqual([DEFAULT_ENVIRONMENT]);
+  });
+
+  it("asks when a change takes a server out of hidden, though the tool's own change is at hand", async () => {
+    const { ask, call } = await started();
+
+    await call("updateSettings", {
+      overrides: { mcp: { servers: { files: { ...ENTRY, exposure: "hidden" } } } },
+    });
+
+    const id = approvalIdOf(
+      await ask(
+        "settings_mcp_exposure_set",
+        { scope: GLOBAL_SCOPE, name: "files", exposure: "codemode", reason: "Needed now" },
+        undefined,
+        Effect.succeed(NARROWED),
+      ),
+    );
+
+    expect(await call("listApprovals", {})).toEqual([
+      expect.objectContaining({ id, section: "mcp", tool: "settings_mcp_exposure_set" }),
+    ]);
+  });
+
+  it("makes a change that narrows at once through the tool's own change, asking nobody", async () => {
+    const { ask, call } = await started();
+
+    await call("updateSettings", { overrides: { mcp: { servers: { files: ENTRY } } } });
+
+    const answer = await ask(
+      "settings_mcp_exposure_set",
+      { scope: GLOBAL_SCOPE, name: "files", exposure: "hidden", reason: "Not needed" },
+      undefined,
+      Effect.succeed(NARROWED),
+    );
+
+    expect(answer).toEqual(NARROWED);
+    expect(await call("listApprovals", {})).toEqual([]);
+  });
+
+  it("answers a repeat of a request_id that asked, its settle cut, with the same request, though the state narrows now", async () => {
+    // The settle of the first call's claim is lost: its claim has no answer and no changes.
+    const { ask, call } = await started(() => ({
+      settleChangeRequest: () => Effect.succeed(false),
+    }));
+
+    await call("updateSettings", {
+      overrides: { mcp: { servers: { files: { ...ENTRY, exposure: "hidden" } } } },
+    });
+
+    const args = { scope: GLOBAL_SCOPE, name: "files", exposure: "codemode", reason: "Needed now" };
+
+    const first = approvalIdOf(
+      await ask("settings_mcp_exposure_set", args, "req-1", Effect.succeed(NARROWED)),
+    );
+
+    // Meanwhile the entry is no longer hidden, so the same call would narrow, if it were made now.
+    await call("updateSettings", {
+      overrides: { mcp: { servers: { files: { ...ENTRY, exposure: "direct" } } } },
+    });
+
+    const repeated = await ask(
+      "settings_mcp_exposure_set",
+      args,
+      "req-1",
+      Effect.succeed(NARROWED),
+    );
+
+    expect(approvalIdOf(repeated)).toBe(first);
+    expect(await call("listApprovals", {})).toHaveLength(1);
+  });
+
+  // L17: a repeat of a `request_id` whose first call made its change and was cut is answered from the changes it recorded,
+  // before `prepare` reads a state the change altered (a removed server is gone; a tool exposure is set already).
+  type Cut = {
+    readonly tool: ApprovalToolName;
+    readonly args: Readonly<Record<string, string>> & {
+      readonly reason: string;
+      readonly request_id?: string;
+    };
+    readonly change: { readonly field: string; readonly value: Schema.Json; readonly reset?: true };
+  };
+
+  it.each<Cut>([
+    {
+      tool: "settings_mcp_remove",
+      args: { scope: GLOBAL_SCOPE, name: "files", reason: "Not needed" },
+      change: { field: "mcp.servers.files", value: null, reset: true },
+    },
+    {
+      tool: "settings_mcp_tool_exposure_set",
+      args: {
+        scope: GLOBAL_SCOPE,
+        name: "files",
+        tool: "drop_*",
+        exposure: "hidden",
+        reason: "Not needed",
+      },
+      change: { field: "mcp.servers.files.toolExposure", value: { "drop_*": "hidden" } },
+    },
+  ])(
+    "answers a repeat of $tool's request_id from its recorded change",
+    async ({ tool, args, change }) => {
+      const { ask, call } = await started();
+
+      await call("updateSettings", { overrides: { mcp: { servers: { files: ENTRY } } } });
+      await call("changeSettings", {
+        changes: [change],
+        author: {
+          via: PI,
+          tool,
+          reason: args.reason,
+          request: { id: "req-1", tool, digest: requestDigest(tool, args), attempt: "first" },
+        },
+      });
+
+      const repeated = await ask(tool, args, "req-1", Effect.succeed(NARROWED));
+
+      expect(repeated).toEqual(NARROWED);
+      expect(await call("listApprovals", {})).toEqual([]);
+    },
+  );
 });
 
 describe("approval_wait", () => {

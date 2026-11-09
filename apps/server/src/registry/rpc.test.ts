@@ -1629,9 +1629,20 @@ const fakeRegistries = () => {
           ? [{ repo: "app", path: ".pi/mcp.json", state: "read", blob: "b1" }]
           : null;
       }),
-    mcpSettingsView: () => Effect.die("The endpoint answers no settings_mcp tool"),
+    // The owner's Approve of an MCP server change reads these (`approvalTools`' MCP cores): the server is in no view, and the
+    // change reaches the default Environment.
+    mcpSettingsView: () => Effect.succeed(null),
     mcpSettingsReload: () => Effect.die("The endpoint answers no settings_mcp tool"),
-    mcpChangeCheck: () => Effect.die("The endpoint answers no settings_mcp tool"),
+    mcpChangeCheck: () =>
+      Effect.succeed({
+        environments: [
+          {
+            environment: { id: DEFAULT_ENVIRONMENT, name: "Default" },
+            reached: true,
+            widening: [],
+          },
+        ],
+      }),
     mcpPending: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpPushed: () => Effect.die("The endpoint pushes through `mcp`"),
     mcpDestroyed: () => Effect.die("The endpoint pushes through `mcp`"),
@@ -1822,8 +1833,13 @@ const fakeRegistries = () => {
     completeMcpSignIn: () => Effect.die("The endpoint completes no sign-in"),
     listMcpSignIns: () => Effect.die("The endpoint lists no sign-ins"),
     signOutMcpSignIn: () => Effect.die("The endpoint signs out of no sign-in"),
-    // The Session DO makes Agent changes, never the endpoint.
-    changeSettings: () => Effect.die("The endpoint makes no Agent change"),
+    // The Session DO makes Agent changes, and the endpoint's approved ones (a write that finds the value there already).
+    changeSettings: () =>
+      Effect.sync(() => {
+        calls.push("changeSettings");
+
+        return { status: "unchanged" as const };
+      }),
     listSettingsChanges: () => Effect.sync(() => Arr.filter(settingsChanges, listed).toReversed()),
     dismissSettingsChange: ({ change }) => dismiss(settingsChanges, SETTINGS_SCOPE, change),
     // A revert of the model, as the Registry DO's (`revertSettingsChange`).
@@ -6804,6 +6820,41 @@ describe("the Approvals asked over the MCP endpoint", () => {
     );
 
     expect(again.status).toBe("refused");
+  });
+
+  it("applies an approved MCP server change inline with no host to ask, and has the main Worker sync what it reaches", async () => {
+    const fake = fakeRegistries();
+    const entry = { command: "node", args: ["files.js"] };
+    const reason = "The project reads files";
+
+    asked(fake, {
+      tool: "settings_mcp_add",
+      section: "mcp",
+      args: { scope: GLOBAL_SCOPE, name: "files", entry, reason },
+      card: {
+        tool: "settings_mcp_add",
+        target: "Global",
+        change: "MCP server files: add",
+        before: "none",
+        after: JSON.stringify(entry),
+        reason,
+      },
+      expected: { value: null, after: entry },
+    });
+
+    const answered = await withClient(
+      Registry.pipe(
+        Effect.flatMap((registry) => registry.answerApproval({ id: "a-1", approved: true })),
+      ),
+      fake,
+    );
+
+    expect(answered.status).toBe("finished");
+    expect(fake.calls).toContain("changeSettings");
+
+    await fake.runBackground();
+
+    expect(fake.mcpSyncs).toEqual([DEFAULT_ENVIRONMENT]);
   });
 
   /** An approved delete of Environment `environment`, asked against `footprint`, which no run is applying. */

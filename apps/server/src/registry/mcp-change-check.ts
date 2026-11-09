@@ -15,11 +15,12 @@ import {
   sortedJson,
   withOverrideFields,
 } from "@cloudpid/config";
-import type {
-  McpChangeGuard,
-  McpFieldChange,
-  SettingsMcpChangeCheck,
-  SettingsMcpReach,
+import {
+  type McpChangeGuard,
+  type McpFieldChange,
+  type SettingsMcpChangeCheck,
+  type SettingsMcpReach,
+  WIDENING_REFUSAL_TAIL,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
@@ -201,7 +202,7 @@ export const mcpGuardRefusal = (
       return `the change would now make something reachable that is switched off or hidden in ${Arr.join(
         Arr.map(widened, (each) => JSON.stringify(each.environment.name)),
         ", ",
-      )}: it needs the user's Approval, and something changed since it was checked as narrowing. Call again.`;
+      )}: it needs the user's Approval, ${WIDENING_REFUSAL_TAIL}`;
     }
   }
 

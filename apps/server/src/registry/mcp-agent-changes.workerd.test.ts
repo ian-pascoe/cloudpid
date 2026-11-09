@@ -571,6 +571,22 @@ describe("the guard of an agent's MCP change", () => {
       setOverrides(STAGING, { mcp: { servers: { docs: kept } } });
     }));
 
+  it("refuses an approved write, against the value the owner saw, whose ${NAME} stopped resolving since the ask, writing and recording nothing", () =>
+    inRegistry(({ changeAt, changes }) => {
+      // `KEPT` was a Secret when the owner was asked; it is kept nowhere now.
+      const entry = { url: "https://docs.example/mcp", headers: { "X-Org": "${KEPT}" } };
+
+      const refused = changeAt(
+        STAGING,
+        [{ field: "mcp.servers.docs", value: entry, expected: { value: null, inherited: true } }],
+        { name: "docs", reads: ["KEPT"] },
+      );
+
+      // The refusal's words name the `${NAME}` (the row above pins that); here the contract is that nothing is written or recorded.
+      expect(refused).toMatchObject({ status: "rejected" });
+      expect(changes.list(STAGING)).toEqual([]);
+    }));
+
   it("never checks the ${NAME}s of an entry at Global, where each Environment has its own", () =>
     inRegistry(({ changeGlobal }) => {
       changed(

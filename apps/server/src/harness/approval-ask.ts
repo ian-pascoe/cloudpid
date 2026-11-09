@@ -37,6 +37,11 @@ export type ApprovalAskCall = {
   readonly digest: string;
   /** A fresh attempt for the `request_id` claim. */
   readonly attempt: string;
+  /**
+   * The call made as the tool's own change, for the tools that ask only when they widen: run when `prepare` finds the change
+   * narrows (`immediate`), or finds a repeat of a call that made it already. None for a tool that always asks.
+   */
+  readonly narrowing?: Effect.Effect<ApiResult<HarnessAnswer>> | undefined;
 };
 
 /** What the asking part needs: the Registry's Approvals and claims, the writes the cores read through, and `background`. */
@@ -143,6 +148,11 @@ export const askApproval = (services: ApprovalAskServices) => {
         }
 
         if (earlier.answer !== null) return apiOk(earlier.answer);
+
+        // A repeat of a narrowing call that made its change and was cut before its answer: the tool's own change answers it
+        // from the recorded changes, before `prepare` reads a state the change has altered (L17).
+        if (call.narrowing !== undefined && earlier.changes.length > 0)
+          return yield* call.narrowing;
       }
 
       const kept = keptArgs(args);
@@ -150,11 +160,18 @@ export const askApproval = (services: ApprovalAskServices) => {
 
       if (Result.isFailure(prepared)) return askRefused(prepared.failure);
 
-      const { card, expected, unchanged, scope } = prepared.success;
+      const { card, expected, unchanged, immediate, scope, section } = prepared.success;
 
       // A repeat of a call that asked asks again (its request is answered); otherwise a target set already asks nothing.
       if (unchanged !== undefined && earlier === null) {
         return apiOk(unchangedAnswer(unchanged, scope));
+      }
+
+      // A change that narrows what an MCP server reaches asks nobody: the tool's own core makes it at once. A repeat whose earlier
+      // call claimed the `request_id` without an answer or changes is not that: the earlier call may have asked (its settle cut)
+      // before the state flipped to narrowing, so it reaches `requestApproval`, which answers the request it made.
+      if (call.narrowing !== undefined && immediate === true && earlier === null) {
+        return yield* call.narrowing;
       }
 
       const claim: ChangeClaim | undefined =
@@ -165,7 +182,7 @@ export const askApproval = (services: ApprovalAskServices) => {
       const asked = yield* services.registry.requestApproval({
         tool,
         scope: scope.id,
-        section: found.section,
+        section,
         args: kept,
         card,
         expected,

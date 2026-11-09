@@ -752,6 +752,7 @@ describe("the lifecycle, Skill and reset tools", () => {
       { id: "default", setting: "maxInstance", reason },
       { changes: [], changes_truncated: false, global: null },
     ],
+    ["settings_mcp_enable", "settings_mcp_enable", { scope: "default", name: "docs", reason }, {}],
   ] as const)(
     "hands %s to the ask for the owner's Approval, writing nothing",
     (_, tool, input, keys) =>
@@ -906,8 +907,8 @@ describe("a change to the Settings or an MCP server", () => {
       ),
   );
 
-  /** `settings_mcp_disable` of `docs` over a host that takes the set, or (`applyFails`) fails to. */
-  const disabling = (applyFails: boolean) => {
+  /** `tool` (with `more` input) at `docs` over a host that would take the set: the main Worker pushes it, after the answer. */
+  const changingDocs = (tool: string, more: Readonly<Record<string, string>>) => {
     const hostCalls: HostCalls = [];
     const registryCalls: RegistryCalls = [];
     const { registry, ledger } = changingRegistry(registryCalls);
@@ -916,24 +917,30 @@ describe("a change to the Settings or an MCP server", () => {
     const dispatch = harnessDispatch(
       harnessServices({
         registry,
-        mcpHosts: harnessHosts(hostCalls, { applyFails }),
+        mcpHosts: harnessHosts(hostCalls, { applyFails: false }),
         appOrigin: "https://cloudpid.test",
         ...upkeep.deps,
       }),
     );
 
     const result = dispatch(
-      { tool: "settings_mcp_disable", input: { scope: "default", name: "docs", reason }, via },
+      { tool, input: { scope: "default", name: "docs", reason, ...more }, via },
       caller,
     );
 
     return { result, hostCalls, registryCalls, ledger, upkeep };
   };
 
-  it("settings_mcp_disable is recorded as the caller and its set pushed to the host before the answer, with nothing left to sync", () =>
+  it("settings_mcp_disable is recorded as the caller, and its set is pushed by the main Worker with one sync of each Environment it reaches, after the answer", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const { result: answered, hostCalls, registryCalls, ledger, upkeep } = disabling(false);
+        const {
+          result: answered,
+          hostCalls,
+          ledger,
+          upkeep,
+        } = changingDocs("settings_mcp_disable", {});
+
         const result = yield* answered;
 
         expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -955,31 +962,40 @@ describe("a change to the Settings or an MCP server", () => {
           reason,
         });
 
-        expect(hostCalls).toContainEqual({ host: "mcp:default", method: "apply" });
-        // The push is before the answer; it took, so nothing is handed on.
-        expect(registryCalls).toContain("mcpPushed");
+        // The host is asked nothing before the answer; the push is the main Worker's, under `background`.
+        expect(hostCalls).toEqual([]);
+        expect(upkeep.calls).toEqual([]);
 
         yield* upkeep.runBackground;
 
-        expect(upkeep.calls).toEqual([]);
+        expect(upkeep.calls).toEqual(["mcp.sync:default"]);
       }),
     ));
 
-  it("settings_mcp_disable over a host that fails the push names the Environment, and schedules one sync of it after the answer", () =>
+  // The routing of a tool that asks only when it widens: the stand-in's check widens nothing, so the ask finds a narrowing
+  // change and the tool's own change is made at once (no request), as it was before the endpoint asked.
+  it("settings_mcp_exposure_set that widens nothing is made at once, not asked, and synced after the answer", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const { result: answered, registryCalls, ledger, upkeep } = disabling(true);
+        const {
+          result: answered,
+          ledger,
+          upkeep,
+        } = changingDocs("settings_mcp_exposure_set", {
+          exposure: "hidden",
+        });
+
         const result = yield* answered;
 
-        // The change stands and the call does not fail for the host.
         expect(result.ok, JSON.stringify(result)).toBe(true);
-        expect(ledger.changes).toHaveLength(1);
-        expect(registryCalls).not.toContain("mcpPushed");
+        expect(ledger.changes[0]?.change).toMatchObject({
+          field: "mcp.servers.docs.exposure",
+          after: "hidden",
+        });
 
-        if (result.ok) expect(result.value.text).toContain("Default");
-
-        // Under `background`, so after the answer, and once.
-        expect(upkeep.calls).toEqual([]);
+        if (result.ok) {
+          expect(result.value.structured).not.toHaveProperty("approval_id");
+        }
 
         yield* upkeep.runBackground;
 

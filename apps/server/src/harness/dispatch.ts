@@ -7,7 +7,9 @@
 // not meant to read it. A change goes through one path: the probe (`agentChangeFeatures`, failing closed), the
 // `request_id` (refused with the Registry's own `approval:` prefix; looked up, then claimed by the write's own transaction
 // and settled before the answer is sent), then the notice and the upkeep after the answer. A tool whose change waits for
-// the owner's Approval, and the reset of a Limit, goes to the ask instead (`./approval-ask.ts`). The input is the caller's
+// the owner's Approval, the reset of a Limit, and an MCP server's change that widens what is reachable, goes to the ask
+// instead (`./approval-ask.ts`); an MCP server's change that narrows is made at once, through the path above, when the ask
+// finds it does. The input is the caller's
 // JSON, read again, and an attempt is a plain UUID:
 // @effect-diagnostics missingPipeableSignature:off preferTypedSchemaDecoder:off cryptoRandomUUID:off
 import { sha256Hex, sortedJson } from "@cloudpid/config";
@@ -51,6 +53,7 @@ import {
   GLOBAL_ID,
   HARNESS_TOOLS,
   type HarnessToolName,
+  type McpWideningToolName,
   RESET_LIMIT_SETTING,
 } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
@@ -62,7 +65,7 @@ import * as Schema from "effect/Schema";
 import type { ChangeClaim, ChangeRequest } from "../registry/change-requests.ts";
 import type { AuthorSource } from "../session/change-author.ts";
 import { type ApprovalAskCall, askApproval } from "./approval-ask.ts";
-import type { CoreError } from "./approval-tools.ts";
+import { type CoreError, resetsMcpField } from "./approval-tools.ts";
 import type { HarnessChangeServices, HarnessServices } from "./services.ts";
 
 /** The answer of a failure no code names: fixed, so a service's own message (a Registry's, a host's) is never relayed. */
@@ -192,10 +195,12 @@ const serveAsk = <Name extends ApprovalToolName>(
   ask: Ask,
   tool: Name,
   newAttempt: () => string,
+  narrowing?: Served,
 ): Served => {
   const decode = decoder(tool);
 
-  return ({ input, requestId: given }, caller) => {
+  return (request, caller) => {
+    const { input, requestId: given } = request;
     const decoded = decode(input);
 
     if (Result.isFailure(decoded)) return Effect.succeed(decoded.failure);
@@ -216,12 +221,21 @@ const serveAsk = <Name extends ApprovalToolName>(
       // SAFETY: an endpoint input as its schema decoded it: JSON.
       digest: requestDigest(tool, Record.remove(args as Record<string, Schema.Json>, "reason")),
       attempt: newAttempt(),
+      narrowing:
+        narrowing === undefined ? undefined : Effect.suspend(() => narrowing(request, caller)),
     });
   };
 };
 
 /** What `settings_reset`'s routing reads of its input: the field. */
 const decodeResetField = Schema.decodeUnknownOption(Schema.Struct({ field: Schema.String }));
+
+/**
+ * Whether a `settings_reset` input names a field of an MCP server's adjustment, whose reset waits for the owner's Approval
+ * when it widens what is reachable: `resetsMcpField` (`./approval-tools.ts`) decides, as the table's pick does.
+ */
+const resetsMcpFieldInput = (input: HarnessRequest["input"]): boolean =>
+  Option.isSome(Option.filter(decodeResetField(input), ({ field }) => resetsMcpField(field)));
 
 /** What `environment_setting_reset`'s routing reads of its input: the setting. */
 const decodeResetSetting = Schema.decodeUnknownOption(Schema.Struct({ setting: Schema.String }));
@@ -526,8 +540,8 @@ export const harnessDispatch = (
       unsupported,
     );
 
-  // The Settings' and the MCP servers' tools: their scope is `scope`. A push of a server set that fails is handed on to
-  // `background` by the services (`settingsChanges`' `pushFailed`), once per host.
+  // The Settings' and the MCP servers' tools: their scope is `scope`. The push of a server set is the services'
+  // (`settingsChanges`' `sync`: `mcp.sync` under `background`, once per Environment the change reaches).
   const settingsChange = <Name extends SettingsEndpointToolName>(
     tool: Name,
     coreOf: (cores: SettingsEndpointCores) => HarnessWrite<InputOf<Name>, CoreError>,
@@ -554,14 +568,34 @@ export const harnessDispatch = (
 
   const asking = <Name extends ApprovalAskToolName>(tool: Name) => serveAsk(ask, tool, newAttempt);
 
-  // `settings_reset` of a Limit asks the owner, as the Limit tools do; any other field is reset at once.
+  // The MCP servers' changes that ask only when they widen: the ask's `prepare` finds whether this one does, and one that
+  // narrows is made at once by the tool's own core, as it was before the endpoint asked. Their answers are a change's, with a
+  // request's keys when one was asked.
+  const widening = <Name extends McpWideningToolName>(tool: Name): Served => {
+    const asks = serveAsk(
+      ask,
+      tool,
+      newAttempt,
+      // SAFETY: the core of a tool is a `HarnessWrite` of that tool's input (`SettingsEndpointCores` is keyed by tool).
+      settingsChange(tool, (cores) => cores[tool] as HarnessWrite<InputOf<Name>, CoreError>),
+    );
+
+    return (request, caller) =>
+      Effect.map(asks(request, caller), asChangeAnswer(SETTINGS_CHANGE_KEYS));
+  };
+
+  // `settings_reset` of a Limit asks the owner, as the Limit tools do; of an MCP server's key it asks when it widens, as the
+  // MCP tools do; any other field is reset at once.
   const resetChange = settingsChange("settings_reset", (cores) => cores.settings_reset);
   const resetAsk = serveAsk(ask, "settings_reset", newAttempt);
+  const resetMcpAsk = serveAsk(ask, "settings_reset", newAttempt, resetChange);
 
   const settingsReset: Served = (request, caller) =>
     resetsLimit(request.input)
       ? Effect.map(resetAsk(request, caller), asChangeAnswer(SETTINGS_CHANGE_KEYS))
-      : resetChange(request, caller);
+      : resetsMcpFieldInput(request.input)
+        ? Effect.map(resetMcpAsk(request, caller), asChangeAnswer(SETTINGS_CHANGE_KEYS))
+        : resetChange(request, caller);
 
   // `environment_setting_reset` of the size limit asks the owner, as `environment_container_size_limit_set` does; any
   // other setting is reset at once.
@@ -656,18 +690,9 @@ export const harnessDispatch = (
       "settings_mcp_disable",
       (cores) => cores.settings_mcp_disable,
     ),
-    settings_mcp_exposure_set: settingsChange(
-      "settings_mcp_exposure_set",
-      (cores) => cores.settings_mcp_exposure_set,
-    ),
-    settings_mcp_tool_exposure_set: settingsChange(
-      "settings_mcp_tool_exposure_set",
-      (cores) => cores.settings_mcp_tool_exposure_set,
-    ),
-    settings_mcp_remove: settingsChange(
-      "settings_mcp_remove",
-      (cores) => cores.settings_mcp_remove,
-    ),
+    settings_mcp_exposure_set: widening("settings_mcp_exposure_set"),
+    settings_mcp_tool_exposure_set: widening("settings_mcp_tool_exposure_set"),
+    settings_mcp_remove: widening("settings_mcp_remove"),
     environment_create: change("environment_create", (cores) => cores.environment_create),
     environment_rename: change("environment_rename", (cores) => cores.environment_rename),
     environment_repo_add: change("environment_repo_add", (cores) => cores.environment_repo_add),
@@ -704,6 +729,9 @@ export const harnessDispatch = (
     settings_subagent_depth_set: asking("settings_subagent_depth_set"),
     settings_subagent_workspaces_set: asking("settings_subagent_workspaces_set"),
     settings_instructions_set: asking("settings_instructions_set"),
+    settings_mcp_add: asking("settings_mcp_add"),
+    settings_mcp_update: asking("settings_mcp_update"),
+    settings_mcp_enable: asking("settings_mcp_enable"),
     environment_container_size_limit_set: asking("environment_container_size_limit_set"),
     environment_delete: asking("environment_delete"),
     environment_secret_delete: asking("environment_secret_delete"),
