@@ -56,7 +56,8 @@ export const sessionFire =
 
     if (refused !== undefined) return Effect.succeed(refused);
 
-    // A model this version doesn't offer is left to the Environment's Settings.
+    // A model that is not one (`provider/id`) is left to the Environment's Settings, as is one the Model catalog does not
+    // list: `configure` leaves it out (ADR-0051).
     const pick: Types.Mutable<ConfigureRequest> = {};
 
     if (request.model !== undefined && isModelId(request.model)) pick.model = request.model;

@@ -12,7 +12,7 @@
 // events cloudpid makes its hook on. The owner's changes never wait for
 // Approval, and record no Agent change.
 
-import { SUPPORTED_MODELS, THINKING_LEVELS } from "@cloudpid/config";
+import { THINKING_LEVELS } from "@cloudpid/config";
 import {
   type EnvironmentRecord,
   fireTimeWords,
@@ -38,7 +38,7 @@ import { Input } from "../components/ui/input.tsx";
 import { NativeSelect } from "../components/ui/native-select.tsx";
 import { environmentsErrorAtom, environmentsInOrderAtom } from "../environments-state.ts";
 import { InAppLink } from "../in-app-link.tsx";
-import { modelName } from "../models.ts";
+import { ModelOptions } from "../model-options.tsx";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import { sessionPath } from "../router.ts";
 import { sessionListAtom } from "../sessions.ts";
@@ -1046,15 +1046,8 @@ export const TriggerFormView = ({
                 }}
               >
                 <option value="">The environment's</option>
-                {/* A model the agent set that this version doesn't list stays as it is. */}
-                {draft.model !== "" && !SUPPORTED_MODELS.some((model) => model === draft.model) && (
-                  <option value={draft.model}>{draft.model}</option>
-                )}
-                {SUPPORTED_MODELS.map((model) => (
-                  <option key={model} value={model}>
-                    {modelName(model)}
-                  </option>
-                ))}
+                {/* A model the catalog doesn't list (one the proxy stopped serving) stays as it is. */}
+                <ModelOptions current={draft.model} />
               </NativeSelect>
             </Field>
             <Field label="Thinking" htmlFor={id("thinking")}>

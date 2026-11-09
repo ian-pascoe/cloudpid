@@ -1057,7 +1057,8 @@ export const TriggerTools: Effect.Effect<
       base: Schema.optionalKey(Base),
       model: Schema.optionalKey(
         ModelId.annotate({
-          description: "The model of each Fire's Session; default the Environment's",
+          description:
+            "The model of each Fire's Session, an id models_list lists; default the Environment's",
         }),
       ),
       thinking: Schema.optionalKey(
@@ -1392,7 +1393,8 @@ export const TriggerTools: Effect.Effect<
       base: Schema.optionalKey(Base.pipe(Schema.NullOr)),
       model: Schema.optionalKey(
         Schema.NullOr(ModelId).annotate({
-          description: "The model of each Fire's Session; null for the Environment's",
+          description:
+            "The model of each Fire's Session, an id models_list lists; null for the Environment's",
         }),
       ),
       thinking: Schema.optionalKey(

@@ -268,8 +268,7 @@ describe("an Agent change to the Settings", () => {
 
   it("forgets saved overrides that no longer apply, saying which, since the write keeps what resolves", () => {
     const registry = inRegistry({
-      [SETTINGS_DOCUMENT]:
-        '{"roles":{"large":{"model":"anthropic/retired-model"}},"thinkingLevel":"low"}',
+      [SETTINGS_DOCUMENT]: '{"roles":{"large":{"model":"retired-model"}},"thinkingLevel":"low"}',
     });
 
     const outcome = registry.change([set("model", "anthropic/claude-haiku-5-5")]);

@@ -36,6 +36,8 @@ import {
   revertAgentChange,
 } from "./agent-changes.ts";
 import { globalSettingsOf } from "./global.ts";
+import type { ModelCatalog } from "@cloudpid/config";
+import { MODEL_CATALOG_DOCUMENT, readModelCatalog } from "./model-catalog.ts";
 import {
   putEnvironmentInstructions,
   readSettings,
@@ -516,6 +518,16 @@ export class TestRegistry extends DurableObject {
   /** What Session `session` resolves its Settings from, as the Registry DO answers it. */
   sessionSettings(session: string): SessionSettingsSource {
     return sessionSettingsSource(this.#store, session);
+  }
+
+  /** The Model catalog the store keeps: the fallback until `putModelCatalog`. */
+  modelCatalog(): ModelCatalog {
+    return readModelCatalog(this.#store);
+  }
+
+  /** Keep `catalog` as the Model catalog, as a read of the proxy's does. */
+  putModelCatalog(catalog: ModelCatalog, now: number): void {
+    this.#store.putDocument(MODEL_CATALOG_DOCUMENT, JSON.stringify(catalog), now);
   }
 
   /** Save settings overrides, as the Registry DO does; overrides that do not resolve throw. */

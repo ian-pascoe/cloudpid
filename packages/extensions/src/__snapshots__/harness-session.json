@@ -5657,7 +5657,7 @@
     {
       "extension": "settings",
       "name": "settings_model_set",
-      "description": "Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. Models: anthropic/claude-fable-5-1, anthropic/claude-opus-5-5, anthropic/claude-sonnet-5-5, anthropic/claude-haiku-5-5; thinking levels: off, minimal, low, medium, high, xhigh, max. Give at least one of them.\n\nA Session that picked its own model or thinking level keeps its pick; the result says whether this Session did. Subagents keep the agent they started with: their models come from the roles (settings_role_set).\n\nGive scope \"*\" to change Global, which each Environment inherits unless it overrides the field, or an Environment's id (environment_list shows them) to override Global for that Environment's Sessions only; there is no default. At an Environment the value is kept as its Override even when it equals Global's, so the field stops following Global until settings_reset removes the Override.\n\nThe change is recorded with your reason, and the user can see and revert it on the Settings page. Each Session runs with its own Environment's Settings (its Overrides over Global over the defaults): a change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field. A Session it reaches uses it from its next request (this one) or when it next admits input (the others); the result says whether it reaches this Session.",
+      "description": "Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. Models: any id models_list lists (provider/id, such as anthropic/claude-opus-5-5); one the model proxy does not serve is refused; thinking levels: off, minimal, low, medium, high, xhigh, max. Give at least one of them.\n\nA Session that picked its own model or thinking level keeps its pick; the result says whether this Session did. Subagents keep the agent they started with: their models come from the roles (settings_role_set).\n\nGive scope \"*\" to change Global, which each Environment inherits unless it overrides the field, or an Environment's id (environment_list shows them) to override Global for that Environment's Sessions only; there is no default. At an Environment the value is kept as its Override even when it equals Global's, so the field stops following Global until settings_reset removes the Override.\n\nThe change is recorded with your reason, and the user can see and revert it on the Settings page. Each Session runs with its own Environment's Settings (its Overrides over Global over the defaults): a change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field. A Session it reaches uses it from its next request (this one) or when it next admits input (the others); the result says whether it reaches this Session.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -5668,12 +5668,6 @@
           },
           "model": {
             "type": "string",
-            "enum": [
-              "anthropic/claude-fable-5-1",
-              "anthropic/claude-opus-5-5",
-              "anthropic/claude-sonnet-5-5",
-              "anthropic/claude-haiku-5-5"
-            ],
             "description": "The default model"
           },
           "thinking_level": {
@@ -5822,7 +5816,7 @@
     {
       "extension": "settings",
       "name": "settings_role_set",
-      "description": "Set one model role: the model a subagent runs on when it is started with that role, and optionally its hint, the text that tells an agent when to pick it. Roles: small, medium, large, xlarge. Models: anthropic/claude-fable-5-1, anthropic/claude-opus-5-5, anthropic/claude-sonnet-5-5, anthropic/claude-haiku-5-5.\n\nA Role's model and hint are one setting: a hint left out keeps the hint the role has at that Scope now, and at an Environment the two are its Override together. The change reaches the next subagent started; subagents that run keep the model they started with.\n\nGive scope \"*\" to change Global, which each Environment inherits unless it overrides the field, or an Environment's id (environment_list shows them) to override Global for that Environment's Sessions only; there is no default. At an Environment the value is kept as its Override even when it equals Global's, so the field stops following Global until settings_reset removes the Override.\n\nThe change is recorded with your reason, and the user can see and revert it on the Settings page. Each Session runs with its own Environment's Settings (its Overrides over Global over the defaults): a change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field. A Session it reaches uses it from its next request (this one) or when it next admits input (the others); the result says whether it reaches this Session.",
+      "description": "Set one model role: the model a subagent runs on when it is started with that role, and optionally its hint, the text that tells an agent when to pick it. Roles: small, medium, large, xlarge. Models: any id models_list lists (provider/id, such as anthropic/claude-opus-5-5); one the model proxy does not serve is refused.\n\nA Role's model and hint are one setting: a hint left out keeps the hint the role has at that Scope now, and at an Environment the two are its Override together. The change reaches the next subagent started; subagents that run keep the model they started with.\n\nGive scope \"*\" to change Global, which each Environment inherits unless it overrides the field, or an Environment's id (environment_list shows them) to override Global for that Environment's Sessions only; there is no default. At an Environment the value is kept as its Override even when it equals Global's, so the field stops following Global until settings_reset removes the Override.\n\nThe change is recorded with your reason, and the user can see and revert it on the Settings page. Each Session runs with its own Environment's Settings (its Overrides over Global over the defaults): a change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field. A Session it reaches uses it from its next request (this one) or when it next admits input (the others); the result says whether it reaches this Session.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -5838,12 +5832,6 @@
           },
           "model": {
             "type": "string",
-            "enum": [
-              "anthropic/claude-fable-5-1",
-              "anthropic/claude-opus-5-5",
-              "anthropic/claude-sonnet-5-5",
-              "anthropic/claude-haiku-5-5"
-            ],
             "description": "The role's model"
           },
           "hint": {
@@ -6776,6 +6764,68 @@
       },
       "replay": "unsafe",
       "executionMode": "sequential"
+    },
+    {
+      "extension": "settings",
+      "name": "models_list",
+      "description": "List the models the model proxy serves, which settings_model_set, settings_role_set and the trigger tools take, by id (provider/id): each with its display name, who serves it (owned_by) and its context window. Give query to keep the models whose id, name or owned_by holds it (case-insensitive), such as fable or opencode. Models that are not Claude are served under an alias id the proxy gives them (GPT-5 is anthropic/claude-fable-5-dd-5-tpg): use the id as listed. A model that is listed may still be refused by the proxy when its request is made.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Keep the models whose id, name or owned_by holds this text (case-insensitive)"
+          }
+        },
+        "additionalProperties": false
+      },
+      "structuredOutputSchema": {
+        "type": "object",
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "owned_by": {
+                  "type": "string"
+                },
+                "context_window": {
+                  "type": "number"
+                },
+                "max_tokens": {
+                  "type": "number"
+                }
+              },
+              "required": ["id", "name", "owned_by", "context_window", "max_tokens"],
+              "additionalProperties": true
+            }
+          },
+          "total": {
+            "type": "number"
+          },
+          "fetched_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["models", "total", "fetched_at"],
+        "additionalProperties": true
+      },
+      "replay": "safe",
+      "executionMode": null
     },
     {
       "extension": "settings_mcp",

@@ -1,6 +1,7 @@
 /* oxlint-disable anti-slop/require-safety-comment-for-type-assertion -- a fake backend is cut down to what a case reads. */
 // docs/architecture/mcp-endpoint.md → The `api` target, Limits and errors: the service over a fake Registry and Sessions.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off missedPipeableOpportunity:off
+import { FALLBACK_CATALOG } from "@cloudpid/config";
 import {
   apiFailure,
   apiOk,
@@ -87,6 +88,7 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
       createdAt: 1,
     }),
   defaultModel: Effect.succeed("anthropic/claude-opus"),
+  models: Effect.succeed(FALLBACK_CATALOG),
   status: () =>
     Effect.succeed({
       ok: true as const,
@@ -704,6 +706,8 @@ describe("start", () => {
 
     const bad = await Promise.all([
       run(api.start({ text: "go", model: "gpt-nope", via: VIA })),
+      // Well formed, but not one the Model catalog lists.
+      run(api.start({ text: "go", model: "anthropic/claude-nope", via: VIA })),
       run(api.start({ text: "go", thinking: "turbo", via: VIA })),
       run(api.start({ text: "go", branch: "a..b", via: VIA })),
       run(api.start({ text: "go", branch: "cloudpid/spare", via: VIA })),

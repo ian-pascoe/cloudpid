@@ -13,7 +13,6 @@ import {
   ROLE_NAMES,
   type RoleName,
   THINKING_LEVELS,
-  SUPPORTED_MODELS,
 } from "@cloudpid/config";
 import { GLOBAL_SCOPE } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
@@ -21,7 +20,7 @@ import { Input } from "../components/ui/input.tsx";
 import { NativeSelect } from "../components/ui/native-select.tsx";
 import { sizeLimitLabel, sizeLimitProblem } from "../environments.ts";
 import { cn } from "../lib/utils.ts";
-import { modelName } from "../models.ts";
+import { ModelOptions } from "../model-options.tsx";
 import { badOfferedEntries, offeredFromText } from "../offered-tools.ts";
 import { spendLimitFromText } from "../spend-limit.ts";
 import {
@@ -58,11 +57,7 @@ const ModelSelect = ({
       if (isModelId(event.target.value)) onChange(event.target.value);
     }}
   >
-    {SUPPORTED_MODELS.map((model) => (
-      <option key={model} value={model}>
-        {modelName(model)}
-      </option>
-    ))}
+    <ModelOptions current={value} />
   </NativeSelect>
 );
 

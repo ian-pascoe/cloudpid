@@ -2,13 +2,18 @@
 // and its Environment's Overrides over them (ADR-0027), with the Environment's name and own Instructions, which add to
 // Global's rather than overriding them. The Session keeps the last it read, in its own storage, and hands the Harness
 // live getters over that copy. The Harness reads its settings synchronously, so the Registry is read
-// before a request is admitted (`refresh`), never inside a getter.
+// before a request is admitted (`refresh`), never inside a getter. The Model catalog comes with them (ADR-0051), kept in the
+// same copy: the models the Session's requests may use, and against which a saved model is read.
 import {
   DEFAULT_SETTINGS,
+  FALLBACK_CATALOG,
+  type ModelCatalog,
   parseModelId,
   resolveLeniently,
   resolveOverridesLeniently,
   type Settings,
+  withNamedModels,
+  withServedModels,
 } from "@cloudpid/config";
 import type {
   EnvironmentInstructions,
@@ -61,6 +66,12 @@ export type SessionSettingsValues = {
    * tools come from, and how many MCP servers its set has: with none, the host is never woken.
    */
   readonly mcp: { readonly environment: string | null; readonly servers: number };
+  /**
+   * The Model catalog as last read (the fallback before the first, or from an older Registry): the models the Session's
+   * requests may use. Under the fallback it also lists the models the settings run that the fallback lacks
+   * (`withNamedModels`), since a saved model is kept while the catalog says nothing of what the proxy serves.
+   */
+  readonly models: ModelCatalog;
 };
 
 /**
@@ -83,6 +94,10 @@ export const valuesFrom = (
   // An Environment's settings carry Global's Instructions: its Overrides hold none, and its own add to them (ADR-0027).
   instructions: { global: settings.instructions, environment: source?.instructions ?? undefined },
   mcp: { environment: source?.environment ?? null, servers: source?.mcp?.servers ?? 0 },
+  models: withNamedModels(source?.models ?? FALLBACK_CATALOG, [
+    settings.model,
+    ...Arr.map(Record.values(settings.roles), (role) => role.model),
+  ]),
 });
 
 export type SessionSettingsService = {
@@ -149,6 +164,8 @@ export type SettingsSource = {
   readonly environment?: string | null;
   /** How many MCP servers the Environment's set has; absent from an older Registry's answer. */
   readonly mcp?: { readonly servers: number };
+  /** The Model catalog (ADR-0051); absent from an older Registry's answer, and from a source kept before it. */
+  readonly models?: ModelCatalog;
 };
 
 /** Where what was last read is kept. */
@@ -174,10 +191,26 @@ export type SessionSettingsOptions = {
   readonly backoff?: Duration.Input;
 };
 
-/** The settings the source gives, with what no longer resolves left out and logged. */
-const resolveLogged = ({ global, overrides }: SettingsSource) => {
-  const { settings, dropped: own } = resolveOverridesLeniently(global, overrides);
-  const dropped = [...resolveLeniently(global).dropped, ...own];
+/**
+ * The settings the source gives, with what no longer resolves left out and logged: a model the catalog no longer lists
+ * too, unless the catalog is the fallback (`withServedModels`).
+ */
+const resolveLogged = ({ global, overrides, models }: SettingsSource) => {
+  const catalog = models ?? FALLBACK_CATALOG;
+  const servedGlobal = withServedModels(global, catalog);
+  const servedOwn = withServedModels(overrides, catalog);
+
+  const { settings, dropped: own } = resolveOverridesLeniently(
+    servedGlobal.document,
+    servedOwn.document,
+  );
+
+  const dropped = [
+    ...servedGlobal.dropped,
+    ...resolveLeniently(servedGlobal.document).dropped,
+    ...servedOwn.dropped,
+    ...own,
+  ];
 
   return dropped.length === 0
     ? Effect.succeed(settings)

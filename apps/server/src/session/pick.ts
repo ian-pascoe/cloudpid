@@ -1,7 +1,7 @@
 // @effect-diagnostics missingPipeableSignature:off -- plain functions over the pick, called directly.
 // The model and thinking level a Session picked itself (`configure`), kept in its storage: the fields it leaves out
 // follow the default in the settings.
-import { formatModelId, isModelId } from "@cloudpid/config";
+import { catalogHas, formatModelId, type ModelCatalog } from "@cloudpid/config";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentChange, AgentState, ModelRef } from "@earendil-works/pi-durable";
 import type * as Types from "effect/Types";
@@ -28,12 +28,17 @@ export const withChange = (pick: AgentPick, change: AgentChange): AgentPick => {
   return next;
 };
 
-/** What the Session in `kv` picked: a field is absent while it follows the default. */
-export const pickedIn = (kv: SettingsKv): AgentPick => {
+/**
+ * What the Session in `kv` picked: a field is absent while it follows the default. `catalog` is the Model catalog the
+ * Session last read (ADR-0051).
+ */
+export const pickedIn = (kv: SettingsKv, catalog: ModelCatalog): AgentPick => {
   const kept = kv.get<AgentPick>(PICK_KEY) ?? {};
 
-  // A model the settings no longer accept is ignored: the Session follows the default rather than fail every request.
-  return kept.model === undefined || isModelId(formatModelId(kept.model))
+  // A model the catalog does not list is ignored: the Session follows the default rather than fail every request. Unlike
+  // a saved setting, a pick is not kept under the fallback: the Session could not run it, and losing it costs only the
+  // pick (the settings run under the fallback are listed in it, `withNamedModels`).
+  return kept.model === undefined || catalogHas(catalog, formatModelId(kept.model))
     ? kept
     : withChange(kept, { model: null });
 };

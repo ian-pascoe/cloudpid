@@ -5,6 +5,7 @@
 // @effect-diagnostics asyncFunction:off missingPipeableSignature:off preferEffectArray:off preferEffectRecord:off
 import {
   checkMcpWidening,
+  FALLBACK_CATALOG,
   type McpResolvedServer,
   normalizeMcpName,
   overridesFrom,
@@ -205,6 +206,7 @@ export const setup = async (
         });
       }),
     own: Effect.succeed(own),
+    models: Effect.succeed(FALLBACK_CATALOG),
     change: ({ scope, changes, author: { conversation, tool, reason, approved, actor }, guard }) =>
       Effect.suspend(() => {
         changeCalls.push({

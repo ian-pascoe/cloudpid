@@ -2,7 +2,13 @@
 // Agent changes. The Settings page's sections edit them a part each (`settings/forms.ts`), through `readSettings` and
 // `writeSettings`.
 
-import { overridesFrom, overridesPatchBetween, type Settings } from "@cloudpid/config";
+import {
+  FALLBACK_CATALOG,
+  type ModelCatalog,
+  overridesFrom,
+  overridesPatchBetween,
+  type Settings,
+} from "@cloudpid/config";
 import type * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -28,6 +34,22 @@ export const settingsStateAtom = Atom.map(settingsAtom, (result) =>
  */
 export const settingsOverridesAtom = Atom.family((environment: string) =>
   RegistryClient.query("getSettingsOverrides", { environment }, { reactivityKeys: ["settings"] }),
+);
+
+/**
+ * The Model catalog (ADR-0051): the models the model proxy serves, as the Registry last read them, which the model
+ * pickers offer. Asked again with the settings, since a save is when the Registry reads the proxy's again.
+ */
+export const modelCatalogAtom = RegistryClient.query("getModelCatalog", undefined, {
+  reactivityKeys: ["settings"],
+});
+
+/** The Model catalog as of the last answer; the built-in fallback until the first, or while it cannot load. */
+export const modelCatalogStateAtom = Atom.map(modelCatalogAtom, (result): ModelCatalog =>
+  result.pipe(
+    AsyncResult.value,
+    Option.getOrElse(() => FALLBACK_CATALOG),
+  ),
 );
 
 /** Why the settings could not load, or null. */

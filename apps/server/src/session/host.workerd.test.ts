@@ -691,7 +691,7 @@ describe("a Session's agent", () => {
     expect(await requests(stub)).toEqual([{ model: "claude-haiku-5-5", thinking: "high" }]);
   });
 
-  it("ignores a pick of a model the settings no longer accept, and follows the default", async () => {
+  it("ignores a pick of a model its Model catalog does not list, and follows the default", async () => {
     const { stub } = await registered();
 
     await script(stub, "one");

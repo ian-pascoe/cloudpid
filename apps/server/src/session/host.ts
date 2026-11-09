@@ -3,6 +3,7 @@
 // opened over the object's SQLite storage and woken by its alarm (ADR-0002). The Harness stays native Promise code,
 // reached through the `Harness` facade and `Effect.tryPromise` (ADR-0003). The object builds both services once, as
 // one Layer kept in a `ManagedRuntime`.
+import { catalogHas, formatModelId, unservedModel } from "@cloudpid/config";
 import { Harness, type HarnessError, openHarness } from "@cloudpid/effect-durable";
 import {
   type AgentWorkspace,
@@ -573,9 +574,9 @@ export type SessionHostOptions<R = never> = {
   readonly storage: SessionStorage;
   /**
    * The models every conversation's requests go through, or an Effect that builds them from the Session's services
-   * (such as models that scrub requests with its `Secrets`).
+   * (such as models that scrub requests with its `Secrets`, or that list the Model catalog its settings carry).
    */
-  readonly models: Models | Effect.Effect<Models, never, R>;
+  readonly models: Models | Effect.Effect<Models, never, R | SessionSettings>;
   /**
    * Reset the object (`ctx.abort`). Called when a storage error closes the Harness: the next event starts a new
    * instance, which reopens it.
@@ -944,8 +945,13 @@ export type SessionHostService = {
   /**
    * Pick the root agent's model and thinking level (the active branch's), from its next request on: a field left out
    * stays as it is, and `null` clears it, so the root follows the default in the settings again. The pick is kept across evictions.
+   * A model the Model catalog does not list is refused (ADR-0051), or, with `unservedModel: "ignore"` (a Trigger's pick at
+   * its Fire), left out, so the root follows the default.
    */
-  readonly configure: (change: AgentChange) => Effect.Effect<void, SessionError>;
+  readonly configure: (
+    change: AgentChange,
+    options?: { readonly unservedModel?: "refuse" | "ignore" },
+  ) => Effect.Effect<void, SessionError>;
   /**
    * Read the settings now and bring the active branch's agent to the default in force, unless the Session picked its own, so
    * what a client is shown is what the next request runs on.
@@ -1529,7 +1535,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   const { kv } = storage;
 
   /** What this Session picked: a field is absent while the Session follows the default. */
-  const picked = (): AgentPick => pickedIn(kv);
+  const picked = (): AgentPick => pickedIn(kv, settings.current().models);
 
   /** The conversations whose `/compact` waits for their Run to end, with the focus asked for. */
   const pendingCompactions = (): Readonly<Record<string, string>> =>
@@ -4510,10 +4516,33 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ),
     ),
     releaseFork: forks.releaseFork,
-    configure: (change) =>
+    configure: (change, options) =>
       refreshSettings.pipe(
         Effect.andThen(
-          Effect.sync(() => kv.put(PICK_KEY, withChange(picked(), change))).pipe(
+          Effect.suspend(() => {
+            const model = change.model ?? undefined;
+
+            if (
+              model === undefined ||
+              catalogHas(settings.current().models, formatModelId(model))
+            ) {
+              return Effect.succeed(change);
+            }
+
+            const { model: _unserved, ...rest } = change;
+
+            return options?.unservedModel === "ignore"
+              ? Effect.succeed(rest)
+              : Effect.fail(
+                  SessionError.make({
+                    operation: "configure",
+                    message: unservedModel(formatModelId(model)),
+                  }),
+                );
+          }),
+        ),
+        Effect.flatMap((wanted) =>
+          Effect.sync(() => kv.put(PICK_KEY, withChange(picked(), wanted))).pipe(
             Effect.andThen(applyAgent),
             serially,
           ),

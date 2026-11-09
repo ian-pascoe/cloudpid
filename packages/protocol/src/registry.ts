@@ -4,6 +4,7 @@ import {
   ContainerOverrides,
   ContainerSettings,
   McpSettingsProblem,
+  ModelCatalog,
   Settings,
   SettingsError,
 } from "@cloudpid/config";
@@ -1149,6 +1150,12 @@ export class RegistryRpcs extends RpcGroup.make(
    * field (`overriddenIn`).
    */
   Rpc.make("getSettings", { success: SettingsState }),
+  /**
+   * The Model catalog (ADR-0051): the models the model proxy serves, with their names and who serves each, as the
+   * Registry last read them from it (`fetchedAt`), or the built-in fallback before it ever has (`fetchedAt: null`). What a
+   * model picker offers; a write of a model it does not list is refused.
+   */
+  Rpc.make("getModelCatalog", { success: ModelCatalog }),
   /**
    * Replace the saved Global overrides, a partial of the settings that differs from the defaults. Overrides that do not
    * resolve fail with a `SettingsError` whose message lists each problem, and nothing is saved. A Session reads the

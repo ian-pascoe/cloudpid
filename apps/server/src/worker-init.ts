@@ -303,7 +303,15 @@ export const serverInit = Effect.gen(function* () {
         Layer.provideMerge(GitHubAppConfigLive),
         Layer.provideMerge(
           RegistryLive.pipe(
-            Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive, GitHubAppConfigLive)),
+            // The Registry reads the Model catalog from the model proxy.
+            Layer.provide(
+              Layer.mergeAll(
+                PushConfigLive,
+                SecretsConfigLive,
+                GitHubAppConfigLive,
+                ModelProxyConfigLive,
+              ),
+            ),
           ),
         ),
       ),

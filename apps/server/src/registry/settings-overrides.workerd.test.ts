@@ -3,9 +3,14 @@
 // each field, the agent's changes of them recorded under the Environment with whether the field was inherited, and the
 // owner's revert of those. And the deploy: Settings stored before resolve the same for every Session.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
-import { DEFAULT_SETTINGS, resolveLeniently, resolveOverridesLeniently } from "@cloudpid/config";
+import {
+  DEFAULT_SETTINGS,
+  type ModelCatalog,
+  resolveLeniently,
+  resolveOverridesLeniently,
+} from "@cloudpid/config";
 import { migrate } from "@cloudpid/effect-durable/sqlite";
 import { DEFAULT_ENVIRONMENT, SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
@@ -13,6 +18,7 @@ import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
+import { MODEL_CATALOG_DOCUMENT } from "./model-catalog.ts";
 import {
   putEnvironmentInstructions,
   readSettings,
@@ -92,6 +98,23 @@ const inRegistry = <A>(
         revertAgentChange(storage, store, changes, { environment, id }, 2_000, noSkills(storage)),
     });
   });
+
+/** Keep a Model catalog as read from the proxy that lists `ids`. */
+const putCatalog = (store: ReturnType<typeof openRegistryStore>, ids: ReadonlyArray<string>) =>
+  store.putDocument(
+    MODEL_CATALOG_DOCUMENT,
+    JSON.stringify({
+      models: ids.map((id) => ({
+        id,
+        name: id,
+        ownedBy: "anthropic",
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      })),
+      fetchedAt: 1,
+    } satisfies ModelCatalog),
+    1,
+  );
 
 const saved = <A>(result: Result.Result<A, { readonly message: string }> | null): A => {
   if (result === null) throw new Error("No such Environment");
@@ -186,8 +209,18 @@ describe("an Environment's Settings Overrides", () => {
       expect(settingsOverriddenIn(store)["model"]).toEqual([{ id: STAGING, name: "Staging" }]);
     }));
 
-  it("leave out an Override a release no longer takes, which then inherits, and say so", () =>
+  it("keep a saved model while the Model catalog is the fallback, which says nothing of what the proxy serves", () =>
     inRegistry(({ store }) => {
+      store.putSettingsOverrides(STAGING, { model: "anthropic/claude-fable-5-2" });
+
+      expect(readSettingsOverrides(store, STAGING)?.settings.model).toBe(
+        "anthropic/claude-fable-5-2",
+      );
+    }));
+
+  it("leave out an Override the model proxy no longer serves, which then inherits, and say so", () =>
+    inRegistry(({ store }) => {
+      putCatalog(store, [SONNET, HAIKU, OPUS]);
       store.putSettingsOverrides(STAGING, {
         model: "anthropic/claude-retired-1",
         thinkingLevel: "low",
@@ -199,6 +232,52 @@ describe("an Environment's Settings Overrides", () => {
       expect(state?.settings.thinkingLevel).toBe("low");
       expect(state?.overrides).toEqual({ thinkingLevel: "low" });
       expect(state?.problem).toContain("model");
+    }));
+});
+
+describe("a write of a model, checked against the Model catalog (ADR-0051)", () => {
+  it("is refused for a model the catalog does not list, at Global and at an Environment", () =>
+    inRegistry(({ store, update }) => {
+      putCatalog(store, [SONNET, "anthropic/claude-fable-5-2"]);
+
+      expect(
+        Result.isSuccess(writeSettings(store, { model: "anthropic/claude-fable-5-2" }, 5)),
+      ).toBe(true);
+
+      const global = writeSettings(store, { model: HAIKU }, 6);
+
+      expect(Result.isFailure(global) && global.failure.message).toContain(
+        `model: ${HAIKU} is not one of the models the model proxy serves`,
+      );
+
+      const own = update(STAGING, { set: { roles: { small: { model: HAIKU } } } });
+
+      expect(own !== null && Result.isFailure(own) && own.failure.message).toContain(
+        `roles.small.model: ${HAIKU} is not one`,
+      );
+      expect(store.getSettingsOverrides(STAGING)).toEqual({});
+    }));
+
+  it("does not check again a model the Scope already holds under the fallback, so another field still saves", () =>
+    inRegistry(({ store, update }) => {
+      store.putSettingsOverrides(STAGING, { model: "anthropic/claude-fable-5-2" });
+
+      const changed = saved(update(STAGING, { set: { thinkingLevel: "low" } }));
+
+      expect(changed.overrides).toEqual({
+        model: "anthropic/claude-fable-5-2",
+        thinkingLevel: "low",
+      });
+    }));
+
+  it("forgets, at the next write, a saved model a catalog read from the proxy no longer lists", () =>
+    inRegistry(({ store, update }) => {
+      store.putSettingsOverrides(STAGING, { model: "anthropic/claude-fable-5-2" });
+      putCatalog(store, [SONNET]);
+
+      expect(saved(update(STAGING, { set: { thinkingLevel: "low" } })).overrides).toEqual({
+        thinkingLevel: "low",
+      });
     }));
 });
 

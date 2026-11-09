@@ -1,7 +1,9 @@
 // The Settings as the Registry keeps them (`docs/architecture/overview.md` → Settings, ADR-0027): Global's overrides of the
 // defaults, one JSON document in the store's document table, and each Environment's Overrides of Global, in its row,
 // beside its own Instructions, which add to Global's rather than overriding them.
-// Reading falls back to what resolves and writing validates, so what Sessions read always resolves.
+// Reading falls back to what resolves and writing validates, so what Sessions read always resolves. A model is checked
+// against the Model catalog (ADR-0051): a write of one it does not list is refused, and a saved one a catalog read from
+// the proxy no longer lists is left out of a read.
 // @effect-diagnostics missingPipeableSignature:off -- store operations, not combinators.
 import {
   DEFAULT_SETTINGS,
@@ -14,11 +16,14 @@ import {
   resolveOverridesLeniently,
   resolveSettings,
   type McpSettingsProblem,
+  type ModelCatalog,
   type Settings,
   SettingsError,
   type SettingsOverrides,
+  unservedModelLines,
   withOverrides,
   withRenamedTools,
+  withServedModels,
 } from "@cloudpid/config";
 import type { EnvironmentInstructions } from "@cloudpid/extensions/instructions";
 import type { OverridingEnvironment, SettingsOverridesState } from "@cloudpid/protocol";
@@ -29,6 +34,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { type McpRepoFilesStore, mcpRepoLayers } from "./mcp-repo-files.ts";
 import { type McpSetLayers, mcpServerCountOf } from "./mcp-set.ts";
+import { readModelCatalog } from "./model-catalog.ts";
 
 /** The name of the settings overrides document. */
 export const SETTINGS_DOCUMENT = "settings";
@@ -58,8 +64,8 @@ const parseJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json))
 const defaults: SettingsState = { settings: DEFAULT_SETTINGS, overrides: {}, mcpProblems: [] };
 
 /**
- * The settings in force. Saved overrides that no longer resolve (a model a release dropped, a setting it renamed) cost
- * only themselves: the rest still apply, and `problem` lists what was left out, so saving the form that shows the
+ * The settings in force. Saved overrides that no longer resolve (a model the proxy no longer serves, a setting a
+ * release renamed) cost only themselves: the rest still apply, and `problem` lists what was left out, so saving the form that shows the
  * survivors is the user's choice to forget the rest. Text that is not JSON gives the defaults, with the `problem`.
  */
 export const readSettings = (documents: DocumentStore): SettingsState => {
@@ -73,15 +79,37 @@ export const readSettings = (documents: DocumentStore): SettingsState => {
     return { ...defaults, problem: "The saved settings overrides are not valid JSON." };
   }
 
-  const { settings, dropped, mcpProblems } = resolveLeniently(saved.value);
+  const served = withServedModels(saved.value, readModelCatalog(documents));
+  const { settings, dropped, mcpProblems } = resolveLeniently(served.document);
   const state = { settings, overrides: overridesFrom(settings), mcpProblems };
+  const ignored = [...served.dropped, ...dropped];
 
-  if (dropped.length === 0) return state;
+  if (ignored.length === 0) return state;
 
   return {
     ...state,
-    problem: `These saved overrides no longer apply and are ignored:\n${Arr.join(dropped, "\n")}`,
+    problem: `These saved overrides no longer apply and are ignored:\n${Arr.join(ignored, "\n")}`,
   };
+};
+
+/**
+ * `checked`, a write's strict resolution of `layer`, refused too for each model `layer` gives that `catalog` does not
+ * list (`unservedModelLines`; one `kept`, the layer as saved, already holds is not given by the write), with one line
+ * per problem.
+ */
+const servedOnly = <A>(
+  checked: Result.Result<A, SettingsError>,
+  layer: Schema.Json,
+  catalog: ModelCatalog,
+  kept: Schema.Json,
+): Result.Result<A, SettingsError> => {
+  const lines = unservedModelLines(layer, catalog, kept);
+
+  if (lines.length === 0) return checked;
+
+  const others = Result.isFailure(checked) ? [checked.failure.message] : [];
+
+  return Result.fail(SettingsError.make({ message: Arr.join([...lines, ...others], "\n") }));
 };
 
 /**
@@ -109,14 +137,22 @@ export const writeSettings = (
   documents: DocumentStore,
   overrides: Schema.Json,
   now: number,
-): Result.Result<SettingsState, SettingsError> =>
-  Result.map(resolveSettings(overrides), (settings) => {
+): Result.Result<SettingsState, SettingsError> => {
+  const checked = servedOnly(
+    resolveSettings(overrides),
+    overrides,
+    readModelCatalog(documents),
+    savedGlobalSettings(documents),
+  );
+
+  return Result.map(checked, (settings) => {
     const normalized = overridesFrom(settings);
 
     documents.putDocument(SETTINGS_DOCUMENT, JSON.stringify(normalized), now);
 
     return { settings, overrides: normalized };
   });
+};
 
 /** The Global document as saved: `{}` before anything is, and text that is not JSON reads as none. */
 export const savedGlobalSettings = (documents: DocumentStore): Schema.Json => {
@@ -144,19 +180,23 @@ const overridesState = (
   environment: string,
   saved: Schema.Json,
 ): SettingsOverridesState => {
+  const catalog = readModelCatalog(store);
+  const served = withServedModels(saved, catalog);
+
   const { settings, global, overrides, dropped, mcpProblems } = resolveOverridesLeniently(
-    savedGlobalSettings(store),
-    saved,
+    withServedModels(savedGlobalSettings(store), catalog).document,
+    served.document,
   );
 
   const instructions = store.getEnvironmentInstructions(environment)?.text ?? "";
   const state = { environment, settings, global, overrides, instructions, mcpProblems };
+  const ignored = [...served.dropped, ...dropped];
 
-  if (dropped.length === 0) return state;
+  if (ignored.length === 0) return state;
 
   return {
     ...state,
-    problem: `These saved Overrides no longer apply and are ignored, so their fields inherit Global:\n${Arr.join(dropped, "\n")}`,
+    problem: `These saved Overrides no longer apply and are ignored, so their fields inherit Global:\n${Arr.join(ignored, "\n")}`,
   };
 };
 
@@ -183,7 +223,12 @@ export const putSettingsOverrides = (
   environment: string,
   overrides: Schema.Json,
 ): Result.Result<SettingsOverridesState, SettingsError> | null => {
-  const checked = resolveOverrides(savedGlobalSettings(store), overrides);
+  const checked = servedOnly(
+    resolveOverrides(savedGlobalSettings(store), overrides),
+    overrides,
+    readModelCatalog(store),
+    store.getSettingsOverrides(environment) ?? {},
+  );
 
   if (Result.isFailure(checked)) return Result.fail(checked.failure);
 
@@ -257,6 +302,8 @@ export type SessionSettingsSource = {
    * Session with none, and no Resource watch, never wakes the Environment's `McpHost`. Absent from an older Registry.
    */
   readonly mcp?: { readonly servers: number };
+  /** The Model catalog as the Registry keeps it (ADR-0051). Absent from an older Registry. */
+  readonly models?: ModelCatalog;
 };
 
 /**
@@ -295,9 +342,11 @@ export const sessionSettingsSource = (
     mcpLayersOf(store, overrides ?? {}, mcpRepoLayers(store, known?.environment ?? null)),
   );
 
+  const models = readModelCatalog(store);
+
   return known === null || overrides === null
-    ? { global, environment: null, overrides: {}, instructions: null, mcp: { servers } }
-    : { global, environment: known.environment, overrides, instructions, mcp: { servers } };
+    ? { global, environment: null, overrides: {}, instructions: null, mcp: { servers }, models }
+    : { global, environment: known.environment, overrides, instructions, mcp: { servers }, models };
 };
 
 /**
@@ -305,11 +354,14 @@ export const sessionSettingsSource = (
  * resolve over Global.
  */
 export const settingsOverriddenIn = (store: SettingsStore): SettingsAnswer["overriddenIn"] => {
-  const global = savedGlobalSettings(store);
+  const catalog = readModelCatalog(store);
+  const global = withServedModels(savedGlobalSettings(store), catalog).document;
   const fields: Record<string, Array<OverridingEnvironment>> = {};
 
   for (const { id, name, overrides } of store.listSettingsOverrides()) {
-    for (const field of overrideFields(resolveOverridesLeniently(global, overrides).overrides)) {
+    const served = withServedModels(overrides, catalog).document;
+
+    for (const field of overrideFields(resolveOverridesLeniently(global, served).overrides)) {
       (fields[field] ??= []).push({ id, name });
     }
   }

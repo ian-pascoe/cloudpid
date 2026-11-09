@@ -1540,6 +1540,7 @@ export const serveRegistryRpc = <R = never>(
           ),
         ),
       getSettings: () => registry.getSettings(),
+      getModelCatalog: () => registry.getModelCatalog(),
       getPush: ({ endpoint }) => registry.getPush({ endpoint }),
       subscribePush: ({ subscription }) => registry.subscribePush({ subscription }),
       unsubscribePush: ({ endpoint }) => registry.unsubscribePush({ endpoint }),

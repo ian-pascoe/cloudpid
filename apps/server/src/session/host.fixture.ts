@@ -3269,6 +3269,7 @@ export class TestSession extends DurableObject {
       // The test Registry holds no MCP servers.
       mcpServerNames: () => Effect.succeed(null),
       sessionSettings: ({ session }) => Effect.promise(() => registry().sessionSettings(session)),
+      getModelCatalog: () => Effect.promise(() => registry().modelCatalog()),
       changeSettings: ({ environment, changes, author }) =>
         Effect.promise(
           // SAFETY: the stub's RPC result is the plain data the test Registry returned.

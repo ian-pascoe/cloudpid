@@ -13,7 +13,6 @@ import {
   ModelId,
   OVERRIDE_FIELD_NAMES,
   ROLE_NAMES,
-  SUPPORTED_MODELS,
   THINKING_LEVELS,
   ThinkingLevel,
 } from "@cloudpid/config";
@@ -66,7 +65,16 @@ export const CHANGE_NOTE =
 export const CHANGE_NOTE_ENDPOINT =
   "The change is recorded with your reason, and the owner can see and revert it on the Settings page. Each Session runs with its own Environment's Settings (its Overrides over Global over the defaults): a change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field. A Session it reaches uses it when it next admits input.";
 
-const MODEL_LIST = Arr.join(SUPPORTED_MODELS, ", ");
+/**
+ * What the descriptions say of the models: the Model catalog changes without a release, so it is never listed in a
+ * description (ADR-0051), which must stay as it is for the prompt cache; the agent lists it with `models_list`.
+ */
+const MODEL_NOTE =
+  "Models: any id models_list lists (provider/id, such as anthropic/claude-opus-5-5); one the model proxy does not serve is refused";
+
+/** The same on the endpoint, where `environments_list` lists the models. */
+const MODEL_NOTE_ENDPOINT =
+  "Models: any of environments_list's models.available (as provider/id, such as anthropic/claude-opus-5-5); one the model proxy does not serve is refused";
 
 const Reason = settingsReason("user", "this task is small and cheap");
 
@@ -100,7 +108,7 @@ export const settingsModelSet = {
   annotations: WRITE_IDEMPOTENT,
   session: {
     description: paragraphs([
-      `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. Models: ${MODEL_LIST}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
+      `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. ${MODEL_NOTE}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
       "A Session that picked its own model or thinking level keeps its pick; the result says whether this Session did. Subagents keep the agent they started with: their models come from the roles (settings_role_set).",
       SCOPE_NOTE,
       CHANGE_NOTE,
@@ -110,7 +118,7 @@ export const settingsModelSet = {
   },
   endpoint: {
     description: paragraphs([
-      `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. Models: ${MODEL_LIST}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
+      `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. ${MODEL_NOTE_ENDPOINT}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
       "A Session that picked its own model or thinking level keeps its pick. Subagents keep the agent they started with: their models come from the roles (settings_role_set).",
       SCOPE_NOTE,
       CHANGE_NOTE_ENDPOINT,
@@ -133,10 +141,14 @@ const roleFields = {
   ),
 };
 
-const roleLines = [
-  `Set one model role: the model a subagent runs on when it is started with that role, and optionally its hint, the text that tells an agent when to pick it. Roles: ${Arr.join(ROLE_NAMES, ", ")}. Models: ${MODEL_LIST}.`,
-  "A Role's model and hint are one setting: a hint left out keeps the hint the role has at that Scope now, and at an Environment the two are its Override together. The change reaches the next subagent started; subagents that run keep the model they started with.",
-];
+const roleIntro = `Set one model role: the model a subagent runs on when it is started with that role, and optionally its hint, the text that tells an agent when to pick it. Roles: ${Arr.join(ROLE_NAMES, ", ")}.`;
+
+const roleNote =
+  "A Role's model and hint are one setting: a hint left out keeps the hint the role has at that Scope now, and at an Environment the two are its Override together. The change reaches the next subagent started; subagents that run keep the model they started with.";
+
+const roleLines = [`${roleIntro} ${MODEL_NOTE}.`, roleNote];
+
+const roleLinesEndpoint = [`${roleIntro} ${MODEL_NOTE_ENDPOINT}.`, roleNote];
 
 export const settingsRoleSet = {
   name: "settings_role_set",
@@ -147,7 +159,7 @@ export const settingsRoleSet = {
     output: ChangeOutput,
   },
   endpoint: {
-    description: paragraphs([...roleLines, SCOPE_NOTE, CHANGE_NOTE_ENDPOINT]),
+    description: paragraphs([...roleLinesEndpoint, SCOPE_NOTE, CHANGE_NOTE_ENDPOINT]),
     input: Schema.Struct({ ...roleFields, reason: ReasonEndpoint, ...RequestIdField }),
     output: ChangeEndpointOutput,
   },
