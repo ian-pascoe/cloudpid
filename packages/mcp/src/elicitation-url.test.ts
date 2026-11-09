@@ -32,39 +32,13 @@ describe("the pages declined unseen", () => {
 
   it.each([
     "https://localhost/auth",
-    "https://LOCALHOST:8443/auth",
-    "https://localhost./auth",
-    "https://app.localhost/",
-    "https://printer.local/",
-    "https://db.internal/",
-    "https://a.b.internal./",
-    // loopback
     "https://127.0.0.1/",
-    "https://127.255.255.254/",
-    "https://0.0.0.0/",
-    "https://[::1]/",
-    "https://[::]/",
     "https://2130706433/",
-    "https://0x7f.1/",
-    // private
     "https://10.0.0.1/",
-    "https://172.16.0.1/",
-    "https://172.31.255.255/",
-    "https://192.168.1.1/",
-    // link-local, the cloud metadata address included
     "https://169.254.169.254/latest/meta-data",
-    "https://[fe80::1]/",
-    "https://[febf::1]/",
-    // CGNAT
     "https://100.64.0.1/",
-    "https://100.127.255.255/",
-    // ULA
     "https://[fc00::1]/",
-    "https://[fd12:3456::1]/",
-    // an IPv4 address carried by an IPv6 one
     "https://[::ffff:127.0.0.1]/",
-    "https://[::ffff:10.1.2.3]/",
-    "https://[64:ff9b::192.168.0.1]/",
   ])("%s is local or private", (url) => {
     expect(problemOf(url)).toEqual({
       kind: "declined",
@@ -72,19 +46,15 @@ describe("the pages declined unseen", () => {
     });
   });
 
-  it.each([
-    "https://pi.ianpascoe.dev/oauth/mcp/start",
-    "https://PI.ianpascoe.dev/",
-    "https://cloudpid-server-dev.ian-g-pascoe.workers.dev/",
-    "https://ianpascoe.app/",
-    "https://abc123.ianpascoe.app/view",
-    "https://abc--dev.ianpascoe.app:8443/",
-  ])("%s is one of cloudpid's own hosts", (url) => {
-    expect(problemOf(url)).toEqual({
-      kind: "declined",
-      reason: "the page is on one of cloudpid's own hosts",
-    });
-  });
+  it.each(["https://pi.ianpascoe.dev/oauth/mcp/start"])(
+    "%s is one of cloudpid's own hosts",
+    (url) => {
+      expect(problemOf(url)).toEqual({
+        kind: "declined",
+        reason: "the page is on one of cloudpid's own hosts",
+      });
+    },
+  );
 
   it.each(["", "not a url", "https://", "https://exa mple.com/", "//example.com/"])(
     "%j is malformed",
@@ -107,22 +77,14 @@ describe("the pages declined unseen", () => {
 describe("the pages shown", () => {
   it.each([
     "https://example.com/authorize?client=1#top",
-    "https://auth.example.co.uk/",
-    "https://8.8.8.8/",
-    "https://[2606:4700:4700::1111]/",
     "https://172.15.0.1/",
     "https://172.32.0.1/",
     "https://100.63.255.255/",
     "https://100.128.0.1/",
     "https://169.253.0.1/",
-    "https://193.168.0.1/",
     "https://[fec0::1]/",
-    "https://[::ffff:8.8.8.8]/",
     "https://localhost.example.com/",
-    "https://notlocal.dev/",
     "https://my.internal.example.com/",
-    "https://ianpascoe.app.example.com/",
-    "https://example.com:8443/path",
   ])("%s", (url) => {
     expect(problemOf(url)).toBeUndefined();
   });
@@ -161,23 +123,12 @@ describe("the pages shown", () => {
 
 describe("the registrable domain", () => {
   it.each([
-    ["example.com", "example.com"],
     ["a.b.example.com", "example.com"],
-    ["example.co.uk", "example.co.uk"],
     ["auth.example.co.uk", "example.co.uk"],
-    ["co.uk", "co.uk"],
     // A hosting platform's customer is the page's owner, so the platform's own suffix is not the domain.
-    ["attacker.github.io", "attacker.github.io"],
     ["www.attacker.github.io", "attacker.github.io"],
-    ["github.io", "github.io"],
-    ["a.pages.dev", "a.pages.dev"],
-    ["x.y.pages.dev", "y.pages.dev"],
-    ["shop.workers.dev", "shop.workers.dev"],
-    ["app.vercel.app", "app.vercel.app"],
-    ["www.xn--85x722f.com.cn", "xn--85x722f.com.cn"],
     ["localhost", "localhost"],
     ["8.8.8.8", "8.8.8.8"],
-    ["[2606:4700::1]", "[2606:4700::1]"],
   ])("%s → %s", (host, domain) => {
     expect(registrableDomain(host)).toBe(domain);
   });

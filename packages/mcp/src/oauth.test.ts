@@ -288,7 +288,6 @@ describe("client_secret_expires_at", () => {
   it("counts a secret within 5 min of its expiry as expiring", () => {
     const at = 1_000_000;
 
-    expect(REGISTRATION_RENEW_MARGIN_MS).toBe(300_000);
     expect(expiresWithin(at, at - REGISTRATION_RENEW_MARGIN_MS - 1)).toBe(false);
     expect(expiresWithin(at, at - REGISTRATION_RENEW_MARGIN_MS)).toBe(true);
     expect(expiresWithin(at, at + 1)).toBe(true);

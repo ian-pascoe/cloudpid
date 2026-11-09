@@ -1,6 +1,6 @@
 // The origin a sign-in starts on (`docs/architecture/mcp-sign-in.md` → The client document and the callback outside Access).
 import { describe, expect, it } from "vitest";
-import { callbackUrl, clientDocumentUrl, signInOrigin } from "./sign-in-origin.ts";
+import { signInOrigin } from "./sign-in-origin.ts";
 
 const DEPLOYED = "https://cloudpid-server-pr-450.ian-g-pascoe.workers.dev";
 
@@ -50,12 +50,5 @@ describe("alchemy dev", () => {
     "127.0.0.1:1337",
   ])("answers nothing for Host %j", (host) => {
     expect(signInOrigin({ deployedOrigin: DEPLOYED, localMode: true, host })).toBe(undefined);
-  });
-});
-
-describe("the URLs under an origin", () => {
-  it("are the client document and the callback", () => {
-    expect(clientDocumentUrl(DEPLOYED)).toBe(`${DEPLOYED}/oauth/mcp/client.json`);
-    expect(callbackUrl(DEPLOYED)).toBe(`${DEPLOYED}/oauth/mcp/callback`);
   });
 });

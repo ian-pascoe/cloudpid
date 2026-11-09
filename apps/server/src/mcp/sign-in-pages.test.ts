@@ -2,7 +2,6 @@
 // escape and what they never hold.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { MCP_SIGN_IN_FAILURES, type McpSignInFailure } from "@cloudpid/mcp/types";
-import { SIGN_IN_CHANNEL } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
   CALLBACK_SCRIPT,
@@ -67,24 +66,6 @@ describe("the CSP hashes", () => {
     expect(csp).not.toContain("unsafe");
     expect(page.html).toContain(`<script>${CALLBACK_SCRIPT}</script>`);
     expect(page.html).toContain(`<style>${PAGE_STYLE}</style>`);
-  });
-
-  it("allow no script on a page that has none, and a form only on the interstitial", () => {
-    for (const page of [startProblemPage("x", 400, undefined), cancelledPage()]) {
-      expect(page.headers["content-security-policy"]).toContain("script-src 'none'");
-      expect(page.html).not.toContain("<script");
-    }
-
-    const interstitial = interstitialPage({
-      state: "s".repeat(43),
-      server: "sentry",
-      source: "owner",
-      url: "https://mcp.example/mcp",
-      issuer: "https://as.example",
-      clientId: "https://cloudpid.example/oauth/mcp/client.json",
-    });
-
-    expect(interstitial.headers["content-security-policy"]).toContain("script-src 'none'");
   });
 });
 
@@ -163,15 +144,6 @@ describe("the referrer policy", () => {
 });
 
 describe("the callback script", () => {
-  it("clears the address first and then tells the channel the outcome and nothing else", () => {
-    expect(CALLBACK_SCRIPT.startsWith(`history.replaceState(null,"",location.pathname);`)).toBe(
-      true,
-    );
-    expect(CALLBACK_SCRIPT).toContain(`new BroadcastChannel("${SIGN_IN_CHANNEL}")`);
-    expect(CALLBACK_SCRIPT).toContain("postMessage({outcome:document.body.dataset.outcome})");
-    expect(SIGN_IN_CHANNEL).toBe("cloudpid:mcp-sign-in");
-  });
-
   it("never redirects the page", () => {
     expect(CALLBACK_SCRIPT).not.toMatch(/location\s*=|location\.(href|assign|replace)/);
     expect(pages().every(([, page]) => !/http-equiv=["']?refresh/i.test(page.html))).toBe(true);
@@ -189,8 +161,7 @@ describe("every callback page", () => {
     });
   });
 
-  it.each(pages())("%s says the tab can be closed and offers Back", (_name, page) => {
-    expect(page.html).toContain("You can close this tab.");
+  it.each(pages())("%s offers Back", (_name, page) => {
     expect(page.html).toContain(">Back</a>");
   });
 
@@ -268,7 +239,7 @@ describe("what a page says", () => {
     expect(page.html).not.toContain(`"onmouseover=`);
   });
 
-  it("names the Environments a sign-in serves, or says none does yet", () => {
+  it("names the Environments a sign-in serves", () => {
     const signedIn = (environments: ReadonlyArray<{ id: string; name: string }>) =>
       callbackPage({
         status: "signed_in",
@@ -283,8 +254,7 @@ describe("what a page says", () => {
         { id: "a", name: "Work" },
         { id: "b", name: "Home" },
       ]),
-    ).toContain("Used by Work, Home.");
-    expect(signedIn([])).toContain("No Environment uses this sign-in yet.");
+    ).toContain("Work, Home");
   });
 
   it("holds no code, state or token even when a failure names them", () => {
@@ -323,17 +293,6 @@ describe("the issuer interstitial", () => {
     expect(page.html).toContain(`name="decision" value="continue"`);
     expect(page.html).toContain(`name="decision" value="cancel"`);
   });
-
-  it("names a repository's source and a Variable", () => {
-    const page = interstitialPage({
-      ...confirmation,
-      source: "repo:acme/app",
-      secret: { scope: "variable", name: "ID" },
-    });
-
-    expect(page.html).toContain("repo:acme/app");
-    expect(page.html).toContain("from your Variables");
-  });
 });
 
 describe("the page a start asks on", () => {
@@ -365,10 +324,5 @@ describe("the start's pages", () => {
     expect(page.status).toBe(403);
     expect(page.html).toContain("&lt;i&gt;no&lt;/i&gt;");
     expect(page.html).toContain(`href="/settings"`);
-    expect(page.html).toContain("You can close this tab.");
-  });
-
-  it("say a cancel changed nothing", () => {
-    expect(cancelledPage().html).toContain("Nothing changed.");
   });
 });

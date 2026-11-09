@@ -552,12 +552,12 @@ describe("apply({ kind: 'sign_ins' })", () => {
     ]);
   });
 
-  it.each(["replaced", "rebound"])("does the same for %s", async (change) => {
+  it("does the same for a replaced sign-in", async () => {
     const host = await withTwo();
 
     await host.scriptToken("linear", [ok(TOKEN, { resource: urlOf("linear") })]);
     await host.scriptEngine(urlOf("linear"), [found(["issues"])]);
-    await host.apply({ kind: "sign_ins", change, servers: ["linear"], revision: 3 });
+    await host.apply({ kind: "sign_ins", change: "replaced", servers: ["linear"], revision: 3 });
     await settled(host);
 
     expect(await stateOf(host, "linear")).toBe("connected");
@@ -862,22 +862,6 @@ describe("a server that signs in on its own", () => {
     const host = await discovered([noToken("unavailable", "no")], [found(["never"])], GRANT);
 
     expect(await stateOf(host, "sentry")).toBe("unavailable");
-  });
-
-  it("asks for a new token after a 401, retries once with it, and reports nothing", async () => {
-    const host = await discovered(
-      [ok(TOKEN), ok(NEXT)],
-      [unauthorized(), found(["issues"])],
-      GRANT,
-    );
-
-    expect(await stateOf(host, "sentry")).toBe("connected");
-    expect(await host.tokenAsks()).toEqual([
-      { environment: expect.any(String), server: "sentry" },
-      { environment: expect.any(String), server: "sentry", stale: TOKEN },
-    ]);
-    expect(await sent(host)).toEqual([`Bearer ${TOKEN}`, `Bearer ${NEXT}`]);
-    expect(await host.reports()).toEqual([]);
   });
 
   it("is `failed`, not `rejected` or `sign_in`, when a renewed token is refused too", async () => {

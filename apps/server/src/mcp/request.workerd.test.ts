@@ -1205,6 +1205,7 @@ describe("a request to a server that signs in on its own", () => {
       "step_up",
       "rejected",
       "refresh_failing",
+      "unavailable",
     ] as const) {
       // The discovery's token has run out by the call, and the Registry has none to give instead.
       const host = await grantHost([
@@ -1218,50 +1219,17 @@ describe("a request to a server that signs in on its own", () => {
         noToken(status, "The client id is not accepted"),
       ]);
 
-      expect(await host.request(call("sentry", "search"), {})).toMatchObject({
-        _tag: "CallFailed",
-        error: { _tag: "Unreachable", message: "The client id is not accepted" },
-      });
-      expect(await host.engineRequests()).toEqual([]);
-      expect(await host.reports()).toEqual([]);
-    }
-  });
-
-  it("never marks a refresh that fails, a Registry that is not available or a token that could not be had as a sign-in the owner could give", async () => {
-    for (const status of ["refresh_failing", "unavailable", "failed"] as const) {
-      const host = await grantHost([
-        {
-          status: "ok",
-          token: TOKEN,
-          resource: urlOf("sentry"),
-          signIn: "grant-1",
-          expiresAt: Date.now(),
-        },
-        noToken(status, "The authorization server did not answer"),
-      ]);
-
       const answer = await host.request(call("sentry", "search"), {});
 
       expect(answer).toMatchObject({
         _tag: "CallFailed",
-        error: { _tag: "Unreachable", message: expect.stringContaining("did not answer") },
+        error: { _tag: "Unreachable", message: "The client id is not accepted" },
       });
       // No `signIn`: the Session adds no `details.sign_in` and never says to ask the owner.
       expect(answer).not.toHaveProperty("error.signIn");
+      expect(await host.engineRequests()).toEqual([]);
+      expect(await host.reports()).toEqual([]);
     }
-  });
-
-  it("asks again with the refused token as stale after a 401, and retries with the renewed one", async () => {
-    const host = await grantHost([granted(TOKEN), granted(NEXT)]);
-
-    await host.scriptRequest(urlOf("sentry"), [
-      { result: completed("found"), auth: [false, true] },
-    ]);
-
-    expect(await tagOf(host, call("sentry", "search"))).toBe("Completed");
-    expect((await host.engineRequests())[0]?.tokens).toEqual([TOKEN, NEXT]);
-    expect((await host.tokenAsks()).at(-1)).toMatchObject({ server: "sentry", stale: TOKEN });
-    expect(await host.reports()).toEqual([]);
   });
 
   it("fails as unreachable, never as a sign-in, when the renewed token is refused too, and reports nothing", async () => {

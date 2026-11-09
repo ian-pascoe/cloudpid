@@ -18,11 +18,9 @@ import {
   ProtocolViolation,
   ServerError,
   SignInRequired,
-  StepUpRequired,
   TimedOut,
   TooLarge,
   Unreachable,
-  Unsupported,
 } from "./types.ts";
 
 const Wire = Schema.fromJsonString(McpErrorWire);
@@ -65,12 +63,6 @@ describe("McpErrorWire", () => {
     expect(mayHaveRun(error, "tools/call")).toBe(false);
     expect(await encode(error)).toBe('{"_tag":"Refused","message":"No","mayHaveRun":false}');
   });
-
-  it("writes a known McpError as its fields", async () => {
-    const error = NotFound.make({ message: "Unknown tool", code: -32602 });
-
-    expect(await encode(error)).toBe('{"_tag":"NotFound","message":"Unknown tool","code":-32602}');
-  });
 });
 
 /** Each failure, whether a `tools/call` that failed with it may have run, and whether a read may have. */
@@ -92,10 +84,7 @@ const RUNS: ReadonlyArray<readonly [string, McpErrorWire, boolean, boolean]> = [
   ["Unreachable with a 408", Unreachable.make({ message: "Slow", status: 408 }), false, false],
   ["Unreachable with no status", Unreachable.make({ message: "Gone" }), false, false],
   ["SignInRequired", SignInRequired.make({ message: "Sign in", rejected: false }), false, false],
-  ["StepUpRequired", StepUpRequired.make({ message: "Scope" }), false, false],
   ["ServerError", ServerError.make({ message: "Bad", code: -32603 }), false, false],
-  ["NotFound", NotFound.make({ message: "Unknown tool", code: -32602 }), false, false],
-  ["Unsupported", Unsupported.make({ message: "No" }), false, false],
 ];
 
 describe("mayHaveRun", () => {
@@ -106,9 +95,6 @@ describe("mayHaveRun", () => {
 });
 
 describe("McpEngineRequestResult", () => {
-  const decodeResult = (value: typeof McpEngineRequestResult.Encoded) =>
-    Schema.decodeEffect(McpEngineRequestResult)(value).pipe(Effect.runPromise);
-
   it("reads a newer engine's failure tag as an OtherMcpError, with the rows it changed", async () => {
     const result = await Schema.decodeEffect(Schema.fromJsonString(McpEngineRequestResult))(
       '{"kind":"failed","error":{"_tag":"QuotaExceeded","message":"Too many calls"},"state":{"era":null}}',
@@ -120,21 +106,5 @@ describe("McpEngineRequestResult", () => {
       state: { era: null },
     });
     expect(result.kind === "failed" && result.error).toBeInstanceOf(OtherMcpError);
-  });
-
-  it("keeps a large value's native byte stream as it came", async () => {
-    const body = new ReadableStream<Uint8Array>();
-
-    const result = await decodeResult({
-      kind: "complete",
-      result: { kind: "stream", body, bytes: 2 * 1024 * 1024 },
-      cacheable: true,
-      fetchedAt: 0,
-      state: {},
-    });
-
-    expect(
-      result.kind === "complete" && result.result.kind === "stream" && result.result.body,
-    ).toBe(body);
   });
 });

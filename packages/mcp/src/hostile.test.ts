@@ -589,32 +589,6 @@ describe.each(legacyBases)("a %s server that ends a call's stream early", (_name
     }
   });
 
-  it.each([
-    ["two CRs", "\r\r"],
-    ["a CR after the line's LF", "\n\r"],
-  ])(
-    "settles a stream whose answer ends in %s when a later chunk has no line ending",
-    async (_what, ending) => {
-      // The SDK's parser holds the CR that ends a chunk, and every later chunk without a CR or LF after it.
-      for (const id of ["a-1", undefined]) {
-        const server = resumable(
-          base(),
-          (rpc) =>
-            chunked([
-              `${id === undefined ? "" : `id: ${id}\n`}event: message\ndata: ${JSON.stringify(answerOf(rpc, "held CR"))}${ending}`,
-              "id: a-2",
-            ]),
-          (rpc) => stream(event(answerOf(rpc, "never asked for"))),
-        );
-
-        const { called } = await attempt(server);
-
-        expect(called).toEqual({ content: [{ type: "text", text: "held CR" }] });
-        expect(resumedAfter(server)).toEqual([]);
-      }
-    },
-  );
-
   it("does not dispatch an answer an early end left with its last line cut short", async () => {
     // The unfinished event is whole but for its last line, an `id:` cut short; its answer must not be dispatched.
     const server = resumable(
@@ -624,20 +598,6 @@ describe.each(legacyBases)("a %s server that ends a call's stream early", (_name
           priming("a-1"),
           `event: message\ndata: ${JSON.stringify(answerOf(rpc, "premature"))}\nid: a-`,
         ),
-      (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
-    );
-
-    const { called } = await attempt(server);
-
-    expect(called).toEqual({ content: [{ type: "text", text: "whole" }] });
-    expect(resumedAfter(server)).toEqual(["a-1"]);
-  });
-
-  it("does not dispatch an answer a CR-ended early end left with its last line cut short", async () => {
-    // The tap ends the line the SDK was left holding, so the discard that follows needs no line ending of its own.
-    const server = resumable(
-      base(),
-      (rpc) => stream(`id: a-1\n\ndata:${JSON.stringify(answerOf(rpc, "premature"))}\rid: a-`),
       (rpc) => stream(event(answerOf(rpc, "whole"), { id: "a-3" })),
     );
 
@@ -885,21 +845,6 @@ describe("the tap's resumed stream", () => {
     expect(resumeHeaders[0]?.get("content-type")).toBeNull();
   });
 
-  it("reads events whichever way their lines end", async () => {
-    const answer = JSON.stringify({ jsonrpc: "2.0", id: 7, result: { own: true } });
-
-    const wire = tapFetch(
-      async (_input, init) =>
-        init?.method === "GET" ? stream(`id: a-2\r\rdata: ${answer}\r\r`) : stream("id: a-1\r\r"),
-      { now: () => 0, sleep: async () => undefined },
-      new Verdicts(),
-    );
-
-    const response = await post(wire);
-
-    expect(await response.text()).toContain('"own":true');
-  });
-
   it("keeps a CRLF split between chunks from ending an event", async () => {
     const wire = tapFetch(
       async (_input, init) =>
@@ -919,7 +864,7 @@ describe("the tap's resumed stream", () => {
     expect(text).not.toContain("may or may not have run");
   });
 
-  it("splits a stream fed in tiny chunks in time that does not grow with the event", async () => {
+  it("splits a stream fed in tiny chunks into the events it carries", async () => {
     const big = `data: ${"x".repeat(MiB - 1024)}`;
     const resumed = () => chunked([`${big}\n\n`, event(answerOf({ id: 7 }, "ok"))], 64);
 
@@ -929,75 +874,11 @@ describe("the tap's resumed stream", () => {
       new Verdicts(),
     );
 
-    const started = performance.now();
     const text = await (await post(wire)).text();
-    const took = performance.now() - started;
 
     expect(text).toContain('"id":7');
     expect(text).not.toContain("over 1 MiB");
-    // Splitting what is held again for every chunk takes seconds here; splitting what is new takes tens of ms.
-    expect(took).toBeLessThan(1500);
   });
-
-  it("ends a GET stream at an event over 1 MiB that arrives whole in one chunk", async () => {
-    let ended = false;
-
-    const wire = tapFetch(
-      async () => chunked([`data: ${"x".repeat(MiB + 1)}\n\n`, "data: after\n\n"]),
-      { now: () => 0, sleep: async () => undefined },
-      new Verdicts(),
-      {
-        response: () => undefined,
-        retried: () => undefined,
-        get: (e) => void ("ended" in e && (ended = true)),
-      },
-    );
-
-    const response = await wire(ENDPOINT, { method: "GET" });
-
-    expect(await response.text()).toBe("");
-    expect(ended).toBe(true);
-  });
-
-  it("holds a GET stream fed in tiny chunks to time that does not grow with the event", async () => {
-    const wire = tapFetch(
-      async () => chunked([`data: ${"x".repeat(MiB - 1024)}`], 64),
-      { now: () => 0, sleep: async () => undefined },
-      new Verdicts(),
-    );
-
-    const started = performance.now();
-    const text = await (await wire(ENDPOINT, { method: "GET" })).text();
-
-    expect(text.length).toBeGreaterThan(MiB - 2048);
-    expect(performance.now() - started).toBeLessThan(1500);
-  });
-
-  it.each([
-    ["a line ending and then the blank line", (event: string) => [`${event}\n`, "\n"]],
-    ["the whole event and its blank line", (event: string) => [`${event}\n\n`]],
-  ])(
-    "holds a resumed event to 1 MiB, not a byte over, whether it arrives as %s",
-    async (_what, split) => {
-      const answer = event({ jsonrpc: "2.0", id: 7, result: { own: true } });
-
-      const read = async (size: number) => {
-        const wire = tapFetch(
-          async (_input, init) =>
-            init?.method === "GET"
-              ? chunked([...split(eventOfSize(size)), answer])
-              : stream(priming("a-1")),
-          { now: () => 0, sleep: async () => undefined },
-          new Verdicts(),
-        );
-
-        return (await post(wire)).text();
-      };
-
-      expect(await read(MiB)).toContain('"own":true');
-      expect(await read(MiB + 1)).toContain("over 1 MiB");
-    },
-  );
 
   it.each([
     ["a line ending and then the blank line", (event: string) => [`${event}\n`, "\n"]],

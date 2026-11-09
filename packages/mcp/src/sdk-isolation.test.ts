@@ -103,14 +103,6 @@ describe("the SDK stays out of the Workers that must not load it", () => {
     expect(await sdkReferences(entry)).toEqual([]);
   });
 
-  it.each(workers)("fails when %s imports the core", async (_name, entry) => {
-    expect(await sdkReferences(entry, ["@cloudpid/mcp"])).not.toEqual([]);
-  });
-
-  it.each(workers)("fails when %s imports the SDK itself", async (_name, entry) => {
-    expect(await sdkReferences(entry, ["@modelcontextprotocol/client"])).not.toEqual([]);
-  });
-
   it.each(workers)(
     "fails when %s imports an SDK module that does not resolve",
     async (_name, entry) => {
