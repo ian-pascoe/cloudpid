@@ -1064,3 +1064,57 @@ describe("unapprovedGlobalChange", () => {
     expect(unapprovedGlobalChange("some-environment", false)).toBeUndefined();
   });
 });
+
+describe("an Environment's Skill saved over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "environment_skill_save",
+    reason: "The release steps are the same every time",
+  };
+
+  it("is recorded with its files, the via and no Session, and the owner reverts it", async () => {
+    const [saved, removed, listed, reverted, kept] = await inRegistry(
+      async ({ storage, store, skills, changes, revert }) => {
+        const context = { storage, store, skills, changes, now: 1_000 };
+
+        const saved = saveSkillAs(context, {
+          environment: DEFAULT_ENVIRONMENT,
+          folder: "release",
+          files: release,
+          hashed: await hashFiles(release),
+          author: endpoint,
+        });
+
+        const removed = removeSkillAs(
+          { ...context, now: 2_000 },
+          {
+            environment: DEFAULT_ENVIRONMENT,
+            name: "release",
+            author: { ...endpoint, tool: "environment_skill_remove" },
+          },
+        );
+
+        return [
+          saved,
+          removed,
+          changes.list(DEFAULT_ENVIRONMENT),
+          revert(2),
+          skills.list(DEFAULT_ENVIRONMENT).map(({ name }) => name),
+        ];
+      },
+    );
+
+    expect(saved).toMatchObject({
+      status: "saved",
+      change: { session: null, conversation: null, via: { auth: "oauth", client: { name: "pi" } } },
+    });
+    expect(removed).toMatchObject({
+      status: "removed",
+      change: { tool: "environment_skill_remove", via: { auth: "oauth" } },
+    });
+    expect(JSON.stringify(listed)).not.toContain("grant-1");
+    expect(reverted).toMatchObject({ status: "reverted" });
+    // The revert of the removal brings the Skill back.
+    expect(kept).toEqual(["release"]);
+  });
+});

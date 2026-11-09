@@ -33,9 +33,15 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type { SkillSet } from "../workspace/skill-set-schema.ts";
-import type { AgentChangeAuthor, AgentChangeRevert, AgentChanges } from "./agent-changes.ts";
+import {
+  type AgentChangeAuthor,
+  type AgentChangeRevert,
+  type AgentChanges,
+  recordedAuthor,
+} from "./agent-changes.ts";
 import { type SecretScope, scopeOf } from "./secret-changes.ts";
 import type { EnvironmentRecord, RegistryStorage } from "./store.ts";
+import type { ViaCheck } from "./via-secrets.ts";
 
 /** A Skill's files: each one's path in the Skill's folder (`SKILL.md`, `references/x.md`), with its text. */
 export type SkillFiles = Readonly<Record<string, string>>;
@@ -771,6 +777,11 @@ export type SkillChangeContext = {
   readonly skills: Skills;
   readonly changes: AgentChanges;
   readonly now: number;
+  /**
+   * The check an endpoint's install or update opens after it fetched (`via-secrets.ts`): `saveSkillAs` runs it, inside
+   * its transaction, on the folder, files, source and author it keeps, and answers `rejected` when it refuses them.
+   */
+  readonly check?: ViaCheck | undefined;
 };
 
 /** A Skill to keep: its folder, its files (hashed beforehand), and where it was installed from, if it was. */
@@ -924,6 +935,16 @@ export const saveSkillAs = (
 ): SkillSave =>
   context.storage.transactionSync((): SkillSave => {
     const { author, environment, expected } = input;
+
+    const refused = context.check?.({
+      folder: input.folder,
+      files: input.files,
+      source: input.source,
+      author,
+    });
+
+    if (refused !== undefined) return { status: "rejected", message: refused };
+
     const plan = planSave(context, input);
 
     if (plan.status === "rejected" || plan.status === "missing") return plan;
@@ -941,10 +962,7 @@ export const saveSkillAs = (
     const change = context.changes.record({
       scope: environment,
       at: context.now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: skillField(skill.name),
       before: before === null ? null : changeValue(before),
@@ -1055,10 +1073,7 @@ export const removeSkillAs = (
     const change = changes.record({
       scope: environment,
       at: now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: skillField(name),
       before: changeValue(before),

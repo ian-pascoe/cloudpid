@@ -80,6 +80,11 @@ const memoryChanges = (): AgentChanges => {
           withReverts,
         ),
       ),
+    byIds: (ids) =>
+      Arr.map(
+        Arr.filter(rows, (row) => ids.includes(row.id)),
+        withReverts,
+      ),
     dismiss: (scope, id) => {
       const known = Arr.some(rows, (row) => row.scope === scope && row.id === id);
 

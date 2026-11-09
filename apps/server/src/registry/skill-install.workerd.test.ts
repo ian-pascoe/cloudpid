@@ -3,6 +3,7 @@
 // installs and as nothing when the owner does, and put back with their source by a revert.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of `fetch` and the Registry over native arrays.
+import { openKeptVault } from "@cloudpid/extensions/secrets/core";
 import { MAX_FILE_BYTES, MAX_SKILL_SET_BYTES } from "@cloudpid/extensions/skill-checks";
 import { runInDurableObject } from "cloudflare:test";
 import {
@@ -12,9 +13,11 @@ import {
   type SkillSource,
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
+import { keepSecret } from "./environment-secrets.ts";
 import { installedIn, installedSkillRefs } from "./skill-badges.ts";
 import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import {
@@ -29,6 +32,9 @@ import {
 } from "./skills.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
+import { HOLDS_SECRET, openViaCheck, reachOf, SECRETS_CHANGED } from "./via-secrets.ts";
+
+const MASTER = "test-master-key-0123456789abcdef0123456789";
 
 const author: AgentChangeAuthor = {
   session: "s-1",
@@ -979,5 +985,180 @@ describe("the Skill directory's badges over installed Skills", () => {
       updateAvailable: false,
     });
     expect(none).toBeUndefined();
+  });
+});
+
+describe("installing Skills over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "environment_skill_install",
+    reason: "The user asked for the grill-me Skill",
+  };
+
+  it("records the install with the via and no Session, and the owner reverts it", async () => {
+    const [installed, listed, reverted, kept] = await inRegistry(
+      async ({ context, skills, changes, revert }) => {
+        const installed = await installSkills(context(1_000), readerOf(REPO), {
+          environment: DEFAULT_ENVIRONMENT,
+          source: "o/skills@grill-me",
+          skills: undefined,
+          folders: undefined,
+          author: endpoint,
+          pin: undefined,
+        });
+
+        return [
+          installed,
+          changes.list(DEFAULT_ENVIRONMENT),
+          revert(1),
+          skills.list(DEFAULT_ENVIRONMENT),
+        ];
+      },
+    );
+
+    expect(installed).toMatchObject({ status: "installed", results: [{ outcome: "installed" }] });
+    expect(listed).toMatchObject([
+      {
+        actor: "agent",
+        session: null,
+        conversation: null,
+        tool: "environment_skill_install",
+        field: "skills.grill-me",
+        via: { auth: "oauth", client: { name: "pi" } },
+      },
+    ]);
+    expect(JSON.stringify(listed)).not.toContain("grant-1");
+    expect(reverted).toMatchObject({ status: "reverted" });
+    expect(kept).toEqual([]);
+  });
+
+  describe("when a kept Secret's value is in a file it fetched", () => {
+    const SECRET = "plain-secret-value-9876";
+
+    /** The check the Registry opens once the files are fetched, over the Secret `API_KEY` kept for the default Environment. */
+    const opened = async (
+      { storage }: { readonly storage: DurableObjectStorage },
+      between?: () => Promise<void>,
+    ) => {
+      const store = openRegistryStore(storage);
+      const keys = await Effect.runPromise(openKeptVault(MASTER, "registry"));
+
+      await Effect.runPromise(
+        keepSecret(
+          store,
+          keys,
+          { environment: DEFAULT_ENVIRONMENT, name: "API_KEY", value: SECRET },
+          500,
+        ),
+      );
+
+      return async () => {
+        const check = await Effect.runPromise(
+          openViaCheck({ storage, store, vault: Effect.succeed(keys) })({
+            author: endpoint,
+            reach: reachOf(DEFAULT_ENVIRONMENT),
+          }),
+        );
+
+        await between?.();
+
+        return check;
+      };
+    };
+
+    const REPO_WITH_SECRET = {
+      ...REPO,
+      "skills/tdd/SKILL.md": skillMd("tdd", `Run with ${SECRET}.`),
+    } satisfies Repo;
+
+    it("refuses that Skill and installs the others, recording only what it kept", async () => {
+      const [installed, listed, kept] = await inRegistry(
+        async ({ context, skills, changes, storage }) => {
+          const openCheck = await opened({ storage });
+
+          return [
+            await installSkills(context(1_000), readerOf(REPO_WITH_SECRET), {
+              environment: DEFAULT_ENVIRONMENT,
+              source: "o/skills",
+              skills: ["*"],
+              folders: undefined,
+              author: endpoint,
+              pin: undefined,
+              openCheck,
+            }),
+            changes.list(DEFAULT_ENVIRONMENT),
+            skills.list(DEFAULT_ENVIRONMENT),
+          ];
+        },
+      );
+
+      expect(installed).toMatchObject({
+        status: "installed",
+        results: [
+          { name: "grill-me", outcome: "installed" },
+          { name: "tdd", outcome: "rejected", message: HOLDS_SECRET },
+        ],
+      });
+      expect(listed).toMatchObject([{ field: "skills.grill-me" }]);
+      expect(kept.map(({ name }: { name: string }) => name)).toEqual(["grill-me"]);
+      expect(JSON.stringify([installed, listed])).not.toContain(SECRET);
+    });
+
+    it("refuses every Skill, saying to try again, when a Secret is kept after the check opened", async () => {
+      const [installed, kept] = await inRegistry(async ({ context, skills, storage }) => {
+        const store = openRegistryStore(storage);
+        const keys = await Effect.runPromise(openKeptVault(MASTER, "registry"));
+
+        const openCheck = await opened({ storage }, async () => {
+          await Effect.runPromise(
+            keepSecret(
+              store,
+              keys,
+              { environment: DEFAULT_ENVIRONMENT, name: "NEW_KEY", value: "another-value-1234" },
+              1_500,
+            ),
+          );
+        });
+
+        return [
+          await installSkills(context(1_000), readerOf(REPO), {
+            environment: DEFAULT_ENVIRONMENT,
+            source: "o/skills",
+            skills: ["*"],
+            folders: undefined,
+            author: endpoint,
+            pin: undefined,
+            openCheck,
+          }),
+          skills.list(DEFAULT_ENVIRONMENT),
+        ];
+      });
+
+      expect(installed).toMatchObject({
+        status: "installed",
+        results: [
+          { outcome: "rejected", message: SECRETS_CHANGED },
+          { outcome: "rejected", message: SECRETS_CHANGED },
+        ],
+      });
+      expect(kept).toEqual([]);
+    });
+
+    it("keeps whatever the owner installs, which is never checked", async () => {
+      const kept = await inRegistry(async ({ context, skills }) => {
+        await installSkills(context(1_000), readerOf(REPO_WITH_SECRET), {
+          environment: DEFAULT_ENVIRONMENT,
+          source: "o/skills",
+          skills: ["*"],
+          folders: undefined,
+          author: null,
+          pin: undefined,
+        });
+
+        return skills.list(DEFAULT_ENVIRONMENT);
+      });
+
+      expect(kept.map(({ name }) => name)).toEqual(["grill-me", "tdd"]);
+    });
   });
 });

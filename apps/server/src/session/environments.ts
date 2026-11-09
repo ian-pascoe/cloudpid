@@ -531,6 +531,11 @@ export const sessionEnvironments = ({
           author: { session, ...author },
         });
 
+        // The Registry refuses only a write over the MCP endpoint (`via`), which a Session's is not.
+        if (marked.status === "rejected") {
+          return yield* EnvironmentsError.make({ message: marked.message });
+        }
+
         // As after the owner's switch: the Secrets marked for the Build are part of what a Build is made with.
         if (marked.status === "changed") {
           yield* buildsAfterScope(registry, builds, environment);

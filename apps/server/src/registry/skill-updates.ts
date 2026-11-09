@@ -37,6 +37,7 @@ import {
   type Skills,
   type StoredSkill,
 } from "./skills.ts";
+import type { OpenViaCheck } from "./via-secrets.ts";
 
 /** The Registry document that keeps when the daily check last ran (epoch milliseconds, as text). */
 export const SKILL_CHECK_DOCUMENT = "skill-update-check";
@@ -344,11 +345,19 @@ export const previewSkillUpdates = async (
 export const updateSkills = async (
   context: SkillChangeContext,
   reader: RepoReader,
-  request: UpdateRequest & { readonly author: AgentChangeAuthor | null },
+  request: UpdateRequest & {
+    readonly author: AgentChangeAuthor | null;
+    /** An endpoint's update: opens the check of what each Skill keeps, once the files are fetched (`via-secrets.ts`). */
+    readonly openCheck?: OpenViaCheck | undefined;
+  },
 ): Promise<SkillUpdateRun> => {
   const planned = await plan(context, reader, request);
 
   if ("status" in planned) return planned;
+
+  // The Secrets are opened now, with the files in hand, and each save checks what it keeps inside its own transaction.
+  const check = await request.openCheck?.();
+  const checked = check === undefined ? context : { ...context, check };
 
   const { settled, candidates, order, environment } = planned;
   const { author } = request;
@@ -405,7 +414,7 @@ export const updateSkills = async (
     const kept =
       author === null
         ? keepSkillAsOwner(context, toKeep)
-        : saveSkillAs(context, { ...toKeep, author, expected: { savedAt: skill.savedAt } });
+        : saveSkillAs(checked, { ...toKeep, author, expected: { savedAt: skill.savedAt } });
 
     switch (kept.status) {
       case "saved": {

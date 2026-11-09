@@ -4,6 +4,8 @@ export { McpEngine } from "@cloudpid/mcp-worker/engine";
 
 export { TestMcpHost } from "./mcp/host.fixture.ts";
 
+export { RealRegistry } from "./registry/registry.fixture.ts";
+
 export { TestRegistry } from "./registry/store.fixture.ts";
 
 export { TestSession } from "./session/host.fixture.ts";

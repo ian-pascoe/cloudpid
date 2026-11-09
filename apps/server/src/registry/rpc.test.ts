@@ -1702,6 +1702,9 @@ const fakeRegistries = () => {
     agentUpdateTrigger: () => Effect.succeed({ status: "missing" as const }),
     agentSetTriggerPaused: () => Effect.succeed({ status: "missing" as const }),
     agentRemoveTrigger: () => Effect.succeed({ status: "missing" as const }),
+    changeRequest: () => Effect.succeed(null),
+    settleChangeRequest: () => Effect.succeed(false),
+    agentChangeFeatures: () => Effect.succeed({ via: true }),
     listTriggers: ({ environment }) =>
       Effect.sync(() =>
         Arr.filter(

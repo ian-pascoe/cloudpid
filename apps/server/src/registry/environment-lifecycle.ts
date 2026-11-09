@@ -21,7 +21,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { nameTaken, noEnvironment, noRepo, repoTaken } from "./messages.ts";
-import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
+import { type AgentChangeAuthor, type AgentChanges, recordedAuthor } from "./agent-changes.ts";
 import type { EnvironmentRecord, RegistryStorage, RegistryStore } from "./store.ts";
 
 /** An Agent change made to an Environment's record, as recorded. */
@@ -71,10 +71,7 @@ const recorded = (
   changes.record({
     scope,
     at: now,
-    actor: "agent",
-    session: author.session,
-    conversation: author.conversation,
-    tool: author.tool,
+    ...recordedAuthor(author),
     reason: author.reason,
     field,
     before,

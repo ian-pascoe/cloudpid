@@ -1,7 +1,14 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { ForkKind, SessionAgent, SessionRecord } from "./registry.ts";
+import {
+  AgentChange,
+  AgentChangeVia,
+  agentChangeViaLabel,
+  ForkKind,
+  SessionAgent,
+  SessionRecord,
+} from "./registry.ts";
 import { userEntryData, USER_ENTRY_KIND } from "./user-entry.ts";
 
 /** `SessionRecord` as a bundle from before the MCP marks decodes it: a Session's origin is a Fork or Clone's alone. */
@@ -83,6 +90,53 @@ describe("a Session's subagents", () => {
       { id: "agent-1", parent: "root", role: null, status: "idle" },
       { id: "agent-2", parent: "root", role: "reviewer", status: "working" },
     ]);
+  });
+});
+
+describe("an Agent change's `via`", () => {
+  const change = {
+    id: 41,
+    scope: "default",
+    at: 1,
+    actor: "agent",
+    session: null,
+    conversation: null,
+    tool: "environment_variable_set",
+    reason: "Needed",
+    field: "variables.API_URL",
+    before: null,
+    after: "https://example.test",
+    reverts: null,
+    revertedBy: null,
+  } as const;
+
+  const decode = (input: Schema.Json) =>
+    Effect.runSync(Schema.decodeUnknownEffect(AgentChange)(input));
+
+  it("is kept without the client id", () => {
+    const via = { client: { name: "pi", version: "1.5.0" }, auth: "oauth" };
+
+    expect(decode({ ...change, via: { ...via, clientId: "abc" } }).via).toEqual(via);
+  });
+
+  it("is absent on a change from before it, and on one whose via cannot be read", () => {
+    expect(decode(change)).toEqual(change);
+    expect(decode({ ...change, via: "nope" })).toEqual(change);
+  });
+
+  it("reads an auth it does not know as unknown", () => {
+    expect(decode({ ...change, via: { auth: "later" } }).via).toEqual({ auth: "unknown" });
+  });
+
+  it("is what an author records, with the client id", () => {
+    expect(
+      Effect.runSync(Schema.decodeEffect(AgentChangeVia)({ auth: "local", clientId: "abc" })),
+    ).toEqual({ auth: "local", clientId: "abc" });
+  });
+
+  it("is worded as the byline and the notice say it", () => {
+    expect(agentChangeViaLabel({ client: { name: "pi" } })).toBe("Changed over MCP · pi");
+    expect(agentChangeViaLabel({})).toBe("Changed over MCP");
   });
 });
 

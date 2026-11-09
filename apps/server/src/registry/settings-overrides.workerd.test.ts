@@ -658,3 +658,50 @@ describe("the Settings stored before Environments had Overrides", () => {
       },
     ));
 });
+
+describe("the Settings changed over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "settings_model_set",
+    reason: "This Environment's work is small",
+  };
+
+  it("records an Environment's Override with the via and no Session, and the owner reverts it", () =>
+    inRegistry(({ change, changes, revert }) => {
+      const made = change([{ field: "model", value: SONNET }], STAGING, 1_000, endpoint);
+      const reverted = revert(1);
+
+      expect(made).toMatchObject({
+        status: "changed",
+        changes: [
+          {
+            scope: STAGING,
+            session: null,
+            conversation: null,
+            tool: "settings_model_set",
+            field: "model",
+            beforeInherited: true,
+            via: { auth: "oauth", client: { name: "pi" } },
+          },
+        ],
+      });
+      expect(JSON.stringify(changes.list(STAGING))).not.toContain("grant-1");
+      expect(reverted).toMatchObject({ status: "reverted", change: { actor: "owner" } });
+    }));
+
+  it("records a change at Global under the Settings' scope with the via", () =>
+    inRegistry(({ store, storage, changes }) => {
+      const made = changeSettings(
+        storage,
+        store,
+        changes,
+        { changes: [{ field: "model", value: HAIKU }], author: endpoint },
+        1_000,
+      );
+
+      expect(made).toMatchObject({ status: "changed" });
+      expect(changes.list(SETTINGS_SCOPE)).toMatchObject([
+        { session: null, tool: "settings_model_set", via: { auth: "oauth" } },
+      ]);
+    }));
+});

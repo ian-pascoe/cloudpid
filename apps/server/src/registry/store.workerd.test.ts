@@ -9,14 +9,16 @@ import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
+import { openAgentChanges, revertAgentChange } from "./agent-changes.ts";
 import { GLOBAL_DOCUMENT, globalSettingsOf, readGlobal, writeGlobal } from "./global.ts";
 import {
+  GLOBAL_SCOPE,
   MIGRATIONS,
   openRegistryStore,
   SPARE_REFILL_WINDOW_MS,
   type StoredWorkspaceChoice,
 } from "./store.ts";
-import type { TestRegistry } from "./store.fixture.ts";
+import { noSkills, type TestRegistry } from "./store.fixture.ts";
 
 declare global {
   namespace Cloudflare {
@@ -2225,6 +2227,177 @@ describe("the Registry store", () => {
         (steps) => steps.exec("CREATE TABLE half_done (a INTEGER)"),
       ]);
       expect(versions()).toEqual({ version: MIGRATIONS.length + 1 });
+    });
+  });
+
+  describe("a store at migration 35", () => {
+    /** Run `body` over a store of migration 35 holding an Agent change made before `via` and before `request_id`. */
+    const atMigration35 = <A>(body: (storage: DurableObjectStorage) => A) =>
+      runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
+        const { storage } = state;
+        const { sql } = storage;
+
+        for (const { name } of sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
+          )
+          .toArray()) {
+          sql.exec(`DROP TABLE "${name}"`);
+        }
+
+        migrate(storage, MIGRATIONS.slice(0, 35));
+        sql.exec(
+          `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts)
+           VALUES ('default', 5, 'agent', 's-1', 1, 'environment_variable_set', 'Before via', 'variables.A', NULL, '"1"', NULL)`,
+        );
+
+        return body(storage);
+      });
+
+    it("migrates to 37, and its old changes read without a via", async () => {
+      const [listed, tables, version] = await atMigration35((storage) => {
+        const store = openRegistryStore(storage);
+        const changes = openAgentChanges(storage);
+
+        expect(store.getEnvironment(DEFAULT_ENVIRONMENT)).not.toBeNull();
+
+        return [
+          changes.list(DEFAULT_ENVIRONMENT),
+          storage.sql
+            .exec<{ name: string }>("SELECT name FROM sqlite_master WHERE name = 'change_requests'")
+            .toArray(),
+          storage.sql
+            .exec<{ version: number }>("SELECT MAX(version) AS version FROM schema_version")
+            .toArray(),
+        ];
+      });
+
+      expect(listed).toEqual([
+        {
+          id: 1,
+          scope: DEFAULT_ENVIRONMENT,
+          at: 5,
+          actor: "agent",
+          session: "s-1",
+          conversation: 1,
+          tool: "environment_variable_set",
+          reason: "Before via",
+          field: "variables.A",
+          before: null,
+          after: "1",
+          reverts: null,
+          revertedBy: null,
+        },
+      ]);
+      expect(tables).toEqual([{ name: "change_requests" }]);
+      expect(version).toEqual([{ version: 37 }]);
+    });
+
+    it("records an endpoint's change beside them, and reverts the old one as before", async () => {
+      const [listed, reverted] = await atMigration35((storage) => {
+        const store = openRegistryStore(storage);
+        const changes = openAgentChanges(storage);
+
+        store.putEnvironmentSettings(DEFAULT_ENVIRONMENT, { variables: { A: "1" } });
+        changes.record({
+          scope: DEFAULT_ENVIRONMENT,
+          at: 6,
+          actor: "agent",
+          session: null,
+          conversation: null,
+          tool: "environment_variable_set",
+          via: { auth: "local" },
+          reason: "After via",
+          field: "variables.B",
+          before: null,
+          after: "2",
+          reverts: null,
+        });
+
+        const reverted = revertAgentChange(
+          storage,
+          store,
+          changes,
+          { environment: DEFAULT_ENVIRONMENT, id: 1 },
+          7,
+          noSkills(storage),
+        );
+
+        return [changes.list(DEFAULT_ENVIRONMENT), reverted];
+      });
+
+      expect(reverted).toMatchObject({ status: "reverted", change: { reverts: 1 } });
+      expect(Arr.map(listed, (change) => [change.id, change.via])).toEqual([
+        [3, undefined],
+        [2, { auth: "local" }],
+        [1, undefined],
+      ]);
+    });
+  });
+
+  describe("the stamp of the kept Secrets", () => {
+    const sealed = { version: 1 as const, iv: "aXY=", ciphertext: "Y2lwaGVy" };
+
+    it("changes when a Secret in the reach is kept, replaced or deleted, and not for one outside it", async () => {
+      const stamps = await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
+        const store = openRegistryStore(state.storage);
+
+        store.createEnvironment("0000beef", "Other", 500);
+
+        const reach = [DEFAULT_ENVIRONMENT, GLOBAL_SCOPE];
+        const empty = store.keptSecretsStamp(reach);
+
+        store.putEnvironmentSecret({ environment: DEFAULT_ENVIRONMENT, name: "A", sealed }, 10);
+
+        const kept = store.keptSecretsStamp(reach);
+
+        store.putEnvironmentSecret({ environment: DEFAULT_ENVIRONMENT, name: "A", sealed }, 20);
+
+        const replaced = store.keptSecretsStamp(reach);
+
+        store.putEnvironmentSecret({ environment: "0000beef", name: "B", sealed }, 30);
+
+        const outside = store.keptSecretsStamp(reach);
+        const every = store.keptSecretsStamp("every");
+
+        store.deleteEnvironmentSecret(DEFAULT_ENVIRONMENT, "A");
+
+        return { empty, kept, replaced, outside, every, deleted: store.keptSecretsStamp(reach) };
+      });
+
+      expect(stamps.empty).toBe("0:0");
+      expect(stamps.kept).toBe("1:10");
+      // The same count, a later time.
+      expect(stamps.replaced).toBe("1:20");
+      expect(stamps.outside).toBe("1:20");
+      expect(stamps.every).toBe("2:30");
+      expect(stamps.deleted).toBe("0:0");
+    });
+
+    it("lists the sealed Secrets of the Scopes it names, those at Global first, and every Scope's for every", async () => {
+      const [reached, everything] = await runInDurableObject(
+        fresh(),
+        (_instance: TestRegistry, state) => {
+          const store = openRegistryStore(state.storage);
+
+          store.createEnvironment("0000beef", "Other", 500);
+          store.putEnvironmentSecret({ environment: null, name: "G", sealed }, 1);
+          store.putEnvironmentSecret({ environment: DEFAULT_ENVIRONMENT, name: "D", sealed }, 2);
+          store.putEnvironmentSecret({ environment: "0000beef", name: "O", sealed }, 3);
+
+          const names = (rows: ReadonlyArray<{ name: string }>) =>
+            Arr.map(rows, ({ name }) => name);
+
+          return [
+            names(store.sealedSecretsIn([DEFAULT_ENVIRONMENT, GLOBAL_SCOPE])),
+            names(store.sealedSecretsIn("every")),
+          ];
+        },
+      );
+
+      expect(reached).toEqual(["G", "D"]);
+      // By scope: Global, then each Environment by id.
+      expect(everything).toEqual(["G", "O", "D"]);
     });
   });
 

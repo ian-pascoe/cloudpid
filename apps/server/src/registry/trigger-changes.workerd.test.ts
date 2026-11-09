@@ -485,6 +485,35 @@ describe("the agent's Workspace triggers", () => {
     return registry;
   };
 
+  it("are recorded under the endpoint's author, in the Workspace's Environment, with its `via`", async () => {
+    const registry = await started();
+
+    const made = await registry.agentCreateTrigger(
+      "t1",
+      inWorkspace,
+      {
+        via: { auth: "oauth", client: { name: "pi" } },
+        tool: "trigger_create",
+        reason: "the owner asked for a nightly check",
+      },
+      1_000,
+    );
+
+    expect(made).toMatchObject({
+      status: "changed",
+      definition: { kind: "workspace" },
+      change: {
+        scope: DEFAULT_ENVIRONMENT,
+        actor: "agent",
+        session: null,
+        conversation: null,
+        tool: "trigger_create",
+        field: triggerField("t1"),
+        via: { auth: "oauth", client: { name: "pi" } },
+      },
+    });
+  });
+
   it("record the Workspace by its branch under the Workspace's Environment, and revert", async () => {
     const registry = await started();
 

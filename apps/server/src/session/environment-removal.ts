@@ -104,6 +104,11 @@ export const sessionEnvironmentRemoval = ({
           author: { session, ...author },
         });
 
+        // The Registry refuses only a write over the MCP endpoint (`via`), which a Session's is not.
+        if (deleted.status === "rejected") {
+          return yield* EnvironmentsError.make({ message: deleted.message });
+        }
+
         // As after the owner's delete: the Secrets a Build gets are part of what it is made with.
         if (deleted.status === "deleted") {
           yield* buildsAfterScope(registry, builds, environment);

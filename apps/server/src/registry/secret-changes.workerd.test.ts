@@ -480,3 +480,78 @@ describe("a kept Secret the agent deletes with the owner's Approval", () => {
     expect(left).toEqual([]);
   });
 });
+
+describe("a kept Secret changed over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "environment_secret_build",
+    reason: "A Setup Script needs it",
+  };
+
+  it("has its Build mark recorded by name with the via and no Session, and the owner reverts it", async () => {
+    const [marked, listed, reverted, dump] = await inRegistry(
+      async ({ keep, store, changes, revert, dump }) => {
+        await keep("API_KEY", DEFAULT_ENVIRONMENT);
+
+        const marked = markSecretBuildAs(
+          { transactionSync: (body) => body() },
+          store,
+          changes,
+          { environment: DEFAULT_ENVIRONMENT, name: "API_KEY", build: true, author: endpoint },
+          2_000,
+        );
+
+        return [marked, changes.list(DEFAULT_ENVIRONMENT), revert(DEFAULT_ENVIRONMENT, 2), dump()];
+      },
+    );
+
+    expect(marked).toMatchObject({
+      status: "changed",
+      change: {
+        actor: "agent",
+        session: null,
+        conversation: null,
+        tool: "environment_secret_build",
+        field: secretBuildField("API_KEY"),
+        via: { auth: "oauth", client: { name: "pi" } },
+      },
+    });
+    expect(listed[0]).toMatchObject({ id: 2, via: { auth: "oauth", client: { name: "pi" } } });
+    expect(JSON.stringify(listed)).not.toContain("grant-1");
+    expect(reverted).toMatchObject({ status: "reverted" });
+    expect(dump).not.toContain(VALUE);
+  });
+
+  it("is deleted with the owner's Approval, recorded by name with the via", async () => {
+    const [deleted, left] = await inRegistry(async ({ keep, store, changes }) => {
+      await keep("API_KEY", DEFAULT_ENVIRONMENT);
+
+      return [
+        deleteSecretAs(
+          { transactionSync: (body) => body() },
+          store,
+          changes,
+          {
+            environment: DEFAULT_ENVIRONMENT,
+            name: "API_KEY",
+            author: { ...endpoint, tool: "environment_secret_delete", approved: true },
+          },
+          2_000,
+        ),
+        store.listEnvironmentSecrets(),
+      ];
+    });
+
+    expect(deleted).toMatchObject({
+      status: "deleted",
+      change: {
+        session: null,
+        before: "kept",
+        after: null,
+        approved: true,
+        via: { auth: "oauth" },
+      },
+    });
+    expect(left).toEqual([]);
+  });
+});

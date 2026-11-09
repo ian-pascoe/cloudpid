@@ -4,14 +4,17 @@
 // the source and the mark, and the check marks the Skills whose folder moved with one request for each repo and ref.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off -- fakes of GitHub and the Registry over native arrays.
+import { openKeptVault } from "@cloudpid/extensions/secrets/core";
 import { MAX_FILE_BYTES, MAX_SKILL_SET_BYTES } from "@cloudpid/extensions/skill-checks";
 import { runInDurableObject } from "cloudflare:test";
 import { DEFAULT_ENVIRONMENT, type SkillUpdatePin } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { GithubReadError, type RepoReader } from "../github/skill-fetch.ts";
 import { fakeGithub, type Files, skillMd } from "../github/skill-repo.fixture.ts";
 import { type AgentChangeAuthor, openAgentChanges, revertAgentChange } from "./agent-changes.ts";
+import { keepSecret } from "./environment-secrets.ts";
 import { installSkills } from "./skill-install.ts";
 import {
   checkSkillUpdates,
@@ -24,6 +27,7 @@ import {
 import { hashFiles, openSkills, saveSkillAs, type SkillChangeContext } from "./skills.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
+import { HOLDS_SECRET, openViaCheck, reachOf } from "./via-secrets.ts";
 
 const author: AgentChangeAuthor = {
   session: "s-1",
@@ -1144,5 +1148,109 @@ describe("the daily check", () => {
     expect(limited[0]).toMatchObject({ rateLimited: true });
     expect(limited[1]).toBeUndefined();
     expect(retried).toMatchObject({ rateLimited: true });
+  });
+});
+
+const MASTER = "test-master-key-0123456789abcdef0123456789";
+
+describe("updating installed Skills over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "environment_skill_update",
+    reason: "The user asked for the latest grill-me",
+  };
+
+  it("records each Skill moved with the via and no Session, and the owner reverts it", async () => {
+    const github = fakeGithub();
+
+    github.push(REPO, files());
+
+    const [updated, listed, reverted] = await inRegistry(
+      async ({ install, context, changes, revert }) => {
+        await install(REPO, { owner: true });
+
+        github.push(REPO, files({}, "New steps."));
+
+        const updated = await updateSkills(context(2_000), github.reader, {
+          environment: DEFAULT_ENVIRONMENT,
+          names: ["grill-me"],
+          overwrite: false,
+          author: endpoint,
+        });
+
+        return [updated, changes.list(DEFAULT_ENVIRONMENT), revert(1)];
+      },
+      github,
+    );
+
+    expect(updated).toMatchObject({ status: "done", results: [{ outcome: "updated" }] });
+    expect(listed[0]).toMatchObject({
+      actor: "agent",
+      session: null,
+      tool: "environment_skill_update",
+      via: { auth: "oauth", client: { name: "pi" } },
+    });
+    expect(JSON.stringify(listed)).not.toContain("grant-1");
+    // The install was the owner's, with no change of its own to revert: the update is the first record.
+    expect(reverted).toMatchObject({ status: "reverted" });
+  });
+
+  it("refuses a Skill whose new files hold a kept Secret, leaving it as it was", async () => {
+    const SECRET = "plain-secret-value-9876";
+    const github = fakeGithub();
+
+    github.push(REPO, files());
+
+    const [updated, listed, kept, before] = await inRegistry(
+      async ({ install, context, changes, skills, storage }) => {
+        await install(REPO, { owner: true });
+
+        const store = openRegistryStore(storage);
+        const keys = await Effect.runPromise(openKeptVault(MASTER, "registry"));
+
+        await Effect.runPromise(
+          keepSecret(
+            store,
+            keys,
+            { environment: DEFAULT_ENVIRONMENT, name: "API_KEY", value: SECRET },
+            500,
+          ),
+        );
+
+        const before = skills.get(DEFAULT_ENVIRONMENT, "grill-me");
+
+        github.push(REPO, files({}, `Run with ${SECRET}.`));
+
+        const updated = await updateSkills(context(2_000), github.reader, {
+          environment: DEFAULT_ENVIRONMENT,
+          names: ["grill-me"],
+          overwrite: false,
+          author: endpoint,
+          // The Secrets are opened once the new files are fetched, and each save is checked in its transaction.
+          openCheck: () =>
+            Effect.runPromise(
+              openViaCheck({ storage, store, vault: Effect.succeed(keys) })({
+                author: endpoint,
+                reach: reachOf(DEFAULT_ENVIRONMENT),
+              }),
+            ),
+        });
+
+        return [
+          updated,
+          changes.list(DEFAULT_ENVIRONMENT),
+          skills.get(DEFAULT_ENVIRONMENT, "grill-me"),
+          before,
+        ];
+      },
+      github,
+    );
+
+    expect(updated).toMatchObject({
+      status: "done",
+      results: [{ outcome: "rejected", message: HOLDS_SECRET }],
+    });
+    expect(listed).toEqual([]);
+    expect(kept).toEqual(before);
   });
 });

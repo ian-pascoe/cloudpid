@@ -3,7 +3,8 @@
 // and the values before and after (with whether each was inherited from Global), so the owner can see each one and
 // revert it at either Scope. Synchronous over the Registry DO's SQLite, as the store is, so a change and its record are
 // one step no other request lands in the middle of. The table is migration 17's (`store.ts`; the inherited marks
-// migration 25's), and deleting an Environment deletes its changes.
+// migration 25's, the `via` of a change made over the MCP endpoint migration 36's), and deleting an Environment deletes
+// its changes. A change made under a `request_id` claims it in the same step (`change-requests.ts`).
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- plain functions over SQLite, and a digest.
 import {
   CONTAINER_SETTING_NAMES,
@@ -17,12 +18,14 @@ import {
 } from "@cloudpid/config";
 import {
   type AgentChange,
+  type AgentChangeVia,
   CREATED_FIELD,
   fieldSecret,
   fieldSkill,
   fieldTrigger,
   fieldVariable,
   MAX_AGENT_CHANGES,
+  McpAuth,
   unrevertableField,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -31,9 +34,11 @@ import * as Predicate from "effect/Predicate";
 import type * as Types from "effect/Types";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import { type EnvironmentSettingsState, patchEnvironmentSettings } from "./environment-settings.ts";
 import type { EnvironmentRepo } from "@cloudpid/protocol";
 import { buildKey, buildWanted } from "../workspace/build-record.ts";
+import { type ChangeClaim, claimChangeRequest } from "./change-requests.ts";
 import { isLifecycleField, revertLifecycleChange } from "./environment-lifecycle.ts";
 import { environmentSettingsOf, globalSettingsOf, patchGlobal } from "./global.ts";
 import { revertSecretBuild } from "./secret-changes.ts";
@@ -53,8 +58,8 @@ import {
   type RegistryStore,
 } from "./store.ts";
 
-/** Who made an Agent change: the Session, the conversation in it that called the tool, the tool, and why. */
-export type AgentChangeAuthor = {
+/** Who made an Agent change from a Session: the Session, the conversation in it that called the tool, the tool, and why. */
+export type SessionChangeAuthor = {
   readonly session: string;
   readonly conversation: number;
   readonly tool: string;
@@ -66,7 +71,32 @@ export type AgentChangeAuthor = {
    * recorded as the owner's change, with no Session, conversation or tool, and with no revert, as the owner's reverts have.
    */
   readonly actor?: "owner" | undefined;
+  readonly via?: undefined;
 };
+
+/**
+ * Who made an Agent change over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → The recorded author): the tool
+ * and why, and `via`, who called it. There is no Session or conversation. A write with this author is checked against
+ * the kept Secrets (`via-secrets.ts`); a Session's never is. With `request`, the write claims a `request_id`.
+ */
+export type EndpointChangeAuthor = {
+  readonly via: AgentChangeVia;
+  readonly tool: string;
+  readonly reason: string;
+  /** Set when the owner approved the change before it was made (GLOSSARY.md → Approval). */
+  readonly approved?: true | undefined;
+  /** The `request_id` the write claims in the transaction that records its changes. */
+  readonly request?: ChangeClaim | undefined;
+  readonly session?: undefined;
+  readonly actor?: undefined;
+};
+
+/** Who made an Agent change: a Session's agent, or a Local agent over the MCP endpoint. */
+export type AgentChangeAuthor = SessionChangeAuthor | EndpointChangeAuthor;
+
+/** Whether `author` is a Local agent's over the MCP endpoint. */
+export const isEndpointAuthor = (author: AgentChangeAuthor): author is EndpointChangeAuthor =>
+  author.via !== undefined;
 
 /** Why the owner's change `change` is not reverted: a revert is not undone, and an act of their own is theirs to change back. */
 export const ownerChangeRefusal = (change: AgentChange): string =>
@@ -74,9 +104,24 @@ export const ownerChangeRefusal = (change: AgentChange): string =>
     ? "This is your own change, which has no revert: change the setting itself"
     : "A revert is not undone: change the setting itself";
 
-/** Who a change by `author` is recorded as made by: the owner (no Session, conversation or tool) or the agent. */
-export const recordedAuthor = (author: AgentChangeAuthor) =>
-  author.actor === "owner"
+/**
+ * Who a change by `author` is recorded as made by: the owner (no Session, conversation or tool), the agent of a Session, or
+ * the agent over the endpoint (no Session or conversation, the tool, and `via`, with the `request` it claims).
+ */
+export const recordedAuthor = (author: AgentChangeAuthor) => {
+  if (author.via !== undefined) {
+    const made = {
+      actor: "agent",
+      session: null,
+      conversation: null,
+      tool: author.tool,
+      via: author.via,
+    } as const;
+
+    return author.request === undefined ? made : { ...made, request: author.request };
+  }
+
+  return author.actor === "owner"
     ? ({ actor: "owner", session: null, conversation: null, tool: null } as const)
     : ({
         actor: "agent",
@@ -84,6 +129,7 @@ export const recordedAuthor = (author: AgentChangeAuthor) =>
         conversation: author.conversation,
         tool: author.tool,
       } as const);
+};
 
 /**
  * One Container setting of an Environment or at Global, given a new value: `field` is a setting's name (`idleMinutes`)
@@ -247,9 +293,15 @@ type AgentChangeRow = {
   dismissed: number;
   before_inherited: number | null;
   after_inherited: number | null;
+  via_auth: string | null;
+  via_client_name: string | null;
+  via_client_version: string | null;
 };
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
+
+// @effect-diagnostics-next-line schemaSync:off -- the store is synchronous, as SQLite in a Durable Object is; `McpAuth` takes any text.
+const decodeAuth = Schema.decodeUnknownSync(McpAuth);
 
 /** A stored value: JSON text, or null for none. Text that is not JSON (never written so) reads as none. */
 const valueOf = (text: string | null): Schema.Json | null =>
@@ -279,13 +331,37 @@ const toChange = (row: AgentChangeRow): AgentChange => {
     revertedBy: row.reverted_by,
   };
 
-  return withMarks(change, {
+  return withMarks(withVia(change, row), {
     // Only a change the owner approved says so (`docs/architecture/agent-changes.md` → Approval).
     approved: row.approved === 1,
     beforeInherited: row.before_inherited === 1,
     afterInherited: row.after_inherited === 1,
   });
 };
+
+/**
+ * `change` with who made it over the endpoint, when its row says (`via_auth` is set with every `via`). The client id is
+ * kept in its column and never read back: a reader is not told it.
+ */
+const withVia = (change: AgentChange, row: AgentChangeRow): AgentChange => {
+  if (row.via_auth === null) return change;
+
+  // An auth this version does not know (a later build wrote it) reads as `unknown`.
+  const via: Types.Mutable<NonNullable<AgentChange["via"]>> = { auth: decodeAuth(row.via_auth) };
+
+  if (row.via_client_name !== null) {
+    via.client =
+      row.via_client_version === null
+        ? { name: row.via_client_name }
+        : { name: row.via_client_name, version: row.via_client_version };
+  }
+
+  return { ...change, via };
+};
+
+/** `via` as a reader is told it: without the client id. */
+const shownVia = ({ auth, client }: AgentChangeVia): NonNullable<AgentChange["via"]> =>
+  client === undefined ? { auth } : { auth, client };
 
 /** The marks a change may carry, each left out of it unless set. */
 type Marks = {
@@ -313,18 +389,31 @@ const withMarks = (change: AgentChange, marks: Marks): AgentChange => {
  */
 type NewAgentChange = Omit<
   AgentChange,
-  "id" | "revertedBy" | "approved" | "beforeInherited" | "afterInherited"
+  "id" | "revertedBy" | "approved" | "beforeInherited" | "afterInherited" | "via"
 > &
-  Marks;
+  Marks & {
+    /** Who made it over the endpoint, with the client id that is recorded and never read back. */
+    readonly via?: AgentChangeVia | undefined;
+    /** The `request_id` it claims in the same step; the claim is not part of the change. */
+    readonly request?: ChangeClaim | undefined;
+  };
 
-/** `change` as it is recorded under `id`, with no revert yet, and only the marks that are set. */
+/**
+ * `change` as it is recorded under `id`, with no revert yet, and only the marks that are set. Its `via` is as a reader
+ * is told it: without the client id.
+ */
 export const asRecorded = (change: NewAgentChange, id: number): AgentChange => {
-  const { approved, beforeInherited, afterInherited, ...made } = change;
+  const { approved, beforeInherited, afterInherited, via, ...rest } = change;
+  // The claim is not part of the change.
+  const made = Struct.omit(rest, ["request"]);
 
-  return withMarks(
-    { ...made, id, revertedBy: null },
-    { approved, beforeInherited, afterInherited },
-  );
+  const recorded: AgentChange = { ...made, id, revertedBy: null };
+
+  return withMarks(via === undefined ? recorded : { ...recorded, via: shownVia(via) }, {
+    approved,
+    beforeInherited,
+    afterInherited,
+  });
 };
 
 /** The Agent changes the Registry keeps, by scope (an Environment's id). */
@@ -335,6 +424,8 @@ export type AgentChanges = {
   readonly list: (scope: string) => ReadonlyArray<AgentChange>;
   /** Change `id` of `scope`, dismissed or not, or null. */
   readonly get: (scope: string, id: number) => AgentChange | null;
+  /** The changes numbered `ids` that are still kept, dismissed or not, oldest first. */
+  readonly byIds: (ids: ReadonlyArray<number>) => ReadonlyArray<AgentChange>;
   /**
    * Take change `id` of `scope` out of the list, leaving what it changed and its record: false when `scope` has no such
    * change. Dismissing one dismissed already changes nothing.
@@ -363,8 +454,8 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
     record: (change) => {
       const [row] = sql
         .exec<{ id: number }>(
-          `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts, approved, before_inherited, after_inherited)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+          `INSERT INTO agent_changes (scope, at, actor, session, conversation, tool, reason, field, before, after, reverts, approved, before_inherited, after_inherited, via_auth, via_client_name, via_client_version, via_client_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
           change.scope,
           change.at,
           change.actor,
@@ -379,6 +470,10 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
           change.approved === true ? 1 : 0,
           change.beforeInherited === true ? 1 : null,
           change.afterInherited === true ? 1 : null,
+          change.via?.auth ?? null,
+          change.via?.client?.name ?? null,
+          change.via?.client?.version ?? null,
+          change.via?.clientId ?? null,
         )
         .toArray();
 
@@ -401,6 +496,9 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
       // SQLite answers the row it inserted; one that does not is a broken store, not a change to report.
       if (row === undefined) throw new Error("Recording an Agent change returned no id");
 
+      // In the transaction of the write that records it: a claim another attempt holds throws, and the write is undone.
+      if (change.request !== undefined) claimChangeRequest(sql, change.request, row.id, change.at);
+
       return asRecorded(change, row.id);
     },
     list: (scope) =>
@@ -414,6 +512,21 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
         toChange,
       ),
     get,
+    byIds: (ids) =>
+      Arr.isReadonlyArrayNonEmpty(ids)
+        ? Arr.map(
+            sql
+              .exec<AgentChangeRow>(
+                `${SELECT_CHANGES} WHERE changes.id IN (${Arr.join(
+                  Arr.map(ids, () => "?"),
+                  ", ",
+                )}) ORDER BY changes.id`,
+                ...Arr.fromIterable(ids),
+              )
+              .toArray(),
+            toChange,
+          )
+        : [],
     dismiss: (scope, id) => {
       const [row] = sql
         .exec<{ id: number }>(
@@ -589,10 +702,7 @@ export const changeEnvironment = (
     const recorded = changes.record({
       scope: environment,
       at: now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: change.field,
       before: before.value,
@@ -660,10 +770,7 @@ export const changeGlobal = (
     const recorded = changes.record({
       scope: GLOBAL_SCOPE,
       at: now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: change.field,
       before,
