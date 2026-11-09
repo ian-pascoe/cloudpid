@@ -10,7 +10,9 @@
 // Sessions (`Trigger.ts`). A webhook Trigger's object also holds its token and Signing secret (sealed, made at its
 // first adopt), checks each delivery to its URL (`deliver`: token, signature, size, content type, then `match` and the
 // bot-loop guard), counts what it refuses or filters per day without calling the Registry, and keeps an accepted
-// delivery as a pending Fire (`docs/architecture/triggers.md` → Webhooks).
+// delivery as a pending Fire (`docs/architecture/triggers.md` → Webhooks). A Trigger with a GitHub-managed hook keeps it
+// in line with its definition at each adopt and rotation, and deletes it when it goes (`hook-sync.ts`,
+// `docs/architecture/triggers.md` → GitHub-managed hooks).
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- the object's methods, over a Promise-based alarm.
 import type { KeptVault } from "@cloudpid/extensions/secrets/core";
 import {
@@ -23,8 +25,6 @@ import {
   type FireRequest,
   type FireResult,
   type FireSource,
-  type GitHubHookSource,
-  githubHookOf,
   type GitHubHookStatus,
   matchesDelivery,
   matchFacts,
@@ -59,7 +59,7 @@ import {
   keyedDelivery,
   senderLogin,
 } from "./delivery.ts";
-import { GitHubHookFailed, hookTriggers, orphanHooks, type RepoHooks } from "./github-hook.ts";
+import { type HookGitHub, hookSync } from "./hook-sync.ts";
 import {
   checkGitHubSignature,
   checkStandardSignature,
@@ -69,7 +69,6 @@ import {
 import {
   type DayCount,
   hasTriggerStore,
-  type HookDelete,
   type KeptDelivery,
   type KeptSecrets,
   openTriggerStore,
@@ -109,18 +108,8 @@ export type TriggerPorts = {
    * while GitHub cannot say. Never fails.
    */
   readonly botLogin: Effect.Effect<string | undefined>;
-  /**
-   * What a GitHub-managed hook needs (`triggers.md` → GitHub-managed hooks): the repos' hooks as the App, the stage's
-   * origin its Trigger URLs start with (undefined where it has none, as under `alchemy dev`: no hook can reach it), and
-   * the Registry's `knownTriggers`, which the orphan sweep asks.
-   */
-  readonly github: {
-    readonly hooks: RepoHooks;
-    readonly origin: string | undefined;
-    readonly known: (
-      ids: ReadonlyArray<string>,
-    ) => Effect.Effect<ReadonlyArray<string>, TriggerUnreachable>;
-  };
+  /** What a GitHub-managed hook needs (`triggers.md` → GitHub-managed hooks, `hook-sync.ts`). */
+  readonly github: HookGitHub;
 };
 
 /** The object's alarm and storage, as the platform gives them (`ctx.storage`). */
@@ -277,9 +266,6 @@ export const MAX_FIRE_ATTEMPTS = 12;
 /** How many times a Fire is admitted again after a `stale` answer before it waits for the next try. */
 const MAX_STALE_REFRESHES = 3;
 
-/** How long a hook's delete at GitHub is tried before it is given up, with a warning. */
-export const HOOK_DELETE_MS = 24 * 60 * 60_000;
-
 /** A manual Fire's own part of its key: random, unlike a scheduled Fire's, since each one is its own Fire. */
 // @effect-diagnostics-next-line cryptoRandomUUID:off -- a key, not a secret; the Registry's IDs use the same source.
 const newManualId = (): string => crypto.randomUUID();
@@ -379,22 +365,10 @@ export const triggerHandlers = (options: {
   const wipe = Effect.gen(function* () {
     const at = yield* now;
     const kept = existing();
-    const hook = kept?.githubHook();
 
     // Its GitHub-managed hook goes first; a delete that fails is kept past the wipe, for the alarm to try again.
-    if (kept !== undefined && hook?.hookId !== undefined) {
-      kept.deleteLater({
-        repo: hook.repo,
-        hookId: hook.hookId,
-        since: at,
-        attempts: 0,
-        nextTryAt: at,
-      });
-    }
-
-    if (kept !== undefined) yield* deleteHooks(at);
-
-    const left = kept?.hookDeletes() ?? [];
+    hooks.drop(at);
+    yield* hooks.deleteDue(at);
 
     for (const pending of kept?.pending() ?? []) {
       yield* Effect.logWarning("A removed Trigger dropped a pending Fire").pipe(
@@ -406,39 +380,43 @@ export const triggerHandlers = (options: {
       );
     }
 
-    yield* Effect.promise(async () => {
-      await storage.deleteAlarm();
-      await storage.deleteAll();
-      opened = undefined;
-    });
+    const left = hooks.nextTryAt(undefined, at);
 
-    if (left.length === 0) return;
+    if (kept === undefined || left === undefined) {
+      yield* Effect.promise(async () => {
+        await storage.deleteAlarm();
+        await storage.deleteAll();
+        opened = undefined;
+      });
 
-    for (const hookDelete of left) store().deleteLater(hookDelete);
+      return;
+    }
 
-    yield* Effect.promise(() => storage.setAlarm(Math.min(...Arr.map(left, (d) => d.nextTryAt))));
+    // The deletes still to try stay, everything else goes in the same transaction.
+    kept.wipeKeepingDeletes();
+    yield* Effect.promise(() => storage.setAlarm(left));
   });
 
   /**
    * The time the next Fire is due: the Schedule's next after the cursor, or a pending Fire's next try. A paused Trigger
    * has only its admitted Fires to complete.
    */
-  const nextAt = (): number | undefined => {
+  const nextAt = (at: number): number | undefined => {
     const definition = store().definition();
-    const deletes = Arr.map(store().hookDeletes(), (hookDelete) => hookDelete.nextTryAt);
+    const hookAt = hooks.nextTryAt(definition, at);
 
-    if (definition === undefined) return deletes.length === 0 ? undefined : Math.min(...deletes);
+    if (definition === undefined) return hookAt;
 
     const pending = Arr.filter(
       store().pending(),
       (fire) => !definition.paused || fire.session !== undefined,
     );
 
-    const times = [...Arr.map(pending, (fire) => fire.nextTryAt), ...deletes];
-    const retry = store().githubHook()?.nextTryAt;
+    const times = Arr.map(pending, (fire) => fire.nextTryAt);
     const schedule = scheduleOf(definition);
 
-    if (retry !== undefined) times.push(retry);
+    if (hookAt !== undefined) times.push(hookAt);
+
     const cursor = store().cursor();
 
     if (!definition.paused && schedule !== undefined && cursor !== undefined) {
@@ -448,11 +426,13 @@ export const triggerHandlers = (options: {
     return times.length === 0 ? undefined : Math.min(...times);
   };
 
-  const arm = Effect.promise(async () => {
-    const at = nextAt();
+  const arm = Effect.flatMap(now, (at) =>
+    Effect.promise(async () => {
+      const next = nextAt(at);
 
-    await (at === undefined ? storage.deleteAlarm() : storage.setAlarm(at));
-  });
+      await (next === undefined ? storage.deleteAlarm() : storage.setAlarm(next));
+    }),
+  );
 
   const tokenBinding = { owner: id, name: "token" } as const;
 
@@ -508,249 +488,32 @@ export const triggerHandlers = (options: {
 
   /** An object never synced (or wiped) reads its definition first, as a manual Fire does, so it can answer as the Trigger's. */
   const known = Effect.gen(function* () {
-    if (existing() !== undefined) return;
+    if (existing()?.definition() !== undefined) return;
 
     const definition = yield* ports.definition(id);
 
     if (definition !== null) yield* adopt(definition, yield* now);
   });
 
-  /** What a GitHub-managed hook is set with now: the stage's origin, the token's keyed hash and the sealed secret. */
-  const fingerprint = (secrets: KeptSecrets): string =>
-    JSON.stringify([ports.github.origin ?? "", secrets.tokenHash, secrets.secret.ciphertext]);
+  /** The Trigger's GitHub-managed hook, kept in line with its definition (`hook-sync.ts`). */
+  const hooks = hookSync({
+    id,
+    store,
+    existing,
+    github: ports.github,
+    opened: (secrets) =>
+      vaulted(
+        Effect.gen(function* () {
+          const vault = yield* ports.vault;
 
-  /** Where the GitHub-managed hook of `definition` is, or null for a Trigger that has none. */
-  const hookStatus = (definition: TriggerDefinition | undefined): GitHubHookStatus | null => {
-    const wanted = githubHookOf(definition);
-
-    if (wanted === undefined) return null;
-
-    const kept = existing()?.githubHook();
-
-    if (kept === undefined || kept.repo !== wanted.repo)
-      return { repo: wanted.repo, state: "pending" };
-
-    if (kept.problem !== undefined) {
-      return { repo: wanted.repo, state: "failed", problem: kept.problem };
-    }
-
-    const secrets = existing()?.secrets();
-
-    const current =
-      kept.hookId !== undefined &&
-      secrets !== undefined &&
-      secrets !== "unreadable" &&
-      kept.synced === fingerprint(secrets);
-
-    return { repo: wanted.repo, state: current ? "ready" : "pending" };
-  };
-
-  /** The span attributes of a hook call's failure: its code, and GitHub's status when it answered. */
-  const failedHook = (error: GitHubHookFailed) =>
-    Effect.annotateCurrentSpan(
-      error.status === undefined
-        ? { "trigger.outcome": error.code }
-        : { "trigger.outcome": error.code, "http.status": error.status },
-    );
-
-  /**
-   * Try each hook due to be deleted at GitHub by `at` once more: one deleted (or gone already) is forgotten, one that
-   * fails waits for a later try, with backoff, until `HOOK_DELETE_MS` after its first, then is given up with a warning.
-   */
-  const deleteHooks = (at: number) =>
-    Effect.gen(function* () {
-      for (const hookDelete of store().hookDeletes()) {
-        if (hookDelete.nextTryAt > at) continue;
-
-        const deleted = yield* Effect.result(
-          ports.github.hooks.delete(hookDelete.repo, hookDelete.hookId),
-        );
-
-        if (Result.isSuccess(deleted)) {
-          store().hookDeleted(hookDelete.repo, hookDelete.hookId);
-
-          continue;
-        }
-
-        const annotated = Effect.annotateLogs({
-          "trigger.id": id,
-          "github.repo": hookDelete.repo,
-          "github.hook": hookDelete.hookId,
-        });
-
-        if (at - hookDelete.since >= HOOK_DELETE_MS) {
-          store().hookDeleted(hookDelete.repo, hookDelete.hookId);
-          yield* Effect.logWarning(
-            "A Trigger gave up deleting its GitHub hook after a day: delete it in the repo's settings",
-            deleted.failure.message,
-          ).pipe(annotated);
-
-          continue;
-        }
-
-        const next: HookDelete = {
-          ...hookDelete,
-          attempts: hookDelete.attempts + 1,
-          nextTryAt: at + backoff(hookDelete.attempts),
-        };
-
-        store().deleteLater(next);
-        yield* Effect.logInfo(
-          "A Trigger's GitHub hook could not be deleted yet",
-          deleted.failure.message,
-        ).pipe(annotated);
-      }
-    });
-
-  /**
-   * The orphan sweep before a hook is made on `repo`: its hooks that send to this stage's `/hooks/<id>/` for a Trigger
-   * the Registry doesn't know (`knownTriggers`), or for this one (a hook it made and lost), are deleted. Without the
-   * Registry's answer no other Trigger's hook is deleted.
-   */
-  const sweep = (repo: string, origin: string): Effect.Effect<void, GitHubHookFailed> =>
-    Effect.gen(function* () {
-      const listed = yield* ports.github.hooks.list(repo);
-      const others = Arr.filter(hookTriggers(listed, origin), (trigger) => trigger !== id);
-
-      const known = yield* ports.github
-        .known(others)
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning(
-              "The orphan sweep could not ask the Registry which Triggers it knows",
-              error.message,
-            ).pipe(Effect.as(others)),
-          ),
-        );
-
-      let deleted = 0;
-
-      for (const orphan of orphanHooks(listed, { origin, own: id, known: new Set(known) })) {
-        const gone = yield* Effect.result(ports.github.hooks.delete(repo, orphan.id));
-
-        if (Result.isSuccess(gone)) deleted++;
-        else
-          yield* Effect.logInfo("An orphan GitHub hook could not be deleted", gone.failure.message);
-      }
-
-      yield* Effect.annotateCurrentSpan({
-        "trigger.outcome": "ok",
-        "trigger.hooks_deleted": deleted,
-      });
-    }).pipe(
-      Effect.tapError(failedHook),
-      Effect.withSpan("trigger.github_hook", {
-        attributes: { "trigger.id": id, "trigger.github_hook.op": "sweep" },
-      }),
-    );
-
-  /**
-   * Point the hook at `wanted`'s repo at the Trigger URL and Signing secret `secrets` hold: update hook `hookId`, or,
-   * for none (or one GitHub no longer has), sweep the repo's orphans and make one. Answers the hook's id.
-   */
-  const placeHook = (
-    wanted: GitHubHookSource,
-    hookId: number | undefined,
-    secrets: KeptSecrets,
-  ): Effect.Effect<number, GitHubHookFailed | TriggerUnreachable> =>
-    Effect.gen(function* () {
-      const { origin } = ports.github;
-
-      if (origin === undefined) {
-        return yield* GitHubHookFailed.make({
-          code: "no_origin",
-          message:
-            "This stage has no public origin (it runs under alchemy dev), so GitHub can't reach its Trigger URLs: no hook is made",
-        });
-      }
-
-      const vault = yield* vaulted(ports.vault);
-      const token = yield* vaulted(vault.open(tokenBinding, secrets.token));
-      const secret = yield* vaulted(vault.open(secretBinding, secrets.secret));
-      const config = { url: `${origin}/hooks/${id}/${token}`, secret, events: wanted.events };
-
-      if (hookId !== undefined) {
-        const updated = yield* ports.github.hooks.update(wanted.repo, hookId, config);
-
-        if (updated === "updated") return hookId;
-      }
-
-      yield* sweep(wanted.repo, origin);
-
-      return yield* ports.github.hooks.create(wanted.repo, config);
-    });
-
-  /**
-   * Bring the GitHub-managed hook in line with `definition` at `at`: made once the Trigger has its secrets, updated
-   * when its URL or Signing secret was replaced, and one of another repo (or of none) deleted. A failure is kept, with
-   * the next try after a backoff that doubles to an hour; `force` tries at once (a sync after a change, a rotation).
-   */
-  const reconcile = (definition: TriggerDefinition, at: number, force: boolean) =>
-    Effect.gen(function* () {
-      const wanted = githubHookOf(definition);
-      let kept = store().githubHook();
-
-      // A hook of another repo goes: a Trigger's source is fixed, so only a definition read wrong ever moves it.
-      if (kept !== undefined && kept.repo !== wanted?.repo) {
-        if (kept.hookId !== undefined) {
-          store().deleteLater({
-            repo: kept.repo,
-            hookId: kept.hookId,
-            since: at,
-            attempts: 0,
-            nextTryAt: at,
-          });
-        }
-
-        store().dropGitHubHook();
-        kept = undefined;
-      }
-
-      const secrets = store().secrets();
-
-      if (wanted === undefined || secrets === undefined || secrets === "unreadable") return;
-
-      const synced = fingerprint(secrets);
-
-      if (kept?.hookId !== undefined && kept.synced === synced && kept.problem === undefined)
-        return;
-
-      if (!force && kept?.nextTryAt !== undefined && kept.nextTryAt > at) return;
-
-      const placed = yield* Effect.result(placeHook(wanted, kept?.hookId, secrets));
-
-      if (Result.isSuccess(placed)) {
-        store().keepGitHubHook({
-          repo: wanted.repo,
-          hookId: placed.success,
-          synced,
-          problem: undefined,
-          attempts: 0,
-          nextTryAt: undefined,
-        });
-
-        return;
-      }
-
-      const { failure } = placed;
-      const attempts = kept?.attempts ?? 0;
-
-      store().keepGitHubHook({
-        repo: wanted.repo,
-        hookId: kept?.hookId,
-        synced: kept?.synced,
-        problem: {
-          code: Schema.is(GitHubHookFailed)(failure) ? failure.code : "unreachable",
-          message: failure.message,
-        },
-        attempts: attempts + 1,
-        nextTryAt: at + backoff(attempts),
-      });
-      yield* Effect.logWarning(
-        "A Trigger's GitHub hook could not be made or updated",
-        failure.message,
-      ).pipe(Effect.annotateLogs({ "trigger.id": id, "github.repo": wanted.repo }));
-    });
+          return {
+            token: yield* vault.open(tokenBinding, secrets.token),
+            secret: yield* vault.open(secretBinding, secrets.secret),
+          };
+        }),
+      ),
+    backoff,
+  });
 
   /**
    * The token and Signing secret as the owner reads them. A webhook Trigger that holds none (its creation did not
@@ -780,7 +543,7 @@ export const triggerHandlers = (options: {
           token,
           secret: webhook.format === "standard" ? standardSecretText(secret) : secret,
         },
-        github: hookStatus(existing()?.definition()) ?? undefined,
+        github: hooks.status(existing()?.definition()) ?? undefined,
       } as const;
     }).pipe(vaulted);
 
@@ -827,13 +590,13 @@ export const triggerHandlers = (options: {
       }
 
       yield* ensureSecrets(definition);
-      yield* reconcile(definition, at, force);
+      yield* hooks.reconcile(definition, at, force);
       yield* arm;
 
       return true;
     });
 
-  const state = (): TriggerState => {
+  const state = (at: number): TriggerState => {
     const kept = existing();
 
     if (kept === undefined) return NO_STATE;
@@ -848,14 +611,14 @@ export const triggerHandlers = (options: {
 
     return {
       definition: kept.definition() ?? null,
-      nextFireAt: nextAt() ?? null,
+      nextFireAt: nextAt(at) ?? null,
       lastFire: kept.fires(1)[0] ?? null,
       pending: pending.length,
       waiting: Option.match(waiting, {
         onNone: () => null,
         onSome: (fire) => ({ since: fire.queuedAt, merged: fire.waiting?.merged ?? 0 }),
       }),
-      github: hookStatus(kept.definition()),
+      github: hooks.status(kept.definition()),
     };
   };
 
@@ -1274,7 +1037,7 @@ export const triggerHandlers = (options: {
       const at = yield* now;
 
       // The hooks still to delete at GitHub, a removed Trigger's among them, whatever its definition says now.
-      if (existing() !== undefined) yield* deleteHooks(at);
+      yield* hooks.deleteDue(at);
 
       const read = yield* Effect.result(ports.definition(id));
 
@@ -1613,9 +1376,11 @@ export const triggerHandlers = (options: {
         const definition = yield* ports.definition(id);
 
         // A sync follows a change: a GitHub hook that failed is tried again at once.
-        yield* adopt(definition, yield* now, true);
+        const at = yield* now;
 
-        return definition === null ? NO_STATE : state();
+        yield* adopt(definition, at, true);
+
+        return definition === null ? NO_STATE : state(at);
       }).pipe(serially),
 
     remove: () => serially(Effect.flatMap(now, retire)),
@@ -1672,7 +1437,7 @@ export const triggerHandlers = (options: {
         // Its GitHub-managed hook takes the new URL or Signing secret in the same call.
         const definition = existing()?.definition();
 
-        if (definition !== undefined) yield* reconcile(definition, yield* now, true);
+        if (definition !== undefined) yield* hooks.reconcile(definition, yield* now, true);
 
         yield* arm;
 
@@ -1681,7 +1446,7 @@ export const triggerHandlers = (options: {
 
     fireLog: (input) => Effect.sync(() => existing()?.fires(input?.limit) ?? []),
 
-    state: () => Effect.sync(state),
+    state: () => Effect.map(now, state),
 
     alarm,
   };

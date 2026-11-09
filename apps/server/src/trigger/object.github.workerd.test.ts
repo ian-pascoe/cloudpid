@@ -1,18 +1,20 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
 // A Trigger's GitHub-managed hook, made by its object over real storage and alarms (`docs/architecture/triggers.md` →
-// GitHub-managed hooks): made on the repo at its first sync, with a token for the installation on the repo's owner that
-// asks for Webhooks: write alone; updated in the same call as New URL and New signing secret; deleted when the Trigger
-// goes, a failed delete tried again for up to a day; made again on a reverted removal; the orphan sweep before it is
-// made; and a failure kept, shown and tried again. GitHub is a fake (`github.fixture.ts`) behind the real hooks client;
-// how each of GitHub's refusals reads is `github-hook.test.ts`'s.
+// GitHub-managed hooks, `hook-sync.ts`): made on the repo at its first sync; updated in the same call as New URL and New
+// signing secret; deleted when the Trigger goes, a failed delete tried again for up to a day; made again on a reverted
+// removal; the orphan sweep before it is made; a failure kept, shown and tried again, at once on a sync; kept when a
+// definition read from an older Registry names none; and made by the alarm when an older object left none. GitHub is a
+// fake (`github.fixture.ts`) behind the real hooks client; the token's permissions, how each of GitHub's refusals reads
+// and which hooks the sweep picks are `github-hook.test.ts`'s.
 import { DEFAULT_ENVIRONMENT, type EnvironmentTriggerInput } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { FakeHook } from "./github.fixture.ts";
 import type { TestTrigger } from "./object.fixture.ts";
-import { HOOK_DELETE_MS, RETRY_MS } from "./object.ts";
+import { HOOK_DELETE_MS } from "./hook-sync.ts";
+import { RETRY_MS } from "./object.ts";
 
 declare global {
   namespace Cloudflare {
@@ -120,15 +122,6 @@ describe("a GitHub-managed hook", () => {
       },
     ]);
     expect(state.github).toEqual({ repo: "o/r", state: "ready" });
-
-    // Its token is minted for the installation on the repo's owner, `o` (11), and asks for Webhooks: write alone.
-    const mints = (await trigger.githubState()).seen.filter(({ path }) =>
-      path.endsWith("/access_tokens"),
-    );
-
-    expect(mints.map(({ path, body }) => [path, JSON.parse(body)])).toEqual([
-      ["/app/installations/11/access_tokens", { permissions: { repository_hooks: "write" } }],
-    ]);
   });
 
   it("is updated in the same call as New URL and as New signing secret", async () => {
@@ -213,18 +206,13 @@ describe("a GitHub-managed hook", () => {
         await registry.createTrigger("known", hooked(), start);
         await stub.setGitHub({
           hooks: {
-            "o/r": [
-              hook(101, `${ORIGIN}/hooks/known/t`),
-              hook(102, `${ORIGIN}/hooks/forgotten/t`),
-              hook(103, "https://pr-7.pi.example/hooks/forgotten/t"),
-              hook(104, "https://ci.example/hook"),
-            ],
+            "o/r": [hook(101, `${ORIGIN}/hooks/known/t`), hook(102, `${ORIGIN}/hooks/forgotten/t`)],
           },
         });
       },
     });
 
-    expect((await hooksOf(trigger)).map(({ id: hookId }) => hookId)).toEqual([101, 103, 104, 1]);
+    expect((await hooksOf(trigger)).map(({ id: hookId }) => hookId)).toEqual([101, 1]);
 
     // A hook of its own it lost track of (as after a wipe whose delete was lost) goes too, before it makes another.
     await trigger.setGitHub({ hooks: { "o/r": [hook(201, `${ORIGIN}/hooks/${id}/old-token`)] } });
@@ -280,6 +268,53 @@ describe("a GitHub-managed hook", () => {
     await trigger.setGitHub({ limit: 20 });
 
     expect(await trigger.sync()).toMatchObject({ github: { state: "ready" } });
+  });
+
+  it("is made at once by a sync after the owner accepts the permission, the App's last failure not told again", async () => {
+    const { trigger, state } = await made({
+      arrange: async (stub) => {
+        await stub.setGitHub({ accepted: [] });
+      },
+    });
+
+    expect(state.github).toMatchObject({ state: "failed", problem: { code: "permission" } });
+
+    // Accepted, then resumed at the same moment: well within the App's wait after a failed mint.
+    await trigger.setGitHub({ accepted: ["o"] });
+
+    expect(await trigger.sync()).toMatchObject({ github: { state: "ready" } });
+  });
+
+  it("is kept when a definition from an older Registry names no repo, and still in place once it does again", async () => {
+    const { trigger } = await made();
+
+    await trigger.freezeReadsWithoutHook();
+    await trigger.sync();
+    await trigger.runAlarm();
+
+    expect(await hooksOf(trigger)).toHaveLength(1);
+    expect((await trigger.githubState()).seen.filter(({ method }) => method === "DELETE")).toEqual(
+      [],
+    );
+    expect(await trigger.logged()).toContainEqual({
+      level: "Warn",
+      message: expect.stringContaining("names no GitHub hook"),
+    });
+  });
+
+  it("is made by the alarm when an older object left the hook it names untried", async () => {
+    const { trigger } = await made();
+
+    await trigger.setGitHub({ hooks: { "o/r": [] } });
+    await trigger.forgetHookRow();
+
+    // Its next touch arms the alarm at once, and the alarm makes the hook.
+    expect((await trigger.state()).nextFireAt).toBe(start);
+
+    await trigger.runAlarm();
+
+    expect(await hooksOf(trigger)).toHaveLength(1);
+    expect(await trigger.state()).toMatchObject({ github: { state: "ready" } });
   });
 
   it("is not made on a stage with no public origin, and says so", async () => {

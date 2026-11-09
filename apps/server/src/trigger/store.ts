@@ -114,6 +114,17 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   },
 ];
 
+/** Every table a wipe that keeps the hooks still to delete empties: all of them but `trigger_github_deletes`. */
+const WIPED_TABLES = [
+  "trigger_meta",
+  "trigger_pending",
+  "trigger_fires",
+  "trigger_secrets",
+  "trigger_counts",
+  "trigger_hook",
+  "trigger_github_hook",
+] as const;
+
 /** How long a delivery's Fire is held against a repeat once it is in the fire log: the Registry's memory of its key. */
 export const DEDUPE_MS = 24 * 60 * 60_000;
 
@@ -607,6 +618,28 @@ export const openTriggerStore = (storage: MigrationStorage) => {
         hook.attempts,
         hook.nextTryAt,
       );
+    },
+
+    /** Keep hook `hookId` on `repo` to delete at GitHub, its first try due at `at`. */
+    deleteHook: (repo: string, hookId: number, at: number): void => {
+      sql.exec(
+        `INSERT INTO trigger_github_deletes (repo, hook_id, since, attempts, next_try_at) VALUES (?, ?, ?, 0, ?)
+           ON CONFLICT (repo, hook_id) DO NOTHING`,
+        repo,
+        hookId,
+        at,
+        at,
+      );
+    },
+
+    /**
+     * Wipe everything but the hooks still to delete, in one transaction: what a removed Trigger's object keeps until
+     * its alarm deleted them at GitHub.
+     */
+    wipeKeepingDeletes: (): void => {
+      storage.transactionSync(() => {
+        for (const table of WIPED_TABLES) sql.exec(`DELETE FROM ${table}`);
+      });
     },
 
     /** Hook `hookId` on `repo` is deleted at GitHub, or given up on. */

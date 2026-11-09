@@ -323,6 +323,30 @@ export class TestTrigger extends DurableObject {
     this.#frozen = await this.#registryStub().triggerDefinition(id);
   }
 
+  /**
+   * Every read of the definition answers the one the Registry holds now without a webhook's `repo` and `events`, as a
+   * Registry older than them answers (after a rollback).
+   */
+  async freezeReadsWithoutHook(): Promise<void> {
+    await this.freezeReads();
+
+    const frozen = this.#frozen;
+
+    if (frozen?.source.type !== "webhook") return;
+
+    const { repo: _repo, events: _events, ...source } = frozen.source;
+
+    this.#frozen = { ...frozen, source };
+  }
+
+  /**
+   * Forget the GitHub-managed hook's row, as an object older than its hook code leaves its storage: the hook it names
+   * was never tried.
+   */
+  forgetHookRow(): void {
+    this.ctx.storage.sql.exec("DELETE FROM trigger_github_hook");
+  }
+
   /** What the next Sessions' `fire` answer, in order; then every one answers `ok`. */
   scriptFires(scripts: ReadonlyArray<FireScript>): void {
     this.#scripts.push(...scripts);
