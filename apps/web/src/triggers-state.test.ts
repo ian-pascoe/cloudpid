@@ -14,9 +14,12 @@ import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { type RegistryHandlers, registryWith, settled } from "./registry.testing.ts";
 import {
+  fireAgainAtom,
+  hookAtom,
   saveTriggerAtom,
   sessionTriggersAtom,
   type TriggerForm,
+  triggerDeliveriesAtom,
   triggerDraftAtom,
   triggerFormAtom,
   triggerNoticeAtom,
@@ -205,6 +208,79 @@ describe("a Session's triggers", () => {
       yield* Effect.yieldNow;
 
       expect(registry.get(sessionTriggersAtom("s-1"))).toEqual([]);
+      registry.dispose();
+    }),
+  );
+});
+
+describe("a webhook Trigger's URL, secret, deliveries and Fire again", () => {
+  const HOOK = { path: "/hooks/t1/tok", secret: "whsec_abc" };
+
+  it.effect("reveals the URL and Signing secret, and shows the new pair once one is replaced", () =>
+    Effect.gen(function* () {
+      const asked: string[] = [];
+
+      const registry = registryWith({
+        revealTrigger: ({ id }) =>
+          Effect.sync(() => {
+            asked.push(`reveal ${id}`);
+
+            return HOOK;
+          }),
+        rotateTrigger: ({ id, what }) =>
+          Effect.sync(() => {
+            asked.push(`rotate ${id} ${what}`);
+
+            return { ...HOOK, path: "/hooks/t1/new" };
+          }),
+      });
+
+      registry.mount(hookAtom("t1"));
+      registry.set(hookAtom("t1"), { kind: "reveal" });
+
+      const revealed = yield* settled(registry, hookAtom("t1"));
+
+      expect(AsyncResult.isSuccess(revealed) && revealed.value).toEqual(HOOK);
+
+      registry.set(hookAtom("t1"), { kind: "rotate", what: "url" });
+
+      const rotated = yield* settled(registry, hookAtom("t1"));
+
+      expect(AsyncResult.isSuccess(rotated) && rotated.value.path).toBe("/hooks/t1/new");
+      expect(asked).toEqual(["reveal t1", "rotate t1 url"]);
+      registry.dispose();
+    }),
+  );
+
+  it.effect("asks for a Fire again under the key it is given, and for the deliveries", () =>
+    Effect.gen(function* () {
+      const asked: string[] = [];
+
+      const registry = registryWith({
+        fireTriggerAgain: ({ id, key }) =>
+          Effect.sync(() => {
+            asked.push(`${id} ${key}`);
+
+            return { key };
+          }),
+        triggerDeliveries: () =>
+          Effect.succeed({
+            counts: [{ day: "2026-11-08", outcome: "filtered", n: 2 }],
+            lastDeliveryAt: 5,
+            pingAt: null,
+          }),
+      });
+
+      registry.mount(fireAgainAtom("t1"));
+      registry.mount(triggerDeliveriesAtom("t1"));
+      registry.set(fireAgainAtom("t1"), "press-1");
+
+      const fired = yield* settled(registry, fireAgainAtom("t1"));
+      const deliveries = yield* settled(registry, triggerDeliveriesAtom("t1"));
+
+      expect(AsyncResult.isSuccess(fired) && fired.value).toEqual({ key: "press-1" });
+      expect(asked).toEqual(["t1 press-1"]);
+      expect(AsyncResult.isSuccess(deliveries) && deliveries.value.lastDeliveryAt).toBe(5);
       registry.dispose();
     }),
   );
