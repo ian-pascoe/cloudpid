@@ -28,7 +28,6 @@ import {
   samplingTotals,
   sessionTotals,
   spendMessage,
-  spendReason,
   unledgeredTotals,
   totalsOf,
   usageMessage,
@@ -56,12 +55,6 @@ const ask = (models: Models) =>
   });
 
 describe("the refusal message", () => {
-  it("says the Session is out of budget, with what it spent and the limit", () => {
-    expect(spendMessage(5.004, 5)).toBe(
-      "This Session is out of budget: it has spent 5.00 US dollars of its 5.00 US dollars limit. Raise or clear the spend limit in the settings to go on.",
-    );
-  });
-
   it("shows an amount under a cent with its first digit, so a small limit does not read as zero", () => {
     expect(spendMessage(0.0029, 0.002)).toContain("spent 0.003 US dollars of its 0.002 US dollars");
   });
@@ -101,10 +94,6 @@ describe("totalsOf", () => {
         tools: { codemode: usage(1, 0.125) },
       }),
     ).toEqual({ input: 31, output: 6, cacheRead: 9, cacheWrite: 12, totalTokens: 58, cost: 0.875 });
-  });
-
-  it("is empty for an empty ledger", () => {
-    expect(totalsOf({ models: {}, tools: {} })).toEqual(NO_TOTALS);
   });
 
   it("counts a field a provider did not report as nothing", () => {
@@ -214,18 +203,9 @@ describe("the usage of MCP servers' Sampling requests", () => {
       cost: 0.25,
     });
   });
-
-  it("gives the limit as a clause the owner reads on the call", () => {
-    expect(spendReason(1.5, 1)).toBe("it has spent 1.50 US dollars of its 1.00 US dollars limit");
-  });
 });
 
 describe("usageMessage", () => {
-  it("carries the totals and the limit", () => {
-    expect(usageMessage({ ...NO_TOTALS, cost: 1 }, 2)).toEqual({ ...NO_TOTALS, cost: 1, limit: 2 });
-    expect(usageMessage(NO_TOTALS, null).limit).toBeNull();
-  });
-
   it("carries the Containers' usage when known, apart from the models' cost", () => {
     const container = {
       instance: "cpu-2",

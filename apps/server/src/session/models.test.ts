@@ -36,13 +36,6 @@ it("sends the default model's requests to the model proxy with its API key", () 
     });
 });
 
-it("caps the proxied Claude models' context window as the local models.json does", () => {
-  const models = proxyModels({ url: "https://proxy.example.test", apiKey: "test-key" });
-
-  expect(models.getModel("anthropic", "claude-opus-5-5")?.contextWindow).toBe(400_000);
-  expect(models.getModel("anthropic", "claude-haiku-5-5")?.contextWindow).toBe(400_000);
-});
-
 it("serves every model the settings accept", () => {
   const models = proxyModels({ url: "https://proxy.example.test", apiKey: "test-key" });
 

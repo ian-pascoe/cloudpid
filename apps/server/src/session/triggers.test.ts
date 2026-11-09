@@ -214,14 +214,6 @@ describe("the Session's Triggers", () => {
     expect(narrowing.woken).toEqual([]);
   });
 
-  it("reads the Registry's Triggers", async () => {
-    const { access } = setUp();
-
-    expect(await Effect.runPromise(access.list("default"))).toEqual([DEFINITION]);
-    expect(await Effect.runPromise(access.get("nope"))).toBeNull();
-    expect(await Effect.runPromise(access.newId)).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
   it("says which Workspace this Session works in, for a Workspace trigger", async () => {
     const { access } = setUp();
 

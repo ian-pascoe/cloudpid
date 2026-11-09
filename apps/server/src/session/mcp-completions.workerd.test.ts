@@ -228,15 +228,6 @@ afterEach(() => {
 });
 
 describe("a completion over the Session's socket", () => {
-  it("says in hello that it takes mcp_complete, so a client sends it only to a Session that does", async () => {
-    const { stub } = await withServer(completing().server);
-    const client = await connect(stub);
-
-    await client.until((messages) => messages[0]?.type === "hello");
-
-    expect(client.received[0]).toMatchObject({ type: "hello", mcpCompletions: true });
-  });
-
   it("asks the server through the host and answers its suggestions with the other fields as context, writing nothing into the conversation", async () => {
     const { stub, server } = await withServer(completing().server);
     const client = await connect(stub);

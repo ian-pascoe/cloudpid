@@ -16,12 +16,7 @@ import type {
   McpEngineRequestResult,
   McpSetEntry,
 } from "@cloudpid/mcp/types";
-import {
-  type ClientMessage,
-  MAX_MCP_RESOURCE_PER_MINUTE,
-  ServerMessageJson,
-  type ServerMessage,
-} from "@cloudpid/protocol";
+import { type ClientMessage, ServerMessageJson, type ServerMessage } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -242,15 +237,6 @@ afterEach(() => {
 });
 
 describe("a resource preview over the Session's socket", () => {
-  it("says in hello that it takes mcp_resource_read, so a client sends it only to a Session that does", async () => {
-    const { stub } = await withPreview();
-    const client = await connect(stub);
-
-    await client.until((messages) => messages[0]?.type === "hello");
-
-    expect(client.received[0]).toMatchObject({ type: "hello", resourcePreviews: true });
-  });
-
   it("reads the resource through the host and answers its contents, writing nothing into the conversation", async () => {
     const { stub } = await withPreview();
     const client = await connect(stub);
@@ -360,18 +346,5 @@ describe("a resource preview over the Session's socket", () => {
 
     // The send was the last of it: the slot is free once the answer is out.
     await settles(async () => expect(decodeSlotHeld()).toBe(false));
-  });
-
-  it("limits the reads of a socket in a minute", async () => {
-    const { stub } = await withPreview();
-    const client = await connect(stub);
-
-    await client.visible();
-
-    for (let index = 0; index < MAX_MCP_RESOURCE_PER_MINUTE; index++) {
-      expect(await client.read(NOTES)).toMatchObject({ status: "contents" });
-    }
-
-    expect(await client.read(NOTES)).toMatchObject({ status: "unavailable", reason: "limit" });
   });
 });

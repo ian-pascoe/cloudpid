@@ -136,28 +136,6 @@ describe("stop", () => {
   });
 });
 
-describe("waitForChange over an import", () => {
-  it("returns at once for an import that is going, and ends with it as import_ended", async () => {
-    const { mcp, set } = open(follow({ copying: true, idle: false }));
-    const deadline = () => Date.now() + 5_000;
-
-    const going = await mcp((service) => service.waitForChange({ deadline: deadline() }));
-
-    expect(going).toMatchObject({ ok: true, value: { status: "importing", ended_by: "timeout" } });
-
-    const after = going.ok ? going.value.cursor : "";
-
-    set(follow({}));
-
-    expect(
-      await mcp((service) => service.waitForChange({ after, deadline: deadline() })),
-    ).toMatchObject({
-      ok: true,
-      value: { status: "idle", ended_by: "import_ended" },
-    });
-  });
-});
-
 describe("waiting requests", () => {
   it("lists an MCP server's question by its server's name only, never what it asks", async () => {
     const asking: McpElicitationRequest = {

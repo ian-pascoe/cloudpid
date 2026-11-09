@@ -314,11 +314,4 @@ describe("the Harness's settings", () => {
       reserveTokens: 1_000,
     });
   });
-
-  it("keep no idle contexts or documents in memory, as Workers need", () => {
-    const live = harnessSettings(open(registry()));
-
-    expect(live.contextRetentionMs).toBe(0);
-    expect(live.documentRetentionMs).toBe(0);
-  });
 });

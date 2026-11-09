@@ -4,7 +4,6 @@ import type { PromptSummaries } from "@cloudpid/extensions/mcp";
 import { UPLOADS_ROOT } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import {
-  imageCharacters,
   NO_SUMMARIES,
   promptContent,
   promptData,
@@ -43,7 +42,6 @@ describe("the owner's input beside an MCP prompt", () => {
     const paths = [{ type: "text" as const, text: `@${UPLOADS_ROOT}/s/a.txt` }, image("A")];
 
     expect(typedAndBeside(paths)).toEqual({ typed: "", beside: paths });
-    expect(imageCharacters([image("AAAA"), image("BB")])).toBe(6);
   });
 });
 

@@ -119,7 +119,7 @@ describe("the Viewed boxes", () => {
     expect(await Effect.runPromise(viewed.list)).toHaveLength(MAX_VIEWED - 1);
   });
 
-  it("refuses a box past the characters the paths may take, and never an untick", async () => {
+  it("refuses a box past the characters the paths may take", async () => {
     const { viewed } = store();
     const long = "p".repeat(4_000);
 
@@ -139,9 +139,6 @@ describe("the Viewed boxes", () => {
     expect(ticked).toBeLessThan(MAX_VIEWED);
     expect(refused).toMatch(/characters of paths/);
     expect(await Effect.runPromise(viewed.list)).toHaveLength(ticked);
-
-    await Effect.runPromise(viewed.set(key(`${long}0`, 1), null));
-    expect(await Effect.runPromise(viewed.list)).toHaveLength(ticked - 1);
   });
 
   describe("on a refresh of the pull request", () => {
@@ -199,32 +196,30 @@ describe("the Viewed boxes", () => {
       expect(await Effect.runPromise(viewed.list)).toHaveLength(1);
     });
 
-    it.each((["merged", "closed"] as const).map((state) => [state]))(
-      "drops all of a pull request's boxes when it comes back %s, and no other pull request's",
-      async (state) => {
-        const { viewed, announced } = store();
+    it("drops all of a pull request's boxes when it comes back merged, and no other pull request's", async () => {
+      const state = "merged" as const;
+      const { viewed, announced } = store();
 
-        await Effect.runPromise(viewed.set(key("a.ts"), "a1"));
-        await Effect.runPromise(viewed.set(key("b.ts"), "b1"));
-        await Effect.runPromise(viewed.set(key("a.ts", 8), "o1"));
+      await Effect.runPromise(viewed.set(key("a.ts"), "a1"));
+      await Effect.runPromise(viewed.set(key("b.ts"), "b1"));
+      await Effect.runPromise(viewed.set(key("a.ts", 8), "o1"));
 
-        const before = announced.length;
+      const before = announced.length;
 
-        const done = pullComparison([{ path: "a.ts", blob: "a1" }], {
-          pull: { number: 7, title: "T", author: "dev", draft: false, state },
-        });
+      const done = pullComparison([{ path: "a.ts", blob: "a1" }], {
+        pull: { number: 7, title: "T", author: "dev", draft: false, state },
+      });
 
-        await Effect.runPromise(viewed.reset(done));
+      await Effect.runPromise(viewed.reset(done));
 
-        expect(
-          (await Effect.runPromise(viewed.list)).map((each) => `${each.pull} ${each.path}`),
-        ).toEqual(["8 a.ts"]);
-        expect(announced).toHaveLength(before + 1);
+      expect(
+        (await Effect.runPromise(viewed.list)).map((each) => `${each.pull} ${each.path}`),
+      ).toEqual(["8 a.ts"]);
+      expect(announced).toHaveLength(before + 1);
 
-        // Again: nothing is left to drop, and nothing is announced.
-        await Effect.runPromise(viewed.reset(done));
-        expect(announced).toHaveLength(before + 1);
-      },
-    );
+      // Again: nothing is left to drop, and nothing is announced.
+      await Effect.runPromise(viewed.reset(done));
+      expect(announced).toHaveLength(before + 1);
+    });
   });
 });

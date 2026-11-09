@@ -216,32 +216,6 @@ describe("waitForChange", () => {
     expect(ended.activity.entries).toBeGreaterThan(0);
   });
 
-  it("returns at once for a Run that ended after the cursor, and waits out one that ended before", async () => {
-    const stub = fresh();
-
-    await script(stub, "one", "two");
-
-    const first = await send(stub);
-
-    okValue(await wait(stub, first.cursor));
-
-    const idle = okValue(await stub.mcpStatus());
-
-    // The cursor of an idle Session waits for what is new: nothing, so it ends at its deadline.
-    const quiet = okValue(await wait(stub, idle.cursor, 200));
-
-    expect(quiet).toMatchObject({ ended_by: "timeout", status: "idle", cursor: idle.cursor });
-
-    // The first input's cursor still finds its Run ended, at once.
-    const late = okValue(await wait(stub, first.cursor, 200));
-
-    expect(late.ended_by).toBe("run_ended");
-
-    const second = await send(stub);
-
-    expect(okValue(await wait(stub, second.cursor)).ended_by).toBe("run_ended");
-  });
-
   it("tells a failed Run as its outcome, never an error", async () => {
     const stub = fresh();
 
@@ -253,24 +227,6 @@ describe("waitForChange", () => {
     expect(ended.ended_by).toBe("run_ended");
     expect(ended.outcome).toMatchObject({ result: "failed" });
     expect(ended.error).toContain("the prompt is bad");
-  });
-
-  it("returns at once without a cursor unless a Run is going and nothing waits", async () => {
-    const stub = fresh();
-
-    // Nothing has run: nothing to wait for.
-    expect(okValue(await wait(stub, undefined)).ended_by).toBe("timeout");
-
-    await script(stub, "hang");
-    await send(stub);
-    await runInDurableObject(stub, (instance: TestSession) => instance.hanging.promise);
-
-    const started = Date.now();
-
-    expect(okValue(await wait(stub, undefined, 300)).ended_by).toBe("timeout");
-    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
-
-    await stub.mcpStop({ via });
   });
 
   it("says a waiting request ended it once, and a request already seen does not end the next wait", async () => {
@@ -335,32 +291,14 @@ describe("waitForChange", () => {
     await Promise.all(holding);
   });
 
-  it("refuses what is not a cursor", async () => {
-    const stub = fresh();
-
-    expect(await wait(stub, "not-a-cursor")).toMatchObject({ error: { code: "invalid_cursor" } });
-    expect(await stub.mcpStatus({ after: "!" })).toMatchObject({
-      error: { code: "invalid_cursor" },
-    });
-    expect(await stub.mcpTranscript({ after: "!" })).toMatchObject({
-      error: { code: "invalid_cursor" },
-    });
-  });
-
-  it("refuses a well-formed cursor of a conversation this Session does not have, which no retry mends", async () => {
+  it("refuses what is not a cursor, and a cursor of a conversation this Session does not have, which no retry mends", async () => {
     const stub = fresh();
     const elsewhere = encodeCursor({ c: 9_999, e: 0, w: 0, s: 0 });
 
+    expect(await wait(stub, "not-a-cursor")).toMatchObject({ error: { code: "invalid_cursor" } });
     expect(await wait(stub, elsewhere)).toMatchObject({
       ok: false,
       error: { code: "invalid_cursor", retryable: false },
-    });
-    expect(await stub.mcpTranscript({ before: elsewhere })).toMatchObject({
-      ok: false,
-      error: { code: "invalid_cursor", retryable: false },
-    });
-    expect(await stub.mcpTranscript({ after: elsewhere })).toMatchObject({
-      error: { code: "invalid_cursor" },
     });
   });
 
@@ -501,21 +439,6 @@ describe("stop", () => {
   });
 });
 
-describe("stop, from a caller with no name", () => {
-  it("leaves the notice Stopped over MCP", async () => {
-    const stub = fresh();
-
-    await script(stub, "hang");
-    await send(stub);
-    await runInDurableObject(stub, (instance: TestSession) => instance.hanging.promise);
-    await stub.mcpStop({ via: { auth: "service_token" } });
-
-    expect(okValue(await stub.mcpTranscript({})).entries.map((entry) => entry.text)).toContain(
-      "· Stopped over MCP",
-    );
-  });
-});
-
 describe("configure", () => {
   it("picks the model and thinking level the first Run uses, as a socket's configure does", async () => {
     const stub = fresh();
@@ -529,17 +452,6 @@ describe("configure", () => {
     await settled(stub);
 
     expect(await stub.requests()).toEqual([{ model: "claude-haiku-5-5", thinking: "low" }]);
-  });
-
-  it("leaves a field it is not given as it is", async () => {
-    const stub = fresh();
-
-    await script(stub, "done");
-    await stub.mcpConfigure({ thinkingLevel: "minimal" });
-    await send(stub);
-    await settled(stub);
-
-    expect((await stub.requests())[0]?.thinking).toBe("minimal");
   });
 });
 

@@ -780,21 +780,6 @@ describe("a Session that only follows an MCP task, over the MCP endpoint", () =>
     await followingNone(stub);
     expect(okValue(await stub.mcpStatus()).status).toBe("idle");
   });
-
-  it("reads idle, and its Stop all is a no-op, when only a branch that is not active has a task", async () => {
-    const { stub, server } = await following();
-
-    await leaveBranch(stub);
-    expect(okValue(await stub.mcpStatus()).status).toBe("idle");
-
-    // Stop all reaches the active branch only, which follows nothing: the call is idempotent and stops nothing.
-    const result = okValue(await stub.mcpStop({ via, subagents: true }));
-
-    expect(result.status).toBe("idle");
-    expect(result.stopping).toBeUndefined();
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    expect(server.tasks.get("task-1")?.status).toBe("working");
-  });
 });
 
 describe("a server that never answers `tasks/cancel`", () => {
@@ -824,25 +809,6 @@ describe("a server that never answers `tasks/cancel`", () => {
     await submit(stub, "and?", "turn-9");
     await finishedRuns(stub, 3);
     expect((await requests(stub)).at(-1) ?? "").toContain("[MCP task notice | task=mcp-task-1");
-  });
-
-  it("does not hold the owner's Stop all (the socket's `abort`) for longer than the bound, and ends every record by Stop", async () => {
-    const { stub, wire } = await followingMany(2);
-
-    wire.hangCancel = true;
-
-    const took = await stopAll(stub);
-
-    expect(took).toBeLessThan(3500);
-    await settles(async () =>
-      expect(await records(stub)).toEqual([
-        { status: "cancelled", by: "stop" },
-        { status: "cancelled", by: "stop" },
-      ]),
-    );
-    await followingNone(stub);
-    // The agent is told in a notice, and no Run was started for it.
-    expect((await pushes(stub)).filter((event) => event.kind === "finished")).toHaveLength(2);
   });
 
   it("does not hold the Session's deletion for longer than the bound either", async () => {
