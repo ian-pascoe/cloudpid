@@ -46,6 +46,7 @@
     "./approval-tools": "./src/approval-tools.ts",
     "./approval-cores": "./src/approval-cores.ts",
     "./environment-size-limit": "./src/environment-size-limit.ts",
+    "./environment-deletes": "./src/environment-deletes.ts",
     "./triggers": "./src/triggers.ts",
     "./images": "./src/images.ts",
     "./models": "./src/models.ts",
