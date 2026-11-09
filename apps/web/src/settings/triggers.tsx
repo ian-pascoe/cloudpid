@@ -795,7 +795,7 @@ export const TriggerFormView = ({
           className={TEXT_AREA}
         />
       </Field>
-      {!editing && (
+      {!editing && draft.kind !== "session" && (
         <Field
           label="Fires on"
           htmlFor={id("source")}

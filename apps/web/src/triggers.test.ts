@@ -500,4 +500,10 @@ describe("a Session trigger's form", () => {
       whenBusy: "steer",
     });
   });
+
+  it("never switches to a webhook: a Session trigger takes a Schedule only", () => {
+    const draft = triggerDraftOf(SESSION);
+
+    expect(withSource(draft, "webhook")).toBe(draft);
+  });
 });

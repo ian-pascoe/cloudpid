@@ -207,14 +207,15 @@ const rowsUnchanged = (draft: TriggerDraft, opened: TriggerDefinition | undefine
 
 /**
  * `draft` with its source switched to a Schedule or a webhook: `when_busy` follows to the new source's default while it
- * still is the old one's (a webhook Trigger starts a Session for each delivery, a Schedule's skips).
+ * still is the old one's (a webhook Trigger starts a Session for each delivery, a Schedule's skips). A Session trigger
+ * takes a Schedule only, so its draft never switches.
  */
 export const withSource = (draft: TriggerDraft, source: "schedule" | "webhook"): TriggerDraft => {
   const scheduled = source === "schedule";
 
-  if (draft.scheduled === scheduled) return draft;
+  if (draft.scheduled === scheduled || draft.kind === "session") return draft;
 
-  const kind = draft.workspace === null ? "environment" : "workspace";
+  const { kind } = draft;
   const was = defaultWhenBusy(kind, draft.scheduled ? SCHEDULE_DEFAULT : WEBHOOK_DEFAULT);
   const now = defaultWhenBusy(kind, scheduled ? SCHEDULE_DEFAULT : WEBHOOK_DEFAULT);
 
