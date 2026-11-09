@@ -12,7 +12,9 @@ import * as Record from "effect/Record";
 import { environmentGet, environmentList } from "./environment.ts";
 import { CONTAINER_SETTING_TOOLS, environmentSecretBuild } from "./environment-changes.ts";
 import { settingsGet } from "./settings.ts";
+import { settingsReset, SETTINGS_CHANGE_TOOLS } from "./settings-changes.ts";
 import { settingsMcpGet, settingsMcpList } from "./settings-mcp.ts";
+import { SETTINGS_MCP_CHANGE_TOOLS, settingsMcpReload } from "./settings-mcp-changes.ts";
 
 export * from "./change-output.ts";
 
@@ -43,7 +45,11 @@ export * from "./secret-name.ts";
 
 export * from "./settings.ts";
 
+export * from "./settings-changes.ts";
+
 export * from "./settings-mcp.ts";
+
+export * from "./settings-mcp-changes.ts";
 
 export * from "./settings-mcp-output.ts";
 
@@ -52,8 +58,8 @@ export * from "./settings-output.ts";
 export * from "./surface.ts";
 
 /**
- * Every harness tool's declaration, by name: the five reads, the nine Container setting tools and
- * `environment_secret_build`.
+ * Every harness tool's declaration, by name: the five reads, the nine Container setting tools,
+ * `environment_secret_build`, the Settings' changing tools, `settings_mcp_reload` and the MCP servers' narrowing tools.
  */
 export const HARNESS_TOOLS = {
   environment_list: environmentList,
@@ -63,6 +69,10 @@ export const HARNESS_TOOLS = {
   settings_get: settingsGet,
   settings_mcp_list: settingsMcpList,
   settings_mcp_get: settingsMcpGet,
+  ...SETTINGS_CHANGE_TOOLS,
+  settings_reset: settingsReset,
+  settings_mcp_reload: settingsMcpReload,
+  ...SETTINGS_MCP_CHANGE_TOOLS,
 } as const;
 
 export type HarnessToolName = keyof typeof HARNESS_TOOLS;

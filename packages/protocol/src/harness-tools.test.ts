@@ -22,6 +22,23 @@ const SCHEMAS = Arr.flatMap(HARNESS_TOOL_NAMES, (name) =>
   ]),
 );
 
+/** The writes that are no Agent change, so they take no `request_id` and have no replayed answer. */
+const NO_REQUEST_ID: ReadonlyArray<string> = ["settings_mcp_reload"];
+
+/** The tools the endpoint does not serve yet: no endpoint text names them (the stages that serve them add them). */
+const UNSERVED_TOOLS = [
+  "tool_search",
+  "settings_spend_limit_set",
+  "settings_subagent_depth_set",
+  "settings_subagent_workspaces_set",
+  "settings_instructions_set",
+  "settings_mcp_enable",
+  "settings_mcp_add",
+  "settings_mcp_update",
+  "container_restart",
+  "secret_ask",
+];
+
 /** `schema`'s JSON Schema, as MCP shows it to a client. */
 const jsonSchemaOf = (schema: Schema.Top) => Schema.toJsonSchemaDocument(schema).schema;
 
@@ -44,8 +61,14 @@ describe("the harness tools' declarations", () => {
 
       expect(session, name).not.toContain("request_id");
 
-      if (tool.annotations.readOnlyHint) {
+      if (tool.annotations.readOnlyHint || NO_REQUEST_ID.includes(name)) {
         expect(endpoint, name).not.toContain("request_id");
+
+        if (NO_REQUEST_ID.includes(name)) {
+          // Its endpoint input is the Session's.
+          expect(endpoint, name).toEqual(session);
+          expect(propertyNames(tool.endpoint.output), name).not.toContain("replayed");
+        }
       } else {
         expect(endpoint, name).toContain("request_id");
         expect(jsonSchemaOf(tool.endpoint.input), name).not.toMatchObject({
@@ -72,6 +95,20 @@ describe("the harness tools' declarations", () => {
       const shown = `${tool.endpoint.description}\n${JSON.stringify(jsonSchemaOf(tool.endpoint.input))}`;
 
       expect(shown, name).not.toMatch(/\buser\b/);
+    }
+  });
+
+  it("name no tool the endpoint does not serve in a change tool's endpoint description and input", () => {
+    for (const name of HARNESS_TOOL_NAMES) {
+      const tool = HARNESS_TOOLS[name];
+
+      if (tool.annotations.readOnlyHint) continue;
+
+      const shown = `${tool.endpoint.description}\n${JSON.stringify(jsonSchemaOf(tool.endpoint.input))}`;
+
+      for (const unserved of UNSERVED_TOOLS) {
+        expect(shown, `${name} names ${unserved}`).not.toContain(unserved);
+      }
     }
   });
 
