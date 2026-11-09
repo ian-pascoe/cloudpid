@@ -67,6 +67,11 @@ export type TriggerState = {
   readonly nextFireAt: number | null;
   readonly lastFire: FireRecord | null;
   readonly pending: number;
+  /**
+   * The Fire waiting for its Workspace to be idle (`wait`), when there is one: when it was queued and how many later
+   * Fires were merged into it.
+   */
+  readonly waiting?: { readonly since: number; readonly merged: number } | null;
 };
 
 /** What the owner's Fire now answers: the Fire's key once it waits, or why there is none. */
@@ -132,7 +137,13 @@ const sameSchedule = (a: TriggerDefinition | undefined, b: TriggerDefinition): b
 
 const decodeDefinition = Schema.decodeUnknownOption(TriggerDefinition);
 
-const NO_STATE: TriggerState = { definition: null, nextFireAt: null, lastFire: null, pending: 0 };
+const NO_STATE: TriggerState = {
+  definition: null,
+  nextFireAt: null,
+  lastFire: null,
+  pending: 0,
+  waiting: null,
+};
 
 /** The outcome a span and its readers name: `started`, `skipped:<why>` or `failed`. */
 const outcomeName = (outcome: FireOutcome): string =>
@@ -269,17 +280,39 @@ export const triggerHandlers = (options: {
 
     if (kept === undefined) return NO_STATE;
 
+    const pending = kept.pending();
+
+    // As `drain` merges into it: the one not yet let through.
+    const waiting = Arr.findFirst(
+      pending,
+      (fire) => fire.waiting !== undefined && fire.session === undefined,
+    );
+
     return {
       definition: kept.definition() ?? null,
       nextFireAt: nextAt() ?? null,
       lastFire: kept.fires(1)[0] ?? null,
-      pending: kept.pending().length,
+      pending: pending.length,
+      waiting: Option.match(waiting, {
+        onNone: () => null,
+        onSome: (fire) => ({ since: fire.queuedAt, merged: fire.waiting?.merged ?? 0 }),
+      }),
     };
   };
 
   /** Record what came of pending Fire `pending` at `at`; a failure is pushed to the owner. */
-  const settle = (pending: PendingFire, outcome: FireOutcome, at: number) =>
+  const settle = (pending: PendingFire, outcomeOf: FireOutcome, at: number) =>
     Effect.gen(function* () {
+      // The later Fires merged into a Fire that fails or is skipped for good are lost with it: the fire log says how many.
+      const merged = pending.waiting?.merged ?? 0;
+      let outcome = outcomeOf;
+
+      if (merged > 0 && outcomeOf.type === "failed") {
+        outcome = { ...outcomeOf, reason: `${outcomeOf.reason}, ${String(merged)} merged` };
+      } else if (merged > 0 && outcomeOf.type === "skipped") {
+        outcome = { ...outcomeOf, merged };
+      }
+
       store().record({ key: pending.key, at, source: pending.source, outcome });
       yield* Effect.annotateCurrentSpan("trigger.outcome", outcomeName(outcome));
 
@@ -307,6 +340,10 @@ export const triggerHandlers = (options: {
     };
 
     if (pending.source.type === "schedule") header.scheduledAt = pending.source.scheduledAt;
+
+    if (pending.waiting !== undefined && pending.waiting.merged > 0) {
+      header.coalesced = pending.waiting.merged;
+    }
 
     const request: Types.Mutable<FireRequest> = {
       trigger: { id: definition.id, name: definition.name },
@@ -336,6 +373,25 @@ export const triggerHandlers = (options: {
         if (definition === undefined) return true;
 
         if (definition.paused && pending.session === undefined) return true;
+
+        // A Workspace trigger holds at most one waiting Fire: a later one is merged into it, whether or not the
+        // Workspace is idle by now, so the Fires start in the order they came.
+        if (definition.whenBusy === "wait" && pending.session === undefined) {
+          const waiting = Arr.findFirst(
+            store().pending(),
+            (other) =>
+              other.key !== pending.key &&
+              other.waiting !== undefined &&
+              other.session === undefined,
+          );
+
+          if (pending.waiting === undefined && Option.isSome(waiting)) {
+            store().coalesce(waiting.value.key);
+            yield* settle(pending, { type: "skipped", reason: "coalesced" }, at);
+
+            return true;
+          }
+        }
 
         const admission: Types.Mutable<FireAdmission> = {
           trigger: id,
@@ -378,6 +434,12 @@ export const triggerHandlers = (options: {
             return false;
           case "paused":
             return yield* adopt({ ...definition, paused: true }, at);
+          case "busy":
+            // A Workspace trigger's Fire waits for its Workspace to be idle: tried again a minute later.
+            store().wait(pending.key, at + RETRY_MS);
+            yield* Effect.annotateCurrentSpan("trigger.outcome", "waiting");
+
+            return true;
           case "skipped":
             yield* settle(pending, { type: "skipped", reason: answer.reason }, at);
 

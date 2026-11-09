@@ -49,6 +49,8 @@ import { InAppLink } from "../in-app-link.tsx";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import { navigate, settingsPath } from "../router.ts";
 import { sessionListAtom } from "../sessions.ts";
+import { triggersInAtom } from "../triggers-state.ts";
+import { oneOrMany, triggerNames } from "../triggers.ts";
 import { environmentNameForm } from "./forms.ts";
 import { ConfirmField, Field, Group, SectionFormView, SettingsSection } from "./parts.tsx";
 import { sessionCount } from "./workspaces.tsx";
@@ -262,6 +264,8 @@ const DeleteEnvironmentDialog = ({
   const busy = deleted.waiting;
   const confirmed = deleteConfirmed(name, typed);
   const count = sessionCount(sessions);
+  // Read while the dialog is open only: a list that has not answered names none.
+  const triggers = useAtomValue(triggersInAtom(id)) ?? [];
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -285,6 +289,16 @@ const DeleteEnvironmentDialog = ({
             : `${count}, with their conversations and history. Running ones stop first.`}
         </li>
         <li>Its repos, Container settings, secrets and build.</li>
+        {triggers.length > 0 && (
+          <li>
+            {oneOrMany(triggers.length, "Its trigger", "Its triggers")}{" "}
+            <span className="font-medium">
+              {triggerNames(triggers.map((overview) => overview.definition))}
+            </span>
+            , workspace triggers included, with{" "}
+            {oneOrMany(triggers.length, "its fire log", "their fire logs")}.
+          </li>
+        )}
       </ul>
       <ConfirmField
         id={`confirm-${id}`}
@@ -343,7 +357,7 @@ const DeleteGroup = ({ environment }: { environment: EnvironmentRecord }) => {
   return (
     <Group
       title="Delete"
-      description="Deletes its workspaces with their files and Containers, its sessions, repos, Container settings, secrets and build, for good."
+      description="Deletes its workspaces with their files and Containers, its sessions, triggers, repos, Container settings, secrets and build, for good."
     >
       <Button
         type="button"

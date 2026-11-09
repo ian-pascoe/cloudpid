@@ -5,20 +5,22 @@
 import {
   type AgentChange,
   asChangeJson,
-  type EnvironmentTriggerInput,
   triggerChangeJson,
   type TriggerChanged,
   type TriggerChangeValue,
   type TriggerDefinition,
   triggerField,
+  type TriggerInput,
   type TriggerPatch,
+  defaultWhenBusy,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { ChangeAuthor } from "./environment.ts";
-import type { TriggerAccessService } from "./triggers.ts";
+import { EnvironmentsError } from "./environment.ts";
+import type { TriggerAccessService, TriggerWorkspace } from "./triggers.ts";
 
 const sameValue = Schema.toEquivalence(Schema.NullOr(Schema.Json));
 
@@ -41,6 +43,8 @@ export type FakeTriggers = {
 export const fakeTriggers = (
   environments: Readonly<Record<string, string>>,
   now = 1_000,
+  /** The Workspace the fake's Session works in; none: it has no Workspace the Registry lists. */
+  here?: TriggerWorkspace,
 ): FakeTriggers => {
   const held = new Map<string, TriggerDefinition>();
   const changes: Array<AgentChange & { readonly author: ChangeAuthor }> = [];
@@ -138,18 +142,22 @@ export const fakeTriggers = (
     return next;
   };
 
-  const create = (
-    id: string,
-    input: EnvironmentTriggerInput,
-    author: ChangeAuthor,
-  ): TriggerChanged => {
+  const create = (id: string, input: TriggerInput, author: ChangeAuthor): TriggerChanged => {
     const known = held.get(id);
 
     if (known !== undefined) return { status: "unchanged", definition: known };
 
-    if (environments[input.environment] === undefined) return { status: "missing" };
+    const environment = input.kind === "workspace" ? here?.environment : input.environment;
 
-    const { kind, environment, name, message, source, whenBusy, base, model, thinking } = input;
+    if (environment === undefined || environments[environment] === undefined) {
+      return { status: "missing" };
+    }
+
+    if (input.kind === "workspace" && input.workspace !== here?.id) {
+      return { status: "invalid", problem: `There is no Workspace ${input.workspace}` };
+    }
+
+    const { kind, name, message, source, whenBusy, model, thinking } = input;
 
     const definition: Types.Mutable<TriggerDefinition> = {
       id,
@@ -159,13 +167,17 @@ export const fakeTriggers = (
       name,
       message,
       source,
-      whenBusy: whenBusy ?? "skip",
+      whenBusy: whenBusy ?? defaultWhenBusy(kind, source),
       paused: false,
       createdAt: now,
       updatedAt: now,
     };
 
-    if (base !== undefined) definition.base = base;
+    if (input.kind === "workspace" && here !== undefined) {
+      definition.workspace = { id: here.id, branch: here.branch };
+    }
+
+    if (input.kind === "environment" && input.base !== undefined) definition.base = input.base;
 
     if (model !== undefined) definition.model = model;
 
@@ -186,6 +198,10 @@ export const fakeTriggers = (
       ),
     get: (id) => Effect.sync(() => held.get(id) ?? null),
     newId: Effect.sync(() => ids[drawn++] ?? `0190-${String(drawn)}`),
+    workspace:
+      here === undefined
+        ? Effect.fail(EnvironmentsError.make({ message: "This Session has no Workspace" }))
+        : Effect.succeed(here),
     create: ({ id, trigger, author }) =>
       Effect.sync(() => {
         reached.push("create");

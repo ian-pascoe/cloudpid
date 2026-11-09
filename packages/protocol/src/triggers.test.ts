@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   armsTrigger,
+  baseProblem,
   defaultWhenBusy,
   sourceProblem,
   webhookOf,
@@ -25,6 +26,7 @@ import {
   triggerField,
   triggerMessageProblem,
   triggerNameProblem,
+  whenBusyProblem,
 } from "./triggers.ts";
 import { cleanPayload } from "./trigger-payload.ts";
 
@@ -127,14 +129,14 @@ describe("a value a later slice added", () => {
     expect(
       read(TriggerDefinition, {
         ...definition,
-        kind: "workspace",
+        kind: "later-kind",
         source: { type: "webhook", format: "slack" },
-        whenBusy: "wait",
+        whenBusy: "later-overlap",
       }),
     ).toMatchObject({ kind: "unknown", source: { type: "unknown" }, whenBusy: "skip" });
     expect(read(FireSource, { type: "slack", delivery: "d1" })).toEqual({ type: "unknown" });
     expect(read(FireOutcome, { type: "sent", delivery: "queued" })).toEqual({ type: "unknown" });
-    expect(read(FireOutcome, { type: "skipped", reason: "coalesced" })).toEqual({
+    expect(read(FireOutcome, { type: "skipped", reason: "later-reason" })).toEqual({
       type: "skipped",
       reason: "unknown",
     });
@@ -242,8 +244,10 @@ describe("a webhook source", () => {
   });
 
   it("starts a Fire's Session anyway when busy unless told otherwise, as a Schedule skips", () => {
-    expect(defaultWhenBusy(webhook)).toBe("start");
-    expect(defaultWhenBusy({ type: "schedule", cron: "@daily", zone: "UTC" })).toBe("skip");
+    expect(defaultWhenBusy("environment", webhook)).toBe("start");
+    expect(defaultWhenBusy("environment", { type: "schedule", cron: "@daily", zone: "UTC" })).toBe(
+      "skip",
+    );
   });
 
   it("is refused for a match that can't filter, as a Schedule is for a cron it can't read", () => {
@@ -306,5 +310,25 @@ describe("a webhook Fire's words", () => {
       delivery: "d1",
       event: "push",
     });
+  });
+});
+
+describe("the options a kind takes", () => {
+  it("waits only as a Workspace trigger, which waits by default", () => {
+    // A Workspace trigger waits whatever its source: a webhook's deliveries would be lost by a skip.
+    expect(defaultWhenBusy("workspace", { type: "webhook", format: "github" })).toBe("wait");
+    expect(defaultWhenBusy("workspace", { type: "schedule", cron: "@daily", zone: "UTC" })).toBe(
+      "wait",
+    );
+    expect(whenBusyProblem("workspace", "wait")).toBeUndefined();
+    expect(whenBusyProblem("environment", "wait")).toContain("Only a Workspace trigger");
+    expect(whenBusyProblem("environment", "start")).toBeUndefined();
+  });
+
+  it("takes a base only as an Environment trigger", () => {
+    expect(baseProblem("environment", "develop")).toBeUndefined();
+    expect(baseProblem("workspace", undefined)).toBeUndefined();
+    expect(baseProblem("workspace", null)).toBeUndefined();
+    expect(baseProblem("workspace", "develop")).toContain("takes no base");
   });
 });

@@ -7,18 +7,22 @@
 import { ThinkingLevel } from "@cloudpid/config";
 import {
   defaultWhenBusy,
-  type EnvironmentTriggerInput,
   fireTitle,
   senderText,
   type TriggerSource,
   webhookFireTitle,
   sourceProblem,
   TriggerDefinition,
+  type TriggerInput,
   triggerMessageProblem,
   triggerNameProblem,
   type TriggerChangeValue,
+  type TriggerKind,
   type TriggerPatch,
   type TriggerSourceInput,
+  baseProblem,
+  whenBusyProblem,
+  type WorkspaceRef,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -27,12 +31,13 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type {
+  Deletion,
   EnvironmentDeletion,
   RegistryStorage,
   RegistryStore,
   SessionRefusal,
 } from "./store.ts";
-import { triggerIdTaken } from "./messages.ts";
+import { noWorkspace, subagentWorkspaceHoldsNoTrigger, triggerIdTaken } from "./messages.ts";
 
 /** What a write of a Trigger answers: the definition as kept, or why nothing was kept. */
 export type TriggerWrite =
@@ -59,7 +64,7 @@ export type FireAdmission = {
 /**
  * What `admitFire` answers: the Session to send the Fire to (`started`; `repeated` for a Fire admitted before, whose
  * Session is answered again), `stale` with the current definition for the object to check again, or why the Fire does
- * not go: `removed`, `paused`, `skipped` (`overlap`) or `failed`. A reader treats a status it does not know as `failed`.
+ * not go: `busy` (a Workspace trigger's `wait`: tried again later), `removed`, `paused`, `skipped` (`overlap`) or `failed`. A reader treats a status it does not know as `failed`.
  */
 export type FireAdmitted =
   | {
@@ -69,6 +74,8 @@ export type FireAdmitted =
       readonly repeated?: true | undefined;
     }
   | { readonly status: "stale"; readonly definition: TriggerDefinition }
+  /** A Workspace trigger's `wait`: some Session in its Workspace isn't idle, so the Fire stays pending to try again. */
+  | { readonly status: "busy" }
   | { readonly status: "removed" }
   | { readonly status: "paused" }
   | { readonly status: "skipped"; readonly reason: "overlap" }
@@ -79,6 +86,8 @@ type TriggerRow = {
   readonly revision: number;
   readonly kind: string;
   readonly environment: string;
+  /** The Workspace a Workspace trigger keeps; null for the other kinds. */
+  readonly workspace: string | null;
   readonly name: string;
   readonly message: string;
   readonly source: string;
@@ -117,8 +126,10 @@ const toFields = (row: TriggerRow): TriggerDefinition =>
     updatedAt: row.updated_at,
   });
 
-const toDefinition = (row: TriggerRow): TriggerDefinition => {
+const toDefinition = (row: TriggerRow, workspace?: WorkspaceRef): TriggerDefinition => {
   const definition: Types.Mutable<TriggerDefinition> = toFields(row);
+
+  if (workspace !== undefined) definition.workspace = workspace;
 
   if (row.base !== null) definition.base = row.base;
 
@@ -183,17 +194,25 @@ const changedSource = (
   return { source: requested !== undefined && kept.type === "schedule" ? requested : kept };
 };
 
-/** Why `fields` can't be a Trigger's, or undefined when they can. */
-const fieldsProblem = (fields: {
-  readonly name: string;
-  readonly message: string;
-  readonly source: TriggerSourceInput;
-  readonly base: string | null;
-}): string | undefined =>
+/** Why `fields` can't be those of a Trigger of `kind`, or undefined when they can. */
+const fieldsProblem = (
+  kind: TriggerKind,
+  fields: {
+    readonly name: string;
+    readonly message: string;
+    readonly source: TriggerSourceInput;
+    readonly when_busy: string;
+    readonly base: string | null;
+  },
+): string | undefined =>
   triggerNameProblem(fields.name) ??
   triggerMessageProblem(fields.message) ??
   sourceProblem(fields.source) ??
-  (fields.base !== null && fields.base.trim() === "" ? "A base branch can't be empty" : undefined);
+  whenBusyProblem(kind, fields.when_busy) ??
+  (fields.base !== null && fields.base.trim() === ""
+    ? "A base branch can't be empty"
+    : undefined) ??
+  baseProblem(kind, fields.base);
 
 /** Why `refusal` kept a Fire's Session from being registered, as the fire log says it. */
 const refusalReason = (refusal: SessionRefusal): string => {
@@ -202,6 +221,8 @@ const refusalReason = (refusal: SessionRefusal): string => {
       return "its Environment is gone";
     case "branch-taken":
       return "the Workspace's branch is taken";
+    case "no-workspace":
+      return "its Workspace is gone";
     default:
       return `the Session was refused (${refusal.refused})`;
   }
@@ -258,10 +279,40 @@ export const openTriggers = (
   storage: RegistryStorage,
   store: Pick<
     RegistryStore,
-    "getEnvironment" | "getSession" | "createSession" | "requestedSession" | "deleteEnvironment"
+    | "getEnvironment"
+    | "getSession"
+    | "getWorkspace"
+    | "createSession"
+    | "requestedSession"
+    | "deleteEnvironment"
+    | "deleteWorkspace"
+    | "deleteWorkspaceWithTriggers"
   >,
 ) => {
   const { sql } = storage;
+
+  /** The ids of the active Triggers kept for Workspace `id`. */
+  const activeWorkspaceTriggers = (id: string): ReadonlyArray<string> =>
+    Arr.map(
+      sql
+        .exec<{ id: string }>(
+          "SELECT id FROM triggers WHERE workspace = ? AND removed_at IS NULL",
+          id,
+        )
+        .toArray(),
+      (found) => found.id,
+    );
+
+  /** `row` as a definition, its Workspace named by id and branch. */
+  const toDef = (found: TriggerRow): TriggerDefinition => {
+    if (found.workspace === null) return toDefinition(found);
+
+    const [kept] = sql
+      .exec<{ branch: string }>("SELECT branch FROM workspaces WHERE id = ?", found.workspace)
+      .toArray();
+
+    return toDefinition(found, { id: found.workspace, branch: kept?.branch ?? "" });
+  };
 
   const row = (id: string): TriggerRow | undefined =>
     sql
@@ -271,7 +322,7 @@ export const openTriggers = (
   const definition = (id: string): TriggerDefinition | null => {
     const found = row(id);
 
-    return found === undefined ? null : toDefinition(found);
+    return found === undefined ? null : toDef(found);
   };
 
   /** Write `next`'s fields over its row; `next` holds the new revision. */
@@ -292,7 +343,7 @@ export const openTriggers = (
       next.id,
     );
 
-    return toDefinition(next);
+    return toDef(next);
   };
 
   /**
@@ -312,20 +363,51 @@ export const openTriggers = (
     return known.updatedAt === known.createdAt && known.createdAt > now - startingMs;
   };
 
+  /** Whether any Session in Workspace `workspace` is at work (`busy`), the owner's own included. */
+  const workspaceBusy = (workspace: string, now: number, startingMs: number): boolean =>
+    Arr.some(
+      sql.exec<{ id: string }>("SELECT id FROM sessions WHERE workspace = ?", workspace).toArray(),
+      (session) => busy(session.id, now, startingMs),
+    );
+
   return {
     /**
      * Keep Trigger `id` made of `input`, at revision 1. Made again under the same id (a retry) with the same input, it
      * is `unchanged`; with other input it is refused, and so is the id of a Trigger the agent removed, whose row is kept
      * for a revert. The owner's removal deletes the row, so its id could be used again.
      */
-    create: (id: string, input: EnvironmentTriggerInput, now: number): TriggerWrite =>
+    create: (id: string, input: TriggerInput, now: number): TriggerWrite =>
       storage.transactionSync((): TriggerWrite => {
-        if (store.getEnvironment(input.environment) === null) {
-          return { status: "invalid", problem: `There is no Environment ${input.environment}` };
+        let environment: string;
+        let workspace: string | null = null;
+        let base: string | null = null;
+
+        if (input.kind === "workspace") {
+          // A Workspace trigger keeps a Workspace a Session works in: a spare is bound to nothing, and a Subagent
+          // Workspace lasts as long as its subagent, which has no trigger tools.
+          const kept = store.getWorkspace(input.workspace);
+
+          if (kept === null) {
+            return { status: "invalid", problem: noWorkspace(input.workspace) };
+          }
+
+          if (kept.subagent !== undefined) {
+            return { status: "invalid", problem: subagentWorkspaceHoldsNoTrigger };
+          }
+
+          environment = kept.environment;
+          workspace = kept.id;
+        } else {
+          environment = input.environment;
+          base = input.base ?? null;
         }
 
-        const base = input.base ?? null;
-        const problem = fieldsProblem({ ...input, base });
+        if (store.getEnvironment(environment) === null) {
+          return { status: "invalid", problem: `There is no Environment ${environment}` };
+        }
+
+        const whenBusy = input.whenBusy ?? defaultWhenBusy(input.kind, input.source);
+        const problem = fieldsProblem(input.kind, { ...input, when_busy: whenBusy, base });
 
         if (problem !== undefined) return { status: "invalid", problem };
 
@@ -333,11 +415,12 @@ export const openTriggers = (
           id,
           revision: 1,
           kind: input.kind,
-          environment: input.environment,
+          environment,
+          workspace,
           name: input.name.trim(),
           message: input.message,
           source: sourceText(input.source),
-          when_busy: input.whenBusy ?? defaultWhenBusy(input.source),
+          when_busy: whenBusy,
           base: base?.trim() ?? null,
           model: input.model ?? null,
           thinking: input.thinking ?? null,
@@ -354,17 +437,19 @@ export const openTriggers = (
           return known.removed_at === null &&
             known.kind === made.kind &&
             known.environment === made.environment &&
+            known.workspace === made.workspace &&
             sameFields(known, made)
-            ? { status: "unchanged", definition: toDefinition(known) }
+            ? { status: "unchanged", definition: toDef(known) }
             : { status: "invalid", problem: triggerIdTaken };
         }
 
         sql.exec(
-          `INSERT INTO triggers (id, revision, kind, environment, name, message, source, when_busy, base, model, thinking,
-             paused, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO triggers (id, revision, kind, environment, workspace, name, message, source, when_busy, base, model,
+             thinking, paused, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
           made.kind,
           made.environment,
+          made.workspace,
           made.name,
           made.message,
           made.source,
@@ -377,7 +462,7 @@ export const openTriggers = (
           now,
         );
 
-        return { status: "ok", definition: toDefinition(made) };
+        return { status: "ok", definition: toDef(made) };
       }),
 
     get: definition,
@@ -397,7 +482,7 @@ export const openTriggers = (
                 environment,
               )
               .toArray(),
-        toDefinition,
+        toDef,
       ),
 
     /**
@@ -415,7 +500,7 @@ export const openTriggers = (
 
         if (known === undefined) return { status: "missing" };
 
-        const kept = sourceOf(toDefinition(known));
+        const kept = sourceOf(toDef(known));
 
         if (kept === undefined) {
           return { status: "invalid", problem: "This version can't change the Trigger's source" };
@@ -449,11 +534,11 @@ export const openTriggers = (
           updated_at: now,
         };
 
-        const problem = fieldsProblem({ ...next, source });
+        const problem = fieldsProblem(toFields(known).kind, { ...next, source });
 
         if (problem !== undefined) return { status: "invalid", problem };
 
-        const current = toDefinition(known);
+        const current = toDef(known);
 
         if (sameFields(known, next)) return { status: "unchanged", definition: current };
 
@@ -476,7 +561,7 @@ export const openTriggers = (
 
         if (known === undefined) return { status: "missing" };
 
-        const current = toDefinition(known);
+        const current = toDef(known);
 
         if (current.paused === paused) return { status: "unchanged", definition: current };
 
@@ -504,9 +589,7 @@ export const openTriggers = (
     ): { readonly definition: TriggerDefinition; readonly removedAt: number | null } | null => {
       const [found] = sql.exec<TriggerRow>("SELECT * FROM triggers WHERE id = ?", id).toArray();
 
-      return found === undefined
-        ? null
-        : { definition: toDefinition(found), removedAt: found.removed_at };
+      return found === undefined ? null : { definition: toDef(found), removedAt: found.removed_at };
     },
 
     /**
@@ -594,12 +677,21 @@ export const openTriggers = (
 
         if (known.paused === 1) return { status: "paused" };
 
-        const current = toDefinition(known);
+        const current = toDef(known);
 
         if (known.revision !== fire.revision) return { status: "stale", definition: current };
 
-        if (current.whenBusy === "skip" && busy(known.last_session, now, startingMs)) {
-          return { status: "skipped", reason: "overlap" };
+        // A Workspace trigger is busy while any Session in its Workspace is at work; the rest, while their last Fire's
+        // Session is.
+        const overlapping =
+          current.workspace === undefined
+            ? busy(known.last_session, now, startingMs)
+            : workspaceBusy(current.workspace.id, now, startingMs);
+
+        if (overlapping) {
+          if (current.whenBusy === "wait") return { status: "busy" };
+
+          if (current.whenBusy === "skip") return { status: "skipped", reason: "overlap" };
         }
 
         if (current.source.type === "unknown") {
@@ -616,13 +708,16 @@ export const openTriggers = (
           {
             id: ids.session,
             title,
-            workspace: {
-              kind: "new",
-              id: ids.workspace,
-              environment: current.environment,
-              branch: null,
-              base: current.base ?? null,
-            },
+            workspace:
+              current.workspace === undefined
+                ? {
+                    kind: "new",
+                    id: ids.workspace,
+                    environment: current.environment,
+                    branch: null,
+                    base: current.base ?? null,
+                  }
+                : { kind: "existing", id: current.workspace.id },
             marks: {
               kind: "trigger",
               auth: "trigger",
@@ -638,6 +733,33 @@ export const openTriggers = (
         sql.exec("UPDATE triggers SET last_session = ? WHERE id = ?", created.id, current.id);
 
         return { status: "started", session: created.id, environment: created.environment };
+      }),
+
+    /**
+     * Delete Workspace `id`'s Triggers alone, whatever Sessions are bound to it, and answer the ids of the active ones,
+     * whose objects the caller wipes: the owner's Remove does it first, so no waiting Fire starts a Session in a
+     * Workspace that is being torn down (`docs/architecture/triggers.md` → Cascades).
+     */
+    deleteWorkspaceTriggers: (id: string): ReadonlyArray<string> =>
+      storage.transactionSync(() => {
+        const held = activeWorkspaceTriggers(id);
+
+        sql.exec("DELETE FROM triggers WHERE workspace = ?", id);
+
+        return held;
+      }),
+
+    /**
+     * Delete Workspace `id` as the owner's Remove does (`store.deleteWorkspaceWithTriggers`, which deletes the Triggers
+     * kept for it in the same transaction) and answer the ids of the active Triggers that went with it, whose objects
+     * the caller wipes (`docs/architecture/triggers.md` → Cascades).
+     */
+    deleteWorkspaceWithTriggers: (id: string): WorkspaceRemoval =>
+      storage.transactionSync((): WorkspaceRemoval => {
+        const held = activeWorkspaceTriggers(id);
+        const deletion = store.deleteWorkspaceWithTriggers(id);
+
+        return { deletion, triggers: deletion === "deleted" ? held : [] };
       }),
 
     /**
@@ -660,6 +782,12 @@ export const openTriggers = (
 
 /** The Registry's Triggers. */
 export type Triggers = ReturnType<typeof openTriggers>;
+
+/** A Workspace's deletion by the owner's Remove, with the ids of the Triggers that went with it, whose objects the caller wipes. */
+export type WorkspaceRemoval = {
+  readonly deletion: Deletion;
+  readonly triggers: ReadonlyArray<string>;
+};
 
 /** An Environment's deletion, with the ids of the Triggers that went with it, whose objects the caller wipes. */
 export type EnvironmentRemoval = {

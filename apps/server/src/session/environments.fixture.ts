@@ -123,6 +123,7 @@ export const unusedTriggers: TriggerAccessService = {
   list: () => Effect.succeed([]),
   get: () => Effect.succeed(null),
   newId: Effect.die("the test Sessions make no Trigger"),
+  workspace: Effect.die("the test Sessions have no Workspace trigger"),
   create: untriggered,
   update: untriggered,
   setPaused: untriggered,

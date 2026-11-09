@@ -2,16 +2,22 @@
 
 // The Workspaces section of the Settings page (docs/architecture/workspace.md → Environments from the UI): an Environment's Workspaces, or at
 // Global every Environment's under its name, each with a new Session in it, a restart of its Container, and its
-// removal behind a confirmation that names what goes with it. A Subagent Workspace names its subagent, and its removal
-// deletes the subagent too.
+// removal behind a confirmation that names what goes with it, and a New trigger that makes a Workspace trigger for it
+// (`docs/architecture/triggers.md` → The owner's UI). A Workspace kept only by a Workspace trigger is listed with no
+// session, and names the trigger. A Subagent Workspace names its subagent, and its removal deletes the subagent too.
 
-import { GLOBAL_SCOPE, type SessionRecord, type WorkspaceRecord } from "@cloudpid/protocol";
+import {
+  GLOBAL_SCOPE,
+  type SessionRecord,
+  type TriggerDefinition,
+  type WorkspaceRecord,
+} from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Predicate from "effect/Predicate";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { Bot, GitFork, Play, RotateCw, Trash2 } from "lucide-react";
+import { Bot, GitFork, Play, RotateCw, Timer, Trash2 } from "lucide-react";
 import type { FormEvent } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "../components/ui/dialog.tsx";
@@ -36,7 +42,18 @@ import { sessionPath, settingsPath } from "../router.ts";
 import { SubagentWorkspaceLoss } from "../session-menu.tsx";
 import { sessionListAtom, sessionsErrorAtom } from "../sessions.ts";
 import { sessionTitle } from "../sidebar.tsx";
+import {
+  newTriggerKey,
+  saveTriggerAtom,
+  triggerDraftAtom,
+  triggerFormAtom,
+  triggerNoticeAtom,
+  triggersInAtom,
+  workspaceFormKey,
+} from "../triggers-state.ts";
+import { emptyTriggerDraft, oneOrMany, triggerNames, workspaceTriggersOf } from "../triggers.ts";
 import { ConfirmField, Group, Pending, SettingsSection } from "./parts.tsx";
+import { browserZone, TriggerFormView } from "./triggers.tsx";
 
 /** "1 session (1 archived)" for `sessions`, or null when there are none. */
 export const sessionCount = (sessions: readonly SessionRecord[]): string | null => {
@@ -108,11 +125,14 @@ const RemoveWorkspaceDialog = ({
   id,
   workspace,
   sessions,
+  triggers,
 }: {
   id: string;
   workspace: WorkspaceRecord;
   /** The Sessions in the Workspace, archived ones included. */
   sessions: readonly SessionRecord[];
+  /** The Workspace triggers kept for it, which go with it. */
+  triggers: readonly TriggerDefinition[];
 }) => {
   const [typed, setTyped] = useAtom(removeWorkspaceTypedAtom(workspace.id));
   const [removed, run] = useAtom(removeWorkspaceAtom(id));
@@ -141,6 +161,14 @@ const RemoveWorkspaceDialog = ({
           Its files and Container, including changes that were not committed and commits that were
           not pushed.
         </li>
+        {triggers.length > 0 && (
+          <li>
+            {oneOrMany(triggers.length, "Its trigger", "Its triggers")}{" "}
+            <span className="font-medium">{triggerNames(triggers)}</span>, with{" "}
+            {oneOrMany(triggers.length, "its fire log", "their fire logs")}: nothing fires in it any
+            more.
+          </li>
+        )}
       </ul>
       <p className="text-sm text-muted-foreground">
         What was pushed to <span className="font-mono">{workspace.branch}</span> stays on the
@@ -314,10 +342,72 @@ const SubagentMark = ({
   </span>
 );
 
+/**
+ * The New trigger button of a Workspace's row and the dialog it opens: the Triggers section's form for a Workspace
+ * trigger, kept for this Workspace. Its atoms are the row's own (`workspaceFormKey`).
+ */
+const NewWorkspaceTrigger = ({ workspace }: { workspace: WorkspaceRecord }) => {
+  const key = workspaceFormKey(workspace.id);
+  const [form, setForm] = useAtom(triggerFormAtom(key));
+  const [draft, setDraft] = useAtom(triggerDraftAtom(key));
+  const setNotice = useAtomSet(triggerNoticeAtom(key));
+  const [saved, save] = useAtom(saveTriggerAtom(key));
+
+  const close = () => {
+    setForm(null);
+    setDraft(null);
+  };
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        aria-label={`New trigger for the ${workspace.branch} workspace`}
+        title={`New trigger for the ${workspace.branch} workspace`}
+        onClick={() => {
+          setNotice(null);
+          // A failure of an earlier try shows no more once the form is opened again.
+          save(Atom.Reset);
+          setDraft(emptyTriggerDraft(workspace.environment, browserZone(), workspace.id));
+          setForm({ kind: "create", id: newTriggerKey() });
+        }}
+      >
+        <Timer />
+        New trigger
+      </Button>
+      <Dialog
+        open={form !== null && draft !== null}
+        onClose={close}
+        dismissible={!saved.waiting}
+        title={`New trigger for ${workspace.branch}`}
+        description="Each fire starts a new session in this workspace, on its files and branch. The workspace stays while the trigger exists, even without sessions."
+        className="max-w-xl"
+      >
+        {draft !== null && (
+          <TriggerFormView formKey={key} draft={draft} editing={false} environments={[]} />
+        )}
+      </Dialog>
+    </>
+  );
+};
+
+/** What a Workspace trigger's notice says after its form closed: saved, but not scheduled yet. */
+const WorkspaceTriggerNotice = ({ workspace }: { workspace: WorkspaceRecord }) => {
+  const notice = useAtomValue(triggerNoticeAtom(workspaceFormKey(workspace.id)));
+
+  return notice === null ? null : (
+    <p role="status" className="basis-full text-xs text-muted-foreground">
+      {notice}
+    </p>
+  );
+};
+
 /** A Workspace: its branch and how much is in it, with the actions on it. */
 const WorkspaceRow = ({
   workspace,
   sessions,
+  triggers,
   owner,
   starting,
   onStart,
@@ -327,6 +417,8 @@ const WorkspaceRow = ({
   workspace: WorkspaceRecord;
   /** The Sessions in the Workspace, archived ones included. */
   sessions: readonly SessionRecord[];
+  /** The Workspace triggers kept for it, which keep it. */
+  triggers: readonly TriggerDefinition[];
   /** For a Subagent Workspace: the Session its subagent is in, when it is listed. */
   owner: SessionRecord | undefined;
   starting: boolean;
@@ -351,20 +443,28 @@ const WorkspaceRow = ({
         {workspace.subagent !== undefined && (
           <SubagentMark agent={workspace.subagent.agent} session={owner} />
         )}
+        {triggers.length > 0 && (
+          <span className="text-xs text-muted-foreground">
+            Kept by {oneOrMany(triggers.length, "trigger", "triggers")} {triggerNames(triggers)}
+          </span>
+        )}
       </span>
       <div className="flex items-center gap-1.5">
         {workspace.subagent === undefined && (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={starting}
-            aria-label={`New session in the ${workspace.branch} workspace`}
-            title={`New session in the ${workspace.branch} workspace`}
-            onClick={onStart}
-          >
-            <Play />
-            New session here
-          </Button>
+          <>
+            <NewWorkspaceTrigger workspace={workspace} />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={starting}
+              aria-label={`New session in the ${workspace.branch} workspace`}
+              title={`New session in the ${workspace.branch} workspace`}
+              onClick={onStart}
+            >
+              <Play />
+              New session here
+            </Button>
+          </>
         )}
         <Button
           size="icon"
@@ -387,6 +487,7 @@ const WorkspaceRow = ({
           <Trash2 />
         </Button>
       </div>
+      <WorkspaceTriggerNotice workspace={workspace} />
     </li>
   );
 };
@@ -404,6 +505,9 @@ const EnvironmentWorkspaces = ({
   const [started, start] = useAtom(startSessionAtom(id));
   const workspaceList = useAtomValue(workspaceListAtom);
   const workspaces = (workspaceList ?? []).filter((workspace) => workspace.environment === id);
+  const triggerList = useAtomValue(triggersInAtom(id));
+
+  const triggersOf = (workspace: string) => workspaceTriggersOf(triggerList, workspace);
   const [dialog, setDialog] = useAtom(environmentDialogAtom(id));
   const restarted = useAtomValue(restartContainerAtom(id));
   const removed = useAtomValue(removeWorkspaceAtom(id));
@@ -443,6 +547,7 @@ const EnvironmentWorkspaces = ({
               key={workspace.id}
               workspace={workspace}
               sessions={sessions.filter((session) => session.workspace === workspace.id)}
+              triggers={triggersOf(workspace.id)}
               owner={sessions.find((session) => session.id === workspace.subagent?.session)}
               starting={started.waiting}
               onStart={() => {
@@ -480,6 +585,7 @@ const EnvironmentWorkspaces = ({
               id={id}
               workspace={removing}
               sessions={sessions.filter((session) => session.workspace === removing.id)}
+              triggers={triggersOf(removing.id)}
             />
           ) : (
             <RemoveSubagentWorkspaceDialog

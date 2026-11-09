@@ -11,15 +11,18 @@ import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { renderToStaticMarkup } from "react-dom/server";
 import { environmentsAtom } from "../environments-state.ts";
 import { type RegistryHandlers, registryWith, settled } from "../registry.testing.ts";
+import { sessionsAtom } from "../sessions.ts";
 import {
   fireLogAtom,
   fireLogOpenAtom,
   triggerDraftAtom,
   triggerFormAtom,
+  removeTriggerDialogAtom,
   triggerNoticeAtom,
   triggersAtom,
 } from "../triggers-state.ts";
@@ -70,13 +73,27 @@ const TRIGGERS: ReadonlyArray<TriggerOverview> = [
   { definition: WEBHOOK_TRIGGER, lastFire: null, reached: true },
 ];
 
+const WORKSPACE_TRIGGER: TriggerDefinition = {
+  ...definition("t5", "work", "Lint sweep"),
+  workspace: { id: "ab12cd34", branch: "feature/lint" },
+  whenBusy: "wait",
+};
+
+const WORKSPACE_OVERVIEW: TriggerOverview = {
+  definition: WORKSPACE_TRIGGER,
+  lastFire: null,
+  reached: true,
+  waiting: { since: Date.parse("2025-01-06T15:00:00Z"), merged: 2 },
+};
+
 const HANDLERS: Partial<RegistryHandlers> = {
+  listSessions: () => Effect.succeed([]),
   listEnvironments: () =>
     Effect.succeed([environment("work", "Work"), environment("home", "Home")]),
   listTriggers: ({ environment }) =>
     Effect.succeed(
       Arr.filter(
-        TRIGGERS,
+        [...TRIGGERS, WORKSPACE_OVERVIEW],
         (trigger) => environment === undefined || trigger.definition.environment === environment,
       ),
     ),
@@ -93,9 +110,13 @@ const HANDLERS: Partial<RegistryHandlers> = {
 };
 
 /** The section at Scope `scope`, once its queries answered; `before` sets atoms first. */
-const render = (scope: string, before?: (registry: AtomRegistry.AtomRegistry) => void) =>
+const render = (
+  scope: string,
+  before?: (registry: AtomRegistry.AtomRegistry) => void,
+  handlers: Partial<RegistryHandlers> = {},
+) =>
   Effect.gen(function* () {
-    const registry = registryWith(HANDLERS);
+    const registry = registryWith({ ...HANDLERS, ...handlers });
 
     before?.(registry);
 
@@ -103,6 +124,8 @@ const render = (scope: string, before?: (registry: AtomRegistry.AtomRegistry) =>
     registry.mount(triggersAtom(scope));
     registry.mount(environmentsAtom);
     registry.mount(fireLogAtom("t1"));
+    registry.mount(sessionsAtom);
+    yield* settled(registry, sessionsAtom);
     yield* settled(registry, triggersAtom(scope));
     yield* settled(registry, environmentsAtom);
     yield* settled(registry, fireLogAtom("t1"));
@@ -220,8 +243,19 @@ describe("the Triggers section", () => {
 
       expect(markup).toContain("CI failed");
       expect(markup).toContain("Webhook · github");
-      // Fire now is the Schedule Trigger's alone.
-      expect(markup.match(/Fire now<\/button>/g)).toHaveLength(1);
+
+      // Fire now is the Schedule triggers' alone: the webhook's row has none, the others' do.
+      const rows = markup.split("<li ");
+
+      const rowOf = (name: string) =>
+        Arr.findFirst(rows, (row) => row.includes(`aria-label="Remove ${name}"`)).pipe(
+          Option.getOrElse(() => ""),
+        );
+
+      expect(rowOf("CI failed")).not.toBe("");
+      expect(rowOf("CI failed")).not.toContain("Fire now</button>");
+      expect(rowOf("Weekly report")).toContain("Fire now</button>");
+      expect(rowOf("Lint sweep")).toContain("Fire now</button>");
     }),
   );
 
@@ -237,5 +271,107 @@ describe("the Triggers section", () => {
       expect(markup).not.toContain("5-field cron");
       expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Save/);
     }),
+  );
+
+  it.effect(
+    "lists a Workspace trigger under its Workspace's branch, apart from the Environment's",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work");
+
+        expect(markup).toContain("Lint sweep");
+        expect(markup).toMatch(/Workspace <span[^>]*>feature\/lint<\/span>/);
+        expect(markup.indexOf("Weekly report")).toBeLessThan(markup.indexOf("feature/lint"));
+        expect(markup.indexOf("feature/lint")).toBeLessThan(markup.indexOf("Lint sweep"));
+        // Its waiting Fire is said, since when and how many more were merged into it.
+        expect(markup).toContain("Waiting for the workspace to be idle (since ");
+        expect(markup).toContain("2 more merged)");
+        expect(markup.match(/Waiting for the workspace/g)).toHaveLength(1);
+      }),
+  );
+
+  it.effect(
+    "says a removed Workspace trigger leaves its Workspace, which nothing keeps any more",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", (registry) => {
+          registry.set(removeTriggerDialogAtom("work"), "t5");
+        });
+
+        expect(markup).toContain("Remove Lint sweep?");
+        expect(markup).toContain("feature/lint</span> stays, with its files");
+        expect(markup).toContain("remove it from the Workspaces section");
+        expect(markup).not.toContain("deleting its last session removes it");
+
+        // With a Session in it, deleting that Session is what removes it.
+        const sessioned = yield* render(
+          "work",
+          (registry) => {
+            registry.set(removeTriggerDialogAtom("work"), "t5");
+          },
+          // SAFETY: the dialog reads the Session's Workspace id only.
+          { listSessions: () => Effect.succeed([{ id: "s1", workspace: "ab12cd34" } as never]) },
+        );
+
+        expect(sessioned).toContain("so deleting its last session removes it");
+
+        // Another trigger of the Workspace still keeps it.
+        const shared = yield* render(
+          "work",
+          (registry) => {
+            registry.set(removeTriggerDialogAtom("work"), "t5");
+          },
+          {
+            listTriggers: () =>
+              Effect.succeed([
+                WORKSPACE_OVERVIEW,
+                {
+                  definition: { ...WORKSPACE_TRIGGER, id: "t6", name: "Weekly lint" },
+                  lastFire: null,
+                  reached: true,
+                },
+              ]),
+          },
+        );
+
+        expect(shared).toContain("stays, kept by trigger");
+        expect(shared).toContain("Weekly lint");
+        expect(shared).not.toContain("remove it from the Workspaces section");
+
+        const environment = yield* render("work", (registry) => {
+          registry.set(removeTriggerDialogAtom("work"), "t1");
+        });
+
+        expect(environment).toContain("Remove Weekly report?");
+        expect(environment).not.toContain("stays, with");
+      }),
+  );
+
+  it.effect(
+    "shows a Workspace trigger's form without a base or an Environment, offering to wait",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("*", (registry) => {
+          registry.set(triggerFormAtom("*"), { kind: "create", id: "0190-new" });
+          registry.set(
+            triggerDraftAtom("*"),
+            emptyTriggerDraft("work", "America/Chicago", "ab12cd34"),
+          );
+        });
+
+        expect(markup).toContain("When the workspace is busy");
+        expect(markup).toContain("Wait until the workspace is idle");
+        expect(markup).not.toContain("Start from");
+        expect(markup).not.toContain('id="trigger-environment-*"');
+
+        const environment = yield* render("*", (registry) => {
+          registry.set(triggerFormAtom("*"), { kind: "create", id: "0190-new" });
+          registry.set(triggerDraftAtom("*"), emptyTriggerDraft("work", "America/Chicago"));
+        });
+
+        expect(environment).toContain("Start from");
+        expect(environment).toContain('id="trigger-environment-*"');
+        expect(environment).not.toContain("Wait until the workspace is idle");
+      }),
   );
 });

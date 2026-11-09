@@ -91,8 +91,11 @@ type Answer = {
 
 const APPROVE: Answer = { approve: true };
 
-const setUp = async (held: ReadonlyArray<TriggerDefinition> = []) => {
-  const triggers = fakeTriggers(ENVIRONMENTS, NOW);
+/** The Workspace of the Session under test, which a Workspace trigger made by `owner: "workspace"` keeps. */
+const HERE = { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f", environment: "default" };
+
+const setUp = async (held: ReadonlyArray<TriggerDefinition> = [], here?: typeof HERE) => {
+  const triggers = fakeTriggers(ENVIRONMENTS, NOW, here);
 
   for (const definition of held) triggers.held.set(definition.id, definition);
 
@@ -607,5 +610,127 @@ describe("a subagent", () => {
   it("is never granted a trigger_* tool", () => {
     expect(isParentOnly("trigger_create")).toBe(true);
     expect(isParentOnly("trigger_list")).toBe(true);
+  });
+});
+
+/** A Workspace trigger held by the fake: nightly, for `HERE`, waiting when busy. */
+const nightly = (fields: Partial<TriggerDefinition> = {}): TriggerDefinition =>
+  weekly({
+    id: "w1",
+    kind: "workspace",
+    workspace: { id: HERE.id, branch: HERE.branch },
+    name: "Nightly check",
+    message: "Check the build.",
+    whenBusy: "wait",
+    ...fields,
+  });
+
+describe("a Workspace trigger", () => {
+  const NIGHTLY = {
+    owner: "workspace",
+    name: "Nightly check",
+    message: "Check the build.",
+    schedule: { cron: "@daily", zone: "UTC" },
+    reason: "the user wants the build checked every night",
+  };
+
+  it("is made for this Session's own Workspace once the owner approves, recorded naming it by branch", async () => {
+    const { call, triggers, asked } = await setUp([], HERE);
+
+    const { result, text } = await call("trigger_create", NIGHTLY);
+
+    expect(asked[0]).toMatchObject({
+      tool: "trigger_create",
+      target: 'Workspace "cloudpid/0f0f0f0f" of Environment "Default"',
+      change: "Create a Trigger",
+    });
+    expect(asked[0]?.after).toContain("Workspace: cloudpid/0f0f0f0f");
+    expect(asked[0]?.after).toContain("when busy: wait");
+    expect(asked[0]?.after).not.toContain("base:");
+    expect(asked[0]?.notes?.join("\n")).toContain('Workspace "cloudpid/0f0f0f0f"');
+    expect(text).toContain('made the Trigger "Nightly check" (id 0190-a)');
+    expect(text).toContain("once the Workspace is idle");
+    expect(triggers.held.get("0190-a")).toMatchObject({
+      kind: "workspace",
+      environment: "default",
+      workspace: { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f" },
+      whenBusy: "wait",
+    });
+    // Recorded under the Environment's Scope, naming the Workspace by its branch.
+    expect(triggers.changes).toMatchObject([
+      {
+        field: triggerField("0190-a"),
+        before: null,
+        after: { kind: "workspace", workspace: { branch: "cloudpid/0f0f0f0f" }, whenBusy: "wait" },
+      },
+    ]);
+    expect(decodeChange(result.structuredOutput)).toMatchObject({
+      scope: { id: "default" },
+      trigger: { kind: "workspace", workspace: { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f" } },
+    });
+  });
+
+  it("takes no base, and wait only as a Workspace trigger's", async () => {
+    const { call, asked, triggers } = await setUp([], HERE);
+
+    const withBase = await call("trigger_create", { ...NIGHTLY, base: "develop" });
+
+    expect(withBase.error).toBe(true);
+    expect(withBase.text).toContain("takes no base");
+
+    const waiting = await call("trigger_create", { ...WEEKLY, when_busy: "wait" });
+
+    expect(waiting.error).toBe(true);
+    expect(waiting.text).toContain("Only a Workspace trigger can wait");
+    expect(asked).toEqual([]);
+    expect(triggers.held.size).toBe(0);
+  });
+
+  it("is refused where the Session has no Workspace the Registry lists", async () => {
+    const { call, asked } = await setUp();
+
+    const { error, text } = await call("trigger_create", NIGHTLY);
+
+    expect(error).toBe(true);
+    expect(text).toContain("no Workspace");
+    expect(asked).toEqual([]);
+  });
+
+  it("changes when_busy, model and thinking, and refuses a base", async () => {
+    const { call, asked, triggers } = await setUp([nightly()], HERE);
+
+    await call("trigger_options_set", {
+      id: "w1",
+      when_busy: "skip",
+      thinking: "low",
+      reason: "overlap is fine to skip",
+    });
+
+    expect(asked[0]).toMatchObject({
+      target: 'Workspace "cloudpid/0f0f0f0f" of Environment "Default"',
+      before: expect.stringContaining("when busy: wait, model: the Environment's"),
+      after: expect.stringContaining("when busy: skip, model: the Environment's, thinking: low"),
+    });
+    expect(triggers.held.get("w1")).toMatchObject({ whenBusy: "skip", thinking: "low" });
+
+    const base = await call("trigger_options_set", { id: "w1", base: "develop", reason: "r" });
+
+    expect(base.error).toBe(true);
+    expect(base.text).toContain("takes no base");
+    expect(asked).toHaveLength(1);
+  });
+
+  it("is listed with its Workspace", async () => {
+    const { call } = await setUp([nightly(), weekly()], HERE);
+
+    const listed = await call("trigger_list", {});
+
+    expect(listed.text).toContain("Workspace cloudpid/0f0f0f0f of Environment");
+    expect(decodeList(listed.result.structuredOutput)).toMatchObject({
+      triggers: [
+        { id: "w1", kind: "workspace", workspace: { branch: "cloudpid/0f0f0f0f" } },
+        { id: "t1", workspace: null },
+      ],
+    });
   });
 });

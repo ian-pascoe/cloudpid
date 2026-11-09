@@ -44,6 +44,12 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       outcome TEXT NOT NULL
     ) STRICT`);
   },
+  // 2: how many later Fires were merged into a pending Fire that is waiting for its Workspace to be idle (a Workspace
+  // trigger's `wait`, `docs/architecture/triggers.md` → Overlap): null until it first waited. Null for every Fire stored
+  // before.
+  (sql) => {
+    sql.exec("ALTER TABLE trigger_pending ADD COLUMN coalesced INTEGER");
+  },
 ];
 
 /**
@@ -57,6 +63,12 @@ export type PendingFire = {
   readonly nextTryAt: number;
   readonly attempts: number;
   readonly session: string | undefined;
+  /**
+   * Undefined until the Fire first waited for a busy Workspace (`wait`); then `merged` counts the later Fires recorded
+   * `coalesced` into it, which the Session that finally starts is told. Stored in `trigger_pending.coalesced`, null
+   * while it does not wait.
+   */
+  readonly waiting: { readonly merged: number } | undefined;
 };
 
 type MetaRow = { readonly definition: string; readonly cursor: number | null };
@@ -68,6 +80,7 @@ type PendingRow = {
   readonly next_try_at: number;
   readonly attempts: number;
   readonly session: string | null;
+  readonly coalesced: number | null;
 };
 
 type FireRow = {
@@ -94,6 +107,7 @@ const toPending = (row: PendingRow): PendingFire => ({
   nextTryAt: row.next_try_at,
   attempts: row.attempts,
   session: row.session ?? undefined,
+  waiting: row.coalesced === null ? undefined : { merged: row.coalesced },
 });
 
 /**
@@ -172,6 +186,26 @@ export const openTriggerStore = (storage: MigrationStorage) => {
       sql.exec(
         "UPDATE trigger_pending SET attempts = attempts + 1, next_try_at = ? WHERE key = ?",
         at,
+        key,
+      );
+    },
+
+    /**
+     * Pending Fire `key` waits for its Workspace to be idle (`admitFire` answered `busy`): tried again at `at`, which
+     * counts no attempt, since waiting is no failure. A Fire already waiting keeps its count of merged Fires.
+     */
+    wait: (key: string, at: number): void => {
+      sql.exec(
+        "UPDATE trigger_pending SET coalesced = COALESCE(coalesced, 0), next_try_at = ? WHERE key = ?",
+        at,
+        key,
+      );
+    },
+
+    /** One more later Fire was merged into the waiting pending Fire `key`. */
+    coalesce: (key: string): void => {
+      sql.exec(
+        "UPDATE trigger_pending SET coalesced = COALESCE(coalesced, 0) + 1 WHERE key = ?",
         key,
       );
     },

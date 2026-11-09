@@ -1,10 +1,11 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- the times shown are now's, and JSX lists are native arrays.
 
 // The Triggers section of the Settings page (docs/architecture/triggers.md → The owner's UI): an Environment's Triggers,
-// or at Global every Environment's under its name, each with its Schedule, its last and next Fire, Fire now, Edit,
-// Pause or Resume, Remove behind a confirm, and its fire log; and the form that makes or edits an Environment trigger,
-// its zone filled in from the browser, with the next 5 Fires its Schedule gives. The owner's changes never wait for
-// Approval, and record no Agent change.
+// or at Global every Environment's under its name (its Workspace triggers listed under their Workspace, by branch), each
+// with its Schedule, its last and next Fire, Fire now, Edit, Pause or Resume, Remove behind a confirm, and its fire log;
+// and the form that makes or edits an Environment trigger, or a Workspace trigger (made from the Workspaces section's
+// New trigger, which shows the same form), its zone filled in from the browser, with the next 5 Fires its Schedule
+// gives. The owner's changes never wait for Approval, and record no Agent change.
 
 import { SUPPORTED_MODELS, THINKING_LEVELS } from "@cloudpid/config";
 import {
@@ -12,7 +13,9 @@ import {
   fireTimeWords,
   GLOBAL_SCOPE,
   MAX_TRIGGER_NAME_LENGTH,
+  type TriggerDefinition,
   type TriggerOverview,
+  type WorkspaceRef,
 } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -28,6 +31,7 @@ import { InAppLink } from "../in-app-link.tsx";
 import { modelName } from "../models.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import { sessionPath, settingsPath } from "../router.ts";
+import { sessionListAtom } from "../sessions.ts";
 import {
   fireLogAtom,
   fireLogOpenAtom,
@@ -54,12 +58,18 @@ import {
   triggerDraftOf,
   triggerDraftProblems,
   triggerDraftReady,
+  waitingWords,
+  whenBusyChoices,
+  whenBusyOfText,
   zoneOf,
+  oneOrMany,
+  triggerNames,
+  workspaceTriggersOf,
 } from "../triggers.ts";
 import { CODE_AREA, Field, Group, Pending, SettingsSection, TEXT_AREA } from "./parts.tsx";
 
 /** The browser's zone, the one a new Trigger's Schedule starts in. */
-const browserZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
+export const browserZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 /** Trigger `id`'s fire log, newest first: each Fire's time, what made it and what came of it. */
 const FireLog = ({ id, zone }: { id: string; zone: string }) => {
@@ -130,6 +140,11 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             {triggerSourceWords(definition)}
           </span>
           <span className="text-xs text-muted-foreground">{lastFireWords(overview, zone)}</span>
+          {overview.waiting !== undefined && (
+            <span className="text-xs text-muted-foreground">
+              {waitingWords(overview.waiting, zone)}
+            </span>
+          )}
           <span className="text-xs text-muted-foreground">
             {next === null ? "No next fire" : `Next fire: ${fireTimeWords(next, zone)}`}
           </span>
@@ -213,46 +228,86 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
   );
 };
 
-/** A list of Triggers, or what says there are none. */
+/** A list of Triggers. */
 const TriggerList = ({
   scope,
   triggers,
 }: {
   scope: string;
   triggers: ReadonlyArray<TriggerOverview>;
-}) =>
-  triggers.length === 0 ? (
-    <p className="text-sm text-muted-foreground">No triggers yet.</p>
-  ) : (
-    <ul className="flex flex-col divide-y">
-      {triggers.map((overview) => (
-        <TriggerRow key={overview.definition.id} scope={scope} overview={overview} />
+}) => (
+  <ul className="flex flex-col divide-y">
+    {triggers.map((overview) => (
+      <TriggerRow key={overview.definition.id} scope={scope} overview={overview} />
+    ))}
+  </ul>
+);
+
+/** An Environment's Triggers: its Environment triggers, then each Workspace's under its branch; or what says there are none. */
+const EnvironmentTriggers = ({
+  scope,
+  triggers,
+}: {
+  scope: string;
+  triggers: ReadonlyArray<TriggerOverview>;
+}) => {
+  if (triggers.length === 0)
+    return <p className="text-sm text-muted-foreground">No triggers yet.</p>;
+
+  const own = triggers.filter((overview) => overview.definition.workspace === undefined);
+  // In the order the Triggers came, each Workspace once.
+  const workspaces = new Map<string, { branch: string; triggers: TriggerOverview[] }>();
+
+  for (const overview of triggers) {
+    const kept = overview.definition.workspace;
+
+    if (kept === undefined) continue;
+
+    const held = workspaces.get(kept.id) ?? { branch: kept.branch, triggers: [] };
+
+    held.triggers.push(overview);
+    workspaces.set(kept.id, held);
+  }
+
+  return (
+    <>
+      {own.length > 0 && <TriggerList scope={scope} triggers={own} />}
+      {[...workspaces].map(([id, held]) => (
+        <div key={id} className="flex flex-col gap-1">
+          <h3 className="text-xs font-medium text-muted-foreground">
+            Workspace <span className="font-mono text-foreground">{held.branch}</span>
+          </h3>
+          <TriggerList scope={scope} triggers={held.triggers} />
+        </div>
       ))}
-    </ul>
+    </>
   );
+};
 
 /**
  * The form that makes a Trigger, or edits one: at Global it names the Environment of a new one; an edited Trigger's
  * Environment is fixed.
  */
-const TriggerFormView = ({
-  scope,
+export const TriggerFormView = ({
+  formKey,
   draft,
   editing,
   environments,
 }: {
-  scope: string;
+  /** The key of the form's atoms: a Scope, or a Workspace's (`workspaceFormKey`). */
+  formKey: string;
   draft: TriggerDraft;
   editing: boolean;
   environments: ReadonlyArray<EnvironmentRecord>;
 }) => {
-  const setDraft = useAtomSet(triggerDraftAtom(scope));
-  const setForm = useAtomSet(triggerFormAtom(scope));
-  const [saved, save] = useAtom(saveTriggerAtom(scope));
+  const setDraft = useAtomSet(triggerDraftAtom(formKey));
+  const setForm = useAtomSet(triggerFormAtom(formKey));
+  const [saved, save] = useAtom(saveTriggerAtom(formKey));
   const problems = triggerDraftProblems(draft);
   const preview = previewFires(draft, Date.now());
   const busy = saved.waiting;
-  const id = (field: string) => `trigger-${field}-${scope}`;
+  const id = (field: string) => `trigger-${field}-${formKey}`;
+  const kind = draft.workspace === null ? "environment" : "workspace";
 
   const change = (patch: Partial<TriggerDraft>) => {
     setDraft({ ...draft, ...patch });
@@ -272,7 +327,7 @@ const TriggerFormView = ({
       aria-label={editing ? "Edit trigger" : "New trigger"}
       className="flex flex-col gap-4"
     >
-      {scope === GLOBAL_SCOPE && !editing && (
+      {formKey === GLOBAL_SCOPE && !editing && draft.workspace === null && (
         <Field label="Environment" htmlFor={id("environment")}>
           <NativeSelect
             id={id("environment")}
@@ -370,35 +425,52 @@ const TriggerFormView = ({
       )}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field
-          label="When the last fire's session is busy"
+          label={
+            kind === "workspace"
+              ? "When the workspace is busy"
+              : "When the last fire's session is busy"
+          }
           htmlFor={id("when-busy")}
-          hint="Busy: still running, or waiting for you."
+          hint={
+            kind === "workspace"
+              ? "Busy: any session in the workspace is running or waiting for you, yours included. A waiting fire starts once it is idle; later ones are merged into it."
+              : "Busy: still running, or waiting for you."
+          }
         >
           <NativeSelect
             id={id("when-busy")}
             value={draft.whenBusy}
             disabled={busy}
             onChange={(event) => {
-              change({ whenBusy: event.target.value === "start" ? "start" : "skip" });
+              change({ whenBusy: whenBusyOfText(kind, event.target.value) });
             }}
           >
-            <option value="skip">Skip this fire</option>
-            <option value="start">Start another session</option>
+            {whenBusyChoices(kind).map((choice) => (
+              <option key={choice.value} value={choice.value}>
+                {choice.label}
+              </option>
+            ))}
           </NativeSelect>
         </Field>
-        <Field label="Start from" htmlFor={id("base")} hint="A branch; empty: each repo's default.">
-          <Input
-            id={id("base")}
-            value={draft.base}
-            placeholder="Default branch"
-            spellCheck={false}
-            autoComplete="off"
-            disabled={busy}
-            onChange={(event) => {
-              change({ base: event.target.value });
-            }}
-          />
-        </Field>
+        {kind === "environment" && (
+          <Field
+            label="Start from"
+            htmlFor={id("base")}
+            hint="A branch; empty: each repo's default."
+          >
+            <Input
+              id={id("base")}
+              value={draft.base}
+              placeholder="Default branch"
+              spellCheck={false}
+              autoComplete="off"
+              disabled={busy}
+              onChange={(event) => {
+                change({ base: event.target.value });
+              }}
+            />
+          </Field>
+        )}
         <Field label="Model" htmlFor={id("model")}>
           <NativeSelect
             id={id("model")}
@@ -459,8 +531,55 @@ const TriggerFormView = ({
   );
 };
 
-/** Confirm removing a Trigger of Scope `scope`, saying what goes with it. */
-const RemoveTriggerDialog = ({ scope, id }: { scope: string; id: string }) => {
+/**
+ * What removing a Workspace trigger leaves of its Workspace `workspace`: it stays, with its files, because the owner
+ * removes a Workspace only from the Workspaces section; and, while a Session is in it or another trigger keeps it, what
+ * keeps it.
+ */
+const WorkspaceStays = ({
+  workspace,
+  others,
+}: {
+  workspace: WorkspaceRef;
+  /** The other Workspace triggers kept for the Workspace. */
+  others: ReadonlyArray<TriggerDefinition>;
+}) => {
+  const sessions = useAtomValue(sessionListAtom);
+  const branch = <span className="font-mono">{workspace.branch}</span>;
+
+  if (others.length > 0) {
+    return (
+      <>
+        The workspace {branch} stays, kept by {oneOrMany(others.length, "trigger", "triggers")}{" "}
+        {triggerNames(others)}.
+      </>
+    );
+  }
+
+  // A list that has not answered says nothing of the Sessions.
+  if (sessions?.some((session) => session.workspace === workspace.id) === true) {
+    return (
+      <>
+        The workspace {branch} stays, with its files; no trigger keeps it any more, so deleting its
+        last session removes it.
+      </>
+    );
+  }
+
+  return <>The workspace {branch} stays, with its files; remove it from the Workspaces section.</>;
+};
+
+/** Confirm removing Trigger `definition` of Scope `scope`, saying what goes with it and what stays. */
+const RemoveTriggerDialog = ({
+  scope,
+  definition,
+  triggers,
+}: {
+  scope: string;
+  definition: TriggerDefinition;
+  /** Every Trigger as last listed, for what else keeps the Workspace. */
+  triggers: ReadonlyArray<TriggerOverview>;
+}) => {
   const [removed, remove] = useAtom(removeTriggerAtom(scope));
   const setRemoving = useAtomSet(removeTriggerDialogAtom(scope));
   const busy = removed.waiting;
@@ -470,7 +589,7 @@ const RemoveTriggerDialog = ({ scope, id }: { scope: string; id: string }) => {
 
     if (busy) return;
 
-    remove(id);
+    remove(definition.id);
   };
 
   return (
@@ -478,6 +597,16 @@ const RemoveTriggerDialog = ({ scope, id }: { scope: string; id: string }) => {
       <p className="text-sm">
         It stops firing, and its fire log goes with it. The sessions it started stay.
       </p>
+      {definition.workspace !== undefined && (
+        <p className="text-sm">
+          <WorkspaceStays
+            workspace={definition.workspace}
+            others={workspaceTriggersOf(triggers, definition.workspace.id).filter(
+              (other) => other.id !== definition.id,
+            )}
+          />
+        </p>
+      )}
       <DialogProblem problem={settledFailureOf(removed)} />
       <DialogActions>
         <Button
@@ -501,8 +630,8 @@ const RemoveTriggerDialog = ({ scope, id }: { scope: string; id: string }) => {
 /** What the section says it is for, at Scope `scope`. */
 const description = (scope: string): string =>
   scope === GLOBAL_SCOPE
-    ? "Each trigger starts a new session in a new workspace of its environment when its schedule comes due. Your changes here apply at once; the agent's wait for your approval."
-    : "Each of this environment's triggers starts a new session in a new workspace of it when its schedule comes due. Your changes here apply at once; the agent's wait for your approval.";
+    ? "Each trigger starts a new session when its schedule comes due: in a new workspace of its environment, or, for a workspace trigger, in its workspace. Your changes here apply at once; the agent's wait for your approval."
+    : "Each of this environment's triggers starts a new session when its schedule comes due: in a new workspace of it, or, for a workspace trigger, in its workspace. Your changes here apply at once; the agent's wait for your approval.";
 
 /** The Triggers, under each Environment's name at Global, or the Environment's own. */
 const TriggerLists = ({
@@ -517,7 +646,7 @@ const TriggerLists = ({
   scope === GLOBAL_SCOPE ? (
     environments.map((environment) => (
       <Group key={environment.id} title={environment.name}>
-        <TriggerList
+        <EnvironmentTriggers
           scope={scope}
           triggers={triggers.filter((trigger) => trigger.definition.environment === environment.id)}
         />
@@ -531,7 +660,7 @@ const TriggerLists = ({
     ))
   ) : (
     <Group>
-      <TriggerList scope={scope} triggers={triggers} />
+      <EnvironmentTriggers scope={scope} triggers={triggers} />
     </Group>
   );
 
@@ -579,7 +708,7 @@ export const TriggersSection = ({ scope }: { scope: string }) => {
         )}
         {form !== null && draft !== null ? (
           <TriggerFormView
-            scope={scope}
+            formKey={scope}
             draft={draft}
             editing={form.kind === "edit"}
             environments={environments}
@@ -600,7 +729,11 @@ export const TriggersSection = ({ scope }: { scope: string }) => {
         title={`Remove ${removingTrigger?.definition.name ?? ""}?`}
       >
         {removingTrigger !== undefined && (
-          <RemoveTriggerDialog scope={scope} id={removingTrigger.definition.id} />
+          <RemoveTriggerDialog
+            scope={scope}
+            definition={removingTrigger.definition}
+            triggers={triggers}
+          />
         )}
       </Dialog>
     </SettingsSection>

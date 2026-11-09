@@ -4,6 +4,7 @@ import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentTriggerInput,
   triggerChangeValue,
+  type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -671,6 +672,408 @@ describe("admitFire for a webhook Trigger", () => {
     expect(await registry.admitFire(at("t2", 2), ids(4), monday + 2_000)).toEqual({
       status: "skipped",
       reason: "overlap",
+    });
+  });
+});
+
+/** Workspace `workspace` of the default Environment, made by Session `session` at `at`. */
+const startIn = (
+  registry: ReturnType<typeof fresh>,
+  session: string,
+  workspace: string,
+  at = 500,
+) =>
+  registry.createSession(
+    {
+      id: session,
+      title: null,
+      workspace: {
+        kind: "new",
+        id: workspace,
+        environment: DEFAULT_ENVIRONMENT,
+        branch: null,
+        base: null,
+      },
+    },
+    at,
+  );
+
+const inWorkspace = (workspace: string): WorkspaceTriggerInput => ({
+  kind: "workspace",
+  workspace,
+  name: "Nightly check",
+  message: "Check the build.",
+  source: { type: "schedule", cron: "0 9 * * MON", zone: "America/Chicago" },
+});
+
+describe("a Workspace trigger", () => {
+  it("is kept for a Workspace, by id and branch, in its Environment, waiting when busy by default", async () => {
+    const registry = fresh();
+
+    await startIn(registry, "s-0", "0f0f0f0f");
+
+    expect(await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 1_000)).toMatchObject({
+      status: "ok",
+    });
+    expect(await registry.triggerDefinition("t1")).toEqual({
+      id: "t1",
+      revision: 1,
+      kind: "workspace",
+      environment: DEFAULT_ENVIRONMENT,
+      workspace: { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f" },
+      name: "Nightly check",
+      message: "Check the build.",
+      source: { type: "schedule", cron: "0 9 * * MON", zone: "America/Chicago" },
+      whenBusy: "wait",
+      paused: false,
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    });
+  });
+
+  it("is refused for a Workspace that isn't there, a spare, or a Subagent Workspace", async () => {
+    const registry = fresh();
+
+    await startIn(registry, "s-0", "0f0f0f0f", monday);
+    await registry.createSubagentWorkspace(
+      { id: "2b3c4d5e", session: "s-0", agent: "agent-1", branch: null, base: null, limit: 3 },
+      monday,
+    );
+    await registry.upkeepSpares([DEFAULT_ENVIRONMENT], ["5a5a5a5a"], monday);
+
+    expect(await registry.getSpare(DEFAULT_ENVIRONMENT)).toBe("5a5a5a5a");
+
+    for (const workspace of ["feedfeed", "5a5a5a5a", "2b3c4d5e"]) {
+      expect(await registry.createTrigger("t1", inWorkspace(workspace), 1_000)).toMatchObject({
+        status: "invalid",
+      });
+    }
+
+    expect(await registry.createTrigger("t1", inWorkspace("2b3c4d5e"), 1_000)).toEqual({
+      status: "invalid",
+      problem: "A subagent's Workspace can't hold a Trigger: it lasts only as long as its subagent",
+    });
+    expect(await registry.listTriggers()).toEqual([]);
+  });
+
+  it("takes no base, and only a Workspace trigger waits", async () => {
+    const registry = fresh();
+
+    await startIn(registry, "s-0", "0f0f0f0f");
+    await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 1_000);
+    await registry.createTrigger("t2", weekly, 1_000);
+
+    expect(await registry.updateTrigger("t1", { base: "develop" }, 2_000)).toMatchObject({
+      status: "invalid",
+    });
+    expect(await registry.updateTrigger("t1", { whenBusy: "start" }, 2_000)).toMatchObject({
+      status: "ok",
+      definition: { whenBusy: "start" },
+    });
+    expect(await registry.updateTrigger("t2", { whenBusy: "wait" }, 2_000)).toMatchObject({
+      status: "invalid",
+    });
+    expect(
+      await registry.createTrigger("t3", { ...weekly, whenBusy: "wait" }, 2_000),
+    ).toMatchObject({ status: "invalid" });
+  });
+
+  it("may fire on a webhook, waiting when busy by default, and starts its Session in the Workspace", async () => {
+    const registry = fresh();
+
+    await startIn(registry, "s-0", "0f0f0f0f");
+    await registry.createTrigger(
+      "t1",
+      {
+        ...inWorkspace("0f0f0f0f"),
+        name: "CI failed",
+        source: { type: "webhook", format: "github" },
+      },
+      1_000,
+    );
+
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      kind: "workspace",
+      workspace: { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f" },
+      source: { type: "webhook", format: "github" },
+      whenBusy: "wait",
+    });
+
+    const delivery = (n: number) => ({
+      trigger: "t1",
+      revision: 1,
+      requestId: `t1:d-${String(n)}`,
+      event: "push",
+    });
+
+    await registry.setSessionStatus("s-0", "running", monday - 1_000);
+
+    expect(await registry.admitFire(delivery(1), ids(1), monday)).toEqual({ status: "busy" });
+
+    await registry.setSessionStatus("s-0", "idle", monday + 1_000);
+
+    expect(await registry.admitFire(delivery(1), ids(1), monday + 2_000)).toMatchObject({
+      status: "started",
+      session: "s-1",
+    });
+    expect(await registry.getSession("s-1")).toMatchObject({
+      title: expect.stringMatching(/^CI failed · push · .* UTC$/),
+      workspace: "0f0f0f0f",
+    });
+    expect((await registry.listWorkspaces()).map((workspace) => workspace.id)).toEqual([
+      "0f0f0f0f",
+    ]);
+  });
+
+  it("makes one Trigger of a create retried under its id", async () => {
+    const registry = fresh();
+
+    await startIn(registry, "s-0", "0f0f0f0f");
+    await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 1_000);
+
+    expect(await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 2_000)).toMatchObject({
+      status: "unchanged",
+    });
+    expect(await registry.listTriggers()).toHaveLength(1);
+  });
+
+  describe("admitFire", () => {
+    const first = (requestId = "t1:one") => ({ trigger: "t1", revision: 1, requestId });
+
+    const kept = async (when?: WorkspaceTriggerInput["whenBusy"]) => {
+      const registry = fresh();
+
+      await startIn(registry, "s-0", "0f0f0f0f");
+      await registry.createTrigger("t1", { ...inWorkspace("0f0f0f0f"), whenBusy: when }, 1_000);
+
+      return registry;
+    };
+
+    it("starts a Session in its Workspace, on its branch, titled and marked as an Environment trigger's", async () => {
+      const registry = await kept();
+
+      expect(await registry.admitFire({ ...first(), scheduledAt: monday }, ids(1), monday)).toEqual(
+        { status: "started", session: "s-1", environment: DEFAULT_ENVIRONMENT },
+      );
+      expect(await registry.getSession("s-1")).toMatchObject({
+        title: "Nightly check · Mon, Nov 9, 2026, 9:00 AM",
+        workspace: "0f0f0f0f",
+        marks: { kind: "trigger", auth: "trigger", trigger: { id: "t1", name: "Nightly check" } },
+      });
+      // No Workspace is made for it.
+      expect((await registry.listWorkspaces()).map((workspace) => workspace.id)).toEqual([
+        "0f0f0f0f",
+      ]);
+    });
+
+    it("answers busy while any Session in the Workspace isn't idle, the owner's own included", async () => {
+      const registry = await kept();
+
+      await registry.setSessionStatus("s-0", "running", monday - 1_000);
+
+      expect(await registry.admitFire(first(), ids(1), monday)).toEqual({ status: "busy" });
+      expect(await registry.listSessions()).toHaveLength(1);
+
+      await registry.setSessionStatus("s-0", "idle", monday + 3_000);
+
+      expect(await registry.admitFire(first(), ids(1), monday + 4_000)).toMatchObject({
+        status: "started",
+        session: "s-1",
+      });
+    });
+
+    it("doesn't wait on an archived Session or on a Session in another Workspace", async () => {
+      const registry = await kept();
+
+      await startIn(registry, "s-9", "0e0e0e0e");
+      await registry.setSessionStatus("s-9", "running", monday - 1_000);
+      await registry.setSessionStatus("s-0", "running", monday - 1_000);
+      await registry.archiveSession("s-0", monday - 500);
+
+      expect(await registry.admitFire(first(), ids(1), monday)).toMatchObject({
+        status: "started",
+      });
+    });
+
+    it("is busy while the Session a Fire just started hasn't reported its first Run", async () => {
+      const registry = await kept();
+
+      await registry.admitFire(first("t1:one"), ids(1), monday);
+
+      expect(await registry.admitFire(first("t1:two"), ids(2), monday + 1_000)).toEqual({
+        status: "busy",
+      });
+    });
+
+    it("lets one of concurrent admits through, and the rest wait", async () => {
+      const registry = await kept();
+
+      const answers = await Promise.all(
+        [1, 2, 3, 4].map((n) => registry.admitFire(first(`t1:${String(n)}`), ids(n), monday)),
+      );
+
+      expect(answers.filter((answer) => answer.status === "started")).toHaveLength(1);
+      expect(answers.filter((answer) => answer.status === "busy")).toHaveLength(3);
+      expect(await registry.listSessions()).toHaveLength(2);
+    });
+
+    it("records skipped: overlap with when_busy skip, and starts at once with start", async () => {
+      const skipping = await kept("skip");
+
+      await skipping.setSessionStatus("s-0", "running", monday - 1_000);
+
+      expect(await skipping.admitFire(first(), ids(1), monday)).toEqual({
+        status: "skipped",
+        reason: "overlap",
+      });
+
+      const starting = await kept("start");
+
+      await starting.setSessionStatus("s-0", "running", monday - 1_000);
+
+      expect(await starting.admitFire(first(), ids(1), monday)).toMatchObject({
+        status: "started",
+        session: "s-1",
+      });
+    });
+
+    it("answers a Fire let through before its Session again, though the Workspace is busy now", async () => {
+      const registry = await kept();
+
+      await registry.admitFire(first(), ids(1), monday);
+      await registry.setSessionStatus("s-1", "running", monday + 1_000);
+
+      expect(await registry.admitFire(first(), ids(2), monday + 2_000)).toEqual({
+        status: "started",
+        session: "s-1",
+        environment: DEFAULT_ENVIRONMENT,
+        repeated: true,
+      });
+    });
+  });
+
+  describe("keeps its Workspace", () => {
+    it("deleting the last Session leaves the Workspace's record while a Workspace trigger holds it", async () => {
+      const registry = fresh();
+
+      await startIn(registry, "s-0", "0f0f0f0f");
+      await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 1_000);
+      await registry.deleteSession("s-0");
+
+      expect(await registry.workspaceKept("0f0f0f0f")).toBe(true);
+      expect(await registry.deleteWorkspace("0f0f0f0f")).toBe("in-use");
+      expect(await registry.getWorkspace("0f0f0f0f")).toMatchObject({ id: "0f0f0f0f" });
+      expect((await registry.listWorkspaces()).map((workspace) => workspace.id)).toEqual([
+        "0f0f0f0f",
+      ]);
+      expect(await registry.listSessions()).toEqual([]);
+    });
+
+    it("deletes it once the Trigger is gone, and when the agent removed it", async () => {
+      const registry = fresh();
+
+      await startIn(registry, "s-0", "0f0f0f0f");
+      await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 1_000);
+      await registry.deleteSession("s-0");
+      await registry.removeTrigger("t1");
+
+      // Without a Session or a Trigger the Workspace stays, listed, for the owner to remove: it may hold unpushed work.
+      expect(await registry.workspaceKept("0f0f0f0f")).toBe(false);
+      expect(await registry.getWorkspace("0f0f0f0f")).toMatchObject({ id: "0f0f0f0f" });
+      expect(await registry.deleteWorkspace("0f0f0f0f")).toBe("deleted");
+
+      await startIn(registry, "s-1", "0e0e0e0e");
+      await registry.agentCreateTrigger(
+        "t2",
+        inWorkspace("0e0e0e0e"),
+        { session: "s-1", conversation: 0, tool: "trigger_create", reason: "asked" },
+        2_000,
+      );
+      await registry.deleteSession("s-1");
+
+      expect(await registry.deleteWorkspace("0e0e0e0e")).toBe("in-use");
+
+      await registry.agentRemoveTrigger(
+        "t2",
+        { session: "s-1", conversation: 0, tool: "trigger_remove", reason: "done" },
+        3_000,
+      );
+
+      // The agent's removal keeps its row for a revert, but it no longer keeps the Workspace; the row goes with it.
+      expect(await registry.deleteWorkspace("0e0e0e0e")).toBe("deleted");
+      expect(await registry.storedTriggerIds()).toEqual([]);
+    });
+
+    it("keeps its record while a Session is bound to it, and Remove takes its Triggers first, whatever Sessions are bound", async () => {
+      const registry = fresh();
+
+      await startIn(registry, "s-0", "0f0f0f0f");
+      await startIn(registry, "s-9", "0e0e0e0e");
+      await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 1_000);
+      await registry.createTrigger("t2", { ...inWorkspace("0f0f0f0f"), name: "Another" }, 1_000);
+      await registry.createTrigger("t3", inWorkspace("0e0e0e0e"), 1_000);
+
+      expect(await registry.workspaceKept("0f0f0f0f")).toBe(true);
+      expect(await registry.workspaceKept("0e0e0e0e")).toBe(true);
+      expect(await registry.workspaceKept("0a0a0a0a")).toBe(false);
+
+      // The record and the Triggers stay while a Session is bound.
+      expect(await registry.deleteWorkspaceWithTriggers("0f0f0f0f")).toEqual({
+        deletion: "in-use",
+        triggers: [],
+      });
+      expect(await registry.listTriggers()).toHaveLength(3);
+
+      // The owner's Remove takes the Triggers alone first, whatever Sessions are bound.
+      expect(await registry.deleteWorkspaceTriggers("0f0f0f0f")).toEqual(
+        expect.arrayContaining(["t1", "t2"]),
+      );
+      expect((await registry.listTriggers()).map((trigger) => trigger.id)).toEqual(["t3"]);
+      expect(await registry.workspaceKept("0f0f0f0f")).toBe(false);
+      expect(await registry.triggerDefinition("t1")).toBeNull();
+      expect(await registry.getWorkspace("0f0f0f0f")).toMatchObject({ id: "0f0f0f0f" });
+
+      await registry.deleteSession("s-0");
+
+      expect(await registry.deleteWorkspaceWithTriggers("0f0f0f0f")).toEqual({
+        deletion: "deleted",
+        triggers: [],
+      });
+    });
+
+    it("goes with its Environment: it is in use until its Workspaces are removed, then its Triggers go", async () => {
+      const registry = fresh();
+
+      await registry.createEnvironment("0000abcd", "Cloudpid", 500);
+      await registry.createSession(
+        {
+          id: "s-0",
+          title: null,
+          workspace: {
+            kind: "new",
+            id: "0f0f0f0f",
+            environment: "0000abcd",
+            branch: null,
+            base: null,
+          },
+        },
+        600,
+      );
+      await registry.createTrigger("t1", inWorkspace("0f0f0f0f"), 1_000);
+      await registry.deleteSession("s-0");
+
+      expect(await registry.deleteEnvironmentWithTriggers("0000abcd")).toEqual({
+        deletion: "in-use",
+        triggers: [],
+      });
+      expect(await registry.deleteWorkspaceWithTriggers("0f0f0f0f")).toEqual({
+        deletion: "deleted",
+        triggers: ["t1"],
+      });
+      expect(await registry.deleteEnvironmentWithTriggers("0000abcd")).toEqual({
+        deletion: "deleted",
+        triggers: [],
+      });
     });
   });
 });

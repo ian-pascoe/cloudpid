@@ -21,7 +21,6 @@ import type {
   EnvironmentRepo,
   EnvironmentSecretRecord,
   EnvironmentSkill,
-  EnvironmentTriggerInput,
   MarkedOrigin,
   McpRepoFileView,
   OverridingEnvironment,
@@ -37,6 +36,7 @@ import type {
   TriggerChanged,
   TriggerChangeValue,
   TriggerDefinition,
+  TriggerInput,
   TriggerPatch,
 } from "@cloudpid/protocol";
 import { pageSessions, type SessionsResult } from "./session-page.ts";
@@ -156,6 +156,7 @@ import {
   type FireAdmitted,
   openTriggers,
   type TriggerWrite,
+  type WorkspaceRemoval,
 } from "./triggers.ts";
 import {
   putEnvironmentInstructions,
@@ -774,8 +775,29 @@ export type RegistryMethods = {
   readonly listSubagentWorkspaces: (input: {
     readonly session: string;
   }) => Effect.Effect<ReadonlyArray<WorkspaceRecord>>;
-  /** Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session is bound to it. */
+  /**
+   * Forget a Workspace once its Sessions are deleted and its object wiped; kept while a Session or a Workspace trigger
+   * is bound to it (`docs/architecture/triggers.md` → Kinds and what a Fire delivers to).
+   */
   readonly deleteWorkspace: (input: { readonly id: string }) => Effect.Effect<Deletion>;
+  /**
+   * `deleteWorkspace` as the owner's Remove makes it, which takes the Workspace's Triggers with it: answers the ids of
+   * the Triggers that went (deleted in the same transaction), whose objects the caller wipes. Kept, with its Triggers,
+   * while a Session is bound to it.
+   */
+  readonly deleteWorkspaceWithTriggers: (input: {
+    readonly id: string;
+  }) => Effect.Effect<WorkspaceRemoval>;
+  /**
+   * Delete Workspace `id`'s Triggers alone, whatever Sessions are bound to it, and answer the ids of the active ones,
+   * whose objects the caller wipes: the owner's Remove does it first, so no waiting Fire starts a Session in a Workspace
+   * being removed.
+   */
+  readonly deleteWorkspaceTriggers: (input: {
+    readonly id: string;
+  }) => Effect.Effect<ReadonlyArray<string>>;
+  /** Whether a Workspace trigger is kept for Workspace `id`, which keeps it when its last Session is deleted. */
+  readonly workspaceKept: (input: { readonly id: string }) => Effect.Effect<boolean>;
   /**
    * What keeps the spare Workspace of each of `environments` (all of them when undefined) current, in one call:
    * the stale spares to remove (`forgetSpare`, then their objects), and the spares registered now, each with what its
@@ -1035,7 +1057,7 @@ export type RegistryMethods = {
    */
   readonly createTrigger: (input: {
     readonly id?: string | undefined;
-    readonly trigger: EnvironmentTriggerInput;
+    readonly trigger: TriggerInput;
   }) => Effect.Effect<TriggerWrite>;
   /**
    * Change a Trigger's fields at its next revision; its kind and Environment never change. With `expected`, only while
@@ -1060,7 +1082,7 @@ export type RegistryMethods = {
    */
   readonly agentCreateTrigger: (input: {
     readonly id: string;
-    readonly trigger: EnvironmentTriggerInput;
+    readonly trigger: TriggerInput;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<TriggerChanged>;
   /** The agent's change of a Trigger's fields, recorded, while it is still `expected`. The caller wakes its object. */
@@ -1882,6 +1904,11 @@ export const RegistryLive = Registry.make(
           listSubagentWorkspaces: ({ session }) =>
             Effect.sync(() => store.listSubagentWorkspaces(session)),
           deleteWorkspace: ({ id }) => Effect.sync(() => store.deleteWorkspace(id)),
+          deleteWorkspaceWithTriggers: ({ id }) =>
+            Effect.sync(() => triggers.deleteWorkspaceWithTriggers(id)),
+          deleteWorkspaceTriggers: ({ id }) =>
+            Effect.sync(() => triggers.deleteWorkspaceTriggers(id)),
+          workspaceKept: ({ id }) => Effect.sync(() => store.workspaceKept(id)),
           upkeepSpares: ({ environments }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
