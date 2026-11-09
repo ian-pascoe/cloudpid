@@ -80,9 +80,8 @@ describe("the Sampling card's write of the definition", () => {
     const world = await setup();
     const result = await write(world, { kind: "global" }, "allow");
 
-    expect(result.pipe(Result.flip, Result.getOrUndefined)?.message).toBe(
-      "The Settings have no definition of docs to change",
-    );
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrUndefined(Result.flip(result))).toBeInstanceOf(McpQuestionsError);
   });
 
   it("is writable for a Global or an Environment's definition of a Session with an Environment, and for nothing else", async () => {

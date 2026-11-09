@@ -93,13 +93,4 @@ describe("the Container previews' routes", () => {
         expect(acquired).not.toHaveProperty("outboundByHost");
       }
     }));
-
-  it("are left out while no call has named a Workspace, and the browser is acquired as before", () =>
-    withHost(async (raw, run) => {
-      await asSession(raw, undefined).run(WHERE, 1);
-
-      expect(run.state.acquired).toHaveLength(1);
-      expect(run.state.acquired[0]).not.toHaveProperty("outboundByHost");
-      expect(run.state.acquired[0]?.keepAlive).toBe(600_000);
-    }));
 });

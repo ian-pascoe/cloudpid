@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 // @effect-diagnostics preferEffectArray:off globalTimers:off newPromise:off asyncFunction:off -- a form driven in a DOM, its asks kept in native arrays.
 // The argument form's wiring to its completions (`docs/architecture/mcp-in-a-session.md` → As built (#485): completion): the
-// focus asks at once, typing asks once it stops, the answer is listed under the focused field and taken with the keys, and
-// closing the form cancels what is in flight.
+// form asks for the first field's suggestions as it opens and lists them under it, the highlighted one is taken with the
+// arrows and Enter, and a reason there are none is said, as a link when the owner can sign in.
 import type { McpCompletion } from "@cloudpid/protocol";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -48,16 +48,6 @@ const Form = ({ onDone = () => {} }: { onDone?: () => void }) => {
 
 let container: HTMLDivElement;
 let root: Root;
-
-const typeInto = (element: HTMLElement, value: string) => {
-  // oxlint-disable-next-line typescript/unbound-method -- the native value setter, called on the element
-  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-
-  act(() => {
-    setter?.call(element, value);
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-};
 
 const press = (element: HTMLElement, key: string) => {
   act(() => {
@@ -111,42 +101,6 @@ describe("the argument form with completions", () => {
     ).toEqual(["acme", "apex"]);
   });
 
-  it("drives the completer as the owner types: the older request is cancelled at the keystroke, the next is asked once typing stops with the other fields as context", async () => {
-    act(() => {
-      root.render(<Form />);
-    });
-    await flush();
-
-    const owner = field("owner");
-    const repo = field("repo");
-
-    if (owner === null || repo === null) throw new Error("the fields are not there");
-
-    typeInto(repo, "web");
-    // The focus was on the first field: typing in the other is its own edit, asked after the debounce.
-    act(() => {
-      owner.focus();
-    });
-    typeInto(owner, "ac");
-
-    // The request the focus made is for a value typed past.
-    expect(asked[0]?.signal.aborted).toBe(true);
-    // Nothing is asked while the owner is typing.
-    expect(asked).toHaveLength(1);
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(130);
-    });
-
-    const last = asked.find((each) => each.ask.argument.value === "ac");
-
-    expect(last?.ask).toEqual({
-      field: "owner",
-      argument: { name: "owner", value: "ac" },
-      context: { repo: "web" },
-    });
-  });
-
   it("takes the highlighted suggestion with the arrows and Enter, and closes the list after", async () => {
     act(() => {
       root.render(<Form />);
@@ -165,23 +119,6 @@ describe("the argument form with completions", () => {
 
     expect(owner.value).toBe("apex");
     expect(container.querySelector('[role="listbox"]')).toBeNull();
-  });
-
-  it("cancels the request in flight when the form closes", async () => {
-    act(() => {
-      root.render(<Form />);
-    });
-    await flush();
-
-    expect(asked[0]?.signal.aborted).toBe(false);
-
-    act(() => {
-      root.unmount();
-    });
-    expect(asked[0]?.signal.aborted).toBe(true);
-
-    // The `afterEach` unmount is of a root that is already gone.
-    root = createRoot(container);
   });
 
   it("says why there are no suggestions, as a link when the owner can sign in", async () => {

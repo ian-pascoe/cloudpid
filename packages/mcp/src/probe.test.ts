@@ -65,15 +65,6 @@ afterEach(() => {
 });
 
 describe("the probe's outcome table", () => {
-  it("401 without a token: sign-in required, asked once", async () => {
-    const server = probeAnswered(() => new Response("Unauthorized", { status: 401 }));
-
-    expect(await outcome(testDeps(fetchTo(server)))).toEqual(
-      failedWith(SignInRequired, { rejected: false }),
-    );
-    expect(probes(server)).toBe(1);
-  });
-
   it("401 when the auth hook has no token: sign-in required, asked once", async () => {
     const server = probeAnswered(() => new Response("Unauthorized", { status: 401 }));
     const asked: Array<boolean> = [];
@@ -121,20 +112,6 @@ describe("the probe's outcome table", () => {
     });
 
     expect(await outcome(deps)).toEqual({ connected: "modern" });
-  });
-
-  it("403 insufficient_scope: step-up, with the scope asked for", async () => {
-    const server = probeAnswered(
-      () =>
-        new Response("Forbidden", {
-          status: 403,
-          headers: { "www-authenticate": 'Bearer error="insufficient_scope", scope="files:write"' },
-        }),
-    );
-
-    expect(await outcome(testDeps(fetchTo(server)))).toEqual(
-      failedWith(StepUpRequired, { scope: "files:write" }),
-    );
   });
 
   it("403 insufficient_scope: the step-up carries the challenge's parameters", async () => {

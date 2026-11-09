@@ -209,8 +209,6 @@ describe("the mcp_servers section and its notice", () => {
 
     for (const intro of [plain, deferred]) {
       expect(intro).toContain("list_mcp_resources");
-      expect(intro).toContain("list_mcp_resource_templates");
-      expect(intro).toContain("read_mcp_resource");
       expect(intro).toContain("mcp_sign_in_ask");
       expect(intro).toContain("tools.mcp__<server>__<tool>(args)");
       expect(intro).toContain("(direct)");

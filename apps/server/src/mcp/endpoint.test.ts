@@ -380,28 +380,6 @@ describe("waiting on a Session through the target", () => {
     expect(result).toEqual({ ok: true, value: { session_id: SESSION, ...ended } });
     expect(asked.statuses).toEqual([]);
   });
-
-  it("answers an interrupted wait with the cursor held when the Session's RPC is cut", async () => {
-    const { endpoint, asked } = startEndpoint(undefined, () => Effect.die("the object was reset"));
-
-    const result = await waitThrough(endpoint, "c-held");
-
-    // One read of the status, told the cursor, answers it.
-    expect(asked.statuses).toEqual([{ after: "c-held" }]);
-    expect(result).toMatchObject({
-      ok: true,
-      value: { ended_by: "timeout", interrupted: true, status: "running", cursor: "c-held" },
-    });
-  });
-
-  it("reads the status without a cursor when the wait had none", async () => {
-    const { endpoint, asked } = startEndpoint(undefined, () => Effect.die("the object was reset"));
-
-    const result = await waitThrough(endpoint, undefined);
-
-    expect(asked.statuses).toEqual([undefined]);
-    expect(result).toMatchObject({ ok: true, value: { interrupted: true, cursor: "c2" } });
-  });
 });
 
 /** The arguments of a management tool, as the cases here send them. */

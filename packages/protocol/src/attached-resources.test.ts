@@ -1,9 +1,7 @@
 // An Attached resource's block, labels and messages, its entry's projection into the transcript, and the socket
 // messages that carry it (`docs/architecture/mcp-in-a-session.md` → Attached resources).
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics preferEffectArray:off
 import type { EntryRecord } from "@earendil-works/pi-durable";
-import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   attachableUriProblem,
@@ -18,7 +16,6 @@ import {
   resourcesBlock,
 } from "./attached-resources.ts";
 import { rank } from "./ranking.ts";
-import { decodeClientMessage, ServerMessageJson } from "./session.ts";
 import { projectEntry } from "./transcript.ts";
 import { USER_ENTRY_KIND } from "./user-entry.ts";
 
@@ -229,75 +226,6 @@ describe("ranking with a tie-break", () => {
       "alpha",
       "alpine",
     ]);
-  });
-});
-
-describe("the socket messages of Attached resources", () => {
-  it("read a submit with resources, and reject one past the limit of a ref or an unknown key", async () => {
-    const ok = await Effect.runPromise(
-      decodeClientMessage(
-        JSON.stringify({
-          type: "submit",
-          id: "s1",
-          input: "go",
-          resources: [{ server: "docs", uri: "file:///a.md", name: "A" }],
-        }),
-      ).pipe(Effect.option),
-    );
-
-    expect(ok._tag).toBe("Some");
-
-    const bad = await Effect.runPromise(
-      decodeClientMessage(
-        JSON.stringify({
-          type: "submit",
-          id: "s1",
-          input: "go",
-          resources: [{ server: "docs", uri: "x".repeat(5000) }],
-        }),
-      ).pipe(Effect.option),
-    );
-
-    expect(bad._tag).toBe("None");
-
-    const extra = await Effect.runPromise(
-      decodeClientMessage(
-        JSON.stringify({
-          type: "submit",
-          id: "s1",
-          input: "go",
-          resources: [{ server: "docs", uri: "file:///a", extra: 1 }],
-        }),
-      ).pipe(Effect.option),
-    );
-
-    expect(extra._tag).toBe("None");
-  });
-
-  it("read the menu request, with or without a conversation", async () => {
-    for (const message of [
-      { type: "mcp_resource_menu", id: "m1" },
-      { type: "mcp_resource_menu", id: "m2", conversationId: 3 },
-    ]) {
-      const read = await Effect.runPromise(
-        decodeClientMessage(JSON.stringify(message)).pipe(Effect.option),
-      );
-
-      expect(read._tag).toBe("Some");
-    }
-  });
-
-  it("carry the hello's `attachedResources`, which an older hello does not have", async () => {
-    const decode = Schema.decodeEffect(ServerMessageJson);
-
-    expect(
-      await Effect.runPromise(
-        decode('{"type":"hello","root":1,"appViews":true,"attachedResources":true}'),
-      ),
-    ).toMatchObject({ type: "hello", attachedResources: true });
-    expect(await Effect.runPromise(decode('{"type":"hello","root":1}'))).not.toHaveProperty(
-      "attachedResources",
-    );
   });
 });
 

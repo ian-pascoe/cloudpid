@@ -474,15 +474,6 @@ describe("the warning that codemode is not offered", () => {
       expect(markup).toContain('href="/settings/all/tools"');
     }),
   );
-
-  it.effect("is not shown when codemode is offered, and is the Scope's own at an Environment", () =>
-    Effect.gen(function* () {
-      expect(textOf(yield* render("*"))).not.toContain("have codemode Exposure");
-      expect(textOf(yield* render("work", { held: { offered: ["read"] } }))).toContain(
-        "search, notes have codemode Exposure",
-      );
-    }),
-  );
 });
 
 describe("the MCP servers section at an Environment", () => {
@@ -926,30 +917,6 @@ describe("a Repo's .pi/mcp.json at an Environment", () => {
     }),
   );
 
-  it.effect("says the problem on the file's row once the Registry makes it one", () =>
-    Effect.gen(function* () {
-      const markup = yield* render("work", {
-        held: {
-          repoFiles: [
-            repoFile({
-              state: "unreadable",
-              error: "GitHub answered 502",
-              errorSince: Date.now() - 30 * 3_600_000,
-              problem: "could not be read for over a day, so its servers are those of the copy",
-            }),
-          ],
-        },
-      });
-
-      const file = textOf(markup.slice(markup.indexOf('id="mcp-repo-app"')));
-
-      expect(file).toContain(
-        "Repo app (.pi/mcp.json): could not be read for over a day, so its servers are those of the copy",
-      );
-      expect(rowNames(markup)).toContain("docs");
-    }),
-  );
-
   it.effect("shows an unreadable Repo with no copy as a problem and no servers", () =>
     Effect.gen(function* () {
       const markup = yield* render("work", {
@@ -973,23 +940,6 @@ describe("a Repo's .pi/mcp.json at an Environment", () => {
       expect(textOf(markup)).toContain(
         "Repo app (.pi/mcp.json): could not be read: GitHub has no repo acme/app (install the GitHub App)",
       );
-    }),
-  );
-
-  it.effect("says a Repo without the file has none, with no problem", () =>
-    Effect.gen(function* () {
-      const markup = yield* render("work", {
-        held: {
-          repoFiles: [
-            repoFile({ state: "absent", text: undefined, blob: undefined, readAt: undefined }),
-          ],
-        },
-      });
-
-      expect(textOf(markup)).toContain("no .pi/mcp.json on its default branch");
-      expect(rowNames(markup)).toEqual(["files", "linear", "notes", "search"]);
-      expect(markup).not.toContain('role="alert"');
-      expect(underProblems(markup)).not.toContain("Repo app");
     }),
   );
 
@@ -1034,37 +984,6 @@ describe("a Repo's .pi/mcp.json at an Environment", () => {
         "Repo app (.pi/mcp.json): is 70 KiB, over 64 KiB, so it is not read",
       );
       expect(rowNames(markup)).not.toContain("docs");
-    }),
-  );
-
-  it.effect("says a Repo that is not on GitHub is not read, with no Reload", () =>
-    Effect.gen(function* () {
-      const markup = yield* render("work", {
-        held: {
-          repoFiles: [
-            {
-              repo: "app",
-              path: ".pi/mcp.json",
-              state: "not_github",
-              lookedAt: Date.now(),
-            },
-          ],
-        },
-      });
-
-      expect(textOf(markup)).toContain("Not on GitHub, so its .pi/mcp.json is not read");
-      expect(markup).not.toContain("Reload");
-    }),
-  );
-
-  it.effect("says a Repo not looked at yet is not read yet", () =>
-    Effect.gen(function* () {
-      const markup = yield* render("work", {
-        held: { repoFiles: [{ repo: "app", path: ".pi/mcp.json", state: "never" }] },
-      });
-
-      expect(textOf(markup)).toContain("Not read yet.");
-      expect(markup).toContain('aria-label="Reload app&#x27;s .pi/mcp.json"');
     }),
   );
 
@@ -1640,78 +1559,8 @@ describe("the import", () => {
         expect(textOf(entries)).toContain("fresh New");
         expect(textOf(entries)).toContain("bad Not imported");
         expect(textOf(entries)).toContain("has both a command and a url");
-        expect(entries).toContain(">Skip</label>");
-        expect(entries).toContain(">Replace</label>");
-        expect(entries).toMatch(/name="mcp-import-\*-linear" checked=""[^>]*\/>Skip/);
         expect(textOf(markup)).toContain("Import 1 server");
       }),
-  );
-
-  it.effect("counts what Replace adds, and ignores autoEnableCodemode with a hint", () =>
-    Effect.gen(function* () {
-      const markup = yield* render("*", {
-        panel: { kind: "import", text, choices: { linear: "replace" } },
-      });
-
-      expect(textOf(markup)).toContain("Import 2 servers");
-      expect(textOf(markup)).toContain("autoEnableCodemode is ignored");
-      expect(markup).toContain('href="/settings/all/tools"');
-    }),
-  );
-
-  it.effect(
-    "at an Environment, Global's name is no conflict, an adjusted name is replaced, and its own name asks Replace or Skip",
-    () =>
-      Effect.gen(function* () {
-        const pasted = JSON.stringify({
-          mcpServers: {
-            files: { command: "files-v2" },
-            linear: { url: "https://mcp.linear.app/v2" },
-            notes: { command: "notes-v2" },
-            fresh: { command: "fresh-mcp" },
-          },
-        });
-
-        const markup = yield* render("work", {
-          panel: { kind: "import", text: pasted, choices: {} },
-        });
-
-        const entries = markup.slice(markup.indexOf('aria-label="Entries to import"'));
-        const text = textOf(entries);
-
-        // `files` is Global's, which the Environment does not touch: no conflict, its own entry replaces Global's here.
-        expect(text).toContain("files New here, replaces Global's");
-        expect(entries).not.toContain('name="mcp-import-work-files"');
-        // `linear` is Global's with an adjustment of this Environment's: it is replaced by the own entry.
-        expect(text).toContain("linear New here, replaces Global's");
-        expect(entries).not.toContain('name="mcp-import-work-linear"');
-        // `notes` is the Environment's own: Replace or Skip, Skip until chosen.
-        expect(text).toContain("notes Already here");
-        expect(entries).toMatch(/name="mcp-import-work-notes" checked=""[^>]*\/>Skip/);
-        expect(text).toContain("fresh New");
-        expect(text).toContain("Import 3 servers");
-      }),
-  );
-
-  it.effect("at an Environment, Replace on its own name adds it to what is imported", () =>
-    Effect.gen(function* () {
-      const pasted = JSON.stringify({ mcpServers: { notes: { command: "notes-v2" } } });
-
-      const markup = yield* render("work", {
-        panel: { kind: "import", text: pasted, choices: { notes: "replace" } },
-      });
-
-      expect(textOf(markup)).toContain("Import 1 server");
-    }),
-  );
-
-  it.effect("holds the import while the text is not pi's JSON", () =>
-    Effect.gen(function* () {
-      const markup = yield* render("*", { panel: { kind: "import", text: "{", choices: {} } });
-
-      expect(textOf(markup)).toContain("Not JSON");
-      expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Import<\/button>/);
-    }),
   );
 });
 

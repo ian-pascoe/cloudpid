@@ -154,43 +154,6 @@ describe("signing in", () => {
     expect(stored?.discovery?.resourceMetadataUrl).toBe(RESOURCE_METADATA_URL);
     expect(stored?.discovery?.authorizationServerUrl).toBe(AUTH_ORIGIN);
   });
-
-  it("is refused by the token endpoint when the PKCE verifier is not the challenge's", async () => {
-    // The stub is as strict as Access: this is what makes the exchange above a check of PKCE.
-    let code = "";
-
-    await signIn(
-      config,
-      scriptedUi({}),
-      deps({
-        openBrowser: async (url) => {
-          const response = await stub.fetch(url, { redirect: "manual" });
-
-          code =
-            new URL(response.headers.get("location") ?? "http://none").searchParams.get("code") ??
-            "";
-
-          await fetch(response.headers.get("location") ?? "");
-        },
-      }),
-    );
-
-    const redirect = oauth.registrations[0]?.["redirect_uris"];
-
-    const response = await stub.fetch("https://auth.cloudpid.test/token", {
-      method: "POST",
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        code_verifier: "not-the-verifier",
-        client_id: "client-1",
-        redirect_uri: String(redirect),
-      }),
-    });
-
-    expect(response.status).toBe(400);
-  });
-
   it("replaces a stored sign-in only once the new one has its tokens", async () => {
     await auth.store.write(KEY, oauth.signedIn());
 

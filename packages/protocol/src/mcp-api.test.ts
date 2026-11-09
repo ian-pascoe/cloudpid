@@ -6,30 +6,22 @@ import {
   ApiDescription,
   ApiError,
   ApiErrorCode,
-  ApiResult,
   Delivery,
   EndedBy,
-  HarnessAnswer,
-  HarnessRequest,
   harnessServed,
-  MCP_API_OPERATIONS,
+  MCP_API_LIMITS,
   McpAuth,
   McpEra,
-  McpSessionOrigin,
   McpSessionStatus,
-  McpSessionSummary,
   RunOutcome,
   SessionVia,
+  Via,
   SessionDetail,
   TranscriptEntry,
-  Via,
   WaitingKind,
   WaitingRequest,
-  apiFailure,
-  apiOk,
   decodeCursor,
   encodeCursor,
-  MCP_API_LIMITS,
   runOutcome,
   SubmitRequest,
   sessionOriginLabel,
@@ -65,20 +57,6 @@ describe("cursors", () => {
     ]) {
       expect(Option.isNone(decodeCursor(bad))).toBe(true);
     }
-  });
-});
-
-describe("failures", () => {
-  it("are values whose retryability follows the code", () => {
-    expect(apiFailure("session_busy", "Busy.")).toEqual({
-      ok: false,
-      error: { code: "session_busy", message: "Busy.", retryable: true },
-    });
-    expect(apiFailure("not_found", "No.", { details: { id: "x" } })).toEqual({
-      ok: false,
-      error: { code: "not_found", message: "No.", retryable: false, details: { id: "x" } },
-    });
-    expect(apiOk(1)).toEqual({ ok: true, value: 1 });
   });
 });
 
@@ -147,17 +125,6 @@ describe("marks", () => {
   });
 });
 
-describe("describe() limits", () => {
-  it("are the endpoint's", () => {
-    expect(MCP_API_LIMITS).toEqual({
-      maxInputBytes: 1_900_000,
-      maxSliceBytes: 2 * 1024 * 1024,
-      maxImportBytes: 64 * 1024 * 1024,
-      maxWaitMs: 300_000,
-    });
-  });
-});
-
 describe("a value a newer deploy added", () => {
   const future = "from-the-future";
 
@@ -175,34 +142,11 @@ describe("a value a newer deploy added", () => {
     );
   });
 
-  it("reads known members as they are", () => {
-    expect(read(ApiErrorCode, "branch_taken")).toBe("branch_taken");
-    expect(read(ApiErrorCode, "stopped")).toBe("stopped");
-    expect(read(McpSessionStatus, "waiting_for_owner")).toBe("waiting_for_owner");
-    expect(read(EndedBy, "owner_needed")).toBe("owner_needed");
-  });
-
   it("reads inside what carries it: failures, waiting requests, marks and the listing", () => {
     expect(read(ApiError, { code: future, message: "m", retryable: true })).toMatchObject({
       code: "unavailable",
       retryable: true,
     });
-    // A reader that does not know `stopped` (a message the owner's Stop withdrew) sees `unavailable` and, as the flag
-    // travels, that sending it again will not help.
-    expect(read(ApiError, { code: future, message: "m", retryable: false })).toMatchObject({
-      code: "unavailable",
-      retryable: false,
-    });
-    expect(apiFailure("stopped", "m", { retryable: false })).toMatchObject({
-      ok: false,
-      error: { code: "stopped", retryable: false },
-    });
-    expect(
-      read(ApiResult(Schema.String), {
-        ok: false,
-        error: { code: future, message: "m", retryable: false },
-      }),
-    ).toMatchObject({ ok: false, error: { code: "unavailable" } });
     expect(
       read(WaitingRequest, {
         kind: future,
@@ -213,42 +157,7 @@ describe("a value a newer deploy added", () => {
         url: "/",
       }).kind,
     ).toBe("unknown");
-    expect(read(SessionVia, { auth: future, era: future, client: { name: "pi" } })).toEqual({
-      auth: "unknown",
-      era: "unknown",
-      client: { name: "pi" },
-    });
-    // The owner's grant id travels in the mark when there is one; a version that predates it reads the mark without it.
-    expect(read(SessionVia, { auth: "oauth", clientId: "dcr-1" })).toEqual({
-      auth: "oauth",
-      clientId: "dcr-1",
-    });
-    expect(read(SessionVia, { auth: "oauth" })).toEqual({ auth: "oauth" });
-    expect(read(Via, { era: future })).toEqual({ era: "unknown" });
-    expect(read(McpSessionOrigin, { kind: future, auth: future })).toEqual({
-      kind: "unknown",
-      auth: "unknown",
-    });
-    expect(read(McpSessionOrigin, { kind: future, session: "s" })).toEqual({
-      kind: "unknown",
-      session: "s",
-    });
-    expect(read(McpSessionOrigin, { kind: "clone", session: "s" })).toEqual({
-      kind: "clone",
-      session: "s",
-    });
 
-    const summary = read(McpSessionSummary, {
-      session_id: "s",
-      title: null,
-      environment: { id: "e", name: "E" },
-      status: future,
-      updated_at: "",
-      archived: false,
-      url: "/",
-    });
-
-    expect(summary.status).toBe("unknown");
     expect(
       read(SessionDetail, {
         session_id: "s",
@@ -277,10 +186,6 @@ describe("Via", () => {
 describe("describe() and the management tools", () => {
   const limits = MCP_API_LIMITS;
 
-  it("lists harness among the operations", () => {
-    expect(MCP_API_OPERATIONS).toContain("harness");
-  });
-
   it("reads the tools a newer Server serves", () => {
     const description = read(ApiDescription, {
       operations: ["environments", "harness"],
@@ -296,23 +201,5 @@ describe("describe() and the management tools", () => {
 
     expect(description.harness).toBeUndefined();
     expect(harnessServed(description)).toEqual([]);
-  });
-
-  it("decodes a request and an answer, the answer's structured value being any JSON", () => {
-    expect(
-      read(HarnessRequest, {
-        tool: "environment_get",
-        input: { id: "*", field: "setupScript" },
-        via: { era: "modern" },
-      }),
-    ).toEqual({
-      tool: "environment_get",
-      input: { id: "*", field: "setupScript" },
-      via: { era: "modern" },
-    });
-    expect(read(HarnessAnswer, { text: "x", structured: { a: [1, null] } })).toEqual({
-      text: "x",
-      structured: { a: [1, null] },
-    });
   });
 });

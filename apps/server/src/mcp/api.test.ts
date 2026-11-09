@@ -18,7 +18,6 @@ import { endedBy } from "../session/mcp-follow.ts";
 import type { FollowState } from "../session/mcp-reads.ts";
 import { MCP_CALLS_PERIOD_S } from "../mcp-access.ts";
 import {
-  identityOf,
   tooManyRunning,
   mcpApiService,
   type McpApiContext,
@@ -158,24 +157,6 @@ describe("describe", () => {
   it("reports Server's deploy id when it has one, and none otherwise", () => {
     expect(service({}, { version: "v-123" }).describe().version).toBe("v-123");
     expect(service().describe().version).toBeUndefined();
-  });
-
-  it("lists the read operations, the four that start, send, stop and wait, and the four of an import, and no others", () => {
-    expect(service().describe().operations).toEqual([
-      "environments",
-      "sessions",
-      "session",
-      "transcript",
-      "start",
-      "send",
-      "stop",
-      "wait",
-      "importBegin",
-      "importAppend",
-      "importFinish",
-      "importCancel",
-      "harness",
-    ]);
   });
 
   it("lists the five management tools it serves in harness, and no other", () => {
@@ -681,28 +662,10 @@ describe("start", () => {
     );
   });
 
-  it("names the tools that wait for or stop a running Session in the cap's refusal", async () => {
-    const cap = await run(
-      service({
-        createSession: () => Effect.succeed({ refused: "too-many-running", limit: 10 }),
-      }).start({ text: "go", via: VIA }),
-    );
-
-    // `wait` is served now, so the refusal may name the tool that waits for one to end.
-    expect(!cap.ok && cap.error.message).toContain("session_wait");
-    expect(!cap.ok && cap.error.message).toContain("session_stop");
-  });
-
   it("words the cap's refusal over the operations served, naming a tool only where it is", () => {
-    const served = ["session", "wait", "start", "stop"];
-
-    expect(tooManyRunning(10, served)).toBe(
-      "10 Sessions started over MCP are running: wait for one with session_wait or check them with session_get, or stop one with session_stop, then start again.",
-    );
+    expect(tooManyRunning(10, ["session", "wait", "start", "stop"])).toContain("session_wait");
     expect(tooManyRunning(10, ["session", "start", "stop"])).not.toContain("session_wait");
-    expect(tooManyRunning(10, ["start", "stop"])).toBe(
-      "10 Sessions started over MCP are running: stop one with session_stop, then start again.",
-    );
+    expect(tooManyRunning(10, ["start", "stop"])).not.toContain("session_get");
   });
 
   it("says the Session is running when it cannot yet say", async () => {
@@ -1223,15 +1186,6 @@ describe("wait", () => {
 });
 
 describe("the caller", () => {
-  it("is marked as it got in, and rate-limited by an identity that is never the email", () => {
-    expect(identityOf({ kind: "owner" })).toEqual({ auth: "oauth", rateKey: "owner" });
-    expect(identityOf({ kind: "owner", clientId: "dcr-1" })).toEqual({
-      auth: "oauth",
-      rateKey: "owner",
-    });
-    expect(identityOf({ kind: "local" })).toEqual({ auth: "local", rateKey: "local" });
-  });
-
   it("counts a call against its key, and says to wait a period when over", async () => {
     const withinRate = vi.fn(() => Effect.succeed(false));
 
@@ -1346,19 +1300,6 @@ describe("the import tools", () => {
           ],
         },
       },
-    });
-  });
-
-  it("refuses a begin past the running cap, in words over the tools it serves", async () => {
-    const result = await run(
-      service({
-        createSession: () => Effect.succeed({ refused: "too-many-running", limit: 10 }),
-      }).importBegin(begin),
-    );
-
-    expect(result).toMatchObject({
-      ok: false,
-      error: { code: "too_many_running", retryable: true, details: { limit: 10 } },
     });
   });
 

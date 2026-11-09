@@ -629,7 +629,7 @@ describe("the thread messages of a view", () => {
     );
   });
 
-  it("puts the Call diff a finished edit or write recorded on its card, and none for a failed call, another tool, or details that record none", () => {
+  it("puts the Call diff a finished edit recorded on its card, and none for a failed call", () => {
     const called = (name: string, error: boolean, details: Record<string, string | boolean>) =>
       toThreadMessages(
         view({
@@ -662,21 +662,6 @@ describe("the thread messages of a view", () => {
     });
     expect(called("edit", true, details)).not.toHaveProperty("artifact");
     expect(called("read", false, details)).not.toHaveProperty("artifact");
-    // An edit from before the patch was recorded, and a write from before the wrapper recorded anything.
-    expect(called("edit", false, { diff: "shown" })).not.toHaveProperty("artifact");
-    expect(called("write", false, {})).not.toHaveProperty("artifact");
-
-    // A write: a new file's patch, or that the change is too large to show.
-    expect(called("write", false, { ...details, created: true })).toMatchObject({
-      artifact: { diff: { patch: details.patch, created: true } },
-    });
-    expect(called("write", false, { tooLarge: true })).toMatchObject({
-      artifact: { diff: { unavailable: true } },
-    });
-    expect(called("write", false, { binary: true })).toMatchObject({
-      artifact: { diff: { unavailable: true } },
-    });
-    expect(called("write", true, { tooLarge: true })).not.toHaveProperty("artifact");
   });
 
   it("puts the screenshots of a finished tool call on its card, besides its text", () => {

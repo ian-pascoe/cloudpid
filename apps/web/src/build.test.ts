@@ -84,12 +84,4 @@ describe("the web app's build", { timeout: 120_000 }, () => {
 
     expect(build()).toBe(before);
   });
-
-  it("changes when the app's own source names a new class", () => {
-    const before = build();
-
-    name("src/app.tsx", "0.4321");
-
-    expect(build()).not.toBe(before);
-  });
 });

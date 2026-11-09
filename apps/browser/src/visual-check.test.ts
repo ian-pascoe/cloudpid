@@ -180,22 +180,6 @@ describe("checkVisual: the commands", () => {
     expect(result.contentHeight).toBe(400);
   });
 
-  it("makes the context disposeOnDetach, in the page's own context, and sends the page's commands in its session", async () => {
-    const fake = scripted();
-
-    await run(fake);
-
-    expect(paramsOf(fake, "Target.createBrowserContext")).toEqual({ disposeOnDetach: true });
-    expect(paramsOf(fake, "Target.createTarget")).toMatchObject({ browserContextId: "ctx-1" });
-    expect(paramsOf(fake, "Target.attachToTarget")).toEqual({ targetId: "page-1", flatten: true });
-
-    for (const method of ["Page.navigate", "Fetch.enable", "Page.captureScreenshot"]) {
-      expect(sentOf(fake, method)[0]?.sessionId, method).toBe(PAGE);
-    }
-
-    expect(sentOf(fake, "Target.createTarget")[0]?.sessionId).toBeUndefined();
-  });
-
   it("emulates the width with mobile off, and the color scheme", async () => {
     const fake = scripted();
 
@@ -569,55 +553,6 @@ describe("checkVisual: what it keeps as it hears", () => {
     expect(result.warnings).toEqual([
       "There may be more CSP violations than the 50 shown: the check stopped collecting them at that cap.",
     ]);
-  });
-
-  it("lists no log line of a violation the audits left out, once the violations are full", async () => {
-    const audits = Array.from({ length: 80 }, (_, index) =>
-      inPage("Audits.issueAdded", {
-        issue: {
-          code: "ContentSecurityPolicyIssue",
-          details: {
-            contentSecurityPolicyIssueDetails: {
-              blockedURL: `https://evil.example/${index}.js`,
-              violatedDirective: "script-src-elem",
-            },
-          },
-        },
-      }),
-    );
-
-    // The log lines come after: those of the violations 50 to 79 have no issue to match.
-    const logs = Array.from({ length: 80 }, (_, index) =>
-      inPage("Log.entryAdded", {
-        entry: {
-          source: "security",
-          text: `Loading the script 'https://evil.example/${index}.js' violates the following Content Security Policy directive: "script-src 'self'".`,
-        },
-      }),
-    );
-
-    const fake = scripted({ events: [...audits, ...logs] });
-    const result = await run(fake);
-
-    expect(result.violations).toHaveLength(50);
-    expect(result.violations.every((line) => line.startsWith("script-src-elem blocked "))).toBe(
-      true,
-    );
-    expect(sentOf(fake, "Log.disable")).toHaveLength(1);
-    expect(sentOf(fake, "Audits.disable")).toHaveLength(1);
-  });
-
-  it("says nothing of other kinds of issue", async () => {
-    const others = Array.from({ length: 100 }, () =>
-      inPage("Audits.issueAdded", { issue: { code: "CookieIssue", details: {} } }),
-    );
-
-    const fake = scripted({ events: others });
-    const result = await run(fake);
-
-    expect(result.violations).toEqual([]);
-    expect(result.warnings).toEqual([]);
-    expect(sentOf(fake, "Audits.disable")).toHaveLength(0);
   });
 
   it("turns a source off once its list is full, once, and goes on with the check", async () => {

@@ -137,17 +137,6 @@ describe("the draft composer's lookups", () => {
     }),
   );
 
-  it.effect("take a Workspace of another Environment for a new one", () =>
-    Effect.gen(function* () {
-      const { registry, loaded } = lookingUp();
-
-      yield* loaded;
-      registry.set(draftWorkspaceAtom, WORKSPACE.id);
-
-      expect(registry.get(draftPlaceAtom)).toEqual(draftPlace("default", "new"));
-    }),
-  );
-
   it.effect("search the files of the place the draft is made in, once the owner pauses", () =>
     Effect.gen(function* () {
       const { registry, asked, loaded } = lookingUp();

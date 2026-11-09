@@ -618,6 +618,23 @@ describe("a resource request that must not start the Container", () => {
     expect(await host.request(listing("local"), {})).toMatchObject({ _tag: "Completed" });
     expect((await host.engineRequests())[0]?.target).toMatchObject({ start: true });
   });
+
+  it("is refused for a read that names no Workspace: there is no Container to read in", async () => {
+    const host = await withResources();
+
+    expect(
+      await host.request(
+        {
+          op: "resources/read",
+          server: "local",
+          params: { uri: "file:///a.md" },
+          ctx: { origin: "owner", start: false },
+        },
+        {},
+      ),
+    ).toMatchObject({ _tag: "NotAllowed" });
+    expect(await host.engineRequests()).toEqual([]);
+  });
 });
 
 describe("a call", () => {

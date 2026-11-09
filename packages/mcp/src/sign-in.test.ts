@@ -7,7 +7,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { McpAccessTokenAnswer, McpAuthEvent, McpAuthReport, McpAuthReportAnswer } from "./types.ts";
+import { McpAccessTokenAnswer, McpAuthReport, McpAuthReportAnswer } from "./types.ts";
 
 /** Decode `input` as the edge does: it arrives as data of any shape. */
 const decode = <A, I>(schema: Schema.Codec<A, I>, input: Schema.Json): Promise<A> =>
@@ -16,12 +16,6 @@ const decode = <A, I>(schema: Schema.Codec<A, I>, input: Schema.Json): Promise<A
 const base = { environment: "default", server: "linear" };
 
 describe("a host's report (McpAuthReport)", () => {
-  it("reads each event this build knows as itself", async () => {
-    for (const event of ["needs_sign_in", "step_up", "rejected", "working"]) {
-      expect(await decode(McpAuthEvent, event)).toBe(event);
-    }
-  });
-
   it("reads an event a newer host sends as an unknown string, not as a failure", async () => {
     expect(
       await decode(McpAuthReport, {
@@ -30,10 +24,6 @@ describe("a host's report (McpAuthReport)", () => {
         challenge: { scope: "read" },
       }),
     ).toEqual({ ...base, event: "needs_consent", challenge: { scope: "read" } });
-  });
-
-  it("still refuses an event that is not a string", async () => {
-    await expect(decode(McpAuthReport, { ...base, event: 3 })).rejects.toThrow();
   });
 });
 

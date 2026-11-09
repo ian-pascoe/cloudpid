@@ -1171,21 +1171,20 @@ describe("completing a sign-in", () => {
       },
     ));
 
-  it.each([
-    ["no path", "/oauth/mcp/callback/aaaaaaaaaaaa"],
-    ["another path", "/oauth/mcp/other"],
-  ])("saves nothing for a callback at %s than the redirect URI's", (_, path) =>
-    run(sentry(), async ({ setGlobal, signIn, complete, signIns, keyHash, calls }) => {
-      setGlobal({ sentry: { url: SERVER_URL } });
+  it.each([["another path", "/oauth/mcp/other"]])(
+    "saves nothing for a callback at %s than the redirect URI's",
+    (_, path) =>
+      run(sentry(), async ({ setGlobal, signIn, complete, signIns, keyHash, calls }) => {
+        setGlobal({ sentry: { url: SERVER_URL } });
 
-      const state = stateOf(await signIn());
+        const state = stateOf(await signIn());
 
-      expect(await complete(state, { path })).toMatchObject({ status: "path_mismatch" });
-      expect(signIns.get(keyHash("sentry"))?.hasTokens ?? false).toBe(false);
-      expect(calls.some(({ url }) => url.endsWith("/token"))).toBe(false);
-      // The state is spent whatever the callback found.
-      expect(await complete(state)).toEqual({ status: "expired" });
-    }),
+        expect(await complete(state, { path })).toMatchObject({ status: "path_mismatch" });
+        expect(signIns.get(keyHash("sentry"))?.hasTokens ?? false).toBe(false);
+        expect(calls.some(({ url }) => url.endsWith("/token"))).toBe(false);
+        // The state is spent whatever the callback found.
+        expect(await complete(state)).toEqual({ status: "expired" });
+      }),
   );
 
   it("says declined, naming nothing, when the owner declined at the server's page", () =>

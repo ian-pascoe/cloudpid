@@ -73,13 +73,6 @@ const heldFound = (tools: ReadonlyArray<string>): EngineScript => ({
   hold: true,
 });
 
-/** A discovery that failed, held until the test releases it. */
-const heldUnreachable = (): EngineScript => ({
-  // SAFETY: a failure as it crosses the edge.
-  result: { kind: "failed", error: { _tag: "Unreachable", message: "down" }, state: {} } as Encoded,
-  hold: true,
-});
-
 const CALLER = { session: "s-1", conversation: "1", workspace: "w-1" };
 
 /** `requestStart` as a Session that built its tools before: it starts what is due and waits for nothing. */
@@ -135,24 +128,12 @@ const inFlight = async (name: string, script: EngineScript) => {
 
 describe("the keep-alive alarm", () => {
   it("is armed about 30 s ahead while a discovery is in flight, and not once it ends connected", async () => {
-    expect(KEEP_ALIVE_MS).toBe(30_000);
-
     const host = await inFlight("linear", heldFound(["search"]));
 
     await host.release(urlOf("linear"));
     await settled(host);
 
     expect((await restart(host)).servers.linear?.state).toBe("connected");
-    expect(await alarmOf(host)).toBeNull();
-  });
-
-  it("is not armed once a discovery ends failed", async () => {
-    const host = await inFlight("down", heldUnreachable());
-
-    await host.release(urlOf("down"));
-    await settled(host);
-
-    expect((await restart(host)).servers.down?.state).toBe("unavailable");
     expect(await alarmOf(host)).toBeNull();
   });
 

@@ -17,7 +17,7 @@ it("mints UUIDv7 session ids that begin with the millisecond time", () =>
     expect(id.startsWith("019a2b3c-4d5e-7")).toBe(true);
   }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise));
 
-it("mints a different id each time, later ones sorting later", () =>
+it("mints ids that sort later when minted later", () =>
   Effect.gen(function* () {
     const first = yield* newSessionId;
 
@@ -25,7 +25,6 @@ it("mints a different id each time, later ones sorting later", () =>
 
     const second = yield* newSessionId;
 
-    expect(second).not.toBe(first);
     expect(second > first).toBe(true);
   }).pipe(Effect.provide(TestClock.layer()), Effect.runPromise));
 

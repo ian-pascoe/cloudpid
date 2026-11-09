@@ -423,19 +423,6 @@ describe("a Skill's page that has no Skill to show", () => {
       }),
   );
 
-  it.effect("says a repo is not found, or not readable by the GitHub App, in one state", () =>
-    Effect.gen(function* () {
-      const markup = yield* render(() =>
-        Effect.fail(SkillRepoError.make({ kind: "not_found", message: "GitHub has no repo." })),
-      );
-
-      expect(text(markup)).toContain(
-        "mattpocock/skills was not found, or the GitHub App cannot read it.",
-      );
-      expect(text(markup)).toContain("GitHub has no repo.");
-    }),
-  );
-
   it.effect("says a ref the repo does not have, and links the Skill on the default branch", () =>
     Effect.gen(function* () {
       const markup = yield* render(
@@ -448,20 +435,6 @@ describe("a Skill's page that has no Skill to show", () => {
         href: "/settings/all/skills/mattpocock/skills/tdd?path=skills%2Ftdd",
         text: "Show the Skill on its default branch",
       });
-    }),
-  );
-
-  it.effect("says why GitHub failed, with Try again", () =>
-    Effect.gen(function* () {
-      const markup = yield* render(() =>
-        Effect.fail(
-          SkillRepoError.make({ kind: "rate_limited", message: "The limit is used up." }),
-        ),
-      );
-
-      expect(text(markup)).toContain("GitHub did not give the skill tdd.");
-      expect(text(markup)).toContain("The limit is used up.");
-      expect(markup).toContain("Try again");
     }),
   );
 

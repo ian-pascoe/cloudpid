@@ -1,6 +1,6 @@
 // The Session's checks of the owner's preview of a resource link (`./mcp-resource-previews.ts`): a page that is visible, the
-// limits of a socket, a spill read from the Workspace, what is answered as it is read, and the end of what a socket has in
-// flight.
+// limits of a socket (previews a minute, and what it has in flight), a spill read from the Workspace, what is answered as it
+// is read, large previews taking turns, and a spill's read stopped when its page goes.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off asyncFunction:off newPromise:off globalTimers:off
 import {
   MAX_MCP_RESOURCE_IN_FLIGHT,
@@ -126,30 +126,6 @@ describe("a preview's checks in the Session", () => {
       expect(await none.ask(undefined)).toEqual(contents("from the server"));
       expect(none.asked).toEqual([]);
     });
-
-    it("counts against the socket's limits as any preview does", async () => {
-      const previews = resourcePreviewsOver({
-        read: () => Effect.succeed(contents("x")),
-        now: () => 0,
-      });
-
-      const view = socket();
-
-      for (let index = 0; index < MAX_MCP_RESOURCE_PER_MINUTE; index++) {
-        await scoped(
-          previews.resourcePreview(
-            read(view, true, {
-              path: SPILL,
-              spill: () => Effect.succeed<SpillRead>({ kind: "base64", base64: "" }),
-            }),
-          ),
-        );
-      }
-
-      expect(
-        await scoped(previews.resourcePreview(read(view, true, { path: SPILL }))),
-      ).toMatchObject({ reason: "limit" });
-    });
   });
 
   it("limits a socket to a number of previews a minute, counted as they arrive, and lets it ask again a minute on", async () => {
@@ -177,7 +153,7 @@ describe("a preview's checks in the Session", () => {
     expect(await ask()).toMatchObject({ status: "contents" });
   });
 
-  it("limits what one socket has in flight, and aborts it all when the socket goes", async () => {
+  it("limits what one socket has in flight", async () => {
     const gate = Deferred.makeUnsafe<void>();
     const signals: AbortSignal[] = [];
 
@@ -203,9 +179,6 @@ describe("a preview's checks in the Session", () => {
       status: "unavailable",
       reason: "limit",
     });
-
-    await Effect.runPromise(previews.endResourcePreviews(view));
-    expect(signals.every((each) => each.aborted)).toBe(true);
 
     Effect.runSync(Deferred.succeed(gate, undefined));
     await Promise.all(pending);

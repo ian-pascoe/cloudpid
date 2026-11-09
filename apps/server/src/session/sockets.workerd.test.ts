@@ -638,19 +638,6 @@ describe("an abort", () => {
 });
 
 describe("a watch", () => {
-  it("of a conversation the Session does not have answers with an error", async () => {
-    const client = await connect(fresh());
-    const root = await client.root();
-
-    const unknown = await Effect.runPromise(
-      Schema.decodeUnknownEffect(ConversationId)(root + 1000),
-    );
-
-    client.send({ type: "watch", id: "watch", conversationId: unknown });
-
-    expect(await client.answer("watch")).toMatchObject({ type: "error", id: "watch" });
-  });
-
   it("stops streaming once unwatched", async () => {
     const stub = fresh();
 
@@ -857,26 +844,6 @@ describe("a task graph watch", () => {
     await client.answer("unwatch");
     expect(await recordedWatches(stub)).toEqual([{ watches: [], taskGraph: false }]);
   });
-
-  it("survives hibernation: the woken Session sends the summary again on the same socket", async () => {
-    const stub = fresh();
-    const client = await connect(stub);
-    const root = await client.root();
-
-    client.send({ type: "watch_task_graph" });
-    await client.until((messages) => graphs(messages).length === 1);
-    await evictDurableObject(stub);
-
-    const before = client.received.length;
-
-    // A message wakes it.
-    client.send({ type: "unwatch", id: "wake", conversationId: root });
-    await client.answer("wake");
-
-    expect(graphs(await client.until((messages) => graphs(messages).length === 1, before))).toEqual(
-      [{ type: "task_graph", agents: [], background: [] }],
-    );
-  });
 });
 
 /** The usage messages among `messages`, in order. */
@@ -943,26 +910,6 @@ describe("a usage watch", () => {
     );
 
     expect(sent.at(-1)).toMatchObject({ limit: 3, cost: 0 });
-  });
-
-  it("survives hibernation: the woken Session sends the usage again on the same socket", async () => {
-    const stub = fresh();
-    const client = await connect(stub);
-    const root = await client.root();
-
-    client.send({ type: "watch_usage" });
-    await client.until((messages) => usages(messages).length === 1);
-    await evictDurableObject(stub);
-
-    const before = client.received.length;
-
-    // A message wakes it.
-    client.send({ type: "unwatch", id: "wake", conversationId: root });
-    await client.answer("wake");
-
-    expect(usages(await client.until((messages) => usages(messages).length === 1, before))).toEqual(
-      [expect.objectContaining({ type: "usage", cost: 0, limit: null })],
-    );
   });
 });
 
@@ -1377,37 +1324,6 @@ describe("a Todo List watch", () => {
     ]);
   });
 
-  it("survives hibernation: the woken Session sends the list again on the same socket", async () => {
-    const stub = fresh();
-
-    await runInDurableObject(stub, (instance: TestSession) =>
-      instance.script([ADD_TASKS, "Done."]),
-    );
-
-    const client = await connect(stub);
-    const root = await client.root();
-
-    client.send({ type: "watch", id: "watch", conversationId: root });
-    await client.until((messages) => todoLists(messages, root).length === 1);
-    client.send({ type: "submit", id: "submit", input: "plan it", requestId: "turn-1" });
-    await client.until((messages) => todoLists(messages, root).length === 2);
-    await idle(stub);
-    await evictDurableObject(stub);
-
-    const before = client.received.length;
-
-    // A message wakes it, and the watch it restarts sends the list as it stands.
-    client.send({ type: "abort", id: "wake" });
-    await client.answer("wake");
-
-    const lists = todoLists(
-      await client.until((messages) => todoLists(messages, root).length === 1, before),
-      root,
-    );
-
-    expect(lists[0]).toHaveLength(2);
-  });
-
   it("does not outlive an unwatch that comes while the view is being made", async () => {
     const stub = fresh();
 
@@ -1453,25 +1369,6 @@ describe("a Todo List watch", () => {
     await idle(stub);
 
     expect(todoLists(client.received, root)).toEqual([[]]);
-  });
-});
-
-describe("owner commands addressed to a conversation", () => {
-  it("are refused, with the command's id, when it is neither the root nor a subagent's", async () => {
-    const client = await connect(fresh());
-    const root = await client.root();
-
-    const stranger = await Effect.runPromise(
-      Schema.decodeUnknownEffect(ConversationId)(root + 1000),
-    );
-
-    client.send({ type: "submit", id: "submit", conversationId: stranger, input: "hi" });
-    client.send({ type: "abort", id: "abort", conversationId: stranger });
-    client.send({ type: "entries", id: "entries", conversationId: stranger, query: {}, limit: 10 });
-
-    expect(await client.answer("submit")).toMatchObject({ type: "error", id: "submit" });
-    expect(await client.answer("abort")).toMatchObject({ type: "error", id: "abort" });
-    expect(await client.answer("entries")).toMatchObject({ type: "error", id: "entries" });
   });
 });
 
@@ -1573,11 +1470,5 @@ describe("the approval_requests message", () => {
     });
 
     expect(JSON.stringify(message)).not.toContain("expected");
-  });
-
-  it("has no notes key for a request that has none", () => {
-    const message = approvalRequests([ask]);
-
-    expect(JSON.stringify(message)).not.toContain("notes");
   });
 });

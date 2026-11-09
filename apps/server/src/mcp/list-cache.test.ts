@@ -6,10 +6,6 @@ import * as Layer from "effect/Layer";
 import { describe, expect, it } from "vitest";
 import {
   jsonBytes,
-  LIST_CACHE_ENTRY_BYTES,
-  LIST_CACHE_HOST_BYTES,
-  LIST_CACHE_ISOLATE_BYTES,
-  LIST_CACHE_MAX_TTL_MS,
   makeIsolateBudget,
   makeListCache,
   isolateBudget,
@@ -41,7 +37,6 @@ describe("the list cache", () => {
 
     cache.put("k", DOCS, "e", { a: 1 }, 30 * DAY_MS, 0);
 
-    expect(LIST_CACHE_MAX_TTL_MS).toBe(DAY_MS);
     expect(cache.get("k", "e", DAY_MS - 1)).toEqual({ a: 1 });
     expect(cache.get("k", "e", DAY_MS)).toBeUndefined();
   });
@@ -58,17 +53,13 @@ describe("the list cache", () => {
   it("keeps no entry over 4 MiB, and one at it", () => {
     const cache = makeListCache(undefined, makeIsolateBudget());
 
-    expect(LIST_CACHE_ENTRY_BYTES).toBe(4 * MiB);
     expect(cache.put("big", DOCS, "e", weighing(4 * MiB), 1000, 0)).toBe(false);
     expect(cache.put("fits", DOCS, "e", weighing(4 * MiB - 64), 1000, 0)).toBe(true);
-    expect(jsonBytes(weighing(10))).toBe(JSON.stringify(weighing(10)).length);
   });
 
   it("holds 4 MiB a host, dropping the least recently used first", () => {
     const cache = makeListCache(undefined, makeIsolateBudget());
     const piece = weighing(1.5 * MiB);
-
-    expect(LIST_CACHE_HOST_BYTES).toBe(4 * MiB);
 
     cache.put("a", DOCS, "e", piece, 1000, 0);
     cache.put("b", DOCS, "e", piece, 1000, 0);
@@ -136,8 +127,6 @@ describe("the isolate's budget", () => {
   it("is 8 MiB, charged by every host's cache in the isolate, the least recently used of all dropped first", () => {
     const isolate = makeIsolateBudget();
     const [first, second, third] = [1, 2, 3].map(() => makeListCache(undefined, isolate));
-
-    expect(LIST_CACHE_ISOLATE_BYTES).toBe(8 * MiB);
 
     first?.put("a", DOCS, "e", piece, 1000, 0);
     second?.put("b", DOCS, "e", piece, 1000, 0);

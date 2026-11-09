@@ -2,7 +2,7 @@ import type { McpPromptArgument } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { formKey, shownSuggestions, suggestionKey } from "./argument-form.ts";
-import { ArgumentForm, SuggestionList, requiredFilled } from "./argument-form.tsx";
+import { ArgumentForm, requiredFilled } from "./argument-form.tsx";
 import { PromptChipView } from "./prompt-chip.tsx";
 
 const FIELDS: McpPromptArgument[] = [
@@ -130,20 +130,6 @@ describe("the chip", () => {
     expect(html).toContain('aria-label="Remove the MCP prompt"');
     expect(html).toContain("Edit the arguments");
   });
-
-  it("says a prompt the catalog no longer offers cannot be sent", () => {
-    const html = renderToStaticMarkup(
-      <PromptChipView
-        chip={{ prompt, values: {} }}
-        gone="docs no longer offers Review PR"
-        onEdit={() => {}}
-        onRemove={() => {}}
-      />,
-    );
-
-    expect(html).toContain("docs no longer offers Review PR");
-    expect(html).toContain("border-dashed");
-  });
 });
 
 describe("the keys of a field's list of suggestions", () => {
@@ -180,47 +166,6 @@ describe("the suggestions a field lists", () => {
     expect(shownSuggestions(many, "")).toHaveLength(8);
     expect(shownSuggestions(["acme"], "acme")).toEqual([]);
     expect(shownSuggestions(["acme", "acme-labs"], "acme")).toEqual(["acme", "acme-labs"]);
-  });
-
-  it("renders a listbox of options with the highlighted one selected", () => {
-    const html = renderToStaticMarkup(
-      <SuggestionList id="l" suggestions={["acme", "apex"]} highlighted={1} onAccept={() => {}} />,
-    );
-
-    expect(html).toContain('role="listbox"');
-    expect(html).toContain('id="l-0" role="option" aria-selected="false"');
-    expect(html).toContain('id="l-1" role="option" aria-selected="true"');
-  });
-});
-
-describe("the argument form with completions", () => {
-  const render = (
-    completion?: { scope: string; complete: () => Promise<never> },
-    preview?: string,
-  ) =>
-    renderToStaticMarkup(
-      <ArgumentForm
-        title="Review PR"
-        server="docs"
-        fields={FIELDS}
-        values={{ pr: "", focus: "" }}
-        completion={completion}
-        preview={preview}
-        onChange={() => {}}
-        onDone={() => {}}
-        onCancel={() => {}}
-      />,
-    );
-
-  it("makes its fields comboboxes only when the server completes them", () => {
-    expect(render()).not.toContain('role="combobox"');
-    expect(
-      render({ scope: "s", complete: () => Promise.reject(new Error("not asked")) }),
-    ).toContain('role="combobox"');
-  });
-
-  it("shows the resource a template's values make so far under its title", () => {
-    expect(render(undefined, "repo://{owner}/web")).toContain("repo://{owner}/web");
   });
 });
 

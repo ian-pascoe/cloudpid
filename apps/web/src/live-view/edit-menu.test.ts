@@ -28,11 +28,9 @@ describe("the edit menu's items", () => {
 
   it("offers Paste and Select All in a field with nothing selected, after a long press or double tap", () => {
     expect(menuItems(probe({ target: true }))).toEqual(["Paste", "Select All"]);
-    expect(menuItems(probe({ target: true }))).toEqual(["Paste", "Select All"]);
   });
 
   it("shows nothing outside a field with nothing selected", () => {
-    expect(menuItems(probe({}))).toEqual([]);
     expect(menuItems(probe({}))).toEqual([]);
   });
 });

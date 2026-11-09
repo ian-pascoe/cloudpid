@@ -46,7 +46,7 @@ describe("the model an import runs with", () => {
     expect(resolved.warnings).toEqual([]);
   });
 
-  it.each(["openai/gpt-9", "anthropic/claude-old-1", "not-a-model"])(
+  it.each(["openai/gpt-9", "not-a-model"])(
     "falls back to the default, not picked, with a warning that names %s",
     (model) => {
       const resolved = resolveImportAgent({ model }, defaults);

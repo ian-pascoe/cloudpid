@@ -5,38 +5,12 @@
 // FUSE mount was checked by hand in Docker (the doc section).
 // @effect-diagnostics nodeBuiltinImport:off processEnv:off preferEffectArray:off
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
-import {
-  NOTIFY_ATTRIBUTE,
-  NOTIFY_PROGRAM,
-  NOTIFY_ROOT_VARIABLE,
-} from "@cloudpid/sandbox-image/notify";
-
-const image = (name: string) => readFileSync(join(sandboxImageContext, name), "utf8");
-
-const dockerfile = image("Dockerfile");
-const source = image("cloudpid-notify.c");
-
-it("sets the attribute the Workspace DO names, under the root variable it names", () => {
-  expect(source).toContain(`#define NOTIFY_ATTRIBUTE "${NOTIFY_ATTRIBUTE}"`);
-  expect(source).toContain(`getenv("${NOTIFY_ROOT_VARIABLE}")`);
-  expect(source).toContain('#define DEFAULT_ROOT "/workspace"');
-});
-
-it("is built into the image where the Workspace DO runs it", () => {
-  expect(dockerfile).toMatch(
-    new RegExp(`cc [^\\n]*-o ${NOTIFY_PROGRAM.replaceAll("/", "\\/")} [^\\n]*cloudpid-notify\\.c`),
-  );
-  // Its source is bound for the build only: no layer of the image keeps it.
-  expect(dockerfile).toContain(
-    "RUN --mount=type=bind,source=cloudpid-notify.c,target=/tmp/cloudpid-notify.c",
-  );
-  expect(dockerfile).not.toMatch(/^COPY .*cloudpid-notify\.c/m);
-});
+import { NOTIFY_ATTRIBUTE, NOTIFY_ROOT_VARIABLE } from "@cloudpid/sandbox-image/notify";
 
 /** The helper built from the image's source, when this machine can build and run it (Linux, with `cc`). */
 const built = ((): string | undefined => {

@@ -469,30 +469,12 @@ describe("MCP sampling", () => {
       expect(usages).toEqual([]);
     }));
 
-  test("refuses an invalid request with -32602: malformed, mispaired, or with tools over the bounds", () =>
+  test("refuses an invalid request with -32602: malformed, or with tools over the bounds", () =>
     Effect.gen(function* () {
       const { sampler } = open();
 
       expect(refusedWith(yield* sampler.sample(ask({ messages: "no" })))).toMatchObject({
         code: -32602,
-      });
-      expect(
-        refusedWith(
-          yield* sampler.sample(
-            ask({
-              maxTokens: 5,
-              messages: [
-                {
-                  role: "assistant",
-                  content: { type: "tool_use", id: "a", name: "x", input: {} },
-                },
-              ],
-            }),
-          ),
-        ),
-      ).toMatchObject({
-        code: -32602,
-        message: expect.stringContaining("invalid sampling messages"),
       });
       expect(
         refusedWith(

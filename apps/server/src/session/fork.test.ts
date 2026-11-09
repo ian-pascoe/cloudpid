@@ -219,45 +219,6 @@ describe("the Visuals a page of a Fork carries", () => {
     },
   });
 
-  it("holds the copies of the calls its entries have results of, and none when there are none", () => {
-    const visualsOf = (each: EntryRecord) =>
-      toolResultIds(each).map((callId) => record(callId, 10));
-
-    const page = exportPage(
-      [entry(1), result(2, "call-2"), result(3, "call-3")],
-      false,
-      undefined,
-      undefined,
-      visualsOf,
-    );
-
-    expect(page.visuals).toEqual([record("call-2", 10), record("call-3", 10)]);
-    expect(page.entries).toHaveLength(3);
-    // A page of calls that showed no Visual has no `visuals` at all, as one from a Session before them.
-    expect(exportPage([entry(1)], false, undefined, undefined, visualsOf)).toEqual({
-      entries: [entry(1)],
-      next: null,
-    });
-  });
-
-  it("counts the copies in the page's size, so a page of large Visuals is cut, and its copies go with its entries", () => {
-    const visualsOf = (each: EntryRecord) =>
-      toolResultIds(each).map((callId) => record(callId, MAX_COPY_PAGE_SIZE / 2));
-
-    const page = exportPage(
-      [result(1, "a"), result(2, "b"), result(3, "c")],
-      false,
-      undefined,
-      undefined,
-      visualsOf,
-    );
-
-    expect(page.entries.map((each) => each.id)).toEqual([1]);
-    expect(page.next).toBe(1);
-    expect(page.visuals).toHaveLength(1);
-    expect(page.visuals?.[0]).toMatchObject({ kind: "record", record: { callId: "a" } });
-  });
-
   it("fits to what is left of the page beside the entry and its App records", () => {
     const apps = (): McpAppCopy[] => [stubOf("call-1")];
 
@@ -339,21 +300,6 @@ describe("the Visuals of one entry too large for a page", () => {
 });
 
 describe("the draft of a copied entry", () => {
-  it("keeps its kind, messages and data", () => {
-    const source = asEntry({
-      id: 4,
-      kind: "pi.compaction",
-      model: [{ role: "user", content: "summary", timestamp: 4 }],
-      data: { reason: "manual" },
-    });
-
-    expect(copiedDraft(source, new Map())).toEqual({
-      kind: "pi.compaction",
-      model: [{ role: "user", content: "summary", timestamp: 4 }],
-      data: { reason: "manual" },
-    });
-  });
-
   it("renumbers the head and the edits' targets, its own head as self, and drops what was not copied", () => {
     const ids = new Map([
       [2, 12],

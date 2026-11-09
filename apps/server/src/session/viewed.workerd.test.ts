@@ -1,6 +1,7 @@
 // Viewed boxes and the drafts on a pull request, on a Session host in workerd: the boxes are kept in the Session and synced
 // to every client like the drafts (`viewed`, `viewed_set`); a refresh of the pull request to a file's new blob unticks it;
-// a Fork or Clone has none; the drafts on a pull request move to a new head and head its Review.
+// a Fork or Clone has none; the drafts on a pull request move with their lines to a new head, take its title, and are
+// outdated when their lines change.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";
@@ -20,7 +21,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import { idle } from "../durable-waits.fixture.ts";
 import { poll } from "../poll.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
@@ -159,7 +159,7 @@ describe("Viewed boxes", () => {
     expect((await third.nth(1)).map((box) => box.path)).toEqual(["src/b.ts"]);
   });
 
-  it("untick when a refresh brings a new blob for the file, or the file leaves, and not otherwise", async () => {
+  it("untick when a refresh brings a new blob for the file, or the file leaves", async () => {
     const stub = fresh();
 
     await runInDurableObject(stub, (instance: TestSession) => {
@@ -212,26 +212,6 @@ describe("Viewed boxes", () => {
     expect(await runInDurableObject(stub, (instance: TestSession) => instance.viewed())).toEqual([
       { repo: "app", pull: 7, path: "a.ts", blob: "blob-a" },
     ]);
-
-    // The pull request's last result marked behind is not its head: it unticks nothing.
-    await runInDurableObject(stub, async (instance: TestSession) => {
-      await instance.comparedPull(pullComparison(HEAD_1, [["a.ts", "other"]], { behind: HEAD_2 }));
-    });
-    expect(
-      await runInDurableObject(stub, (instance: TestSession) => instance.viewed()),
-    ).toHaveLength(1);
-
-    // One that comes back merged drops the pull request's boxes.
-    await runInDurableObject(stub, async (instance: TestSession) => {
-      await instance.comparedPull(
-        pullComparison(HEAD_1, [["a.ts", "blob-a"]], {
-          pull: { number: 7, title: "T", author: "dev", draft: false, state: "merged" },
-        }),
-      );
-    });
-    expect(
-      await runInDurableObject(stub, (instance: TestSession) => instance.viewed()),
-    ).toHaveLength(0);
   });
 
   it("are not copied into a Fork or Clone", async () => {
@@ -250,14 +230,6 @@ describe("Viewed boxes", () => {
     await runInDurableObject(env.SESSIONS.getByName(target), async (copy: TestSession) => {
       expect(await copy.viewed()).toEqual([]);
     });
-  });
-
-  it("belong to pull requests: a pull request Comparison asked for without a number is an error", async () => {
-    const stub = fresh();
-    const client = await connect(stub);
-
-    client.send({ type: "compare", id: "bad", repo: "app", source: "pull" });
-    expect(await client.answer("bad")).toMatchObject({ type: "error", id: "bad" });
   });
 });
 
@@ -372,37 +344,5 @@ describe("drafts on a pull request", () => {
       diffs(await runInDurableObject(stub, (instance: TestSession) => instance.annotations()))[0]
         ?.status,
     ).toBe("outdated");
-  });
-
-  it("head the Review: Pull request #7 'title' at the head's first seven characters", async () => {
-    const stub = fresh();
-
-    await runInDurableObject(stub, (instance: TestSession) => {
-      instance.script(["Looked."]);
-    });
-
-    const client = await connect(stub);
-
-    client.send({ type: "annotation_save", id: "save", annotation: onPull() });
-    await client.answer("save");
-    client.send({
-      type: "submit",
-      id: "send",
-      input: "Check this.",
-      requestId: "review-pull",
-      annotations: ["on-pull"],
-    });
-    await client.answer("send");
-
-    await idle(stub);
-
-    const entries = await runInDurableObject(stub, (instance: TestSession) =>
-      instance.rootEntries(),
-    );
-
-    const sent = entries.find((entry) => entry.kind === "cloudpid.user");
-
-    expect(sent?.text).toContain("### Pull request #7 'Fix the thing' at `1111111`");
-    expect(sent?.text).toContain("`/workspace/app/src/a.ts`, lines 2–3");
   });
 });

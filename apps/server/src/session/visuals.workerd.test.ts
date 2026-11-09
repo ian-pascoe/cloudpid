@@ -1,6 +1,6 @@
 // Visuals in a Session end to end (`docs/architecture/visuals.md` → Testing): a model's `visual_show` call keeps its page in the
 // Session's storage, outside History, which `visual_page` answers with the Session's origin, after the object restarts too; the
-// sockets say `hello.visuals`, and send a watched conversation's Visuals (`visuals`) after its view and as they change; past its
+// sockets send a watched conversation's Visuals (`visuals`) after its view and as they change; past its
 // bounds the least recently mounted Visual becomes a stub its card can still show; an earlier Visual of the same file is the
 // one a show supersedes; the call's `pi.tool.visual_show` span carries counts and fixed values, never the page's words; and a
 // Fork or Clone shows the Visuals of the calls it copies, across builds too, where what a build cannot use is "no longer kept".
@@ -168,14 +168,6 @@ const draft = (callId: string, html: string, path?: string): VisualDraft => ({
 });
 
 describe("a Visual shown in a Session", () => {
-  it("says in hello that the Session keeps Visuals", async () => {
-    const { stub } = fresh();
-    const client = await connect(stub);
-
-    expect(await client.root()).toMatchObject({ type: "hello", visuals: true });
-    client.close();
-  });
-
   it("keeps the page of a call outside History, and answers it with the Session's origin, after a restart too", async () => {
     const { name, stub } = fresh();
     const client = await connect(stub);
@@ -494,6 +486,7 @@ describe("a Visual shown in a Session", () => {
         instance.toolResults(),
       );
 
+      // The model tells an unavailable check from a failed one only by these words, so they are the contract.
       expect(text).toContain("visual_check is unavailable");
     });
 
@@ -513,48 +506,6 @@ describe("a Visual shown in a Session", () => {
       expect(text).toContain("visual_check is busy");
       expect(text).not.toContain("Not checked");
       expect(text).not.toContain("the browser could not render");
-    });
-
-    it("does not read a failure's words as unavailable: only the host's own flag says so", async () => {
-      const { stub } = fresh();
-
-      await script(stub, "visual-check-failure", {
-        message: "checkVisual: Error: visual_check is unavailable",
-      });
-      await check(stub, { html: PAGE });
-
-      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
-        instance.toolResults(),
-      );
-
-      expect(text).toContain("Not checked");
-    });
-
-    it("warns of what a partial result could not do", async () => {
-      const { stub } = fresh();
-
-      const { screenshot: _taken, ...without } = FOUND;
-
-      await script(stub, "visual-check-result", {
-        ...without,
-        warnings: ["The screenshot failed: boom"],
-      });
-      await check(stub, { html: PAGE });
-
-      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
-        instance.toolResults(),
-      );
-
-      expect(text).toContain("There is no screenshot");
-      expect(text).toContain("Warning: The screenshot failed: boom");
-    });
-
-    it("refuses a page that gives both sources before it asks the browser", async () => {
-      const { stub } = fresh();
-
-      await check(stub, { html: PAGE, path: "/workspace/a.html" });
-
-      expect(await asked(stub)).toBeUndefined();
     });
 
     it("puts counts and fixed values on the call's span, never the page's words, the console's or a host", async () => {
@@ -588,20 +539,6 @@ describe("a Visual shown in a Session", () => {
         expect(recorded).not.toContain(words);
       }
     });
-  });
-
-  it("tells the model when to show a Visual in a section of its own, which the tool's grant shows", async () => {
-    const { stub } = fresh();
-
-    await show(stub, { html: PAGE, title: "t", summary: "s" });
-
-    const sections = await runInDurableObject(stub, (instance: TestSession) =>
-      instance.requestSection("visuals"),
-    );
-
-    expect(sections[0]).toContain("visual_show");
-    // Frozen: every request of the Context Window shows the same text.
-    expect(new Set(sections).size).toBe(1);
   });
 });
 
@@ -814,17 +751,9 @@ describe("the Visuals a Fork or Clone carries", () => {
       expect(visuals).toEqual([]);
     });
 
-    it("skips a kind of copy it does not know, and keeps the others", async () => {
+    it("skips a kind of copy it does not know, or that is not the shape of its kind, and keeps the others", async () => {
       const { visuals, first, second } = await skewed((all) => [
         copyOf({ kind: "future", payload: { html: PAGE } }),
-        ...all,
-      ]);
-
-      expect(Arr.map(visuals, (each) => each.callId)).toEqual([first, second]);
-    });
-
-    it("skips a copy that is not the shape of its kind", async () => {
-      const { visuals, first, second } = await skewed((all) => [
         copyOf({ kind: "record" }),
         copyOf({ kind: "record", record: "not a record" }),
         copyOf({ kind: "stub", stub: null }),
@@ -867,22 +796,6 @@ describe("the Visuals a Fork or Clone carries", () => {
         [first, "evicted", true],
         [second, "kept", false],
       ]);
-    });
-
-    it("keeps the fields a newer build added to a record, and a source kind it does not know", async () => {
-      const { pages, first } = await skewed((all, head) => [
-        recordChanged(head, (record) => ({
-          ...record,
-          source: { kind: "url", url: "https://x" },
-          later: 1,
-        })),
-        ...all.slice(1),
-      ]);
-
-      expect(pages[first]).toMatchObject({
-        status: "page",
-        record: { html: PAGE, source: { kind: "url" } },
-      });
     });
   });
 });

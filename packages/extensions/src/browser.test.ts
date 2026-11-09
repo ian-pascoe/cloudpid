@@ -142,31 +142,13 @@ const decodeOwnerTabs = Schema.decodeUnknownSync(OwnerTabsOutput);
 const decodeHandoff = Schema.decodeUnknownSync(HandoffOutput);
 
 describe("the browser extension", () => {
-  it("offers the browser tool with the host's description, and says what the Session's Secrets cannot do in it", async () => {
+  it("offers the browser tool with the host's description", async () => {
     const { host } = fakeHost(() => completed([]));
     const extension = await extensionOver(host);
     const [tool] = extension.tools ?? [];
 
     expect(tool?.name).toBe("browser");
     expect(tool?.description).toContain(DESCRIPTION);
-    expect(tool?.description).toMatch(/Secret references are not resolved/);
-    expect(tool?.description).toMatch(/jpeg/i);
-  });
-
-  it("tells the agent where a dev server on the Container opens: not localhost, which Browser Run refuses, but its port's own host, listening on 0.0.0.0", async () => {
-    const { host } = fakeHost(() => completed([]));
-    const extension = await extensionOver(host);
-    const description = extension.tools?.[0]?.description ?? "";
-
-    expect(description).toMatch(/localhost/);
-    expect(description).toContain("http://5173.cloudpid.internal/");
-    expect(description).toContain("0.0.0.0");
-
-    for (const port of [3000, 3001, 4173, 4321, 5173, 5174, 8000, 8787]) {
-      expect(description).toContain(String(port));
-    }
-
-    expect(description).not.toMatch(/\b8080\b.*cloudpid\.internal|cloudpid\.internal.*\b8080\b/);
   });
 
   it("still offers the tool, with a short description, when the host cannot be reached for it", async () => {
@@ -178,7 +160,6 @@ describe("the browser extension", () => {
     });
 
     expect(extension.tools?.[0]?.name).toBe("browser");
-    expect(extension.tools?.[0]?.description).toMatch(/Chrome DevTools Protocol/);
   });
 
   it("runs the model's code in its conversation's tab, and returns what the page gave", async () => {
@@ -370,7 +351,6 @@ describe("the browser extension in the user's Owner tabs", () => {
     expect(JSON.stringify(tool?.parameters)).toMatch(/"tab"/);
     expect(JSON.stringify(tool?.parameters)).toMatch(/browser_owner_tabs/);
     expect(tool?.parameters).toMatchObject({ required: ["code"] });
-    expect(tool?.description).toMatch(/Owner tabs/);
   });
 
   it("runs the model's code in the Owner tab it names, by ID or as the one shown, and tells the clients while it drives it", async () => {

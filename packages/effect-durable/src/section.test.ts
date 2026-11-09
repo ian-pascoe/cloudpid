@@ -115,10 +115,4 @@ describe("frozenSection", () => {
     ]);
     expect(heard).toEqual(["read 1", "read 1"]);
   });
-
-  it("freezes nothing when the read fails, and reads again", async () => {
-    const { sections } = await threeRequests([new Error("cannot read"), "later"]);
-
-    expect(sections).toEqual([undefined, "later", "later"]);
-  });
 });

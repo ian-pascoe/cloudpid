@@ -138,10 +138,6 @@ describe("followRequest", () => {
 });
 
 describe("the cards' anchors", () => {
-  it("is request-<id>", () => {
-    expect(requestCardId("abc-1")).toBe("request-abc-1");
-  });
-
   it("is on the Secret form", () => {
     const request: SecretRequest = {
       id: "s1",

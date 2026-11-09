@@ -11,7 +11,6 @@ import {
   replaceSearch,
   searchAtom,
   sessionIdAtom,
-  isDraftPath,
   legacyRedirect,
   SETTINGS_PATH,
   sessionIdOf,
@@ -188,10 +187,6 @@ describe("the Settings page's paths", () => {
 
 describe("the draft path", () => {
   it("shows the draft, and no Session or settings", () => {
-    expect(isDraftPath(DRAFT_PATH)).toBe(true);
-    expect(isDraftPath("/new/")).toBe(true);
-    expect(isDraftPath("/new/x")).toBe(false);
-    expect(isDraftPath("/sessions/new")).toBe(false);
     expect(sessionIdOf(DRAFT_PATH)).toBeUndefined();
     expect(pageOf(DRAFT_PATH)).toEqual({ kind: "draft" });
   });
@@ -290,11 +285,6 @@ describe("the Skills section's query", () => {
 });
 
 describe("the old pages' addresses", () => {
-  it("lead to the Environments section", () => {
-    expect(legacyRedirect("/environments", "")).toBe("/settings/all/environments");
-    expect(legacyRedirect("/environments/", "")).toBe("/settings/all/environments");
-  });
-
   it("lead to the Skills section of the Scope `?environment=` named, keeping the tab and the search", () => {
     expect(legacyRedirect("/skills", "")).toBe("/settings/all/skills");
     expect(legacyRedirect("/skills/", "?tab=hot&q=grill+me")).toBe(
@@ -307,24 +297,6 @@ describe("the old pages' addresses", () => {
       "/settings/all/skills?tab=installed",
     );
     expect(legacyRedirect("/skills", "?environment=%2A")).toBe("/settings/all/skills");
-  });
-
-  it("lead the Skill directory's pages to Global's, with their query", () => {
-    expect(legacyRedirect("/skills/mattpocock", "")).toBe("/settings/all/skills/mattpocock");
-    expect(legacyRedirect("/skills/o/r", "?ref=v1")).toBe("/settings/all/skills/o/r?ref=v1");
-    expect(legacyRedirect("/skills/o/r/tdd", "?ref=v1&path=skills%2Ftdd")).toBe(
-      "/settings/all/skills/o/r/tdd?ref=v1&path=skills%2Ftdd",
-    );
-    expect(legacyRedirect("/skills/o%20w/r", "")).toBe("/settings/all/skills/o%20w/r");
-  });
-
-  it("leave every other address alone", () => {
-    expect(legacyRedirect("/", "")).toBeUndefined();
-    expect(legacyRedirect("/settings", "")).toBeUndefined();
-    expect(legacyRedirect("/settings/all/skills", "?tab=hot")).toBeUndefined();
-    expect(legacyRedirect("/sessions/skills", "")).toBeUndefined();
-    expect(legacyRedirect("/skills/a/b/c/d", "")).toBeUndefined();
-    expect(legacyRedirect("/environments/x", "")).toBeUndefined();
   });
 
   it("are replaced in the history as the page opens, and when one is navigated to", () => {

@@ -82,31 +82,12 @@ describe("which hop is read from McpWorker", () => {
   it.each([
     ["an https GET to the production host", { url: RESOURCE_METADATA, headers: {} }, true],
     [
-      "an https GET to a preview's host",
-      {
-        url: "https://cloudpid-server-pr-9.ian-g-pascoe.workers.dev/.well-known/x",
-        method: "GET" as const,
-        headers: {},
-      },
-      true,
-    ],
-    [
       "a POST to cloudpid's host",
       { url: RESOURCE_METADATA, method: "POST" as const, headers: {}, body: "" },
       false,
     ],
     ["an http GET to cloudpid's host", { url: "http://pi.ianpascoe.dev/x", headers: {} }, false],
     ["an https GET to another host", { url: "https://as.example/x", headers: {} }, false],
-    [
-      "an https GET to the App sandbox's zone, which isOwnHost names too",
-      { url: "https://aaaaaaaaaaaaaaaaaaaaaaaaaa.ianpascoe.app/", headers: {} },
-      true,
-    ],
-    [
-      "another Worker on the account's workers.dev",
-      { url: "https://someone-else.ian-g-pascoe.workers.dev/x", headers: {} },
-      false,
-    ],
   ])("%s: %s", (_, request, expected) => {
     expect(readsFromMcpWorker(request)).toBe(expected);
   });

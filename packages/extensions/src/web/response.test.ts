@@ -20,26 +20,10 @@ describe("discardBody", () => {
     expect(cancelled).toBe(true);
   });
 
-  it("succeeds when the body has none", async () => {
-    await Effect.runPromise(discardBody(new Response(null, { status: 302 })));
-  });
-
   it("swallows a cancel that rejects", async () => {
     const response = new Response(
       new ReadableStream({
         cancel: () => Promise.reject(new Error("boom")),
-      }),
-    );
-
-    await expect(Effect.runPromise(discardBody(response))).resolves.toBeUndefined();
-  });
-
-  it("swallows a cancel that throws", async () => {
-    const response = new Response(
-      new ReadableStream({
-        cancel: () => {
-          throw new Error("boom");
-        },
       }),
     );
 

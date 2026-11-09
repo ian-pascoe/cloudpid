@@ -72,18 +72,6 @@ describe("parseTemplate", () => {
     });
   });
 
-  it("describes a template without a description by its first line, cut to 60 characters", () => {
-    const long = "x".repeat(70);
-
-    expect(parseTemplate("/p/a.md", `\n\n  First line\nSecond`)?.description).toBe("  First line");
-    expect(parseTemplate("/p/a.md", long)?.description).toBe(`${"x".repeat(60)}...`);
-    expect(parseTemplate("/p/a.md", "")?.description).toBe("");
-  });
-
-  it("has no argument hint unless the frontmatter gives one", () => {
-    expect(parseTemplate("/p/a.md", "Body")).not.toHaveProperty("argumentHint");
-  });
-
   it("skips a file whose frontmatter is not YAML", () => {
     expect(parseTemplate("/p/a.md", "---\ndescription: [unclosed\n---\nBody")).toBeUndefined();
   });

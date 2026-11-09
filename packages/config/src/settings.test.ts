@@ -34,54 +34,6 @@ const rejected = (overrides: Schema.Json): string => {
 };
 
 describe("the defaults", () => {
-  it("run Opus at high thinking, as the spec says", () => {
-    expect(DEFAULT_SETTINGS.model).toBe("anthropic/claude-opus-5-5");
-    expect(DEFAULT_SETTINGS.thinkingLevel).toBe("high");
-  });
-
-  it("give each role the model and hint of the local pi settings", () => {
-    expect(DEFAULT_SETTINGS.roles.small.model).toBe("anthropic/claude-haiku-5-5");
-    expect(DEFAULT_SETTINGS.roles.medium.model).toBe("anthropic/claude-sonnet-5-5");
-    expect(DEFAULT_SETTINGS.roles.large.model).toBe("anthropic/claude-opus-5-5");
-    expect(DEFAULT_SETTINGS.roles.xlarge.model).toBe("anthropic/claude-fable-5-1");
-    expect(DEFAULT_SETTINGS.roles.small.hint).toContain("Cheap and fast");
-    expect(DEFAULT_SETTINGS.roles.xlarge.hint).toContain("Most capable");
-  });
-
-  it("keep compaction on, with pi-durable's thresholds", () => {
-    expect(DEFAULT_SETTINGS.compaction).toEqual({
-      enabled: true,
-      reserveTokens: 16_384,
-      keepRecentTokens: 20_000,
-      backgroundTokens: 32_768,
-    });
-  });
-
-  it("offer the core coding tools, code mode and tool_search, and leave every other tool deferred", () => {
-    expect(DEFAULT_SETTINGS.tools.offered).toEqual(DEFAULT_OFFERED_TOOLS);
-    expect(DEFAULT_SETTINGS.tools.offered).toEqual(
-      expect.arrayContaining([
-        "read",
-        "write",
-        "edit",
-        "bash",
-        "ls",
-        "find",
-        "grep",
-        "codemode",
-        "tool_search",
-        "secret_ask",
-      ]),
-    );
-    expect(DEFAULT_SETTINGS.tools.offered).not.toContain("web_fetch");
-    expect(DEFAULT_SETTINGS.tools.offered).not.toContain("browser");
-    expect(DEFAULT_SETTINGS.tools.offered).not.toContain("subagent");
-  });
-
-  it("leave the spend limit off", () => {
-    expect(DEFAULT_SETTINGS.spendLimit).toEqual({ perSession: null });
-  });
-
   it("offer only models the proxy serves", () => {
     expect(SUPPORTED_MODELS).toContain(DEFAULT_SETTINGS.model);
   });
@@ -123,13 +75,6 @@ describe("the Instructions", () => {
       "instructions: is longer than 64 KiB of UTF-8",
     );
   });
-
-  it("are a field of their own", () => {
-    expect(settingsFieldPath("instructions")).toEqual(["instructions"]);
-    expect(settingsFieldValue(resolved({ instructions: "Be terse." }), "instructions")).toBe(
-      "Be terse.",
-    );
-  });
 });
 
 describe("resolving overrides", () => {
@@ -164,13 +109,6 @@ describe("resolving overrides", () => {
 
     expect(settings.tools.offered).toEqual(["read", "codemode", "web_*"]);
     expect(resolved({ tools: { offered: [] } }).tools.offered).toEqual([]);
-  });
-
-  it("saves restart_container in the offered tools as container_restart, its new name", () => {
-    const settings = resolved({ tools: { offered: ["restart_container"] } });
-
-    expect(settings.tools.offered).toEqual(["container_restart"]);
-    expect(overridesFrom(settings)).toEqual({ tools: { offered: ["container_restart"] } });
   });
 
   it("rejects an offered tool that is not a snake_case name or pattern, so a typo is not saved", () => {

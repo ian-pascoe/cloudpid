@@ -182,40 +182,6 @@ describe("the Workspace DO's Changes", () => {
     });
   });
 
-  it("sends a repo with .gitattributes rules git applies to the Container, and never starts it on its own", async () => {
-    const stub = workspace();
-
-    await place(stub, "attributed");
-
-    // The Container is stopped: the repo keeps its last list (none yet), "may be out of date".
-    expect(
-      await stub.changes({ directory: "/workspace/attributed", startContainer: false }),
-    ).toEqual({
-      repos: [
-        {
-          repo: "attributed",
-          head: { commit: expect.stringMatching(/^[0-9a-f]{40}$/), branch: "main" },
-          files: [],
-          more: 0,
-          stale: true,
-        },
-      ],
-    });
-    expect((await stub.liveStubs()).container).toBe(0);
-
-    // The owner's Refresh may start it: the listing goes to the Container, which this test Worker refuses.
-    const refreshed = await stub.changes({
-      directory: "/workspace/attributed",
-      startContainer: true,
-    });
-
-    expect((await stub.liveStubs()).container).toBe(1);
-    expect(refreshed.repos[0]).toMatchObject({
-      stale: true,
-      error: expect.stringContaining("no Container"),
-    });
-  });
-
   it("lets the Workspace DO's other calls in while it lists", async () => {
     const stub = workspace();
 

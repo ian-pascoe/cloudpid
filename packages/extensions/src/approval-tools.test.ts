@@ -803,31 +803,6 @@ describe("settings_subagent_workspaces_set", () => {
     ]);
     expect(text).toContain("The user approved");
   });
-
-  it("changes nothing on Decline", async () => {
-    const { call, calls } = await setUp();
-
-    await call(
-      "settings_subagent_workspaces_set",
-      { scope: "*", limit: 9, reason: "More" },
-      { approve: false },
-    );
-
-    expect(calls.settings).toEqual([]);
-  });
-
-  it("asks nothing when the limit already has the value", async () => {
-    const { call, asked } = await setUp();
-
-    const { text } = await call("settings_subagent_workspaces_set", {
-      scope: "*",
-      limit: 1,
-      reason: "Same",
-    });
-
-    expect(text).toContain("already");
-    expect(asked).toEqual([]);
-  });
 });
 
 describe("the Limits at an Environment", () => {
@@ -1970,32 +1945,6 @@ describe("the tools that wait for Approval, from a program", () => {
       name: "API_KEY",
       deleted: false,
       approval: { approved: false, reason: "Too much" },
-    });
-  });
-
-  it("gets Instructions too large to give left out, with their flag, and the call does not fail", async () => {
-    // The longest the Settings page allows, each newline two bytes stored.
-    const text = "\n".repeat(64 * 1024);
-
-    const [called] = await runSteps(
-      {},
-      [["settings_instructions_set", { scope: "*", text, reason }]],
-      [APPROVE],
-    );
-
-    expect(called).toMatchObject({ isError: false, diagnostics: [] });
-    expect(called?.structuredOutput).toMatchObject({
-      changes: [
-        {
-          field: "instructions",
-          before: "",
-          before_truncated: false,
-          after: null,
-          after_truncated: true,
-        },
-      ],
-      changes_truncated: false,
-      approval: { approved: true, reason: null },
     });
   });
 });

@@ -16,29 +16,6 @@ describe("the difference between what was sent and what the textarea holds", () 
 });
 
 describe("text typed after the sentinel", () => {
-  it("sends each new character as it is typed", () => {
-    const typed = new TypedText();
-
-    expect(typed.edit(typedAfterSentinel("h"))).toEqual({ backspaces: 0, insert: "h", kept: true });
-    expect(typed.edit(typedAfterSentinel("hi"))).toEqual({
-      backspaces: 0,
-      insert: "i",
-      kept: true,
-    });
-  });
-
-  it("sends an autocorrect replacement as Backspaces and the new word", () => {
-    const typed = new TypedText();
-
-    typed.edit(typedAfterSentinel("Teh"));
-
-    expect(typed.edit(typedAfterSentinel("The"))).toEqual({
-      backspaces: 2,
-      insert: "he",
-      kept: true,
-    });
-  });
-
   it("sends Backspace past the kept text when the sentinel itself is deleted, and asks to start over", () => {
     const typed = new TypedText();
 

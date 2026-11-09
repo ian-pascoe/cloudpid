@@ -4,7 +4,6 @@
 // browser is gone is said to be gone rather than replaced unasked.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { MAX_PAGE_SELECTION_READ, OWNER_TAB_GONE } from "@cloudpid/extensions/browser/contract";
-import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import { BrowserGoneError } from "./cdp.ts";
 import { fakeTransport, linkTo, page, records, TOKEN } from "./cdp.testing.ts";
@@ -284,35 +283,6 @@ describe("the Browser Pane's Owner tabs", () => {
     expect(opened).toEqual([]);
     expect(forgotten).toEqual([ownerTabScope("a")]);
     expect(ownerTabs.list()).toEqual({ tabs: [{ id: "b" }], shown: "b" });
-  });
-
-  it("leaves out a window that closes between the listing and its link, still minting the others", async () => {
-    const cdp = fakeTransport({
-      "Target.getTargets": {
-        targetInfos: [
-          page("owner-1"),
-          page("popup-1", { openerId: "owner-1", canAccessOpener: true, title: "Sign in" }),
-          page("popup-2", { openerId: "owner-1", canAccessOpener: true, title: "Help" }),
-        ],
-      },
-      "Cloudflare.getLiveView": (params) => {
-        const asked = params?.["targetId"];
-        const targetId = Predicate.isString(asked) ? asked : "";
-
-        // The sign-in pop-up closed once the windows were listed.
-        if (targetId === "popup-1") throw new Error("No target with given id found");
-
-        return { webSocketDebuggerUrl: linkTo(targetId) };
-      },
-    });
-
-    const { ownerTabs } = ownerTabsOver([cdp]);
-    const links = await ownerTabs.view(true);
-
-    expect(links.tab).toEqual({ targetId: "owner-1", link: linkTo("owner-1") });
-    expect(links.windows).toEqual([
-      { targetId: "popup-2", openerId: "owner-1", title: "Help", link: linkTo("popup-2") },
-    ]);
   });
 
   it("says the Owner tab is gone when Browser Run no longer has its browser or its page", async () => {

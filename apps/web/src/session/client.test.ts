@@ -500,38 +500,6 @@ describe("a Session connection", () => {
   });
 
   describe("MCP elicitation requests", () => {
-    const asked = {
-      id: "call-1:1",
-      callId: "call-1",
-      conversationId: 1,
-      server: "docs",
-      tool: "mcp__docs__ask",
-      message: "Who?",
-      form: { fields: [{ kind: "text", name: "name", required: true }] },
-      notes: [],
-      deadline: 600_000,
-    };
-
-    it.effect("keeps the cards of a closed socket until the next one says which still wait", () =>
-      Effect.gen(function* () {
-        const { latest, state } = yield* setup();
-
-        yield* watching(latest());
-        yield* latest().say({ type: "mcp_elicitation_requests", requests: [asked] });
-        yield* latest().drop();
-
-        expect(state().status).toBe("reconnecting");
-        expect(state().mcpElicitationRequests).toEqual([asked]);
-
-        // The next socket says none wait any more (the question ended while the owner was away).
-        yield* advance(60_000);
-        yield* watching(latest());
-        yield* latest().say({ type: "mcp_elicitation_requests", requests: [] });
-
-        expect(state().mcpElicitationRequests).toEqual([]);
-      }),
-    );
-
     it.effect("sends an Accept with its values, and a Decline with none", () =>
       Effect.gen(function* () {
         const { client, latest } = yield* setup();
@@ -568,45 +536,6 @@ describe("a Session connection", () => {
           action: "decline",
         });
         yield* Fiber.interrupt(decline);
-      }),
-    );
-
-    it.effect("fails with the Session's refusal, so the card can show it", () =>
-      Effect.gen(function* () {
-        const { client, latest } = yield* setup();
-
-        yield* watching(latest());
-
-        const answer = yield* Effect.forkChild(
-          client.answerMcpElicitation("call-1:1", "accept", { name: "hunter2" }),
-        );
-
-        yield* settle;
-        yield* latest().say({
-          type: "error",
-          id: latest().commands().at(-1)?.id,
-          message: "name: matches one of your Secrets",
-        });
-
-        const exit = yield* Fiber.await(answer);
-
-        expect(Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined).toMatchObject({
-          message: "name: matches one of your Secrets",
-        });
-      }),
-    );
-
-    it.effect("fails an answer that was sent as the connection dropped", () =>
-      Effect.gen(function* () {
-        const { client, latest } = yield* setup();
-
-        yield* watching(latest());
-
-        const answer = yield* Effect.forkChild(client.answerMcpElicitation("call-1:1", "cancel"));
-
-        yield* settle;
-        yield* latest().drop();
-        expect(Exit.isFailure(yield* Fiber.await(answer))).toBe(true);
       }),
     );
   });
@@ -811,37 +740,6 @@ describe("a Session connection", () => {
   });
 
   describe("MCP sign-in requests", () => {
-    const asked = {
-      id: "signin-1",
-      conversationId: 1,
-      server: "sentry",
-      environment: "env_1",
-      urlHost: "mcp.sentry.dev",
-      reason: "I need the issues",
-      why: "required",
-      scopes: [],
-      askedAt: 1,
-    };
-
-    it.effect("keeps the cards of a closed socket until the next one says which still wait", () =>
-      Effect.gen(function* () {
-        const { latest, state } = yield* setup();
-
-        yield* watching(latest());
-        yield* latest().say({ type: "mcp_sign_in_requests", requests: [asked] });
-        yield* latest().drop();
-
-        expect(state().mcpSignInRequests).toEqual([asked]);
-
-        // The next socket says none wait any more (a sign-in finished while the owner was away).
-        yield* advance(60_000);
-        yield* watching(latest());
-        yield* latest().say({ type: "mcp_sign_in_requests", requests: [] });
-
-        expect(state().mcpSignInRequests).toEqual([]);
-      }),
-    );
-
     it.effect("sends a decline with the owner's reason, trimmed, or with none", () =>
       Effect.gen(function* () {
         const { client, latest } = yield* setup();

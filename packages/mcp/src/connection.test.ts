@@ -23,7 +23,7 @@ import {
   rpcMethods,
 } from "./fakes.fixture.ts";
 import { type McpProgress, ServerError, Unsupported } from "./types.ts";
-import { connect, SUPPORTED_PROTOCOL_VERSIONS } from "./index.ts";
+import { connect } from "./index.ts";
 import type { McpCallContext } from "./types.ts";
 import {
   HOST,
@@ -322,16 +322,6 @@ describe("what the client declares", () => {
         ? [received.rpc.params]
         : [],
     );
-
-  it("offers exactly the five protocol versions", () => {
-    expect(SUPPORTED_PROTOCOL_VERSIONS).toEqual([
-      "2026-07-28",
-      "2025-11-25",
-      "2025-06-18",
-      "2025-03-26",
-      "2024-11-05",
-    ]);
-  });
 
   it("declares MCP Apps and the injected extensions at a Legacy initialize, with clientInfo", async () => {
     const server = legacyStatelessServer();

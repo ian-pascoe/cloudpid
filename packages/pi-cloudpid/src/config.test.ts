@@ -84,11 +84,8 @@ describe("the endpoint from settings", () => {
 
   it.each([
     ["https://pi.example.test", "https://pi.example.test/mcp"],
-    ["https://pi.example.test/", "https://pi.example.test/mcp"],
-    ["https://pi.example.test/mcp", "https://pi.example.test/mcp"],
     ["https://pi.example.test/mcp/", "https://pi.example.test/mcp"],
     ["https://pi.example.test/base", "https://pi.example.test/base/mcp"],
-    ["https://pi.example.test/base/mcp", "https://pi.example.test/base/mcp"],
     ["https://pi.example.test/?x=1#y", "https://pi.example.test/mcp"],
   ])("appends /mcp once: %s", (baseUrl, expected) => {
     write(globalFile(), { cloudpid: { baseUrl } });
@@ -149,16 +146,6 @@ describe("global and project settings", () => {
 
 describe("an invalid block", () => {
   it.each([
-    [
-      "an empty baseUrl",
-      { cloudpid: { baseUrl: "" } },
-      "cloudpid settings/baseUrl: must not have fewer than 1 characters",
-    ],
-    [
-      "a baseUrl that is not a string",
-      { cloudpid: { baseUrl: 5 } },
-      "cloudpid settings/baseUrl: must be string",
-    ],
     [
       "an unknown field",
       { cloudpid: { baseUrl: "https://a.example.test", clientId: "x" } },

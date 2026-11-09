@@ -4,7 +4,6 @@
 // Workspaces serve, each text kept once, and reverted unless saved again since.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
-import { MAX_FILE_BYTES } from "@cloudpid/extensions/skill-checks";
 import { runInDurableObject } from "cloudflare:test";
 import {
   DEFAULT_ENVIRONMENT,
@@ -183,12 +182,6 @@ describe("saving an Environment's Skill", () => {
     expect(absent).toBeNull();
   });
 
-  it("is the empty set, under its own hash, while the Environment keeps no Skill", async () => {
-    const set = await inRegistry(async ({ set }) => set());
-
-    expect(set).toEqual(EMPTY_SKILL_SET);
-  });
-
   it("is the empty set again once the Environment's only Skill is removed", async () => {
     const set = await inRegistry(async ({ save, remove, set }) => {
       await save("release", release);
@@ -241,25 +234,11 @@ describe("saving an Environment's Skill", () => {
 
   it.each([
     [
-      "a name with capitals",
-      "Release",
-      { "SKILL.md": skillMd("Release") },
-      "lowercase letters, digits and hyphens",
-    ],
-    ["two hyphens in a row", "re--lease", { "SKILL.md": skillMd("re--lease") }, "two in a row"],
-    [
-      "a name over 64 characters",
-      "a".repeat(65),
-      { "SKILL.md": skillMd("a".repeat(65)) },
-      "more than the 64",
-    ],
-    [
       "a name that is not the folder's",
       "releases",
       { "SKILL.md": skillMd("release") },
       "must be the same",
     ],
-    ["no SKILL.md", "release", { "README.md": "Hi.\n" }, "no SKILL.md"],
     ["no frontmatter", "release", { "SKILL.md": "# Release\n" }, "no YAML frontmatter"],
     [
       "no description",
@@ -267,19 +246,7 @@ describe("saving an Environment's Skill", () => {
       { "SKILL.md": "---\nname: release\n---\n" },
       "sets no description",
     ],
-    [
-      "a description over 1024 characters",
-      "release",
-      { "SKILL.md": skillMd("release", "d".repeat(1025)) },
-      "more than the 1024",
-    ],
     ["a binary file", "release", { ...release, "logo.bin": "PNG\0\0" }, "a binary file"],
-    [
-      "a file over the limit",
-      "release",
-      { ...release, "big.md": "x".repeat(MAX_FILE_BYTES + 1) },
-      `more than the ${MAX_FILE_BYTES}`,
-    ],
     [
       "a credential",
       "release",

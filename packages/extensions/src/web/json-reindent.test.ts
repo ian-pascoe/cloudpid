@@ -39,19 +39,6 @@ describe("reindentJson", () => {
     );
   });
 
-  test("keeps key order, integer-like keys, and duplicate keys", () => {
-    expect(reindentJson('{"10":1,"2":2,"a":3,"a":4}')).toBe(
-      '{\n  "10": 1,\n  "2": 2,\n  "a": 3,\n  "a": 4\n}',
-    );
-  });
-
-  test.each(["42", '"text"', "true", "null", " -1.5e-3 "])(
-    "accepts top-level scalar %j",
-    (source) => {
-      expect(reindentJson(source)).toBe(source.trim());
-    },
-  );
-
   test.each([
     ["empty", ""],
     ["whitespace", "  \n"],

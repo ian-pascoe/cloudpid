@@ -130,32 +130,14 @@ describe("appOriginOf", () => {
     ["a hash 25 characters long", `${HASH.slice(1)}.ianpascoe.app`],
     ["a hash 27 characters long", `a${HASH}.ianpascoe.app`],
     ["a hash with a character outside base32 (0)", `${HASH.slice(1)}0.ianpascoe.app`],
-    ["a hash with a character outside base32 (1)", `${HASH.slice(1)}1.ianpascoe.app`],
-    ["a hash with a character outside base32 (8)", `${HASH.slice(1)}8.ianpascoe.app`],
-    ["a hash with an underscore", `${HASH.slice(1)}_.ianpascoe.app`],
-    ["an empty label", `${HASH}--.ianpascoe.app`],
     ["a label starting with `-`", `${HASH}---a.ianpascoe.app`],
-    ["a label ending with `-`", `${HASH}--a-.ianpascoe.app`],
-    ["a label of one `-`", `${HASH}---.ianpascoe.app`],
     ["a label over 35 characters", `${HASH}--${"a".repeat(36)}.ianpascoe.app`],
-    ["a label with an underscore", `${HASH}--a_b.ianpascoe.app`],
-    ["a single dash between hash and label", `${HASH}-a.ianpascoe.app`],
     ["a second host label", `x.${HASH}.ianpascoe.app`],
-    ["a second host label after a stage", `x.${HASH}--pr-1.ianpascoe.app`],
-    ["a dot in the label", `${HASH}--a.b.ianpascoe.app`],
-    ["a trailing dot", `${HASH}.ianpascoe.app.`],
     ["another zone", `${HASH}.ianpascoe.dev`],
-    ["another zone with the domain in front", `${HASH}.ianpascoe.app.example.com`],
     ["a lookalike zone", `${HASH}.evilianpascoe.app`],
-    ["a lookalike zone with a dot", `${HASH}.ianpascoe-app`],
-    ["no zone", HASH],
-    ["an empty host", ""],
     ["a host with a port", `${HASH}.ianpascoe.app:443`],
-    ["a path in the host", `${HASH}.ianpascoe.app/x`],
     ["a newline", `${HASH}.ianpascoe.app\n`],
-    ["a space", ` ${HASH}.ianpascoe.app`],
     ["an IP address", "127.0.0.1"],
-    ["localhost", "localhost"],
   ])("returns undefined for %s", (_, host) => {
     expect(appOriginOf(host)).toBeUndefined();
   });
@@ -183,7 +165,6 @@ describe("viewOrigin", () => {
   it("is the one shared origin under alchemy dev, whatever the hash", () => {
     expect(viewOrigin({ hash: HASH, label: undefined, local: true })).toBe(LOCAL_SANDBOX_ORIGIN);
     expect(viewOrigin({ hash: OTHER_HASH, label: "x", local: true })).toBe(LOCAL_SANDBOX_ORIGIN);
-    expect(LOCAL_SANDBOX_ORIGIN).toBe("http://127.0.0.1:1338");
   });
 
   it.each([

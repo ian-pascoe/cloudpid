@@ -82,20 +82,6 @@ describe("fitEntry", () => {
     expect(JSON.stringify(fitted.entry)).toContain("TAIL");
   });
 
-  it("holds an entry whose text escapes to more bytes than it has characters", () => {
-    // Each of these is six bytes of JSON.
-    const fitted = fitEntry(entry("\u0001".repeat(40_000)), 10_000);
-
-    expect(fitted.entry === undefined ? 0 : storedBytes(fitted.entry)).toBeLessThanOrEqual(10_000);
-  });
-
-  it("cuts a long string of a result's details and of a call's arguments, not only the text", () => {
-    const fitted = fitEntry(entry("short", { details: { diff: "d".repeat(50_000) } }), 10_000);
-
-    expect(fitted.cut).toBe(true);
-    expect(fitted.entry === undefined ? 0 : storedBytes(fitted.entry)).toBeLessThanOrEqual(10_000);
-  });
-
   it("replaces images, the largest first, when the text cannot make the entry fit; and drops one that nothing can", () => {
     const images = entry("t", {
       content: [

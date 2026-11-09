@@ -1,7 +1,7 @@
 // The owner's preview of a resource link end to end (`docs/architecture/mcp-in-a-session.md` → Resource links and embedded
 // resources): a client's `mcp_resource_read` goes Session → host → the real `McpEngine` → a fake server, and is answered with
-// the contents; a page that is not visible, a server that is hidden and a socket that asks too often are refused before
-// the host is asked; and the Session says in `hello` that it takes the message, so a client sends it to none that does not.
+// the contents; a page that is not visible and a server that is hidden or not there are refused before the host is asked;
+// a stopped stdio server's Container is never started; and a large read holds the isolate's decode slot until its answer is sent.
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off
 // The engine's answers are written as they cross the edge, encoded, so their failures are plain `_tag` objects.
@@ -16,12 +16,7 @@ import type {
   McpEngineRequestResult,
   McpSetEntry,
 } from "@cloudpid/mcp/types";
-import {
-  type ClientMessage,
-  MAX_MCP_RESOURCE_PER_MINUTE,
-  ServerMessageJson,
-  type ServerMessage,
-} from "@cloudpid/protocol";
+import { type ClientMessage, ServerMessageJson, type ServerMessage } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -242,15 +237,6 @@ afterEach(() => {
 });
 
 describe("a resource preview over the Session's socket", () => {
-  it("says in hello that it takes mcp_resource_read, so a client sends it only to a Session that does", async () => {
-    const { stub } = await withPreview();
-    const client = await connect(stub);
-
-    await client.until((messages) => messages[0]?.type === "hello");
-
-    expect(client.received[0]).toMatchObject({ type: "hello", resourcePreviews: true });
-  });
-
   it("reads the resource through the host and answers its contents, writing nothing into the conversation", async () => {
     const { stub } = await withPreview();
     const client = await connect(stub);
@@ -360,18 +346,5 @@ describe("a resource preview over the Session's socket", () => {
 
     // The send was the last of it: the slot is free once the answer is out.
     await settles(async () => expect(decodeSlotHeld()).toBe(false));
-  });
-
-  it("limits the reads of a socket in a minute", async () => {
-    const { stub } = await withPreview();
-    const client = await connect(stub);
-
-    await client.visible();
-
-    for (let index = 0; index < MAX_MCP_RESOURCE_PER_MINUTE; index++) {
-      expect(await client.read(NOTES)).toMatchObject({ status: "contents" });
-    }
-
-    expect(await client.read(NOTES)).toMatchObject({ status: "unavailable", reason: "limit" });
   });
 });

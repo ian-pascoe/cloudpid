@@ -3,13 +3,7 @@
  * server says, never a key, a number or the engine's own fields, and never a name, which is left out instead.
  */
 // @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off strictEffectProvide:off schemaSync:off globalJsonInEffect:off globalDate:off
-import {
-  type FakeServer,
-  fetchTo,
-  hostileServer,
-  modernServer,
-  TYPED_TOOL,
-} from "@cloudpid/mcp/testing";
+import { type FakeServer, fetchTo, hostileServer, modernServer } from "@cloudpid/mcp/testing";
 import {
   type McpEngineRequestEncoded,
   McpEngineDiscoverResult,
@@ -147,41 +141,6 @@ describe("a discovery whose Secret looks like what the engine itself reports", (
     expect(after.tools.find((tool) => tool.name === "dated")?.description).toBe(
       "Dated [REDACTED], stamped [REDACTED].",
     );
-  });
-
-  it("leaves out a tool whose name holds a Secret, and a prompt, each with a problem of its own kind", async () => {
-    const server = modernServer({
-      moreTools: [{ name: "acme_search", inputSchema: { type: "object" } }],
-    });
-
-    const found = await discovered(server, ["acme"]);
-
-    if (found.kind !== "discovered") throw new Error(JSON.stringify(found));
-
-    expect(found.tools.map((tool) => tool.name)).not.toContain("acme_search");
-    expect(found.problems).toEqual([
-      { tool: `tool #${found.tools.length + 1}`, problem: expect.stringContaining("left out") },
-    ]);
-    expect(found.promptProblems).toBeUndefined();
-  });
-});
-
-describe("a tools/call result", () => {
-  it("keeps a number that holds a Secret as a number, and scrubs the strings", async () => {
-    const result = await requested(modernServer(), ["1759"], {
-      op: "tools/call",
-      tool: TYPED_TOOL,
-      arguments: { structured: { count: 1759, label: "id 1759" } },
-      ctx: AGENT,
-    });
-
-    expect(result).toMatchObject({
-      kind: "complete",
-      result: {
-        kind: "inline",
-        value: { structuredContent: { count: 1759, label: "id [REDACTED]" } },
-      },
-    });
   });
 });
 

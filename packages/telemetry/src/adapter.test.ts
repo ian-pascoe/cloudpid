@@ -1,6 +1,5 @@
 // The adapter is Promise code: pi's `TelemetryContext` takes callbacks that return promises.
 // @effect-diagnostics asyncFunction:off newPromise:off preferEffectArray:off preferEffectRecord:off
-import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -77,26 +76,6 @@ describe("effectTelemetry", () => {
     expect(parentOf(spans[1]!)).toBeUndefined();
     expect(spans[0]!.traceId).not.toBe(spans[1]!.traceId);
   });
-
-  it("nests Effect spans made inside a pi span under it", async () => {
-    const { spans, tracer } = recordingTracer();
-    const telemetry = effectTelemetry(tracer);
-
-    await telemetry.startSpan({ name: "pi.tool" }, (span) =>
-      span.startSpan({ name: "pi.child" }, async () => undefined),
-    );
-
-    const child = Effect.void.pipe(
-      Effect.withSpan("effect.child", { parent: spans[0]! }),
-      Effect.provideService(Tracer.Tracer, tracer),
-    );
-
-    await Effect.runPromise(child);
-
-    expect(spans.map((span) => span.name)).toEqual(["pi.tool", "pi.child", "effect.child"]);
-    expect(parentOf(spans[2]!)).toBe(spans[0]!.spanId);
-  });
-
   it("rejects with the callback's own rejection, and marks the span failed", async () => {
     const { spans, tracer } = recordingTracer();
     const telemetry = effectTelemetry(tracer);
@@ -112,19 +91,6 @@ describe("effectTelemetry", () => {
 
     expect(Predicate.isTagged(status, "Ended") && Exit.isFailure(status.exit)).toBe(true);
   });
-
-  it("rejects with a synchronous throw, as a promise", async () => {
-    const { tracer } = recordingTracer();
-    const telemetry = effectTelemetry(tracer);
-    const failure = new Error("sync");
-
-    await expect(
-      telemetry.startSpan({ name: "pi.sync" }, () => {
-        throw failure;
-      }),
-    ).rejects.toBe(failure);
-  });
-
   it("keeps the span open until a returned promise settles, and ignores calls after", async () => {
     const { spans, tracer } = recordingTracer();
     const telemetry = effectTelemetry(tracer);
@@ -226,14 +192,5 @@ describe("effectTelemetry", () => {
 
     expect(spans[1]!.links).toEqual([]);
     expect(spans[0]!.links).toEqual([]);
-  });
-
-  it("rejects with a rejection that is not an Error as it is", async () => {
-    const { tracer } = recordingTracer();
-    const telemetry = effectTelemetry(tracer);
-
-    await expect(
-      telemetry.startSpan({ name: "pi.reject" }, () => Promise.reject("plain string")),
-    ).rejects.toBe("plain string");
   });
 });

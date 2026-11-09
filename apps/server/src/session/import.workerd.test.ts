@@ -261,7 +261,6 @@ describe("a Session import in the Session object", () => {
 
   it.each([
     [true, "uncommitted Changes were carried"],
-    [false, "had no uncommitted Changes to carry"],
     [undefined, "which this import is not told"],
   ])("tells in the notice what finish said of the Changes carried (%s)", async (said, sentence) => {
     const stub = fresh();
@@ -537,18 +536,6 @@ describe("a Session import in the Session object", () => {
       expect(failed.message).toMatch(/more entries than the 100/u);
       expect(await entriesOf(stub)).toHaveLength(200);
     });
-  });
-
-  it("keeps a model the owner has, without a warning", async () => {
-    const stub = fresh();
-
-    await begin(stub, file, { model: "anthropic/claude-sonnet-5-5", thinking: "high" });
-    await send(stub, file);
-
-    const finished = okValue(await stub.stageFinish({ sha256: await sha256(file) }));
-
-    expect(finished.warnings).toEqual([]);
-    expect(okValue(await stub.mcpStatus()).status).not.toBe("importing");
   });
 
   it("warns when the imported context is near the model's window", async () => {

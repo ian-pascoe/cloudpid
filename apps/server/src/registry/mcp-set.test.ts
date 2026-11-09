@@ -141,17 +141,6 @@ describe("the set a host is handed", () => {
 
 describe("the decision to push a set", () => {
   const some = setOf(owner({ linear: LINEAR })).hash;
-  const other = setOf(owner({ local: LOCAL })).hash;
-
-  it("pushes a set that differs from the one the host was told", () => {
-    expect(shouldPushMcpSet(some, other)).toBe(true);
-    expect(shouldPushMcpSet(undefined, some)).toBe(true);
-    expect(shouldPushMcpSet(EMPTY_MCP_SET_HASH, some)).toBe(true);
-  });
-
-  it("does not push a set the host holds", () => {
-    expect(shouldPushMcpSet(some, some)).toBe(false);
-  });
 
   it("pushes an empty set only after a non-empty one", () => {
     expect(shouldPushMcpSet(some, EMPTY_MCP_SET_HASH)).toBe(true);

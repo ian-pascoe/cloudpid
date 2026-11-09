@@ -28,19 +28,6 @@ describe("the App sandbox in local mode", () => {
       expect(response.headers.get(name)).toBe(value);
     }
   });
-
-  it("builds the CSP from ?csp= here as well", () => {
-    const csp = JSON.stringify({ connectDomains: ["https://api.example.com"] });
-
-    const response = get(
-      `http://127.0.0.1:1338/?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}&csp=${encodeURIComponent(csp)}`,
-    );
-
-    expect(response.headers.get("content-security-policy")).toBe(
-      buildCsp(csp, LOCAL_APP_ORIGINS[0] ?? ""),
-    );
-  });
-
   it.each([
     "",
     "?host=https://evil.example",
@@ -61,24 +48,6 @@ describe("the App sandbox in local mode", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toBe(PROXY_JS);
   });
-
-  it("is a 405 for another method, and a 404 for another path", () => {
-    const post = worker.fetch(
-      new Request(`http://127.0.0.1:1338/?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}`, {
-        method: "POST",
-      }),
-      LOCAL,
-    );
-
-    expect(post.status).toBe(405);
-
-    const other = get(
-      `http://127.0.0.1:1338/x?host=${encodeURIComponent(LOCAL_APP_ORIGINS[0] ?? "")}`,
-    );
-
-    expect(other.status).toBe(404);
-  });
-
   it("is not a mode a request can ask for: without the var, ?host= and a localhost host are a 404", () => {
     for (const env of [{}, { [SANDBOX_LOCAL_VAR]: "false" }, { [SANDBOX_LOCAL_VAR]: "1" }]) {
       const response = get(

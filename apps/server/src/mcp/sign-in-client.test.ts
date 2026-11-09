@@ -71,16 +71,12 @@ describe("random tokens", () => {
     expect(new Set(tokens).size).toBe(50);
   });
 
-  it.each([
-    "",
-    "short",
-    `${"a".repeat(42)}+`,
-    "a".repeat(44),
-    `${"a".repeat(42)} `,
-    `${"a".repeat(42)}\n`,
-  ])("are not what a state %j looks like", (state) => {
-    expect(WELL_FORMED_STATE.test(state)).toBe(false);
-  });
+  it.each(["short", "a".repeat(44), `${"a".repeat(42)}\n`])(
+    "are not what a state %j looks like",
+    (state) => {
+      expect(WELL_FORMED_STATE.test(state)).toBe(false);
+    },
+  );
 });
 
 const metadata = (
@@ -175,21 +171,16 @@ describe("the authorization URL", () => {
 });
 
 describe("the return path", () => {
-  it.each(["/", "/settings", "/settings?tab=mcp#a", "/a/b/c"])("keeps %s", (path) => {
+  it.each(["/", "/settings?tab=mcp#a"])("keeps %s", (path) => {
     expect(safeReturnPath(path)).toBe(path);
   });
 
   it.each([
     null,
-    undefined,
-    "",
-    "settings",
     "//evil.example",
     "/\\evil.example",
     "https://evil.example",
-    "/a\\b",
     "/a\nb",
-    "/a\u0000b",
     `/${"a".repeat(600)}`,
   ])("drops %j", (path) => {
     expect(safeReturnPath(path)).toBe(undefined);

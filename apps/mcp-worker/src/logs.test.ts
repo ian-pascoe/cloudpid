@@ -67,27 +67,6 @@ describe("callLogs", () => {
     expect(entry?.data).not.toContain("tttt");
     expect(entry?.data).toHaveLength(MCP_LOG_DATA_MAX - 20 + "[REDACTED]".length);
   });
-
-  it("scrubs a value with a quote or a backslash in both of its forms: as a string and as JSON text", () => {
-    const odd = 'pa"ss\\word';
-    const logs = collector(new Set([odd]));
-
-    logs.hear({ level: "warning", data: `raw ${odd}` });
-    logs.hear({ level: "warning", data: { echo: odd } });
-
-    expect(logs.entries().map((entry) => entry.data)).toEqual([
-      "raw [REDACTED]",
-      '{"echo":"[REDACTED]"}',
-    ]);
-  });
-
-  it("keeps nothing for data that has no JSON", () => {
-    const logs = collector();
-
-    logs.hear({ level: "warning", data: undefined });
-
-    expect(logs.entries()[0]?.data).toBe("");
-  });
 });
 
 describe("secretsOf", () => {

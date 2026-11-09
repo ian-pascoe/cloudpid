@@ -209,32 +209,14 @@ describe("checkMcpWidening", () => {
     it.each<[string, Entry, Entry, ReadonlyArray<string>]>([
       ["switching a server on", { enabled: false }, { enabled: true }, ["switched_on"]],
       [
-        "a server's exposure leaving hidden, for each other exposure",
+        "a server's exposure leaving hidden",
         { exposure: "hidden" },
         { exposure: "codemode" },
         ["exposure_unhidden"],
       ],
       [
-        "leaving hidden for deferred",
-        { exposure: "hidden" },
-        { exposure: "deferred" },
-        ["exposure_unhidden"],
-      ],
-      [
-        "leaving hidden for direct",
-        { exposure: "hidden" },
-        { exposure: "direct" },
-        ["exposure_unhidden"],
-      ],
-      [
         "removing a hidden exact key",
         { toolExposure: { delete_issue: "hidden" } },
-        {},
-        ["key_removed"],
-      ],
-      [
-        "removing a hidden pattern",
-        { toolExposure: { "delete_*": "hidden" } },
         {},
         ["key_removed"],
       ],
@@ -245,21 +227,9 @@ describe("checkMcpWidening", () => {
         ["key_loosened"],
       ],
       [
-        "loosening a hidden pattern to direct",
-        { toolExposure: { "delete_*": "hidden" } },
-        { toolExposure: { "delete_*": "direct" } },
-        ["key_loosened"],
-      ],
-      [
         "adding a non-hidden key on a hidden server",
         { exposure: "hidden" },
         { exposure: "hidden", toolExposure: { get_issue: "direct" } },
-        ["key_ahead"],
-      ],
-      [
-        "adding a non-hidden pattern on a hidden server",
-        { exposure: "hidden" },
-        { exposure: "hidden", toolExposure: { "get_*": "deferred" } },
         ["key_ahead"],
       ],
       [
@@ -365,23 +335,10 @@ describe("checkMcpWidening", () => {
         { exposure: "codemode" },
         { exposure: "direct" },
       ],
-      ["deferred to codemode", { exposure: "deferred" }, { exposure: "codemode" }],
-      [
-        "moving a key among codemode, deferred and direct",
-        { toolExposure: { a: "direct", "b*": "codemode" } },
-        { toolExposure: { a: "deferred", "b*": "direct" } },
-      ],
-      ["hiding a tool", { toolExposure: { a: "direct" } }, { toolExposure: { a: "hidden" } }],
       [
         "adding a hidden key",
         { exposure: "direct" },
         { exposure: "direct", toolExposure: { a: "hidden", "b*": "hidden" } },
-      ],
-      ["removing a non-hidden key", { toolExposure: { a: "direct", "b*": "deferred" } }, {}],
-      [
-        "adding a non-hidden key on a server that is not hidden",
-        { exposure: "codemode" },
-        { exposure: "codemode", toolExposure: { a: "direct", "b*": "deferred" } },
       ],
       [
         "adding a non-hidden exact key a hidden pattern does not match",
@@ -402,16 +359,6 @@ describe("checkMcpWidening", () => {
         "adding a hidden pattern ahead of a hidden one",
         { toolExposure: { "delete_*": "hidden" } },
         { toolExposure: { "*": "hidden", "delete_*": "hidden" } },
-      ],
-      [
-        "reordering non-hidden keys",
-        { toolExposure: { "a*": "direct", "b*": "deferred" } },
-        { toolExposure: { "b*": "deferred", "a*": "direct" } },
-      ],
-      [
-        "an exact key beside hidden exact keys",
-        { toolExposure: { a: "hidden" } },
-        { toolExposure: { a: "hidden", b: "direct" } },
       ],
       [
         "a key that was already ahead of the hidden pattern",

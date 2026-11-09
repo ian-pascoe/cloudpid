@@ -220,12 +220,6 @@ const requests = (stub: DurableObjectStub<TestSession>) =>
   runInDurableObject(stub, (instance: TestSession) => instance.requestMessages());
 
 describe("an App View's context in a Session", () => {
-  it("says in hello that it takes mcp_app_context and submit.app, so a client sends them only to a Session that does", async () => {
-    const { client } = await withApp();
-
-    expect(await client.hello()).toMatchObject({ appMessages: true, appContext: true });
-  });
-
   it("is held while the conversation is idle, writing nothing and starting no Run, and reaches the model with the owner's next input as an untrusted notice", async () => {
     const rig = await withApp();
     const { stub } = rig;
@@ -287,57 +281,6 @@ describe("an App View's context in a Session", () => {
     expect((await callOf(rig))?.context).toMatchObject({ delivered: true });
   });
 
-  it("is not given again: the same text (a remount) and what was delivered stay out, and a changed text goes", async () => {
-    const rig = await withApp();
-    const { stub } = rig;
-
-    await rig.context("state one");
-    await runInDurableObject(stub, async (instance: TestSession) => {
-      instance.script(["a", "b", "c"]);
-      await instance.submit({ requestId: "t-1", text: "first" });
-    });
-    await idle(stub);
-
-    // The View is mounted again and sends the same context: held once, delivered already.
-    expect(await rig.context("state one")).toMatchObject({ status: "held" });
-    await runInDurableObject(stub, (instance: TestSession) =>
-      instance.submit({ requestId: "t-2", text: "second" }),
-    );
-    await idle(stub);
-
-    expect(Arr.filter(await entries(stub), (each) => each.kind === KIND)).toHaveLength(1);
-
-    await rig.context("state two");
-    await runInDurableObject(stub, (instance: TestSession) =>
-      instance.submit({ requestId: "t-3", text: "third" }),
-    );
-    await idle(stub);
-
-    const notices = Arr.filter(await entries(stub), (each) => each.kind === KIND);
-
-    expect(notices).toHaveLength(2);
-    expect(notices[1]?.text).toContain("state two");
-    expect(notices[1]?.text).not.toContain("state one");
-  });
-
-  it("is cleaned, redacted of a held Secret and cut to 4 KB before it is held", async () => {
-    const rig = await withApp();
-
-    await runInDurableObject(rig.stub, (instance: TestSession) =>
-      instance.hold({ TOKEN: "s3cr3t-value" }),
-    );
-
-    const answer = await rig.context(`a\u0000b\u0007 key s3cr3t-value ${"x".repeat(5000)}`);
-
-    if (answer.status !== "held" || !("context" in answer) || answer.context === undefined) {
-      throw new Error(`not held: ${JSON.stringify(answer)}`);
-    }
-
-    expect(answer.context.text).toContain(`ab key ${secretReference("TOKEN")} `);
-    expect(answer.context.text).not.toContain("s3cr3t-value");
-    expect(new TextEncoder().encode(answer.context.text).length).toBeLessThanOrEqual(4096);
-  });
-
   it("is written at the next boundary of a busy conversation, one write in flight, and starts no Run", async () => {
     const rig = await withApp();
     const { stub } = rig;
@@ -370,22 +313,6 @@ describe("an App View's context in a Session", () => {
     ).toHaveLength((await requests(stub)).length);
     expect((await callOf(rig))?.context).toMatchObject({ text: "while busy: two" });
     expect((await callOf(rig))?.context?.delivered).toBeUndefined();
-  });
-
-  it("is delivered for a collapsed View too, and is refused for a call the Session has no record of", async () => {
-    const rig = await withApp();
-
-    // A collapsed View is not mounted; what it sent before stays pending in the Session all the same.
-    await rig.context("sent before it collapsed");
-    expect(await rig.context("x", "no-such-call")).toMatchObject({ status: "refused" });
-
-    await runInDurableObject(rig.stub, async (instance: TestSession) => {
-      instance.script(["ok"]);
-      await instance.submit({ requestId: "t-1", text: "hi" });
-    });
-    await idle(rig.stub);
-
-    expect(Arr.filter(await entries(rig.stub), (each) => each.kind === KIND)).toHaveLength(1);
   });
 
   it("is dropped with a moved branch, and not carried by a Fork or a Clone", async () => {

@@ -1,8 +1,7 @@
 // The owner's completion of an argument end to end (`docs/architecture/mcp-in-a-session.md` → Arguments and completions): a
 // client's `mcp_complete` goes Session → host → the real `McpEngine` → a fake server, and is answered with the suggestions; a
 // newer request for a field, or a cancel, cancels the older one at the server; a server that does not declare the capability is
-// never asked, nor a stdio server's stopped Container started; and the Session says in `hello` that it takes the message, so a
-// client sends it to none that does not.
+// never asked, nor a stdio server's stopped Container started.
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off
 // The engine's answers are written as they cross the edge, encoded, so their failures are plain `_tag` objects.
@@ -228,15 +227,6 @@ afterEach(() => {
 });
 
 describe("a completion over the Session's socket", () => {
-  it("says in hello that it takes mcp_complete, so a client sends it only to a Session that does", async () => {
-    const { stub } = await withServer(completing().server);
-    const client = await connect(stub);
-
-    await client.until((messages) => messages[0]?.type === "hello");
-
-    expect(client.received[0]).toMatchObject({ type: "hello", mcpCompletions: true });
-  });
-
   it("asks the server through the host and answers its suggestions with the other fields as context, writing nothing into the conversation", async () => {
     const { stub, server } = await withServer(completing().server);
     const client = await connect(stub);

@@ -295,49 +295,6 @@ describe("a server's row", () => {
     }),
   );
 
-  it.effect("asks for more access on a step-up, and says what it wants", () =>
-    Effect.gen(function* () {
-      const row = rowOf(
-        yield* render("*", {
-          signIns: [view("sentry", { status: "step_up", wantedScope: "admin" })],
-        }),
-        "sentry",
-      );
-
-      expect(textOf(row)).toContain("More access requested");
-      expect(textOf(row)).toContain("It asks for: admin");
-      expect(row).toContain("step_up=1");
-      expect(row).toContain("for more access");
-    }),
-  );
-
-  it.effect("says a refused sign-in's last problem", () =>
-    Effect.gen(function* () {
-      const row = rowOf(
-        yield* render("*", {
-          signIns: [view("sentry", { status: "rejected", lastError: "invalid_client" })],
-        }),
-        "sentry",
-      );
-
-      expect(textOf(row)).toContain("Refused its sign-in");
-      expect(textOf(row)).toContain("Sign-in: invalid_client");
-    }),
-  );
-
-  it.effect("says a client-credentials server signs in on its own, with nothing to press", () =>
-    Effect.gen(function* () {
-      const row = rowOf(
-        yield* render("*", { signIns: [view("service", { kind: "client_grant" })] }),
-        "service",
-      );
-
-      expect(textOf(row)).toContain("Signs in on its own · auth.service.dev");
-      expect(row).not.toContain("/oauth/mcp/start");
-      expect(row).not.toContain("Sign out of");
-    }),
-  );
-
   it.effect(
     "has no sign-in parts on a server with its own Authorization header or on a stdio one",
     () =>

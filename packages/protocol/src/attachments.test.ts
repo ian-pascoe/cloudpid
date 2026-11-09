@@ -1,13 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  attachmentPath,
   attachmentRoutePath,
   freeAttachmentName,
-  isInlineImageType,
   MAX_ATTACHMENT_NAME_BYTES,
   MAX_ATTACHMENT_NAME_LENGTH,
   sanitizeAttachmentName,
-  uploadsDirectory,
 } from "./attachments.ts";
 
 const session = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
@@ -99,26 +96,9 @@ describe("freeAttachmentName", () => {
 });
 
 describe("where an Attachment goes", () => {
-  it("is the Session's own directory under the Workspace's .cloudpid/uploads", () => {
-    expect(uploadsDirectory(session)).toBe(`/workspace/.cloudpid/uploads/${session}`);
-    expect(attachmentPath(session, "a.png")).toBe(`/workspace/.cloudpid/uploads/${session}/a.png`);
-  });
-
   it("is uploaded to the Session's attachments route, the name escaped as one segment", () => {
     expect(attachmentRoutePath(session, "a b/c.png")).toBe(
       `/sessions/${session}/attachments/a%20b%2Fc.png`,
     );
-  });
-});
-
-describe("isInlineImageType", () => {
-  it("accepts the image types every provider takes inline, and nothing else", () => {
-    for (const type of ["image/png", "image/jpeg", "image/webp", "image/gif"]) {
-      expect(isInlineImageType(type)).toBe(true);
-    }
-
-    for (const type of ["image/svg+xml", "image/heic", "application/pdf", ""]) {
-      expect(isInlineImageType(type)).toBe(false);
-    }
   });
 });

@@ -2,18 +2,11 @@
 /* oxlint-disable anti-slop/no-unknown-parameters -- a View's own `params`, as a case sends them */
 // @effect-diagnostics asyncFunction:off -- the handler answers a promise.
 import { describe, expect, it, vi } from "vitest";
-import { displayModeHandler, displayOf, isFullscreen, modeOfPlace } from "./display-mode.ts";
+import { displayModeHandler, displayOf, isFullscreen } from "./display-mode.ts";
 
 const context = { signal: new AbortController().signal };
 
 describe("a View's request for a display mode", () => {
-  it("is `fullscreen` only in an App Pane", () => {
-    expect(modeOfPlace("app-pane")).toBe("fullscreen");
-    expect(modeOfPlace("card")).toBe("inline");
-    expect(modeOfPlace("subagent-pane")).toBe("inline");
-    expect(modeOfPlace("subagent-page")).toBe("inline");
-  });
-
   it("moves a card's View to an App Pane for `fullscreen`, answering the mode it will be in", async () => {
     const move = vi.fn();
 

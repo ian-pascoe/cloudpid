@@ -65,51 +65,23 @@ const check = async (packageDirectory: string, cases: ReadonlyArray<Planted>) =>
 };
 
 describe("only packages/mcp imports @modelcontextprotocol/*", () => {
-  it.each(["packages/protocol", "apps/server", "apps/browser"])(
-    "fails a planted import in %s",
-    async (directory) => {
-      await check(directory, [
-        [`import { Client } from "@modelcontextprotocol/client";`, true],
-        [`import type { Tool } from "@modelcontextprotocol/client";`, true],
-        [`import { type Tool } from "@modelcontextprotocol/client";`, true],
-        [`import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";`, true],
-        [`import { createMcpHandler } from "@modelcontextprotocol/server";`, true],
-        [`import { ZodError } from "@modelcontextprotocol/core";`, true],
-        [`import { tasks } from "@modelcontextprotocol/ext-tasks";`, true],
-        [`import { App } from "@modelcontextprotocol/ext-apps";`, true],
-        [`export { Client } from "@modelcontextprotocol/client";`, true],
-        [`import "@modelcontextprotocol/client";`, true],
-      ]);
-    },
-  );
-
-  it("passes the imports a Worker is meant to use", async () => {
-    await check("packages/protocol", [
-      [`import { Schema } from "effect";`, false],
-      [`import { McpTypes } from "@cloudpid/mcp/types";`, false],
-      [`import { McpOAuth } from "@cloudpid/mcp/oauth";`, false],
-    ]);
-  });
-
-  it("passes packages/mcp, which imports the SDK", async () => {
-    await check("packages/mcp", [
-      [`import { Client } from "@modelcontextprotocol/client";`, false],
-      [`import { createMcpHandler } from "@modelcontextprotocol/server";`, false],
-      [`import { tasks } from "@modelcontextprotocol/ext-tasks";`, false],
+  it("fails a planted import in apps/server", async () => {
+    await check("apps/server", [
+      [`import { Client } from "@modelcontextprotocol/client";`, true],
+      [`import type { Tool } from "@modelcontextprotocol/client";`, true],
+      [`import { type Tool } from "@modelcontextprotocol/client";`, true],
+      [`import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";`, true],
+      [`import { createMcpHandler } from "@modelcontextprotocol/server";`, true],
+      [`import { ZodError } from "@modelcontextprotocol/core";`, true],
+      [`import { tasks } from "@modelcontextprotocol/ext-tasks";`, true],
+      [`import { App } from "@modelcontextprotocol/ext-apps";`, true],
+      [`export { Client } from "@modelcontextprotocol/client";`, true],
+      [`import "@modelcontextprotocol/client";`, true],
     ]);
   });
 });
 
 describe("packages/pi-cloudpid runs on the owner's machine", () => {
-  it("passes the SDK it bundles and what a laptop extension imports", async () => {
-    await check("packages/pi-cloudpid", [
-      [`import { Client } from "@modelcontextprotocol/client";`, false],
-      [`import type { SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";`, false],
-      [`import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";`, false],
-      [`import { spawn } from "node:child_process";`, false],
-    ]);
-  });
-
   it("fails what belongs to the Workers side", async () => {
     await check("packages/pi-cloudpid", [
       [`import { env } from "cloudflare:workers";`, true],

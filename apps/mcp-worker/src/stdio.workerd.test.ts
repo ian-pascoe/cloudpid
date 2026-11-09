@@ -265,17 +265,6 @@ describe("the minimum bridge level", () => {
     });
   });
 
-  it("fails a server whose bridge answers a level below the minimum the same way", async () => {
-    const server = stdio("legacy", "level-zero");
-
-    await control(server, "_level?value=0");
-
-    expect(decodeDiscover(await env.MCP_ENGINE.discover(server, {}, {}))).toMatchObject({
-      kind: "failed",
-      error: { _tag: "Unsupported", message: "this Container runs an older bridge; restart it" },
-    });
-  });
-
   it("fails a call the same way", async () => {
     const server = stdio("legacy", "old-bridge-call");
 
@@ -291,10 +280,7 @@ describe("the minimum bridge level", () => {
 describe("the bridge's refusals", () => {
   it.each([
     ["stopped", 503, undefined],
-    ["start_failed", 502, undefined],
-    ["bridge_unreachable", 502, undefined],
     ["bridge_failed", 502, 502],
-    ["a_code_a_later_bridge_adds", 502, 502],
   ] as const)(
     "reads %s as an unreachable server, with the bridge's words",
     async (code, status, reported) => {

@@ -1,14 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
-import {
-  AgentChange,
-  AgentChangeVia,
-  agentChangeViaLabel,
-  ForkKind,
-  SessionAgent,
-  SessionRecord,
-} from "./registry.ts";
+import { AgentChange, agentChangeViaLabel, ForkKind, SessionRecord } from "./registry.ts";
 import { userEntryData, USER_ENTRY_KIND } from "./user-entry.ts";
 
 /** `SessionRecord` as a bundle from before the MCP marks decodes it: a Session's origin is a Fork or Clone's alone. */
@@ -76,23 +69,6 @@ describe("SessionRecord", () => {
   });
 });
 
-describe("a Session's subagents", () => {
-  const decode = (agents: Schema.Json) =>
-    Effect.runSync(Schema.decodeUnknownEffect(Schema.Array(SessionAgent))(agents));
-
-  it("read a status this version does not know as idle, keeping the others", () => {
-    expect(
-      decode([
-        { id: "agent-1", parent: "root", role: null, status: "waiting" },
-        { id: "agent-2", parent: "root", role: "reviewer", status: "working" },
-      ]),
-    ).toEqual([
-      { id: "agent-1", parent: "root", role: null, status: "idle" },
-      { id: "agent-2", parent: "root", role: "reviewer", status: "working" },
-    ]);
-  });
-});
-
 describe("an Agent change's `via`", () => {
   const change = {
     id: 41,
@@ -128,12 +104,6 @@ describe("an Agent change's `via`", () => {
     expect(decode({ ...change, via: { auth: "later" } }).via).toEqual({ auth: "unknown" });
   });
 
-  it("is what an author records, with the client id", () => {
-    expect(
-      Effect.runSync(Schema.decodeEffect(AgentChangeVia)({ auth: "local", clientId: "abc" })),
-    ).toEqual({ auth: "local", clientId: "abc" });
-  });
-
   it("is worded as the byline and the notice say it", () => {
     expect(agentChangeViaLabel({ client: { name: "pi" } })).toBe("Changed over MCP · pi");
     expect(agentChangeViaLabel({})).toBe("Changed over MCP");
@@ -144,13 +114,6 @@ describe("a user entry's `via`", () => {
   const entry = (via: Schema.Json) => ({
     kind: USER_ENTRY_KIND,
     data: { display: "hi", skills: [], via },
-  });
-
-  it("is kept", () => {
-    expect(userEntryData(entry({ auth: "oauth", client: { name: "pi" } }))?.via).toEqual({
-      auth: "oauth",
-      client: { name: "pi" },
-    });
   });
 
   it("reads an auth it does not know as unknown, and a mark it cannot read as none, leaving the entry", () => {

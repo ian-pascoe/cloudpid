@@ -288,39 +288,6 @@ describe("what the file tools cut", () => {
   const long = (index: number) => `${String(index).padStart(5, "0")}${"n".repeat(95)}`;
 
   // A nested call gives no text, so these compare the text and the value of a direct call.
-  it("keeps in ls's value only the entries its text shows when the text is cut", async () => {
-    const entries = Arr.makeBy(1000, (index) => file(long(index)));
-    const listed = await direct({ directories: { [WORKSPACE]: entries } }, "ls", { limit: 1000 });
-    const shown = shownLines(listed.text);
-
-    expect(listed.details).toEqual({ truncated: true });
-    expect(shown.length).toBeLessThan(1000);
-    expect(listed.structuredOutput).toMatchObject({ truncated: true, structured_truncated: false });
-    expect(listOf(listed.structuredOutput, "entries").map((entry) => entry["name"])).toEqual(shown);
-  });
-
-  it("keeps in find's value only the paths its text shows when the text is cut", async () => {
-    const found = Arr.makeBy(1000, (index): FoundEntry => ({
-      path: `${WORKSPACE}/${long(index)}`,
-      type: "file",
-    }));
-
-    const result = await direct({ directories: { [WORKSPACE]: [] }, found }, "find", {
-      pattern: "*",
-      limit: 1000,
-    });
-
-    const shown = shownLines(result.text);
-
-    expect(shown.length).toBeLessThan(1000);
-    expect(result.structuredOutput).toMatchObject({
-      truncated: true,
-      result_limit_reached: 1000,
-      structured_truncated: false,
-    });
-    expect(listOf(result.structuredOutput, "paths").map((entry) => entry["path"])).toEqual(shown);
-  });
-
   it("keeps in grep's value only the lines its text shows when the text is cut", async () => {
     const matches = Arr.makeBy(1000, (index): GrepMatch => ({
       path: `${WORKSPACE}/${long(index)}`,

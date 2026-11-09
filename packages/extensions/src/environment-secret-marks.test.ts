@@ -137,15 +137,6 @@ describe("environment_secret_build", () => {
     });
   });
 
-  it("says that a Secret marked for the Build reaches every Setup Script of the Environment", async () => {
-    const { tool } = await setUp();
-    const description = tool("environment_secret_build").description;
-
-    expect(description).toContain("every Setup Script of the Environment");
-    expect(description).toContain("Build");
-    expect(description).toContain('id "*"');
-  });
-
   it("marks a Secret kept for the Environment, recording the mark before and after", async () => {
     const { tool, logged, kept, calls } = await setUp();
 

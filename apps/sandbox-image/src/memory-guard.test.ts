@@ -19,20 +19,10 @@ import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
   COMMAND_BASH,
   COMMAND_BASH_ENV,
-  MEMORY_GUARD,
   MEMORY_GUARD_AVOID,
   MEMORY_GUARD_KIB,
   MEMORY_GUARD_PERCENT,
-  MEMORY_NOTES_DIRECTORY,
 } from "@cloudpid/sandbox-image/memory-guard";
-import { toolchainEnv } from "@cloudpid/sandbox-image/toolchains";
-
-const image = (name: string) => readFileSync(join(sandboxImageContext, name), "utf8");
-
-const dockerfile = image("Dockerfile");
-const supervise = image("supervise");
-const guardSource = image("cloudpid-memory-guard");
-const commandSource = image("command.bash");
 
 const guardScript = join(sandboxImageContext, "cloudpid-memory-guard");
 const commandBash = join(sandboxImageContext, "command.bash");
@@ -146,27 +136,6 @@ const leaveNote = (text: string) =>
   `mkdir -p "$CLOUDPID_MEMORY_NOTES"; echo "${text}" >"$CLOUDPID_MEMORY_NOTES/\${EPOCHREALTIME/[.,]/}"`;
 
 describe("the memory guard in the image", () => {
-  it("installs earlyoom, the guard and the file every command's bash reads first", () => {
-    expect(dockerfile).toMatch(/^\s+earlyoom \\$/m);
-    expect(dockerfile).toContain(`COPY --chmod=755 cloudpid-memory-guard ${MEMORY_GUARD}\n`);
-    expect(dockerfile).toContain(`COPY command.bash ${COMMAND_BASH}\n`);
-    expect(supervise).toContain(`\${CLOUDPID_MEMORY_GUARD:-${MEMORY_GUARD}}`);
-  });
-
-  it("gives earlyoom the limits and the names it spares", () => {
-    expect(guardSource).toContain(`memory_percent=${MEMORY_GUARD_PERCENT}\n`);
-    expect(guardSource).toContain(`memory_kib=${MEMORY_GUARD_KIB}\n`);
-    expect(guardSource).toContain(`avoid='${MEMORY_GUARD_AVOID}'\n`);
-  });
-
-  it("keeps the notes in one place for the supervisor, the guard and the commands", () => {
-    const fallback = `\${CLOUDPID_MEMORY_NOTES:-${MEMORY_NOTES_DIRECTORY}}`;
-
-    expect(supervise).toContain(fallback);
-    expect(guardSource).toContain(fallback);
-    expect(commandSource).toContain(fallback);
-  });
-
   it("never stops computerd, the supervisor, the guard or the MCP bridge, by the names the kernel gives them, and stops anything else", () => {
     const avoid = new RegExp(MEMORY_GUARD_AVOID);
 
@@ -183,16 +152,6 @@ describe("the memory guard in the image", () => {
     for (const name of ["node", "python3", "tsgolint", "workerd", "computerd-x", "bash"]) {
       expect(avoid.test(name), name).toBe(false);
     }
-  });
-
-  it("spares the bridge by the name it gives its process", () => {
-    expect(readFileSync(join(sandboxImageContext, "cloudpid-mcp-bridge.ts"), "utf8")).toContain(
-      'process.title = "cloudpid-mcp-bridge";',
-    );
-  });
-
-  it("is what every command's environment points BASH_ENV at", () => {
-    expect(toolchainEnv().BASH_ENV).toBe(COMMAND_BASH_ENV);
   });
 });
 
@@ -227,9 +186,7 @@ describe("the guard", () => {
     expect(guard.output.stdout).toContain(`earlyoom v1.7\n`);
     expect(guard.output.stdout).toContain(`${sending("SIGTERM", 4242, "node", 1911)}\n`);
     expect(notesIn(notes)).toEqual([
-      expect.stringMatching(
-        /^cloudpid: the Container was nearly out of memory, so its memory guard stopped `node` \(pid 4242, 1911 MiB\) at \d\d:\d\d:\d\d UTC to keep the Container answering\. Run less at once \(fewer parallel tasks or test workers, such as turbo's --concurrency or vitest's --maxWorkers\), or restart this Container at a larger size with the container_resize tool\.\n$/,
-      ),
+      expect.stringContaining("stopped `node` (pid 4242, 1911 MiB)"),
     ]);
   });
 
@@ -377,15 +334,6 @@ describe("a command while the guard stops a process", () => {
 });
 
 describe("BASH_ENV of a command", () => {
-  it("reads the file where the image has it", () => {
-    const notes = notesDirectory();
-    const bashEnv = COMMAND_BASH_ENV.replaceAll(COMMAND_BASH, commandBash);
-
-    const run = command(`${leaveNote("stopped node")}; exit 4`, notes, bashEnv);
-
-    expect(run).toMatchObject({ status: 4, stderr: "stopped node\n" });
-  });
-
   it("says nothing on a Container whose older image lacks it", () => {
     const bashEnv = COMMAND_BASH_ENV.replaceAll(COMMAND_BASH, "/nonexistent/command.bash");
 

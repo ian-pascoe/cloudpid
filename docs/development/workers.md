@@ -70,6 +70,8 @@ The App sandbox has `workersDev: false` and the one route above and no one calls
 
 ## workerd tests
 
+Which tests belong here rather than in a node test, and what any test is for, is in [`testing.md`](testing.md).
+
 Tests that need workerd (Durable Object storage, alarms, eviction) are `src/**/*.workerd.test.ts`, run by the package's `workerd` Vitest project through `@cloudflare/vitest-plugin` (see `apps/server/vitest.config.ts`): `bun --cwd <package dir> vitest run --project workerd <file>`. Give miniflare what the code under test binds:
 
 - **Browser host:** the facet class as a Durable Object too (`CODEMODE_RUNTIME`, else `ctx.exports.CodemodeRuntime` is not a class), `workerLoaders: { LOADER: {} }`, and a stand-in Workspaces Worker for `CONTAINER_PREVIEWS` (an auxiliary `workers` entry; see `apps/browser/vitest.config.ts`).

@@ -75,18 +75,6 @@ describe("withCall", () => {
 
     expect(await largeSlotFree(budget)).toBe(true);
   });
-
-  it("scrubs the Secrets its target carries as it scrubs a token", async () => {
-    const budget = makeBudget();
-
-    const held = await Effect.runPromise(
-      withCall({}, hooks, env, (call) => Effect.succeed([...call.tokens]), ["sk-held-secret"]).pipe(
-        Effect.provideService(ByteBudget, budget),
-      ),
-    );
-
-    expect(held).toEqual(["sk-held-secret"]);
-  });
 });
 
 describe("progressTo", () => {

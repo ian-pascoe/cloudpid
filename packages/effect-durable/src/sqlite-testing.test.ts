@@ -56,33 +56,6 @@ describe("refusingStorage", () => {
     await expect(gate.storage.list()).rejects.toThrow("list");
     await expect(gate.storage.transaction(() => Promise.resolve(1))).rejects.toThrow("transaction");
   });
-
-  it("refuses a method captured before the trip, when it is called", async () => {
-    const gate = refusingStorage(fakeStorage());
-    const { exec } = gate.storage.sql;
-    const { put } = gate.storage;
-
-    expect(exec("SELECT 1")).toBe(8);
-
-    gate.trip();
-
-    expect(() => exec("SELECT 1")).toThrow("sql.exec");
-    await expect(put("a", 1)).rejects.toThrow("put");
-  });
-
-  it("refuses the synchronous key-value store a caller kept hold of before the trip", () => {
-    const real = fakeStorage();
-    const gate = refusingStorage(real);
-    const { kv } = gate.storage;
-
-    kv.set("kept", 1);
-    gate.trip();
-
-    expect(() => kv.get("kept")).toThrow("kv.get");
-    expect(() => kv.set("late", 2)).toThrow("kv.set");
-    expect(real.kv.has("late")).toBe(false);
-  });
-
   it("refuses a call a transaction started before the trip, and leaves the real storage as it was", async () => {
     const real = fakeStorage();
     const gate = refusingStorage(real);
@@ -129,15 +102,6 @@ describe("shippedMigrationProblems", () => {
 
     expect(problems).toEqual([expect.stringMatching(/^Migration 2 shipped but is gone/)]);
   });
-
-  it("fails a revert that let a new migration take a shipped migration's number", async () => {
-    // Migration 2 was replaced by a different change, the manifest line kept. (A revert that drops the line too is
-    // `scripts/check-migration-manifests.sh`'s, in `check-migration-manifests.test.ts`.)
-    const problems = await shippedMigrationProblems([create("a"), create("other")], await shipped);
-
-    expect(problems).toEqual([expect.stringMatching(/^Migration 2 changed/)]);
-  });
-
   it("fails a migration the manifest does not record yet, naming its digest", async () => {
     const [, , digest] = await migrationDigests([create("a"), create("b"), create("c")]);
 

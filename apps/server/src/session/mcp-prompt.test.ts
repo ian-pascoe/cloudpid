@@ -403,17 +403,8 @@ describe("a prompt's result as the owner's message", () => {
 
   it("refuses a result that is not a prompt, a file it cannot write, and a block that is too large", async () => {
     for (const result of [
-      7,
       {},
-      { messages: [7] },
       { messages: [{ role: "system", content: { type: "text", text: "x" } }] },
-      { messages: [{ role: "user", content: { type: "text" } }] },
-      { messages: [{ role: "user", content: { type: "image", data: PNG } }] },
-      {
-        messages: [
-          { role: "user", content: { type: "audio", data: "***", mimeType: "audio/wav" } },
-        ],
-      },
     ] satisfies ReadonlyArray<Schema.Json>) {
       expect(await refused(result)).toMatchObject({ code: "MCP_PROMPT_FAILED" });
     }

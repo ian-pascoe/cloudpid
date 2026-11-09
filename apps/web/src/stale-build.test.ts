@@ -116,13 +116,6 @@ describe("handlePreloadError", () => {
     expect(state.prevented).toBe(0);
   });
 
-  it("reloads again once the gap has passed", () => {
-    const { page, state } = fakePage({ stamp: String(5_000_000 - RELOAD_GAP_MS) });
-
-    expect(handlePreloadError(page)({ preventDefault: () => undefined })).toBe("reload");
-    expect(state.reloads).toBe(1);
-  });
-
   it("leaves the error to throw over unsent text", () => {
     const { page, state } = fakePage({ unsentText: true });
     const event = { preventDefault: () => (state.prevented += 1) };

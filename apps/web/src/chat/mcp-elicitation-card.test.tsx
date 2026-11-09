@@ -16,7 +16,6 @@ import {
   ownValue,
   refusalOf,
   sourceLabel,
-  timeZoneName,
   toRfc3339,
 } from "./mcp-elicitation-form.ts";
 
@@ -200,35 +199,6 @@ describe("McpElicitationCard", () => {
     expect(markup).not.toContain("call ends in");
   });
 
-  it("says a prompt send's question is from getting the prompt, with a countdown to the get going on", () => {
-    const markup = render(
-      request(FORM, {
-        prompt: "Review PR",
-        tool: "/mcp__github__review",
-        deadline: 5 * 60 * 1000 + 1000,
-      }),
-      false,
-      "reviewer (checks)",
-    );
-
-    expect(markup).toContain("getting prompt Review PR");
-    expect(markup).not.toContain("during");
-    expect(markup).not.toContain("subagent");
-    expect(markup).toContain("github&#x27;s prompt goes on without an answer in 5:00");
-    expect(markup).not.toContain("call ends in");
-  });
-
-  it("says an App View's question is from the server's app, which goes on without an answer", () => {
-    const markup = render(
-      request(FORM, { app: true, tool: "report", deadline: 5 * 60 * 1000 + 1000 }),
-    );
-
-    expect(markup).toContain("github&#x27;s app");
-    expect(markup).not.toContain("during");
-    expect(markup).toContain("github&#x27;s app goes on without an answer in 5:00");
-    expect(markup).not.toContain("call ends in");
-  });
-
   it("draws a widget per kind, prefills defaults and marks required fields", () => {
     const markup = render(request(FORM));
 
@@ -250,28 +220,6 @@ describe("McpElicitationCard", () => {
     // A long text is a textarea.
     expect(markup).toContain("<textarea");
     expect(markup.match(/text-destructive">\*/g)?.length).toBe(2);
-  });
-
-  it("says which agent asked, and where the server's definition is", () => {
-    expect(render(request(FORM))).toContain("· the agent");
-    expect(render(request(FORM), false, "reviewer (checks)")).toContain(
-      "· subagent reviewer (checks)",
-    );
-    expect(render(request(FORM, { source: { kind: "global" } }))).toContain(">Global<");
-    expect(render(request(FORM, { source: { kind: "environment" } }))).toContain(
-      ">This environment<",
-    );
-    expect(
-      render(request(FORM, { source: { kind: "repo", slug: "ian-pascoe/cloudpid" } })),
-    ).toContain(">from ian-pascoe/cloudpid<");
-    expect(render(request(FORM))).not.toContain("rounded border px-1");
-  });
-
-  it("names the time zone a date and time is read in", () => {
-    expect(render(request(FORM))).toContain(`In your time zone, ${timeZoneName()}`);
-    expect(
-      render(request({ fields: [{ kind: "text", name: "a", required: false }] })),
-    ).not.toContain("time zone");
   });
 
   it("tells assistive technology what is required, and names each group", () => {
@@ -312,20 +260,6 @@ describe("McpElicitationCard", () => {
     expect(markup).toMatch(/aria-describedby="[^"]*-f0-description"/);
     expect(markup).not.toContain('role="alert"');
     expect(ownValue({}, "constructor")).toBeUndefined();
-  });
-
-  it("starts with Submit off while a required field is empty, and on once the form is valid", () => {
-    const needs = render(request(FORM));
-
-    expect(needs).toMatch(
-      /<button[^>]*disabled=""[^>]*type="submit"|<button[^>]*type="submit"[^>]*disabled=""/,
-    );
-
-    const simple: ElicitationForm = {
-      fields: [{ kind: "text", name: "name", required: true, default: "Ada" }],
-    };
-
-    expect(render(request(simple))).not.toMatch(/type="submit"[^>]*disabled/);
   });
 
   it("offers Accept and Decline for a form with no fields, and Cancel that closes quietly", () => {

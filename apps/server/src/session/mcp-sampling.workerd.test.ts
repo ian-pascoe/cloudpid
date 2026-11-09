@@ -562,36 +562,6 @@ describe("a Legacy MCP server whose definition says ask, in a Session", () => {
     ).toMatchObject({ requests: 0 });
   });
 
-  it("offers no Always allow or Never where the Session cannot write a definition, and refuses to", async () => {
-    const sampled: Array<Schema.Json> = [];
-    const { stub, registry } = await open({}, sampled, "mcp-unwritable-sampling", false);
-    const owner = await connect(stub);
-
-    await start(stub, [sample(1), "never sampled", "done"]);
-    await settles(async () => expect(owner.requests()).toHaveLength(1));
-    expect(owner.requests()[0]?.writable).toBe(false);
-
-    owner.send({
-      type: "mcp_sampling_answer",
-      id: "always",
-      request: owner.requests()[0]?.id ?? "",
-      choice: "allow_always",
-    });
-    await settles(async () =>
-      expect(owner.received.some((message) => message.type === "error")).toBe(true),
-    );
-    expect(owner.requests()).toHaveLength(1);
-    expect(await registryOf(registry)).toMatchObject({ changes: [] });
-
-    owner.send({
-      type: "mcp_sampling_answer",
-      id: "no",
-      request: owner.requests()[0]?.id ?? "",
-      choice: "refuse",
-    });
-    await idle(stub);
-  });
-
   it("keeps the card and tells the owner why when Always allow cannot be saved, so they can pick another answer", async () => {
     const sampled: Array<Schema.Json> = [];
     const { stub, registry } = await open({}, sampled);

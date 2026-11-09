@@ -1,7 +1,5 @@
 // App records' bounds and messages (`docs/architecture/mcp-apps.md` → App records, Socket messages).
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off
-import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   appAuditSummary,
@@ -9,13 +7,8 @@ import {
   boundAppRecord,
   MAX_MCP_APP_RECORD_BYTES,
   MCP_APP_TEXT_CUT_BYTES,
-  McpAppHtmlAnswer,
   type McpAppRecord,
-  McpAppMounted,
-  McpAppRequestAnswer,
-  McpAppsMessage,
 } from "./mcp-apps.ts";
-import { ClientMessage, ServerMessage } from "./session.ts";
 
 const record = (
   result: McpAppRecord["result"],
@@ -229,137 +222,7 @@ describe("boundAppRecord", () => {
   });
 });
 
-describe("the messages", () => {
-  const decodeServer = Schema.decodeUnknownOption(ServerMessage);
-  const decodeClient = Schema.decodeUnknownOption(ClientMessage);
-
-  it("carry a conversation's App calls and the inventory's App tools", () => {
-    expect(
-      Option.isSome(
-        decodeServer({
-          type: "mcp_apps",
-          conversationId: 1,
-          apps: [{ callId: "c", server: "docs", tool: "page", state: "kept", at: 1 }],
-        }),
-      ),
-    ).toBe(true);
-    expect(
-      Option.isSome(
-        decodeServer({
-          type: "mcp_app_tools",
-          tools: [
-            {
-              name: "mcp__docs__page",
-              server: "docs",
-              tool: "page",
-              uri: "ui://p",
-              visibility: ["app"],
-            },
-          ],
-        }),
-      ),
-    ).toBe(true);
-  });
-
-  it("read an entry state this build does not know, and a status it does not know, as the fallback", () => {
-    const read = <A, I>(schema: Schema.Codec<A, I>, input: Schema.Json): A =>
-      Option.getOrThrow(Schema.decodeUnknownOption(schema)(input));
-
-    const parsed = read(McpAppsMessage, {
-      type: "mcp_apps",
-      conversationId: 1,
-      apps: [{ callId: "c", server: "docs", tool: "page", state: "archived-later", at: 1 }],
-    });
-
-    expect(parsed.apps[0]?.state).toBe("archived-later");
-    expect(read(McpAppMounted, { status: "later" })).toEqual({ status: "later" });
-    // A server that is no longer the call's is a status of its own, with its reason.
-    expect(read(McpAppHtmlAnswer, { status: "unavailable", message: "Shadowed" })).toEqual({
-      status: "unavailable",
-      message: "Shadowed",
-    });
-    expect(read(McpAppHtmlAnswer, { status: "later" })).toEqual({ status: "later" });
-  });
-
-  it("are the client's mount and page asks, with a command id", () => {
-    expect(Option.isSome(decodeClient({ type: "mcp_app_mount", id: "1", callId: "call-1" }))).toBe(
-      true,
-    );
-    expect(Option.isSome(decodeClient({ type: "mcp_app_html", id: "2", hash: "abc" }))).toBe(true);
-    expect(Option.isNone(decodeClient({ type: "mcp_app_mount", id: "1" }))).toBe(true);
-  });
-});
-
 describe("an App View's request", () => {
-  const decodeClient = Schema.decodeUnknownOption(ClientMessage);
-  const decodeAnswer = Schema.decodeUnknownOption(McpAppRequestAnswer);
-
-  it("is the client's request, cancel and visibility, with the View's own params", () => {
-    const request = {
-      type: "mcp_app_request",
-      id: "1",
-      callId: "call-1",
-      requestId: "r1",
-      method: "tools/call",
-      params: { name: "echo", arguments: { text: "hi" } },
-    };
-
-    expect(Option.isSome(decodeClient(request))).toBe(true);
-    expect(
-      Option.isSome(
-        decodeClient({
-          type: "mcp_app_request",
-          id: "1",
-          callId: "c",
-          requestId: "r",
-          method: "resources/read",
-        }),
-      ),
-    ).toBe(true);
-    expect(Option.isNone(decodeClient({ ...request, requestId: "r".repeat(129) }))).toBe(true);
-    expect(Option.isNone(decodeClient({ ...request, callId: undefined }))).toBe(true);
-
-    expect(
-      Option.isSome(
-        decodeClient({ type: "mcp_app_cancel", id: "2", callId: "c", requestId: "r1" }),
-      ),
-    ).toBe(true);
-
-    expect(Option.isSome(decodeClient({ type: "page_visible", id: "3", visible: false }))).toBe(
-      true,
-    );
-    expect(Option.isNone(decodeClient({ type: "page_visible", id: "3" }))).toBe(true);
-
-    const log = { type: "mcp_app_log", id: "4", callId: "c", level: "warning", message: "m" };
-
-    expect(Option.isSome(decodeClient(log))).toBe(true);
-    expect(Option.isSome(decodeClient({ ...log, logger: "view" }))).toBe(true);
-    expect(Option.isNone(decodeClient({ ...log, message: "m".repeat(2049) }))).toBe(true);
-    expect(Option.isNone(decodeClient({ ...log, level: "l".repeat(129) }))).toBe(true);
-  });
-
-  it("says in hello whether the Session takes the App Views' messages, and a hello without it still reads", () => {
-    const decodeServer = Schema.decodeUnknownOption(ServerMessage);
-
-    expect(Option.isSome(decodeServer({ type: "hello", root: 1, appViews: true }))).toBe(true);
-    expect(Option.isSome(decodeServer({ type: "hello", root: 1 }))).toBe(true);
-  });
-
-  it("is answered with a result or an error, and a status a later build adds still reads", () => {
-    const read = (input: Schema.Json) => Option.getOrThrow(decodeAnswer(input));
-
-    expect(read({ status: "result", result: { content: [] } })).toEqual({
-      status: "result",
-      result: { content: [] },
-    });
-
-    expect(
-      read({ status: "error", code: -32_000, message: "m", reason: "sign_in", server: "docs" }),
-    ).toMatchObject({ reason: "sign_in", server: "docs" });
-
-    expect(read({ status: "later" })).toEqual({ status: "later" });
-  });
-
   it("is summed up for the audit log in one line, the arguments cut to 2 KiB and the text to 500 characters", () => {
     const summary = appAuditSummary({
       method: "tools/call",

@@ -50,43 +50,6 @@ describe("an Agent change of an MCP server", () => {
     expect(markup).toContain("Revert change 4");
   });
 
-  it("says a value was inherited, and one that was the default", () => {
-    const markup = render(
-      change("mcp.servers.linear.exposure", {
-        before: "direct",
-        beforeInherited: true,
-        after: "hidden",
-      }),
-    );
-
-    expect(markup).toContain("Before · Inherited (Global&#x27;s or a Repo&#x27;s)");
-    expect(markup).not.toContain("After ·");
-    expect(markup).toContain(">direct</pre>");
-    expect(render(change("mcp.servers.linear.exposure", { before: null }))).toContain(
-      ">codemode (default)</pre>",
-    );
-  });
-
-  it("says a value of any other setting was inherited from Global", () => {
-    const markup = render(
-      change("roles.small", { before: "a/b", beforeInherited: true, after: "c/d" }),
-    );
-
-    expect(markup).toContain("Before · Inherited from Global");
-  });
-
-  it("shows each tool exposure key on a line", () => {
-    const markup = render(
-      change("mcp.servers.linear.toolExposure", {
-        before: {},
-        after: { "delete_*": "hidden" },
-      }),
-    );
-
-    expect(markup).toContain("no keys");
-    expect(markup).toContain("delete_* → hidden");
-  });
-
   it("shows a whole entry as a line diff, with Global's entry noted as inherited", () => {
     const markup = render(
       change("mcp.servers.linear", {

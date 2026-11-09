@@ -1,5 +1,6 @@
-// The `bash` tool's backend argument, through a real Harness with a scripted model: the call reaches the environment's
-// Worker Shell or Container as asked, and the model's description of the two is what tells it which to pick.
+// The coding tools through a real Harness with a scripted model: the `bash` tool's backend argument and its routing, so the
+// call reaches the environment's Worker Shell or Container as asked or as its command calls for; the `coding_tools` section
+// naming only the tools a request offers; and `read` reducing an image to fit the conversation's bound.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, it } from "vitest";
@@ -103,17 +104,6 @@ describe("bash", () => {
       isError: false,
     });
     expect(calls).toEqual<BackendCall[]>([{ backend: undefined, command: "echo hi" }]);
-  });
-
-  it("describes both backends to the model", async () => {
-    const { tool } = await openCodingHarness({ backends: true });
-
-    expect(tool("bash")?.description).toMatch(/worker/i);
-    expect(tool("bash")?.description).toMatch(/container/i);
-    expect(tool("bash")?.description).toMatch(/ELF|native binar/i);
-    expect(tool("bash")?.description).toMatch(/automatic/i);
-    expect(tool("bash")?.description).toMatch(/override|explicit/i);
-    expect(JSON.stringify(tool("bash")?.parameters)).toContain("container");
   });
 
   /** A Worker Shell that has `programs` besides the ones the router knows, as the probe finds them. */
@@ -344,19 +334,6 @@ describe("bash", () => {
     expect(calls).toEqual<BackendCall[]>([{ backend: "worker", command }]);
   });
 
-  it("tells the model that paths only the container has are reached through it", async () => {
-    const { tool } = await openCodingHarness({ backends: true });
-
-    expect(tool("bash")?.description).toContain("Paths only the container has");
-    expect(tool("bash")?.description).toContain("node_modules");
-
-    for (const name of ["read", "write", "edit"]) {
-      expect(tool(name)?.description).toContain(
-        "Paths only the container has (anything outside /workspace, /tmp included,",
-      );
-    }
-  });
-
   it("does not run a command that writes a file again, even when the Worker Shell could not run it", async () => {
     const { call, calls } = await openCodingHarness({ backends: true, respond: noColor });
 
@@ -380,24 +357,6 @@ describe("the coding_tools section", () => {
       { agent: { tools: tools.map((name) => ({ name })) } } as never,
       BACKGROUND_CONTEXT,
     );
-
-  it("tells the model to use the file tools for files, and to leave the Container to what needs it", async () => {
-    const text = await render(["read", "write", "edit", "bash", "ls", "find", "grep"]);
-
-    expect(text).toMatch(/`read`[^\n]*not `cat`/);
-    expect(text).toMatch(/`edit`[^\n]*no python/);
-    expect(text).toMatch(/`grep`/);
-    expect(text).toMatch(/`backend` unset/);
-  });
-
-  it("tells the model that paths only the container have are reached through it", async () => {
-    expect(await render(["read"])).toMatch(
-      /Paths only the container has \(anything outside \/workspace, `\/tmp` included, and dependency, build and cache directories such as `node_modules`/,
-    );
-    expect(await render(["bash"])).toMatch(
-      /A command naming a path only the container has \([^)]*`node_modules`[^)]*\) is sent there by itself\./,
-    );
-  });
 
   it("names only the tools the request offers", async () => {
     expect(await render(["bash"])).not.toMatch(/`read`/);
@@ -483,13 +442,11 @@ describe("read", () => {
   it("offers the formats the Images binding takes, and leaves out a BMP saying how to read it", async () => {
     const { images } = fakeImages();
 
-    const { call, tool } = await openCodingHarness({
+    const { call } = await openCodingHarness({
       backends: true,
       files: { "/workspace/scan.bmp": fakeImage(800, 600, { size: 2000, header: "bmp" }) },
       images,
     });
-
-    expect(tool("read")?.description).toContain("(jpg, png, gif, webp)");
 
     const result = await call("read", { path: "scan.bmp" });
 

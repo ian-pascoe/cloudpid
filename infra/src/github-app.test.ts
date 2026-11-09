@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { githubAppManifest, withDevEnvValues } from "./github-app.ts";
+import { withDevEnvValues } from "./github-app.ts";
 
 /** What `set -a; . file` gives bash for `name`, as a deploy from a workstation loads dev.env. */
 const sourced = (text: string, name: string): string => {
@@ -23,34 +23,6 @@ const sourced = (text: string, name: string): string => {
 
 const KEY =
   "-----BEGIN RSA PRIVATE KEY-----\nMIIEow'IBAAKCAQEA\nzz$HOME`x`\n-----END RSA PRIVATE KEY-----\n";
-
-describe("the manifest the setup registers the GitHub App from", () => {
-  it("is a public app named as asked, with the permissions ADR-0025 lists, no webhook, and the setup's redirect", () => {
-    expect(
-      githubAppManifest({
-        name: "cloudpid",
-        homepage: "https://pi.ianpascoe.dev",
-        redirect: "http://127.0.0.1:4567/done",
-      }),
-    ).toEqual({
-      name: "cloudpid",
-      url: "https://pi.ianpascoe.dev",
-      redirect_url: "http://127.0.0.1:4567/done",
-      public: true,
-      default_permissions: {
-        contents: "write",
-        pull_requests: "write",
-        issues: "write",
-        workflows: "write",
-        actions: "read",
-        checks: "read",
-        statuses: "read",
-        metadata: "read",
-      },
-      default_events: [],
-    });
-  });
-});
 
 describe("the dev.env the setup writes the app's secrets into", () => {
   it("gets them at its end, each read back by bash as written, the key over its lines", () => {

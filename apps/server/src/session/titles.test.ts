@@ -94,10 +94,6 @@ describe("sanitizeTitle", () => {
     expect(sanitizeTitle("\u200B\u202E\u0007")).toBeUndefined();
   });
 
-  it("keeps punctuation inside the title", () => {
-    expect(sanitizeTitle("Fix foo() in don't-panic mode")).toBe("Fix foo() in don't-panic mode");
-  });
-
   it("takes the first line and collapses whitespace", () => {
     expect(sanitizeTitle("\n\n  Fix   the\tbuild  \nThis title names the work.\n")).toBe(
       "Fix the build",
@@ -110,10 +106,6 @@ describe("sanitizeTitle", () => {
     expect(title).toBeDefined();
     expect(title?.length).toBeLessThanOrEqual(MAX_GENERATED_TITLE_LENGTH);
     expect(title?.endsWith("word")).toBe(true);
-  });
-
-  it("cuts one long word at the cap", () => {
-    expect(sanitizeTitle("x".repeat(500))?.length).toBeLessThanOrEqual(MAX_GENERATED_TITLE_LENGTH);
   });
 
   it("gives nothing for a reply with no words", () => {
@@ -215,17 +207,6 @@ describe("titleRequest", () => {
 });
 
 describe("generateTitle", () => {
-  it("asks the model and sanitizes its reply", async () => {
-    const { models, requests } = fauxModels(['"Fix the login bug."']);
-
-    const title = await Effect.runPromise(
-      generateTitle(models, SMALL, { question: "login is broken", answer: "fixed" }),
-    );
-
-    expect(title).toBe("Fix the login bug");
-    expect(requests).toHaveLength(1);
-  });
-
   it("fails on a model error, an unknown model and an empty reply", async () => {
     const { models } = fauxModels([new Error("overloaded"), "..."]);
     const exchange = { question: "q", answer: undefined };

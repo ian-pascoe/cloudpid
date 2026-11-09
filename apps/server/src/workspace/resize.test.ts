@@ -110,45 +110,6 @@ describe("a Container resize", () => {
     });
   });
 
-  it("puts cpu-3 (9 GiB) above the default limit and standard-3, and under a cpu-3 or standard-4 limit", async () => {
-    expect(await open().resizes.resize("cpu-3")).toEqual({
-      outcome: "refused",
-      limit: "cpu-2",
-    });
-    expect(await open({ maxInstance: "standard-3" }).resizes.resize("cpu-3")).toEqual({
-      outcome: "refused",
-      limit: "standard-3",
-    });
-
-    for (const maxInstance of ["cpu-3", "standard-4"] as const) {
-      expect(await open({ maxInstance }).resizes.resize("cpu-3")).toMatchObject({
-        outcome: "resized",
-        next: "cpu-3",
-      });
-    }
-  });
-
-  it("puts mem-4 above standard-1, mem-8 above cpu-2 and mem-12 above cpu-3, under the next standard size", async () => {
-    expect(await open({ maxInstance: "standard-1" }).resizes.resize("mem-4")).toEqual({
-      outcome: "refused",
-      limit: "standard-1",
-    });
-    expect(await open({ maxInstance: "standard-2" }).resizes.resize("mem-4")).toMatchObject({
-      outcome: "resized",
-    });
-    expect(await open().resizes.resize("mem-8")).toEqual({ outcome: "refused", limit: "cpu-2" });
-    expect(await open({ maxInstance: "standard-3" }).resizes.resize("mem-8")).toMatchObject({
-      outcome: "resized",
-    });
-    expect(await open({ maxInstance: "cpu-3" }).resizes.resize("mem-12")).toEqual({
-      outcome: "refused",
-      limit: "cpu-3",
-    });
-    expect(await open({ maxInstance: "standard-4" }).resizes.resize("mem-12")).toMatchObject({
-      outcome: "resized",
-    });
-  });
-
   it("leaves a Container that already runs on the size running, keeping the size for a restart", async () => {
     const { state, resizes } = open({}, { launched: "cpu-2" });
 

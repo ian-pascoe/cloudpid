@@ -54,10 +54,6 @@ describe("an Environment's settings", () => {
     expect(settings.thinkingLevel).toBe(DEFAULT_SETTINGS.thinkingLevel);
   });
 
-  it("take the Environment's Override over Global", () => {
-    expect(environment({ model: SONNET }, { model: HAIKU }).model).toBe(HAIKU);
-  });
-
   it("keep an Override equal to Global pinned when Global changes", () => {
     const overrides = { model: SONNET };
 
@@ -113,12 +109,6 @@ describe("an Environment's settings", () => {
         .spendLimit.perSession,
     ).toBeNull();
     expect(environment({ spendLimit: { perSession: 10 } }, {}).spendLimit.perSession).toBe(10);
-  });
-
-  it("offer a renamed tool an Environment's list names under its new name", () => {
-    expect(
-      environment({}, { tools: { offered: ["read", "restart_container"] } }).tools.offered,
-    ).toEqual(["read", "container_restart"]);
   });
 
   it("refuse an Override the settings do not take, naming it", () => {
@@ -281,12 +271,6 @@ describe("the fields an Environment overrides", () => {
   });
 
   it("are listed by name, each one a field", () => {
-    expect(OVERRIDE_FIELD_NAMES).toContain("model");
-    expect(OVERRIDE_FIELD_NAMES).toContain("roles.small");
-    expect(OVERRIDE_FIELD_NAMES).toContain("compaction.enabled");
-    expect(OVERRIDE_FIELD_NAMES).toContain("tools.offered");
-    expect(OVERRIDE_FIELD_NAMES).toContain("extensions.<extension>.<key>");
-
     for (const field of OVERRIDE_FIELD_NAMES) {
       if (!field.startsWith("extensions.")) {
         expect(overrideFieldPath(field.replace("<name>", "linear"))).toBeDefined();

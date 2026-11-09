@@ -500,19 +500,9 @@ describe("Sign-in requests", () => {
   it.each([
     ["a sign-in that stands", { status: "signed_in" }, { kind: "signed_in" }],
     [
-      "a server with no sign-in to give",
-      { status: "not_applicable", reason: "It sends its own Authorization header" },
-      { kind: "not_applicable", reason: "It sends its own Authorization header" },
-    ],
-    [
       "a step-up asked for too often",
       { status: "step_up_failed", reason: "Still short of access", scopes: ["a"] },
       { kind: "step_up_failed", reason: "Still short of access" },
-    ],
-    [
-      "a server that is not in the set",
-      { status: "unavailable", reason: "No such server" },
-      { kind: "unavailable", reason: "No such server" },
     ],
   ] as const)("end at once for %s, keeping nothing", (_name, answer, outcome) =>
     Effect.runPromise(

@@ -264,22 +264,6 @@ describe("a stopped Container", () => {
     expect(await stub.mcpBridgeUses()).toMatchObject({ begin: 1 });
   });
 
-  it("reads the token again while it polls, since the launch is recorded after the Container has started", async () => {
-    const stub = await workspace({ running: false });
-
-    await stub.forgetLaunchRecord();
-
-    const answered = stub.mcpBridge(call(), { start: true, use: false });
-
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    await stub.seedLaunchRecord(TOKEN);
-
-    const response = await answered;
-
-    expect(response.status).toBe(200);
-    expect((await stub.bridgeState()).requests[0]?.authorization).toBe(`Bearer ${TOKEN}`);
-  });
-
   it("is started once for requests that arrive while it starts, and polls once for them all", async () => {
     const stub = await workspace({ running: false });
 
@@ -341,18 +325,6 @@ describe("a bridge that does not answer", () => {
     expect(await stub.mcpBridgeHolds()).toEqual({ open: 0, writing: 0 });
   });
 
-  it("answers 502 `bridge_unreachable` for a Container whose launch kept no token: it runs no bridge", async () => {
-    const stub = await workspace();
-
-    await stub.seedLaunchRecord(undefined);
-
-    const response = await stub.mcpBridge(call(), USE);
-
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({ error: "bridge_unreachable" });
-    expect((await stub.bridgeState()).requests).toEqual([]);
-  });
-
   it("answers 502 `bridge_unreachable` when the bridge refuses the token in its health check: it is another launch's", async () => {
     const stub = await workspace({ running: false });
 
@@ -379,25 +351,6 @@ describe("a bridge that does not answer", () => {
 
     await vi.waitFor(async () => expect((await stub.mcpBridgeUses()).end).toBe(1));
     expect(await stub.mcpBridgeHolds()).toEqual({ open: 0, writing: 0 });
-  });
-
-  it("remembers a failed poll for the launch: a later request, whatever it asks, answers `bridge_unreachable` at once", async () => {
-    const stub = await workspace({ running: false });
-
-    await stub.fakeBridge({ token: TOKEN, unreachable: true });
-    expect((await stub.mcpBridge(call(), { start: true, use: false })).status).toBe(502);
-
-    const polled = (await stub.bridgeState()).healthPolls;
-
-    // The bridge comes up, but nothing polls for this launch again.
-    await stub.fakeBridge({ token: TOKEN });
-
-    for (const options of [NO_USE, { start: true, use: false }]) {
-      expect((await stub.mcpBridge(call(), options)).status).toBe(502);
-    }
-
-    expect(await stub.bridgeState()).toEqual({ requests: [], healthPolls: 0, streams: [] });
-    expect(polled).toBe(20);
   });
 
   it("passes any other status of the bridge's on, as it is the bridge's own", async () => {

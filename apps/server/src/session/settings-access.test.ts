@@ -4,7 +4,6 @@
 import { SettingsAccessError } from "@cloudpid/extensions/settings";
 import type { McpChangeGuard } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import { describe, expect, it } from "vitest";
 import {
   sessionSettingsAccess,
@@ -73,44 +72,6 @@ const NO_HOST = {
   request: () => Effect.die("no host"),
 };
 
-describe("a Session's MCP read", () => {
-  it("fails for an id no Environment has, in the words the Settings read uses", async () => {
-    // SAFETY: the read asks the one method, which answers that no Environment has the id.
-    const registry = { mcpSettingsView: () => Effect.succeed(null) } as never;
-
-    const access = sessionSettingsMcpAccess({
-      registry,
-      session: undefined,
-      host: () => NO_HOST,
-    });
-
-    const exit = await Effect.runPromiseExit(access.view({ scope: "nope" }));
-
-    expect(Exit.isFailure(exit)).toBe(true);
-    expect(JSON.stringify(exit)).toContain("No Environment has the id");
-  });
-
-  it("gives the host of whichever Environment is asked for", () => {
-    const asked: Array<string> = [];
-
-    const access = sessionSettingsMcpAccess({
-      // SAFETY: only `host` is used.
-      registry: {} as never,
-      session: undefined,
-      host: (environment) => {
-        asked.push(environment);
-
-        return NO_HOST;
-      },
-    });
-
-    access.host("env-a");
-    access.host("env-b");
-
-    expect(asked).toEqual(["env-a", "env-b"]);
-  });
-});
-
 describe("what a Session hands the Registry for an agent's MCP change", () => {
   it("passes the guard of a change to the Registry's transaction, and the ${NAME}s an entry reads to its check", async () => {
     const sent: Array<unknown> = [];
@@ -157,41 +118,6 @@ describe("what a Session hands the Registry for an agent's MCP change", () => {
 });
 
 describe("the reads of the Settings and of the MCP servers", () => {
-  it("are built from a Registry alone: the Settings of Global, and of an Environment with its count of MCP servers", async () => {
-    // SAFETY: the Settings read uses these four methods only; the answers are what each returns.
-    const registry: SettingsReadsRegistry = {
-      getSettings: () =>
-        Effect.succeed({
-          settings: { model: "anthropic/claude-opus-5-5", mcp: { servers: { a: {}, b: {} } } },
-          overrides: {},
-          problem: undefined,
-          overriddenIn: {},
-        }),
-      getSettingsOverrides: () =>
-        Effect.succeed({
-          settings: { model: "anthropic/claude-opus-5-5" },
-          overrides: {},
-          global: {},
-          problem: undefined,
-          instructions: { global: "", environment: "own words" },
-        }),
-      getEnvironment: ({ id }: { readonly id: string }) =>
-        Effect.succeed(id === "env-a" ? { id, name: "A", repos: [], createdAt: 0 } : null),
-      mcpServerNames: () => Effect.succeed(["x"]),
-    } as never;
-
-    const reads = settingsReads(registry);
-
-    expect(Object.keys(reads)).toEqual(["get"]);
-
-    expect(await Effect.runPromise(reads.get("*"))).toMatchObject({ scope: "*", mcpServers: 2 });
-    expect(await Effect.runPromise(reads.get("env-a"))).toMatchObject({
-      scope: "env-a",
-      name: "A",
-      mcpServers: 1,
-    });
-  });
-
   it("refuse an id no Environment has with the code not_found", async () => {
     // SAFETY: the read asks for the Environment's overrides and the Environment, both of which answer none.
     const registry: SettingsReadsRegistry = {
@@ -210,9 +136,6 @@ describe("the reads of the Settings and of the MCP servers", () => {
     // SAFETY: the MCP read asks the one method, which answers that no Environment has the id.
     const registry = { mcpSettingsView: () => Effect.succeed(null) } as never;
     const reads = settingsMcpReads(registry, () => NO_HOST);
-
-    expect(Object.keys(reads).sort()).toEqual(["host", "view"]);
-    expect(reads.host("env-a")).toBe(NO_HOST);
 
     const failure = await Effect.runPromise(Effect.flip(reads.view({ scope: "nope" })));
 

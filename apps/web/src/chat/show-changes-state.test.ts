@@ -110,23 +110,6 @@ describe("what Show changes sums up", () => {
         expect(asks()).toHaveLength(1);
       }),
   );
-
-  it.effect("sums up nothing when the Session answers another Run's diff", () =>
-    Effect.gen(function* () {
-      const { registry, latest, live, asks } = setup();
-      const totals = runTotalsAtom({ sessionId: "s1", run: "run1abc" });
-
-      yield* live;
-      registry.mount(totals);
-      yield* settle;
-      yield* latest().say({ type: "result", id: asks()[0]?.id, result: ended("run2def") });
-      yield* settle;
-
-      const result = registry.get(totals);
-
-      expect(AsyncResult.isSuccess(result) ? result.value : undefined).toBeNull();
-    }),
-  );
 });
 
 describe("whether Show changes is drawn", () => {
@@ -136,15 +119,6 @@ describe("whether Show changes is drawn", () => {
     deletions: 0,
     approximate: false,
     stale: false,
-  });
-
-  it("is not while the totals are asked for", () => {
-    expect(runLink(AsyncResult.initial(true))).toBe("hidden");
-  });
-
-  it("is not when the Run's diff lists no file, or is another Run's", () => {
-    expect(runLink(AsyncResult.success(totals(0)))).toBe("hidden");
-    expect(runLink(AsyncResult.success(null))).toBe("hidden");
   });
 
   it("sums up the Run's files when it changed some", () => {

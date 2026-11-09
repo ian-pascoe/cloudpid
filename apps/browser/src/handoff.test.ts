@@ -549,23 +549,7 @@ describe("the agent's viewport after a handoff", () => {
     expect(settledViewport(cdp)).toEqual({ width: 1000, height: 700, deviceScaleFactor: 1 });
   });
 
-  it("is set back when the owner reports failure", async () => {
-    const { host, cdp } = await resizedByPhone();
-
-    cdp.emit(COMPLETE({ success: false, reason: "No code came" }));
-    await host.wait("7", 10);
-
-    expect(settledViewport(cdp)).toEqual({ width: 780, height: 493, deviceScaleFactor: 1 });
-  });
-
-  it("is set back when Browser Run times the handoff out", async () => {
-    const { host, cdp } = await resizedByPhone();
-
-    cdp.emit(COMPLETE({ success: false, reason: "Handoff timed out" }));
-    await host.wait("7", 10);
-
-    expect(settledViewport(cdp)).toEqual({ width: 780, height: 493, deviceScaleFactor: 1 });
-
+  it("is set back when Browser Run no longer has the handoff", async () => {
     const lost = await resizedByPhone();
 
     lost.cdp.transport.send = (

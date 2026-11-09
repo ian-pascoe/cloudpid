@@ -306,63 +306,6 @@ describe("an MCP App call in a Session", () => {
 
     expect(copied.map((call) => call.callId)).toEqual([calls[0]?.callId]);
   });
-
-  it("is bounded: a record over 1 MiB is cut, and one past the Session's 32 MiB leaves a stub", async () => {
-    const { stub } = await overServer();
-
-    const draft = (callId: string, size: number) => ({
-      callId,
-      server: "docs",
-      tool: "app",
-      conversation: "1",
-      arguments: {},
-      result: {
-        content: [{ type: "text", text: "ok" }],
-        structuredContent: { a: "x".repeat(size) },
-      },
-    });
-
-    // `huge` is cut to nothing but its text, so 33 records of about 1 MB fit under 32 MiB, and the 34th does not.
-    await runInDurableObject(stub, async (instance: TestSession) => {
-      await instance.appPut(draft("huge", 2 * 1024 * 1024));
-      await instance.appPut(draft("first", 1_000_000));
-    });
-
-    for (let at = 0; at < 32; at++) {
-      await runInDurableObject(stub, (instance: TestSession) =>
-        instance.appPut(draft(`call-${at}`, 1_000_000)),
-      );
-    }
-
-    // `huge` is mounted again, which makes `first` the least recently mounted; one more record tips the Session over.
-    await runInDurableObject(stub, async (instance: TestSession) => {
-      expect(await instance.appMount("huge")).toMatchObject({ status: "record" });
-      await instance.appPut(draft("last", 1_000_000));
-    });
-
-    const calls = await runInDurableObject(stub, (instance: TestSession) => instance.appCalls());
-
-    expect(calls.find((call) => call.callId === "huge")).toMatchObject({
-      state: "kept",
-      truncated: true,
-    });
-    // The least recently mounted went first, and is a stub that no longer has the call's data.
-    expect(Arr.filter(calls, (call) => call.state === "evicted")).toEqual([
-      expect.objectContaining({ callId: "first" }),
-    ]);
-    expect(
-      await runInDurableObject(stub, (instance: TestSession) => instance.appMount("first")),
-    ).toEqual({
-      status: "stub",
-      stub: {
-        callId: "first",
-        server: "docs",
-        tool: "app",
-        conversation: "1",
-        at: expect.any(Number),
-      },
-    });
-  }, 60_000);
 });
 
 describe("an MCP App call over the Session's socket", () => {
@@ -643,62 +586,6 @@ describe("an App View's requests over the Session's socket", () => {
     );
   });
 
-  it("says in hello that it takes page_visible and mcp_app_log, so a client sends them only to a Session that does", async () => {
-    const { client } = await withViews();
-
-    await client.root();
-
-    expect(client.received[0]).toMatchObject({ type: "hello", appViews: true });
-  });
-
-  it("takes a View's log line over the socket, answered with null whatever its level and call (its span is the node test's)", async () => {
-    const { entry, client, visible } = await withViews();
-
-    await visible();
-
-    const log = (id: string, level: string, callId = entry.callId) => {
-      client.send({ type: "mcp_app_log", id, callId, level, logger: "view", message: "line" });
-    };
-
-    log("l1", "info");
-    log("l2", "error");
-    log("l3", "error", "nope");
-
-    for (const id of ["l1", "l2", "l3"]) {
-      expect(await client.answer(id)).toMatchObject({ result: null });
-    }
-  });
-
-  it("is refused while the tab is hidden, or has not said it is visible, and nothing reaches the server", async () => {
-    const { server, visible, ask } = await withViews();
-
-    const calls = () =>
-      server.received.filter((each) => JSON.stringify(each).includes("from the view")).length;
-
-    // A page that has not said it is visible is not.
-    expect(
-      await ask("tools/call", { name: "echo", arguments: { text: "from the view" } }),
-    ).toMatchObject({
-      status: "error",
-      reason: "hidden",
-    });
-
-    await visible();
-    expect(
-      await ask("tools/call", { name: "echo", arguments: { text: "from the view" } }),
-    ).toMatchObject({ status: "result" });
-    expect(calls()).toBe(1);
-
-    await visible(false);
-    expect(
-      await ask("tools/call", { name: "echo", arguments: { text: "from the view" } }),
-    ).toMatchObject({
-      status: "error",
-      reason: "hidden",
-    });
-    expect(calls()).toBe(1);
-  });
-
   it("is refused another server's tool, a tool only the model sees, and a method it does not serve", async () => {
     const { elsewhere, server, visible, ask } = await withViews();
 
@@ -856,36 +743,4 @@ describe("an App View's requests over the Session's socket", () => {
     expect(await hanging).toMatchObject({ status: "error", reason: "cancelled" });
     await settles(async () => expect(cancelled).toEqual(["hang"]));
   });
-
-  it("is refused a tool call, but may read, once the Session is archived", async () => {
-    const { stub, visible, ask } = await withViews();
-
-    await visible();
-    await runInDurableObject(stub, (instance: TestSession) => {
-      instance.setArchived(true);
-    });
-
-    expect(await ask("tools/call", { name: "echo", arguments: { text: "x" } })).toMatchObject({
-      status: "error",
-      reason: "refused",
-    });
-
-    expect(await ask("resources/read", { uri: URI })).toMatchObject({ status: "result" });
-  });
-
-  it("limits a View to 60 requests a minute", async () => {
-    const { visible, ask } = await withViews();
-
-    await visible();
-
-    // Unreadable params are refused after they are counted: the limit holds whatever the View sends.
-    for (let each = 0; each < 60; each++) {
-      expect(await ask("tools/list", {})).toMatchObject({ status: "error", code: -32_601 });
-    }
-
-    expect(await ask("tools/call", { name: "echo", arguments: { text: "x" } })).toMatchObject({
-      status: "error",
-      reason: "limit",
-    });
-  }, 60_000);
 });

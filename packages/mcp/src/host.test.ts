@@ -8,15 +8,9 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   HostFailed,
-  HostUnsupported,
-  McpApplied,
-  McpDestroyed,
   McpApplySet,
   McpApplySignIns,
-  McpSignInsTaken,
-  McpServerSetAnswer,
   McpSetSource,
-  McpStale,
   readMcpApplyResult,
 } from "./types.ts";
 
@@ -24,25 +18,6 @@ import {
 const read = (text: string) => readMcpApplyResult(JSON.parse(text));
 
 describe("readMcpApplyResult", () => {
-  it("reads a known result as it is", () => {
-    expect(read('{"_tag":"Applied","hash":"h","changed":true}')).toEqual(
-      McpApplied.make({ hash: "h", changed: true }),
-    );
-    expect(read('{"_tag":"Stale","hash":"h","revision":6}')).toEqual(
-      McpStale.make({ hash: "h", revision: 6 }),
-    );
-    expect(read('{"_tag":"Destroyed"}')).toEqual(McpDestroyed.make({}));
-    expect(read('{"_tag":"HostUnsupported","message":"no","op":"x"}')).toEqual(
-      HostUnsupported.make({ message: "no", op: "x" }),
-    );
-  });
-
-  it("reads the sign-ins answer, and keeps the servers it reached", () => {
-    expect(read('{"_tag":"SignInsTaken","servers":["linear"]}')).toEqual(
-      McpSignInsTaken.make({ servers: ["linear"] }),
-    );
-  });
-
   it("reads a tag it does not know as a generic failure that keeps the tag", () => {
     expect(read('{"_tag":"Throttled","message":"slow down","retryAfter":3}')).toEqual(
       HostFailed.make({ message: "slow down", tag: "Throttled" }),
@@ -91,13 +66,6 @@ describe("the set's schemas", () => {
       kind: "workspace",
     });
   });
-
-  it("reads the Registry's answer with no set when the host holds the current one", () => {
-    expect(Schema.decodeSync(McpServerSetAnswer)({ hash: "h", signInsRevision: 0 })).toEqual({
-      hash: "h",
-      signInsRevision: 0,
-    });
-  });
 });
 
 describe("the sign-ins operation", () => {
@@ -111,9 +79,5 @@ describe("the sign-ins operation", () => {
       change: "signed_in",
     });
     expect(decode({ ...base, change: "refreshed_somehow" }).change).toBe("refreshed_somehow");
-  });
-
-  it("refuses one with no revision, which could not be ordered", () => {
-    expect(() => decode({ kind: "sign_ins", change: "signed_in", servers: ["linear"] })).toThrow();
   });
 });

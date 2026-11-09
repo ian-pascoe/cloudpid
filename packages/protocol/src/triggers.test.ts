@@ -20,10 +20,10 @@ import {
   fieldTrigger,
   fireTimeWords,
   holdsEditedFields,
-  MAX_TRIGGER_MESSAGE_BYTES,
   triggerChangeJson,
   triggerChangeValue,
   triggerField,
+  MAX_TRIGGER_MESSAGE_BYTES,
   triggerMessageProblem,
   triggerNameProblem,
   whenBusyProblem,
@@ -49,7 +49,7 @@ describe("triggerNameProblem", () => {
 });
 
 describe("triggerMessageProblem", () => {
-  it("takes any words up to an input's bound, and refuses none or more", () => {
+  it("takes any words up to an input's bound in UTF-8 bytes, and refuses none or more", () => {
     expect(triggerMessageProblem("Summarize last week's PRs.")).toBeUndefined();
     expect(triggerMessageProblem("x".repeat(MAX_TRIGGER_MESSAGE_BYTES))).toBeUndefined();
     expect(triggerMessageProblem(" \n")).toBeDefined();
@@ -120,10 +120,6 @@ describe("a value a later slice added", () => {
     createdAt: 1,
     updatedAt: 2,
   };
-
-  it("reads known members as they are", () => {
-    expect(read(TriggerDefinition, definition)).toEqual(definition);
-  });
 
   it("reads a kind, source, overlap or outcome it doesn't know as the fallback member", () => {
     expect(

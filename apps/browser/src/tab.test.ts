@@ -165,18 +165,6 @@ describe("the tab a conversation works in", () => {
     expect(JSON.stringify([...otherStore.records])).toBe(before);
   });
 
-  it("is none when the conversation's tab is no longer open, or Browser Run lost the browser", async () => {
-    const { lookup, work, run } = setup();
-    const sessionId = await work(5, "tab-1");
-
-    run.state.tabs.set(sessionId, ["other"]);
-    expect(await tabOf(lookup, 5)).toBeUndefined();
-
-    run.state.tabs.set(sessionId, ["tab-1"]);
-    run.state.gone.add(sessionId);
-    expect(await tabOf(lookup, 5)).toBeUndefined();
-  });
-
   it("is none for a conversation whose browser was closed or replaced since", async () => {
     const { lookup, work, browser } = setup();
 

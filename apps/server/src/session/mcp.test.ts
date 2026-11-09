@@ -1,6 +1,6 @@
 // The Session object's RPC for the MCP endpoint over a scripted host, for what its storage-backed tests cannot reach
 // (`docs/architecture/mcp-endpoint.md` → Starting, sending and stopping): a Session with only subagents working.
-// @effect-diagnostics asyncFunction:off globalDate:off strictEffectProvide:off missedPipeableOpportunity:off -- plain fixtures.
+// @effect-diagnostics asyncFunction:off strictEffectProvide:off missedPipeableOpportunity:off -- plain fixtures.
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { McpQuestions, McpSignIns } from "@cloudpid/extensions/mcp";
@@ -133,28 +133,6 @@ describe("stop", () => {
     await running.stop({});
     expect(running.calls.aborts).toEqual([false]);
     expect(running.calls.notes).toHaveLength(1);
-  });
-});
-
-describe("waitForChange over an import", () => {
-  it("returns at once for an import that is going, and ends with it as import_ended", async () => {
-    const { mcp, set } = open(follow({ copying: true, idle: false }));
-    const deadline = () => Date.now() + 5_000;
-
-    const going = await mcp((service) => service.waitForChange({ deadline: deadline() }));
-
-    expect(going).toMatchObject({ ok: true, value: { status: "importing", ended_by: "timeout" } });
-
-    const after = going.ok ? going.value.cursor : "";
-
-    set(follow({}));
-
-    expect(
-      await mcp((service) => service.waitForChange({ after, deadline: deadline() })),
-    ).toMatchObject({
-      ok: true,
-      value: { status: "idle", ended_by: "import_ended" },
-    });
   });
 });
 

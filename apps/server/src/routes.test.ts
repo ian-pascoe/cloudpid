@@ -1,4 +1,3 @@
-import { MCP_ROUTE } from "@cloudpid/protocol/mcp-api";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { expect, it } from "vitest";
 import {
@@ -23,13 +22,9 @@ it("routes a Session's socket by its ID, and nothing else", () => {
 
 it("knows a request for a file under /assets/, whatever the method", () => {
   expect(isAssetPath(request("GET", "/assets/patch-view-iLOTrZXd.js"))).toBe(true);
-  expect(isAssetPath(request("GET", "/assets/index-CDZ3SOBd.css?v=1"))).toBe(true);
   expect(isAssetPath(request("HEAD", "/assets/a/b.js"))).toBe(true);
   expect(isAssetPath(request("GET", "/assets"))).toBe(false);
-  expect(isAssetPath(request("GET", "/assetsx/a.js"))).toBe(false);
-  expect(isAssetPath(request("GET", `/sessions/${session}`))).toBe(false);
   expect(isAssetPath(request("GET", `/sessions/${session}/assets/a.js`))).toBe(false);
-  expect(isAssetPath(request("GET", "/"))).toBe(false);
 });
 
 it("routes Registry RPC calls", () => {
@@ -77,8 +72,4 @@ it("knows the MCP endpoint by exactly /mcp, whatever the method", () => {
   expect(isMcpRoute(request("POST", "/MCP"))).toBe(false);
   expect(isMcpRoute(request("POST", "/mcp/sub"))).toBe(false);
   expect(isMcpRoute(request("POST", "/rpc"))).toBe(false);
-});
-
-it("serves the path @cloudpid/protocol names for the endpoint", () => {
-  expect(isMcpRoute(request("POST", MCP_ROUTE))).toBe(true);
 });

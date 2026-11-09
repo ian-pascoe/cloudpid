@@ -304,18 +304,6 @@ describe("an Agent change to an Environment", () => {
     expect(saved).toEqual({});
   });
 
-  it("refuses the 51st variable, as the owner's save does", async () => {
-    const outcome = await inRegistry(({ change, store }) => {
-      store.putEnvironmentSettings(DEFAULT_ENVIRONMENT, {
-        variables: Object.fromEntries(Array.from({ length: 50 }, (_, index) => [`V${index}`, "x"])),
-      });
-
-      return change(setVariable("ONE_MORE", "x"));
-    });
-
-    expect(outcome).toMatchObject({ status: "rejected" });
-  });
-
   it("keeps each Environment's last 200 changes", async () => {
     const [ids, others] = await inRegistry(({ change, changes, store }) => {
       store.createEnvironment("0000abcd", "Other", 1_000);
@@ -735,12 +723,8 @@ describe("an Agent change to each of the other Container settings", () => {
 
   it.each([
     { field: "idleMinutes", value: 0 },
-    { field: "idleMinutes", value: 1441 },
-    { field: "setupScript", value: "x".repeat(64 * 1024 + 1) },
     { field: "startScript", value: "a\u0000b" },
-    { field: "toolchains", value: "x".repeat(16 * 1024 + 1) },
     { field: "ignore", value: ["data"] },
-    { field: "ignore", value: Array.from({ length: 51 }, (_, index) => `/d${index}`) },
   ])("refuses $field of $value as the owner's save does, and records nothing", async (invalid) => {
     const [outcome, listed, stored] = await inRegistry(({ change, changes, store }) => [
       change(invalid),

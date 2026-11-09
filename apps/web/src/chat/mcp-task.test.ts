@@ -2,7 +2,7 @@
 import type { ConversationId, McpTask } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
-import { clock, endText, followingLabel, liveTasks, taskLine, taskOfCall } from "./mcp-task.ts";
+import { clock, endText, liveTasks, taskLine, taskOfCall } from "./mcp-task.ts";
 
 const task = (more: Partial<McpTask> = {}): McpTask => ({
   task: "mcp-task-1",
@@ -18,11 +18,6 @@ const task = (more: Partial<McpTask> = {}): McpTask => ({
 });
 
 describe("an MCP task's words", () => {
-  it("counts the tasks followed", () => {
-    expect(followingLabel(1)).toBe("Following 1 MCP task");
-    expect(followingLabel(3)).toBe("Following 3 MCP tasks");
-  });
-
   it("shows how long a task has gone on", () => {
     expect(clock(42_000)).toBe("0:42");
     expect(clock(725_000)).toBe("12:05");

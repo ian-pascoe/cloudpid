@@ -93,16 +93,6 @@ describe("inputProblem", () => {
     expect(inputProblem(stored, 0)).toBeUndefined();
   });
 
-  it("lets through a Review of 100 page drafts at every limit, its crops in what the message leaves", () => {
-    const { stored, fitted } = storedReview(
-      Array.from({ length: MAX_ANNOTATIONS }, (_, index) => pageAtLimits(index)),
-    );
-
-    expect(storedBytes(stored)).toBeLessThan(MAX_STORED_INPUT_BYTES);
-    expect(inputProblem(stored, 0)).toBeUndefined();
-    expect(fitted.length).toBeLessThan(MAX_REVIEW_CROPS);
-  });
-
   it("carries 20 crops at most, within the image budget, when the text leaves room", () => {
     const { stored, fitted } = storedReview(
       Array.from({ length: MAX_ANNOTATIONS }, (_, index) => pageAtLimits(index, 10)),

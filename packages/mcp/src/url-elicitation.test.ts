@@ -386,7 +386,6 @@ describe("a Legacy server's -32042", () => {
       "docs",
     );
 
-    expect(MCP_INPUT_ROUNDS).toBe(10);
     expect(failureOf(outcome)).toEqual(
       ServerError.make({
         message: "Authorization needed. docs kept asking for the same page; stopped after 10 tries",

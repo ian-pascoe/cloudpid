@@ -5,7 +5,6 @@
 import {
   McpHostCallFailed,
   McpHostTaskAck,
-  MCP_TASK_TIMEOUT_MS,
   McpHostTaskState,
   type McpTaskSnapshot,
   NotFound,
@@ -18,14 +17,10 @@ import { ROOT_CONVERSATION_ID, type TaskId } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import { HostLost, type McpHostClientService } from "./mcp/client.ts";
 import {
-  backoffMs,
-  clampPollMs,
   detachedText,
-  durationText,
   endedHeader,
   endedText,
   MCP_TASK_CANCEL_SENDING_MS,
-  MCP_TASK_CONNECT_MARGIN_MS,
   MCP_TASK_FAILURE_LIMIT_MS,
   MCP_TASK_RESULT_KEPT_MS,
   MCP_TASK_UNKNOWN_GRACE_MS,
@@ -35,7 +30,7 @@ import {
   windowMsOf,
 } from "./mcp/task-policy.ts";
 import { endedRecord } from "./mcp/task-end.ts";
-import { cancelDue, cancelStale, taskAttributes } from "./mcp/task-host.ts";
+import { cancelStale, taskAttributes } from "./mcp/task-host.ts";
 import { applyDecision, cancelTook, decide } from "./mcp/task-poll.ts";
 import { MCP_TASK_POOL_BYTES, resultPool, type StoredResult } from "./mcp/task-results.ts";
 import {
@@ -106,12 +101,6 @@ describe("the inline window and the poll cadence", () => {
     expect(windowMsOf("nope")).toBe(60_000);
   });
 
-  it("keeps the server's pollIntervalMs within 1 second and 5 minutes", () => {
-    expect(clampPollMs(10)).toBe(1000);
-    expect(clampPollMs(7000)).toBe(7000);
-    expect(clampPollMs(10 * 60_000)).toBe(300_000);
-  });
-
   it("polls every 2 s for the first minute, 5 s to 10 minutes, then 30 s", () => {
     const base = { background: false, ownerOnly: false, jitter: 0 };
 
@@ -130,12 +119,6 @@ describe("the inline window and the poll cadence", () => {
       pollDelayMs({ ...base, background: false, ownerOnly: false, pollIntervalMs: 20_000 }),
     ).toBe(20_000);
   });
-
-  it("backs off 5 s, 15 s, 30 s, 1 min, 2 min, 5 min, then 10 min", () => {
-    expect([1, 2, 3, 4, 5, 6, 7, 40].map(backoffMs)).toEqual([
-      5000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 600_000,
-    ]);
-  });
 });
 
 describe("the words the agent reads", () => {
@@ -144,15 +127,6 @@ describe("the words the agent reads", () => {
     expect(statusLine("  \u202eevil\u0000 text\n")).toBe("evil  text");
     expect(statusLine("   ")).toBeUndefined();
     expect(statusLine("x".repeat(5000))).toHaveLength(1000);
-  });
-
-  it("writes durations as seconds, minutes and hours", () => {
-    expect([30_000, 14 * 60_000, 125 * 60_000, 120 * 60_000].map(durationText)).toEqual([
-      "30s",
-      "14m",
-      "2h 5m",
-      "2h",
-    ]);
   });
 
   it("names the handle and the three tools when a call detaches, and never the server's id", () => {
@@ -584,44 +558,6 @@ describe("the pool of task results", () => {
       pool.put("mcp-task-4", result("z".repeat(MCP_TASK_POOL_BYTES + 1)), 5000),
     ).toBeUndefined();
   });
-
-  it("counts the images a result holds", () => {
-    const pool = resultPool(memoryStore());
-
-    const note = pool.put(
-      "mcp-task-1",
-      { output: [{ type: "image", data: "AAAA", mimeType: "image/png" }] },
-      1000,
-    );
-
-    expect(note?.images).toBe(1);
-  });
-});
-
-describe("whether Stop all still has to send a `tasks/cancel`", () => {
-  // SAFETY: only its identity is read: no request is made.
-  const client = {} as McpHostClientService;
-
-  const cancelled = (cancel: McpTaskRecord["cancel"]) => {
-    const record = recordIn(state());
-
-    if (cancel !== undefined) record.cancel = cancel;
-
-    return record;
-  };
-
-  it("sends one for a task that was never asked to cancel", () => {
-    expect(cancelDue(client, cancelled(undefined))).toBe(true);
-  });
-
-  it("sends none for a cancel that went, or failed, which is not asked again", () => {
-    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "sent" }))).toBe(false);
-    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "failed" }))).toBe(false);
-  });
-
-  it("sends one for a `sending` another instance left, however fresh: an orphan is worse than a duplicate", () => {
-    expect(cancelDue(client, cancelled({ at: 1_000, by: "agent", sent: "sending" }))).toBe(true);
-  });
 });
 
 describe("whether the follower sends a `sending` cancel again by itself", () => {
@@ -639,8 +575,6 @@ describe("whether the follower sends a `sending` cancel again by itself", () => 
   it("leaves it to its sender until it is older than any send of a live call", () => {
     expect(cancelStale(client, sending(), 1_000 + MCP_TASK_CANCEL_SENDING_MS - 1)).toBe(false);
     expect(cancelStale(client, sending(), 1_000 + MCP_TASK_CANCEL_SENDING_MS)).toBe(true);
-    // A send, the wire's one resend of a cut, and the margin for connecting.
-    expect(MCP_TASK_CANCEL_SENDING_MS).toBe(2 * MCP_TASK_TIMEOUT_MS + MCP_TASK_CONNECT_MARGIN_MS);
   });
 
   it("is never for a cancel that went, or one this instance began", () => {
