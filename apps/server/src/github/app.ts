@@ -131,6 +131,11 @@ export type GitHubAppOptions = {
   /** The permissions its tokens ask for (a subset of the app's); absent, all of the installation's. */
   readonly permissions?: GitHubPermissions | undefined;
   /**
+   * The repositories its tokens reach, by name (without the owner), of those the installation has; absent, all of them.
+   * Sent as `repositories`, never `repository_ids` (the Registry's issues-only token, ADR-0051).
+   */
+  readonly repositories?: ReadonlyArray<string> | undefined;
+  /**
    * Where the tokens minted are kept until they expire, so an object made again (a Workspace DO after its eviction,
    * while its Container runs on) still hands out the latest one and still takes them all out of output. Absent, in
    * memory only.
@@ -447,12 +452,17 @@ export class GitHubApp implements GitHubTokens {
   }
 
   async #mint(account: string, installation: number): Promise<MintedToken> {
+    const { permissions, repositories } = this.#options;
+
     const answer = await this.#ask(`${API}/app/installations/${installation}/access_tokens`, {
       method: "POST",
       body:
-        this.#options.permissions === undefined
+        permissions === undefined && repositories === undefined
           ? undefined
-          : JSON.stringify({ permissions: this.#options.permissions }),
+          : JSON.stringify({
+              ...(repositories === undefined ? {} : { repositories }),
+              ...(permissions === undefined ? {} : { permissions }),
+            }),
     });
 
     if (!answer.ok) {
