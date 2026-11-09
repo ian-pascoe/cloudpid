@@ -3,6 +3,7 @@ import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
@@ -169,6 +170,9 @@ import {
   type OpenViaCheck,
 } from "./via-secrets.ts";
 import { GitHubAppConfig } from "../github/config.ts";
+import { APP_ORIGIN_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
+import type { CloudpidReportAnswer } from "@cloudpid/extensions/cloudpid-report";
+import { type AgentReportInput, registryCloudpidReports } from "./cloudpid-reports.ts";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier, pushOwner } from "../push/notify.ts";
 import {
@@ -1257,6 +1261,12 @@ export type RegistryMethods = {
     readonly id: string;
     readonly author: AgentChangeAuthor;
   }) => Effect.Effect<TriggerChanged>;
+  /**
+   * File the agent's cloudpid report on cloudpid's own repo, as the GitHub App, once per Session and call (ADR-0051,
+   * `cloudpid-reports.ts`): refused when it names the owner's Repos or a cap is reached, and a rerun of the call answered
+   * what the first attempt came to. A status a newer Registry adds reads as `unknown` to the Session.
+   */
+  readonly agentFileReport: (input: AgentReportInput) => Effect.Effect<CloudpidReportAnswer>;
   /** Every Trigger, or `environment`'s, newest first. */
   readonly listTriggers: (input: {
     readonly environment?: string | undefined;
@@ -1506,6 +1516,18 @@ export const registryMethods = Effect.suspend(() =>
         const viaCheckOf = (author: AgentChangeAuthor, reach: SecretReach) => () =>
           // @effect-diagnostics-next-line runEffectInsideEffect:off
           Effect.runPromise(viaCheck({ author, reach }));
+
+        // The agent's cloudpid reports, posted with a token of their own: `issues: write` on cloudpid's repo alone. Every
+        // stage but `prod` (the one with no stage label) files fewer a day.
+        const cloudpidReports = registryCloudpidReports({
+          storage: state.raw.storage,
+          store,
+          github,
+          stageLabel: Predicate.isString(worker[STAGE_LABEL_VAR])
+            ? worker[STAGE_LABEL_VAR]
+            : undefined,
+          origin: Predicate.isString(worker[APP_ORIGIN_VAR]) ? worker[APP_ORIGIN_VAR] : undefined,
+        });
 
         const changeRequests = openChangeRequests(state.raw.storage, store, changes);
         const approvals = openApprovals(state.raw.storage);
@@ -2577,6 +2599,7 @@ export const registryMethods = Effect.suspend(() =>
             viaWrite<TriggerChanged>(args, triggerReach(args.id), invalid, (now) =>
               triggerChanges.remove(args.id, args.author, now),
             ),
+          agentFileReport: (input) => Effect.promise(() => cloudpidReports.file(input)),
           listTriggers: ({ environment }) => Effect.sync(() => triggers.list(environment)),
           listSessionTriggers: ({ session }) => Effect.sync(() => triggers.listOfSession(session)),
           triggerDefinition: ({ id }) => Effect.sync(() => triggers.get(id)),
