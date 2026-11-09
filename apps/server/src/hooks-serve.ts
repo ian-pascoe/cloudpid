@@ -4,16 +4,20 @@
 // Trigger object, which checks it and answers; the Worker only turns the answer into a status. Every other form under
 // `/hooks` is a 404 and the bare `/hooks` goes on to the guard (`hooksRoute`).
 //
-// The token is in the path, so neither this Worker's spans nor its logs may hold the path: the Worker's own server span
-// (Effect's `HttpMiddleware.tracer`, which records `url.full` and `url.path`) is turned off for these requests
-// (`hooksTracing`), and the one span made here records the route template, `/hooks/:id/:token`, and the status.
+// The token is in the path, so neither this Worker's Effect spans nor its logs may hold the path: the Worker's own server
+// span (Effect's `HttpMiddleware.tracer`, which records `url.full` and `url.path`) is turned off for these requests
+// (`hooksTracing`, registered with alchemy as `hooksTelemetry`, since alchemy builds a request's telemetry from what is
+// registered on the Worker's runtime context and nothing else), and the one span made here records the route template,
+// `/hooks/:id/:token`, and the status. The main Worker has no Effect tracer today, so this keeps it so when one is added.
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- `serveHooks` is called by `worker-init.ts` with its handler; a stream is read with Promises.
 import { MAX_DELIVERY_BODY_BYTES } from "@cloudpid/protocol";
+import * as AlchemyTelemetry from "alchemy/Telemetry";
 import * as Effect from "effect/Effect";
 import * as HttpMiddleware from "effect/http/HttpMiddleware";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import { HOOKS_ROUTE_TEMPLATE } from "./hooks-path.ts";
 import { hooksRoute } from "./hooks-routes.ts";
 import { rawPathOf } from "./sign-in-routes.ts";
@@ -39,6 +43,12 @@ const routeOf = (request: HttpServerRequest.HttpServerRequest) =>
 export const hooksTracing = Layer.succeed(HttpMiddleware.TracerDisabledWhen)(
   (request) => routeOf(request) !== undefined,
 );
+
+/**
+ * `hooksTracing` as alchemy takes it: registered on the Worker's runtime context at init, which is what its bridge builds
+ * into each request's telemetry. A plain provide of `hooksTracing` on the init effect never reaches a request.
+ */
+export const hooksTelemetry = AlchemyTelemetry.layer(hooksTracing);
 
 /**
  * The body of a request, read to the end or to `max` bytes: `size` is the bytes received, or `max + 1` when it went
@@ -101,10 +111,25 @@ const serveDelivery = (
     const length = declaredLength(request);
 
     // A body declared over the cap is not read: the object answers it once the token is right.
-    const received =
-      length !== undefined && length > MAX_DELIVERY_BODY_BYTES
-        ? { body: new Uint8Array(0), size: length }
-        : yield* Effect.promise(() => readBounded(web.body, MAX_DELIVERY_BODY_BYTES));
+    const reading: Effect.Effect<Awaited<ReturnType<typeof readBounded>>, "broken"> = length !==
+      undefined && length > MAX_DELIVERY_BODY_BYTES
+      ? Effect.succeed({ body: new Uint8Array(0), size: length })
+      : Effect.tryPromise({
+          try: () => readBounded(web.body, MAX_DELIVERY_BODY_BYTES),
+          catch: () => "broken" as const,
+        });
+
+    const read = yield* Effect.result(reading);
+
+    // A body that breaks off (the sender went away) is a bad request, not a fault of the Worker's.
+    if (Result.isFailure(read)) {
+      yield* Effect.logWarning("A delivery's body could not be read");
+      yield* Effect.annotateCurrentSpan("http.response.status_code", 400);
+
+      return empty(400);
+    }
+
+    const received = read.success;
 
     const headers = request.headers;
 
@@ -136,6 +161,9 @@ const serveDelivery = (
       attributes: { "http.request.method": "POST", "http.route": HOOKS_ROUTE_TEMPLATE },
     }),
   );
+
+/** What puts the Trigger URLs ahead of the routes it wraps (`serveHooks`'s). */
+export type HooksRouter = ReturnType<typeof serveHooks>;
 
 /**
  * Puts the Trigger URLs ahead of `guarded`, the Worker's guarded routes: a request for a path under `/hooks` never

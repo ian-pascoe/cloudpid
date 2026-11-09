@@ -13,6 +13,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { flow } from "effect/Function";
 import { type AccessGuard, guardAccess } from "./access.ts";
+import type { HooksRouter } from "./hooks-serve.ts";
 import { CALLBACK_PATH, CLIENT_DOCUMENT_PATH } from "./mcp/sign-in-origin.ts";
 
 /** The start's path: behind Access, so it is no sign-in route here and goes on to the guard. */
@@ -158,15 +159,6 @@ export const serveSignInPaths =
           return notFound;
       }
     });
-
-/** What puts the Trigger URLs ahead of the routes it wraps (`serveHooks`, `hooks-serve.ts`). */
-export type HooksRouter = <E, R>(
-  guarded: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
-) => Effect.Effect<
-  HttpServerResponse.HttpServerResponse,
-  E,
-  R | HttpServerRequest.HttpServerRequest
->;
 
 /**
  * What the main Worker wraps its routes in: the sign-in paths first, then the Trigger URLs (`hooks`, when the Worker

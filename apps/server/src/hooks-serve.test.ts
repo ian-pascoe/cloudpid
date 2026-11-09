@@ -1,16 +1,22 @@
 // @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off globalDate:off
 import { MAX_DELIVERY_BODY_BYTES } from "@cloudpid/protocol";
+import { type BaseRuntimeContext, RuntimeContext } from "alchemy/RuntimeContext";
+import { buildEventTelemetry } from "alchemy/TelemetryRuntime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Predicate from "effect/Predicate";
+import * as References from "effect/References";
+import * as Scope from "effect/Scope";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it, vi } from "vitest";
-import { hooksTracing, readBounded, serveHooks } from "./hooks-serve.ts";
+import { type HookDeliver, hooksTelemetry, readBounded, serveHooks } from "./hooks-serve.ts";
 import type { Delivery, DeliveryAnswer } from "./trigger/object.ts";
 import { TriggerUnreachable } from "./trigger/object.ts";
 import { guardedRoutes } from "./sign-in-routes.ts";
@@ -23,6 +29,17 @@ const text = (response: HttpServerResponse.HttpServerResponse): string =>
   Predicate.isTagged(response.body, "Uint8Array")
     ? new TextDecoder().decode(response.body.body)
     : "";
+
+/** A POST whose body breaks off after the headers: the sender went away. */
+const brokenBody = (): RequestInit =>
+  // SAFETY: `duplex` is the option a request with a stream body needs; the DOM's `RequestInit` lacks it.
+  ({
+    method: "POST",
+    body: new ReadableStream<Uint8Array>({
+      pull: (controller) => controller.error(new Error("went away")),
+    }),
+    duplex: "half",
+  }) as RequestInit;
 
 describe("readBounded", () => {
   const streamOf = (...chunks: ReadonlyArray<string>) =>
@@ -161,6 +178,16 @@ describe("the /hooks router ahead of the guarded routes", () => {
     expect(delivered[0]?.delivery.size).toBe(MAX_DELIVERY_BODY_BYTES + 5);
   });
 
+  it("answers 400 when the body breaks off, asking nothing of the object", async () => {
+    delivered.length = 0;
+
+    const response = await run(`${origin}/hooks/${id}/${token}`, brokenBody());
+
+    expect(response.status).toBe(400);
+    expect(text(response)).toBe("");
+    expect(delivered).toEqual([]);
+  });
+
   it("answers any method but POST 405, asking nothing of the object", async () => {
     delivered.length = 0;
 
@@ -290,17 +317,27 @@ describe("the composition the Worker serves with", () => {
   });
 });
 
-describe("what its spans record", () => {
+describe("what its spans and logs record", () => {
   /**
-   * The span names and attributes of every span a request to `path` made, over Effect's own server middleware
-   * (`toHandled`, which the Worker's fetch runs through), with `hooksTracing` provided or not.
+   * A request to `path`, run as the Worker runs one: alchemy's init builds `hooksTelemetry` against the runtime context
+   * when it is `registered`, its bridge builds what the context holds into the event's context (`buildEventTelemetry`),
+   * and the fetch runs through Effect's own server middleware (`toHandled`). Answers every span the request made and
+   * every log line, with its annotations, as text.
    */
-  const spansOf = async (path: string, disabled: boolean) => {
+  const observe = async (
+    path: string,
+    options: {
+      readonly registered: boolean;
+      readonly deliver?: HookDeliver;
+      readonly init?: RequestInit;
+    },
+  ) => {
     const spans: Array<Tracer.NativeSpan> = [];
+    const logs: Array<string> = [];
 
     const tracer = Tracer.make({
-      span: (options) => {
-        const span = new Tracer.NativeSpan(options);
+      span: (made) => {
+        const span = new Tracer.NativeSpan(made);
 
         spans.push(span);
 
@@ -308,52 +345,112 @@ describe("what its spans record", () => {
       },
     });
 
-    const app = serveHooks(() => Effect.succeed({ status: 200, outcome: "accepted" } as const))(
-      Effect.succeed(HttpServerResponse.text("guarded")),
+    const logger = Logger.make((entry) => {
+      logs.push(
+        JSON.stringify([
+          entry.message,
+          String(entry.cause),
+          entry.fiber.getRef(References.CurrentLogAnnotations),
+        ]),
+      );
+    });
+
+    // What the init registers lands on the runtime context, as `Telemetry.layer` finds it.
+    // SAFETY: registering reads and writes only the context's `telemetry`; nothing else of it is touched.
+    const runtime = {} as BaseRuntimeContext;
+    const scope = await Effect.runPromise(Scope.make());
+
+    if (options.registered) {
+      await Effect.runPromise(
+        Layer.buildWithScope(hooksTelemetry, scope).pipe(
+          Effect.provideService(RuntimeContext, runtime),
+        ),
+      );
+    }
+
+    const telemetry = await Effect.runPromise(
+      buildEventTelemetry(Context.empty(), scope, runtime.telemetry, Layer.empty),
     );
 
-    const built = disabled
-      ? await Effect.runPromise(Layer.build(hooksTracing).pipe(Effect.scoped))
-      : Context.empty();
+    const context = Context.add(
+      Context.add(telemetry, Tracer.Tracer, tracer),
+      Logger.CurrentLoggers,
+      new Set([logger]),
+    );
 
-    const context = Context.add(built, Tracer.Tracer, tracer);
+    const app = serveHooks(
+      options.deliver ?? (() => Effect.succeed({ status: 200, outcome: "accepted" } as const)),
+    )(Effect.succeed(HttpServerResponse.text("guarded")));
 
-    // SAFETY: `built` holds the one reference `hooksTracing` makes, and the tracer is a reference: no service is required.
+    // SAFETY: the context holds references only (the telemetry's, the tracer, the loggers): no service is required.
     const handler = HttpEffect.toWebHandlerWith<never, HttpServerRequest.HttpServerRequest>(
       context as Context.Context<never>,
     )(app);
 
-    await handler(new Request(`${origin}${path}`, { method: "POST", body: "{}" }));
+    const response = await handler(
+      new Request(`${origin}${path}`, options.init ?? { method: "POST", body: "{}" }),
+    );
 
-    return spans;
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+
+    return { spans, logs, response };
   };
 
   const everything = (
     spans: ReadonlyArray<{ readonly name: string; readonly attributes: Map<string, unknown> }>,
   ) => JSON.stringify(Arr.map(spans, ({ name, attributes }) => [name, [...attributes]]));
 
-  it("would hold the token in the server span's path, were that span not turned off", async () => {
-    // The control: without `hooksTracing`, Effect's own span records the whole URL.
-    expect(everything(await spansOf(`/hooks/${id}/${token}`, false))).toContain(token);
+  it("would hold the token in the server span's path, were hooksTelemetry not registered", async () => {
+    // The control: without it, Effect's own span records the whole URL.
+    const { spans } = await observe(`/hooks/${id}/${token}`, { registered: false });
+
+    expect(everything(spans)).toContain(token);
   });
 
-  it("holds neither the token nor the id, only the route template, with hooksTracing", async () => {
-    const spans = await spansOf(`/hooks/${id}/${token}`, true);
+  it("holds neither the token nor the id, only the route template, once hooksTelemetry is registered", async () => {
+    const { spans } = await observe(`/hooks/${id}/${token}`, { registered: true });
 
     expect(everything(spans)).not.toContain(token);
     expect(everything(spans)).not.toContain(id);
     expect(Arr.map(spans, ({ name }) => name)).toEqual(["hooks.delivery"]);
     expect(spans[0]?.attributes.get("http.route")).toBe("/hooks/:id/:token");
+    expect(spans[0]?.attributes.get("http.response.status_code")).toBe(200);
   });
 
   it("holds none of a refused form's path either", async () => {
-    expect(everything(await spansOf(`/hooks/${id}/${token}/x`, true))).not.toContain(token);
+    const { spans } = await observe(`/hooks/${id}/${token}/x`, { registered: true });
+
+    expect(everything(spans)).not.toContain(token);
   });
 
   it("leaves every other request its server span", async () => {
-    const spans = await spansOf("/rpc", true);
+    const { spans } = await observe("/rpc", { registered: true });
 
     expect(spans.length).toBeGreaterThan(0);
     expect(everything(spans)).toContain("/rpc");
+  });
+
+  it("logs neither the token nor the id when its object does not answer or the body breaks off", async () => {
+    const unreachable = await observe(`/hooks/${id}/${token}`, {
+      registered: true,
+      deliver: () => Effect.fail(TriggerUnreachable.make({ message: "no answer" })),
+    });
+
+    expect(unreachable.response.status).toBe(503);
+    expect(unreachable.logs.length).toBeGreaterThan(0);
+
+    const broken = await observe(`/hooks/${id}/${token}`, {
+      registered: true,
+      init: brokenBody(),
+    });
+
+    expect(broken.response.status).toBe(400);
+    expect(broken.logs.length).toBeGreaterThan(0);
+
+    for (const line of [...unreachable.logs, ...broken.logs]) {
+      expect(line).not.toContain(token);
+      expect(line).not.toContain(id);
+      expect(line).not.toContain("/hooks/");
+    }
   });
 });

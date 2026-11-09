@@ -9,7 +9,7 @@ import * as Predicate from "effect/Predicate";
 import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
-import { hooksTracing, serveHooks } from "./hooks-serve.ts";
+import { hooksTelemetry, serveHooks } from "./hooks-serve.ts";
 import { guardedRoutes, isStartRequest } from "./sign-in-routes.ts";
 import {
   serveCallback,
@@ -298,7 +298,7 @@ export const serverInit = Effect.gen(function* () {
         ),
       ),
       // The Worker's own server span records the whole path, and a Trigger URL's path holds its token: none for `/hooks`.
-      Layer.provideMerge(hooksTracing),
+      Layer.provideMerge(hooksTelemetry),
     ),
   ),
 );
