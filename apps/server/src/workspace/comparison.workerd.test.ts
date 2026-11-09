@@ -7,6 +7,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, inject, it } from "vitest";
 import type { RepoFiles } from "./changes.repos.ts";
 import { lines } from "./changes.repos.ts";
+import { MAX_PACK_BYTES } from "./git.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 const repos = inject("comparisonRepos");
@@ -104,5 +105,34 @@ describe("This branch in the Workspace DO", () => {
     expect(await ask("bin.dat")).toEqual({ old: null, new: { kind: "binary" } });
     expect((await stub.fakeContainerState()).scripts).toHaveLength(1);
     expect((await stub.liveStubs()).container).toBe(0);
+  });
+
+  it("sends a repo whose packs are over 16 MB to the Container for contents", async () => {
+    const { stub, list } = await compared();
+
+    await stub.putFiles([
+      ["/workspace/app/.git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1)],
+    ]);
+
+    const ask = () =>
+      stub.comparisonFile({
+        repo: "app",
+        mergeBase: list.mergeBase,
+        head: list.head,
+        path: "new.txt",
+      });
+
+    // Caught at once: a stub's rejected call left to `expect().rejects` is reported as unhandled too.
+    const refused = await ask().then(
+      () => undefined,
+      (cause: unknown) => String(cause),
+    );
+
+    expect(refused).toMatch(/need the Container, which is stopped/);
+
+    await stub.fakeContainer({ running: true, outputs: [repos.blob.stdout] });
+
+    expect(await ask()).toEqual({ old: null, new: { kind: "text", text: "fresh\n" } });
+    expect((await stub.fakeContainerState()).scripts).toHaveLength(2);
   });
 });

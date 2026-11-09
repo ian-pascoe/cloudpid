@@ -1,8 +1,7 @@
 // Pull request Comparisons in the Workspace DO (docs/architecture/diffs-and-review.md → Comparisons), over a repo real git made and
 // the Container's command real git ran on it (`comparison.setup.ts`), written into a Workspace as computer's sync would, with
-// GitHub's API and the clock stubbed in the test Worker: the 60 s the list is kept, the "New commits" banner when the
-// pull request's head moves, closed and merged, and the refs of pull requests no longer open. The Container is a fake that
-// is counted, and never started by a call that may not start it.
+// GitHub's API stubbed in the test Worker: the Container's git compares the branch with the pull request's own base, and
+// the files of the list carry their head blobs. The Container is a fake that is counted.
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off preferEffectRecord:off
 import { type Comparison } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";

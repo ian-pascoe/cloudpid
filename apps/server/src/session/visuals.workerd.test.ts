@@ -1,6 +1,6 @@
 // Visuals in a Session end to end (`docs/architecture/visuals.md` → Testing): a model's `visual_show` call keeps its page in the
 // Session's storage, outside History, which `visual_page` answers with the Session's origin, after the object restarts too; the
-// sockets say `hello.visuals`, and send a watched conversation's Visuals (`visuals`) after its view and as they change; past its
+// sockets send a watched conversation's Visuals (`visuals`) after its view and as they change; past its
 // bounds the least recently mounted Visual becomes a stub its card can still show; an earlier Visual of the same file is the
 // one a show supersedes; the call's `pi.tool.visual_show` span carries counts and fixed values, never the page's words; and a
 // Fork or Clone shows the Visuals of the calls it copies, across builds too, where what a build cannot use is "no longer kept".
@@ -471,6 +471,22 @@ describe("a Visual shown in a Session", () => {
 
       expect(text).toContain("Not checked");
       expect(text).toContain("Browser Run is down");
+    });
+
+    it("fails as unavailable when the Browsers Worker predates the check", async () => {
+      const { stub } = fresh();
+
+      await script(stub, "visual-check-failure", {
+        message: "checkVisual: the Browsers Worker has no such method yet",
+        unavailable: true,
+      });
+      await check(stub, { html: PAGE });
+
+      const [text] = await runInDurableObject(stub, (instance: TestSession) =>
+        instance.toolResults(),
+      );
+
+      expect(text).toContain("visual_check is unavailable");
     });
 
     it("fails as busy, not as the browser's fault, when the host holds as many checks as it takes", async () => {

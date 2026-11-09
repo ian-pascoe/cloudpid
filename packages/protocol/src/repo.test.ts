@@ -125,9 +125,12 @@ describe("branchProblem", () => {
   });
 
   it.each([
+    ["", "empty"],
     ["-x", "an option"],
     ["a..b", "a range"],
     ["a b", "a space"],
+    ["a.lock", "a lock file"],
+    ["a.", "a trailing dot"],
     ["a@{1}", "a reflog"],
     ["HEAD", "HEAD"],
     ["x".repeat(201), "too long"],

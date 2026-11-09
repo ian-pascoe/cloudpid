@@ -131,10 +131,12 @@ describe("appOriginOf", () => {
     ["a hash 27 characters long", `a${HASH}.ianpascoe.app`],
     ["a hash with a character outside base32 (0)", `${HASH.slice(1)}0.ianpascoe.app`],
     ["a label starting with `-`", `${HASH}---a.ianpascoe.app`],
+    ["a label over 35 characters", `${HASH}--${"a".repeat(36)}.ianpascoe.app`],
     ["a second host label", `x.${HASH}.ianpascoe.app`],
     ["another zone", `${HASH}.ianpascoe.dev`],
     ["a lookalike zone", `${HASH}.evilianpascoe.app`],
     ["a host with a port", `${HASH}.ianpascoe.app:443`],
+    ["a newline", `${HASH}.ianpascoe.app\n`],
     ["an IP address", "127.0.0.1"],
   ])("returns undefined for %s", (_, host) => {
     expect(appOriginOf(host)).toBeUndefined();

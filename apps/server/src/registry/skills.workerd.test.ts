@@ -239,6 +239,13 @@ describe("saving an Environment's Skill", () => {
       { "SKILL.md": skillMd("release") },
       "must be the same",
     ],
+    ["no frontmatter", "release", { "SKILL.md": "# Release\n" }, "no YAML frontmatter"],
+    [
+      "no description",
+      "release",
+      { "SKILL.md": "---\nname: release\n---\n" },
+      "sets no description",
+    ],
     ["a binary file", "release", { ...release, "logo.bin": "PNG\0\0" }, "a binary file"],
     [
       "a credential",
@@ -246,6 +253,13 @@ describe("saving an Environment's Skill", () => {
       { ...release, "env.md": `token: ghp_${"a".repeat(36)}` },
       "looks like a credential",
     ],
+    [
+      "a local path",
+      "release",
+      { ...release, "where.md": "See /home/ian/notes.\n" },
+      "a local path",
+    ],
+    ["a path with ..", "release", { ...release, "../escape.md": "Out.\n" }, "`..` segment"],
   ])("refuses %s, saying why, and saves and records nothing", async (_, folder, files, message) => {
     const [saved, listed, changed] = await inRegistry(async ({ save, skills, changes }) => [
       await save(folder, files),

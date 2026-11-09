@@ -3,7 +3,7 @@
 // redesign that changes a token fails here until the table follows.
 // @effect-diagnostics preferEffectArray:off preferEffectRecord:off nodeBuiltinImport:off -- reads a stylesheet into small native maps.
 import { readFileSync } from "node:fs";
-import { TOKEN_VALUES, TOKENS } from "@cloudpid/protocol";
+import { TOKEN_VALUES, TOKENS, visualStyleVariables } from "@cloudpid/protocol";
 import { describe, expect, it } from "vitest";
 
 const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
@@ -34,5 +34,13 @@ describe("visual_check's token values", () => {
     for (const [, token] of TOKENS) {
       expect(TOKEN_VALUES[theme][token], `${theme} ${token}`).toBe(sheet.get(token));
     }
+  });
+
+  it("give every style variable of the table a value", () => {
+    const variables = visualStyleVariables("dark");
+
+    for (const [variable] of TOKENS) expect(variables[variable]).not.toBe("");
+    expect(variables["--color-background-primary"]).toBe(TOKEN_VALUES.dark["--background"]);
+    expect(variables["--border-radius-md"]).toBe("8px");
   });
 });

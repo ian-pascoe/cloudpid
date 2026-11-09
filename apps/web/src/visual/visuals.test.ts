@@ -3,10 +3,12 @@
 // the guard that freezes a page that climbs; the heights a device remembers; a page's answer checked before it is framed; and
 // the thread's width the guidance tells the agent, held to the layout's classes.
 // @effect-diagnostics preferEffectArray:off nodeBuiltinImport:off -- a transcript in native lists, and the layout's source read as text.
+import { readFileSync } from "node:fs";
 import {
   fitHeight,
   VISUAL_MAX_HEIGHT,
   VISUAL_MIN_HEIGHT,
+  VISUAL_THREAD_WIDTH,
   type TranscriptMessage,
   type VisualEntry,
   type VisualRecord,
@@ -184,5 +186,14 @@ describe("a Visual's page as the Session answers it", () => {
 
     expect(loadOf({ status: "evicted", stub }, page)).toEqual({ status: "evicted", stub });
     expect(loadOf({ status: "gone" }, page)).toEqual({ status: "none" });
+  });
+});
+
+describe("the thread's width the guidance names", () => {
+  it("is the transcript column's: max-w-3xl (48rem) less px-4 on both sides", () => {
+    const thread = readFileSync(new URL("../chat/thread.tsx", import.meta.url), "utf8");
+
+    expect(thread).toContain('"mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-6"');
+    expect(48 * 16 - 2 * 16).toBe(VISUAL_THREAD_WIDTH);
   });
 });

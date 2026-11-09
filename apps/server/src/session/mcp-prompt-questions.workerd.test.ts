@@ -278,6 +278,21 @@ describe.each(eras)("a %s server's form during a prompt send", (_era, make) => {
     expect(await sending).toHaveProperty("submission");
     owner.close();
   });
+
+  it("is withdrawn with its card, and the message with it, when the owner stops", async () => {
+    const { stub } = await open(make, FORM_PROMPT);
+    const owner = await connect(stub);
+    const sending = send(stub);
+
+    await settles(async () => expect(owner.forms()).toHaveLength(1));
+    await runInDurableObject(stub, (instance: TestSession) => instance.abortRoot());
+
+    expect(await sending).toEqual({ withdrawn: true });
+    await settles(async () => expect(owner.forms()).toEqual([]));
+    // Nothing was placed beyond the first turn's message.
+    expect(await ownerMessages(stub)).toHaveLength(1);
+    owner.close();
+  });
 });
 
 describe("a Legacy server's Sampling request during a prompt send", () => {

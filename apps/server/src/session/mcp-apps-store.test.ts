@@ -1,6 +1,7 @@
 // The Session's App records over plain key-value storage (`docs/architecture/mcp-apps.md` → App records): kept in parts
-// and listed, bounded to 1 MiB each and 32 MiB together with the least recently mounted evicted to a stub, the counts that
-// cap them, what a Fork or Clone carries, and the Secrets redacted from what is kept.
+// and listed, bounded to 1 MiB each, the page of a call's record read and pinned, what a Fork or Clone carries (a record
+// evicted to a stub is copied as a stub), and the Secrets redacted from what is kept. The 32 MiB bound and the counts that
+// evict to a stub are tested in `call-records.workerd.test.ts`.
 // @effect-diagnostics asyncFunction:off globalDate:off strictEffectProvide:off missedPipeableOpportunity:off newPromise:off globalTimers:off -- plain fixtures.
 import { Secrets } from "@cloudpid/extensions/secrets";
 import {

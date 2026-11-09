@@ -6,6 +6,7 @@ import { MAX_CHANGED_FILES } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, inject, it } from "vitest";
 import { lines, REWRITE_LINES, type RepoFiles } from "./changes.repos.ts";
+import { MAX_PACK_BYTES } from "./git.ts";
 import type { TestWorkspace } from "./workerd.fixture.ts";
 
 const repos = inject("changesRepos");
@@ -204,5 +205,19 @@ describe("the Workspace DO's Changes", () => {
       { path: "src/d0/f0.ts", status: "modified", additions: 1, deletions: 0 },
     ]);
     expect(order).toEqual(["read", "listing"]);
+  });
+
+  it("sends a repo whose packs are over 16 MB to the Container", async () => {
+    const stub = workspace();
+
+    await place(stub, "tiny");
+    await stub.putFiles([
+      ["/workspace/tiny/.git/objects/pack/pack-big.pack", new Uint8Array(MAX_PACK_BYTES + 1)],
+    ]);
+
+    expect(
+      (await stub.changes({ directory: "/workspace/tiny", startContainer: false })).repos,
+    ).toEqual([expect.objectContaining({ repo: "tiny", stale: true, files: [] })]);
+    expect((await stub.liveStubs()).container).toBe(0);
   });
 });

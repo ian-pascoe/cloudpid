@@ -413,6 +413,24 @@ describe("transcript", () => {
     expect(result).toEqual({ ok: true, value: { entries: [], newer: "n1", session_id: ID } });
     expect(transcript).toHaveBeenCalledWith(ID, { detail: "full" });
   });
+
+  it("never reaches a Session for an unknown or malformed id", async () => {
+    const transcript = vi.fn();
+
+    const unknown = await run(
+      service({ session: () => Effect.succeed(null), transcript }).transcript({
+        session_id: ID,
+      } as never),
+    );
+
+    const malformed = await run(
+      service({ transcript }).transcript({ session_id: "nope" } as never),
+    );
+
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(transcript).not.toHaveBeenCalled();
+  });
 });
 
 const VIA = { client: { name: "claude-code", version: "2.1" }, era: "modern" as const };
@@ -877,6 +895,20 @@ describe("stop", () => {
     ]);
   });
 
+  it("never reaches a Session for an unknown or malformed id", async () => {
+    const stop = vi.fn(backend().stop);
+
+    const unknown = await run(
+      service({ session: () => Effect.succeed(null), stop }).stop({ session_id: ID, via: VIA }),
+    );
+
+    const malformed = await run(service({ stop }).stop({ session_id: "nope", via: VIA }));
+
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(stop).not.toHaveBeenCalled();
+  });
+
   it("says stopping when the Session had not gone idle", async () => {
     const result = await run(
       service({
@@ -954,6 +986,20 @@ describe("wait", () => {
     );
 
     expect(result.ok && result.value.waiting[0]?.url).toBe(`${ORIGIN}/sessions/${ID}?request=r1`);
+  });
+
+  it("never reaches a Session for an unknown or malformed id", async () => {
+    const wait = vi.fn(backend().wait);
+
+    const unknown = await run(
+      service({ session: () => Effect.succeed(null), wait }).wait({ session_id: ID }),
+    );
+
+    const malformed = await run(service({ wait }).wait({ session_id: "nope" }));
+
+    expect(unknown).toMatchObject({ ok: false, error: { code: "not_found" } });
+    expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(wait).not.toHaveBeenCalled();
   });
 
   it("passes the Session's own refusals on as they are: the cap of waits, and a cursor that is not its own", async () => {

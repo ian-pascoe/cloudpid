@@ -1,6 +1,6 @@
 // The Session object's RPC for the MCP endpoint over a scripted host, for what its storage-backed tests cannot reach
 // (`docs/architecture/mcp-endpoint.md` → Starting, sending and stopping): a Session with only subagents working.
-// @effect-diagnostics asyncFunction:off globalDate:off strictEffectProvide:off missedPipeableOpportunity:off -- plain fixtures.
+// @effect-diagnostics asyncFunction:off strictEffectProvide:off missedPipeableOpportunity:off -- plain fixtures.
 import { Approvals } from "@cloudpid/extensions/approvals";
 import { BrowserHandoffs } from "@cloudpid/extensions/browser";
 import { McpQuestions, McpSignIns } from "@cloudpid/extensions/mcp";

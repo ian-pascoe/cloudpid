@@ -175,7 +175,14 @@ describe("the return path", () => {
     expect(safeReturnPath(path)).toBe(path);
   });
 
-  it.each(["//evil.example", "/\\evil.example", "https://evil.example"])("drops %j", (path) => {
+  it.each([
+    null,
+    "//evil.example",
+    "/\\evil.example",
+    "https://evil.example",
+    "/a\nb",
+    `/${"a".repeat(600)}`,
+  ])("drops %j", (path) => {
     expect(safeReturnPath(path)).toBe(undefined);
   });
 });

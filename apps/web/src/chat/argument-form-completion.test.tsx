@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 // @effect-diagnostics preferEffectArray:off globalTimers:off newPromise:off asyncFunction:off -- a form driven in a DOM, its asks kept in native arrays.
 // The argument form's wiring to its completions (`docs/architecture/mcp-in-a-session.md` → As built (#485): completion): the
-// focus asks at once, typing asks once it stops, the answer is listed under the focused field and taken with the keys, and
-// closing the form cancels what is in flight.
+// form asks for the first field's suggestions as it opens and lists them under it, the highlighted one is taken with the
+// arrows and Enter, and a reason there are none is said, as a link when the owner can sign in.
 import type { McpCompletion } from "@cloudpid/protocol";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";

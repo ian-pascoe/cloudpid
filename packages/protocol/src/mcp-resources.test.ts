@@ -4,7 +4,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { isMcpSpillPath } from "./mcp-resources.ts";
-import { ClientMessage } from "./session.ts";
+import { ClientMessage, Hello } from "./session.ts";
 
 describe("a resource preview", () => {
   const decodeClient = Schema.decodeUnknownOption(ClientMessage);
@@ -30,5 +30,14 @@ describe("a resource preview", () => {
     ]) {
       expect(isMcpSpillPath(other)).toBe(false);
     }
+  });
+
+  it("is said in hello, which an older Session leaves out", () => {
+    const decodeHello = Schema.decodeUnknownOption(Hello);
+
+    expect(Option.isSome(decodeHello({ type: "hello", root: 1, resourcePreviews: true }))).toBe(
+      true,
+    );
+    expect(Option.isSome(decodeHello({ type: "hello", root: 1 }))).toBe(true);
   });
 });

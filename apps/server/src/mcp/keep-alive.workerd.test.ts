@@ -137,6 +137,15 @@ describe("the keep-alive alarm", () => {
     expect(await alarmOf(host)).toBeNull();
   });
 
+  it("is not armed once a discovery is interrupted by a set change", async () => {
+    const host = await inFlight("gone", heldFound(["a"]));
+
+    await host.apply(setOf());
+
+    await cleared(host);
+    await host.release(urlOf("gone"));
+  });
+
   it("is not armed once a discovery is given up past its 360 s slot", async () => {
     const host = await inFlight("slow", heldFound(["late"]));
 

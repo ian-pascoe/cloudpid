@@ -518,8 +518,26 @@ describe("local mode (alchemy dev)", () => {
 });
 
 describe("the guard's vars", () => {
+  it("are read from the Worker's environment as strings", () => {
+    expect(guardFromEnv({ CLOUDPID_ACCESS_AUD: "an-aud" })).toMatchObject({
+      audience: "an-aud",
+      localMode: false,
+    });
+    expect(guardFromEnv({ CLOUDPID_LOCAL_MODE: "true" })).toMatchObject({
+      audience: undefined,
+      localMode: true,
+    });
+    expect(guardFromEnv({ CLOUDPID_MCP_ACCESS_AUD: "mcp-aud" }).mcp).toEqual({
+      audience: "mcp-aud",
+    });
+  });
+
   it.each(["false", "1"])("do not put the Worker in local mode for %j", (value) => {
     expect(guardFromEnv({ CLOUDPID_LOCAL_MODE: value }).localMode).toBe(false);
+  });
+
+  it("put nothing in local mode when the var is absent", () => {
+    expect(guardFromEnv({})).toMatchObject({ audience: undefined, localMode: false });
   });
 });
 

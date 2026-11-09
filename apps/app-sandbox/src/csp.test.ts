@@ -96,6 +96,7 @@ describe("buildCsp", () => {
     "https://PI.IANPASCOE.DEV:443/path",
     "https://x.ianpascoe.app",
     "https://cloudpid-server-pr-430.ian-g-pascoe.workers.dev",
+    "https://abcd1234-cloudpid-server-pr-430.ian-g-pascoe.workers.dev",
     "https://*.ianpascoe.dev",
     "https://*.dev",
     "https://*.ian-g-pascoe.workers.dev",

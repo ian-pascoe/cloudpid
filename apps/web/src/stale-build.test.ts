@@ -116,6 +116,15 @@ describe("handlePreloadError", () => {
     expect(state.prevented).toBe(0);
   });
 
+  it("leaves the error to throw over unsent text", () => {
+    const { page, state } = fakePage({ unsentText: true });
+    const event = { preventDefault: () => (state.prevented += 1) };
+
+    expect(handlePreloadError(page)(event)).toBe("ask");
+    expect(state.reloads).toBe(0);
+    expect(state.prevented).toBe(0);
+  });
+
   it("never reloads where the stamp cannot be kept", () => {
     const { page, state } = fakePage({ storageOff: true });
     const event = { preventDefault: () => (state.prevented += 1) };

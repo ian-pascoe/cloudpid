@@ -1,6 +1,7 @@
 // Viewed boxes and the drafts on a pull request, on a Session host in workerd: the boxes are kept in the Session and synced
 // to every client like the drafts (`viewed`, `viewed_set`); a refresh of the pull request to a file's new blob unticks it;
-// a Fork or Clone has none; the drafts on a pull request move to a new head and head its Review.
+// a Fork or Clone has none; the drafts on a pull request move with their lines to a new head, take its title, and are
+// outdated when their lines change.
 // workerd's Durable Object, WebSocket, and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";

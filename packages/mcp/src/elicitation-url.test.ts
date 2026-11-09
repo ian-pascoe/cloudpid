@@ -32,13 +32,17 @@ describe("the pages declined unseen", () => {
 
   it.each([
     "https://localhost/auth",
+    "https://db.internal/",
     "https://127.0.0.1/",
+    "https://[::1]/",
     "https://2130706433/",
     "https://10.0.0.1/",
     "https://169.254.169.254/latest/meta-data",
+    "https://[fe80::1]/",
     "https://100.64.0.1/",
     "https://[fc00::1]/",
     "https://[::ffff:127.0.0.1]/",
+    "https://[64:ff9b::192.168.0.1]/",
   ])("%s is local or private", (url) => {
     expect(problemOf(url)).toEqual({
       kind: "declined",

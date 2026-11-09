@@ -1,7 +1,8 @@
 /**
  * A Legacy server's elicitation during a call (`docs/architecture/mcp-server-requests.md` → Questions; ADR-0037): the
- * core ties the question to the `tools/call` whose POST stream carried it, passes it to `onInput` while the call's
- * timeout stops, and answers the server with what `onInput` gives; a question that belongs to no such call is cancelled.
+ * core ties the question to the `tools/call` whose POST stream carried it, passes it to `onInput`, and answers the server
+ * with what `onInput` gives (the owner's answer, decline or cancel, or the server's -32602 when the Session refuses the
+ * form); a question that belongs to no such call, or that the call can answer nothing to, is cancelled.
  */
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import * as Effect from "effect/Effect";

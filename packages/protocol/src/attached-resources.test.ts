@@ -1,6 +1,6 @@
 // An Attached resource's block, labels and messages, its entry's projection into the transcript, and the socket
 // messages that carry it (`docs/architecture/mcp-in-a-session.md` → Attached resources).
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics preferEffectArray:off
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { describe, expect, it } from "vitest";
 import {

@@ -23,6 +23,8 @@ describe("every other form of them", () => {
     ["a trailing slash on the callback", "/oauth/mcp/callback/"],
     ["a sub-path of the callback", `/oauth/mcp/callback/${HASH}/x`],
     ["a hash that is too short", "/oauth/mcp/callback/aB3_-9xYz01"],
+    ["a hash that is too long", `/oauth/mcp/callback/${HASH}3`],
+    ["a hash with a character outside the alphabet", "/oauth/mcp/callback/aB3_-9xYz0.2"],
     ["a `;` after the callback", "/oauth/mcp/callback;x"],
     ["%2f before the hash", `/oauth/mcp/callback%2f${HASH}`],
     ["an escaped letter", "/oauth/mcp/callb%61ck"],

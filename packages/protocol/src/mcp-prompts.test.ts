@@ -1,4 +1,4 @@
-// @effect-diagnostics schemaSync:off preferTypedSchemaDecoder:off asyncFunction:off preferEffectRecord:off -- plain assertions over decoded values.
+// @effect-diagnostics schemaSync:off preferTypedSchemaDecoder:off preferEffectRecord:off -- plain assertions over decoded values.
 import { describe, expect, it } from "vitest";
 import {
   cleanPromptArgument,

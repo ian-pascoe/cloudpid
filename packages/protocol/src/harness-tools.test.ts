@@ -1,6 +1,7 @@
 // The declarations of the harness tools (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → Shared
-// definitions, Names and surfaces): the five reads for both surfaces, the shape the endpoint's output schemas must have on
-// both MCP lanes (L12), the names, and the `field` paths a page can read.
+// definitions, Names and surfaces): on both surfaces, every tool is read-only and holds no definitions, and its output
+// schema has the shape the endpoint needs on both MCP lanes (L12); the names are snake_case and none is the endpoint's own;
+// and the `field` paths a page can read.
 // @effect-diagnostics preferEffectRecord:off preferEffectArray:off preferTypedSchemaDecoder:off schemaSync:off missedPipeableOpportunity:off
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";

@@ -2,7 +2,8 @@
 // → Testing), over a Session object's real key-value storage: records kept in parts, the index written last, the least
 // recently mounted record evicted to a stub past the byte, record and stub bounds, and a replaced instance's storage
 // (`refusingStorage`), which refuses every operation. The App record store's own tests (`mcp-apps-store.test.ts`,
-// `mcp-apps.workerd.test.ts`) are the regression of the primitive's extraction.
+// `mcp-apps.workerd.test.ts`) run through the primitive too, and cover its parts, the 1 MiB bound and the stubs of a Fork's
+// copy; the eviction past 32 MiB and the counts are tested here alone.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { runInDurableObject } from "cloudflare:test";

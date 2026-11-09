@@ -1,6 +1,6 @@
 // The Session's checks of the owner's preview of a resource link (`./mcp-resource-previews.ts`): a page that is visible, the
-// limits of a socket, a spill read from the Workspace, what is answered as it is read, and the end of what a socket has in
-// flight.
+// limits of a socket (previews a minute, and what it has in flight), a spill read from the Workspace, what is answered as it
+// is read, large previews taking turns, and a spill's read stopped when its page goes.
 // @effect-diagnostics preferEffectArray:off missingPipeableSignature:off asyncFunction:off newPromise:off globalTimers:off
 import {
   MAX_MCP_RESOURCE_IN_FLIGHT,

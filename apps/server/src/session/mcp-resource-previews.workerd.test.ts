@@ -1,7 +1,7 @@
 // The owner's preview of a resource link end to end (`docs/architecture/mcp-in-a-session.md` → Resource links and embedded
 // resources): a client's `mcp_resource_read` goes Session → host → the real `McpEngine` → a fake server, and is answered with
-// the contents; a page that is not visible, a server that is hidden and a socket that asks too often are refused before
-// the host is asked; and the Session says in `hello` that it takes the message, so a client sends it to none that does not.
+// the contents; a page that is not visible and a server that is hidden or not there are refused before the host is asked;
+// a stopped stdio server's Container is never started; and a large read holds the isolate's decode slot until its answer is sent.
 // workerd's Durable Object, WebSocket and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off globalDate:off preferEffectArray:off
 // The engine's answers are written as they cross the edge, encoded, so their failures are plain `_tag` objects.

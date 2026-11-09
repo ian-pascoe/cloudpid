@@ -43,6 +43,7 @@ describe("Redactions.redact", () => {
       `https://x.test/?p=${encodeURIComponent("p@ss w0rd/+?&")}`,
     ],
     ["lowercase hex", "hunter2-hunter2", "6875_" + "68756e746572322d68756e74657232"],
+    ["uppercase hex", "hunter2-hunter2", "68756E746572322D68756E74657232"],
     [
       "base64 inside a Basic Authorization header",
       "correct-horse-battery",

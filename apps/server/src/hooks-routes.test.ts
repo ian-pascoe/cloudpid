@@ -28,6 +28,7 @@ describe("hooksRoute", () => {
     ["a trailing slash", `/hooks/${id}/${token}/`],
     ["a short token", `/hooks/${id}/${token.slice(1)}`],
     ["a long token", `/hooks/${id}/${token}x`],
+    ["a token with a character outside base64url", `/hooks/${id}/${token.slice(1)}+`],
     ["an id that is no UUIDv7", `/hooks/0190f0a8-1b2c-4d3e-8f40-123456789abc/${token}`],
     ["an id in capitals", `/hooks/${id.toUpperCase()}/${token}`],
     ["an escaped slash", `/hooks%2f${id}/${token}`],

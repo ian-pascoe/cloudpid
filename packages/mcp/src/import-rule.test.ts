@@ -97,6 +97,16 @@ describe("packages/pi-cloudpid runs on the owner's machine", () => {
     ]);
   });
 
+  it("imports the SDK's client and nothing else of the SDK", async () => {
+    await check("packages/pi-cloudpid", [
+      [`import { Client } from "@modelcontextprotocol/client";`, false],
+      [`import { createMcpHandler } from "@modelcontextprotocol/server";`, true],
+      [`import { ZodError } from "@modelcontextprotocol/core";`, true],
+      [`import { tasks } from "@modelcontextprotocol/ext-tasks";`, true],
+      [`import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";`, true],
+    ]);
+  });
+
   it("imports only types from @cloudpid/protocol", async () => {
     await check("packages/pi-cloudpid", [
       [`import type { SessionImportBeginInput } from "@cloudpid/protocol/mcp-tools";`, false],

@@ -1,5 +1,6 @@
-// The `bash` tool's backend argument, through a real Harness with a scripted model: the call reaches the environment's
-// Worker Shell or Container as asked, and the model's description of the two is what tells it which to pick.
+// The coding tools through a real Harness with a scripted model: the `bash` tool's backend argument and its routing, so the
+// call reaches the environment's Worker Shell or Container as asked or as its command calls for; the `coding_tools` section
+// naming only the tools a request offers; and `read` reducing an image to fit the conversation's bound.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, it } from "vitest";
