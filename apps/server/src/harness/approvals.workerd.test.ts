@@ -16,6 +16,7 @@ import type { ApiResult, ApprovalState, HarnessAnswer } from "@cloudpid/protocol
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import * as Effect from "effect/Effect";
+import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { RealRegistry } from "../registry/registry.fixture.ts";
@@ -63,9 +64,7 @@ const started = async () => {
       get:
         (_target, method: string) =>
         (...input: ReadonlyArray<unknown>) =>
-          Effect.promise(() =>
-            call(method as keyof RegistryMethods, ...(input as [never])),
-          ),
+          Effect.promise(() => call(method as keyof RegistryMethods, ...(input as [never]))),
     },
   ) as HarnessRegistry;
 
@@ -97,7 +96,7 @@ const started = async () => {
     /** Ask for `tool`'s change with `args`, as the dispatcher hands it over. */
     ask: async (
       tool: string,
-      args: Readonly<Record<string, unknown>>,
+      args: Readonly<Record<string, Schema.Json>>,
       requestId?: string,
     ): Promise<ApiResult<HarnessAnswer>> => {
       attempts += 1;
@@ -172,6 +171,7 @@ describe("an ask", () => {
     const { ask } = await started();
 
     const first = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
+
     const again = approvalIdOf(
       await ask("settings_spend_limit_set", { ...SPEND, reason: "Asked again" }),
     );
@@ -311,6 +311,7 @@ describe("an approved request's apply", () => {
 
   it("sets an Environment's size limit", async () => {
     const { ask, call, apply } = await started();
+
     const id = approvalIdOf(
       await ask("environment_container_size_limit_set", {
         id: DEFAULT_ENVIRONMENT,
@@ -322,7 +323,9 @@ describe("an approved request's apply", () => {
     await call("answerApproval", { id, approved: true });
 
     expect(await apply(id)).toMatchObject({ status: "finished" });
-    expect((await call("getEnvironmentSettings", { environment: DEFAULT_ENVIRONMENT }))?.overrides).toMatchObject({
+    expect(
+      (await call("getEnvironmentSettings", { environment: DEFAULT_ENVIRONMENT }))?.overrides,
+    ).toMatchObject({
       maxInstance: LARGER,
     });
   });
@@ -428,6 +431,7 @@ describe("approval_withdraw", () => {
   it("withdraws a waiting request, can be repeated, and is refused once the owner approved", async () => {
     const { ask, call, withdraw } = await started();
     const waiting = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
+
     const approved = approvalIdOf(
       await ask("settings_subagent_depth_set", { scope: GLOBAL_SCOPE, depth: 3, reason: "Deeper" }),
     );

@@ -6,7 +6,7 @@
 // approved shows its apply (`ApprovalProgress`), with Try again once a cut left it unapplied; one done with says what
 // came of it for the 24 h the Registry keeps it. Each has the anchor `?request=` names (`useRequestInView`).
 
-import type { RegistryApproval } from "@cloudpid/protocol";
+import type { ApprovalWithdrawal, RegistryApproval } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { LoaderCircle } from "lucide-react";
 import { ApprovalCard } from "../chat/approval-card.tsx";
@@ -14,12 +14,35 @@ import { requestCardId } from "../chat/request-anchor.ts";
 import { Button } from "../components/ui/button.tsx";
 import { DialogProblem } from "../components/ui/dialog.tsx";
 import { settledFailureOf } from "../registry.ts";
-import { type ApprovalAction, approvalActionAtom, approvalListAtom, approvalsIn, askedVia } from "./approvals.ts";
+import {
+  type ApprovalAction,
+  approvalActionAtom,
+  approvalListAtom,
+  approvalsIn,
+  askedVia,
+} from "./approvals.ts";
+
+/** What a request's row says of it: its words, whether Try again applies it, and whether its apply is under way. */
+interface Outcome {
+  readonly text: string;
+  readonly retry: boolean;
+  readonly busy: boolean;
+}
+
+/** Why a request was withdrawn, as its row says it. */
+const withdrawnText = (withdrawal: ApprovalWithdrawal | undefined): string => {
+  switch (withdrawal) {
+    case "superseded":
+      return "Replaced by a newer request for the same change. Nothing was changed.";
+    case "environment_deleted":
+      return "Withdrawn with its Environment. Nothing was changed.";
+    default:
+      return "Withdrawn by the agent that asked. Nothing was changed.";
+  }
+};
 
 /** What came of a request no longer waiting, as its row says it; `retry` when Try again applies it. */
-const outcomeOf = (
-  approval: RegistryApproval,
-): { readonly text: string; readonly retry: boolean; readonly busy: boolean } => {
+const outcomeOf = (approval: RegistryApproval): Outcome => {
   const because = approval.reason === undefined ? "" : `: ${approval.reason}`;
 
   switch (approval.status) {
@@ -46,12 +69,7 @@ const outcomeOf = (
       };
     case "withdrawn":
       return {
-        text:
-          approval.withdrawal === "superseded"
-            ? "Replaced by a newer request for the same change. Nothing was changed."
-            : approval.withdrawal === "environment_deleted"
-              ? "Withdrawn with its Environment. Nothing was changed."
-              : "Withdrawn by the agent that asked. Nothing was changed.",
+        text: withdrawnText(approval.withdrawal),
         retry: false,
         busy: false,
       };
@@ -131,7 +149,13 @@ export const WaitingApprovalsList = ({
             disabled={false}
             byline={askedVia(approval)}
             onAnswer={(approved, reason) => {
-              onAction({ kind: "answer", scope: approval.scope, id: approval.id, approved, reason });
+              onAction({
+                kind: "answer",
+                scope: approval.scope,
+                id: approval.id,
+                approved,
+                reason,
+              });
             }}
           />
         ) : (

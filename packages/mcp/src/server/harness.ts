@@ -449,8 +449,8 @@ const approvalFollowTool = (name: ApprovalFollowToolName): Tool => {
     present: (value, enabled) => {
       // SAFETY: `value` was decoded with `ApprovalState`.
       const state = value as ApprovalState;
-      // SAFETY: a state is a flat object of JSON.
-      const flat = state as unknown as Readonly<Record<string, Wire>>;
+      // SAFETY: a state is a flat object of JSON, as `value` is.
+      const flat = value as Readonly<Record<string, Wire>>;
       const text = renderApprovalState(state);
       const next = afterState(state, enabled);
 

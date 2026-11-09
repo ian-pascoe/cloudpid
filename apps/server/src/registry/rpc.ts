@@ -836,6 +836,8 @@ export const serveRegistryRpc = <R = never>(
           Effect.tap(() => background(legacy)),
           Effect.tap(() => background(spares.all)),
           Effect.tap(() => background(builds.all)),
+          // The approved requests a cut left unapplied resume on the owner's next visit, whichever page it is (L4).
+          Effect.tap(() => afterAnswer(approvalRuns.resumeStale)),
         ),
       createSession: ({ title, environment, workspace, branch, base }) =>
         Effect.gen(function* () {

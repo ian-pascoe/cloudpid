@@ -726,7 +726,9 @@ export type RegistryMethods = {
     readonly reason?: string | undefined;
   }) => Effect.Effect<StoredApproval | null>;
   /** The caller's withdrawal: a waiting request becomes `withdrawn`; any other is answered as it is. */
-  readonly withdrawApproval: (input: { readonly id: string }) => Effect.Effect<StoredApproval | null>;
+  readonly withdrawApproval: (input: {
+    readonly id: string;
+  }) => Effect.Effect<StoredApproval | null>;
   /** Claim approved request `id` for the run `token` (`APPROVAL_LEASE_MS`): whether the run holds it now. */
   readonly claimApproval: (input: {
     readonly id: string;
@@ -758,7 +760,9 @@ export type RegistryMethods = {
     readonly auth: string;
     readonly deadline: number;
   }) => Effect.Effect<
-    { readonly status: "answered"; readonly approval: StoredApproval } | { readonly status: "too_many_waits" } | null
+    | { readonly status: "answered"; readonly approval: StoredApproval }
+    | { readonly status: "too_many_waits" }
+    | null
   >;
   /**
    * An Agent change (`docs/architecture/workspace.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by

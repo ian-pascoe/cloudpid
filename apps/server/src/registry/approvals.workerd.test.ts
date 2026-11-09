@@ -247,7 +247,11 @@ describe("a withdrawal", () => {
       ];
     });
 
-    expect(withdrawn).toMatchObject({ status: "withdrawn", withdrawal: "withdrawn", settledAt: 10 });
+    expect(withdrawn).toMatchObject({
+      status: "withdrawn",
+      withdrawal: "withdrawn",
+      settledAt: 10,
+    });
     expect(again).toMatchObject({ status: "withdrawn", settledAt: 10 });
     expect(approved?.status).toBe("approved");
   });
@@ -403,9 +407,9 @@ describe("the Registry's Approvals", () => {
 
     // Let the waits start, then one more is refused.
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(
-      await call("waitApproval", { id, seen: "pending", auth: "oauth", deadline }),
-    ).toEqual({ status: "too_many_waits" });
+    expect(await call("waitApproval", { id, seen: "pending", auth: "oauth", deadline })).toEqual({
+      status: "too_many_waits",
+    });
     // A status the caller has not seen yet is answered at once.
     expect(
       await call("waitApproval", { id, seen: "approved", auth: "local", deadline }),

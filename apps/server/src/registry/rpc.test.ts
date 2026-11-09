@@ -1754,8 +1754,7 @@ const fakeRegistries = () => {
         changeApproval(id, (held) =>
           held.status === "approved" ? { ...held, leaseToken: token, leaseUntil: 1 } : held,
         ),
-        (held) =>
-          held === null ? null : { approval: held, leased: held.leaseToken === token },
+        (held) => (held === null ? null : { approval: held, leased: held.leaseToken === token }),
       ),
     finishApproval: ({ id, token, status, reason, result }) =>
       changeApproval(id, (held) =>
@@ -6663,7 +6662,10 @@ describe("the MCP status reads", () => {
 
 describe("the Approvals asked over the MCP endpoint", () => {
   /** A request held by the fake Registry, asked by pi for the spend limit at Global. */
-  const asked = (fake: ReturnType<typeof fakeRegistries>, changed: Partial<StoredApproval> = {}) => {
+  const asked = (
+    fake: ReturnType<typeof fakeRegistries>,
+    changed: Partial<StoredApproval> = {},
+  ) => {
     const approval: StoredApproval = {
       id: "a-1",
       tool: "settings_spend_limit_set",
@@ -6712,8 +6714,24 @@ describe("the Approvals asked over the MCP endpoint", () => {
     );
 
     expect(listed).toEqual([
-      expect.objectContaining({ id: "a-1", status: "pending", via: { auth: "oauth", client: { name: "pi" } } }),
+      expect.objectContaining({
+        id: "a-1",
+        status: "pending",
+        via: { auth: "oauth", client: { name: "pi" } },
+      }),
     ]);
+    expect(fake.calls).not.toContain("staleApprovals");
+
+    await fake.runBackground();
+
+    expect(fake.calls).toContain("staleApprovals");
+  });
+
+  it("resumes the stale ones behind the Session list too, after it answers", async () => {
+    const fake = fakeRegistries();
+
+    await withClient(Registry.pipe(Effect.flatMap((registry) => registry.listSessions())), fake);
+
     expect(fake.calls).not.toContain("staleApprovals");
 
     await fake.runBackground();
@@ -6745,7 +6763,9 @@ describe("the Approvals asked over the MCP endpoint", () => {
     asked(fake, { tool: "settings_retired_set" });
 
     const answered = await withClient(
-      Registry.pipe(Effect.flatMap((registry) => registry.answerApproval({ id: "a-1", approved: true }))),
+      Registry.pipe(
+        Effect.flatMap((registry) => registry.answerApproval({ id: "a-1", approved: true })),
+      ),
       fake,
     );
 

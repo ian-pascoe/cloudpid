@@ -279,7 +279,7 @@ export const instructionsFor = (enabled: Enabled): string => {
 
   if (asks) {
     lines.push(
-      "A change of a Limit or the Instructions waits for the owner's Approval: its tool answers pending with an approval_id, which approval_wait follows.",
+      "A change that needs the owner's Approval answers pending with an approval_id: follow it with approval_wait.",
     );
   }
 

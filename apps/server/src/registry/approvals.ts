@@ -406,7 +406,11 @@ export const openApprovals = (storage: Pick<RegistryStorage, "sql" | "transactio
      * as it is. Null for a request not kept.
      */
     answer: (
-      { id, approved, reason }: { readonly id: string; readonly approved: boolean; readonly reason?: string | undefined },
+      {
+        id,
+        approved,
+        reason,
+      }: { readonly id: string; readonly approved: boolean; readonly reason?: string | undefined },
       now: number,
     ): StoredApproval | null => {
       sweep(now);

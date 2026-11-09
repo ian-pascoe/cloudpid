@@ -45,7 +45,9 @@ export const ApprovalAskOutput = Schema.Struct({
       '"pending": the owner was asked, and approval_wait follows the request; "unchanged": the target has the value already, so nothing was asked',
   }),
   approval_id: Schema.optionalKey(
-    Schema.String.annotate({ description: "The request's id, for approval_wait and approval_withdraw" }),
+    Schema.String.annotate({
+      description: "The request's id, for approval_wait and approval_withdraw",
+    }),
   ),
   url: Schema.optionalKey(
     Schema.String.annotate({ description: "Where the owner answers it: its card in cloudpid" }),
@@ -212,7 +214,7 @@ export const ApprovalStateOutput = Schema.Struct({
   tool: Schema.String.annotate({ description: "The tool that asked" }),
   status: Schema.String.annotate({
     description:
-      'pending (waiting for the owner), approved (approved, its change being applied: finished is false), finished (applied), declined, changed_since (the target changed since the ask, so nothing was changed), refused (cloudpid refused the change), expired or withdrawn',
+      "pending (waiting for the owner), approved (approved, its change being applied: finished is false), finished (applied), declined, changed_since (the target changed since the ask, so nothing was changed), refused (cloudpid refused the change), expired or withdrawn",
   }),
   finished: Schema.Boolean.annotate({
     description: "Nothing more happens to the request: it is applied, or ended without a change",
@@ -234,7 +236,8 @@ export const ApprovalStateOutput = Schema.Struct({
   }),
   interrupted: Schema.optionalKey(
     Schema.Literal(true).annotate({
-      description: "The wait was cut short (a deploy): the status is as read once after; wait again",
+      description:
+        "The wait was cut short (a deploy): the status is as read once after; wait again",
     }),
   ),
 });
@@ -249,7 +252,9 @@ export const approvalWait = {
     input: Schema.Struct({
       approval_id: ApprovalId,
       timeout_s: Schema.optionalKey(
-        Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: MAX_APPROVAL_WAIT_S })).annotate({
+        Schema.Finite.check(
+          Schema.isBetween({ minimum: 0, maximum: MAX_APPROVAL_WAIT_S }),
+        ).annotate({
           description: `Seconds to wait, 0 to ${MAX_APPROVAL_WAIT_S} (default ${DEFAULT_APPROVAL_WAIT_S}); 0 reads the request once`,
         }),
       ),

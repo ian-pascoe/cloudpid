@@ -9,7 +9,11 @@
 // Session registers none of the endpoint's tools that it has in-session twins of.
 // @effect-diagnostics missingPipeableSignature:off
 import * as Record from "effect/Record";
-import { APPROVAL_ASK_TOOLS, APPROVAL_FOLLOW_TOOLS, type ApprovalFollowToolName } from "./approvals.ts";
+import {
+  APPROVAL_ASK_TOOLS,
+  APPROVAL_FOLLOW_TOOLS,
+  type ApprovalFollowToolName,
+} from "./approvals.ts";
 import { environmentGet, environmentList } from "./environment.ts";
 import { CONTAINER_SETTING_TOOLS, environmentSecretBuild } from "./environment-changes.ts";
 import {

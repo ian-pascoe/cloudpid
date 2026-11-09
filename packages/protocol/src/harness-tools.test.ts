@@ -27,7 +27,9 @@ const surfacesOf = (
   const tool: (typeof HARNESS_TOOLS)[typeof name] = HARNESS_TOOLS[name];
   const endpoint = { surface: "endpoint" as const, ...tool.endpoint };
 
-  return "session" in tool ? [{ surface: "session" as const, ...tool.session }, endpoint] : [endpoint];
+  return "session" in tool
+    ? [{ surface: "session" as const, ...tool.session }, endpoint]
+    : [endpoint];
 };
 
 /** Every declaration's schemas, by tool and surface: its input and its output. */

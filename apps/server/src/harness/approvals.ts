@@ -93,23 +93,23 @@ export type ApprovalTool = {
   /** The Settings page section its card shows in. */
   readonly section: string;
   /** The Scope the change is at, `*` for Global; none for arguments the tool does not read. */
-  readonly scopeOf: (args: unknown) => string | undefined;
+  readonly scopeOf: (args: Schema.Json) => string | undefined;
   /** The core's `prepare`, with where the change is (the Scope by id and name). */
   readonly prepare: (
-    args: unknown,
+    args: Schema.Json,
   ) => Effect.Effect<
     Prepared<unknown> & { readonly scope: { readonly id: string; readonly name: string } },
     CoreError
   >;
   /** The core's `apply` against `expected` as `author`, then its `render`. */
   readonly apply: (
-    args: unknown,
+    args: Schema.Json,
     expected: Schema.Json | null,
     author: ChangeAuthor,
   ) => Effect.Effect<ApplyOutcome, CoreError>;
   /** The answer of a write that committed before its run was cut: `render` of the Agent changes it recorded. */
   readonly fromRecords: (
-    args: unknown,
+    args: Schema.Json,
     expected: Schema.Json | null,
     changes: ReadonlyArray<RecordedChange>,
   ) => Effect.Effect<HarnessAnswer, CoreError>;
@@ -126,7 +126,13 @@ const unreadable = (tool: string): CoreError => ({
  * kept it), `how` is what its `render` is told, and `known` and `recorded` rebuild what `apply` would have answered
  * from the Agent changes a committed write recorded.
  */
-const approvalTool = <Args extends { readonly reason: string }, Known, Res, E extends CoreError, How>({
+const approvalTool = <
+  Args extends { readonly reason: string },
+  Known,
+  Res,
+  E extends CoreError,
+  How,
+>({
   core,
   section,
   decode,
@@ -138,7 +144,7 @@ const approvalTool = <Args extends { readonly reason: string }, Known, Res, E ex
 }: {
   readonly core: ApprovalCore<Args, Known, Res, E, How>;
   readonly section: string;
-  readonly decode: (args: unknown) => Option.Option<NoInfer<Args>>;
+  readonly decode: (args: Schema.Json) => Option.Option<NoInfer<Args>>;
   readonly scopeOf: (args: NoInfer<Args>) => string;
   readonly scopeRef: (known: NoInfer<Known>) => { readonly id: string; readonly name: string };
   readonly how: (args: NoInfer<Args>) => How;
@@ -154,7 +160,7 @@ const approvalTool = <Args extends { readonly reason: string }, Known, Res, E ex
     records: Arr.NonEmptyReadonlyArray<RecordedChange>,
   ) => Effect.Effect<Applied<Known, Res>, E>;
 }): ApprovalTool => {
-  const read = (args: unknown) =>
+  const read = (args: Schema.Json) =>
     Effect.fromOption(decode(args)).pipe(Effect.mapError(() => unreadable(core.tool)));
 
   /** `render`'s answer, or for a write that was not made, its refusal as the reason the request ends with. */
@@ -177,6 +183,7 @@ const approvalTool = <Args extends { readonly reason: string }, Known, Res, E ex
         const decoded = yield* read(args);
         const applied = yield* core.apply(decoded, expected, author);
         const made = status(applied.result);
+
         const answer = yield* rendered(decoded, expected, applied);
 
         if (Result.isFailure(answer)) {
@@ -201,6 +208,7 @@ const approvalTool = <Args extends { readonly reason: string }, Known, Res, E ex
           Arr.map(changes, (change) => agentChangeOf(core.tool, decoded.reason, change)),
           changes,
         );
+
         const answer = yield* rendered(decoded, expected, applied);
 
         return Result.getOrElse(answer, () => notKept(core.tool));
@@ -269,7 +277,7 @@ const settingsToolOver =
   <Args extends { readonly scope: string; readonly reason: string }>(
     core: ApprovalCore<Args, SettingsView, AppliedSettingsChange, CoreError, SettingsHow>,
     section: string,
-    decode: (args: unknown) => Option.Option<Args>,
+    decode: (args: Schema.Json) => Option.Option<Args>,
   ): ApprovalTool =>
     approvalTool({
       core,
@@ -326,7 +334,6 @@ export const approvalTools = (
   const settings: SettingsCoreServices = { access, plainText };
   const environments: EnvironmentsService = writes.environments(source);
   const settingsTool = settingsToolOver(access);
-
 
   const sizeLimit = sizeLimitCore({ environments, plainText });
 
@@ -435,7 +442,7 @@ const settingsReset = (settings: SettingsCoreServices): ApprovalTool => {
     ]),
   );
 
-  const pick = (args: unknown): Option.Option<ApprovalTool> =>
+  const pick = (args: Schema.Json): Option.Option<ApprovalTool> =>
     Option.flatMap(decode(args), ({ field }) => Record.get(byField, field));
 
   const missing = Effect.fail(unreadable("settings_reset"));
@@ -443,7 +450,10 @@ const settingsReset = (settings: SettingsCoreServices): ApprovalTool => {
   return {
     tool: "settings_reset",
     section: "limits",
-    scopeOf: (args) => Option.getOrUndefined(Option.flatMap(pick(args), (tool) => Option.fromNullishOr(tool.scopeOf(args)))),
+    scopeOf: (args) =>
+      Option.getOrUndefined(
+        Option.flatMap(pick(args), (tool) => Option.fromNullishOr(tool.scopeOf(args))),
+      ),
     prepare: (args) =>
       Option.match(pick(args), { onNone: () => missing, onSome: (tool) => tool.prepare(args) }),
     apply: (args, expected, author) =>
@@ -531,7 +541,11 @@ const unchangedAnswer = (
   unchanged: { readonly text: string; readonly structured: unknown },
   scope: { readonly id: string; readonly name: string },
 ): HarnessAnswer => {
-  const keys = Option.getOrElse(Schema.decodeUnknownOption(UnchangedKeys)(unchanged.structured), () => ({}));
+  const keys = Option.getOrElse(
+    Schema.decodeUnknownOption(UnchangedKeys)(unchanged.structured),
+    () => ({}),
+  );
+
   const structured: Types.Mutable<Record<string, Schema.Json>> = {
     status: "unchanged",
     scope: "scope" in keys && keys.scope !== undefined ? keys.scope : scope,
@@ -583,7 +597,8 @@ export const askApproval =
         if (earlier.answer !== null) return apiOk(earlier.answer);
       }
 
-      const prepared = yield* found.prepare(args).pipe(Effect.result);
+      const kept = keptArgs(args);
+      const prepared = yield* found.prepare(kept).pipe(Effect.result);
 
       if (Result.isFailure(prepared)) return askRefused(prepared.failure);
 
@@ -603,7 +618,7 @@ export const askApproval =
         tool,
         scope: scope.id,
         section: found.section,
-        args: keptArgs(args),
+        args: kept,
         card,
         expected,
         digest: call.digest,
@@ -691,10 +706,9 @@ export const approvalRunner = ({
 
       /** Settle the claim with `answer`, then the request: a repeat of the resume finds the answer. */
       const finished = (answer: HarnessAnswer) =>
-        approvals.settleChangeRequest({ id: claim.id, attempt: claim.attempt, answer }).pipe(
-          Effect.ignore,
-          Effect.andThen(finish({ status: "finished", result: answer })),
-        );
+        approvals
+          .settleChangeRequest({ id: claim.id, attempt: claim.attempt, answer })
+          .pipe(Effect.ignore, Effect.andThen(finish({ status: "finished", result: answer })));
 
       const tool = approvalTools(writes, {
         kind: "endpoint",
@@ -729,7 +743,10 @@ export const approvalRunner = ({
       }
 
       const outcome = yield* tool
-        .apply(approval.args, approval.expected, { tool: approval.tool, reason: approval.card.reason })
+        .apply(approval.args, approval.expected, {
+          tool: approval.tool,
+          reason: approval.card.reason,
+        })
         .pipe(Effect.result);
 
       // A refusal of the write (the Environment gone, an `expected` it cannot read): nothing was changed.
@@ -801,7 +818,10 @@ export const approvalState = (approval: StoredApproval): ApprovalState => {
 
   if (approval.result !== null) {
     // SAFETY: a kept answer's structured value is JSON (`ChangeAnswer`).
-    state.result = { text: approval.result.text, structured: approval.result.structured as Schema.Json };
+    state.result = {
+      text: approval.result.text,
+      structured: approval.result.structured as Schema.Json,
+    };
   }
 
   return state;
@@ -820,7 +840,7 @@ export type ApprovalFollowServices = {
 };
 
 /** The seconds a wait waits: `timeout_s` clamped to 0–300 (`MAX_APPROVAL_WAIT_S`), 45 when not given. */
-export const waitSeconds = (timeout?: number | undefined): number =>
+export const waitSeconds = (timeout?: number): number =>
   timeout === undefined || !Number.isFinite(timeout)
     ? DEFAULT_APPROVAL_WAIT_S
     : Math.min(Math.max(timeout, 0), MAX_APPROVAL_WAIT_S);
@@ -866,7 +886,9 @@ export const approvalWait =
         if (Result.isFailure(waited)) {
           const after = yield* approvals.approval({ id });
 
-          return after === null ? notFound(id) : apiOk({ ...approvalState(after), interrupted: true as const });
+          return after === null
+            ? notFound(id)
+            : apiOk({ ...approvalState(after), interrupted: true as const });
         }
 
         if (waited.success === null) return notFound(id);
@@ -885,7 +907,10 @@ export const approvalWait =
     }).pipe(
       Effect.catchCause(() =>
         Effect.succeed(
-          apiFailure("unavailable", "cloudpid could not read the request just now: try again shortly."),
+          apiFailure(
+            "unavailable",
+            "cloudpid could not read the request just now: try again shortly.",
+          ),
         ),
       ),
     );
@@ -914,7 +939,10 @@ export const approvalWithdraw =
     }).pipe(
       Effect.catchCause(() =>
         Effect.succeed(
-          apiFailure("unavailable", "cloudpid could not withdraw the request just now: try again shortly."),
+          apiFailure(
+            "unavailable",
+            "cloudpid could not withdraw the request just now: try again shortly.",
+          ),
         ),
       ),
     );

@@ -25,7 +25,10 @@ export const approvalsAtom = Atom.family((scope: string) =>
 /** Scope `scope`'s requests as of the last answer; empty until the first, and while it cannot load. */
 export const approvalListAtom = Atom.family((scope: string) =>
   Atom.map(approvalsAtom(scope), (result) =>
-    result.pipe(AsyncResult.value, Option.getOrElse((): ReadonlyArray<RegistryApproval> => [])),
+    result.pipe(
+      AsyncResult.value,
+      Option.getOrElse((): ReadonlyArray<RegistryApproval> => []),
+    ),
   ),
 );
 

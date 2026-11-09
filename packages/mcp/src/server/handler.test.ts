@@ -1839,7 +1839,12 @@ describe("the management tools", () => {
         }),
       );
 
-    const pending = await answer({ status: "pending", approval_id: "a-1", url: "u", expires_at: "t" });
+    const pending = await answer({
+      status: "pending",
+      approval_id: "a-1",
+      url: "u",
+      expires_at: "t",
+    });
 
     expect(pending.structuredContent.next).toContain('approval_wait with approval_id="a-1"');
     expect(pending.content[0]?.text).toBe(`Asked.\n\n${pending.structuredContent.next}`);
@@ -2439,6 +2444,7 @@ describe("the instructions with the management tools", () => {
 
   it("add the Approval line only when a tool that asks and approval_wait are both served", () => {
     const asking = instructionsFor(new Set([...reads, "settings_spend_limit_set"]));
+
     const following = instructionsFor(
       new Set([...reads, "settings_spend_limit_set", "approval_wait"]),
     );
