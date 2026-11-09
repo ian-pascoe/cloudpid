@@ -6,10 +6,13 @@
 // (`./approval-tools.ts`); nothing runs the tool's `apply` against `expected` and the endpoint author. A write that made
 // nothing looks the claim up once more, since a run that overlapped a lapsed lease may have committed under it. The claim
 // is settled, then the request. A run cut anywhere leaves it approved, and the next (Try again, `approval_wait`, the
-// owner's next visit: `resumeStale`) picks it up from the claim.
+// owner's next visit: `resumeStale`) picks it up from the claim. A long apply (an Environment's delete, #688 C2) renews
+// the lease after each step it reports, and stops when another run took it; `approval_wait` never runs one, and
+// `resumeStale` runs at most one per request, since each shares the request's 30 s of `waitUntil`.
 // @effect-diagnostics missingPipeableSignature:off cryptoRandomUUID:off -- a run's token is a plain UUID.
 import { APPROVAL_REQUEST_PREFIX } from "@cloudpid/protocol/harness-tools";
 import type { HarnessAnswer } from "@cloudpid/protocol/mcp-api";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
@@ -133,11 +136,25 @@ export const approvalRunner = ({
 
       if (Option.isSome(earlier)) return earlier.value;
 
+      // Between a long apply's steps the lease is renewed: one this run no longer holds stops it, leaving the rest to the
+      // run that took it.
+      const onStep = registry
+        .claimApproval({ id, token })
+        .pipe(
+          Effect.flatMap((renewed) =>
+            renewed?.leased === true
+              ? Effect.void
+              : Effect.die(new Error(`Another run holds approved request ${id} now`)),
+          ),
+        );
+
       const outcome = yield* tool
-        .apply(approval.args, approval.expected, {
-          tool: approval.tool,
-          reason: approval.card.reason,
-        })
+        .apply(
+          approval.args,
+          approval.expected,
+          { tool: approval.tool, reason: approval.card.reason },
+          { onStep },
+        )
         .pipe(Effect.result);
 
       if (
@@ -174,12 +191,20 @@ export const approvalRunner = ({
     );
 
   /**
-   * Resume the approved requests no run is applying (L4: behind the owner's `listApprovals`), each in `background`. A long
-   * apply is resumed by the owner's Try again or visit only; none is long before S3b.
+   * Resume the approved requests no run is applying (L4: behind the owner's `listApprovals` and `listSessions`), each in
+   * `background`: every short one, and the oldest long one (an Environment's delete), at most one per request, since
+   * each takes up to the request's 30 s of `waitUntil`. The next visit resumes the next.
    */
   const resumeStale: Effect.Effect<void> = Effect.suspend(() => registry.staleApprovals()).pipe(
-    Effect.flatMap((stale) =>
-      Effect.forEach(stale, (approval) => background(apply(approval.id).pipe(Effect.asVoid)), {
+    Effect.map((stale) => [
+      ...Arr.filter(stale, (approval) => !approval.long),
+      ...Arr.take(
+        Arr.filter(stale, (approval) => approval.long),
+        1,
+      ),
+    ]),
+    Effect.flatMap((picked) =>
+      Effect.forEach(picked, (approval) => background(apply(approval.id).pipe(Effect.asVoid)), {
         discard: true,
       }),
     ),

@@ -256,14 +256,39 @@ describe("a withdrawal", () => {
     expect(approved?.status).toBe("approved");
   });
 
-  it("withdraws an Environment's waiting requests when it is deleted", async () => {
+  it("withdraws an Environment's waiting requests when it is deleted, and lets its approved delete finish", async () => {
     const found = await inRegistry(({ store, approvals }) => {
       store.createEnvironment("0000abcd", "Web", 0);
       approvals.ask({ ...spendAsk(20), scope: "0000abcd", digest: "web" }, "a-1", 0);
       approvals.ask(spendAsk(20), "a-global", 0);
+      approvals.ask(
+        {
+          ...spendAsk(0),
+          tool: "environment_delete",
+          scope: "0000abcd",
+          digest: "delete",
+          long: true,
+        },
+        "a-delete",
+        0,
+      );
+      approvals.answer({ id: "a-delete", approved: true }, 10);
+      approvals.claim("a-delete", "run-1", 20);
       store.deleteEnvironment("0000abcd", 50);
 
-      return [approvals.get("a-1", 60), approvals.get("a-global", 60)];
+      const kept = approvals.get("a-delete", 60);
+
+      const finished = approvals.finish(
+        {
+          id: "a-delete",
+          token: "run-1",
+          status: "finished",
+          result: { text: "Deleted", structured: { deleted: true } },
+        },
+        70,
+      );
+
+      return [approvals.get("a-1", 60), approvals.get("a-global", 60), kept, finished];
     });
 
     expect(found[0]).toMatchObject({
@@ -272,6 +297,8 @@ describe("a withdrawal", () => {
       settledAt: 50,
     });
     expect(found[1]?.status).toBe("pending");
+    expect(found[2]).toMatchObject({ status: "approved", long: true });
+    expect(found[3]).toMatchObject({ status: "finished", settledAt: 70 });
   });
 });
 

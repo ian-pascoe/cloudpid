@@ -781,6 +781,14 @@ export const harnessUpkeep = (
       all: noted("spares.all"),
     },
     mcp: { sync: (environment?: string) => noted(`mcp.sync:${environment ?? "all"}`) },
+    // What an approved Environment's delete wipes: each object, noted.
+    objects: {
+      workspaces: {
+        destroy: (name: string) => Effect.runPromise(noted(`destroy:${name}`)),
+      },
+      sessions: { destroy: (id: string) => noted(`sessions.destroy:${id}`) },
+      triggers: { remove: (id: string) => noted(`triggers.remove:${id}`) },
+    },
     background: (effect: Effect.Effect<void>) => Effect.sync(() => void pending.push(effect)),
     credentials,
   } satisfies Omit<HarnessDeps, "registry" | "mcpHosts" | "appOrigin">;

@@ -51,7 +51,10 @@ export interface McpEndpoint<R = never> {
   readonly mcpHosts: Pick<Cloudflare.DurableObject<McpHost>, "getByName">;
   /** `APP_ORIGIN_VAR`: this stage's own origin, set on live stages only; the management tools' Self-use rule reads it. */
   readonly appOrigin: string | undefined;
-  /** What deleting an import's Session wipes besides its records, as the owner's delete does (`registry/removal.ts`). */
+  /**
+   * What deleting an import's Session wipes besides its records, as the owner's delete does (`registry/removal.ts`), and
+   * an approved Environment's delete (`harness/services.ts`).
+   */
   readonly objects: RemovalObjects;
   /** `McpWorker`'s `McpServer` entrypoint (`MCP_SERVER`). */
   readonly server: McpServerBinding;
@@ -114,6 +117,7 @@ const backendOf = (
     builds: endpoint.builds,
     spares: endpoint.spares,
     mcp: endpoint.mcp,
+    objects: endpoint.objects,
     background,
     credentials: endpoint.credentials,
     origin,

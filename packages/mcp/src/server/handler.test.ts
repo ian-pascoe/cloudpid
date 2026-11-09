@@ -1925,6 +1925,32 @@ describe("the management tools", () => {
     expect(waited.structuredContent.next).toContain('approval_wait again with approval_id="a-1"');
   });
 
+  it("say a long approved request (an Environment's delete) is applied outside the wait, still sending a wait after", async () => {
+    const approvalWait = vi.fn(() =>
+      Promise.resolve(
+        apiOk({
+          approval_id: "a-1",
+          tool: "environment_delete",
+          status: "approved",
+          finished: false,
+          long: true as const,
+          expires_at: "2026-01-08T00:00:00.000Z",
+        }),
+      ),
+    );
+
+    const waited = await call(
+      "approval_wait",
+      { approval_id: "a-1", timeout_s: 0 },
+      fakeApi({ describe: servingFollow([]), approvalWait }),
+    );
+
+    expect(waited.structuredContent).toMatchObject({ status: "approved", long: true });
+    expect(waited.structuredContent.next).toContain(
+      'approval_wait again later with approval_id="a-1"',
+    );
+  });
+
   it("say a withdrawn request as finished, and send no wait after", async () => {
     const approvalWithdraw = vi.fn(() =>
       Promise.resolve(

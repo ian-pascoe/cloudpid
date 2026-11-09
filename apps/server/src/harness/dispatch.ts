@@ -705,6 +705,8 @@ export const harnessDispatch = (
     settings_subagent_workspaces_set: asking("settings_subagent_workspaces_set"),
     settings_instructions_set: asking("settings_instructions_set"),
     environment_container_size_limit_set: asking("environment_container_size_limit_set"),
+    environment_delete: asking("environment_delete"),
+    environment_secret_delete: asking("environment_secret_delete"),
   };
 
   // Looked up by a name the caller sent: only the table's own keys are tools.

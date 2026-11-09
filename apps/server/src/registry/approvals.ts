@@ -61,7 +61,7 @@ export type StoredApproval = {
   readonly expected: Schema.Json | null;
   /** The dedupe digest: the tool, its Scope and arguments, the reason and `request_id` left out. */
   readonly digest: string;
-  /** Whether its apply is long (an Environment's delete): `approval_wait` never runs one. None is, before S3b. */
+  /** Whether its apply is long (an Environment's delete): `approval_wait` never runs one. */
   readonly long: boolean;
   readonly via: AgentChangeVia;
   readonly requestId: string | null;

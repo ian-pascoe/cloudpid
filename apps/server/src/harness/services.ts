@@ -3,7 +3,8 @@
 // Registry, the McpHosts and the main Worker's upkeep with no Session. `/mcp`'s `api` target runs the cores over them
 // (`./dispatch.ts`). The reads are the Session's own reads; the writes are the Session's services built with the
 // endpoint's author source (`../session/change-author.ts`), with no Workspace to hand a change to, and with the Builds'
-// and spares' upkeep they run handed to `background`, so it runs after the answer as after the owner's save.
+// and spares' upkeep they run handed to `background`, so it runs after the answer as after the owner's save. The deletes
+// an approved request runs are the Session's too (`sessionEnvironmentRemoval`), over the objects the owner's delete wipes.
 import type { SettingsEndpointServices } from "@cloudpid/extensions/settings-endpoint";
 import type { SettingsMcpAccessService } from "@cloudpid/extensions/settings-mcp";
 import { DeployCredentials, type EnvironmentsService } from "@cloudpid/extensions/environment";
@@ -14,6 +15,7 @@ import {
   type TextCheck,
 } from "@cloudpid/extensions/environment-changes";
 import type { LifecycleChangeServices } from "@cloudpid/extensions/environment-lifecycle-changes";
+import type { EnvironmentRemovalService } from "@cloudpid/extensions/environment-deletes";
 import type { ResetCoreServices } from "@cloudpid/extensions/environment-reset";
 import type { SkillChangeServices } from "@cloudpid/extensions/environment-skill-changes";
 import type { EnvironmentReadServices } from "@cloudpid/extensions/environment-reads";
@@ -26,10 +28,15 @@ import { mcpHostName } from "../mcp/name.ts";
 import type { McpPushes } from "../mcp/push.ts";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
+import type { RemovalObjects } from "../registry/removal.ts";
 import type { Spares } from "../registry/rpc.ts";
 import { afterRepos, type UpkeepChange, upkeepFor } from "../registry/upkeep.ts";
 import { type AuthorSource, sessionSource } from "../session/change-author.ts";
 import { type LifecycleRegistry, sessionLifecycle } from "../session/environment-lifecycle.ts";
+import {
+  type EnvironmentRemovalRegistry,
+  sessionEnvironmentRemoval,
+} from "../session/environment-removal.ts";
 import {
   type EnvironmentReadsRegistry,
   type EnvironmentsRegistry,
@@ -84,14 +91,21 @@ export type HarnessRegistry = EnvironmentReadsRegistry &
   HarnessChangeRegistry &
   ApprovalsRegistry;
 
-/** What the writes with no Session use of the Registry: the Environments' and the Settings'. */
-export type EnvironmentWritesRegistry = EnvironmentsRegistry & LifecycleRegistry & SettingsRegistry;
+/** What the writes with no Session use of the Registry: the Environments', the Settings' and the deletes'. */
+export type EnvironmentWritesRegistry = EnvironmentsRegistry &
+  LifecycleRegistry &
+  SettingsRegistry &
+  EnvironmentRemovalRegistry;
 
 /** What the writes with no Session are built from (`endpointWrites`). */
 export type EndpointWriteDeps = {
   readonly registry: EnvironmentWritesRegistry;
   readonly builds: Pick<Builds, "of" | "rebuild">;
   readonly spares: Pick<Spares, "of">;
+  /** The push of the hosts' MCP server sets, after an Environment's delete. */
+  readonly mcp: Pick<McpPushes, "sync">;
+  /** What an Environment's delete wipes besides its records, as the owner's delete does (`../registry/removal.ts`). */
+  readonly objects: RemovalObjects;
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void>;
   readonly credentials: ReadonlyArray<string>;
   /** What an Environment's Repos' change runs after it (`../registry/upkeep.ts` `afterRepos`); none where no tool adds one. */
@@ -104,6 +118,11 @@ export type EndpointWrites = {
   readonly environments: (source: AuthorSource) => EnvironmentsService;
   /** The Settings at either Scope, written as the Session writes them. */
   readonly settings: (source: AuthorSource) => Pick<SettingsAccessService, "get" | "change">;
+  /**
+   * The deletes an approved request makes: an Environment as the owner's delete deletes it, then the hosts' sets pushed
+   * after the answer; a kept Secret recorded, then the Builds' upkeep after the answer.
+   */
+  readonly removal: (source: AuthorSource) => EnvironmentRemovalService;
   /** The endpoint's check of a kept text: the deploy-time credentials and Secret References (the Registry checks the kept Secrets). */
   readonly holdsSecret: TextCheck;
 };
@@ -116,6 +135,8 @@ export const endpointWrites = ({
   registry,
   builds,
   spares,
+  mcp,
+  objects,
   background,
   credentials,
   afterRepos: reposChanged,
@@ -144,6 +165,8 @@ export const endpointWrites = ({
         }),
       }),
     settings: (source) => sessionSettingsAccess({ registry, author: source }),
+    removal: (source) =>
+      sessionEnvironmentRemoval({ registry, author: source, objects, builds, background, mcp }),
     // The deploy-time credentials and the Secret Reference placeholders: the Registry checks the kept Secrets itself.
     holdsSecret: (text) =>
       endpointTextCheck.pipe(
@@ -166,6 +189,8 @@ export type HarnessDeps = {
   readonly spares: Pick<Spares, "of" | "all">;
   /** The push of an Environment's MCP server set to its host, after a change of an MCP server's key. */
   readonly mcp: Pick<McpPushes, "sync">;
+  /** What an approved Environment's delete wipes besides its records, as the owner's delete does. */
+  readonly objects: RemovalObjects;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void>;
   /** The deploy-time credentials a kept text may not hold (`DeployCredentials`): the GitHub App's key, in its forms. */
@@ -220,6 +245,7 @@ export const harnessServices = ({
   builds,
   spares,
   mcp,
+  objects,
   background,
   credentials,
   origin,
@@ -231,6 +257,8 @@ export const harnessServices = ({
     registry,
     builds,
     spares,
+    mcp,
+    objects,
     background,
     credentials,
     // As after the owner's `addRepo` and `removeRepo`: a Repo's `.pi/mcp.json` is looked at, then the set is pushed.

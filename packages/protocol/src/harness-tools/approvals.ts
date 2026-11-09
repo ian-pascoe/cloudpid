@@ -10,8 +10,16 @@ import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import { NextField } from "./field-page.ts";
 import { MAX_CHANGE_REASON, RequestIdField } from "./reason.ts";
-import { GLOBAL_ID, GLOBAL_SETTINGS_SCOPE, idOrGlobal, ScopeRef, SettingsScope } from "./scope.ts";
-import { DESTRUCTIVE_IDEMPOTENT, READ_ONLY, WRITE } from "./surface.ts";
+import {
+  environmentId,
+  GLOBAL_ID,
+  GLOBAL_SETTINGS_SCOPE,
+  idOrGlobal,
+  ScopeRef,
+  SettingsScope,
+} from "./scope.ts";
+import { SecretName } from "./secret-name.ts";
+import { DESTRUCTIVE, DESTRUCTIVE_IDEMPOTENT, READ_ONLY, WRITE } from "./surface.ts";
 
 /** The most seconds `approval_wait` waits, and how long it waits when it is not told. */
 export const MAX_APPROVAL_WAIT_S = 300;
@@ -197,6 +205,52 @@ export const environmentContainerSizeLimitSet = {
   },
 } as const;
 
+/** What the deletes' descriptions say of the Approval, on the endpoint: no revert can undo one, unlike a change. */
+const DELETE_APPROVAL = `No revert can undo it, so the owner must approve it, in cloudpid: the call does not wait for them. It answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires (7 days); follow it with approval_wait, which says whether it was approved and done, declined, or not done. Asking again for the same delete while one waits answers the same approval_id; at most 10 of yours may wait or be applying at once. A Secret's value in an argument is refused, and nothing is asked.`;
+
+export const environmentDelete = {
+  name: "environment_delete",
+  annotations: DESTRUCTIVE,
+  endpoint: {
+    description: Arr.join(
+      [
+        "Ask the owner to delete an Environment, as their delete on the Settings page does: its Workspaces with their Sessions (archived ones too) and everything not pushed in them, its spare Workspace, its Build, the Secrets kept for it, its Triggers and its Agent changes. The default Environment cannot be deleted, and an id that names no Environment is refused; neither asks.",
+        DELETE_APPROVAL,
+        "On Approve the Environment is deleted only while it takes no more than the owner saw (no Workspace, Session, kept Secret or Trigger added since). The delete is long: cloudpid runs it while the owner has cloudpid open, so approval_wait reports it approved and not finished until it is done, and does not run it itself. Its requests still waiting are withdrawn with it.",
+      ],
+      "\n\n",
+    ),
+    input: Schema.Struct({
+      id: environmentId("endpoint"),
+      reason: AskReason,
+      ...RequestIdField,
+    }),
+    output: ApprovalAskOutput,
+  },
+} as const;
+
+export const environmentSecretDelete = {
+  name: "environment_secret_delete",
+  annotations: DESTRUCTIVE,
+  endpoint: {
+    description: Arr.join(
+      [
+        `Ask the owner to delete a Secret kept for an Environment (the one id names; id "${GLOBAL_ID}" is a Secret kept Global), as their delete on the Secrets page does: commands, Sessions and Builds no longer get it. environment_get lists the Secrets kept (names only); a name that is not kept there is refused, and nothing is asked.`,
+        DELETE_APPROVAL,
+        "On Approve the Secret is deleted only while its value and Build mark are still those the owner saw, and the delete is recorded with your reason; the history keeps no value. The Builds' upkeep runs after it.",
+      ],
+      "\n\n",
+    ),
+    input: Schema.Struct({
+      id: idOrGlobal("a Secret kept Global", "endpoint"),
+      name: SecretName.annotate({ description: "The Secret's name, such as NPM_TOKEN" }),
+      reason: AskReason,
+      ...RequestIdField,
+    }),
+    output: ApprovalAskOutput,
+  },
+} as const;
+
 /** The asking tools the endpoint serves, by name. */
 export const APPROVAL_ASK_TOOLS = {
   settings_spend_limit_set: settingsSpendLimitSet,
@@ -204,6 +258,8 @@ export const APPROVAL_ASK_TOOLS = {
   settings_subagent_workspaces_set: settingsSubagentWorkspacesSet,
   settings_instructions_set: settingsInstructionsSet,
   environment_container_size_limit_set: environmentContainerSizeLimitSet,
+  environment_delete: environmentDelete,
+  environment_secret_delete: environmentSecretDelete,
 } as const;
 
 export type ApprovalAskToolName = keyof typeof APPROVAL_ASK_TOOLS;
@@ -249,6 +305,12 @@ export const ApprovalStateOutput = Schema.Struct({
     Schema.Literal(true).annotate({
       description:
         "The wait was cut short (a deploy): the status is as read once after; wait again",
+    }),
+  ),
+  long: Schema.optionalKey(
+    Schema.Literal(true).annotate({
+      description:
+        "The apply is long (an Environment's delete): cloudpid runs it while the owner has cloudpid open or presses Try again on its card, never approval_wait",
     }),
   ),
 });

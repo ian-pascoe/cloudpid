@@ -5,7 +5,9 @@
 // as how the write went, and the answer rebuilt from the Agent changes a write recorded before its run was cut. The asking
 // (`./approval-ask.ts`) and applying (`./approval-runner.ts`) parts look a tool up by name in `approvalTools`' table,
 // built once, and bind it to the caller's author source per call. Every core answers in the endpoint's words
-// (`surface: "endpoint"`): the owner, no Session, and only the tools the endpoint serves.
+// (`surface: "endpoint"`): the owner, no Session, and only the tools the endpoint serves. An Environment's delete is
+// long (#688 C2): its apply reports each step, where the run renews its lease, and a failure of it leaves the request
+// approved for the next run, since every step of the removal is safe to repeat.
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- an id quoted in a sentence.
 import {
   type Applied,
@@ -26,6 +28,12 @@ import {
   EnvironmentsError,
   refuseGlobal,
 } from "@cloudpid/extensions/environment";
+import {
+  type DeleteKnown,
+  environmentDeleteCore,
+  type SecretDeleteKnown,
+  secretDeleteCore,
+} from "@cloudpid/extensions/environment-deletes";
 import { resetLimitCore as resetSizeLimitCore } from "@cloudpid/extensions/environment-reset";
 import { sizeLimitCore } from "@cloudpid/extensions/environment-size-limit";
 import type { AppliedSettingsChange, SettingsView } from "@cloudpid/extensions/settings";
@@ -71,18 +79,27 @@ export type ScopeRef = { readonly id: string; readonly name: string };
 /** What a tool's `prepare` answers: the core's, with where the change is. */
 export type PreparedAsk = Prepared<unknown> & { readonly scope: ScopeRef };
 
+/**
+ * What a run tells an apply as it goes: `onStep` runs between the steps of a long one (an Environment's delete), where
+ * the run renews its lease; it fails the apply (a defect) when the run lost it.
+ */
+export type ApplyProgress = { readonly onStep?: Effect.Effect<void> | undefined };
+
 /** A tool that waits for the owner's Approval, as the endpoint asks and applies it: its arguments are its endpoint input. */
 export type ApprovalTool = {
   readonly tool: string;
   /** The Settings page section its card shows in. */
   readonly section: string;
+  /** Whether its apply is long (an Environment's delete): `approval_wait` never runs it (#688 C2). */
+  readonly long: boolean;
   /** The core's `prepare`, with where the change is. */
   readonly prepare: (args: Schema.Json) => Effect.Effect<PreparedAsk, CoreError>;
-  /** The core's `apply` against `expected` as `author`, then its `render`. */
+  /** The core's `apply` against `expected` as `author`, then its `render`; a long one reports its steps to `progress`. */
   readonly apply: (
     args: Schema.Json,
     expected: Schema.Json | null,
     author: ChangeAuthor,
+    progress?: ApplyProgress,
   ) => Effect.Effect<ApplyOutcome, CoreError>;
   /** The answer of a write that committed before its run was cut: `render` of the Agent changes it recorded. */
   readonly fromClaim: (
@@ -130,8 +147,9 @@ const agentChangeOf = (tool: string, reason: string, change: ClaimedChange): Age
 });
 
 /**
- * How a write went, by its result's status (a Settings' or an Environment's write, whose `missing` is refused): the target
- * has the change (`wrote`: this write made it, rather than finding it made), or the request ends without it.
+ * How a write went, by its result's status (a Settings' or an Environment's write, whose `missing` is refused; a delete's
+ * `deleted`, or `absent` for one gone already): the target has the change (`wrote`: this write made it, rather than
+ * finding it made), or the request ends without it.
  */
 type WriteOutcome =
   | { readonly made: true; readonly wrote: boolean }
@@ -140,8 +158,10 @@ type WriteOutcome =
 const writeOutcome = (result: { readonly status: string }): WriteOutcome => {
   switch (result.status) {
     case "changed":
+    case "deleted":
       return { made: true, wrote: true };
     case "unchanged":
+    case "absent":
       return { made: true, wrote: false };
     case "changed-since":
       return { made: false, end: "changed_since" };
@@ -168,9 +188,20 @@ const approvalTool = <
   scopeRef,
   how,
   rebuilt,
+  long = false,
+  run = (args, expected, author) => core.apply(args, expected, author),
 }: {
   readonly core: ApprovalCore<Args, Known, Res, E, How>;
   readonly section: string;
+  /** Whether the apply is long (`ApprovalTool.long`). */
+  readonly long?: boolean;
+  /** The write, `core.apply` unless the tool says: a long one is told of its steps. */
+  readonly run?: (
+    args: NoInfer<Args>,
+    expected: Schema.Json | null,
+    author: ChangeAuthor,
+    progress: ApplyProgress | undefined,
+  ) => Effect.Effect<Applied<NoInfer<Known>, NoInfer<Res>>, CoreError>;
   readonly decode: (args: Schema.Json) => Option.Option<NoInfer<Args>>;
   /** Where the change is, from what `prepare` read of the target. */
   readonly scopeRef: (target: NoInfer<Known>) => ScopeRef;
@@ -195,6 +226,7 @@ const approvalTool = <
   return {
     tool: core.tool,
     section,
+    long,
     prepare: (args) =>
       Effect.flatMap(read(args), (decoded) =>
         Effect.map(core.prepare(decoded), (prepared) => ({
@@ -202,10 +234,10 @@ const approvalTool = <
           scope: scopeRef(prepared.known),
         })),
       ),
-    apply: (args, expected, author) =>
+    apply: (args, expected, author, progress) =>
       Effect.gen(function* () {
         const decoded = yield* read(args);
-        const applied = yield* core.apply(decoded, expected, author);
+        const applied = yield* run(decoded, expected, author, progress);
         const outcome = writeOutcome(applied.result);
         const answer = yield* renderResult(decoded, expected, applied);
         const said = Result.isFailure(answer) ? answer.failure.message : answer.success.text;
@@ -316,6 +348,7 @@ const settingsLimitReset = (services: SettingsCoreServices): ApprovalTool => {
   return {
     tool: "settings_reset",
     section: "limits",
+    long: false,
     prepare: (args) => Effect.flatMap(pick(args), (tool) => tool.prepare(args)),
     apply: (args, expected, author) =>
       Effect.flatMap(pick(args), (tool) => tool.apply(args, expected, author)),
@@ -462,5 +495,70 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
           }),
       });
     },
+    // An Environment's delete (#688 C2): long, so `approval_wait` never runs it; the owner's Approve runs it inline, and
+    // Try again or their next visit resumes one cut off. A failed step leaves the request approved, its removal safe to
+    // run again; the run renews its lease after each step. Its card shows on the Environment's own section, where the
+    // owner deletes it.
+    environment_delete: (source) => {
+      const core = environmentDeleteCore({
+        environments: writes.environments(source),
+        removal: writes.removal(source),
+        plainText,
+        surface: "endpoint",
+      });
+
+      return approvalTool({
+        core,
+        section: "environments",
+        long: true,
+        decode: Schema.decodeUnknownOption(APPROVAL_ASK_TOOLS.environment_delete.endpoint.input),
+        scopeRef: (known) => known.environment,
+        how: () => undefined,
+        run: (args, expected, _author, progress) =>
+          core.applyWith(args, expected, undefined, progress).pipe(
+            Effect.mapError((error) => new Error(error.message)),
+            Effect.orDie,
+          ),
+        // It records no Agent change, so it claims nothing: a claim never holds its changes.
+        rebuilt: (args, _changes, claimed) =>
+          Effect.succeed({
+            known: {
+              environment: { id: args.id, name: Arr.headNonEmpty(claimed).scopeName },
+              footprint: null,
+            } satisfies DeleteKnown,
+            result: { status: "absent" as const },
+          }),
+      });
+    },
+    // A kept Secret's delete: one write, recorded under the request's claim; the Builds' upkeep runs after it, in
+    // `background`. Its card shows on the Secrets section of the Scope it is kept in.
+    environment_secret_delete: (source) =>
+      approvalTool({
+        core: secretDeleteCore({
+          environments: writes.environments(source),
+          removal: writes.removal(source),
+          plainText,
+          surface: "endpoint",
+        }),
+        section: "secrets",
+        decode: Schema.decodeUnknownOption(
+          APPROVAL_ASK_TOOLS.environment_secret_delete.endpoint.input,
+        ),
+        scopeRef: (known) => known.scope,
+        how: () => undefined,
+        rebuilt: (args, changes, claimed) => {
+          const record = Arr.headNonEmpty(claimed);
+          const scope = { id: record.scope, name: record.scopeName };
+
+          return Effect.succeed({
+            known: { environment: args.id, scope, marked: false } satisfies SecretDeleteKnown,
+            result: {
+              status: "deleted" as const,
+              environment: scope,
+              change: Arr.headNonEmpty(changes),
+            },
+          });
+        },
+      }),
   };
 };
