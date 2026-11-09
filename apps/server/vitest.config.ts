@@ -77,6 +77,8 @@ export default defineConfig({
                 MCP_HOSTS: { className: "TestMcpHost", useSQLite: true },
                 TRIGGERS: { className: "TestTrigger", useSQLite: true },
               },
+              // The GitHub App a Trigger object makes its GitHub-managed hook as (`trigger/object.fixture.ts`).
+              bindings: { TEST_GITHUB_APP_PRIVATE_KEY: githubAppKey },
             },
           }),
         ],

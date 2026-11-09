@@ -240,6 +240,7 @@ describe("a Trigger's object", () => {
         lastFire: null,
         pending: 0,
         waiting: null,
+        github: null,
       });
       expect(await trigger.alarmAt()).toBeNull();
     });
@@ -371,6 +372,7 @@ describe("a Trigger's object", () => {
         lastFire: null,
         pending: 0,
         waiting: null,
+        github: null,
       });
     });
   });
@@ -414,6 +416,7 @@ describe("a Trigger's object", () => {
       lastFire: null,
       pending: 0,
       waiting: null,
+      github: null,
     });
   });
 
@@ -450,6 +453,7 @@ describe("a Trigger's object", () => {
         lastFire: null,
         pending: 0,
         waiting: null,
+        github: null,
       });
       expect(await object.fireLog()).toEqual([]);
 

@@ -13,4 +13,6 @@ export const SHIPPED_MIGRATIONS: ReadonlyArray<string> = [
   // 3: the webhook parts: `trigger_pending`'s `payload`, `body`, `revision` and `facts`, `trigger_secrets`, `trigger_counts`,
   // `trigger_hook`.
   "57e38bd975dce06a",
+  // 4: a GitHub-managed hook: `trigger_github_hook` and `trigger_github_deletes`.
+  "ace07b161b2284b4",
 ];

@@ -1,10 +1,12 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 // The workerd test Durable Object that hosts a Trigger's handlers (`object.ts`) over its SQLite storage and alarm, as
 // the Trigger DO does (`docs/architecture/triggers.md` → Testing): its definitions and `admitFire` are a real
 // `TestRegistry`'s (`use`), the Sessions' `fire` is scripted and recorded, and so are the owner's Notifications and the
-// upkeep after a start. The clock is the test's (`setNow`), and `replace()` makes its storage refuse, as a replaced
-// instance's does.
+// upkeep after a start. GitHub is a fake (`github.fixture.ts`) the object reaches through the real hooks client and a
+// GitHub App keyed with the test Worker's key (`TEST_GITHUB_APP_PRIVATE_KEY`), at the origin `https://pi.example`
+// (`setOrigin`). The clock is the test's (`setNow`), and `replace()` makes its storage refuse, as a replaced instance's
+// does.
 import { openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   ApiResult,
@@ -22,6 +24,13 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { FireAdmitted } from "../registry/triggers.ts";
+import {
+  fakeGitHub,
+  type FakeGitHubState,
+  fakeGitHubState,
+  type FakeHook,
+} from "./github.fixture.ts";
+import { triggerGitHub } from "./github-hook.ts";
 import { triggerOfObject } from "./name.ts";
 import {
   type Delivery,
@@ -41,6 +50,7 @@ declare global {
     /** The bindings `vitest.config.ts` gives the test Worker. */
     interface Env {
       readonly REGISTRIES: DurableObjectNamespace<TestRegistry>;
+      readonly TEST_GITHUB_APP_PRIVATE_KEY: string;
     }
   }
 }
@@ -67,6 +77,12 @@ const reach = <A>(what: string, call: () => Promise<A>) =>
     try: call,
     catch: (cause) => TriggerUnreachable.make({ message: `${what}: ${String(cause)}` }),
   });
+
+/** What a test reads of the fake GitHub: each repo's hooks, and every request it was sent. */
+export type FakeGitHubView = {
+  readonly hooks: Readonly<Record<string, ReadonlyArray<FakeHook>>>;
+  readonly seen: FakeGitHubState["seen"];
+};
 
 export class TestTrigger extends DurableObject {
   /** The object's storage: it refuses everything once `replace()` ran. */
@@ -101,6 +117,22 @@ export class TestTrigger extends DurableObject {
   readonly #failed: Array<{ readonly trigger: string; readonly reason: string }> = [];
 
   readonly #upkeep: Array<string> = [];
+
+  /** GitHub, as the fake keeps it: the App's installations and each repo's hooks. */
+  readonly #github: FakeGitHubState = fakeGitHubState();
+
+  /** The stage's origin its Trigger URLs start with; undefined for none, as under `alchemy dev`. */
+  #origin: string | undefined = "https://pi.example";
+
+  /** While set, the Registry's `knownTriggers` fails. */
+  #knownDown = false;
+
+  readonly #repoHooks = triggerGitHub({
+    appId: "123456",
+    privateKey: this.env.TEST_GITHUB_APP_PRIVATE_KEY,
+    fetch: fakeGitHub(this.#github),
+    now: () => this.#now,
+  }).hooks;
 
   /** What a scripted Session answers to `request`, recorded. */
   #answer(session: string, request: FireRequest | SessionFireRequest) {
@@ -182,8 +214,57 @@ export class TestTrigger extends DurableObject {
         `trigger:${triggerOfObject(this.ctx.id.name) ?? ""}`,
       ).pipe(Effect.mapError((error) => TriggerUnreachable.make({ message: error.message }))),
       botLogin: Effect.sync(() => this.#bot),
+      // The origin is read at each use, so `setOrigin` takes effect at once.
+      github: ((fixture: TestTrigger) => ({
+        hooks: fixture.#repoHooks,
+        get origin() {
+          return fixture.#origin;
+        },
+        known: (ids: ReadonlyArray<string>) =>
+          Effect.suspend(() =>
+            fixture.#knownDown
+              ? Effect.fail(TriggerUnreachable.make({ message: "The Registry is down" }))
+              : reach("knownTriggers", () => fixture.#registryStub().knownTriggers(ids)),
+          ),
+      }))(this),
     },
   });
+
+  /** The fake GitHub's hooks of each repo, and every request it was sent. */
+  githubState(): FakeGitHubView {
+    return { hooks: Object.fromEntries(this.#github.hooks), seen: this.#github.seen };
+  }
+
+  /**
+   * Change the fake GitHub: the accounts that accepted Webhooks: write, whether its hooks' calls answer 503, its limit
+   * of hooks per event, and hooks a repo already has.
+   */
+  setGitHub(change: {
+    readonly accepted?: ReadonlyArray<string>;
+    readonly down?: boolean;
+    readonly limit?: number;
+    readonly hooks?: Readonly<Record<string, ReadonlyArray<FakeHook>>>;
+  }): void {
+    if (change.accepted !== undefined) this.#github.accepted = new Set(change.accepted);
+
+    if (change.down !== undefined) this.#github.down = change.down;
+
+    if (change.limit !== undefined) this.#github.limit = change.limit;
+
+    for (const [repo, hooks] of Object.entries(change.hooks ?? {})) {
+      this.#github.hooks.set(repo, [...hooks]);
+    }
+  }
+
+  /** The stage's origin, or undefined for none. */
+  setOrigin(origin: string | undefined): void {
+    this.#origin = origin;
+  }
+
+  /** Make the Registry's `knownTriggers` fail (`down`), or answer again. */
+  setKnownDown(down: boolean): void {
+    this.#knownDown = down;
+  }
 
   /** What the object logged at warning level or above, in order: its level and message. */
   readonly #logged: Array<{ readonly level: string; readonly message: string }> = [];
