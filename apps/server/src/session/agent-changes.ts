@@ -3,7 +3,7 @@
 // `cloudpid_report` files, is kept in the Session's storage, so an eviction does not lose it, until the Run's end turns them
 // into one Notification listing them (`runNotice`), besides the usual `finished` or `failed` one.
 // @effect-diagnostics missingPipeableSignature:off -- `runNotice` is a plain function of two lists.
-import type { RunReport } from "@cloudpid/extensions/cloudpid-report";
+import type { FiledCloudpidReport } from "@cloudpid/extensions/cloudpid-report";
 import type { RunChange } from "@cloudpid/extensions/environment";
 import type { PushNotice } from "@cloudpid/extensions/notify";
 import * as Arr from "effect/Array";
@@ -44,8 +44,23 @@ const runLog = <A>(kv: SettingsKv, key: string): RunLog<A> => {
 
 export const runChanges = (kv: SettingsKv): RunChanges => runLog(kv, RUN_CHANGES_KEY);
 
-/** The Run's cloudpid reports, kept in the Session's key-value storage. */
-export const runReports = (kv: SettingsKv): RunLog<RunReport> => runLog(kv, RUN_REPORTS_KEY);
+/**
+ * The Run's cloudpid reports, kept in the Session's key-value storage, each issue once: a rerun of a call that filed one
+ * answers it again, and records nothing more.
+ */
+export const runCloudpidReports = (kv: SettingsKv): RunLog<FiledCloudpidReport> => {
+  const log = runLog<FiledCloudpidReport>(kv, RUN_REPORTS_KEY);
+
+  return {
+    ...log,
+    record: (report) =>
+      Effect.flatMap(log.pending, (pending) =>
+        Arr.some(pending, ({ number }) => number === report.number)
+          ? Effect.void
+          : log.record(report),
+      ),
+  };
+};
 
 /** `title` cut to `MAX_NOTICE_TITLE` characters, an ellipsis ending a cut one. */
 const cutTitle = (title: string): string =>
@@ -53,12 +68,13 @@ const cutTitle = (title: string): string =>
 
 /**
  * The Notification of a Run's Agent changes and cloudpid reports, one clause each when it has any: each change's tool,
- * Environment (none for a change to the Settings) and field, then each report's number and title, oldest first. A tap
- * opens the Session, whose transcript has each change's card and each report's call.
+ * Environment (none for a change to the Settings) and field, then each report's number and title (`cloudpid report #1
+ * filed: <title>`, or `2 cloudpid reports filed: #1 <title>, #2 <title>`), oldest first. A tap opens the Session, whose
+ * transcript has each change's card and each report's call.
  */
 export const runNotice = (
   changes: ReadonlyArray<RunChange>,
-  reports: ReadonlyArray<RunReport>,
+  reports: ReadonlyArray<FiledCloudpidReport>,
 ): PushNotice => {
   const changed =
     changes.length === 0
@@ -74,10 +90,18 @@ export const runNotice = (
           )}`,
         ];
 
-  const filed = Arr.map(
-    reports,
-    ({ number, title }) => `cloudpid report #${number} filed: ${cutTitle(title)}`,
-  );
+  const filed = Arr.match(reports, {
+    onEmpty: () => [],
+    onNonEmpty: ([first, ...rest]) =>
+      rest.length === 0
+        ? [`cloudpid report #${first.number} filed: ${cutTitle(first.title)}`]
+        : [
+            `${reports.length} cloudpid reports filed: ${Arr.join(
+              Arr.map(reports, ({ number, title }) => `#${number} ${cutTitle(title)}`),
+              ", ",
+            )}`,
+          ],
+  });
 
   return { kind: "notice", body: Arr.join([...changed, ...filed], "; ") };
 };

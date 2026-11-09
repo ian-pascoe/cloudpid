@@ -3,10 +3,11 @@
 // answer, reaches the tool.
 // @effect-diagnostics asyncFunction:off -- vitest's tests are Promise-based.
 import type { CloudpidReportRequest } from "@cloudpid/extensions/cloudpid-report";
+import { RpcCallError } from "alchemy/Rpc";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import type { AgentReportInput } from "../registry/cloudpid-reports.ts";
-import { reportStage, sessionCloudpidReports } from "./cloudpid-reports.ts";
+import type { AgentCloudpidReportInput } from "../registry/cloudpid-reports.ts";
+import { cloudpidReportStage, sessionCloudpidReports } from "./cloudpid-reports.ts";
 
 const request: CloudpidReportRequest = {
   conversation: 1,
@@ -19,7 +20,7 @@ const request: CloudpidReportRequest = {
 
 describe("the Session's cloudpid reports", () => {
   it("hand the Registry the call with the Session, its stage and its version", async () => {
-    const asked: AgentReportInput[] = [];
+    const asked: AgentCloudpidReportInput[] = [];
 
     const reports = sessionCloudpidReports({
       registry: {
@@ -56,6 +57,37 @@ describe("the Session's cloudpid reports", () => {
     expect(await Effect.runPromise(reports.file(request))).toEqual({ status: "unknown" });
   });
 
+  it.each<[string, Effect.Effect<never, RpcCallError>]>([
+    [
+      "as a defect",
+      Effect.die(
+        new TypeError('The RPC receiver does not implement the method "agentFileReport".'),
+      ),
+    ],
+    [
+      "as the RPC client's failure",
+      Effect.fail(
+        new RpcCallError({
+          method: "agentFileReport",
+          cause: new TypeError('The RPC receiver does not implement the method "agentFileReport".'),
+        }),
+      ),
+    ],
+  ])(
+    "read a Registry without agentFileReport, an older one during a deploy, as nothing filed (%s)",
+    async (_, missing) => {
+      const reports = sessionCloudpidReports({
+        // SAFETY: the call fails as an older Registry's does, which the type does not allow for.
+        registry: { agentFileReport: () => missing as never },
+        session: "s1",
+        stage: "prod",
+        version: undefined,
+      });
+
+      expect(await Effect.runPromise(reports.file(request))).toMatchObject({ status: "failed" });
+    },
+  );
+
   it("is refused for a Session the Registry does not name", async () => {
     const reports = sessionCloudpidReports({
       registry: { agentFileReport: () => Effect.die(new Error("not asked")) },
@@ -67,11 +99,11 @@ describe("the Session's cloudpid reports", () => {
     expect(await Effect.runPromise(reports.file(request))).toMatchObject({ status: "failed" });
   });
 
-  it.each<[string, Parameters<typeof reportStage>[0], string]>([
+  it.each<[string, Parameters<typeof cloudpidReportStage>[0], string]>([
     ["prod, which has no stage label", { label: undefined, local: false }, "prod"],
     ["a preview's label", { label: "pr-731", local: false }, "pr-731"],
     ["local under alchemy dev", { label: "dev-ian", local: true }, "local"],
   ])("name the stage %s", (_, stage, name) => {
-    expect(reportStage(stage)).toBe(name);
+    expect(cloudpidReportStage(stage)).toBe(name);
   });
 });

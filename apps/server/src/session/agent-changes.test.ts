@@ -1,39 +1,84 @@
 // The Run-end Notification of the Run's Agent changes and cloudpid reports (`agent-changes.ts`;
-// `docs/architecture/agent-capabilities.md` → cloudpid reports): one push, a clause for each list that has something.
+// `docs/architecture/agent-capabilities.md` → cloudpid reports): one push, at most a clause for each list, and the reports
+// kept for it once each.
+// @effect-diagnostics asyncFunction:off -- vitest's tests are Promise-based.
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { runNotice } from "./agent-changes.ts";
+import { runCloudpidReports, runNotice } from "./agent-changes.ts";
+import type { SettingsKv } from "./settings.ts";
 
 const change = { tool: "environment_variable_set", environmentName: "Web", field: "API_URL" };
 
+const report = { number: 123, title: "bash ignores its timeout" };
+
+/** How many times `part` is in `text`. */
+const count = (text: string, part: string) => text.split(part).length - 1;
+
 describe("runNotice", () => {
-  it.each<[string, Parameters<typeof runNotice>, string]>([
-    [
-      "the Agent changes alone",
-      [[change], []],
-      '1 Agent change: environment_variable_set "Web" API_URL',
-    ],
-    [
-      "the reports alone",
-      [[], [{ number: 123, title: "bash ignores its timeout" }]],
-      "cloudpid report #123 filed: bash ignores its timeout",
-    ],
-    [
-      "both, the changes first",
-      [[change], [{ number: 123, title: "bash ignores its timeout" }]],
-      '1 Agent change: environment_variable_set "Web" API_URL; cloudpid report #123 filed: bash ignores its timeout',
-    ],
-    [
-      "each report, its title cut to 80 characters",
+  it("tells the Agent changes alone, each by its tool, Environment and field", () => {
+    const { kind, body } = runNotice([change], []);
+
+    expect(kind).toBe("notice");
+    expect(body).toContain('environment_variable_set "Web" API_URL');
+    expect(body).not.toContain("cloudpid report");
+  });
+
+  it("tells one report by its number and title", () => {
+    const { body } = runNotice([], [report]);
+
+    expect(body).toContain("#123");
+    expect(body).toContain(report.title);
+    expect(count(body, "cloudpid report")).toBe(1);
+  });
+
+  it("tells several reports in one clause, by count, number and title, each title cut to 80 characters", () => {
+    const { body } = runNotice(
+      [],
       [
-        [],
-        [
-          { number: 1, title: "a".repeat(81) },
-          { number: 2, title: "short" },
-        ],
+        { number: 1, title: "a".repeat(81) },
+        { number: 2, title: "short" },
       ],
-      `cloudpid report #1 filed: ${"a".repeat(79)}…; cloudpid report #2 filed: short`,
-    ],
-  ])("tells %s", (_, [changes, reports], body) => {
-    expect(runNotice(changes, reports)).toEqual({ kind: "notice", body });
+    );
+
+    expect(count(body, "cloudpid report")).toBe(1);
+    expect(body).toMatch(/^2 cloudpid reports/);
+    expect(body).toContain(`#1 ${"a".repeat(79)}…`);
+    expect(body).not.toContain("a".repeat(80));
+    expect(body).toContain("#2 short");
+    expect(body.indexOf("#1")).toBeLessThan(body.indexOf("#2"));
+  });
+
+  it("tells both, the changes' clause before the reports'", () => {
+    const { body } = runNotice([change], [report, { number: 124, title: "ls hangs" }]);
+
+    expect(body.indexOf("API_URL")).toBeLessThan(body.indexOf("cloudpid report"));
+    expect(count(body, "cloudpid report")).toBe(1);
+    expect(body).toContain("#123");
+    expect(body).toContain("#124");
+  });
+});
+
+describe("runCloudpidReports", () => {
+  it("keeps a report once, though a rerun of its call records it again", async () => {
+    const stored = new Map<string, unknown>();
+
+    const kv: SettingsKv = {
+      // SAFETY: the map holds only what `put` was given under each key.
+      get: <T>(key: string) => stored.get(key) as T | undefined,
+      put: (key, value) => {
+        stored.set(key, value);
+      },
+    };
+
+    const reports = runCloudpidReports(kv);
+
+    await Effect.runPromise(reports.record(report));
+    await Effect.runPromise(reports.record(report));
+    await Effect.runPromise(reports.record({ number: 124, title: "ls hangs" }));
+
+    expect(await Effect.runPromise(reports.pending)).toEqual([
+      report,
+      { number: 124, title: "ls hangs" },
+    ]);
   });
 });
