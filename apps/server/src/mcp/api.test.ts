@@ -209,6 +209,8 @@ describe("describe", () => {
       "settings_subagent_workspaces_set",
       "settings_instructions_set",
       "environment_container_size_limit_set",
+      "environment_delete",
+      "environment_secret_delete",
     ]);
   });
 

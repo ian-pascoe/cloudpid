@@ -1,12 +1,15 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalTimers:off newPromise:off
 // The Approvals asked over the MCP endpoint, end to end over the real Registry (`../registry/registry.fixture.ts` runs
 // `registryMethods` as deployed; `docs/architecture/mcp-endpoint.md` → Approvals with no Session): the ask's `pending`,
 // `unchanged` and refusals, its `request_id`, dedupe and cap (`./approval-ask.ts`); the apply of an approved request
 // against what the owner saw, under the request's claim, its resume after a write that committed, and its second look at
 // the claim after a write that made nothing (`./approval-runner.ts`); `approval_wait` and `approval_withdraw`
-// (`./approval-follow.ts`); and the Limit paths of both resets. A row that needs the Registry to fail (a cut wait, a check
-// that heals) overrides that one method; every other call is the real Registry's.
+// (`./approval-follow.ts`); the Limit paths of both resets; and the deletes (#688 C2): an Environment's, long, which
+// `approval_wait` never runs and its run renews the lease for, and a kept Secret's, against the `updatedAt` the owner
+// saw, with the Builds' upkeep after it; a long apply's lease renewed after each step, given up when another run took
+// it, and let go of when a step fails. A row that needs the Registry to fail (a cut wait, a check that heals) overrides
+// that one method; every other call is the real Registry's.
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import {
   type AgentChangeVia,
@@ -58,7 +61,8 @@ type Overrides = (call: RegistryCall) => Partial<HarnessRegistry>;
 
 /** A fresh real Registry, and the asking, applying and following parts over it, with `overrides` in place of its own. */
 const started = async (overrides: Overrides = () => ({})) => {
-  const call = callOn(env.REAL_REGISTRIES.get(env.REAL_REGISTRIES.newUniqueId()));
+  const stub = env.REAL_REGISTRIES.get(env.REAL_REGISTRIES.newUniqueId());
+  const call = callOn(stub);
   const replaced = overrides(call);
 
   await call("agentChangeFeatures");
@@ -74,13 +78,28 @@ const started = async (overrides: Overrides = () => ({})) => {
     },
   ) as HarnessRegistry;
 
-  // `background` runs at once: the push of a new request is the one thing handed to it here.
+  // `background` runs at once: the push of a new request, and the upkeep after a delete, are handed to it here.
   const background = (effect: Effect.Effect<void>) => effect;
+
+  /** The Environments whose Builds' upkeep ran, in order. */
+  const built: Array<string> = [];
+
+  /** What wiping a Workspace's or Build's object does: a row sets it to see or break a delete's steps. */
+  const objects = { destroy: (_name: string) => Promise.resolve() };
 
   const writes = endpointWrites({
     registry,
-    builds: { of: () => Effect.void, rebuild: () => Effect.die("no Build") },
+    builds: {
+      of: (environment) => Effect.sync(() => void built.push(environment)),
+      rebuild: () => Effect.die("no Build"),
+    },
     spares: { of: () => Effect.void },
+    mcp: { sync: () => Effect.void },
+    objects: {
+      workspaces: { destroy: (name) => objects.destroy(name) },
+      sessions: { destroy: () => Effect.void },
+      triggers: { remove: () => Effect.void },
+    },
     background,
     credentials: [],
   });
@@ -91,7 +110,10 @@ const started = async (overrides: Overrides = () => ({})) => {
   const runner = approvalRunner({ registry, writes, upkeep: () => Effect.void, background });
 
   return {
+    stub,
     call,
+    built,
+    objects,
     /** Ask for `tool`'s change with `args`, as the dispatcher hands it over. */
     ask: async (
       tool: ApprovalToolName,
@@ -527,5 +549,202 @@ describe("approval_withdraw", () => {
       { ok: false, error: { code: "invalid_argument" } },
       { ok: false, error: { code: "invalid_argument" } },
     ]);
+  });
+});
+
+describe("the deletes", () => {
+  /** A new Environment "Web"'s id. */
+  const madeIn = async (call: RegistryCall) => {
+    const made = await call("createEnvironment", { name: "Web" });
+
+    if (made.status !== "named") throw new Error(`Environment not made: ${made.status}`);
+
+    return made.environment.id;
+  };
+
+  it("asks to delete an Environment on its section, as long, and refuses the default and an unknown one without asking", async () => {
+    const { ask, call } = await started();
+    const environment = await madeIn(call);
+
+    const id = approvalIdOf(await ask("environment_delete", { id: environment, reason: "Done" }));
+
+    expect(
+      await ask("environment_delete", { id: DEFAULT_ENVIRONMENT, reason: "Done" }),
+    ).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(await ask("environment_delete", { id: "0000beef", reason: "Done" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(await call("listApprovals", {})).toEqual([
+      expect.objectContaining({ id, scope: environment, section: "environments" }),
+    ]);
+    expect(await call("approval", { id })).toMatchObject({ long: true });
+  });
+
+  it("deletes the Environment once approved, never in approval_wait, withdrawing its other waiting requests", async () => {
+    const { ask, call, wait, apply } = await started();
+    const environment = await madeIn(call);
+    const id = approvalIdOf(await ask("environment_delete", { id: environment, reason: "Done" }));
+
+    const other = approvalIdOf(
+      await ask("environment_container_size_limit_set", {
+        id: environment,
+        size: LARGER,
+        reason: "Bigger builds",
+      }),
+    );
+
+    await call("answerApproval", { id, approved: true });
+
+    expect(okValue(await wait(id, 0))).toMatchObject({
+      status: "approved",
+      long: true,
+      finished: false,
+    });
+    expect(await call("getEnvironment", { id: environment })).not.toBeNull();
+
+    expect(await apply(id)).toMatchObject({
+      status: "finished",
+      result: {
+        structured: { environment: { id: environment, name: "Web" }, deleted: true },
+      },
+    });
+    expect(await call("getEnvironment", { id: environment })).toBeNull();
+    expect(await call("approval", { id: other })).toMatchObject({
+      status: "withdrawn",
+      withdrawal: "environment_deleted",
+    });
+    // Its run found it gone: the delete is done.
+    expect(await apply(id)).toMatchObject({ status: "finished" });
+  });
+
+  /** Environment "Web" with a Session in a Workspace of its own, its delete asked and approved: the request's id. */
+  const approvedDelete = async ({ ask, call }: Awaited<ReturnType<typeof started>>) => {
+    const environment = await madeIn(call);
+
+    await call("createSession", { workspace: { kind: "new", environment } });
+
+    const id = approvalIdOf(await ask("environment_delete", { id: environment, reason: "Done" }));
+
+    await call("answerApproval", { id, approved: true });
+
+    return { environment, id };
+  };
+
+  it("renews its lease after each step of an Environment's delete, as the same run", async () => {
+    const claims: Array<{
+      readonly token: string;
+      readonly leased: boolean;
+      readonly until: number;
+    }> = [];
+
+    const run = await started((registry) => ({
+      claimApproval: (input) =>
+        Effect.promise(() => registry("claimApproval", input)).pipe(
+          Effect.tap((claimed) =>
+            Effect.sync(() => {
+              if (claimed !== null) {
+                claims.push({
+                  token: input.token,
+                  leased: claimed.leased,
+                  until: claimed.approval.leaseUntil ?? 0,
+                });
+              }
+            }),
+          ),
+        ),
+    }));
+
+    const { environment, id } = await approvedDelete(run);
+
+    // Each wipe takes a moment, so a renewal's lease ends later than the claim's.
+    run.objects.destroy = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+    expect(await run.apply(id)).toMatchObject({ status: "finished" });
+    expect(await run.call("getEnvironment", { id: environment })).toBeNull();
+    // The claim, then one renewal after the Workspace and one after the spare and the Build.
+    expect(claims).toHaveLength(3);
+    expect(new Set(claims.map((claim) => claim.token)).size).toBe(1);
+    expect(claims.every((claim) => claim.leased)).toBe(true);
+    expect(claims[2]!.until).toBeGreaterThan(claims[0]!.until);
+  });
+
+  it("stops an Environment's delete at its next step once another run holds the lease, leaving that run's lease", async () => {
+    const run = await started();
+    const { environment, id } = await approvedDelete(run);
+    const wiped: Array<string> = [];
+
+    // While the Workspace is wiped, another run takes the request, as one does once a lease lapsed.
+    run.objects.destroy = async (name) => {
+      wiped.push(name);
+
+      if (name.startsWith("ws:")) {
+        await runInDurableObject(run.stub, (_registry, state) => {
+          state.storage.sql.exec(
+            "UPDATE approval_requests SET lease_token = 'other-run' WHERE id = ?",
+            id,
+          );
+        });
+      }
+    };
+
+    expect(await run.apply(id)).toMatchObject({ status: "approved", leaseToken: "other-run" });
+    // It stopped before the spare and the Build: the rest is the other run's.
+    expect(wiped).toEqual([expect.stringMatching(/^ws:/)]);
+    expect(await run.call("getEnvironment", { id: environment })).not.toBeNull();
+  });
+
+  it("lets go of the lease when a step of an Environment's delete fails, so the next run finishes it at once", async () => {
+    const run = await started();
+    const { environment, id } = await approvedDelete(run);
+
+    run.objects.destroy = () => Promise.reject(new Error("storage error"));
+
+    expect(await run.apply(id)).toMatchObject({
+      status: "approved",
+      leaseToken: null,
+      leaseUntil: null,
+    });
+    expect(await run.call("getEnvironment", { id: environment })).not.toBeNull();
+
+    run.objects.destroy = () => Promise.resolve();
+
+    expect(await run.apply(id)).toMatchObject({ status: "finished" });
+    expect(await run.call("getEnvironment", { id: environment })).toBeNull();
+  });
+
+  it("deletes a kept Secret against the updatedAt the owner saw, recorded under the request's claim, then runs the Builds' upkeep", async () => {
+    const { ask, call, apply, built } = await started();
+    const environment = await madeIn(call);
+
+    await call("setEnvironmentSecret", { environment, name: "API_KEY", value: "v1", build: true });
+
+    const args = { id: environment, name: "API_KEY", reason: "Rotated" };
+    const changed = approvalIdOf(await ask("environment_secret_delete", args));
+
+    // The owner saves it again: the request asked about the value before.
+    await call("setEnvironmentSecret", { environment, name: "API_KEY", value: "v2", build: true });
+    await call("answerApproval", { id: changed, approved: true });
+
+    expect(await apply(changed)).toMatchObject({ status: "changed_since" });
+    expect(await call("listEnvironmentSecrets")).toHaveLength(1);
+    expect(built).toEqual([]);
+
+    const id = approvalIdOf(await ask("environment_secret_delete", { ...args, reason: "Again" }));
+
+    await call("answerApproval", { id, approved: true });
+
+    const applied = await apply(id);
+
+    expect(applied).toMatchObject({
+      status: "finished",
+      result: { structured: { scope: { id: environment }, name: "API_KEY", deleted: true } },
+    });
+    expect(await call("listEnvironmentSecrets")).toEqual([]);
+    expect(built).toEqual([environment]);
+    expect(await call("changeRequest", { id: `approval:${id}` })).toMatchObject({
+      attempt: id,
+      answer: applied?.result,
+    });
   });
 });

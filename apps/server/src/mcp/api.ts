@@ -162,6 +162,8 @@ export const HARNESS_TOOLS_SERVED = [
   "settings_subagent_workspaces_set",
   "settings_instructions_set",
   "environment_container_size_limit_set",
+  "environment_delete",
+  "environment_secret_delete",
 ] as const satisfies ReadonlyArray<DispatchedToolName>;
 
 /** What the endpoint reads of the Registry and the Sessions. Each is one RPC; a failure of any is `unavailable`. */

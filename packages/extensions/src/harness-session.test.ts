@@ -443,6 +443,7 @@ const extensionsOver = (over: EnvironmentsService, standins: Standins = {}) =>
     Effect.provideService(EnvironmentRemoval, {
       footprint: () => nothing("deletes"),
       deleteEnvironment: () => nothing("deletes"),
+      afterGone: () => nothing("deletes"),
       keptSecrets: () => nothing("deletes"),
       deleteSecret: () => nothing("deletes"),
     }),

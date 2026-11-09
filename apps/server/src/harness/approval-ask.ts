@@ -170,6 +170,7 @@ export const askApproval = (services: ApprovalAskServices) => {
         card,
         expected,
         digest: call.digest,
+        long: found.long,
         via: caller,
         request: claim,
       });

@@ -742,6 +742,14 @@ export type RegistryMethods = {
     readonly reason?: string | undefined;
     readonly result?: ChangeAnswer | undefined;
   }) => Effect.Effect<StoredApproval | null>;
+  /**
+   * Let go of approved request `id`'s lease for the run `token` that holds it, leaving it approved, so the next run (Try
+   * again, the owner's next visit) applies it at once.
+   */
+  readonly releaseApproval: (input: {
+    readonly id: string;
+    readonly token: string;
+  }) => Effect.Effect<StoredApproval | null>;
   /** The approved requests no run is applying: what the owner's next visit resumes. */
   readonly staleApprovals: () => Effect.Effect<ReadonlyArray<StoredApproval>>;
   /**
@@ -2027,6 +2035,8 @@ export const registryMethods = Effect.suspend(() =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.claim(id, token, now))),
           finishApproval: (ended) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.finish(ended, now))),
+          releaseApproval: ({ id, token }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.release(id, token, now))),
           staleApprovals: () =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.stale(now))),
           notifyApproval: ({ id }) =>

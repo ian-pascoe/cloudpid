@@ -86,6 +86,8 @@ const TITLES: Readonly<Record<HarnessToolName, string>> = {
   settings_subagent_workspaces_set: "Ask to set the Subagent Workspace limit",
   settings_instructions_set: "Ask to set the Instructions",
   environment_container_size_limit_set: "Ask to set an Environment's size limit",
+  environment_delete: "Ask to delete an Environment",
+  environment_secret_delete: "Ask to delete a kept Secret",
   approval_wait: "Wait for the owner's Approval",
   approval_withdraw: "Withdraw a request for Approval",
 };
@@ -215,6 +217,8 @@ const NEXTS: Readonly<
   settings_subagent_workspaces_set: afterAsk,
   settings_instructions_set: afterAsk,
   environment_container_size_limit_set: afterAsk,
+  environment_delete: afterAsk,
+  environment_secret_delete: afterAsk,
   environment_variable_set: afterChange,
   environment_variable_unset: afterChange,
   environment_container_resize: afterChange,
@@ -376,7 +380,9 @@ export const renderApprovalState = (state: ApprovalState): string => {
       case "pending":
         return `${request} waits for the owner's answer; it expires ${state.expires_at} if they do not answer.`;
       case "approved":
-        return `The owner approved ${request}; its change is being applied.`;
+        return state.long === true
+          ? `The owner approved ${request}; cloudpid applies it while the owner has cloudpid open, and approval_wait does not run it.`
+          : `The owner approved ${request}; its change is being applied.`;
       case "finished":
         return state.result?.text ?? `The owner approved ${request}, and its change was applied.`;
       case "declined":
@@ -402,8 +408,13 @@ export const renderApprovalState = (state: ApprovalState): string => {
 const afterState = (state: ApprovalState, enabled: Enabled): string | undefined => {
   if (!enabled.has("approval_wait") || state.finished) return undefined;
 
-  return state.status === "pending"
-    ? `Call approval_wait again with approval_id="${state.approval_id}" to keep waiting; only the owner answers, in cloudpid.`
+  if (state.status === "pending") {
+    return `Call approval_wait again with approval_id="${state.approval_id}" to keep waiting; only the owner answers, in cloudpid.`;
+  }
+
+  // A long apply (an Environment's delete) is never the wait's to run: the owner's visit or Try again finishes it.
+  return state.long === true
+    ? `cloudpid finishes it when the owner opens cloudpid or presses Try again on its card; call approval_wait again later with approval_id="${state.approval_id}" to see it finished.`
     : `Call approval_wait again with approval_id="${state.approval_id}" to see its change applied.`;
 };
 

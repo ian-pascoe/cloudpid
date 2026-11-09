@@ -521,7 +521,7 @@ export const SessionLive = Session.make(
         // wipes them (`removals`, `registry/removal.ts`), and a kept Secret.
         const environmentRemoval = sessionEnvironmentRemoval({
           registry: registryObject,
-          session: name,
+          author: sessionSource(name),
           objects: {
             workspaces: workspaceObjects,
             sessions: { destroy: destroySessionObject(sessions) },

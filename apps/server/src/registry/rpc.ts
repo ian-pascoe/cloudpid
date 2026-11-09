@@ -486,7 +486,15 @@ export const serveRegistryRpc = <R = never>(
     // (`docs/architecture/mcp-endpoint.md` → Approvals with no Session).
     const approvalRuns = approvalRunner({
       registry,
-      writes: endpointWrites({ registry, builds, spares, background: afterAnswer, credentials }),
+      writes: endpointWrites({
+        registry,
+        builds,
+        spares,
+        mcp,
+        objects: { workspaces, sessions, triggers },
+        background: afterAnswer,
+        credentials,
+      }),
       upkeep: (changes) =>
         upkeepFor({ registry, builds, spares, mcp, background: afterAnswer }, changes),
       background: afterAnswer,

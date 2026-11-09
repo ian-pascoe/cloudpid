@@ -1,19 +1,20 @@
-// The deletes the agent makes once the owner approved them (`@cloudpid/extensions/approval-tools`, `docs/architecture/agent-changes.md` →
-// Approval): an Environment, deleted as the owner's delete on the Environments page deletes it (`removals`, which the
-// main Worker's endpoint runs too, its Triggers with it), and a Secret kept for an Environment, deleted and recorded by the Registry
-// (`agentDeleteSecret`), after which the Builds' upkeep runs as after the owner's delete.
-import type {
-  EnvironmentFootprint,
-  EnvironmentRemovalService,
-} from "@cloudpid/extensions/approval-tools";
+// The deletes the agent makes once the owner approved them (`@cloudpid/extensions/environment-deletes`,
+// `docs/architecture/agent-changes.md` → Approval; `docs/architecture/mcp-endpoint.md` → Approvals with no Session): an
+// Environment, deleted as the owner's delete on the Environments page deletes it (`removals`, which the main Worker's
+// endpoint runs too, its Triggers with it), and a Secret kept for an Environment, deleted and recorded by the Registry
+// (`agentDeleteSecret`), after which the Builds' upkeep runs as after the owner's delete. Built with an author source
+// (`./change-author.ts`, #685 L1): a Session's, or the endpoint's for an approved request the main Worker applies, which
+// hands the upkeep to `background` and pushes the MCP server sets after an Environment's delete, as the owner's does.
+import type { EnvironmentRemovalService } from "@cloudpid/extensions/environment-deletes";
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import { GLOBAL_ID } from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import type { McpPushes } from "../mcp/push.ts";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import { type RemovalObjects, type RemovalRegistry, removals } from "../registry/removal.ts";
-import { sessionAuthor } from "./change-author.ts";
+import { type AuthorSource, authored, sessionOf } from "./change-author.ts";
 import { buildsAfterScope } from "./environments.ts";
 
 /** What the deletes read and change in the Registry. */
@@ -25,12 +26,19 @@ export type EnvironmentRemovalRegistry = RemovalRegistry &
 
 export type SessionEnvironmentRemovalOptions = {
   readonly registry: EnvironmentRemovalRegistry;
-  /** The Session's id in the Registry; undefined when unknown, for a Session that then deletes nothing. */
-  readonly session: string | undefined;
+  /** Who deletes: a Session (one the Registry does not list deletes nothing), or the endpoint's caller. */
+  readonly author: AuthorSource;
   /** The Workspaces' and the Sessions' objects, which deleting an Environment wipes. */
   readonly objects: RemovalObjects;
   /** The Builds' upkeep, run after a kept Secret is deleted, as after the owner's delete. */
   readonly builds: Pick<Builds, "of">;
+  /**
+   * Runs the upkeep after the answer (`waitUntil`): the Builds' after a Secret's delete, and the push of the MCP server
+   * sets after an Environment's. None in a Session, which awaits the Builds' upkeep and pushes nothing.
+   */
+  readonly background?: ((effect: Effect.Effect<void>) => Effect.Effect<void>) | undefined;
+  /** The push of the hosts' MCP server sets, which wipes a deleted Environment's host; none in a Session. */
+  readonly mcp?: Pick<McpPushes, "sync"> | undefined;
 };
 
 const unlisted = EnvironmentsError.make({
@@ -39,11 +47,24 @@ const unlisted = EnvironmentsError.make({
 
 export const sessionEnvironmentRemoval = ({
   registry,
-  session,
+  author,
   objects,
   builds,
+  background,
+  mcp,
 }: SessionEnvironmentRemovalOptions): EnvironmentRemovalService => {
   const { deleteEnvironment } = removals(registry, objects);
+  const registryAuthor = authored(author, unlisted);
+
+  /** A Session the Registry does not list deletes nothing; the endpoint's caller is no Session. */
+  const listed = author.kind === "endpoint" || sessionOf(author) !== undefined;
+
+  /** The upkeep after a delete: in `background` when there is one, else awaited. */
+  const afterwards = (effect: Effect.Effect<void>) =>
+    background === undefined ? effect : background(effect);
+
+  /** After an Environment's delete: the push that wipes its host, and every one an earlier push did not (none in a Session). */
+  const afterGone = () => (mcp === undefined ? Effect.void : afterwards(mcp.sync(undefined)));
 
   /** The Secrets kept in `scope` alone: an Environment's id, or each Environment's (`*`). */
   const keptIn = (scope: string) =>
@@ -74,14 +95,16 @@ export const sessionEnvironmentRemoval = ({
           sessions: sessions.length,
           secrets: (yield* keptIn(environment)).length,
           triggers: (yield* registry.listTriggers({ environment })).length,
-        } satisfies EnvironmentFootprint;
+        };
       }),
-    deleteEnvironment: (environment) =>
-      session === undefined
+    deleteEnvironment: (environment, progress) =>
+      !listed
         ? unlisted
-        : deleteEnvironment(environment).pipe(
+        : deleteEnvironment(environment, progress).pipe(
             Effect.mapError((error) => EnvironmentsError.make({ message: error.message })),
+            Effect.tap(afterGone),
           ),
+    afterGone,
     keptSecrets: (scope) =>
       Effect.gen(function* () {
         if (scope !== GLOBAL_ID && (yield* registry.getEnvironment({ id: scope })) === null) {
@@ -94,25 +117,23 @@ export const sessionEnvironmentRemoval = ({
           updatedAt,
         }));
       }),
-    deleteSecret: ({ environment, name, expected, author }) =>
+    deleteSecret: ({ environment, name, expected, author: change }) =>
       Effect.gen(function* () {
-        if (session === undefined) return yield* unlisted;
-
         const deleted = yield* registry.agentDeleteSecret({
           environment,
           name,
           expected,
-          author: sessionAuthor(session, author),
+          author: yield* registryAuthor(change),
         });
 
-        // The Registry refuses only a write over the MCP endpoint (`via`), which a Session's is not.
+        // The Registry refuses only a write over the MCP endpoint (`via`): a kept Secret in the reason.
         if (deleted.status === "rejected") {
           return yield* EnvironmentsError.make({ message: deleted.message });
         }
 
         // As after the owner's delete: the Secrets a Build gets are part of what it is made with.
         if (deleted.status === "deleted") {
-          yield* buildsAfterScope(registry, builds, environment);
+          yield* afterwards(buildsAfterScope(registry, builds, environment));
         }
 
         return deleted;

@@ -1146,7 +1146,8 @@ const fakeRegistries = () => {
 
         return skillInstallation(environment, skills);
       }),
-    listSkills: () => Effect.die("not under test"),
+    // What an approved Environment's delete reads of it (`environments.get`): no Skill kept.
+    listSkills: () => Effect.succeed([]),
     removeSkill: () => Effect.die("not under test"),
     skillChangeFiles: () => Effect.die("not under test"),
     installedSkills: () =>
@@ -1749,12 +1750,21 @@ const fakeRegistries = () => {
             : { ...held, status: "declined", reason: reason ?? null },
       ),
     withdrawApproval: () => Effect.die("The owner's endpoint withdraws no Approval"),
+    // A lease holds until its run finishes or lets go of it: no time passes here, so none lapses.
     claimApproval: ({ id, token }) =>
       Effect.map(
         changeApproval(id, (held) =>
-          held.status === "approved" ? { ...held, leaseToken: token, leaseUntil: 1 } : held,
+          held.status === "approved" && (held.leaseToken === null || held.leaseToken === token)
+            ? { ...held, leaseToken: token, leaseUntil: 1 }
+            : held,
         ),
         (held) => (held === null ? null : { approval: held, leased: held.leaseToken === token }),
+      ),
+    releaseApproval: ({ id, token }) =>
+      changeApproval(id, (held) =>
+        held.status === "approved" && held.leaseToken === token
+          ? { ...held, leaseToken: null, leaseUntil: null }
+          : held,
       ),
     finishApproval: ({ id, token, status, reason, result }) =>
       changeApproval(id, (held) =>
@@ -1911,6 +1921,10 @@ const fakeRegistries = () => {
     lastDeliveries,
     breakSession: (id: string, message: string) => {
       brokenSessions.set(id, message);
+    },
+    /** Let Session `id`'s object work again, after `breakSession`. */
+    mendSession: (id: string) => {
+      brokenSessions.delete(id);
     },
     runningSessions,
     imported,
@@ -6790,6 +6804,94 @@ describe("the Approvals asked over the MCP endpoint", () => {
     );
 
     expect(again.status).toBe("refused");
+  });
+
+  /** An approved delete of Environment `environment`, asked against `footprint`, which no run is applying. */
+  const deleteAsked = (
+    fake: ReturnType<typeof fakeRegistries>,
+    id: string,
+    environment: string,
+    footprint = { workspaces: 0, sessions: 0, secrets: 0, triggers: 0 },
+  ) =>
+    asked(fake, {
+      id,
+      tool: "environment_delete",
+      scope: environment,
+      section: "environments",
+      args: { id: environment, reason: "Done with it" },
+      card: {
+        tool: "environment_delete",
+        target: `Environment "${environment}"`,
+        change: "Delete the Environment",
+        before: "",
+        after: "deleted",
+        reason: "Done with it",
+      },
+      expected: footprint,
+      long: true,
+      status: "approved",
+    });
+
+  const environmentIds = (fake: ReturnType<typeof fakeRegistries>) =>
+    call(fake, (registry) => registry.listEnvironments()).then((all) => Arr.map(all, (e) => e.id));
+
+  it("finishes on Try again, inline, an Environment's delete a failed step stopped", async () => {
+    const fake = fakeRegistries();
+    const id = await makeEnvironment(fake, "Web");
+    const session = await call(fake, (registry) => registry.createSession({ environment: id }));
+
+    deleteAsked(fake, "a-1", id, { workspaces: 1, sessions: 1, secrets: 0, triggers: 0 });
+    fake.breakSession(session.id, "storage error");
+
+    const cut = await withClient(
+      Registry.pipe(Effect.flatMap((registry) => registry.retryApproval({ id: "a-1" }))),
+      fake,
+    );
+
+    expect(cut.status).toBe("approved");
+    // The run let go of its lease: the fake holds a lease until then, so Try again could not run otherwise.
+    expect(fake.approvalsHeld.get("a-1")?.leaseToken).toBeNull();
+    expect(await environmentIds(fake)).toContain(id);
+
+    fake.mendSession(session.id);
+
+    const retried = await withClient(
+      Registry.pipe(Effect.flatMap((registry) => registry.retryApproval({ id: "a-1" }))),
+      fake,
+    );
+
+    expect(retried.status).toBe("finished");
+    expect(await environmentIds(fake)).not.toContain(id);
+  });
+
+  it("resumes behind the Session list every short request no run applies, and one long one per visit", async () => {
+    const fake = fakeRegistries();
+    const first = await makeEnvironment(fake, "First");
+    const second = await makeEnvironment(fake, "Second");
+
+    deleteAsked(fake, "a-first", first);
+    deleteAsked(fake, "a-second", second);
+    asked(fake, { id: "a-short", status: "approved", tool: "settings_retired_set" });
+
+    const visit = async () => {
+      await withClient(Registry.pipe(Effect.flatMap((registry) => registry.listSessions())), fake);
+      // The resume after the answer, then each apply it handed on.
+      await fake.runBackground();
+      await fake.runBackground();
+    };
+
+    await visit();
+
+    expect(fake.approvalsHeld.get("a-short")?.status).toBe("refused");
+    expect(fake.approvalsHeld.get("a-first")?.status).toBe("finished");
+    expect(fake.approvalsHeld.get("a-second")?.status).toBe("approved");
+    expect(await environmentIds(fake)).not.toContain(first);
+    expect(await environmentIds(fake)).toContain(second);
+
+    await visit();
+
+    expect(fake.approvalsHeld.get("a-second")?.status).toBe("finished");
+    expect(await environmentIds(fake)).not.toContain(second);
   });
 
   it("refuses an answer to a request it does not keep", async () => {

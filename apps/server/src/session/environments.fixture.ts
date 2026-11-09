@@ -42,6 +42,7 @@ const undeleted = () => Effect.die("the test Environments delete nothing");
 export const unusedRemoval: EnvironmentRemovalService = {
   footprint: undeleted,
   deleteEnvironment: undeleted,
+  afterGone: undeleted,
   keptSecrets: undeleted,
   deleteSecret: undeleted,
 };

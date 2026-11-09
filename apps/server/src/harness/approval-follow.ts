@@ -48,6 +48,9 @@ export const approvalState = (approval: StoredApproval): ApprovalState => {
 
   if (reason !== null) state.reason = reason;
 
+  // The caller is told that its apply is not `approval_wait`'s, so it does not wait on it to run.
+  if (approval.long) state.long = true;
+
   if (approval.result !== null) {
     // SAFETY: a kept answer's structured value is JSON (`ChangeAnswer`).
     state.result = {
