@@ -2003,6 +2003,10 @@ describe("the management tools", () => {
       ],
       ["settings_get", { id: long, field: "instructions", next_offset: 40_000 }],
       ["settings_mcp_list", { scope, servers: [{ name: "docs" }] }],
+      ["settings_model_set", { scope, changes: [{ id: 1 }] }],
+      ["settings_reset", { scope, changes: [], replayed: true }],
+      ["settings_mcp_disable", { scope, changes: [{ id: 1 }] }],
+      ["settings_mcp_reload", { scope, repos: [] }],
     ];
 
     for (const [tool, structured] of answers) {
@@ -2103,6 +2107,41 @@ describe("the management tools", () => {
       );
       expect(
         presented("settings_get", instructions(false, null)).structured["next"],
+      ).toBeUndefined();
+    });
+
+    it("sends a Settings change, or a replayed one, to settings_get, and says nothing when nothing changed", () => {
+      const scope = { id: "default", name: "Default" };
+
+      expect(
+        presented("settings_model_set", { scope, changes: [{ id: 1 }] }).structured["next"],
+      ).toBe('Call settings_get with scope="default" to see the settings as they are now.');
+      expect(
+        presented("settings_reset", { scope, changes: [], replayed: true }).structured["next"],
+      ).toContain("settings_get");
+      expect(
+        presented("settings_reset", { scope, changes: [], unchanged: ["model"] }).structured[
+          "next"
+        ],
+      ).toBeUndefined();
+      expect(
+        presented("settings_model_set", { scope, changes: [{ id: 1 }] }, ["settings_model_set"])
+          .structured["next"],
+      ).toBeUndefined();
+    });
+
+    it("sends an MCP server change, and a reload, to settings_mcp_list", () => {
+      const scope = { id: "*", name: "Global" };
+
+      expect(
+        presented("settings_mcp_remove", { scope, changes: [{ id: 2 }] }).structured["next"],
+      ).toBe('Call settings_mcp_list with scope="*" to see the servers as they are now.');
+      expect(
+        presented("settings_mcp_reload", { scope: { id: "default", name: "D" }, repos: [] })
+          .structured["next"],
+      ).toContain('scope="default"');
+      expect(
+        presented("settings_mcp_disable", { scope, changes: [] }).structured["next"],
       ).toBeUndefined();
     });
 
@@ -2213,10 +2252,39 @@ describe("the instructions with the management tools", () => {
 
     expect(withWrites).toMatch(/request_id to session_start and every change/);
     // The sentence is the contract (D14): the clause names only the families with a change tool served, so it points the
-    // model at no tool it cannot call. No settings_* change tool is served yet (S2b), so neither it nor "or scope" is said.
+    // model at no tool it cannot call. With no settings_* change tool served, neither it nor "or scope" is said.
     expect(withWrites).toContain("the other environment_* tools change it, naming an id (");
     expect(withWrites).not.toContain("settings_*");
     expect(withWrites.split("\n").length).toBe(withReads.split("\n").length);
+  });
+
+  it.each([
+    "settings_model_set",
+    "settings_reset",
+    "settings_mcp_disable",
+    "settings_mcp_remove",
+  ] as const)(
+    "name settings_* once the change tool %s is served, and no longer environment_*",
+    (tool) => {
+      const text = instructionsFor(new Set([...sessions, ...reads, tool]));
+
+      expect(text).toContain(
+        'the other settings_* tools change it, naming an id or scope ("*" is Global) and a reason.',
+      );
+      expect(text).not.toContain("environment_*");
+      expect(text).toMatch(/request_id to session_start and every change/);
+    },
+  );
+
+  it("name both families once a change tool of each is served, within the limit", () => {
+    const text = instructionsFor(
+      new Set([...sessions, ...reads, "environment_variable_set", "settings_model_set"]),
+    );
+
+    expect(text).toContain(
+      "the other environment_* and settings_* tools change it, naming an id or scope",
+    );
+    expect(text.length).toBeLessThanOrEqual(1500);
   });
 
   it("name only the reads that are served, and say nothing of field for a list alone", () => {
