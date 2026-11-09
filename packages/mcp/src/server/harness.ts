@@ -383,7 +383,7 @@ export const renderApprovalState = (state: ApprovalState): string => {
       case "expired":
         return `${request} expired before the owner answered: nothing was changed.`;
       case "withdrawn":
-        return `${request} was withdrawn${because} Nothing was changed.`;
+        return `${request} was withdrawn${because}. Nothing was changed.`;
       default:
         return `${request} is ${state.status}${because}`;
     }

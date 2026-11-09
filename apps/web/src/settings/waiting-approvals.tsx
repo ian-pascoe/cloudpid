@@ -6,7 +6,7 @@
 // approved shows its apply (`ApprovalProgress`), with Try again once a cut left it unapplied; one done with says what
 // came of it for the 24 h the Registry keeps it. Each has the anchor `?request=` names (`useRequestInView`).
 
-import type { ApprovalWithdrawal, RegistryApproval } from "@cloudpid/protocol";
+import { type RegistryApproval, withdrawalReason } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import { LoaderCircle } from "lucide-react";
 import { ApprovalCard } from "../chat/approval-card.tsx";
@@ -28,18 +28,6 @@ interface Outcome {
   readonly retry: boolean;
   readonly busy: boolean;
 }
-
-/** Why a request was withdrawn, as its row says it. */
-const withdrawnText = (withdrawal: ApprovalWithdrawal | undefined): string => {
-  switch (withdrawal) {
-    case "superseded":
-      return "Replaced by a newer request for the same change. Nothing was changed.";
-    case "environment_deleted":
-      return "Withdrawn with its Environment. Nothing was changed.";
-    default:
-      return "Withdrawn by the agent that asked. Nothing was changed.";
-  }
-};
 
 /** What came of a request no longer waiting, as its row says it; `retry` when Try again applies it. */
 const outcomeOf = (approval: RegistryApproval): Outcome => {
@@ -69,7 +57,7 @@ const outcomeOf = (approval: RegistryApproval): Outcome => {
       };
     case "withdrawn":
       return {
-        text: withdrawnText(approval.withdrawal),
+        text: `Withdrawn: ${withdrawalReason(approval.withdrawal) ?? "no longer asked"}. Nothing was changed.`,
         retry: false,
         busy: false,
       };

@@ -11,8 +11,9 @@
 //   settled more than 24 h ago.
 // - **Answering**: Approve marks the request `approved` (the main Worker then applies it), Decline `declined`. A request
 //   no longer waiting is answered as it is.
-// - **Applying** is the main Worker's (`../harness/approvals.ts`), under a lease here: a run claims the request for 60 s,
-//   so two runs never apply it at once, and `finish` settles it with the run's outcome, only while its lease holds.
+// - **Applying** is the main Worker's (`../harness/approval-runner.ts`), under a lease here: a run claims the request for
+//   60 s, so two runs never apply it at once, and `finish` settles it with the run's outcome, only while its lease holds.
+//   The lease rule is `awaitsApply`'s, which `claim` and `stale` say again in SQL.
 // - **Withdrawal**: by the caller while it waits, and with its Environment (`withdrawEnvironmentApprovals`, which the
 //   store's `deleteEnvironment` runs in its transaction).
 //
@@ -23,7 +24,7 @@ import {
   APPROVAL_LIFETIME_MS,
   APPROVAL_RETENTION_MS,
   ApprovalCardContent,
-  type ApprovalStatus,
+  ApprovalStatus,
   ApprovalWithdrawal,
   MAX_PENDING_APPROVALS,
   McpAuth,
@@ -77,6 +78,13 @@ export type StoredApproval = {
   /** The applied change's answer, for `finished`. */
   readonly result: ChangeAnswer | null;
 };
+
+/**
+ * The lease rule: an approved request awaits its apply at `now` when no run holds it (none started, or the lease of the
+ * one that did lapsed); otherwise a run is applying it. `claim` takes, `stale` lists and the Settings page shows by it.
+ */
+export const awaitsApply = (approval: StoredApproval, now: number): boolean =>
+  approval.status === "approved" && (approval.leaseUntil === null || approval.leaseUntil <= now);
 
 /** What a tool asks to be approved. */
 export type ApprovalAsk = {
@@ -149,23 +157,8 @@ const decodeAuth = Schema.decodeUnknownSync(McpAuth);
 // @effect-diagnostics-next-line schemaSync:off -- as above.
 const decodeWithdrawal = Schema.decodeUnknownSync(ApprovalWithdrawal);
 
-/** The statuses a row is stored with; one a later build wrote that this one does not know reads as `unknown`. */
-const STORED: ReadonlyArray<ApprovalStatus> = [
-  "pending",
-  "approved",
-  "finished",
-  "declined",
-  "changed_since",
-  "refused",
-  "expired",
-  "withdrawn",
-];
-
-const statusOf = (text: string): ApprovalStatus =>
-  Option.getOrElse(
-    Arr.findFirst(STORED, (status) => status === text),
-    (): ApprovalStatus => "unknown",
-  );
+// @effect-diagnostics-next-line schemaSync:off -- as above: a status a later build wrote that this one does not know reads as `unknown`.
+const statusOf = Schema.decodeUnknownSync(ApprovalStatus);
 
 const toApproval = (row: ApprovalRow): StoredApproval => {
   const via: Types.Mutable<AgentChangeVia> = { auth: decodeAuth(row.via_auth) };
@@ -223,8 +216,7 @@ export const shownApproval = (approval: StoredApproval, now: number): RegistryAp
         ? { auth: approval.via.auth }
         : { auth: approval.via.auth, client: approval.via.client },
     status: approval.status,
-    applying:
-      approval.status === "approved" && approval.leaseUntil !== null && approval.leaseUntil > now,
+    applying: approval.status === "approved" && !awaitsApply(approval, now),
     createdAt: approval.createdAt,
     expiresAt: approval.expiresAt,
   };

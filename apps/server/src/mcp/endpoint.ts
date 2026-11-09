@@ -15,7 +15,8 @@ import { type RemovalObjects, removals } from "../registry/removal.ts";
 import { type Spares, upkeepAfterStart } from "../registry/rpc.ts";
 import type { Session } from "../session/Session.ts";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
-import { approvalRunner, approvalWait, approvalWithdraw } from "../harness/approvals.ts";
+import { approvalWait, approvalWithdraw } from "../harness/approval-follow.ts";
+import { approvalRunner } from "../harness/approval-runner.ts";
 import { harnessDispatch } from "../harness/dispatch.ts";
 import { harnessServices } from "../harness/services.ts";
 import { mcpApiService, type McpBackend } from "./api.ts";
@@ -121,15 +122,7 @@ const backendOf = (
   const dispatch = harnessDispatch(services);
 
   // An approved request no run is applying is applied by the caller's `approval_wait`, as by the owner's Approve.
-  const runner = approvalRunner({
-    approvals: services.approvals,
-    writes: services.writes,
-    upkeep: services.upkeep,
-    background,
-  });
-
-  const waitFor = approvalWait({ approvals: services.approvals, runner });
-  const withdraw = approvalWithdraw({ approvals: services.approvals });
+  const runner = approvalRunner(services);
 
   // A failed RPC is a defect here: `McpApiService` answers every one as `unavailable`, which may heal.
   return {
@@ -198,8 +191,8 @@ const backendOf = (
       ),
     // The management tools over the Registry and the hosts, with no Session.
     harness: (request, caller) => dispatch(request, caller),
-    approvalWait: (request, caller) => waitFor(request, caller),
-    approvalWithdraw: (request) => withdraw(request),
+    approvalWait: approvalWait({ registry: services.registry, runner }),
+    approvalWithdraw: approvalWithdraw(services),
   };
 };
 

@@ -57,8 +57,8 @@ export type HarnessChangeRegistry = Pick<
 >;
 
 /**
- * What the Approvals asked over the endpoint use of the Registry (`./approvals.ts`): the requests, their lease and push,
- * and the Settings' write an approved one makes.
+ * What the Approvals asked over the endpoint use of the Registry (`./approval-ask.ts`, `./approval-runner.ts`,
+ * `./approval-follow.ts`): the requests, their lease and push, and the claims an approved one's write records.
  */
 export type ApprovalsRegistry = Pick<
   RegistryMethods,
@@ -110,7 +110,7 @@ export type EndpointWrites = {
 
 /**
  * The writes with no Session over `deps`: what the management tools' change cores run over, and what an approved
- * Approval's apply runs over (`./approvals.ts`), from the `/mcp` request or from the owner's `/rpc` call alike.
+ * Approval's apply runs over (`./approval-runner.ts`), from the `/mcp` request or from the owner's `/rpc` call alike.
  */
 export const endpointWrites = ({
   registry,
@@ -200,10 +200,8 @@ export type HarnessServices = {
   readonly settingsMcpReload: SettingsMcpAccessService;
   /** The writes with no Session, which an approved Approval's apply runs over. */
   readonly writes: EndpointWrites;
-  /** The probe, the claims of `request_id` and the notice. */
-  readonly registry: HarnessChangeRegistry;
-  /** The Approvals asked over the endpoint, and what their apply reads of the claims. */
-  readonly approvals: ApprovalsRegistry;
+  /** The probe, the claims of `request_id` and the notice, and the Approvals asked over the endpoint. */
+  readonly registry: HarnessChangeRegistry & ApprovalsRegistry;
   /**
    * This request's own origin (`https://<host>`), which a request's card `url` starts with; none for a caller that has none
    * (a test), whose `url` is the path.
@@ -264,7 +262,6 @@ export const harnessServices = ({
     }),
     writes,
     registry,
-    approvals: registry,
     origin,
     upkeep: (changes) => upkeepFor({ registry, builds, spares, mcp, background }, changes),
     background,

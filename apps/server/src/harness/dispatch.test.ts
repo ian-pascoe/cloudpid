@@ -737,6 +737,34 @@ describe("the lifecycle, Skill and reset tools", () => {
       }),
     ));
 
+  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in answers every ask as a caller at its
+  // cap (`too_many_approvals`), which only the ask gives.
+  it.each([
+    [
+      "settings_reset of a Limit",
+      "settings_reset",
+      { scope: "*", field: "spendLimit.perSession", reason },
+    ],
+    [
+      "environment_setting_reset of the size limit",
+      "environment_setting_reset",
+      { id: "default", setting: "maxInstance", reason },
+    ],
+  ] as const)("hands %s to the ask for the owner's Approval, writing nothing", (_, tool, input) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, registryCalls, ledger } = changing();
+
+        const result = yield* call(tool, input);
+
+        expect(result).toMatchObject({ ok: false, error: { code: "too_many_approvals" } });
+        expect(registryCalls).toContain("requestApproval");
+        expect(registryCalls).not.toContain("agentChangeFeatures");
+        expect(ledger.changes).toEqual([]);
+      }),
+    ),
+  );
+
   it.each([
     [
       "a Skill install at Global",
@@ -749,11 +777,6 @@ describe("the lifecycle, Skill and reset tools", () => {
       "a Test Build of proposed changes",
       "environment_rebuild",
       { id: "default", reason, proposed: { setup_script: "echo hi" } },
-    ],
-    [
-      "the reset of the size limit",
-      "environment_setting_reset",
-      { id: "default", setting: "maxInstance", reason },
     ],
   ] as const)(
     "answers %s as unsupported, before the Registry is asked anything",

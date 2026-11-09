@@ -54,6 +54,33 @@ export const ApprovalWithdrawal = openLiterals(
 export type ApprovalWithdrawal = typeof ApprovalWithdrawal.Type;
 
 /**
+ * Whether the owner approved a request in `status`: its change is applied, being applied, or was not applied because the
+ * target changed or the Registry refused it. Such a request can no longer be withdrawn.
+ */
+export const approvalApproved = (status: ApprovalStatus): boolean =>
+  status === "approved" ||
+  status === "finished" ||
+  status === "changed_since" ||
+  status === "refused";
+
+/**
+ * Why a request was withdrawn, as a clause the caller (`approval_wait`'s `reason`) and the owner (the Settings page) both
+ * read after "Withdrawn: ": the one source of the words. Undefined when the cause is not known.
+ */
+export const withdrawalReason = (withdrawal: ApprovalWithdrawal | undefined): string | undefined => {
+  switch (withdrawal) {
+    case "withdrawn":
+      return "the agent that asked took it back";
+    case "superseded":
+      return "a newer request for the same change, with another value, replaced it";
+    case "environment_deleted":
+      return "its Environment was deleted";
+    default:
+      return undefined;
+  }
+};
+
+/**
  * A request as the Settings page shows it: its card, who asked (the client's name, never its id), where it stands, and,
  * once it is done with, what came of it.
  */

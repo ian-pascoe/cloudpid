@@ -238,7 +238,7 @@ export interface McpBackend {
     caller: AgentChangeVia,
   ) => Effect.Effect<ApiResult<HarnessAnswer>>;
   /**
-   * `approval_wait` over the Registry's Approvals (`../harness/approvals.ts`), for `caller`, whose waits are capped by how
+   * `approval_wait` over the Registry's Approvals (`../harness/approval-follow.ts`), for `caller`, whose waits are capped by how
    * it got in. Its failures are values; a defect is read as `unavailable`.
    */
   readonly approvalWait: (

@@ -6,7 +6,8 @@
 // codes, and answers anything else `unavailable` with a fixed sentence, so no service's message reaches a caller that was
 // not meant to read it. A change goes through one path: the probe (`agentChangeFeatures`, failing closed), the
 // `request_id` (refused with the Registry's own `approval:` prefix; looked up, then claimed by the write's own transaction
-// and settled before the answer is sent), then the notice and the upkeep after the answer.
+// and settled before the answer is sent), then the notice and the upkeep after the answer. A tool whose change waits for
+// the owner's Approval, and `settings_reset` of a Limit, goes to the ask instead (`./approval-ask.ts`).
 // @effect-diagnostics missingPipeableSignature:off preferTypedSchemaDecoder:off cryptoRandomUUID:off -- the input is the caller's JSON, read again; an attempt is a plain UUID.
 import { sha256Hex, sortedJson } from "@cloudpid/config";
 import {
@@ -19,7 +20,7 @@ import {
   LIFECYCLE_REPLAYED,
   lifecycleCores,
 } from "@cloudpid/extensions/environment-lifecycle-changes";
-import { RESET_LIMIT_UNSUPPORTED, resetCore } from "@cloudpid/extensions/environment-reset";
+import { resetCore } from "@cloudpid/extensions/environment-reset";
 import { SKILL_REPLAYED, skillCores } from "@cloudpid/extensions/environment-skill-changes";
 import { environmentGetRead, environmentListRead } from "@cloudpid/extensions/environment-reads";
 import type { HarnessRead, HarnessWrite } from "@cloudpid/extensions/harness";
@@ -48,7 +49,9 @@ import {
   HARNESS_TOOLS,
   type HarnessToolName,
   RESET_LIMIT_SETTING,
+  SETTINGS_LIMIT_FIELDS,
 } from "@cloudpid/protocol/harness-tools";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -57,14 +60,9 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { ChangeClaim, ChangeRequest } from "../registry/change-requests.ts";
 import type { AuthorSource } from "../session/change-author.ts";
-import { askApproval } from "./approvals.ts";
+import { type ApprovalAskCall, askApproval } from "./approval-ask.ts";
+import type { CoreError } from "./approval-tools.ts";
 import type { HarnessChangeServices, HarnessServices } from "./services.ts";
-
-/** What a core's refusal carries that the dispatcher reads: the message the model sees, and the code that maps. */
-type CoreError = {
-  readonly message: string;
-  readonly code?: "not_found" | "invalid_argument" | "unsupported" | "unavailable";
-};
 
 /** The answer of a failure no code names: fixed, so a service's own message (a Registry's, a host's) is never relayed. */
 const unavailable = apiFailure(
@@ -115,8 +113,7 @@ const ENVIRONMENT_REPLAYED: Readonly<Record<EnvironmentToolName, Replayed>> = {
 
 /**
  * The words of what a tool is asked for that this stage does not serve (`unsupported`), or undefined for a call it does:
- * a change to the Skills kept Global and the reset of the size limit wait for the owner's Approval (S3b, S3a-2), and a Test
- * Build of `proposed` is S4a's. They are answered before anything is claimed or written.
+ * a change to the Skills kept Global waits for the owner's Approval (S3b), and a Test Build of `proposed` is S4a's. They are answered before anything is claimed or written.
  */
 type Unsupported<Name extends HarnessToolName> = (args: InputOf<Name>) => string | undefined;
 
@@ -182,17 +179,21 @@ const approvalPrefix = apiFailure(
   `A request_id may not begin "${APPROVAL_REQUEST_PREFIX}": cloudpid keeps those for the owner's Approvals.`,
 );
 
+/** The ask of a change that waits for the owner's Approval, over the dispatcher's services (`askApproval`). */
+type Ask = (call: ApprovalAskCall) => Effect.Effect<ApiResult<HarnessAnswer>>;
+
 /**
- * An asking tool's served form (`./approvals.ts`): the input read again, a `request_id` beginning `approval:` refused,
+ * An asking tool's served form (`./approval-ask.ts`): the input read again, a `request_id` beginning `approval:` refused,
  * then the ask, which answers `pending` (or `unchanged`) and claims and settles the `request_id` itself.
  */
-const serveAsk = <Name extends ApprovalAskToolName>(
-  services: HarnessServices,
+const serveAsk = <
+  Name extends ApprovalAskToolName | "settings_reset" | "environment_setting_reset",
+>(
+  ask: Ask,
   tool: Name,
   newAttempt: () => string,
 ): Served => {
   const decode = decoder(tool);
-  const ask = askApproval(services);
 
   return ({ input, requestId: given }, caller) => {
     const decoded = decode(input);
@@ -218,6 +219,46 @@ const serveAsk = <Name extends ApprovalAskToolName>(
     });
   };
 };
+
+/** What `settings_reset`'s routing reads of its input: the field. */
+const decodeResetField = Schema.decodeUnknownOption(Schema.Struct({ field: Schema.String }));
+
+/** What `environment_setting_reset`'s routing reads of its input: the setting. */
+const decodeResetSetting = Schema.decodeUnknownOption(Schema.Struct({ setting: Schema.String }));
+
+/** Whether a `settings_reset` input names a Limit, whose reset waits for the owner's Approval. */
+const resetsLimit = (input: HarnessRequest["input"]): boolean =>
+  Option.match(decodeResetField(input), {
+    onNone: () => false,
+    onSome: ({ field }) => Arr.contains(SETTINGS_LIMIT_FIELDS, field),
+  });
+
+/** Whether an `environment_setting_reset` input names the size limit, whose reset waits for the owner's Approval. */
+const resetsSizeLimit = (input: HarnessRequest["input"]): boolean =>
+  Option.match(decodeResetSetting(input), {
+    onNone: () => false,
+    onSome: ({ setting }) => setting === RESET_LIMIT_SETTING,
+  });
+
+/** The keys a Settings change's endpoint answer always has, as an ask that changed nothing yet gives them. */
+const SETTINGS_CHANGE_KEYS = { changes: [], changes_truncated: false, unchanged: [] };
+
+/** The keys an Environment change's endpoint answer always has, as an ask that changed nothing yet gives them. */
+const ENVIRONMENT_CHANGE_KEYS = { ...SETTINGS_CHANGE_KEYS, global: null };
+
+/**
+ * An ask's answer as a reset's endpoint output has it (`SettingsResetEndpointOutput`, `EnvironmentResetEndpointOutput`):
+ * no change made yet, with `keys`, which a change's answer always has.
+ */
+const asChangeAnswer =
+  (keys: Readonly<Record<string, Schema.Json>>) =>
+  (result: ApiResult<HarnessAnswer>): ApiResult<HarnessAnswer> => {
+    const structured = result.ok ? result.value.structured : null;
+
+    if (!result.ok || !Predicate.isObject(structured) || Array.isArray(structured)) return result;
+
+    return apiOk({ ...result.value, structured: { ...keys, ...structured } });
+  };
 
 /** The refusal of a `request_id` an earlier call holds with another tool or other arguments. */
 const otherArguments = (id: string) =>
@@ -505,8 +546,33 @@ export const harnessDispatch = (
       ? `The Skills kept Global (id "${GLOBAL_ID}") wait for the owner's Approval, which is not offered yet: name an Environment's id.`
       : undefined;
 
+  const ask = askApproval(services);
+
   const asking = <Name extends ApprovalAskToolName>(tool: Name) =>
-    serveAsk(services, tool, newAttempt);
+    serveAsk(ask, tool, newAttempt);
+
+  // `settings_reset` of a Limit asks the owner, as the Limit tools do; any other field is reset at once.
+  const resetChange = settingsChange("settings_reset", (cores) => cores.settings_reset);
+  const resetAsk = serveAsk(ask, "settings_reset", newAttempt);
+
+  const settingsReset: Served = (request, caller) =>
+    resetsLimit(request.input)
+      ? Effect.map(resetAsk(request, caller), asChangeAnswer(SETTINGS_CHANGE_KEYS))
+      : resetChange(request, caller);
+
+  // `environment_setting_reset` of the size limit asks the owner, as `environment_container_size_limit_set` does; any
+  // other setting is reset at once.
+  const sizeLimitReset = serveAsk(ask, "environment_setting_reset", newAttempt);
+
+  const settingReset = change(
+    "environment_setting_reset",
+    (cores) => cores.environment_setting_reset,
+  );
+
+  const environmentSettingReset: Served = (request, caller) =>
+    resetsSizeLimit(request.input)
+      ? Effect.map(sizeLimitReset(request, caller), asChangeAnswer(ENVIRONMENT_CHANGE_KEYS))
+      : settingReset(request, caller);
 
   // The tools `harness` serves: the same names as `HARNESS_TOOLS_SERVED` (`../mcp/api.ts`), which `dispatch.test.ts` checks.
   // `approval_wait` and `approval_withdraw` have operations of their own.
@@ -578,7 +644,7 @@ export const harnessDispatch = (
       "settings_extension_set",
       (cores) => cores.settings_extension_set,
     ),
-    settings_reset: settingsChange("settings_reset", (cores) => cores.settings_reset),
+    settings_reset: settingsReset,
     settings_mcp_reload: serveRead(
       "settings_mcp_reload",
       mcpReloadCore(services.settingsMcpReload),
@@ -629,12 +695,8 @@ export const harnessDispatch = (
       (cores) => cores.environment_skill_remove,
       globalSkillsWords,
     ),
-    environment_setting_reset: change(
-      "environment_setting_reset",
-      (cores) => cores.environment_setting_reset,
-      ({ setting }) => (setting === RESET_LIMIT_SETTING ? RESET_LIMIT_UNSUPPORTED : undefined),
-    ),
-    // The tools that wait for the owner's Approval: they ask, and answer `pending` (`./approvals.ts`).
+    environment_setting_reset: environmentSettingReset,
+    // The tools that wait for the owner's Approval: they ask, and answer `pending` (`./approval-ask.ts`).
     settings_spend_limit_set: asking("settings_spend_limit_set"),
     settings_subagent_depth_set: asking("settings_subagent_depth_set"),
     settings_subagent_workspaces_set: asking("settings_subagent_workspaces_set"),

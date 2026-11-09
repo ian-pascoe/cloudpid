@@ -37,13 +37,8 @@ const SCOPE = `Give scope "${GLOBAL_SETTINGS_SCOPE}" to change Global, which eac
 const REACH =
   "The owner can see and revert the change on the Settings page. A change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field; each takes it when it next admits input, and a Run going keeps what it started with.";
 
-/** The endpoint's answer to an asking tool: the request made (or the one waiting already), or the value set already. */
-export const ApprovalAskOutput = Schema.Struct({
-  ...NextField,
-  status: Schema.String.annotate({
-    description:
-      '"pending": the owner was asked, and approval_wait follows the request; "unchanged": the target has the value already, so nothing was asked',
-  }),
+/** What a `pending` answer says of the request: its id, its card's url, and when it expires. */
+export const ApprovalRequestFields = {
   approval_id: Schema.optionalKey(
     Schema.String.annotate({
       description: "The request's id, for approval_wait and approval_withdraw",
@@ -55,6 +50,16 @@ export const ApprovalAskOutput = Schema.Struct({
   expires_at: Schema.optionalKey(
     Schema.String.annotate({ description: "When the request expires unanswered (ISO 8601)" }),
   ),
+};
+
+/** The endpoint's answer to an asking tool: the request made (or the one waiting already), or the value set already. */
+export const ApprovalAskOutput = Schema.Struct({
+  ...NextField,
+  status: Schema.String.annotate({
+    description:
+      '"pending": the owner was asked, and approval_wait follows the request; "unchanged": the target has the value already, so nothing was asked',
+  }),
+  ...ApprovalRequestFields,
   scope: Schema.optionalKey(ScopeRef),
   unchanged: Schema.optionalKey(
     Schema.Array(Schema.String).annotate({
@@ -268,7 +273,7 @@ export const approvalWithdraw = {
   annotations: DESTRUCTIVE_IDEMPOTENT,
   endpoint: {
     description:
-      "Take back a request for the owner's Approval that is still waiting (approval_id, from the tool that asked): its card goes, and nothing is changed. A request already withdrawn, expired or declined is answered as it is; one the owner approved is refused, since its change is applied.",
+      "Take back a request for the owner's Approval that is still waiting (approval_id, from the tool that asked): its card goes, and nothing is changed. A request already withdrawn, expired or declined is answered as it is; one the owner approved is refused, whether its change is applied, being applied or was not applied (approval_wait says which).",
     input: Schema.Struct({ approval_id: ApprovalId }),
     output: ApprovalStateOutput,
   },

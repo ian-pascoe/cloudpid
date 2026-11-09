@@ -86,7 +86,7 @@ import {
 import type { McpPushes } from "../mcp/push.ts";
 import type { McpSignInManage } from "../mcp/sign-in-manage.ts";
 import type { McpStatus } from "../mcp/status.ts";
-import { approvalRunner } from "../harness/approvals.ts";
+import { approvalRunner } from "../harness/approval-runner.ts";
 import { endpointWrites } from "../harness/services.ts";
 import { shownApproval } from "./approvals.ts";
 import { removals } from "./removal.ts";
@@ -485,7 +485,7 @@ export const serveRegistryRpc = <R = never>(
     // The owner's answer to an Approval asked over the MCP endpoint applies it here, as `approval_wait` does there
     // (`docs/architecture/mcp-endpoint.md` → Approvals with no Session).
     const approvalRuns = approvalRunner({
-      approvals: registry,
+      registry,
       writes: endpointWrites({ registry, builds, spares, background: afterAnswer, credentials }),
       upkeep: (changes) =>
         upkeepFor({ registry, builds, spares, mcp, background: afterAnswer }, changes),

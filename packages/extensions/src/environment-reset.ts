@@ -101,8 +101,11 @@ const valueWords = (setting: ResettableSetting, value: Schema.Json | null): stri
 /** The tool's name, which its cards and the changes it makes carry. */
 const RESET_TOOL = "environment_setting_reset";
 
-/** What the endpoint answers (`unsupported`) to the reset of the size limit, which waits for the owner's Approval (S3a-2). */
-export const RESET_LIMIT_UNSUPPORTED = `Resetting the size limit (${RESET_LIMIT_SETTING}) waits for the owner's Approval, which is not offered yet: the other settings can be reset.`;
+/**
+ * What `resetCore` answers (`unsupported`) to the reset of the size limit, which it never makes: on the endpoint the
+ * dispatcher asks the owner for it before the core runs (`apps/server/src/harness/approval-ask.ts`).
+ */
+export const RESET_LIMIT_UNSUPPORTED = `Nothing was changed: resetting the size limit (${RESET_LIMIT_SETTING}) waits for the owner's Approval and is not made here.`;
 
 /** The card's view of a reset made. */
 const agentChangeOf = (
@@ -245,7 +248,7 @@ export const resetCore =
   ({ id, setting, reason }, surface, conversation) =>
     Effect.gen(function* () {
       if (setting === RESET_LIMIT_SETTING) {
-        // The dispatcher answers this before it claims a request_id: this is the same answer behind it.
+        // The dispatcher asks the owner for this reset before the core: a call that reaches it changes nothing.
         return yield* EnvironmentsError.make({
           message: RESET_LIMIT_UNSUPPORTED,
           code: UNSUPPORTED,

@@ -749,6 +749,10 @@ export const changingRegistry = (
         }),
       ),
     notifyMcpChanges: () => noted("notifyMcpChanges", () => null),
+    // An ask for the owner's Approval: the stand-in keeps no request, and answers as a caller at its cap is answered, so a
+    // test sees the ask reached the Registry and nothing was written.
+    requestApproval: () =>
+      noted("requestApproval", () => ({ status: "too_many" as const, limit: 10 })),
   };
 
   return { registry, ledger };
