@@ -2,13 +2,15 @@
 // breadcrumb with the Scope picker, and the section the path names at its Scope, which every part inside reads from
 // `SettingsScope`. The list of sections is the sidebar's (`nav.tsx`): a phone shows it alone at `/settings/:scope`,
 // and a wide screen goes on to the Scope's first section. A section the Scope does not have goes to its first section
-// too, and an Environment that is not listed says so, with a way back to Global.
+// too, and an Environment that is not listed says so, with a way back to Global. Above a section, the Approvals asked over
+// the MCP endpoint for a change in it wait for the owner (`WaitingForYou`), and `?request=` scrolls to one's card.
 
 import { type EnvironmentRecord, GLOBAL_SCOPE, settingsPath } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import { useEffect } from "react";
+import { useRequestInView } from "../chat/request-anchor.ts";
 import { environmentListAtom, environmentsErrorAtom } from "../environments-state.ts";
 import { InAppLink } from "../in-app-link.tsx";
 import { redirect, type SettingsView } from "../router.ts";
@@ -35,6 +37,7 @@ import {
 import { SkillsSettingsSection } from "./skills.tsx";
 import { TriggersSection } from "./triggers.tsx";
 import { VariablesSection } from "./variables.tsx";
+import { WaitingForYou } from "./waiting-approvals.tsx";
 import { WorkspacesSection } from "./workspaces.tsx";
 
 /** The width from which the list of sections and a section show side by side (Tailwind's `md`). */
@@ -120,10 +123,15 @@ const ViewBody = ({
     case "section":
       if (!isSectionAt(scope, view.section)) return null;
 
-      return environment === null ? (
-        <GlobalSection slug={view.section} />
-      ) : (
-        <EnvironmentScopeSection slug={view.section} environment={environment} />
+      return (
+        <>
+          <WaitingForYou scope={scope} section={view.section} />
+          {environment === null ? (
+            <GlobalSection slug={view.section} />
+          ) : (
+            <EnvironmentScopeSection slug={view.section} environment={environment} />
+          )}
+        </>
       );
     case "skillOwner":
       return <SkillOwnerPage owner={view.owner} />;
@@ -212,6 +220,7 @@ export const SettingsPage = ({ scope, view }: { scope: string; view: SettingsVie
 
   useLeadOn(scope, view);
   useFieldInView(scope, view);
+  useRequestInView();
 
   const body = atGlobal ? (
     <ViewBody scope={scope} view={view} environment={null} />

@@ -2,7 +2,8 @@
 
 // docs/architecture/mcp-endpoint.md → Waiting requests: the link to a request waiting for the owner,
 // `/sessions/<id>?request=<request_id>`, which `session_wait` and `session_get` give the Local agent, scrolls the Session
-// page to that request's card.
+// page to that request's card. An Approval asked over the MCP endpoint (→ Approvals with no Session) has the link
+// `/settings/<all|id>/<section>?request=<id>`, which scrolls the Settings page to its card the same way.
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect } from "react";
 import { requestParamAtom } from "../router.ts";

@@ -97,6 +97,9 @@ const UNEXPECTED: Handlers = {
   triggerFireLog: unexpected("triggerFireLog"),
   subscribePush: unexpected("subscribePush"),
   unsubscribePush: unexpected("unsubscribePush"),
+  listApprovals: unexpected("listApprovals"),
+  answerApproval: unexpected("answerApproval"),
+  retryApproval: unexpected("retryApproval"),
 };
 
 /** A `RegistryClient` answering with `handlers`. */

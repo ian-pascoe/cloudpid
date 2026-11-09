@@ -1,4 +1,4 @@
-import { type ApprovalRequest, MAX_APPROVAL_REASON } from "@cloudpid/protocol";
+import { type ApprovalCardContent, MAX_APPROVAL_REASON } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Arr from "effect/Array";
@@ -14,11 +14,21 @@ const CardState = ScopedAtom.make(() =>
   Atom.make<{ readonly reason: string; readonly sent: boolean }>({ reason: "", sent: false }),
 );
 
-/** What a card takes: its request, whether answering is off, and what to do with the owner's answer. */
+/**
+ * What a card shows of a request: its id (the card's anchor) and its card. A Session's request (`ApprovalRequest`) and one
+ * asked over the MCP endpoint (`RegistryApproval`, on the Settings page) both have them.
+ */
+export type CardRequest = ApprovalCardContent & { readonly id: string };
+
+/**
+ * What a card takes: its request, whether answering is off, and what to do with the owner's answer; and, for a request
+ * no Session asked, who asked it (`byline`, "Asked via pi (MCP)"), which a Session's card leaves out.
+ */
 type CardProps = {
-  request: ApprovalRequest;
+  request: CardRequest;
   disabled: boolean;
   onAnswer: (approve: boolean, reason: string) => void;
+  byline?: string | undefined;
 };
 
 /**
@@ -33,7 +43,7 @@ const valueClass = (value: string): string =>
  * value before and after (for a delete, what is deleted), and the agent's reason, with Approve and Decline. A Decline
  * may carry the owner's reason to the agent. The card closes when the Session's next list leaves the request out.
  */
-const ApprovalCardBody = ({ request, disabled, onAnswer }: CardProps) => {
+const ApprovalCardBody = ({ request, disabled, onAnswer, byline }: CardProps) => {
   const [{ reason, sent }, setState] = useAtom(CardState.use());
   const off = disabled || sent;
 
@@ -55,6 +65,7 @@ const ApprovalCardBody = ({ request, disabled, onAnswer }: CardProps) => {
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
           {request.target} · <span className="font-mono">{request.tool}</span>
+          {byline === undefined ? null : <> · {byline}</>}
         </p>
       </div>
       {request.notes !== undefined && request.notes.length > 0 && (
