@@ -4,6 +4,7 @@
 // entry of the pasted text with its problems before anything is saved; a name the Scope has already asks Replace or Skip
 // (Skip until chosen); a top-level `autoEnableCodemode` is ignored with a hint.
 
+import { settingsPath } from "@cloudpid/protocol";
 import { useAtom } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import type { FormEvent } from "react";
@@ -12,7 +13,6 @@ import { DialogProblem } from "../components/ui/dialog.tsx";
 import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
 import { settledFailureOf } from "../registry.ts";
-import { settingsPath } from "../router.ts";
 import { type McpImportDraft, mcpImportWrites, previewMcpImport } from "./mcp-import.ts";
 import type { McpScopeView } from "./mcp-model.ts";
 import { MessageList, ReferencesNotice } from "./mcp-parts.tsx";

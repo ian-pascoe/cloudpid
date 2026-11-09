@@ -2,7 +2,14 @@
 // What a push says (`docs/architecture/client-and-protocol.md` → Notifications): a title, a line of body, and the Session's
 // page, small enough for any push service and for a lock screen.
 import { MAX_NOTICE_URL_LENGTH, type PushEvent } from "@cloudpid/extensions/notify";
-import { sessionPagePath } from "@cloudpid/protocol";
+import {
+  type AgentChangeVia,
+  agentChangesPath,
+  agentChangeViaLabel,
+  GLOBAL_SCOPE,
+  SETTINGS_SCOPE,
+  sessionPagePath,
+} from "@cloudpid/protocol";
 
 export type { PushEvent, PushNotice } from "@cloudpid/extensions/notify";
 
@@ -124,3 +131,56 @@ export const describeTriggerFailure = (
   url: `/settings/${encodeURIComponent(trigger.environment)}/triggers`,
   tag: `trigger:${trigger.id}:failed`,
 });
+
+/** One of the changes an agent made over the MCP endpoint, as a Notification lists it. */
+export type McpChangeLine = {
+  readonly id: number;
+  /** The Registry's scope: an Environment's id, `*` for Global, or the Settings'. */
+  readonly scope: string;
+  readonly scopeName: string;
+  readonly field: string;
+};
+
+/**
+ * What identifies the caller of a call over the MCP endpoint, in a Notification's tag: the owner's OAuth registration
+ * (`clientId`), else the client's name, else how it got in.
+ */
+export const mcpCallerKey = (via: AgentChangeVia): string =>
+  via.clientId ?? via.client?.name ?? via.auth;
+
+/**
+ * The push for the changes the caller `via` made over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → After a
+ * change, and Notifications), in any order, `changes` not empty: titled "Changed over MCP · <client>", its body
+ * the fields changed by Scope name ("Default: variables.API_URL, name; Global: instructions"), linking to the newest change in
+ * its Scope's Agent changes section. Tagged by the caller, so a burst of calls leaves one Notification. The Settings'
+ * changes are listed with Global's, where the page shows them.
+ */
+export const describeMcpChanges = (
+  via: AgentChangeVia,
+  changes: ReadonlyArray<McpChangeLine>,
+): PushPayload => {
+  const newest = changes.toSorted((left, right) => right.id - left.id);
+  const [latest] = newest;
+  const groups = new Map<string, string[]>();
+
+  for (const { scopeName, field } of newest) {
+    const fields = groups.get(scopeName) ?? [];
+
+    if (!fields.includes(field)) fields.push(field);
+
+    groups.set(scopeName, fields);
+  }
+
+  return {
+    title: brief(agentChangeViaLabel(via), MAX_TITLE),
+    body: brief(
+      Array.from(groups, ([name, fields]) => `${name}: ${fields.join(", ")}`).join("; "),
+      MAX_BODY,
+    ),
+    url: agentChangesPath(
+      latest === undefined || latest.scope === SETTINGS_SCOPE ? GLOBAL_SCOPE : latest.scope,
+      latest?.id,
+    ),
+    tag: `mcp-changes:${mcpCallerKey(via)}`,
+  };
+};

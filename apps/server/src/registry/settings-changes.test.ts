@@ -73,6 +73,7 @@ const memoryChanges = (): AgentChanges => {
         ),
         MAX_AGENT_CHANGES,
       ),
+    madeBy: () => [],
     get: (scope, id) =>
       Option.getOrNull(
         Option.map(

@@ -5,13 +5,12 @@
 // a link to edit it at Global, above the Environment's own. Each Scope saves only its own text (`forms.ts`).
 
 import { instructionsProblem, MAX_INSTRUCTIONS_BYTES, utf8Bytes } from "@cloudpid/config";
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, settingsPath } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
-import { settingsPath } from "../router.ts";
 import { settingsOverridesAtom } from "../settings.ts";
 import { environmentInstructionsForm, instructionsForm } from "./forms.ts";
 import { CODE_AREA, Field, Group, noteId, SectionFormView, SettingsSection } from "./parts.tsx";

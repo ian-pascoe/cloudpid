@@ -11,6 +11,7 @@ import {
   type SessionRecord,
   type TriggerDefinition,
   type WorkspaceRecord,
+  settingsPath,
 } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
@@ -38,7 +39,7 @@ import {
 import { deleteConfirmed } from "../environments.ts";
 import { InAppLink } from "../in-app-link.tsx";
 import { failureOf, settledFailureOf } from "../registry.ts";
-import { sessionPath, settingsPath } from "../router.ts";
+import { sessionPath } from "../router.ts";
 import { SubagentWorkspaceLoss } from "../session-menu.tsx";
 import { sessionListAtom, sessionsErrorAtom } from "../sessions.ts";
 import { sessionTitle } from "../sidebar.tsx";

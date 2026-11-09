@@ -17,6 +17,7 @@ import type {
 import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   AgentChange,
+  AgentChangeVia,
   EnvironmentBuildState,
   EnvironmentRepo,
   EnvironmentSecretRecord,
@@ -77,6 +78,7 @@ import { installSkills, previewSkillInstall } from "./skill-install.ts";
 import { buildMovedRepos, MCP_FIRST_LOOK_WAIT, mcpRepoFileViews } from "./mcp-repo-files.ts";
 import { firstMcpLook, type McpRepoLookReason, openMcpRepoLooks } from "./mcp-repo-look.ts";
 import { mcpChangeCheck, mcpGuard } from "./mcp-change-check.ts";
+import { mcpChangeNotice } from "./mcp-change-notice.ts";
 import { mcpReloadReport, mcpReloadSnapshot, mcpSettingsView } from "./mcp-settings-view.ts";
 import { githubSkillReader } from "./skill-reader.ts";
 import {
@@ -155,8 +157,8 @@ import {
 } from "./via-secrets.ts";
 import { GitHubAppConfig } from "../github/config.ts";
 import { PushConfig } from "../push/config.ts";
-import { pushNotifier, pushToAll } from "../push/notify.ts";
-import { describeTriggerFailure, type PushEvent } from "../push/notification.ts";
+import { pushNotifier, pushOwner } from "../push/notify.ts";
+import { describeTriggerFailure, type PushEvent, type PushPayload } from "../push/notification.ts";
 import { newEnvironmentId, newSessionId, newTriggerId, newWorkspaceId, shortId } from "./ids.ts";
 import { openTriggerChanges } from "./trigger-changes.ts";
 import {
@@ -654,6 +656,15 @@ export type RegistryMethods = {
    * method it does not have, which a caller reads as no feature.
    */
   readonly agentChangeFeatures: () => Effect.Effect<{ readonly via: boolean }>;
+  /**
+   * Tell the owner of the changes the endpoint's caller `via` recorded in the last 10 minutes, as one Notification
+   * (`docs/architecture/mcp-endpoint.md` → After a change, and Notifications): titled `agentChangeViaLabel`, its body the
+   * fields changed by Scope name, tagged by the caller so a burst replaces itself, and linking to the newest change.
+   * Nothing is sent when the caller recorded none. Answers what was sent, null for nothing; the send never fails.
+   */
+  readonly notifyMcpChanges: (input: {
+    readonly via: AgentChangeVia;
+  }) => Effect.Effect<PushPayload | null>;
   /**
    * An Agent change (`docs/architecture/workspace.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
    * its path in the folder) for `environment` (an Environment's id, or `*` at Global), in place of one of its
@@ -1257,7 +1268,7 @@ export const registryMethods = Effect.suspend(() =>
         const skills = openSkills(state.raw.storage);
         const mcpSignIns = openMcpSignIns(state.raw.storage, store);
         const notify = pushNotifier({ store, vapid: push.vapid });
-        const pushAll = pushToAll({ store, vapid: push.vapid });
+        const notifyOwner = pushOwner({ store, vapid: push.vapid });
 
         // Eight hex digits rarely collide; one that does (a spare's too, which only its set-up shows) is drawn again.
         const freshWorkspaceId = Effect.gen(function* () {
@@ -1851,6 +1862,15 @@ export const registryMethods = Effect.suspend(() =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => changeRequests.lookup(id, now))),
           settleChangeRequest: (settled) => Effect.sync(() => changeRequests.settle(settled)),
           agentChangeFeatures: () => Effect.succeed({ via: true }),
+          notifyMcpChanges: ({ via }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              const notice = mcpChangeNotice({ changes, store }, via, now);
+
+              if (notice !== null) yield* notifyOwner(notice);
+
+              return notice;
+            }),
           getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
           getWorkspaceSetup: ({ id, skillSetHash }) =>
             Effect.suspend(() => {
@@ -2352,7 +2372,9 @@ export const registryMethods = Effect.suspend(() =>
             Effect.suspend(() => {
               const known = triggers.get(trigger);
 
-              return known === null ? Effect.void : pushAll(describeTriggerFailure(known, reason));
+              return known === null
+                ? Effect.void
+                : notifyOwner(describeTriggerFailure(known, reason));
             }),
           deleteEnvironmentWithTriggers: ({ id }) =>
             Clock.currentTimeMillis.pipe(

@@ -111,7 +111,10 @@ export const AgentChangeRow = ({
             {/* A change's time is read against the wall clock as the card renders. */}
             {/* @effect-diagnostics-next-line globalDate:off */}
             {changeByline(change, Date.now())}
-            {change.actor === "agent" && change.session !== null && session === undefined
+            {change.actor === "agent" &&
+            change.via === undefined &&
+            change.session !== null &&
+            session === undefined
               ? ", in a session that is gone"
               : null}
           </span>

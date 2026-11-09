@@ -122,7 +122,7 @@ const decodeAnswer = Schema.decodeUnknownOption(Schema.fromJsonString(ChangeAnsw
 const decodeIds = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.Finite)));
 
 /** What a Scope is called in an answer: Global's, the Settings', or an Environment's name (its id once it is gone). */
-const scopeNameOf =
+export const scopeNameOf =
   (store: Pick<RegistryStore, "getEnvironment">) =>
   (scope: string): string =>
     scope === GLOBAL_SCOPE

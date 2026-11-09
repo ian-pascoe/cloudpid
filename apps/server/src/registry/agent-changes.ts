@@ -296,6 +296,7 @@ type AgentChangeRow = {
   via_auth: string | null;
   via_client_name: string | null;
   via_client_version: string | null;
+  via_client_id: string | null;
 };
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
@@ -431,6 +432,14 @@ export type AgentChanges = {
    * change. Dismissing one dismissed already changes nothing.
    */
   readonly dismiss: (scope: string, id: number) => boolean;
+  /**
+   * The changes the caller `via` made over the endpoint at or after `since`, dismissed or not, oldest first. The caller is
+   * the OAuth registration (`clientId`) when `via` has one, else the client's name, else how it got in.
+   */
+  readonly madeBy: (
+    via: AgentChangeVia,
+    since: number,
+  ) => ReadonlyArray<{ readonly id: number; readonly scope: string; readonly field: string }>;
 };
 
 const SELECT_CHANGES = `SELECT changes.*, revert.id AS reverted_by FROM agent_changes AS changes
@@ -537,6 +546,25 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
         .toArray();
 
       return row !== undefined;
+    },
+    madeBy: (via, since) => {
+      const caller =
+        via.clientId !== undefined
+          ? { where: "via_client_id = ?", value: via.clientId }
+          : via.client !== undefined
+            ? { where: "via_client_id IS NULL AND via_client_name = ?", value: via.client.name }
+            : {
+                where: "via_client_id IS NULL AND via_client_name IS NULL AND via_auth = ?",
+                value: via.auth,
+              };
+
+      return sql
+        .exec<{ id: number; scope: string; field: string }>(
+          `SELECT id, scope, field FROM agent_changes WHERE via_auth IS NOT NULL AND at >= ? AND ${caller.where} ORDER BY id`,
+          since,
+          caller.value,
+        )
+        .toArray();
     },
   };
 };

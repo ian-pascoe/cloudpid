@@ -1662,6 +1662,7 @@ const fakeRegistries = () => {
     changeRequest: () => Effect.succeed(null),
     settleChangeRequest: () => Effect.succeed(false),
     agentChangeFeatures: () => Effect.succeed({ via: true }),
+    notifyMcpChanges: () => Effect.succeed(null),
     listTriggers: ({ environment }) =>
       Effect.sync(() =>
         Arr.filter(

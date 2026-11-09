@@ -20,7 +20,14 @@
 // linking to its change in the Agent changes section, while that change is neither reverted nor dismissed.
 
 import type { McpExposure } from "@cloudpid/config";
-import { type AgentChange, GLOBAL_SCOPE, readMcpRepoFileState } from "@cloudpid/protocol";
+import {
+  type AgentChange,
+  agentChangesPath,
+  agentChangeViaLabel,
+  GLOBAL_SCOPE,
+  readMcpRepoFileState,
+  settingsPath,
+} from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -37,7 +44,7 @@ import { agentChangesAtom, environmentListAtom } from "../environments-state.ts"
 import { relativeTime } from "../format.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import { latestAgentChange } from "../mcp-change.ts";
-import { navigate, settingsPath } from "../router.ts";
+import { navigate } from "../router.ts";
 import { settingsChangesAtom } from "../settings.ts";
 import { ExposureSelect, McpFormPanel, McpToolsPanel } from "./mcp-form-panel.tsx";
 import { mcpCopyForm, newMcpForm, toolsDraftOf } from "./mcp-form.ts";
@@ -191,7 +198,11 @@ const scopeChangesAtom = Atom.family((scope: string) =>
   scope === GLOBAL_SCOPE ? settingsChangesAtom : agentChangesAtom(scope),
 );
 
-/** "Changed by the agent · 5 min ago", linking to the change in the Agent changes section; nothing while there is none. */
+/**
+ * "Changed by the agent · 5 min ago" (a Session's agent), or "Changed over MCP · pi · 5 min ago" (an agent over the
+ * endpoint; "Changed over MCP · 5 min ago" with no client's name), linking to the change in the Agent changes section;
+ * nothing while there is none.
+ */
 const AgentChangedLine = ({ scope, name }: { scope: string; name: string }) => {
   const loaded = useAtomValue(scopeChangesAtom(scope));
 
@@ -207,10 +218,11 @@ const AgentChangedLine = ({ scope, name }: { scope: string; name: string }) => {
 
   return (
     <InAppLink
-      href={`${settingsPath(scope, "agent-changes")}#agent-change-${change.id}`}
+      href={agentChangesPath(scope, change.id)}
       className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
     >
-      Changed by the agent · {relativeTime(change.at, Date.now())}
+      {change.via === undefined ? "Changed by the agent" : agentChangeViaLabel(change.via)} ·{" "}
+      {relativeTime(change.at, Date.now())}
     </InAppLink>
   );
 };

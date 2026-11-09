@@ -4,7 +4,7 @@
 // (`forms.ts`). As the other sections' fields are (ADR-0027), an Environment's list marks the names it inherits and
 // those it overrides, and Global's names the Environments that override each of its variables.
 
-import { fieldVariable, GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { fieldVariable, GLOBAL_SCOPE, settingsPath } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
@@ -18,7 +18,6 @@ import {
   globalVariablesAtom,
 } from "../environments-state.ts";
 import { inheritedVariables, parseVariables } from "../environments.ts";
-import { settingsPath } from "../router.ts";
 import { environmentVariablesForm, globalVariablesForm } from "./forms.ts";
 import {
   CodeField,
