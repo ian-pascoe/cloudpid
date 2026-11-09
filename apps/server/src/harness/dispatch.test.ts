@@ -24,7 +24,6 @@ import { harnessDispatch, requestDigest } from "./dispatch.ts";
 import {
   type ChangeOptions,
   changingRegistry,
-  FRESH_SKILL,
   HOLDS_KEPT_SECRET,
   type HostCalls,
   harnessHosts,
@@ -738,8 +737,9 @@ describe("the lifecycle, Skill and reset tools", () => {
       }),
     ));
 
-  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in's targets are not overridden, so the
-  // ask answers `unchanged` (a `status` only the ask gives), with the keys of the tool's change answer and no probe.
+  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in's targets are not overridden, and
+  // Global keeps grill-me, so the ask answers `unchanged` (a `status` only the ask gives), with the keys of the tool's
+  // change answer and no probe.
   it.each([
     [
       "settings_reset of a Limit",
@@ -772,7 +772,7 @@ describe("the lifecycle, Skill and reset tools", () => {
     (_, tool, input, keys) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const { call, registryCalls, ledger } = changing();
+          const { call, registryCalls, ledger } = changing({ globalSkills: ["grill-me"] });
 
           const result = yield* call(tool, input);
 
@@ -787,25 +787,26 @@ describe("the lifecycle, Skill and reset tools", () => {
   );
 
   // S3b-3: a Skill change at Global that needs the owner answers `pending`, its value the tool's endpoint output (read with
-  // its schema, so every key `asChangeAnswer` adds is there), with no change made.
+  // its schema, so every key `asChangeAnswer` adds is there), with no change made. Global keeps grill-me, so an install of
+  // tdd adds a Skill, and an update or a removal of grill-me changes one.
   it.each([
     [
       "environment_skill_install",
-      { id: "*", source: "o/skills", skills: [FRESH_SKILL], reason },
+      { id: "*", source: "o/skills", skills: ["tdd"], reason },
       { installed: [], refused: [], listed: [], source: null },
     ],
-    ["environment_skill_update", { id: "*", names: [FRESH_SKILL], reason }, { updated: [] }],
+    ["environment_skill_update", { id: "*", names: ["grill-me"], reason }, { updated: [] }],
     [
       "environment_skill_remove",
-      { id: "*", name: FRESH_SKILL, reason },
-      { skill: FRESH_SKILL, global_served: false },
+      { id: "*", name: "grill-me", reason },
+      { skill: "grill-me", global_served: false },
     ],
   ] as const)(
     "answers %s at Global pending, with its change's keys and no change",
     (tool, input, own) =>
       Effect.runPromise(
         Effect.gen(function* () {
-          const { call, ledger } = changing({ globalSkills: [FRESH_SKILL] });
+          const { call, ledger } = changing({ globalSkills: ["grill-me"] });
 
           const value = valueOf(HARNESS_TOOLS[tool].endpoint.output, yield* call(tool, input));
 

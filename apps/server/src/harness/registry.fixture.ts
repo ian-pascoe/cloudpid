@@ -3,7 +3,9 @@
 // `./dispatch.ts`, and `/mcp`'s `endpoint.test.ts`): one Environment, "Default", and Global, with the answers the five
 // read tools ask for, and, for the change tools, a Registry that records each change with its author and keeps the
 // `request_id` claims as `change_requests` does; and the upkeep and `background` the services run after an answer. The
-// Registry is cut down to the methods the tools use, and each call to it, to a host or to the upkeep is noted.
+// Registry is cut down to the methods the tools use, and each call to it, to a host or to the upkeep is noted. Its
+// requests for the owner's Approval are each new (no dedupe, no cap), and its Skill previews read what Global keeps
+// (`globalSkills`): a Skill kept is unchanged to an install and moved on to an update.
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS } from "@cloudpid/config";
 import {
@@ -37,9 +39,6 @@ const DEFAULT = {
 
 /** The commit a Skill install read at. */
 const COMMIT = "a".repeat(40);
-
-/** The Skill a change at Global needs the owner's Approval for: an install adds it, an update moves it. */
-export const FRESH_SKILL = "fresh";
 
 /** The setup script of the Environment: long enough to need a second page of 40,000 characters. */
 const LONG_SCRIPT = `${"echo setup\n".repeat(4_000)}echo done\n`;
@@ -215,7 +214,10 @@ export type ChangeOptions = {
    * defect.
    */
   readonly beforeRecordRebuild?: (() => Effect.Effect<void>) | undefined;
-  /** The Skills Global keeps, by name: none unless a test names them. */
+  /**
+   * The Skills Global keeps, by name: none unless a test names them. An install of one is unchanged, an update of one
+   * named moves it, and a removal of one asks; any other Skill an install adds.
+   */
   readonly globalSkills?: ReadonlyArray<string> | undefined;
 };
 
@@ -241,6 +243,8 @@ export const changingRegistry = (
 ): ChangingRegistry => {
   /** The requests for the owner's Approval made so far. */
   let approvals = 0;
+  /** The Skills Global keeps, by name. */
+  const kept = globalSkills ?? [];
 
   const ledger: ChangeLedger = {
     changes: [],
@@ -615,49 +619,55 @@ export const changingRegistry = (
           description: "Asks hard questions",
           files: { "SKILL.md": `---\nname: ${name}\ndescription: Asks hard questions\n---\n` },
           digest: `digest-of-${name}`,
-          unchanged: name !== FRESH_SKILL,
+          // Global keeps a Skill it lists with these files already: an install of it changes nothing.
+          unchanged: kept.includes(name),
           current: null,
         })),
         rejected: [],
       })),
+    // Each Skill named that Global keeps has moved on at its ref: none named is none marked, so nothing to update.
     previewSkillUpdates: ({ names }: { readonly names?: ReadonlyArray<string> | undefined }) =>
       noted("previewSkillUpdates", () => {
         const environment = { id: "*", name: "Global" };
-        const source = { repo: "o/skills", path: `skills/${FRESH_SKILL}`, ref: null };
+        const moving = (names ?? []).filter((name) => kept.includes(name));
 
-        return names?.includes(FRESH_SKILL) === true
-          ? {
+        return moving.length === 0
+          ? { status: "nothing" as const, environment }
+          : {
               status: "done" as const,
               environment,
-              results: [
-                {
-                  name: FRESH_SKILL,
+              results: moving.map((name) => {
+                const source = { repo: "o/skills", path: `skills/${name}`, ref: null };
+
+                return {
+                  name,
                   outcome: "ready" as const,
                   from: { ...source, commit: COMMIT },
                   to: { ...source, commit: "f".repeat(40) },
                   description: "Asks hard questions",
                   files: { "SKILL.md": "Ask one question at a time.\n" },
-                  folderHash: "folder-hash-1",
+                  folderHash: `folder-hash-of-${name}`,
                   savedAt: 5,
                   overwrites: false,
                   current: { description: "Asks hard questions", files: ["SKILL.md"] },
-                },
-              ],
-            }
-          : { status: "nothing" as const, environment };
+                };
+              }),
+            };
       }),
-    // Global keeps `fresh` only when a test says so: the reads of other tests list no Skill there.
+    // Global keeps the Skills a test names (`globalSkills`): the reads of other tests list none there.
     listSkills: ({ environment }: { readonly environment: string }) =>
       noted("listSkills", () =>
         environment === "*"
-          ? (globalSkills ?? []).map((name) => ({
+          ? kept.map((name) => ({
               name,
               description: "Asks hard questions",
               savedAt: 5,
             }))
           : [],
       ),
-    // The Registry's request for the owner's Approval: a new one each time, kept nowhere.
+    // The Registry's request for the owner's Approval: a new one each time, kept nowhere, with no dedupe and no cap. The
+    // dispatcher's tests need only its answer; the ask's dedupe and cap are `approvals.workerd.test.ts`'s, over the real
+    // Registry.
     requestApproval: (ask: ApprovalAsk) =>
       noted("requestApproval", () => ({
         status: "asked" as const,
