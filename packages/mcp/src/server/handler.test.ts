@@ -1716,6 +1716,30 @@ describe("the management tools", () => {
     ).toMatchObject({ readOnlyHint: false, idempotentHint: true, destructiveHint: true });
   });
 
+  // D13 and L9: what a client reads of a tool before it calls it, by the kind of write the tool is.
+  it.each([
+    [
+      "environment_skill_install",
+      { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    ],
+    [
+      "environment_skill_update",
+      { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    ],
+    [
+      "environment_repo_remove",
+      { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    ],
+    [
+      "environment_skill_remove",
+      { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    ],
+  ])("offers %s with the hints of its kind of write", async (name, hints) => {
+    const tools = await listed(fakeApi({ describe: serving(HARNESS_TOOL_NAMES) }));
+
+    expect(tools.find((each) => each.name === name)?.annotations).toMatchObject(hints);
+  });
+
   it("pass a write's request_id as the request's requestId too, and leave it out when there is none", async () => {
     const harness = vi.fn(() =>
       Promise.resolve(

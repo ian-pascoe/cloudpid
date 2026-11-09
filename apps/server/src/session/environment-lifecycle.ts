@@ -61,6 +61,19 @@ export type SessionLifecycleOptions = {
   readonly builds: Pick<Builds, "of" | "rebuild"> & { readonly test?: Builds["test"] };
   /** The upkeep of the spare Workspaces, run after the Repos change. */
   readonly spares: Pick<Spares, "of">;
+  /**
+   * What runs after the Repos of an Environment changed (made with some, one added or one taken out), as the main Worker
+   * runs it after the owner's `addRepo` and `removeRepo`: the Repo's `.pi/mcp.json` is looked at (`look`; `repo` is the
+   * one added, none for every Repo of a new Environment), and the Environment's MCP server set pushed. Absent in a
+   * Session, whose Repos' files are looked at by the owner's own changes only.
+   */
+  readonly afterRepos?:
+    | ((change: {
+        readonly environment: string;
+        readonly repo?: string | undefined;
+        readonly look: boolean;
+      }) => Effect.Effect<void>)
+    | undefined;
   /** How long one round of waiting for a Test Build lasts at most, and how often it looks; for tests. */
   readonly rounds?: { readonly roundMs: number; readonly pollMs: number } | undefined;
 };
@@ -119,6 +132,7 @@ export const sessionLifecycle = ({
   author: source,
   builds,
   spares,
+  afterRepos,
   rounds = { roundMs: TEST_BUILD_ROUND_MS, pollMs: TEST_BUILD_POLL_MS },
 }: SessionLifecycleOptions): EnvironmentLifecycle => {
   const unlisted = EnvironmentsError.make({ message: unlistedSession("Environment") });
@@ -179,6 +193,10 @@ export const sessionLifecycle = ({
         // As after the owner's `createEnvironment`: its spare is made ahead, and so is its Build.
         yield* keepCurrent(made.environment.id);
 
+        if (afterRepos !== undefined && parsed.length > 0) {
+          yield* afterRepos({ environment: made.environment.id, look: true });
+        }
+
         return {
           status: "made" as const,
           environment: changedEnvironment(made.environment),
@@ -210,7 +228,10 @@ export const sessionLifecycle = ({
         });
 
         // The spare holds the Repos it was made with: one made before is stale now, and so is the Build.
-        if (answer.status === "changed") yield* keepCurrent(environment);
+        if (answer.status === "changed") {
+          yield* keepCurrent(environment);
+          yield* afterRepos?.({ environment, repo: repo.success.name, look: true }) ?? Effect.void;
+        }
 
         return recordChanged(answer);
       }),
@@ -222,7 +243,10 @@ export const sessionLifecycle = ({
           author: yield* authorOf(by),
         });
 
-        if (answer.status === "changed") yield* keepCurrent(environment);
+        if (answer.status === "changed") {
+          yield* keepCurrent(environment);
+          yield* afterRepos?.({ environment, look: false }) ?? Effect.void;
+        }
 
         return recordedChange(answer);
       }),

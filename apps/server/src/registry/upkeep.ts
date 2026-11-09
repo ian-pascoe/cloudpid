@@ -1,8 +1,9 @@
 // The upkeep that follows an Agent change once it is recorded (`docs/architecture/mcp-endpoint.md` → Environment and
 // Settings tools → After a change, and Notifications; `docs/architecture/agent-changes.md` → Reverting), as after the
 // owner's save: the Builds' (a Build is made with the Container settings, the variables and the Secrets marked for it),
-// the spares' (the Spare Workspace setting and the Repos) and the McpHosts' (an MCP server's key; any other Settings field,
-// at Global or at an Environment, runs nothing). `upkeepFor` reads it
+// the spares' (the Spare Workspace setting and the Repos), and the McpHosts': an MCP server's key, and a Repo added or
+// taken out, whose `.pi/mcp.json` is looked at (added) and the set pushed (`afterRepos`); any other Settings field, at
+// Global or at an Environment, runs nothing. `upkeepFor` reads it
 // off the changes' Scope and field, so the owner's revert (`rpc.ts`), the endpoint's dispatch (`harness/dispatch.ts`)
 // and a `request_id` replayed from its records all run the same steps. Every step runs under `background` and never
 // fails: what goes wrong is logged, and heals as after the owner's save.
@@ -14,6 +15,9 @@ import {
   SPARE_WORKSPACE_FIELD,
 } from "@cloudpid/config";
 import {
+  type AgentChange,
+  CREATED_FIELD,
+  CreatedValue,
   fieldRepo,
   fieldSecret,
   fieldSkill,
@@ -23,6 +27,8 @@ import {
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import type { McpPushes } from "../mcp/push.ts";
 import type { Builds } from "./builds.ts";
 import type { RegistryMethods } from "./Registry.ts";
@@ -33,7 +39,7 @@ import type { Spares } from "./rpc.ts";
  * `background` needs of the request).
  */
 export type UpkeepDeps<R = never> = {
-  readonly registry: Pick<RegistryMethods, "listEnvironments">;
+  readonly registry: Pick<RegistryMethods, "listEnvironments" | "mcpLookRepoFiles">;
   readonly builds: Pick<Builds, "of">;
   readonly spares: Pick<Spares, "of" | "all">;
   readonly mcp: Pick<McpPushes, "sync">;
@@ -41,11 +47,49 @@ export type UpkeepDeps<R = never> = {
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
 };
 
-/** One recorded change, as the upkeep reads it: its Scope (an Environment's id, or `*`) and its field. */
+/**
+ * One recorded change, as the upkeep reads it: its Scope (an Environment's id, or `*`), its field, and what the change
+ * made of it (`after`): null for a Repo taken out, and a new Environment's Repos for the change that made it. A change
+ * that leaves `after` out is read as one that put something in.
+ */
 export type UpkeepChange = {
   readonly scope: string;
   readonly field: string;
+  readonly after?: AgentChange["after"];
 };
+
+/**
+ * After a Repo was added to an Environment, or an Environment was made with Repos: the Repo's `.pi/mcp.json` is looked
+ * at first (`repo` names one, else every Repo's), and the set it changes is pushed after, as after the owner's `addRepo`.
+ * After a Repo was taken out (`look: false`) the set is pushed only.
+ */
+export const afterRepos = <R>(
+  { registry, mcp, background }: Pick<UpkeepDeps<R>, "registry" | "mcp" | "background">,
+  {
+    environment,
+    repo,
+    look,
+  }: {
+    readonly environment: string;
+    readonly repo?: string | undefined;
+    readonly look: boolean;
+  },
+): Effect.Effect<void, never, R> =>
+  background(
+    (look
+      ? registry
+          .mcpLookRepoFiles({ environment, repo, reason: "added" })
+          .pipe(Effect.andThen(mcp.sync(environment)))
+      : mcp.sync(environment)
+    ).pipe(Effect.asVoid, Effect.ignoreCause),
+  );
+
+/** The Repos a change that made an Environment holds: none for a value that is not its record. */
+const reposMade = (after: UpkeepChange["after"]): number =>
+  Option.match(Schema.decodeUnknownOption(CreatedValue)(after), {
+    onNone: () => 0,
+    onSome: ({ repos }) => repos.length,
+  });
 
 /**
  * After a Secret or a Container setting kept Global changed: each Environment's Build is looked at again (their key
@@ -79,7 +123,7 @@ export const secretChanged = <R>(
  */
 const upkeepOf = <R>(
   deps: UpkeepDeps<R>,
-  { scope, field }: UpkeepChange,
+  { scope, field, after }: UpkeepChange,
 ): Effect.Effect<void, never, R> => {
   if (fieldSkill(field) !== null || fieldTrigger(field) !== null) return Effect.void;
 
@@ -108,12 +152,36 @@ const upkeepOf = <R>(
   // spare: the Session reads it again at its next admitted input. Only Container settings, variables and Repos are.
   if (overrideFieldPath(field) !== undefined) return Effect.void;
 
-  // As after the owner's save: the variables are among what a Build is made with. A Repo added or taken out also makes
-  // the spare stale, as the owner's `addRepo` and `removeRepo` do, and the Spare Workspace setting keeps or removes it.
+  // A new Environment: its spare and its Build are made ahead, and when it was made with Repos, their `.pi/mcp.json`
+  // files are looked at and the set pushed, as for each Repo added.
+  if (field === CREATED_FIELD) {
+    return deps
+      .background(deps.spares.of(scope))
+      .pipe(
+        Effect.andThen(deps.background(deps.builds.of(scope))),
+        Effect.andThen(
+          reposMade(after) > 0 ? afterRepos(deps, { environment: scope, look: true }) : Effect.void,
+        ),
+      );
+  }
+
+  // A Repo added or taken out makes the spare stale, and so the Build, as the owner's `addRepo` and `removeRepo` do;
+  // the set the Repo's own `.pi/mcp.json` changes is looked at (added) and pushed.
+  const repo = fieldRepo(field);
+
+  if (repo !== null) {
+    return deps
+      .background(deps.spares.of(scope))
+      .pipe(
+        Effect.andThen(deps.background(deps.builds.of(scope))),
+        Effect.andThen(afterRepos(deps, { environment: scope, repo, look: after !== null })),
+      );
+  }
+
+  // As after the owner's save: the variables are among what a Build is made with, and the Spare Workspace setting keeps
+  // or removes the spare.
   return (
-    fieldRepo(field) === null && field !== SPARE_WORKSPACE_FIELD
-      ? Effect.void
-      : deps.background(deps.spares.of(scope))
+    field !== SPARE_WORKSPACE_FIELD ? Effect.void : deps.background(deps.spares.of(scope))
   ).pipe(Effect.andThen(deps.background(deps.builds.of(scope))));
 };
 

@@ -67,10 +67,10 @@ const dispatching = (registry?: (calls: RegistryCalls) => HarnessRegistry) => {
  * The dispatcher over the writing stand-in: `call` runs one tool as `McpServer` sends it (the `request_id` in the input
  * and on the request), each call's attempt numbered in order.
  */
-const changing = (options: ChangeOptions = {}) => {
+const changing = (options: ChangeOptions = {}, rebuilds: Array<"asked" | "underway"> = []) => {
   const registryCalls: RegistryCalls = [];
   const { registry, ledger } = changingRegistry(registryCalls, options);
-  const upkeep = harnessUpkeep();
+  const upkeep = harnessUpkeep([], rebuilds);
   let attempts = 0;
 
   const dispatch = harnessDispatch(
@@ -212,7 +212,7 @@ describe("the five reads, over a Registry and hosts alone", () => {
 
 describe("a tool it does not serve", () => {
   it.each([
-    "environment_rename",
+    "environment_skill_save",
     "approval_wait",
     "environments_list",
     "no_such_tool",
@@ -508,6 +508,330 @@ describe("a change", () => {
         expect(registryCalls).not.toContain("notifyMcpChanges");
       }),
     ));
+});
+
+describe("the lifecycle, Skill and reset tools", () => {
+  const reason = "The tests read it";
+
+  it.each([
+    [
+      "environment_create",
+      { name: "Billing", repos: ["o/api"], reason },
+      ["spares.of:made-1", "builds.of:made-1", "mcp.sync:made-1"],
+    ],
+    ["environment_rename", { id: "default", name: "Renamed", reason }, []],
+    [
+      "environment_repo_add",
+      { id: "default", url: "o/lib", reason },
+      ["spares.of:default", "builds.of:default", "mcp.sync:default"],
+    ],
+    [
+      "environment_repo_remove",
+      { id: "default", name: "app", reason },
+      ["spares.of:default", "builds.of:default", "mcp.sync:default"],
+    ],
+    ["environment_rebuild", { id: "default", reason }, []],
+    ["environment_skill_install", { id: "default", source: "o/skills", skills: ["a"], reason }, []],
+    ["environment_skill_update", { id: "default", names: ["a"], reason }, []],
+    ["environment_skill_remove", { id: "default", name: "a", reason }, []],
+    [
+      "environment_setting_reset",
+      { id: "default", setting: "setupScript", reason },
+      ["builds.of:default"],
+    ],
+  ] as const)(
+    "%s is made as the caller, answered as its schema declares, then upkept and noticed after the answer",
+    (tool, input, upkept) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger, registryCalls, upkeep } = changing();
+
+          // The setting the reset takes out is the Environment's own.
+          ledger.values.set("default:setupScript", "echo own");
+
+          const result = yield* call(tool, input);
+
+          expect(result.ok, JSON.stringify(result)).toBe(true);
+
+          if (result.ok) {
+            Schema.decodeUnknownSync(HARNESS_TOOLS[tool].endpoint.output)(result.value.structured);
+          }
+
+          expect(ledger.changes).toHaveLength(1);
+          expect(ledger.changes[0]?.author).toEqual({ via: caller, tool, reason });
+          // Nothing runs after the change until the answer is sent.
+          expect(upkeep.calls).toEqual([]);
+          expect(registryCalls).not.toContain("notifyMcpChanges");
+
+          yield* upkeep.runBackground;
+
+          expect(upkeep.calls).toEqual(upkept);
+          expect(registryCalls.filter((method) => method === "notifyMcpChanges")).toHaveLength(1);
+        }),
+      ),
+  );
+
+  it("looks at a Repo's .pi/mcp.json before the set is pushed when one is added", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, registryCalls, upkeep } = changing();
+
+        yield* call("environment_repo_add", { id: "default", url: "o/lib", reason });
+        yield* upkeep.runBackground;
+
+        expect(registryCalls).toContain("mcpLookRepoFiles");
+        expect(upkeep.calls).toContain("mcp.sync:default");
+      }),
+    ));
+
+  it("only pushes the set when a Repo is taken out", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, registryCalls, upkeep } = changing();
+
+        yield* call("environment_repo_remove", { id: "default", name: "app", reason });
+        yield* upkeep.runBackground;
+
+        expect(registryCalls).not.toContain("mcpLookRepoFiles");
+        expect(upkeep.calls).toContain("mcp.sync:default");
+      }),
+    ));
+
+  it("answers environment_create with the new Environment's id, name and Repos", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call } = changing();
+
+        const value = valueOf(
+          HARNESS_TOOLS.environment_create.endpoint.output,
+          yield* call("environment_create", { name: "Billing", repos: ["o/api"], reason }),
+        );
+
+        expect(value).toMatchObject({
+          scope: { id: "made-1", name: "Billing" },
+          changed: true,
+          repos: [{ name: "api" }],
+        });
+      }),
+    ));
+
+  it("reports each Skill of an install: one refused beside one installed is recorded", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls, upkeep } = changing();
+
+        const mixed = valueOf(
+          HARNESS_TOOLS.environment_skill_install.endpoint.output,
+          yield* call("environment_skill_install", {
+            id: "default",
+            source: "o/skills",
+            skills: ["a", "big"],
+            reason,
+          }),
+        );
+
+        expect(mixed).toMatchObject({
+          changed: true,
+          installed: [{ name: "a" }],
+          refused: [{ name: "big", message: "too large" }],
+        });
+
+        yield* upkeep.runBackground;
+
+        expect(ledger.changes).toHaveLength(1);
+        expect(registryCalls).toContain("notifyMcpChanges");
+      }),
+    ));
+
+  it("reports an install whose Skills were all refused as no failure, and records nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger, registryCalls, upkeep } = changing();
+
+        const none = valueOf(
+          HARNESS_TOOLS.environment_skill_install.endpoint.output,
+          yield* call("environment_skill_install", {
+            id: "default",
+            source: "o/skills",
+            skills: ["big"],
+            reason,
+            request_id: "r-1",
+          }),
+        );
+
+        expect(none).toMatchObject({ changed: false, installed: [], refused: [{ name: "big" }] });
+        expect(ledger.changes).toEqual([]);
+
+        yield* upkeep.runBackground;
+
+        expect(registryCalls).not.toContain("notifyMcpChanges");
+      }),
+    ));
+
+  // #687 → `environment_rebuild`: the Build is asked for before the change is recorded, so a call cut between the two
+  // claims nothing, and its repeat finds the Build under way and asks for none.
+  it("asks for one Build only when a call is cut between builds.rebuild and recordRebuild: the repeat sees it under way", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        let cuts = 0;
+
+        const { call, ledger } = changing(
+          { beforeRecordRebuild: () => (cuts++ === 0 ? Effect.die("cut") : Effect.void) },
+          ["asked", "underway"],
+        );
+
+        const input = { id: "default", reason, request_id: "r-1" };
+
+        const first = yield* call("environment_rebuild", input);
+
+        expect(first).toMatchObject({ ok: false, error: { code: "unavailable" } });
+        expect(ledger.claims.size).toBe(0);
+
+        const repeat = valueOf(
+          HARNESS_TOOLS.environment_rebuild.endpoint.output,
+          yield* call("environment_rebuild", input),
+        );
+
+        expect(repeat).toMatchObject({ changed: false, new_build: false, unchanged: ["build"] });
+        expect(ledger.changes).toEqual([]);
+      }),
+    ));
+
+  it("lists the Skills a repo holds when none is named, and installs nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger } = changing();
+
+        const value = valueOf(
+          HARNESS_TOOLS.environment_skill_install.endpoint.output,
+          yield* call("environment_skill_install", { id: "default", source: "o/skills", reason }),
+        );
+
+        expect(value).toMatchObject({ changed: false, listed: [{ name: "grill-me" }] });
+        expect(ledger.changes).toEqual([]);
+      }),
+    ));
+
+  it("refuses a Skill that is not there as not_found", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call } = changing();
+
+        const gone = yield* call("environment_skill_remove", {
+          id: "default",
+          name: "zzz",
+          reason,
+        });
+
+        expect(gone).toMatchObject({ ok: false, error: { code: "not_found" } });
+      }),
+    ));
+
+  it("refuses an Environment that is not there as not_found", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call } = changing();
+        const none = yield* call("environment_rename", { id: "ghost", name: "X", reason });
+
+        expect(none).toMatchObject({ ok: false, error: { code: "not_found" } });
+      }),
+    ));
+
+  it.each([
+    [
+      "a Skill install at Global",
+      "environment_skill_install",
+      { id: "*", source: "o/skills", reason },
+    ],
+    ["a Skill update at Global", "environment_skill_update", { id: "*", reason }],
+    ["a Skill removal at Global", "environment_skill_remove", { id: "*", name: "a", reason }],
+    [
+      "a Test Build of proposed changes",
+      "environment_rebuild",
+      { id: "default", reason, proposed: { setup_script: "echo hi" } },
+    ],
+    [
+      "the reset of the size limit",
+      "environment_setting_reset",
+      { id: "default", setting: "maxInstance", reason },
+    ],
+  ] as const)(
+    "answers %s as unsupported, before the Registry is asked anything",
+    (_, tool, input) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, registryCalls, ledger } = changing();
+
+          const result = yield* call(tool, { ...input, request_id: "r-1" });
+
+          expect(result).toMatchObject({ ok: false, error: { code: "unsupported" } });
+          expect(registryCalls).toEqual([]);
+          expect(ledger.claims.size).toBe(0);
+        }),
+      ),
+  );
+
+  it.each([
+    ["environment_rename", { id: "*", name: "X", reason }],
+    ["environment_setting_reset", { id: "*", setting: "setupScript", reason }],
+  ] as const)("refuses %s at Global as invalid_argument", (tool, input) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, ledger } = changing();
+        const result = yield* call(tool, input);
+
+        expect(result).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+        expect(ledger.changes).toEqual([]);
+      }),
+    ),
+  );
+
+  // #687 L17: a call cut between its write and its settle is answered from the records, which each family reads.
+  it.each([
+    [
+      "environment_create",
+      { name: "Billing", repos: ["o/api"], reason },
+      { scope: { id: "made-1", name: "Billing" }, repos: [{ name: "api" }] },
+    ],
+    [
+      "environment_skill_install",
+      { id: "default", source: "o/skills", skills: ["a", "b"], reason },
+      { installed: [{ name: "a" }, { name: "b" }], source: { repo: "o/skills" } },
+    ],
+    [
+      "environment_skill_update",
+      { id: "default", names: ["a"], reason },
+      { updated: [{ name: "a", to: { commit: "f".repeat(40) } }] },
+    ],
+  ] as const)(
+    "answers a repeat of %s whose call was cut before its settle from its records",
+    (tool, input, expected) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger } = changing({ beforeSettle: () => Effect.never });
+
+          const withId = { ...input, request_id: "r-1" };
+
+          yield* Effect.exit(call(tool, withId).pipe(Effect.timeout("20 millis")));
+
+          expect(ledger.claims.get("r-1")?.answer).toBeNull();
+
+          const repeat = yield* call(tool, withId);
+
+          expect(repeat.ok, JSON.stringify(repeat)).toBe(true);
+
+          if (repeat.ok) {
+            const value = Schema.decodeUnknownSync(HARNESS_TOOLS[tool].endpoint.output)(
+              repeat.value.structured,
+            );
+
+            expect(value).toMatchObject({ ...expected, replayed: true });
+          }
+
+          expect(ledger.changes.length).toBeGreaterThan(0);
+        }),
+      ),
+  );
 });
 
 describe("a change to the Settings or an MCP server", () => {

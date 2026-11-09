@@ -9,19 +9,21 @@
 // change (`EnvironmentChangeOutput`), with the owner's answer for a reset of the size limit, approved or declined with
 // their reason.
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off
-import {
-  compareInstances,
-  CONTAINER_SETTING_NAMES,
-  type ContainerSettings,
-} from "@cloudpid/config";
+import { compareInstances } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange } from "@cloudpid/protocol";
-import * as Arr from "effect/Array";
+import {
+  EnvironmentChangeEndpointOutput,
+  HARNESS_TOOLS,
+  RESET_LIMIT_SETTING,
+  RESETTABLE_SETTINGS,
+  type ResettableSetting,
+  type Surface,
+} from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
+import type * as Schema from "effect/Schema";
 import type { ApprovalCore } from "./approval-cores.ts";
 import {
-  type ApprovalCall,
   approvedChange,
   type ApprovalsService,
   approvedAlready,
@@ -32,8 +34,6 @@ import {
   describeApplied,
   type EnvironmentDetails,
   type EnvironmentsService,
-  IdNotGlobal,
-  MAX_CHANGE_REASON,
   pathsLine,
   plainValue,
   recordContainerSettingChange,
@@ -42,21 +42,30 @@ import {
   storedText,
   textSize,
 } from "./environment.ts";
+import { environmentTarget, holdsRefusal } from "./environment-change-parts.ts";
+import {
+  authorOf,
+  endpointChangeOutput,
+  endpointText,
+  type TextCheck,
+} from "./environment-changes.ts";
 import { EnvironmentsError, notFound } from "./environment-describe.ts";
 import type { LifecycleDeps } from "./environment-lifecycle.ts";
 import { changeOutput, declinedOutput, unchangedOutput } from "./environment-outputs.ts";
 import { asJsonValue, named } from "./environment-skill-results.ts";
-import { type HarnessAnswer, toolResult } from "./harness.ts";
+import {
+  type HarnessAnswer,
+  type HarnessWrite,
+  INVALID_ARGUMENT,
+  loggedOf,
+  toolResult,
+  UNSUPPORTED,
+} from "./harness.ts";
 import { APPROVED, asOutput, EnvironmentChangeOutput, outputSchema } from "./outputs.ts";
 
-/** A Container setting an Environment may override and reset, but its variables (`environment_variable_unset`). */
-export type ResettableSetting = Exclude<keyof ContainerSettings, "variables">;
-
-/** The Container settings an Environment may override and reset. */
-export const RESETTABLE_SETTINGS: ReadonlyArray<ResettableSetting> = Arr.filter(
-  CONTAINER_SETTING_NAMES,
-  (name): name is ResettableSetting => name !== "variables",
-);
+// The settings that can be reset are the shared declaration's (`@cloudpid/protocol/harness-tools`), since the endpoint
+// declares the same tool; they are re-exported here, where the tool has always imported them from.
+export { RESETTABLE_SETTINGS, type ResettableSetting };
 
 /** Each setting as a result names it. */
 const SETTING_WORDS: Readonly<Record<ResettableSetting, string>> = {
@@ -92,6 +101,9 @@ const valueWords = (setting: ResettableSetting, value: Schema.Json | null): stri
 /** The tool's name, which its cards and the changes it makes carry. */
 const RESET_TOOL = "environment_setting_reset";
 
+/** What the endpoint answers (`unsupported`) to the reset of the size limit, which waits for the owner's Approval (S3a-2). */
+export const RESET_LIMIT_UNSUPPORTED = `Resetting the size limit (${RESET_LIMIT_SETTING}) waits for the owner's Approval, which is not offered yet: the other settings can be reset.`;
+
 /** The card's view of a reset made. */
 const agentChangeOf = (
   setting: ResettableSetting,
@@ -110,11 +122,22 @@ const inheritedAlready = (
   setting: ResettableSetting,
   environment: ChangedEnvironment,
   value: Schema.Json | null,
-): HarnessAnswer => ({
-  text: `The ${SETTING_WORDS[setting]} of ${named(environment)} is inherited from Global already (${valueWords(setting, value)}): nothing changed, and nothing was recorded.`,
-  structured: asOutput(EnvironmentChangeOutput, unchangedOutput(environment, setting)),
-  details: { unchanged: { environment, field: setting } },
-});
+  surface: Surface,
+): HarnessAnswer => {
+  const text = `The ${SETTING_WORDS[setting]} of ${named(environment)} is inherited from Global already (${valueWords(setting, value)}): nothing changed, and nothing was recorded.`;
+
+  return {
+    text: surface === "session" ? text : endpointText(text),
+    structured:
+      surface === "session"
+        ? asOutput(EnvironmentChangeOutput, unchangedOutput(environment, setting))
+        : asOutput(
+            EnvironmentChangeEndpointOutput,
+            endpointChangeOutput({ environment, unchanged: [setting] }),
+          ),
+    details: { unchanged: { environment, field: setting } },
+  };
+};
 
 /**
  * What a reset of `setting` in `environment` answers once the Registry has answered the write, `approved` by the owner or
@@ -127,20 +150,30 @@ const resetAnswer = ({
   result,
   own,
   approved,
+  surface,
 }: {
   readonly environment: string;
   readonly setting: ResettableSetting;
   readonly result: ContainerSettingResult;
   readonly own: boolean;
   readonly approved: boolean;
+  /** Whose words the answer is in: the endpoint's names the owner and refuses with a code (never approved). */
+  readonly surface: Surface;
 }): Effect.Effect<HarnessAnswer, EnvironmentsError> => {
   const prefix = approved ? "The user approved, but nothing was saved" : "Nothing was saved";
+
+  const refusal = (message: string) =>
+    Effect.fail(
+      EnvironmentsError.make(
+        surface === "session" ? { message } : { message, code: INVALID_ARGUMENT },
+      ),
+    );
 
   switch (result.status) {
     case "missing":
       return Effect.fail(notFound(environment));
     case "rejected":
-      return Effect.fail(EnvironmentsError.make({ message: `${prefix}: ${result.message}` }));
+      return refusal(`${prefix}: ${result.message}`);
     case "changed-since":
       return Effect.fail(
         EnvironmentsError.make({
@@ -160,15 +193,27 @@ const resetAnswer = ({
               ),
               details: { approval: { approved: true } },
             }
-          : inheritedAlready(setting, result.environment, result.value),
+          : inheritedAlready(setting, result.environment, result.value, surface),
       );
-    case "changed":
+    case "changed": {
+      const text = `${approved ? "The user approved: r" : "R"}eset the ${SETTING_WORDS[setting]} of ${named(result.environment)}: it was ${valueWords(setting, result.change.before)} (its own), and inherits Global's ${valueWords(setting, result.change.after)} now, and each change of it at Global. ${describeApplied(own, result.newBuild, surface)} The change is recorded${approved ? " as approved" : ""} with your reason; the ${surface === "session" ? "user" : "owner"} can revert it on the Environments page.`;
+
       return Effect.succeed({
-        text: `${approved ? "The user approved: r" : "R"}eset the ${SETTING_WORDS[setting]} of ${named(result.environment)}: it was ${valueWords(setting, result.change.before)} (its own), and inherits Global's ${valueWords(setting, result.change.after)} now, and each change of it at Global. ${describeApplied(own, result.newBuild)} The change is recorded${approved ? " as approved" : ""} with your reason; the user can revert it on the Environments page.`,
-        structured: asOutput(
-          EnvironmentChangeOutput,
-          changeOutput(result, own, approved ? APPROVED : null),
-        ),
+        text: surface === "session" ? text : endpointText(text),
+        structured:
+          surface === "session"
+            ? asOutput(
+                EnvironmentChangeOutput,
+                changeOutput(result, own, approved ? APPROVED : null),
+              )
+            : asOutput(
+                EnvironmentChangeEndpointOutput,
+                endpointChangeOutput({
+                  environment: result.environment,
+                  change: result.change,
+                  newBuild: result.newBuild === true,
+                }),
+              ),
         details: approved
           ? {
               approval: { approved: true },
@@ -176,8 +221,67 @@ const resetAnswer = ({
             }
           : { agentChange: agentChangeOf(setting, result.environment, result.change) },
       });
+    }
   }
 };
+
+/** What the core of the reset of a setting that waits for no Approval reads and writes. */
+export type ResetCoreServices = {
+  readonly environments: Pick<EnvironmentsService, "current" | "change">;
+  readonly holdsSecret: TextCheck;
+};
+
+/** The arguments of `environment_setting_reset`, as a Session's call decodes them (the endpoint's add `request_id`). */
+export type ResetArgs = (typeof HARNESS_TOOLS.environment_setting_reset.session.input)["Type"];
+
+/**
+ * The core of `environment_setting_reset` for every setting but the size limit (`maxInstance`, the one that waits for the
+ * owner's Approval: `resetLimitCore`): the Environment takes Global's value again, as the owner's reset does, and the
+ * change is recorded with the Agent change whose value after is inherited. Both surfaces make the one `Environments` call
+ * the Session's tool has always made; the endpoint's words name the owner and its refusals carry codes.
+ */
+export const resetCore =
+  ({ environments, holdsSecret }: ResetCoreServices): HarnessWrite<ResetArgs, EnvironmentsError> =>
+  ({ id, setting, reason }, surface, conversation) =>
+    Effect.gen(function* () {
+      if (setting === RESET_LIMIT_SETTING) {
+        // The dispatcher answers this before it claims a request_id: this is the same answer behind it.
+        return yield* EnvironmentsError.make({
+          message: RESET_LIMIT_UNSUPPORTED,
+          code: UNSUPPORTED,
+        });
+      }
+
+      if (yield* holdsSecret(reason)) {
+        return yield* holdsRefusal(surface, "Nothing was saved", "the reason");
+      }
+
+      const { environment, own } = yield* environmentTarget(environments, surface)(id);
+
+      const result = yield* environments.change({
+        environment,
+        change: { field: setting, value: null },
+        expected: undefined,
+        author: { ...authorOf(RESET_TOOL, reason, conversation), approved: undefined },
+      });
+
+      const answer = yield* resetAnswer({
+        environment,
+        setting,
+        result,
+        own,
+        approved: false,
+        surface,
+      });
+
+      return {
+        ...answer,
+        logged:
+          result.status === "changed"
+            ? { tool: RESET_TOOL, environmentName: result.environment.name, field: setting }
+            : undefined,
+      };
+    });
 
 /** What the core of the reset of the size limit reads and writes. */
 export type ResetLimitServices = Pick<LifecycleDeps, "refuseSecrets" | "target"> & {
@@ -242,7 +346,10 @@ export const resetLimitCore = ({
         };
 
         if (details.overrides.maxInstance === undefined) {
-          return { ...prepared, unchanged: inheritedAlready("maxInstance", details, maxInstance) };
+          return {
+            ...prepared,
+            unchanged: inheritedAlready("maxInstance", details, maxInstance, "session"),
+          };
         }
 
         if (compareInstances(instance, inherited) > 0) {
@@ -275,6 +382,7 @@ export const resetLimitCore = ({
         result,
         own: known.own,
         approved: true,
+        surface: "session",
       }),
 
     declined: (_args, { details }, answer) =>
@@ -290,82 +398,24 @@ export const resetLimitCore = ({
 export type ResetDeps = LifecycleDeps & { readonly approvals: ApprovalsService };
 
 /** `environment_setting_reset`, over the Session's `Environments`. */
-export const resetTool = ({ environments, approvals, log, refuseSecrets, target }: ResetDeps) => {
-  // Built here, not at the module's top: `environment.ts` imports this file, so its exports are not there yet then.
-  const Reason = Schema.String.check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(MAX_CHANGE_REASON),
-  ).annotate({
-    description:
-      "Why you make the change, for the user to read in the Environment's Agent changes (and on the Approval card, for the size limit), such as 'the Global Setup Script now installs what this one did'",
-  });
-
+export const resetTool = (
+  { environments, approvals, log, refuseSecrets, target }: ResetDeps,
+  core: HarnessWrite<ResetArgs, EnvironmentsError>,
+) => {
   const limit = resetLimitCore({ environments, refuseSecrets, target });
 
-  /** Reset `setting` in `environment` at once, with no Approval, and say how it went. */
-  const reset = ({
-    environment,
-    own,
-    setting,
-    reason,
-    api,
-  }: {
-    readonly environment: string;
-    readonly own: boolean;
-    readonly setting: ResettableSetting;
-    readonly reason: string;
-    readonly api: ApprovalCall;
-  }) =>
-    Effect.gen(function* () {
-      const result = yield* environments.change({
-        environment,
-        change: { field: setting, value: null },
-        expected: undefined,
-        author: {
-          conversation: api.conversationId,
-          tool: RESET_TOOL,
-          reason,
-          approved: undefined,
-        },
-      });
-
-      if (result.status === "changed") {
-        yield* log.record({
-          tool: RESET_TOOL,
-          environmentName: result.environment.name,
-          field: setting,
-        });
-      }
-
-      return toolResult(yield* resetAnswer({ environment, setting, result, own, approved: false }));
-    });
-
   return defineEffectTool({
-    name: RESET_TOOL,
-    description: Arr.join(
-      [
-        "Reset one of an Environment's Container settings (the one id names): take its own value (its Override) back, so the setting inherits the value at Global again, and each later change of it at Global. environment_get shows which settings are the Environment's own (overridden here) and which are inherited from Global.",
-        `The setting is one of ${Arr.join(RESETTABLE_SETTINGS, ", ")}. A variable of its own is taken back with environment_variable_unset, after which a variable at Global of the same name applies again.`,
-        "A reset is refused as the user's save would refuse it, such as a size that would be above the size limit. Resetting the size limit (maxInstance) changes a Limit, so the user must approve it: the call waits for their answer on a card in the Session; on Decline nothing changes.",
-        "The change is recorded with your reason, and the user can see and revert it on the Environments page. It applies at each Workspace's next Container start; for this Session's own Environment, container_restart applies it now.",
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: IdNotGlobal,
-      setting: Schema.Literals(RESETTABLE_SETTINGS).annotate({
-        description: "The Container setting that inherits Global's value again",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentChangeOutput),
+    name: HARNESS_TOOLS.environment_setting_reset.name,
+    description: HARNESS_TOOLS.environment_setting_reset.session.description,
+    parameters: HARNESS_TOOLS.environment_setting_reset.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_setting_reset.session.output),
     executionMode: "sequential",
     // A rerun after an eviction finds the field inherited already and records nothing; the size limit's waits for the
     // same Approval request.
     replay: "safe",
     execute: ({ id, setting, reason }, api) =>
       Effect.gen(function* () {
-        if (setting === "maxInstance") {
+        if (setting === RESET_LIMIT_SETTING) {
           return yield* approvedChange(
             approvals,
             api,
@@ -375,11 +425,11 @@ export const resetTool = ({ environments, approvals, log, refuseSecrets, target 
           );
         }
 
-        yield* refuseSecrets([{ what: "the reason", text: reason }]);
+        const answer = yield* core({ id, setting, reason }, "session", api.conversationId);
 
-        const { environment, own } = yield* target(id);
+        yield* Effect.forEach(loggedOf(answer.logged), log.record, { discard: true });
 
-        return yield* reset({ environment, own, setting, reason, api });
+        return toolResult(answer);
       }),
   });
 };

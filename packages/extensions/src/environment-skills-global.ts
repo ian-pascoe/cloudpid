@@ -25,7 +25,7 @@ import {
   declinedWith,
   withApproval,
 } from "./approvals.ts";
-import { GLOBAL_ID } from "@cloudpid/protocol/harness-tools";
+import { GLOBAL_ID, MAX_CARD_CHARS, SKILL_APPROVAL } from "@cloudpid/protocol/harness-tools";
 import { EnvironmentsError } from "./environment.ts";
 import {
   skillInstalledOutput,
@@ -45,18 +45,11 @@ import {
 import { APPROVED } from "./outputs.ts";
 import { MAX_APPROVED_SKILLS } from "./skill-checks.ts";
 
-/**
- * What a tool's description says of the Approval of a change to the Skills kept Global. It is not the
- * Limits' wording (`approval-tools.ts`): what must still hold when the owner answers is the Skill, not a setting.
- */
-export const SKILL_APPROVAL =
-  "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the Skill of the name was saved again, or the folder's files changed, meanwhile, the approval does not apply and you are told to ask again.";
-
-/**
- * The most characters of a Skill's files the Approval card shows. A Skill may be far larger (`MAX_SKILL_BYTES`), so the card says
- * what it cut, since the owner approves what they can read.
- */
-export const MAX_CARD_CHARS = 16_000;
+// What the tools' descriptions say of the Approval of a change to the Skills kept Global, and the most characters of a
+// Skill's files the card shows (a Skill may be far larger, so the card says what it cut), are the shared declarations'
+// words (`@cloudpid/protocol/harness-tools`), which the endpoint's descriptions use too. They are not the Limits' wording
+// (`approval-tools.ts`): what must still hold when the owner answers is the Skill, not a setting.
+export { MAX_CARD_CHARS, SKILL_APPROVAL };
 
 /** What the card showed of a Skill's files, and what of them it did not. */
 type Card = {
@@ -382,10 +375,6 @@ export const removeAtGlobal = (
         }),
     );
   });
-
-/** What a tool's description says of the Approval of an install at Global. */
-export const INSTALL_APPROVAL =
-  "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the Skills shown are installed and recorded as approved; on Decline nothing is installed, and the result carries their reason. A Skill is installed only if it is the one the user was shown (the same folder and files, at the commit shown) and the Skill of its name was not saved again meanwhile; any other is reported, and you are told to ask again.";
 
 /**
  * What an Approval of an install was asked against: the pin (`SkillInstallPin`), how much the cards cut, and what the

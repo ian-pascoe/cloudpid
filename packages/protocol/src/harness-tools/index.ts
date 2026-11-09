@@ -11,6 +11,19 @@
 import * as Record from "effect/Record";
 import { environmentGet, environmentList } from "./environment.ts";
 import { CONTAINER_SETTING_TOOLS, environmentSecretBuild } from "./environment-changes.ts";
+import {
+  environmentCreate,
+  environmentRebuild,
+  environmentRename,
+  environmentRepoAdd,
+  environmentRepoRemove,
+} from "./environment-lifecycle.ts";
+import { environmentSettingReset } from "./environment-reset.ts";
+import {
+  environmentSkillInstall,
+  environmentSkillRemove,
+  environmentSkillUpdate,
+} from "./environment-skills.ts";
 import { settingsGet } from "./settings.ts";
 import { settingsReset, SETTINGS_CHANGE_TOOLS } from "./settings-changes.ts";
 import { settingsMcpGet, settingsMcpList } from "./settings-mcp.ts";
@@ -21,6 +34,16 @@ export * from "./change-output.ts";
 export * from "./environment.ts";
 
 export * from "./environment-changes.ts";
+
+export * from "./environment-lifecycle.ts";
+
+export * from "./environment-reset.ts";
+
+export * from "./environment-skills.ts";
+
+export * from "./lifecycle-output.ts";
+
+export * from "./skill-words.ts";
 
 // `Source` and `placement` are this folder's own pieces of the output schemas, not part of its surface.
 export {
@@ -59,13 +82,24 @@ export * from "./surface.ts";
 
 /**
  * Every harness tool's declaration, by name: the five reads, the nine Container setting tools,
- * `environment_secret_build`, the Settings' changing tools, `settings_mcp_reload` and the MCP servers' narrowing tools.
+ * `environment_secret_build`, the five tools for an Environment's record and Build, `environment_setting_reset`, the
+ * three that install, update and remove an Environment's Skills, the Settings' changing tools, `settings_mcp_reload` and
+ * the MCP servers' narrowing tools.
  */
 export const HARNESS_TOOLS = {
   environment_list: environmentList,
   environment_get: environmentGet,
   ...CONTAINER_SETTING_TOOLS,
   environment_secret_build: environmentSecretBuild,
+  environment_create: environmentCreate,
+  environment_rename: environmentRename,
+  environment_repo_add: environmentRepoAdd,
+  environment_repo_remove: environmentRepoRemove,
+  environment_rebuild: environmentRebuild,
+  environment_setting_reset: environmentSettingReset,
+  environment_skill_install: environmentSkillInstall,
+  environment_skill_update: environmentSkillUpdate,
+  environment_skill_remove: environmentSkillRemove,
   settings_get: settingsGet,
   settings_mcp_list: settingsMcpList,
   settings_mcp_get: settingsMcpGet,

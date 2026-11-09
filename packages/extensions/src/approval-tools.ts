@@ -254,7 +254,7 @@ export const ApprovalTools: Effect.Effect<
 
   const plainReason = (reason: string) => plainText(reason, "the reason", "Say why without it.");
 
-  const target = environmentTarget(environments);
+  const target = environmentTarget(environments, "session");
 
   const services = { access, plainText };
 

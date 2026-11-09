@@ -8,9 +8,15 @@
 import { DEFAULT_CONTAINER_SETTINGS, DEFAULT_SETTINGS } from "@cloudpid/config";
 import {
   type AgentChange,
+  BUILD_ASKED,
+  BUILD_FIELD,
+  CREATED_FIELD,
+  NAME_FIELD,
+  repoField,
   SETTINGS_SCOPE,
   type SettingsMcpServer,
   type SettingsMcpView,
+  skillField,
 } from "@cloudpid/protocol";
 import { McpApplied } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
@@ -27,6 +33,9 @@ const DEFAULT = {
   repos: [{ name: "app", url: "https://github.com/o/app.git" }],
   createdAt: 0,
 };
+
+/** The commit a Skill install read at. */
+const COMMIT = "a".repeat(40);
 
 /** The setup script of the Environment: long enough to need a second page of 40,000 characters. */
 const LONG_SCRIPT = `${"echo setup\n".repeat(4_000)}echo done\n`;
@@ -197,6 +206,11 @@ export type ChangeOptions = {
    * defect.
    */
   readonly afterWrite?: (() => Effect.Effect<void>) | undefined;
+  /**
+   * Runs before a rebuild is recorded, once the Build was asked for: a test whose call is cut between the two makes it a
+   * defect.
+   */
+  readonly beforeRecordRebuild?: (() => Effect.Effect<void>) | undefined;
 };
 
 /** The Registry's refusal of a write whose text holds a kept Secret, as `via-secrets.ts` words it. */
@@ -215,6 +229,7 @@ export const changingRegistry = (
     keptSecret,
     refusal = HOLDS_KEPT_SECRET,
     afterWrite,
+    beforeRecordRebuild,
   }: ChangeOptions = {},
 ): ChangingRegistry => {
   const ledger: ChangeLedger = {
@@ -304,7 +319,11 @@ export const changingRegistry = (
     return { status: "changed" as const, change: record(scope, field, before, value, author) };
   };
 
-  const scopeName = (scope: string) => (scope === "*" ? "Global" : DEFAULT.name);
+  /** The names of the Environments the stand-in made (`agentCreateEnvironment`), by id. */
+  const made = new Map<string, string>();
+
+  const scopeName = (scope: string) =>
+    scope === "*" ? "Global" : (made.get(scope) ?? DEFAULT.name);
 
   // The change tools ask these methods besides the reads; each answers as the real Registry's would for the one
   // Environment.
@@ -454,6 +473,230 @@ export const changingRegistry = (
         wipes: [],
       })),
     mcpPushed: () => noted("mcpPushed", () => undefined),
+    agentCreateEnvironment: ({
+      name,
+      repos,
+      author,
+    }: {
+      readonly name: string;
+      readonly repos: ReadonlyArray<{ readonly name: string; readonly url: string }>;
+      readonly author: AgentChangeAuthor;
+    }) =>
+      written("agentCreateEnvironment", () => {
+        if (holdsKept(author.reason)) return { status: "rejected", message: refusal };
+
+        const environment = { id: "made-1", name, repos, createdAt: 0 };
+
+        made.set(environment.id, name);
+
+        return {
+          status: "created",
+          environment,
+          change: record(environment.id, CREATED_FIELD, null, { name, repos: [...repos] }, author),
+        };
+      }),
+    agentRenameEnvironment: ({
+      environment,
+      name,
+      author,
+    }: {
+      readonly environment: string;
+      readonly name: string;
+      readonly author: AgentChangeAuthor;
+    }) =>
+      written("agentRenameEnvironment", () => {
+        if (environment !== DEFAULT.id) return { status: "missing" };
+
+        if (holdsKept(author.reason)) return { status: "rejected", message: refusal };
+
+        if (name === DEFAULT.name) return { status: "unchanged", environment: DEFAULT };
+
+        return {
+          status: "changed",
+          environment: { ...DEFAULT, name },
+          change: record(environment, NAME_FIELD, DEFAULT.name, name, author),
+        };
+      }),
+    agentAddRepo: ({
+      environment,
+      repo,
+      author,
+    }: {
+      readonly environment: string;
+      readonly repo: { readonly name: string; readonly url: string };
+      readonly author: AgentChangeAuthor;
+    }) =>
+      written("agentAddRepo", () => {
+        if (environment !== DEFAULT.id) return { status: "missing" };
+
+        if (holdsKept(author.reason)) return { status: "rejected", message: refusal };
+
+        if (DEFAULT.repos.some(({ name }) => name === repo.name)) {
+          return { status: "unchanged", environment: DEFAULT };
+        }
+
+        return {
+          status: "changed",
+          environment: DEFAULT,
+          change: record(environment, repoField(repo.name), null, repo.url, author),
+        };
+      }),
+    agentRemoveRepo: ({
+      environment,
+      name,
+      author,
+    }: {
+      readonly environment: string;
+      readonly name: string;
+      readonly author: AgentChangeAuthor;
+    }) =>
+      written("agentRemoveRepo", () => {
+        if (environment !== DEFAULT.id) return { status: "missing" };
+
+        const held = DEFAULT.repos.find((repo) => repo.name === name);
+
+        if (held === undefined) return { status: "rejected", message: `No repo ${name}.` };
+
+        return {
+          status: "changed",
+          environment: DEFAULT,
+          change: record(environment, repoField(name), held.url, null, author),
+        };
+      }),
+    recordRebuild: ({
+      environment,
+      author,
+    }: {
+      readonly environment: string;
+      readonly author: AgentChangeAuthor;
+    }) =>
+      Effect.andThen(
+        beforeRecordRebuild?.() ?? Effect.void,
+        written("recordRebuild", () =>
+          environment === DEFAULT.id
+            ? {
+                status: "changed" as const,
+                environment: DEFAULT,
+                change: record(environment, BUILD_FIELD, null, BUILD_ASKED, author),
+              }
+            : { status: "missing" as const },
+        ),
+      ),
+    mcpLookRepoFiles: () => noted("mcpLookRepoFiles", () => null),
+    agentInstallSkills: ({
+      environment,
+      source,
+      skills,
+      author,
+    }: {
+      readonly environment: string;
+      readonly source: string;
+      readonly skills?: ReadonlyArray<string> | undefined;
+      readonly author: AgentChangeAuthor;
+    }) =>
+      written("agentInstallSkills", () => {
+        if (environment !== DEFAULT.id) return { status: "missing" };
+
+        const where = { repo: source, ref: null, commit: COMMIT };
+
+        // A repo that holds several Skills, none named: they are listed, and nothing is installed.
+        if (skills === undefined) {
+          return {
+            status: "listed",
+            environment: DEFAULT,
+            ...where,
+            available: [
+              { name: "grill-me", path: "skills/grill-me", description: "Asks hard questions" },
+            ],
+          };
+        }
+
+        return {
+          status: "installed",
+          environment: { id: DEFAULT.id, name: DEFAULT.name },
+          ...where,
+          results: skills.map((name) =>
+            name === "big"
+              ? { name, path: `skills/${name}`, outcome: "rejected", message: "too large" }
+              : {
+                  name,
+                  path: `skills/${name}`,
+                  outcome: "installed",
+                  change: record(
+                    environment,
+                    skillField(name),
+                    null,
+                    {
+                      files: { "SKILL.md": "h1" },
+                      source: { ...where, path: `skills/${name}` },
+                    },
+                    author,
+                  ),
+                },
+          ),
+        };
+      }),
+    agentUpdateSkills: ({
+      environment,
+      names,
+      author,
+    }: {
+      readonly environment: string;
+      readonly names?: ReadonlyArray<string> | undefined;
+      readonly author: AgentChangeAuthor;
+    }) =>
+      written("agentUpdateSkills", () => {
+        if (environment !== DEFAULT.id) return { status: "missing" };
+
+        const source = { repo: "o/skills", path: "skills/a", ref: null };
+
+        return {
+          status: "done",
+          environment: { id: DEFAULT.id, name: DEFAULT.name },
+          results: (names ?? ["a"]).map((name) => ({
+            name,
+            outcome: "updated",
+            from: { ...source, commit: COMMIT },
+            to: { ...source, commit: "f".repeat(40) },
+            overwrote: false,
+            change: record(
+              environment,
+              skillField(name),
+              { files: { "SKILL.md": "h1" }, source: { ...source, commit: COMMIT } },
+              { files: { "SKILL.md": "h2" }, source: { ...source, commit: "f".repeat(40) } },
+              author,
+            ),
+          })),
+        };
+      }),
+    agentRemoveSkill: ({
+      environment,
+      name,
+      author,
+    }: {
+      readonly environment: string;
+      readonly name: string;
+      readonly author: AgentChangeAuthor;
+    }) =>
+      written("agentRemoveSkill", () => {
+        if (environment !== DEFAULT.id) return { status: "missing" };
+
+        if (name !== "a") return { status: "absent", environment: DEFAULT };
+
+        return {
+          status: "removed",
+          environment: { id: DEFAULT.id, name: DEFAULT.name },
+          change: record(
+            environment,
+            skillField(name),
+            { files: { "SKILL.md": "h1" } },
+            null,
+            author,
+          ),
+          inherited: false,
+          overriddenIn: [],
+        };
+      }),
     changeRequest: ({ id }: { readonly id: string }) =>
       noted("changeRequest", () => {
         const held = ledger.claims.get(id);
@@ -518,7 +761,11 @@ export type UpkeepCalls = Array<string>;
  * The upkeep and the background of `HarnessDeps`, noted: `background` keeps each effect for the test to run with
  * `runBackground`, as `waitUntil` runs it after the answer.
  */
-export const harnessUpkeep = (calls: UpkeepCalls = []) => {
+export const harnessUpkeep = (
+  calls: UpkeepCalls = [],
+  /** What each Build asked for (`builds.rebuild`) answers, in order; "asked" once none is left. */
+  rebuilds: Array<"asked" | "underway"> = [],
+) => {
   const pending: Array<Effect.Effect<void>> = [];
   const credentials: ReadonlyArray<string> = [];
 
@@ -527,7 +774,7 @@ export const harnessUpkeep = (calls: UpkeepCalls = []) => {
   const deps = {
     builds: {
       of: (environment: string) => noted(`builds.of:${environment}`),
-      rebuild: () => Effect.succeed("asked" as const),
+      rebuild: () => Effect.succeed(rebuilds.shift() ?? ("asked" as const)),
     },
     spares: {
       of: (environment: string) => noted(`spares.of:${environment}`),

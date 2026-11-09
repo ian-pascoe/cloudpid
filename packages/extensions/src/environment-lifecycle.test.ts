@@ -31,6 +31,10 @@ import {
   RebuildOutput,
   RecordChangeOutput,
 } from "./environment-lifecycle-outputs.ts";
+import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
+import { expectEndpointWords } from "./endpoint-words.fixture.ts";
+import { endpointTextCheck } from "./environment-changes.ts";
+import { LIFECYCLE_REPLAYED, lifecycleCores } from "./environment-lifecycle-changes.ts";
 import { runProgram, runSized } from "./program.fixture.ts";
 import { unusedSecretMarks } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
@@ -874,5 +878,171 @@ describe("the lifecycle tools from a program", () => {
     expect(called?.lengths["repos"]).toBeLessThan(1_300);
     expect(called?.lengths["changes"]).toBe(1);
     expect(called?.bytes).toBeLessThan(1.5 * 1024 * 1024);
+  });
+});
+
+describe("the lifecycle cores on the endpoint", () => {
+  /** The cores over the fake lifecycle as the endpoint runs them: no Session, and a check that knows no Session's Secrets. */
+  const endpointCores = async () => {
+    const lifecycle = fakeLifecycle();
+
+    const holdsSecret = await Effect.runPromise(
+      endpointTextCheck.pipe(Effect.provideService(DeployCredentials, { values: [GITHUB_TOKEN] })),
+    );
+
+    return {
+      cores: lifecycleCores({
+        environments: { ...lifecycle.service, current: Effect.succeed(null) },
+        holdsSecret,
+      }),
+      ...lifecycle,
+    };
+  };
+
+  it.each([
+    ["environment_create", { name: "Billing", repos: ["acme/api"], reason: "r" }],
+    ["environment_rename", { id: "0000abcd", name: "Renamed", reason: "r" }],
+    ["environment_repo_add", { id: "0000abcd", url: "acme/web", reason: "r" }],
+    ["environment_repo_remove", { id: "default", name: "app", reason: "r" }],
+    ["environment_rebuild", { id: "default", reason: "r" }],
+  ] as const)(
+    "%s answers the endpoint's shape, naming no tool it does not serve (%j)",
+    async (name, args) => {
+      const { cores } = await endpointCores();
+
+      // SAFETY: each row's arguments are its tool's.
+      const answer = await Effect.runPromise(cores[name](args as never, "endpoint"));
+
+      const output = Schema.decodeUnknownSync(HARNESS_TOOLS[name].endpoint.output)(
+        answer.structured,
+      );
+
+      expect(output.changes).toHaveLength(1);
+      expect(output).not.toHaveProperty("approval");
+      expect(output).not.toHaveProperty("rerun");
+      expectEndpointWords(answer.text);
+      expect(answer.logged).toMatchObject({ tool: name });
+    },
+  );
+
+  it("answers environment_create with the id, naming session_start", async () => {
+    const { cores } = await endpointCores();
+
+    const answer = await Effect.runPromise(
+      cores.environment_create({ name: "Billing", repos: ["acme/api"], reason: "r" }, "endpoint"),
+    );
+
+    const output = Schema.decodeUnknownSync(HARNESS_TOOLS.environment_create.endpoint.output)(
+      answer.structured,
+    );
+
+    expect(answer.text).toContain(output.scope.id);
+    expect(answer.text).toContain("session_start");
+    expect(output.repos).toEqual([{ name: "api", url: "https://github.com/acme/api.git" }]);
+  });
+
+  it.each([
+    [
+      "a text holding a GitHub token",
+      "environment_rename",
+      { id: "default", name: GITHUB_TOKEN, reason: "r" },
+    ],
+    [
+      "a reason holding a GitHub token",
+      "environment_rebuild",
+      { id: "default", reason: GITHUB_TOKEN },
+    ],
+    ["a Global id", "environment_rename", { id: "*", name: "X", reason: "r" }],
+  ] as const)("refuse %s as invalid_argument and ask for nothing", async (_, name, args) => {
+    const { cores, calls } = await endpointCores();
+
+    // SAFETY: each row's arguments are its tool's.
+    const refused = await Effect.runPromise(
+      cores[name](args as never, "endpoint").pipe(Effect.flip),
+    );
+
+    expect(refused.code).toBe("invalid_argument");
+    expectEndpointWords(refused.message);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a name the Registry refuses as invalid_argument, after asking it", async () => {
+    const { cores, calls } = await endpointCores();
+
+    const refused = await Effect.runPromise(
+      cores
+        .environment_rename({ id: "default", name: "Other", reason: "r" }, "endpoint")
+        .pipe(Effect.flip),
+    );
+
+    expect(refused.code).toBe("invalid_argument");
+    expectEndpointWords(refused.message);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses an Environment no one has as not_found", async () => {
+    const { cores } = await endpointCores();
+
+    const refused = await Effect.runPromise(
+      cores.environment_rebuild({ id: "0000beef", reason: "r" }, "endpoint").pipe(Effect.flip),
+    );
+
+    expect(refused.code).toBe("not_found");
+  });
+
+  it("answers a Build under way as unchanged, with nothing recorded", async () => {
+    const { cores } = await endpointCores();
+    const ask = () => cores.environment_rebuild({ id: "default", reason: "r" }, "endpoint");
+
+    await Effect.runPromise(ask());
+
+    const again = await Effect.runPromise(ask());
+
+    expect(
+      Schema.decodeUnknownSync(HARNESS_TOOLS.environment_rebuild.endpoint.output)(again.structured),
+    ).toMatchObject({ changed: false, new_build: false, unchanged: ["build"], changes: [] });
+    expect(again.logged).toBeUndefined();
+  });
+
+  describe("replayed", () => {
+    const record = {
+      id: 41,
+      scope: "0000ff00",
+      scopeName: "Billing",
+      field: "environment",
+      before: null,
+      after: { name: "Billing", repos: [{ name: "api", url: "https://github.com/acme/api.git" }] },
+    } as const;
+
+    it("takes environment_create's id, name and Repos from the change's after", () => {
+      const answer = LIFECYCLE_REPLAYED.environment_create([record], "");
+
+      expect(
+        Schema.decodeUnknownSync(HARNESS_TOOLS.environment_create.endpoint.output)(
+          answer.structured,
+        ),
+      ).toMatchObject({
+        scope: { id: "0000ff00", name: "Billing" },
+        repos: [{ name: "api", url: "https://github.com/acme/api.git" }],
+        changed: true,
+        replayed: true,
+      });
+    });
+
+    it.each([
+      "environment_rename",
+      "environment_repo_add",
+      "environment_repo_remove",
+      "environment_rebuild",
+    ] as const)("gives %s's shared fields from the record, valid against its schema", (name) => {
+      const answer = LIFECYCLE_REPLAYED[name](
+        [{ ...record, field: "name", after: "N" }],
+        "default",
+      );
+
+      expect(
+        Schema.decodeUnknownSync(HARNESS_TOOLS[name].endpoint.output)(answer.structured),
+      ).toMatchObject({ changes: [{ id: 41 }], unchanged: [], replayed: true });
+    });
   });
 });

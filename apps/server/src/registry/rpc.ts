@@ -1013,9 +1013,9 @@ export const serveRegistryRpc = <R = never>(
 
                 // A setting, variable, Build mark, MCP server key or Repo put back: the upkeep its change calls for, as
                 // after the owner's save (`./upkeep.ts`).
-                return upkeepFor(upkeep, [{ scope: environment, field: revert.change.field }]).pipe(
-                  Effect.as(revert.change),
-                );
+                return upkeepFor(upkeep, [
+                  { scope: environment, field: revert.change.field, after: revert.change.after },
+                ]).pipe(Effect.as(revert.change));
               case "changed-since":
                 return failed(
                   `${revert.field} has changed since: it is ${shownValue(revert.current)} now, so the change is not reverted`,

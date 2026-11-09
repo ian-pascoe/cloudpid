@@ -7,15 +7,8 @@
 // (`docs/architecture/agent-capabilities.md` → Values for programs).
 // @effect-diagnostics missingPipeableSignature:off
 import { ChordContext, defineEffectTool } from "@cloudpid/effect-durable";
-import {
-  type AgentChange,
-  BUILD_FIELD,
-  type EnvironmentRepo,
-  fieldRepo,
-  NAME_FIELD,
-  parseRepoSource,
-  repoField,
-} from "@cloudpid/protocol";
+import type { AgentChange, EnvironmentRepo } from "@cloudpid/protocol";
+import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
@@ -24,26 +17,18 @@ import * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import {
   type ChangeAuthor,
   type ChangedEnvironment,
   type EnvironmentTarget,
   EnvironmentsError,
   type EnvironmentsService,
-  Id,
-  MAX_CHANGE_REASON,
   type RunChange,
 } from "./environment.ts";
-import {
-  createdOutput,
-  EnvironmentCreateOutput,
-  RebuildOutput,
-  RecordChangeOutput,
-  rebuildOutput,
-  recordOutput,
-} from "./environment-lifecycle-outputs.ts";
-import { asOutput, outputSchema } from "./outputs.ts";
+import type { LifecycleCores } from "./environment-lifecycle-changes.ts";
+import { rebuildOutput } from "./environment-lifecycle-outputs.ts";
+import { type HarnessWriteAnswer, loggedOf, toolResult } from "./harness.ts";
+import { outputSchema } from "./outputs.ts";
 
 /** An Agent change made to an Environment's record, as the Session reports it. */
 export type RecordMade = {
@@ -174,26 +159,9 @@ export type TestBuildStarted = {
   readonly progress: TestBuildProgress;
 };
 
-const RepoSource = Schema.String.check(Schema.isMinLength(1)).annotate({
-  description:
-    "The repo to clone: owner/repo (a GitHub repo) or a plain https URL. Never put a credential in it",
-});
-
-const RepoDirectory = Schema.String.check(Schema.isMinLength(1)).annotate({
-  description:
-    "The directory below /workspace the repo is cloned into (default: the repo's own name): letters, digits, dots, underscores and dashes, starting with a letter or digit",
-});
-
-/** A name or address a change holds before or after, as text; none for a change that had none. */
-const shown = (value: AgentChange["before"]): string => (Predicate.isString(value) ? value : "");
-
 /** An Environment as a result names it: its name in quotes, then its id. */
 const named = ({ id, name }: ChangedEnvironment): string =>
   `Environment ${JSON.stringify(name)} (${id})`;
-
-/** A Schema `Json` value as the details' `JsonValue`, which differs only in that its arrays are mutable. */
-// SAFETY: the two types describe the same values; the details are never mutated.
-const asJsonValue = (value: Schema.Json | null): JsonValue | null => value as JsonValue | null;
 
 /** A duration as a result says it: seconds, or minutes and seconds. */
 const durationWords = (ms: number): string => {
@@ -249,9 +217,6 @@ const memo = (api: ToolExecutionApi, name: string, candidate?: JsonValue) =>
     });
   });
 
-const WORKSPACES_UNTOUCHED =
-  "Only the Environment's record and its spare Workspace change: no Workspace a Session has gets a clone or loses one, this Session's included.";
-
 /** What the tools of this file need of `EnvironmentTools`: what it builds them over, and its refusals. */
 export type LifecycleDeps = {
   readonly environments: EnvironmentsService;
@@ -274,67 +239,16 @@ export type LifecycleDeps = {
  * `environment_repo_remove` and `environment_rebuild`. All run alone and are not replayed after an eviction, which would
  * record the change again.
  */
-export const lifecycleTools = ({
-  environments,
-  log,
-  refuseSecrets,
-  target,
-  notFound,
-}: LifecycleDeps) => {
-  // Built here, not at the module's top: `environment.ts` imports this file, so its exports are not there yet then.
-  const Reason = Schema.String.check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(MAX_CHANGE_REASON),
-  ).annotate({
-    description:
-      "Why you make the change, for the user to read in the Environment's Agent changes, such as 'the API lives in a second repo'",
-  });
-
-  /** Say `message` as a refusal: nothing was saved. */
-  const refused = (message: string) =>
-    EnvironmentsError.make({ message: `Nothing was saved: ${message}` });
-
-  /** The result of a change that was recorded: its text, what the card shows, and the value a program gets. */
-  const recordedResult = (
-    tool: string,
-    environment: ChangedEnvironment,
-    change: AgentChange,
-    text: string,
-    structuredOutput: JsonValue,
-  ) =>
-    log.record({ tool, environmentName: environment.name, field: change.field }).pipe(
-      Effect.as({
-        output: [{ type: "text" as const, text }],
-        structuredOutput,
-        details: {
-          agentChange: {
-            id: change.id,
-            environment,
-            field: change.field,
-            before: asJsonValue(change.before),
-            after: asJsonValue(change.after),
-          },
-        },
-      }),
+export const lifecycleTools = (
+  { environments, log, refuseSecrets, target, notFound }: LifecycleDeps,
+  cores: LifecycleCores,
+) => {
+  /** A core's answer as the Session's tool returns it, once the Run's Notification is told of the change it made. */
+  const inSession = (answer: Effect.Effect<HarnessWriteAnswer, EnvironmentsError>) =>
+    answer.pipe(
+      Effect.tap(({ logged }) => Effect.forEach(loggedOf(logged), log.record, { discard: true })),
+      Effect.map(toolResult),
     );
-
-  /** The result of a change that found the record as asked already. */
-  const unchangedResult = (
-    text: string,
-    environment: ChangedEnvironment,
-    structuredOutput: JsonValue,
-  ) => ({
-    output: [{ type: "text" as const, text }],
-    structuredOutput,
-    details: { unchanged: { environment } },
-  });
-
-  /** The value of a change to the record of `environment`: `change` is null for one that was as asked already. */
-  const recordValue = (
-    environment: ChangedEnvironment,
-    change: AgentChange | null,
-    field: string,
-  ) => asOutput(RecordChangeOutput, recordOutput({ environment, change, unchanged: [field] }));
 
   /** The Environment `environment` names, by id and name: the id again when the Registry does not show it. */
   const environmentNamed = (environment: string) =>
@@ -343,289 +257,58 @@ export const lifecycleTools = ({
       Effect.orElseSucceed(() => ({ id: environment, name: environment })),
     );
 
-  /** Apply `change` to the Environment `id` names; what it answers for each outcome but a recorded change. */
-  const applied = <A extends RecordMade | RecordUnchanged>(
-    id: string,
-    change: (environment: string) => Effect.Effect<RecordOutcome<A>, EnvironmentsError>,
-  ) =>
-    Effect.gen(function* () {
-      const { environment } = yield* target(id);
-      const answer = yield* change(environment);
-
-      switch (answer.status) {
-        case "missing":
-          return yield* notFound(environment);
-        case "rejected":
-          return yield* refused(answer.message);
-        default:
-          return answer;
-      }
-    });
-
   const create = defineEffectTool({
-    name: "environment_create",
-    description: Arr.join(
-      [
-        "Make an Environment with a name and Repos, and the default Container settings: the same name rules as the user's (1 to 80 characters, free among the Environments whatever the case). Its Repos are given as owner/repo or plain https URLs, each cloned into a directory of its own below /workspace by the Workspaces made from it. A spare Workspace and a Build are made for it as for one the user makes.",
-        "It answers the new Environment's id. The new Environment is not this Session's: this Session stays in its own Workspace, and you cannot start a Session in another Environment. Set it up by passing its id as id to the other environment_* tools; the user starts a Session in it from the Environments page.",
-        "The change is recorded with your reason, and the user can see it on the Environments page. Making an Environment cannot be reverted, since deleting one needs the user's approval.",
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      name: Schema.String.annotate({
-        description: "The Environment's name, such as 'Billing API'",
-      }),
-      repos: RepoSource.pipe(Schema.Array, Schema.optionalKey),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(EnvironmentCreateOutput),
+    name: HARNESS_TOOLS.environment_create.name,
+    description: HARNESS_TOOLS.environment_create.session.description,
+    parameters: HARNESS_TOOLS.environment_create.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_create.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ name, repos, reason }, api) =>
-      Effect.gen(function* () {
-        const sources = repos ?? [];
-
-        yield* refuseSecrets([
-          { what: "the name", text: name },
-          { what: "a repo", text: Arr.join(sources, " ") },
-          { what: "the reason", text: reason },
-        ]);
-
-        const made = yield* environments.create({
-          name,
-          repos: sources,
-          author: { conversation: api.conversationId, tool: "environment_create", reason },
-        });
-
-        if (made.status === "rejected") return yield* refused(made.message);
-
-        const { environment, repos: held } = made;
-
-        return yield* recordedResult(
-          "environment_create",
-          environment,
-          made.change,
-          Arr.join(
-            [
-              `Made ${named(environment)} with ${
-                held.length === 0
-                  ? "no repos"
-                  : `the repos ${Arr.join(
-                      Arr.map(held, (repo) => `${repo.name} (${repo.url})`),
-                      ", ",
-                    )}`
-              } and the default Container settings. Its id is ${environment.id}: pass it as id to the other environment_* tools to set it up.`,
-              "It is not this Session's Environment, and you cannot start a Session in it: the user can, from the Environments page. Its spare Workspace and its Build are made as for an Environment the user makes (environment_get shows the Build).",
-            ],
-            " ",
-          ),
-          createdOutput({
-            environment,
-            repos: held,
-            change: made.change,
-          }),
-        );
-      }),
+    execute: (args, api) =>
+      inSession(cores.environment_create(args, "session", api.conversationId)),
   });
 
   const rename = defineEffectTool({
-    name: "environment_rename",
-    description:
-      "Rename an Environment (the one id names): the same name rules as the user's (1 to 80 characters, free among the Environments whatever the case). Its id never changes. The change is recorded with your reason, and the user can see and revert it on the Environments page.",
-    parameters: Schema.Struct({
-      id: Id,
-      name: Schema.String.annotate({ description: "The new name" }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(RecordChangeOutput),
+    name: HARNESS_TOOLS.environment_rename.name,
+    description: HARNESS_TOOLS.environment_rename.session.description,
+    parameters: HARNESS_TOOLS.environment_rename.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_rename.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, name, reason }, api) =>
-      Effect.gen(function* () {
-        yield* refuseSecrets([
-          { what: "the name", text: name },
-          { what: "the reason", text: reason },
-        ]);
-
-        const answer = yield* applied(id, (environment) =>
-          environments.rename({
-            environment,
-            name,
-            author: { conversation: api.conversationId, tool: "environment_rename", reason },
-          }),
-        );
-
-        if (answer.status === "unchanged") {
-          return unchangedResult(
-            `${named(answer.environment)} already has that name: nothing changed, and nothing was recorded.`,
-            answer.environment,
-            recordValue(answer.environment, null, NAME_FIELD),
-          );
-        }
-
-        const { environment, change } = answer;
-
-        return yield* recordedResult(
-          "environment_rename",
-          environment,
-          change,
-          `Renamed "${shown(change.before)}" to "${shown(change.after)}": ${named(environment)}. Its id is the same.`,
-          recordValue(environment, change, change.field),
-        );
-      }),
+    execute: (args, api) =>
+      inSession(cores.environment_rename(args, "session", api.conversationId)),
   });
 
   const repoAdd = defineEffectTool({
-    name: "environment_repo_add",
-    description: Arr.join(
-      [
-        "Add a Repo to an Environment (the one id names), for the Workspaces made from then on: the same rules as the user's. It is cloned into /workspace/<name> by a Workspace's first use. The Environment's spare Workspace is made again, and its Build is made with the Repo.",
-        "Only the Environment's record and its spare Workspace change: no Workspace a Session has gets the clone, this Session's included. A new Workspace gets it. The change is recorded with your reason, and the user can see and revert it on the Environments page.",
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: Id,
-      url: RepoSource,
-      name: Schema.optionalKey(RepoDirectory),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(RecordChangeOutput),
+    name: HARNESS_TOOLS.environment_repo_add.name,
+    description: HARNESS_TOOLS.environment_repo_add.session.description,
+    parameters: HARNESS_TOOLS.environment_repo_add.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_repo_add.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, url, name, reason }, api) =>
-      Effect.gen(function* () {
-        yield* refuseSecrets([
-          { what: "the repo", text: url },
-          { what: "the directory", text: name ?? "" },
-          { what: "the reason", text: reason },
-        ]);
-
-        const answer = yield* applied(id, (environment) =>
-          environments.addRepo({
-            environment,
-            source: url,
-            name,
-            author: { conversation: api.conversationId, tool: "environment_repo_add", reason },
-          }),
-        );
-
-        if (answer.status === "unchanged") {
-          return unchangedResult(
-            `${named(answer.environment)} has that repo already: nothing changed, and nothing was recorded.`,
-            answer.environment,
-            recordValue(
-              answer.environment,
-              null,
-              // The directory it is cloned into: the one named, else the Repo's own name.
-              repoField(
-                name ??
-                  Result.match(parseRepoSource(url), {
-                    onSuccess: (repo) => repo.name,
-                    onFailure: () => url,
-                  }),
-              ),
-            ),
-          );
-        }
-
-        const { environment, change } = answer;
-
-        return yield* recordedResult(
-          "environment_repo_add",
-          environment,
-          change,
-          `Added the repo ${fieldRepo(change.field) ?? ""} (${shown(change.after)}) to ${named(environment)}. ${WORKSPACES_UNTOUCHED} A new Workspace made from the Environment gets the clone.`,
-          recordValue(environment, change, change.field),
-        );
-      }),
+    execute: (args, api) =>
+      inSession(cores.environment_repo_add(args, "session", api.conversationId)),
   });
 
   const repoRemove = defineEffectTool({
-    name: "environment_repo_remove",
-    description: Arr.join(
-      [
-        "Take a Repo out of an Environment (the one id names), by its directory name as environment_get shows it: the same rules as the user's. The Environment's spare Workspace is made again, and its Build is made without the Repo.",
-        "Only the Environment's record and its spare Workspace change: no Workspace a Session has loses its clone, this Session's included. A new Workspace does not get one. The change is recorded with your reason, and the user can see and revert it on the Environments page.",
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: Id,
-      name: Schema.String.check(Schema.isMinLength(1)).annotate({
-        description: "The repo's directory name below /workspace, as environment_get shows it",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(RecordChangeOutput),
+    name: HARNESS_TOOLS.environment_repo_remove.name,
+    description: HARNESS_TOOLS.environment_repo_remove.session.description,
+    parameters: HARNESS_TOOLS.environment_repo_remove.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_repo_remove.session.output),
     executionMode: "sequential",
     replay: "unsafe",
-    execute: ({ id, name, reason }, api) =>
-      Effect.gen(function* () {
-        yield* refuseSecrets([
-          { what: "the name", text: name },
-          { what: "the reason", text: reason },
-        ]);
-
-        const answer = yield* applied(id, (environment) =>
-          environments.removeRepo({
-            environment,
-            name,
-            author: { conversation: api.conversationId, tool: "environment_repo_remove", reason },
-          }),
-        );
-
-        const { environment, change } = answer;
-
-        return yield* recordedResult(
-          "environment_repo_remove",
-          environment,
-          change,
-          `Took the repo ${name} (${shown(change.before)}) out of ${named(environment)}. ${WORKSPACES_UNTOUCHED} A new Workspace made from the Environment does not get the clone.`,
-          recordValue(environment, change, change.field),
-        );
-      }),
+    execute: (args, api) =>
+      inSession(cores.environment_repo_remove(args, "session", api.conversationId)),
   });
 
-  const Proposed = Schema.Struct({
-    repos: Schema.optionalKey(
-      Schema.Array(
-        Schema.Struct({ url: RepoSource, name: Schema.optionalKey(RepoDirectory) }),
-      ).annotate({
-        description:
-          "The whole list of Repos, replacing the Environment's: each as environment_repo_add takes one",
-      }),
-    ),
-    variables: Schema.optionalKey(
-      Schema.Record(Schema.String, Schema.String).annotate({
-        description:
-          "The whole map of the Environment's own variables (NAME to value), replacing them; plain, under the same rules as environment_variable_set. The variables kept Global still apply under it, and the 50 counts both",
-      }),
-    ),
-    setup_script: Schema.optionalKey(
-      Schema.String.annotate({
-        description: "The Environment's whole Setup Script (bash); empty: none",
-      }),
-    ),
-    toolchains: Schema.optionalKey(
-      Schema.String.annotate({
-        description: "The whole mise.toml of the Toolchains; empty: the image's base Toolchains",
-      }),
-    ),
-    ignore: Schema.optionalKey(
-      Schema.Array(Schema.String).annotate({
-        description: "The whole list of extra Container-only paths",
-      }),
-    ),
-  }).annotate({
-    description:
-      "Make a Test Build of these proposed changes instead of a Build of the saved settings: each field given replaces the saved one whole, the others stay as saved. Nothing is saved.",
-  });
+  type Proposal = NonNullable<
+    (typeof HARNESS_TOOLS.environment_rebuild.session.input.Type)["proposed"]
+  >;
 
-  type Proposal = typeof Proposed.Type;
-
-  /** Ask for a Build of the saved settings, recorded as an Agent change: once, though the call is run again. */
+  /**
+   * Ask for a Build of the saved settings, recorded as an Agent change: once, though the call is run again. The memo is the
+   * Session's own (on the endpoint a repeat's `request_id` finds the claim), so it stays here and the core asks.
+   */
   const rebuildSaved = (id: string, reason: string, api: ToolExecutionApi) =>
     Effect.gen(function* () {
       yield* refuseSecrets([{ what: "the reason", text: reason }]);
@@ -651,33 +334,8 @@ export const lifecycleTools = ({
 
       yield* memo(api, REBUILD_ASKED, true);
 
-      const answer = yield* applied(id, (environment) =>
-        environments.rebuild({
-          environment,
-          author: { conversation: api.conversationId, tool: "environment_rebuild", reason },
-        }),
-      );
-
-      if (answer.status === "unchanged") {
-        return unchangedResult(
-          `A Build of ${named(answer.environment)} for its current Repos and settings is already under way: nothing was asked for, and nothing was recorded. environment_get with id ${answer.environment.id} shows how it goes.`,
-          answer.environment,
-          rebuildOutput({
-            environment: answer.environment,
-            change: null,
-            unchanged: [BUILD_FIELD],
-          }),
-        );
-      }
-
-      const { environment, change } = answer;
-
-      return yield* recordedResult(
-        "environment_rebuild",
-        environment,
-        change,
-        `Asked for a new Build of ${named(environment)}: the Build is under way. environment_get with id ${environment.id} shows its state and, when it fails, the end of its reason.`,
-        rebuildOutput({ environment, change, unchanged: [] }),
+      return yield* inSession(
+        cores.environment_rebuild({ id, reason }, "session", api.conversationId),
       );
     });
 
@@ -854,21 +512,10 @@ export const lifecycleTools = ({
     });
 
   const rebuild = defineEffectTool({
-    name: "environment_rebuild",
-    description: Arr.join(
-      [
-        "Ask for a new Build of an Environment now (the one id names), as the user's Rebuild does: its Repos cloned and its Toolchains and Setup Script run on a fresh Container, then snapshotted, for the Workspaces made from then on to start from. A Build already under way for the same Repos and settings is left to finish. An Environment with no Repos, no Setup Script and no Toolchains has nothing to build.",
-        "Without proposed it answers at once, with the Build under way: environment_get shows how it goes and, when it fails, the end of its reason. The request is recorded with your reason. It cannot be reverted.",
-        "With proposed it makes a Test Build instead, to check a change before saving it: a Build of the Environment's saved Repos and settings with the proposed fields replaced (repos, the full list; variables, the full map; setup_script; toolchains; ignore), made as a Build is, on a Container of its own. The same rules and Secret refusal as the saving tools apply. Nothing is saved or recorded, no Workspace starts from it, and a Build under way goes on beside it. The call waits until it ends, which can take many minutes, then answers the time it took, or the failing step with the end of its output. If it succeeded, save the fields with the setting tools. One Test Build runs per Environment at a time; Stop cancels it.",
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      id: Id,
-      reason: Reason,
-      proposed: Schema.optionalKey(Proposed),
-    }),
-    structuredOutputSchema: outputSchema(RebuildOutput),
+    name: HARNESS_TOOLS.environment_rebuild.name,
+    description: HARNESS_TOOLS.environment_rebuild.session.description,
+    parameters: HARNESS_TOOLS.environment_rebuild.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.environment_rebuild.session.output),
     executionMode: "sequential",
     // A rerun after an eviction waits for the same Test Build, and asks for a Build of the saved settings only once.
     replay: "safe",

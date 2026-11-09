@@ -4,6 +4,7 @@
 // @effect-diagnostics asyncFunction:off
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import type { AgentChange } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import type { ProposedBuild } from "../registry/builds.ts";
@@ -43,6 +44,8 @@ type Options = {
   /** Who makes the changes: Session s-1 unless given (a Session the Registry does not list has no id). */
   readonly source?: AuthorSource;
   readonly known?: boolean;
+  /** Whether the Repos' after-steps are given (the endpoint's), noted in `upkept` as `after:<environment>:<repo>:<look>`. */
+  readonly afterRepos?: boolean;
 };
 
 /** The Test Builds asked for, what each state read answers next (the last repeats), and the ids cancelled. */
@@ -58,6 +61,7 @@ const open = ({
   rebuild = Effect.succeed("asked" as const),
   source = sessionSource("s-1"),
   known = true,
+  afterRepos = false,
 }: Options = {}) => {
   const asked: Array<{ op: string; input: Asked }> = [];
   const upkept: string[] = [];
@@ -135,6 +139,10 @@ const open = ({
       },
     },
     spares: { of: (environment) => Effect.sync(() => void upkept.push(`spare:${environment}`)) },
+    afterRepos: afterRepos
+      ? ({ environment, repo, look }) =>
+          Effect.sync(() => void upkept.push(`after:${environment}:${repo ?? ""}:${String(look)}`))
+      : undefined,
     rounds: { roundMs: 30, pollMs: 10 },
   });
 
@@ -244,6 +252,53 @@ describe("changing the Repos", () => {
         lifecycle.addRepo({ environment: "0000abcd", source: "o/api", name: undefined, author }),
       );
       expect(upkept).toEqual([]);
+    }
+  });
+});
+
+describe("the Repos' after-steps", () => {
+  it("run after the upkeep for each change of the Repos: a look at the Repo added, none for one taken out, and one for a new Environment's Repos", async () => {
+    const { lifecycle, upkept } = open({ afterRepos: true });
+
+    await Effect.runPromise(
+      lifecycle.addRepo({ environment: "0000abcd", source: "o/api", name: "backend", author }),
+    );
+    await Effect.runPromise(lifecycle.removeRepo({ environment: "0000abcd", name: "app", author }));
+    await Effect.runPromise(lifecycle.create({ name: "N", repos: ["o/app"], author }));
+
+    expect(upkept).toEqual([
+      "spare:0000abcd",
+      "build:0000abcd",
+      "after:0000abcd:backend:true",
+      "spare:0000abcd",
+      "build:0000abcd",
+      "after:0000abcd::false",
+      "spare:0000abcd",
+      "build:0000abcd",
+      "after:0000abcd::true",
+    ]);
+  });
+
+  it("do not run for a new Environment with no Repos, or when nothing changed", async () => {
+    const { lifecycle, upkept } = open({ afterRepos: true });
+
+    await Effect.runPromise(lifecycle.create({ name: "N", repos: [], author }));
+
+    expect(Arr.filter(upkept, (step) => step.startsWith("after:"))).toEqual([]);
+
+    for (const answer of ["unchanged", "rejected"] as const) {
+      const none = open({ afterRepos: true, answer });
+
+      await Effect.runPromise(
+        none.lifecycle.addRepo({
+          environment: "0000abcd",
+          source: "o/api",
+          name: undefined,
+          author,
+        }),
+      );
+
+      expect(none.upkept).toEqual([]);
     }
   });
 });
