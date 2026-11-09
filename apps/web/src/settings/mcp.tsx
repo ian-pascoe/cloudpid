@@ -16,8 +16,9 @@
 // problem, Sign in, Sign in again and Sign out, and the refused-document-client hint (`mcp-sign-in-parts.tsx`); at Global,
 // the Sign-ins list follows the servers (`#sign-ins`). The form's Sign-in (OAuth) disclosure is `mcp-sign-in-form.tsx`.
 //
-// A row the agent changed (the `settings_mcp_*` tools, #484) says so on its meta line: "Changed by the agent · 5 min ago",
-// linking to its change in the Agent changes section, while that change is neither reverted nor dismissed.
+// A row the agent changed (the `settings_mcp_*` tools, #484) says so on its meta line: "Changed by the agent · 5 min ago"
+// ("Changed over MCP · pi · 5 min ago" for an agent over the MCP endpoint), linking to its change in the Agent changes
+// section, while that change is neither reverted nor dismissed.
 
 import type { McpExposure } from "@cloudpid/config";
 import {

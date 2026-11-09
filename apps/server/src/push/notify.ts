@@ -2,7 +2,7 @@
 // Sending a notification to every subscribed browser (`docs/architecture/client-and-protocol.md` → Notifications →
 // Sending): a Session's (`pushNotifier`), or the owner's with no Session (`pushOwner`), such as a Trigger's failed Fire,
 // which opens its Environment's Triggers section (`describeTriggerFailure`), or the changes an agent made over the MCP
-// endpoint (`docs/architecture/mcp-endpoint.md` → After a change, and Notifications). Both send through `sendToAll`.
+// endpoint (`docs/architecture/mcp-endpoint.md` → After a change, and Notifications). `pushNotifier` sends through `pushOwner`.
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -39,11 +39,13 @@ export type NotifierOptions = OwnerPushOptions & {
 };
 
 /**
- * Send `payload` to every subscribed browser. A subscription the push service reports gone (404, 410) is deleted; any
- * other refusal or failure is logged and the subscription kept, so one bad push service never stops the rest. This
- * never fails.
+ * Tell every subscribed browser `payload`, a notification of the owner's that belongs to no Session (the Session's
+ * own go through `pushNotifier`, which builds its payload and sends it here): its `url` is where a tap goes (any
+ * same-origin page: the service worker opens it), and a later one with the same `tag` replaces it on screen. A
+ * subscription the push service reports gone (404, 410) is deleted; any other refusal or failure is logged and the
+ * subscription kept, so one bad push service never stops the rest. This never fails.
  */
-const sendToAll =
+export const pushOwner =
   ({ store, vapid, fetch }: OwnerPushOptions) =>
   (payload: PushPayload): Effect.Effect<void> =>
     Effect.gen(function* () {
@@ -84,20 +86,12 @@ const sendToAll =
       );
     }).pipe(Effect.asVoid);
 
-/**
- * Tell every subscribed browser `payload`, a notification of the owner's that belongs to no Session: its `url` is where a
- * tap goes (any same-origin page: the service worker opens it), and a later one with the same `tag` replaces it on screen.
- * A subscription the push service reports gone is deleted, and this never fails (`sendToAll`).
- */
-export const pushOwner = (options: OwnerPushOptions) => (payload: PushPayload) =>
-  sendToAll(options)(payload);
-
-/** Tell every subscribed browser that Session `sessionId` has `event` (`sendToAll`). A Session the Registry does not know is ignored. */
+/** Tell every subscribed browser that Session `sessionId` has `event` (`pushOwner`). A Session the Registry does not know is ignored. */
 export const pushNotifier =
   (options: NotifierOptions) =>
   (sessionId: string, event: PushEvent): Effect.Effect<void> =>
     Effect.suspend(() => {
       const session = options.store.getSession(sessionId);
 
-      return session === null ? Effect.void : sendToAll(options)(describeEvent(event, session));
+      return session === null ? Effect.void : pushOwner(options)(describeEvent(event, session));
     });

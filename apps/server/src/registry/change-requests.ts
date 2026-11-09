@@ -7,9 +7,10 @@
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { type AgentChange, SETTINGS_SCOPE } from "@cloudpid/protocol";
+import type { AgentChange } from "@cloudpid/protocol";
 import type { AgentChanges } from "./agent-changes.ts";
-import { GLOBAL_SCOPE, type RegistryStorage, type RegistryStore } from "./store.ts";
+import { scopeNameOf } from "./scope-names.ts";
+import type { RegistryStorage, RegistryStore } from "./store.ts";
 
 /** How long a `request_id` is remembered. */
 export const CHANGE_REQUEST_MEMORY_MS = 24 * 60 * 60 * 1000;
@@ -120,16 +121,6 @@ export const claimChangeRequest = (
 const decodeAnswer = Schema.decodeUnknownOption(Schema.fromJsonString(ChangeAnswer));
 
 const decodeIds = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.Finite)));
-
-/** What a Scope is called in an answer: Global's, the Settings', or an Environment's name (its id once it is gone). */
-export const scopeNameOf =
-  (store: Pick<RegistryStore, "getEnvironment">) =>
-  (scope: string): string =>
-    scope === GLOBAL_SCOPE
-      ? "Global"
-      : scope === SETTINGS_SCOPE
-        ? "Settings"
-        : (store.getEnvironment(scope)?.name ?? scope);
 
 /** The `request_id` claims the Registry keeps, over its storage once it is migrated. */
 export type ChangeRequests = {

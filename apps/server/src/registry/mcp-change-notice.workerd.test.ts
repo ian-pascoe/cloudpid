@@ -4,7 +4,12 @@
 // change, and Notifications), through the real Registry's `notifyMcpChanges` (`registry.fixture.ts` runs `registryMethods`
 // as deployed): nothing when the caller recorded nothing in the last 10 minutes, else its title, its body by Scope name,
 // its tag and its link to the newest change.
-import { type AgentChangeVia, DEFAULT_ENVIRONMENT, variableField } from "@cloudpid/protocol";
+import {
+  type AgentChangeVia,
+  DEFAULT_ENVIRONMENT,
+  SETTINGS_SCOPE,
+  variableField,
+} from "@cloudpid/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
@@ -56,10 +61,10 @@ const started = async () => {
         change: { field: variableField(name), value: "1" },
         author: authored(via),
       }),
-    recordAt: async (via: AgentChangeVia, field: string, at: number) =>
+    recordAt: async (via: AgentChangeVia, field: string, at: number, scope = DEFAULT_ENVIRONMENT) =>
       runInDurableObject(stub, (_: RealRegistry, state) =>
         openAgentChanges(state.storage).record({
-          scope: DEFAULT_ENVIRONMENT,
+          scope,
           at,
           actor: "agent",
           session: null,
@@ -112,6 +117,17 @@ describe("notifyMcpChanges", () => {
     });
   });
 
+  it("names the Settings' changes as their own group, linking to Global's list", async () => {
+    const { call, recordAt } = await started();
+
+    await recordAt(PI, "roles.small", Date.now(), SETTINGS_SCOPE);
+
+    expect(await call("notifyMcpChanges", { via: PI })).toMatchObject({
+      body: "Settings: roles.small",
+      url: "/settings/all/agent-changes#agent-change-1",
+    });
+  });
+
   it("lists only the caller's own changes", async () => {
     const { call, setVariable } = await started();
 
@@ -153,6 +169,41 @@ describe("notifyMcpChanges", () => {
     expect(await call("notifyMcpChanges", { via: second })).toMatchObject({
       body: "Default: variables.TWO",
       tag: "mcp-changes:grant-2",
+    });
+  });
+
+  it("keeps a caller with only a name apart from a caller of that name with a registration", async () => {
+    const { call, setVariable } = await started();
+    const registered = { ...PI, clientId: "grant-1" };
+
+    await setVariable(PI, "NAME_ONLY");
+    await setVariable(registered, "REGISTERED");
+
+    expect(await call("notifyMcpChanges", { via: PI })).toMatchObject({
+      body: "Default: variables.NAME_ONLY",
+    });
+
+    // A registration is told apart whatever name it gave.
+    expect(await call("notifyMcpChanges", { via: registered })).toMatchObject({
+      body: "Default: variables.REGISTERED",
+    });
+
+    expect(
+      await call("notifyMcpChanges", { via: { auth: "oauth", clientId: "grant-1" } }),
+    ).toMatchObject({ body: "Default: variables.REGISTERED", tag: "mcp-changes:grant-1" });
+  });
+
+  it("leaves a caller with neither a name nor a registration out of the changes that have one", async () => {
+    const { call, setVariable } = await started();
+    const nameless: AgentChangeVia = { auth: "oauth" };
+
+    await setVariable(PI, "NAMED");
+    await setVariable({ ...PI, clientId: "grant-1" }, "REGISTERED");
+    await setVariable(nameless, "NEITHER");
+
+    expect(await call("notifyMcpChanges", { via: nameless })).toMatchObject({
+      body: "Default: variables.NEITHER",
+      tag: "mcp-changes:oauth",
     });
   });
 

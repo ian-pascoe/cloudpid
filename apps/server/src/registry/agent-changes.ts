@@ -417,6 +417,46 @@ export const asRecorded = (change: NewAgentChange, id: number): AgentChange => {
   });
 };
 
+/**
+ * What tells the caller of a change over the endpoint, from the most to the least specific, with the column of
+ * `agent_changes` that keeps it: the owner's OAuth registration (`clientId`), else the client's name, else how it got in.
+ */
+const CALLER_KEYS: Arr.NonEmptyReadonlyArray<{
+  readonly column: string;
+  readonly of: (via: AgentChangeVia) => string | undefined;
+}> = [
+  { column: "via_client_id", of: (via) => via.clientId },
+  { column: "via_client_name", of: (via) => via.client?.name },
+  { column: "via_auth", of: (via) => via.auth },
+];
+
+/**
+ * Who a caller over the endpoint is, for the changes it made together: the first of `CALLER_KEYS` that `via` has. `key`
+ * is its value, `column` where the table keeps it, and `moreSpecific` the columns before it, which a row of this caller
+ * leaves empty (a row with a more specific mark is another caller's, whatever its other columns say).
+ */
+export const callerOf = (
+  via: AgentChangeVia,
+): {
+  readonly key: string;
+  readonly column: string;
+  readonly moreSpecific: ReadonlyArray<string>;
+} => {
+  const entry = Option.getOrElse(
+    Arr.findFirst(CALLER_KEYS, ({ of }) => of(via) !== undefined),
+    () => Arr.lastNonEmpty(CALLER_KEYS),
+  );
+
+  return {
+    key: entry.of(via) ?? via.auth,
+    column: entry.column,
+    moreSpecific: Arr.map(
+      Arr.takeWhile(CALLER_KEYS, (other) => other !== entry),
+      ({ column }) => column,
+    ),
+  };
+};
+
 /** The Agent changes the Registry keeps, by scope (an Environment's id). */
 export type AgentChanges = {
   /** Record `change`, keeping only the newest `MAX_AGENT_CHANGES` of its scope; answers it as recorded. */
@@ -548,21 +588,21 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
       return row !== undefined;
     },
     madeBy: (via, since) => {
-      const caller =
-        via.clientId !== undefined
-          ? { where: "via_client_id = ?", value: via.clientId }
-          : via.client !== undefined
-            ? { where: "via_client_id IS NULL AND via_client_name = ?", value: via.client.name }
-            : {
-                where: "via_client_id IS NULL AND via_client_name IS NULL AND via_auth = ?",
-                value: via.auth,
-              };
+      const { key, column, moreSpecific } = callerOf(via);
+      // `via_client_id IS NULL AND via_client_name = ?`: this caller's rows, and no more specific caller's.
+      const caller = Arr.join(
+        Arr.append(
+          Arr.map(moreSpecific, (other) => `${other} IS NULL`),
+          `${column} = ?`,
+        ),
+        " AND ",
+      );
 
       return sql
         .exec<{ id: number; scope: string; field: string }>(
-          `SELECT id, scope, field FROM agent_changes WHERE via_auth IS NOT NULL AND at >= ? AND ${caller.where} ORDER BY id`,
+          `SELECT id, scope, field FROM agent_changes WHERE via_auth IS NOT NULL AND at >= ? AND ${caller} ORDER BY id`,
           since,
-          caller.value,
+          key,
         )
         .toArray();
     },

@@ -6,10 +6,10 @@ import {
   type AgentChangeVia,
   agentChangesPath,
   agentChangeViaLabel,
-  GLOBAL_SCOPE,
-  SETTINGS_SCOPE,
   sessionPagePath,
 } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
 
 export type { PushEvent, PushNotice } from "@cloudpid/extensions/notify";
 
@@ -135,32 +135,29 @@ export const describeTriggerFailure = (
 /** One of the changes an agent made over the MCP endpoint, as a Notification lists it. */
 export type McpChangeLine = {
   readonly id: number;
-  /** The Registry's scope: an Environment's id, `*` for Global, or the Settings'. */
+  /** The Scope whose Agent changes section shows the change: an Environment's id, or `*` for Global (the Settings' are there). */
   readonly scope: string;
+  /** What the body calls the Scope: "Default", "Global", "Settings". */
   readonly scopeName: string;
   readonly field: string;
 };
 
 /**
- * What identifies the caller of a call over the MCP endpoint, in a Notification's tag: the owner's OAuth registration
- * (`clientId`), else the client's name, else how it got in.
- */
-export const mcpCallerKey = (via: AgentChangeVia): string =>
-  via.clientId ?? via.client?.name ?? via.auth;
-
-/**
- * The push for the changes the caller `via` made over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → After a
- * change, and Notifications), in any order, `changes` not empty: titled "Changed over MCP · <client>", its body
- * the fields changed by Scope name ("Default: variables.API_URL, name; Global: instructions"), linking to the newest change in
- * its Scope's Agent changes section. Tagged by the caller, so a burst of calls leaves one Notification. The Settings'
- * changes are listed with Global's, where the page shows them.
+ * The push for the changes a caller made over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → After a change,
+ * and Notifications), in any order: titled "Changed over MCP · <client>", its body the fields changed by Scope name
+ * ("Default: variables.API_URL, name; Global: instructions"), linking to the newest change in its Scope's Agent changes
+ * section. Tagged by `caller` (who it is: the Registry's rule), so a burst of calls leaves one Notification.
  */
 export const describeMcpChanges = (
-  via: AgentChangeVia,
-  changes: ReadonlyArray<McpChangeLine>,
+  who: { readonly via: Pick<AgentChangeVia, "client">; readonly caller: string },
+  changes: Arr.NonEmptyReadonlyArray<McpChangeLine>,
 ): PushPayload => {
-  const newest = changes.toSorted((left, right) => right.id - left.id);
-  const [latest] = newest;
+  const newest = Arr.sort(
+    changes,
+    Order.mapInput(Order.flip(Order.Number), (line: McpChangeLine) => line.id),
+  );
+
+  const latest = Arr.headNonEmpty(newest);
   const groups = new Map<string, string[]>();
 
   for (const { scopeName, field } of newest) {
@@ -172,15 +169,12 @@ export const describeMcpChanges = (
   }
 
   return {
-    title: brief(agentChangeViaLabel(via), MAX_TITLE),
+    title: brief(agentChangeViaLabel(who.via), MAX_TITLE),
     body: brief(
       Array.from(groups, ([name, fields]) => `${name}: ${fields.join(", ")}`).join("; "),
       MAX_BODY,
     ),
-    url: agentChangesPath(
-      latest === undefined || latest.scope === SETTINGS_SCOPE ? GLOBAL_SCOPE : latest.scope,
-      latest?.id,
-    ),
-    tag: `mcp-changes:${mcpCallerKey(via)}`,
+    url: agentChangesPath(latest.scope, latest.id),
+    tag: `mcp-changes:${who.caller}`,
   };
 };

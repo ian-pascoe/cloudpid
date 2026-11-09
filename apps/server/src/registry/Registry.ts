@@ -657,7 +657,7 @@ export type RegistryMethods = {
    */
   readonly agentChangeFeatures: () => Effect.Effect<{ readonly via: boolean }>;
   /**
-   * Tell the owner of the changes the endpoint's caller `via` recorded in the last 10 minutes, as one Notification
+   * Tell the owner of the changes the endpoint's caller `via` recorded in the last `MCP_NOTICE_WINDOW_MS`, as one Notification
    * (`docs/architecture/mcp-endpoint.md` → After a change, and Notifications): titled `agentChangeViaLabel`, its body the
    * fields changed by Scope name, tagged by the caller so a burst replaces itself, and linking to the newest change.
    * Nothing is sent when the caller recorded none. Answers what was sent, null for nothing; the send never fails.
