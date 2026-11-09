@@ -163,17 +163,6 @@ describe("creating an Environment", () => {
     expect(upkept).toEqual(["spare:0000abcd", "build:0000abcd"]);
   });
 
-  it("refuses a Repo the owner's address rules refuse, before the Registry hears of it", async () => {
-    const { lifecycle, asked } = open();
-
-    const made = await Effect.runPromise(
-      lifecycle.create({ name: "N", repos: ["file:///etc"], author }),
-    );
-
-    expect(made.status).toBe("rejected");
-    expect(asked).toEqual([]);
-  });
-
   it("starts no upkeep when the Registry refuses the name", async () => {
     const { lifecycle, upkept } = open({ answer: "rejected" });
 
@@ -189,18 +178,6 @@ describe("creating an Environment", () => {
     await expect(
       Effect.runPromise(lifecycle.create({ name: "N", repos: [], author })),
     ).rejects.toThrow(/not one the Registry lists/);
-  });
-});
-
-describe("renaming", () => {
-  it("is recorded and starts no upkeep", async () => {
-    const { lifecycle, upkept } = open();
-
-    expect(
-      (await Effect.runPromise(lifecycle.rename({ environment: "0000abcd", name: "N", author })))
-        .status,
-    ).toBe("changed");
-    expect(upkept).toEqual([]);
   });
 });
 

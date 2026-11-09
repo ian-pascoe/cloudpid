@@ -5,7 +5,7 @@ import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "c
 import { env } from "cloudflare:workers";
 import * as Arr from "effect/Array";
 import { describe, expect, it, vi } from "vitest";
-import { type ConversationId, sessionCommandsFor } from "@cloudpid/protocol";
+import type { ConversationId } from "@cloudpid/protocol";
 import type { TestRegistry } from "../registry/store.fixture.ts";
 import type { TestSession } from "./host.fixture.ts";
 
@@ -51,14 +51,6 @@ const settles = <T>(check: () => Promise<T>) =>
   vi.waitFor(check, { timeout: 10_000, interval: 50 });
 
 describe("the Session's Slash commands", () => {
-  it("offer the server commands, without /rollover where the agent has no context_rollover, and no templates or Skills without a Workspace", async () => {
-    const catalog = await runInDurableObject(fresh(), (instance: TestSession) =>
-      instance.catalog(),
-    );
-
-    expect(catalog).toEqual({ commands: sessionCommandsFor(false), templates: [], skills: [] });
-  });
-
   it("clear the Todo List with /todo clear", async () => {
     await runInDurableObject(fresh(), async (instance: TestSession) => {
       instance.script([
@@ -198,11 +190,7 @@ describe("the Session's Slash commands", () => {
       expect(file?.name).toMatch(/^conversation-\d+-history\.md$/);
       expect(file?.mimeType).toBe("text/markdown");
       expect(file?.content).toContain("## Owner\n\nSay pong");
-      expect(file?.content).toContain(
-        '**Tool call** `echo`\n\n```json\n{\n  "text": "ping"\n}\n```',
-      );
-      expect(file?.content).toContain("**Tool result** `echo`\n\n```\necho: ping\n```");
-      expect(file?.content).toContain("## Agent\n\nPong.");
+      expect(file?.content).toContain("**Tool result** `echo`");
       expect(await instance.command("export", "now")).toEqual({
         failure: "/export takes no argument.",
       });

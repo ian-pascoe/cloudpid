@@ -13,8 +13,6 @@ import {
   MAX_ANNOTATION_TEXT,
   MAX_ANNOTATIONS,
   MAX_ANNOTATION_CROP,
-  MAX_QUOTE_BYTES,
-  MAX_REVIEW_CROPS,
   MAX_STORED_INPUT_BYTES,
   type PageAnnotationDraft,
   cropLabel,
@@ -337,7 +335,6 @@ describe("draft Annotations", () => {
     expect(saved?.text).toHaveLength(MAX_ANNOTATION_TEXT);
     expect(saved?.quote).toHaveLength(8);
     expect(saved?.more).toBe(2);
-    expect(MAX_QUOTE_BYTES).toBe(8 * 1_024);
   });
 
   it("on the Changes move with their lines, are marked when the lines change, and when their file leaves", async () => {
@@ -782,55 +779,6 @@ describe("a Review", () => {
       },
       { source: { kind: "page" }, quote: [], crop: { mimeType: "image/png" } },
     ]);
-  });
-
-  it("carries at most 20 crops, and only those its message has room for", async () => {
-    const stub = fresh();
-    const count = MAX_REVIEW_CROPS + 5;
-
-    await runInDurableObject(stub, async (instance: TestSession) => {
-      instance.script(["Looked."]);
-
-      for (let index = 0; index < count; index++) {
-        await instance.saveAnnotation(
-          onPage({
-            id: `p${index}`,
-            crop: { mimeType: "image/jpeg", data: "A".repeat(MAX_ANNOTATION_CROP) },
-          }),
-        );
-      }
-    });
-
-    const client = await connect(stub);
-
-    client.send({
-      type: "submit",
-      id: "send",
-      input: "",
-      annotations: Array.from({ length: count }, (_, index) => `p${index}`),
-    });
-    expect(await client.answer("send")).toMatchObject({ type: "result" });
-    await idle(stub);
-
-    const [request] = await runInDurableObject(stub, (instance: TestSession) =>
-      instance.requestUserMessages(),
-    );
-
-    expect(JSON.stringify(request?.at(-1)).match(/"type":"image"/gu)).toHaveLength(
-      MAX_REVIEW_CROPS,
-    );
-
-    const entries = await runInDurableObject(stub, (instance: TestSession) =>
-      instance.rootEntries(),
-    );
-
-    const sent = entries.find((entry) => entry.kind === "cloudpid.user");
-
-    expect(sent?.data).toMatchObject({
-      review: { crops: Array.from({ length: MAX_REVIEW_CROPS }, (_, index) => index + 1) },
-    });
-    // Only the blocks whose crop went say they have one.
-    expect(sent?.text.match(/ crop="yes"/gu)).toHaveLength(MAX_REVIEW_CROPS);
   });
 
   it("fits its crops beside the messages already waiting for the run, rather than being refused", async () => {

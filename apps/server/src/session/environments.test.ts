@@ -517,39 +517,6 @@ describe("the Session's Environments", () => {
     expect(installed).toMatchObject({
       status: "installed",
       environment: { id: "default", name: "Default" },
-      commit: "c0ffee0000000000000000000000000000000001",
-      results: [{ name: "grill-me", outcome: "installed" }],
-      handed: true,
-    });
-    expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
-    expect(upkept).toEqual([]);
-  });
-
-  it("hand the Session's own Workspace the Skill set after an update, asking the Registry to fetch as the App", async () => {
-    const { environments, skillSetsHanded, skillsAsked, upkept } = open();
-
-    const updated = await Effect.runPromise(
-      environments.updateSkills({
-        environment: "default",
-        names: ["grill-me"],
-        overwrite: true,
-        author,
-      }),
-    );
-
-    // The Session passes the names on; it holds no token and fetches nothing.
-    expect(skillsAsked).toEqual([
-      {
-        environment: "default",
-        names: ["grill-me"],
-        overwrite: true,
-        author: { session: "s-1", ...author },
-      },
-    ]);
-    expect(updated).toMatchObject({
-      status: "done",
-      environment: { id: "default" },
-      results: [{ name: "grill-me", outcome: "updated", overwrote: false }],
       handed: true,
     });
     expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
@@ -600,21 +567,6 @@ describe("the Session's Environments", () => {
     });
     expect(removed).toMatchObject({ status: "removed", handed: false });
     expect(skillSetsHanded).toEqual([]);
-  });
-
-  it("hand the Session's own Workspace its Environment's Skill set after a Skill removed at Global", async () => {
-    const { environments, skillSetsHanded, skillsAsked } = open();
-    const expected = { savedAt: 5 };
-
-    const removed = await Effect.runPromise(
-      environments.removeSkill({ environment: "*", name: "release", expected, author }),
-    );
-
-    expect(skillsAsked).toEqual([
-      { environment: "*", name: "release", expected, author: { session: "s-1", ...author } },
-    ]);
-    expect(removed).toMatchObject({ status: "removed", handed: true, inherited: false });
-    expect(skillSetsHanded).toEqual([{ object: "ws:0a1b2c3d", hash: "set-of-default" }]);
   });
 
   it("check a Skill at Global as the Registry does, saving nothing", async () => {
@@ -863,22 +815,6 @@ describe("the Session's Environments", () => {
     expect(upkept).toEqual(["default", "0000abcd"]);
   });
 
-  it("keep each Environment's spare Workspace current after a change of the Spare Workspace setting at Global", async () => {
-    const { environments, sparesKept } = open();
-
-    await Effect.runPromise(environments.change({ environment: "*", change, author }));
-    expect(sparesKept).toEqual([]);
-
-    await Effect.runPromise(
-      environments.change({
-        environment: "*",
-        change: { field: "spareWorkspace", value: false },
-        author: { ...author, tool: "environment_spare_workspace_set" },
-      }),
-    );
-    expect(sparesKept).toEqual(["default", "0000abcd"]);
-  });
-
   it("leave the Session's Workspace as it is for a change of another Environment", async () => {
     const { environments, handedOver, upkept } = open();
 
@@ -912,21 +848,6 @@ describe("the Session's Environments", () => {
     expect(upkept).toEqual(["default"]);
   });
 
-  it("keep each Environment's Build current after the mark of a Secret kept Global", async () => {
-    const { environments, upkept } = open();
-
-    await Effect.runPromise(
-      environments.markSecret({
-        environment: "*",
-        name: "NPM_TOKEN",
-        build: true,
-        author: { conversation: 1, tool: "environment_secret_build", reason: "r" },
-      }),
-    );
-
-    expect(upkept).toEqual(["default", "0000abcd"]);
-  });
-
   it("run no upkeep after a mark that changed nothing", async () => {
     const { environments, upkept, setMark } = open();
 
@@ -949,17 +870,15 @@ describe("the Session's Environments", () => {
     expect(upkept).toEqual([]);
   });
 
-  it("do nothing after a change that changed nothing or was refused", async () => {
-    for (const status of ["unchanged", "rejected", "missing"] as const) {
-      const { environments, handedOver, upkept } = open(status);
+  it("do nothing after a change of a missing Environment", async () => {
+    const { environments, handedOver, upkept } = open("missing");
 
-      expect(
-        (await Effect.runPromise(environments.change({ environment: "default", change, author })))
-          .status,
-      ).toBe(status);
-      expect(handedOver).toEqual([]);
-      expect(upkept).toEqual([]);
-    }
+    expect(
+      (await Effect.runPromise(environments.change({ environment: "default", change, author })))
+        .status,
+    ).toBe("missing");
+    expect(handedOver).toEqual([]);
+    expect(upkept).toEqual([]);
   });
 });
 

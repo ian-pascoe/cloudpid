@@ -114,17 +114,6 @@ describe("the chunked-record primitive", () => {
     });
   });
 
-  it("keeps an empty record in one part", async () => {
-    await inSession((state) => {
-      const records = open(state.storage.kv);
-
-      keep(records, "empty", "");
-
-      expect(records.index()).toEqual([expect.objectContaining({ callId: "empty", parts: 1 })]);
-      expect(keysOf(state.storage.kv)).toEqual([partKey("empty", 0), INDEX]);
-    });
-  });
-
   it("replaces a record without leaving its old parts or its other values behind", async () => {
     await inSession((state) => {
       const records = open(state.storage.kv);

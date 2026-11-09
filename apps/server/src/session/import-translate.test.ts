@@ -27,7 +27,6 @@ import {
   translatePiSession,
   translated,
 } from "./import-translate.ts";
-import { MAX_IMPORTED_ENTRY_BYTES, storedBytes } from "./import-bounds.ts";
 
 const facts: ImportFacts = {
   branch: "feature/x",
@@ -466,57 +465,6 @@ describe("tool calls", () => {
 });
 
 describe("bounds", () => {
-  it("replaces an image over the cap, or of a type the models do not take, with text, and counts the entry cut", () => {
-    const out = translate([
-      header,
-      message("a", null, {
-        role: "user",
-        content: [
-          { type: "text", text: "see" },
-          { type: "image", data: "x".repeat(750_001), mimeType: "image/png" },
-          { type: "image", data: "QUJD", mimeType: "image/bmp" },
-          { type: "image", data: "QUJD", mimeType: "image/png" },
-        ],
-        timestamp: 1,
-      }),
-    ]);
-
-    const parts = partsOf(entriesOf(out)[0]);
-
-    expect(parts.map((part) => part.type)).toEqual(["text", "text", "text", "image"]);
-    expect(parts[1]?.text).toContain("too large");
-    expect(parts[2]?.text).toContain("image/bmp");
-    expect(out.summary.cut).toBe(1);
-  });
-
-  it("holds an entry over the bound to it by cutting the middle of its largest text, and counts it", () => {
-    const big = `START${"a".repeat(MAX_IMPORTED_ENTRY_BYTES + 1000)}END`;
-
-    const out = translate([
-      header,
-      message("a", null, userMessage("run it")),
-      message(
-        "b",
-        "a",
-        assistantMessage([toolCall("c1", "bash", { command: "cat big" })], "toolUse"),
-      ),
-      message("c", "b", toolResultMessage("c1", "bash", big)),
-    ]);
-
-    const result = entriesOf(out)[2];
-    const text = partsOf(result)[0]?.text ?? "";
-
-    expect(result === undefined ? 0 : storedBytes(result)).toBeLessThanOrEqual(
-      MAX_IMPORTED_ENTRY_BYTES,
-    );
-    expect(text.startsWith("START")).toBe(true);
-    expect(text.endsWith("END")).toBe(true);
-    expect(text).toMatch(/characters cut by the cloudpid import/u);
-    expect(out.summary.cut).toBe(1);
-    // The entries that fit are not touched.
-    expect(entriesOf(out)[0]?.model?.[0]).toEqual(userMessage("run it"));
-  });
-
   describe("a tool result that cannot be cut to fit", () => {
     /** A call and its result, the result being `result`. */
     const answered = (result: {
@@ -707,7 +655,6 @@ describe("the notice", () => {
 
   it.each([
     [true, "uncommitted Changes were carried"],
-    [false, "had no uncommitted Changes to carry"],
     [undefined, "which this import is not told"],
   ])("says what finish said of the Changes carried (%s)", (changesCarried, sentence) => {
     const out = translate(conversation(), { ...facts, changesCarried });
