@@ -1,6 +1,11 @@
 // docs/architecture/mcp-endpoint.md → The handler, Tools, Limits and errors, Telemetry and testing: `serveMcp` on a fake `api`.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off missedPipeableOpportunity:off globalDate:off preferEffectRecord:off newPromise:off
-import { HARNESS_TOOL_NAMES } from "@cloudpid/protocol/harness-tools";
+import {
+  ENDPOINT_CORE_TEXT_CHARS,
+  ENDPOINT_TEXT_CHARS,
+  HARNESS_TOOL_NAMES,
+  MAX_PAGE_CHARS,
+} from "@cloudpid/protocol/harness-tools";
 import {
   apiFailure,
   apiOk,
@@ -21,6 +26,7 @@ import {
   toolGate,
   unobserved,
 } from "./handler.ts";
+import { HARNESS_MAX_TEXT_CHARS } from "./harness.ts";
 import { renderEnvironments, renderSessions, renderTranscript } from "./render.ts";
 import { TOOLS } from "./tools.ts";
 
@@ -1838,6 +1844,82 @@ describe("the management tools", () => {
     // The page whole, then the sentence that follows.
     expect(result.content[0]?.text.startsWith(text)).toBe(true);
     expect(result.structuredContent).toMatchObject({ next_offset: 40_000 });
+    // With the footer and `next`, still within what a page may take.
+    expect(result.content[0]?.text.length).toBeLessThanOrEqual(HARNESS_MAX_TEXT_CHARS);
+  });
+
+  it("keep a full page, its footer and its next sentence whole inside HARNESS_MAX_TEXT_CHARS", async () => {
+    // A page of the most characters a page holds, ending in the longest footer, with `variables.<NAME>` at a long name.
+    const field = `variables.${"N".repeat(100)}`;
+    const body = "y".repeat(MAX_PAGE_CHARS);
+    const footer = `\n[Characters 0-${MAX_PAGE_CHARS} of 999999: pass offset ${MAX_PAGE_CHARS} for the next page.]`;
+
+    const harness = () =>
+      Promise.resolve(
+        apiOk({
+          text: `${body}${footer}`,
+          structured: {
+            id: "e".repeat(64),
+            field,
+            text: body,
+            offset: 0,
+            total_chars: 999_999,
+            next_offset: MAX_PAGE_CHARS,
+          },
+        }),
+      );
+
+    const result = await call(
+      "environment_get",
+      { id: "e".repeat(64), field },
+      fakeApi({ describe: serving(HARNESS_TOOL_NAMES), harness }),
+    );
+
+    const text = result.content[0]?.text ?? "";
+
+    expect(result.isError).toBeUndefined();
+    expect(text.startsWith(`${body}${footer}`)).toBe(true);
+    expect(text).toContain("for the next page.");
+    expect(text.length).toBeGreaterThan(MAX_PAGE_CHARS);
+    expect(text.length).toBeLessThanOrEqual(HARNESS_MAX_TEXT_CHARS);
+  });
+
+  it("keep a cut answer and its next sentence within ENDPOINT_TEXT_CHARS, whichever tool and however long its ids", () => {
+    // What a core leaves of a cut answer: at most `ENDPOINT_CORE_TEXT_CHARS`.
+    const core = "z".repeat(ENDPOINT_CORE_TEXT_CHARS);
+    const long = "i".repeat(100);
+    const scope = { id: long, name: "Long" };
+
+    const answers: ReadonlyArray<readonly [string, Schema.Json]> = [
+      ["environment_list", { environments: [{ id: long }] }],
+      [
+        "environment_get",
+        { scope, settings_truncated: true, variables: [{ value_truncated: true }] },
+      ],
+      [
+        "environment_get",
+        { id: long, field: `variables.${long}`, next_offset: 40_000, text: "", offset: 0 },
+      ],
+      [
+        "settings_get",
+        {
+          scope,
+          instructions: { global: { text_truncated: true }, environment: { text_truncated: true } },
+        },
+      ],
+      ["settings_get", { id: long, field: "instructions", next_offset: 40_000 }],
+      ["settings_mcp_list", { scope, servers: [{ name: "docs" }] }],
+    ];
+
+    for (const [tool, structured] of answers) {
+      const spec = TOOLS.find((each) => each.name === tool);
+      // SAFETY: `HARNESS_TOOL_NAMES` are tool names, which is what `present` reads of `enabled`.
+      const served = new Set(HARNESS_TOOL_NAMES) as never;
+      const presented = spec?.present({ text: core, structured }, served);
+
+      expect(presented?.structured["next"], tool).toBeDefined();
+      expect(presented?.text.length, tool).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+    }
   });
 
   describe("name the call that follows, as next, in the text and the structured value", () => {

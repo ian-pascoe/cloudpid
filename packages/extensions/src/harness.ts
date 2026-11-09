@@ -3,12 +3,12 @@
 // endpoint's limits). A core is an Effect over plain services that makes the checks and the reads and returns the
 // answer's text, its structured value and its `details`, never touching `ToolExecutionApi`; the in-session wrapper adds
 // replay and the rest, and the endpoint's `api` target runs the same core with `surface: "endpoint"`. On the endpoint
-// an answer is cut to what a client can read: the text to `ENDPOINT_TEXT_CHARS`, the structured value to
+// an answer is cut to what a client can read: the text to `ENDPOINT_CORE_TEXT_CHARS` (`ENDPOINT_TEXT_CHARS` less the room `McpServer` keeps for `next`), the structured value to
 // `ENDPOINT_STRUCTURED_BYTES`, and a long text is read whole, a page at a time (`pageOf`).
 // @effect-diagnostics missingPipeableSignature:off
 import {
   ENDPOINT_STRUCTURED_BYTES,
-  ENDPOINT_TEXT_CHARS,
+  ENDPOINT_CORE_TEXT_CHARS,
   type HarnessErrorCode,
   MAX_PAGE_BYTES,
   MAX_PAGE_CHARS,
@@ -45,7 +45,7 @@ export const toolResult = ({ text, structured, details }: HarnessAnswer) => ({
 
 /** What an endpoint answer's cut text ends with: where it was cut, and what to do about it (`rest`). */
 export const cutNote = (rest: string): string =>
-  `[Cut at ${ENDPOINT_TEXT_CHARS.toLocaleString("en-US")} characters: ${rest}]`;
+  `[Cut at ${ENDPOINT_CORE_TEXT_CHARS.toLocaleString("en-US")} characters: ${rest}]`;
 
 /**
  * `text` cut to at most `maxChars` characters, ending with `note` on a line of its own, at a character boundary (a
@@ -54,7 +54,7 @@ export const cutNote = (rest: string): string =>
 export const cutText = (
   text: string,
   note: string,
-  maxChars: number = ENDPOINT_TEXT_CHARS,
+  maxChars: number = ENDPOINT_CORE_TEXT_CHARS,
 ): string => {
   if (text.length <= maxChars) return text;
 

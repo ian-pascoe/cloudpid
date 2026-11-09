@@ -2,11 +2,13 @@
  * The management tools as the SDK is given them (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools →
  * The dispatcher and `describe().harness`): each tool the shared declarations (`@cloudpid/protocol/harness-tools`) know,
  * offered only when `describe().harness` lists it. `McpServer` knows a tool's name, description, schemas and annotations;
- * the main Worker's `harness` operation runs its core and answers `{text, structured}`, which this only wraps: the text is
- * the core's (the same words as in a Session, cut for the endpoint), and `structuredContent` is its flat object.
+ * the main Worker's `harness` operation runs its core and answers `{text, structured}`. This wraps them as the session tools'
+ * are: the text is the core's (the same words as in a Session, cut for the endpoint) with the `next` sentence added as its
+ * last paragraph, and `structuredContent` is the core's flat object with the same sentence as its optional `next`.
  */
 // @effect-diagnostics missingPipeableSignature:off preferEffectArray:off preferTypedSchemaDecoder:off -- an answer is read for the keys `next` needs, whatever else it holds.
 import {
+  ENVIRONMENT_FIELD_WORDS,
   HARNESS_TOOLS,
   type HarnessToolName,
   MAX_PAGE_CHARS,
@@ -21,8 +23,8 @@ import type { Enabled, Tool, Wire } from "./tools.ts";
 
 /**
  * The most characters of a management tool's text: a field page whole (`MAX_PAGE_CHARS`), plus 1,000 for the footer that
- * says where the page sits in the field and for the `next` sentence. The core cuts every other answer to 12,000
- * characters, so only a page comes near it.
+ * says where the page sits in the field and for the `next` sentence. The core cuts every other answer so that its text
+ * and `next` fit `ENDPOINT_TEXT_CHARS` (`NEXT_RESERVE_CHARS` is left for `next`), so only a page comes near this.
  */
 export const HARNESS_MAX_TEXT_CHARS = MAX_PAGE_CHARS + 1_000;
 
@@ -102,7 +104,7 @@ const NEXTS: Readonly<
       const cutValue = value.variables?.some((variable) => variable.value_truncated) === true;
 
       return value.scope !== undefined && (value.settings_truncated === true || cutValue)
-        ? `Call environment_get with id="${value.scope.id}" and field (setupScript, startScript, toolchains, ignore or variables.<NAME>) to read a cut text whole.`
+        ? `Call environment_get with id="${value.scope.id}" and field (${ENVIRONMENT_FIELD_WORDS}) to read a cut text whole.`
         : undefined;
     },
   ),
