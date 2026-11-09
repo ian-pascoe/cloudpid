@@ -18,7 +18,7 @@ import type {
   EnvironmentsError,
   RunChange,
 } from "./environment.ts";
-import { type HarnessWrite, toolResult } from "./harness.ts";
+import { type HarnessWrite, loggedOf, toolResult } from "./harness.ts";
 import { outputSchema } from "./outputs.ts";
 
 /** How the Build mark of a kept Secret was changed. */
@@ -82,7 +82,7 @@ export const secretMarkTools = ({ core, log }: SecretMarkDeps) => {
     replay: "unsafe",
     execute: (args, api) =>
       core(args, "session", api.conversationId).pipe(
-        Effect.tap(({ logged }) => (logged === undefined ? Effect.void : log.record(logged))),
+        Effect.tap(({ logged }) => Effect.forEach(loggedOf(logged), log.record, { discard: true })),
         Effect.map(toolResult),
       ),
   });

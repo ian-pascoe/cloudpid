@@ -704,4 +704,30 @@ describe("the Settings changed over the MCP endpoint", () => {
         { session: null, tool: "settings_model_set", via: { auth: "oauth" } },
       ]);
     }));
+
+  it("is reverted by the owner at Global: the model is back, the revert is the owner's and the change is kept with its via", () =>
+    inRegistry(({ store, storage, changes }) => {
+      const made = changeSettings(
+        storage,
+        store,
+        changes,
+        { changes: [{ field: "model", value: HAIKU }], author: endpoint },
+        1_000,
+      );
+
+      const id = made.status === "changed" ? (made.changes[0]?.id ?? 0) : 0;
+
+      expect(readSettings(store).settings.model).toBe(HAIKU);
+      expect(revertSettingsChange(storage, store, changes, { id }, 2_000)).toMatchObject({
+        status: "reverted",
+        change: { actor: "owner", reverts: id },
+      });
+      expect(readSettings(store).overrides).toEqual({});
+
+      // Newest first, as Global's list merges them: the revert, then the endpoint's change with the caller it was made by.
+      expect(changes.list(SETTINGS_SCOPE)).toMatchObject([
+        { actor: "owner", reverts: id },
+        { id, actor: "agent", session: null, tool: "settings_model_set", via: { auth: "oauth" } },
+      ]);
+    }));
 });

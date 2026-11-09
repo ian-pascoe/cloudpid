@@ -63,7 +63,7 @@ import {
   describeAppliedGlobal,
   environmentTarget,
 } from "./environment-change-parts.ts";
-import { type HarnessWriteAnswer, toolResult } from "./harness.ts";
+import { type HarnessWriteAnswer, loggedOf, toolResult } from "./harness.ts";
 import { outputSchema } from "./outputs.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
@@ -404,7 +404,7 @@ export const EnvironmentTools: Effect.Effect<
   /** A core's answer as the Session's tool returns it, once the Run's Notification is told of the change it made. */
   const inSession = (answer: Effect.Effect<HarnessWriteAnswer, EnvironmentsError>) =>
     answer.pipe(
-      Effect.tap(({ logged }) => (logged === undefined ? Effect.void : log.record(logged))),
+      Effect.tap(({ logged }) => Effect.forEach(loggedOf(logged), log.record, { discard: true })),
       Effect.map(toolResult),
     );
 

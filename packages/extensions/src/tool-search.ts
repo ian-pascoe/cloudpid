@@ -23,6 +23,7 @@ import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import { isMcpExtensionToolName, matchesToolPattern } from "@cloudpid/config";
+import { ALWAYS_OFFERED_TOOL_NAMES } from "@cloudpid/protocol/harness-tools";
 import { MCP_SIGN_IN_TOOL } from "./mcp/sign-in.ts";
 
 export const extensionName = "tool-search";
@@ -48,7 +49,7 @@ export const fixedToolSearchSettings = (offered: ReadonlyArray<string>) =>
  * Rollover needs offered (the compaction hook prepares one only where it is), and a conversation without it silently
  * falls back to pi-durable's own compaction.
  */
-export const ALWAYS_OFFERED: ReadonlyArray<string> = [TOOL_SEARCH_TOOL_NAME, "context_rollover"];
+export const ALWAYS_OFFERED: ReadonlyArray<string> = ALWAYS_OFFERED_TOOL_NAMES;
 
 /** The most deferred tools the prompt names on one line; past it, they are named a family to a line. */
 export const LISTED_ON_ONE_LINE = 40;

@@ -12,6 +12,7 @@ import {
   type SettingsReadsRegistry,
   type SettingsRegistry,
 } from "./settings-access.ts";
+import { HOLDS_SECRET, SECRETS_CHANGED } from "../registry/via-secrets.ts";
 import { sessionSettingsMcpAccess, settingsMcpReads } from "./settings-mcp-access.ts";
 import { type AuthorSource, sessionSource } from "./change-author.ts";
 
@@ -189,6 +190,63 @@ describe("who a Settings change is recorded as", () => {
     expect(authors).toEqual([]);
     expect(await Effect.runPromise(access.own)).toBeNull();
     expect(sessionsRead).toEqual([]);
+  });
+});
+
+describe("the Registry's refusal of a Settings change", () => {
+  const via = { auth: "local" as const, client: { name: "pi" } };
+  const by = { conversation: 2, tool: "settings_model_set", reason: "r" };
+
+  const refusing = (message: string, source: AuthorSource) =>
+    sessionSettingsAccess({
+      // SAFETY: a change uses this one method, which answers the refusal.
+      registry: { changeSettings: () => Effect.succeed({ status: "rejected", message }) } as never,
+      author: source,
+    });
+
+  it("that heals (the kept Secrets changed meanwhile) is unavailable on the endpoint, so a retry is invited", async () => {
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        refusing(SECRETS_CHANGED, { kind: "endpoint", via }).change({
+          scope: "*",
+          changes: [],
+          author: by,
+        }),
+      ),
+    );
+
+    expect(failure.code).toBe("unavailable");
+    expect(failure.message).toBe(SECRETS_CHANGED);
+  });
+
+  it("that holds a kept Secret is invalid_argument on the endpoint, in the Registry's own words", async () => {
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        refusing(HOLDS_SECRET, { kind: "endpoint", via }).change({
+          scope: "*",
+          changes: [],
+          author: by,
+        }),
+      ),
+    );
+
+    expect(failure.code).toBe("invalid_argument");
+    expect(failure.message).toBe(HOLDS_SECRET);
+  });
+
+  it.each([
+    [
+      "the owner's own validation on the endpoint",
+      "model: not supported",
+      { kind: "endpoint", via } as const,
+    ],
+    ["the same refusal in a Session", SECRETS_CHANGED, sessionSource("s-1")],
+  ])("is left as the Registry's answer for %s", async (_, message, source) => {
+    const answer = await Effect.runPromise(
+      refusing(message, source).change({ scope: "*", changes: [], author: by }),
+    );
+
+    expect(answer).toEqual({ status: "rejected", message });
   });
 });
 

@@ -13423,6 +13423,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -13514,6 +13515,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -13610,6 +13612,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -13683,6 +13686,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -13733,6 +13737,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -13768,6 +13773,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -13799,6 +13805,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -13861,6 +13868,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -13928,6 +13936,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -13981,6 +13990,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -14030,6 +14040,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -14048,6 +14059,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -14066,6 +14078,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -14120,6 +14133,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14216,6 +14230,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14277,6 +14292,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14344,6 +14360,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14414,6 +14431,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14449,6 +14467,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14522,6 +14541,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14598,6 +14618,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14633,6 +14654,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14701,6 +14723,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14788,6 +14811,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -14842,6 +14866,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -14933,6 +14958,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15025,6 +15051,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15123,6 +15150,7 @@
         }
       ],
       "reloads": 1,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15196,6 +15224,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15243,6 +15272,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15278,6 +15308,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15340,6 +15371,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15407,6 +15439,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -15456,6 +15489,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -15505,6 +15539,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -15523,6 +15558,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -15541,6 +15577,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -15594,6 +15631,7 @@
         }
       ],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15687,6 +15725,7 @@
         }
       ],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15780,6 +15819,7 @@
         }
       ],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15865,6 +15905,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15903,6 +15944,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -15970,6 +16012,7 @@
       ],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -16036,6 +16079,7 @@
       ],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -16083,6 +16127,7 @@
       ],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -16130,6 +16175,7 @@
       ],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -16148,6 +16194,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -16166,6 +16213,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -16184,6 +16232,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -16202,6 +16251,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -16255,6 +16305,7 @@
         }
       ],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -16348,6 +16399,7 @@
         }
       ],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -16418,6 +16470,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -16456,6 +16509,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -16643,6 +16697,7 @@
       "environmentCalls": [],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
@@ -16690,6 +16745,7 @@
       ],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": false,
         "output": [
@@ -16756,12 +16812,2437 @@
       ],
       "logged": [],
       "reloads": 0,
+      "pushed": [],
       "result": {
         "isError": true,
         "output": [
           {
             "type": "text",
             "text": "The user approved, but nothing was saved: the size limit changed since the user was asked, to cpu-1. Ask again if the reset is still needed."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    }
+  },
+  "changes": {
+    "model_global": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "model",
+              "value": "anthropic/claude-sonnet-5-5"
+            },
+            {
+              "field": "thinkingLevel",
+              "value": "low"
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_model_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_model_set",
+          "field": "model"
+        },
+        {
+          "tool": "settings_model_set",
+          "field": "thinkingLevel"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed the defaults at Global:\n- default model: it was anthropic/claude-opus-5-5, and is anthropic/claude-sonnet-5-5 now.\n- default thinking level: it was high, and is low now. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). This Session follows the defaults, so its next request uses them. The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "model",
+              "before": "anthropic/claude-opus-5-5",
+              "before_truncated": false,
+              "after": "anthropic/claude-sonnet-5-5",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            },
+            {
+              "id": 8,
+              "field": "thinkingLevel",
+              "before": "high",
+              "before_truncated": false,
+              "after": "low",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "model",
+              "before": "anthropic/claude-opus-5-5",
+              "after": "anthropic/claude-sonnet-5-5"
+            },
+            {
+              "id": 8,
+              "scope": "*",
+              "field": "thinkingLevel",
+              "before": "high",
+              "after": "low"
+            }
+          ]
+        }
+      }
+    },
+    "model_environment_picked": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "model",
+              "value": "anthropic/claude-sonnet-5-5"
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_model_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_model_set",
+          "field": "model",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed the defaults for Environment \"Default\" (default):\n- default model: it was anthropic/claude-opus-5-5 (inherited from Global), and is anthropic/claude-sonnet-5-5 (overridden) now. This Session runs in Environment \"Default\" (default), so the change reaches its next request; the Environment's other Sessions get it when they next admit input. This Session picked its own model, which it keeps; Sessions that follow the defaults use the new ones. The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "model",
+              "before": "anthropic/claude-opus-5-5",
+              "before_truncated": false,
+              "after": "anthropic/claude-sonnet-5-5",
+              "after_truncated": false,
+              "before_inherited": true,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "model",
+              "before": "anthropic/claude-opus-5-5",
+              "after": "anthropic/claude-sonnet-5-5",
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": true,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "model_other_environment": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "big",
+          "changes": [
+            {
+              "field": "thinkingLevel",
+              "value": "off"
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_model_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_model_set",
+          "field": "thinkingLevel",
+          "environmentName": "Big"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed the defaults for Environment \"Big\" (big):\n- default thinking level: it was high (inherited from Global), and is off (overridden) now. This Session runs with the Settings of its own Environment (id default), so a change for Environment \"Big\" (big) does not reach it: that Environment's Sessions get it when they next admit input. The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "big",
+            "name": "Big"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "thinkingLevel",
+              "before": "high",
+              "before_truncated": false,
+              "after": "off",
+              "after_truncated": false,
+              "before_inherited": true,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "big",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "big",
+              "field": "thinkingLevel",
+              "before": "high",
+              "after": "off",
+              "environment": {
+                "id": "big",
+                "name": "Big"
+              },
+              "beforeInherited": true,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "model_nothing_given": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Give a model, a thinking level, or both."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "model_unchanged": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "model",
+              "value": "anthropic/claude-opus-5-5"
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_model_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The default already has these values at Global: nothing changed, and nothing was recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["model"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["model"],
+          "agentChanges": []
+        }
+      }
+    },
+    "model_rejected": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "model",
+              "value": "anthropic/claude-sonnet-5-5"
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_model_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was saved: model: not a model"
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "model_unknown_scope": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "No Environment has the id \"nope\". Call environment_list for the Environments and their ids."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "model_reason_with_reference": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was saved: the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "role_global_with_hint": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "roles.small",
+              "value": {
+                "model": "anthropic/claude-sonnet-5-5",
+                "hint": "Quick edits."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_role_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_role_set",
+          "field": "roles.small"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed the small role at Global:\n- small role: it was anthropic/claude-haiku-5-5 with the hint \"Cheap and fast.\", and is anthropic/claude-sonnet-5-5 with the hint \"Quick edits.\" now.\nThe next subagent started with the role small where the change applies uses it. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "roles.small",
+              "before": {
+                "model": "anthropic/claude-haiku-5-5",
+                "hint": "Cheap and fast."
+              },
+              "before_truncated": false,
+              "after": {
+                "model": "anthropic/claude-sonnet-5-5",
+                "hint": "Quick edits."
+              },
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "roles.small",
+              "before": {
+                "model": "anthropic/claude-haiku-5-5",
+                "hint": "Cheap and fast."
+              },
+              "after": {
+                "model": "anthropic/claude-sonnet-5-5",
+                "hint": "Quick edits."
+              }
+            }
+          ]
+        }
+      }
+    },
+    "role_environment_keeps_hint": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "roles.large",
+              "value": {
+                "model": "anthropic/claude-fable-5-1",
+                "hint": "Planning and review."
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_role_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_role_set",
+          "field": "roles.large",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed the large role for Environment \"Default\" (default):\n- large role: it was anthropic/claude-opus-5-5 (inherited from Global), and is anthropic/claude-fable-5-1 (overridden) now, with the same hint.\nThe next subagent started with the role large where the change applies uses it. This Session runs in Environment \"Default\" (default), so the change reaches its next request; the Environment's other Sessions get it when they next admit input. The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "roles.large",
+              "before": {
+                "model": "anthropic/claude-opus-5-5",
+                "hint": "Planning and review."
+              },
+              "before_truncated": false,
+              "after": {
+                "model": "anthropic/claude-fable-5-1",
+                "hint": "Planning and review."
+              },
+              "after_truncated": false,
+              "before_inherited": true,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "roles.large",
+              "before": {
+                "model": "anthropic/claude-opus-5-5",
+                "hint": "Planning and review."
+              },
+              "after": {
+                "model": "anthropic/claude-fable-5-1",
+                "hint": "Planning and review."
+              },
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": true,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "tool_offer_global": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "tools.offered",
+              "value": [
+                "read",
+                "write",
+                "edit",
+                "bash",
+                "tool_search",
+                "context_rollover",
+                "web_fetch"
+              ]
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_tool_offer",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_tool_offer",
+          "field": "tools.offered"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Offered web_fetch at Global: it is added to the offered tools, so the model of each conversation the change reaches is shown the tools it names from its next request. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). A tool that a conversation has loaded with tool_search stays offered to it. A pattern is a tool's name, or a name with * for any run of characters (context_*): snake_case, and one that matches no tool does nothing. The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "tools.offered",
+              "before": ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+              "before_truncated": false,
+              "after": [
+                "read",
+                "write",
+                "edit",
+                "bash",
+                "tool_search",
+                "context_rollover",
+                "web_fetch"
+              ],
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "tools.offered",
+              "before": ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+              "after": [
+                "read",
+                "write",
+                "edit",
+                "bash",
+                "tool_search",
+                "context_rollover",
+                "web_fetch"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "tool_offer_already": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "bash is among the offered tools at Global already: nothing changed, and nothing was recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["tools.offered"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["tools.offered"],
+          "agentChanges": []
+        }
+      }
+    },
+    "tool_defer_global": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "tools.offered",
+              "value": ["read", "write", "bash", "tool_search", "context_rollover"]
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_tool_defer",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_tool_defer",
+          "field": "tools.offered"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Deferred edit at Global: it is removed from the offered tools, so the tools it names are loaded with tool_search from the next request of each conversation the change reaches. A tool a conversation has loaded stays offered to it. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "tools.offered",
+              "before": ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+              "before_truncated": false,
+              "after": ["read", "write", "bash", "tool_search", "context_rollover"],
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "tools.offered",
+              "before": ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+              "after": ["read", "write", "bash", "tool_search", "context_rollover"]
+            }
+          ]
+        }
+      }
+    },
+    "tool_defer_always_offered": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "tools.offered",
+              "value": ["read", "write", "edit", "bash", "context_rollover"]
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_tool_defer",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_tool_defer",
+          "field": "tools.offered"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Deferred tool_search at Global: it is removed from the offered tools, so the tools it names are loaded with tool_search from the next request of each conversation the change reaches. tool_search stays offered whatever the list says. A tool a conversation has loaded stays offered to it. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "tools.offered",
+              "before": ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+              "before_truncated": false,
+              "after": ["read", "write", "edit", "bash", "context_rollover"],
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "tools.offered",
+              "before": ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+              "after": ["read", "write", "edit", "bash", "context_rollover"]
+            }
+          ]
+        }
+      }
+    },
+    "tool_defer_absent": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The offered tools at Global have no entry \"web_fetch\": nothing changed, and nothing was recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["tools.offered"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["tools.offered"],
+          "agentChanges": []
+        }
+      }
+    },
+    "compaction_global": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "compaction.enabled",
+              "value": false
+            },
+            {
+              "field": "compaction.reserveTokens",
+              "value": 8192
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_compaction_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_compaction_set",
+          "field": "compaction.enabled"
+        },
+        {
+          "tool": "settings_compaction_set",
+          "field": "compaction.reserveTokens"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed compaction at Global:\n- compaction enabled: it was true, and is false now.\n- compaction reserveTokens: it was 16384, and is 8192 now.\nIt applies from the next request of each conversation the change reaches. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "compaction.enabled",
+              "before": true,
+              "before_truncated": false,
+              "after": false,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            },
+            {
+              "id": 8,
+              "field": "compaction.reserveTokens",
+              "before": 16384,
+              "before_truncated": false,
+              "after": 8192,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "compaction.enabled",
+              "before": true,
+              "after": false
+            },
+            {
+              "id": 8,
+              "scope": "*",
+              "field": "compaction.reserveTokens",
+              "before": 16384,
+              "after": 8192
+            }
+          ]
+        }
+      }
+    },
+    "compaction_nothing_given": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Give at least one of enabled, reserve_tokens, keep_recent_tokens and background_tokens."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "compaction_unchanged": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "compaction.backgroundTokens",
+              "value": 32768
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_compaction_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Environment \"Default\" (default) overrides compaction with these values already: nothing changed, and nothing was recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["compaction.backgroundTokens"],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": ["compaction.backgroundTokens"],
+          "agentChanges": []
+        }
+      }
+    },
+    "branch_summary_environment": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "branchSummary.skipPrompt",
+              "value": true
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_branch_summary_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_branch_summary_set",
+          "field": "branchSummary.skipPrompt",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed the branch summary prompt for Environment \"Default\" (default):\n- skip of the branch summary prompt: it was false (inherited from Global), and is true (overridden) now.\nThis Session runs in Environment \"Default\" (default), so the change reaches its next request; the Environment's other Sessions get it when they next admit input. The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "branchSummary.skipPrompt",
+              "before": false,
+              "before_truncated": false,
+              "after": true,
+              "after_truncated": false,
+              "before_inherited": true,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "branchSummary.skipPrompt",
+              "before": false,
+              "after": true,
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": true,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "extension_global": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "extensions.subagents.readToolset",
+              "value": ["read", "grep"]
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_extension_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_extension_set",
+          "field": "extensions.subagents.readToolset"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed subagents.readToolset at Global:\n- extension option subagents.readToolset: it was not set, and is read, grep now.\nIt applies to the next subagent started where the change applies. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "extensions.subagents.readToolset",
+              "before": null,
+              "before_truncated": false,
+              "after": ["read", "grep"],
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "extensions.subagents.readToolset",
+              "before": null,
+              "after": ["read", "grep"]
+            }
+          ]
+        }
+      }
+    },
+    "extension_other": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "extensions.notes.limit",
+              "value": 3
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_extension_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_extension_set",
+          "field": "extensions.notes.limit"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed notes.limit at Global:\n- extension option notes.limit: it was not set, and is 3 now.\nOnly an extension that reads notes.limit is affected by it. This Session's Environment does not override it, so the change reaches its next request; other Sessions get it when they next admit input, unless their Environment overrides the field (settings_get with scope \"*\" names those Environments). The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "extensions.notes.limit",
+              "before": null,
+              "before_truncated": false,
+              "after": 3,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "extensions.notes.limit",
+              "before": null,
+              "after": 3
+            }
+          ]
+        }
+      }
+    },
+    "extension_environment_removed": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "extensions.notes.limit",
+              "value": null,
+              "reset": true
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_extension_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_extension_set",
+          "field": "extensions.notes.limit",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Changed notes.limit for Environment \"Default\" (default):\n- extension option notes.limit: it was 3 (overridden), and is not set (inherited from Global) now.\nOnly an extension that reads notes.limit is affected by it. This Session runs in Environment \"Default\" (default), so the change reaches its next request; the Environment's other Sessions get it when they next admit input. The change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "extensions.notes.limit",
+              "before": 3,
+              "before_truncated": false,
+              "after": null,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": true
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "extensions.notes.limit",
+              "before": 3,
+              "after": null,
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": true
+            }
+          ]
+        }
+      }
+    },
+    "extension_unchanged": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "extensions.notes.limit",
+              "value": null
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_extension_set",
+            "reason": "The reason."
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "notes.limit is not set at Global: nothing changed, and nothing was recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["extensions.notes.limit"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["extensions.notes.limit"],
+          "agentChanges": []
+        }
+      }
+    },
+    "extension_mcp": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "mcp is not an extension whose options are set here: MCP servers are kept under their own settings root, extensions.mcp is read by nothing, and the mcp extension is not switched off this way. The settings_mcp tools show and change the MCP servers (settings_mcp_list shows them)."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "extension_depth_limit": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "subagents.maxSubagentDepth is a Limit: it is not set with settings_extension_set. Use settings_subagent_depth_set, which asks the user for their Approval."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "extension_workspaces_limit": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "subagents.maxSubagentWorkspaces is a Limit: it is not set with settings_extension_set. Use settings_subagent_workspaces_set, which asks the user for their Approval."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "extension_not_a_list": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was saved: subagents.readToolset is a list of tool names or patterns, and the subagents extension ignores every option of its own when one is not."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "extension_value_with_reference": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was saved: the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "reset_environment_field": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Environment \"Default\" (default) does not override the small role: it inherits Global already, so nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["roles.small"],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": ["roles.small"],
+          "agentChanges": []
+        }
+      }
+    },
+    "reset_environment_override": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Environment \"Default\" (default) does not override the default thinking level: it inherits Global already, so nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["thinkingLevel"],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": ["thinkingLevel"],
+          "agentChanges": []
+        }
+      }
+    },
+    "reset_global_field": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "The compaction reserveTokens is at its default at Global already: nothing was asked, changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["compaction.reserveTokens"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["compaction.reserveTokens"],
+          "agentChanges": []
+        }
+      }
+    },
+    "reset_instructions": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: settings_reset does not take the Instructions. settings_instructions_set with an empty text removes them, once the user approves."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "reset_unknown_field": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: nonsense is not a setting settings_reset takes. The settings are: model, thinkingLevel, roles.small, roles.medium, roles.large, roles.xlarge, compaction.enabled, compaction.reserveTokens, compaction.keepRecentTokens, compaction.backgroundTokens, tools.offered, spendLimit.perSession, branchSummary.skipPrompt, mcp.servers.<name>, mcp.servers.<name>.enabled, mcp.servers.<name>.exposure, mcp.servers.<name>.toolExposure, extensions.<extension>.<key>."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "reset_unknown_scope": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "No Environment has the id \"nope\". Call environment_list for the Environments and their ids."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "mcp_disable_global": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "mcp.servers.shared.enabled",
+              "value": false,
+              "expected": {
+                "value": null
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_mcp_disable",
+            "reason": "The reason."
+          },
+          "guard": {
+            "name": "shared",
+            "widening": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_mcp_disable",
+          "field": "mcp.servers.shared.enabled"
+        }
+      ],
+      "reloads": 1,
+      "pushed": ["pushes default"],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Switched off MCP server shared at Global. Its connection is closed and its tools are no longer registered; its inventory is kept, and the user switches it on again.\n- MCP server shared · on/off: it was on, and is on now.\nIt reaches Environment \"Default\" (default).\nThis Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request.\nThe new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).\nThe change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "mcp.servers.shared.enabled",
+              "before": true,
+              "before_truncated": false,
+              "after": false,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "mcp.servers.shared.enabled",
+              "before": true,
+              "after": false
+            }
+          ]
+        }
+      }
+    },
+    "mcp_disable_pushed": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "mcp.servers.docs.enabled",
+              "value": false,
+              "expected": {
+                "value": null,
+                "inherited": true
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_mcp_disable",
+            "reason": "The reason."
+          },
+          "guard": {
+            "name": "docs",
+            "widening": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_mcp_disable",
+          "field": "mcp.servers.docs.enabled",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "pushed": ["pushes default", "pushed default 7"],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Switched off MCP server docs for Environment \"Default\" (default). Its connection is closed and its tools are no longer registered; its inventory is kept, and the user switches it on again.\n- MCP server docs · on/off: it was on (set here), and is on (set here) now.\nIt reaches Environment \"Default\" (default).\nThis Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request.\nThe new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).\nThe change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "mcp.servers.docs.enabled",
+              "before": true,
+              "before_truncated": false,
+              "after": false,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "mcp.servers.docs.enabled",
+              "before": true,
+              "after": false,
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "mcp_disable_push_failed": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "mcp.servers.docs.enabled",
+              "value": false,
+              "expected": {
+                "value": null,
+                "inherited": true
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_mcp_disable",
+            "reason": "The reason."
+          },
+          "guard": {
+            "name": "docs",
+            "widening": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_mcp_disable",
+          "field": "mcp.servers.docs.enabled",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "pushed": ["pushes default"],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Switched off MCP server docs for Environment \"Default\" (default). Its connection is closed and its tools are no longer registered; its inventory is kept, and the user switches it on again.\n- MCP server docs · on/off: it was on (set here), and is on (set here) now.\nIt reaches Environment \"Default\" (default).\nThis Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request.\nThe new set could not be handed to the MCP host of Default now: it takes it at its next pull.\nThe change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "mcp.servers.docs.enabled",
+              "before": true,
+              "before_truncated": false,
+              "after": false,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "mcp.servers.docs.enabled",
+              "before": true,
+              "after": false,
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "mcp_disable_unknown_server": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was changed: No MCP server \"ghost\" in Default's set. Its servers: shared, docs."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "mcp_disable_reason_with_reference": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was asked or saved: the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the user reads them. Say it without the reference."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "mcp_exposure_global": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "mcp.servers.shared.exposure",
+              "value": "deferred",
+              "expected": {
+                "value": null
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_mcp_exposure_set",
+            "reason": "The reason."
+          },
+          "guard": {
+            "name": "shared",
+            "widening": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_mcp_exposure_set",
+          "field": "mcp.servers.shared.exposure"
+        }
+      ],
+      "reloads": 1,
+      "pushed": ["pushes default"],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Set the exposure of MCP server shared to deferred at Global. A tool named in the server's toolExposure keeps its own exposure.\n- MCP server shared · exposure: it was codemode, and is codemode now.\nIt reaches Environment \"Default\" (default).\nThis Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request.\nThe new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).\nThe change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "mcp.servers.shared.exposure",
+              "before": "codemode",
+              "before_truncated": false,
+              "after": "deferred",
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "mcp.servers.shared.exposure",
+              "before": "codemode",
+              "after": "deferred"
+            }
+          ]
+        }
+      }
+    },
+    "mcp_exposure_already": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "MCP server docs has the exposure codemode for Environment \"Default\" (default) already: nothing was changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["mcp.servers.docs.exposure"],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": ["mcp.servers.docs.exposure"],
+          "agentChanges": []
+        }
+      }
+    },
+    "mcp_tool_exposure_hidden": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "mcp.servers.docs.toolExposure",
+              "value": {
+                "publish": "hidden"
+              },
+              "expected": {
+                "value": null,
+                "inherited": true
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_mcp_tool_exposure_set",
+            "reason": "The reason."
+          },
+          "guard": {
+            "name": "docs",
+            "widening": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_mcp_tool_exposure_set",
+          "field": "mcp.servers.docs.toolExposure",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "pushed": ["pushes default"],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Set the toolExposure key \"publish\" of MCP server docs to hidden for Environment \"Default\" (default).\n- MCP server docs · tool exposure: it was no keys (set here), and is no keys (set here) now.\nIt reaches Environment \"Default\" (default).\nThis Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request.\nThe new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).\nIt decides publish (hidden).\nThe change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "mcp.servers.docs.toolExposure",
+              "before": {},
+              "before_truncated": false,
+              "after": {
+                "publish": "hidden"
+              },
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "mcp.servers.docs.toolExposure",
+              "before": {},
+              "after": {
+                "publish": "hidden"
+              },
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "mcp_tool_exposure_pattern": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "*",
+          "changes": [
+            {
+              "field": "mcp.servers.shared.toolExposure",
+              "value": {
+                "look*": "direct"
+              },
+              "expected": {
+                "value": null
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_mcp_tool_exposure_set",
+            "reason": "The reason."
+          },
+          "guard": {
+            "name": "shared",
+            "widening": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_mcp_tool_exposure_set",
+          "field": "mcp.servers.shared.toolExposure"
+        }
+      ],
+      "reloads": 1,
+      "pushed": ["pushes default"],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Set the toolExposure key \"look*\" of MCP server shared to direct at Global.\n- MCP server shared · tool exposure: it was no keys, and is no keys now.\nIt reaches Environment \"Default\" (default).\nThis Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request.\nThe new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).\nIts tools are not checked: the server has not been discovered here, so it is not known which tools \"look*\" decides. settings_mcp_get lists them once it is.\nThe change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "mcp.servers.shared.toolExposure",
+              "before": {},
+              "before_truncated": false,
+              "after": {
+                "look*": "direct"
+              },
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "*",
+              "field": "mcp.servers.shared.toolExposure",
+              "before": {},
+              "after": {
+                "look*": "direct"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "mcp_tool_exposure_absent_key_removed": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "MCP server shared has no toolExposure key \"look*\" at Global: nothing was changed or recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "*",
+            "name": "Global"
+          },
+          "changes": [],
+          "changes_truncated": false,
+          "unchanged": ["mcp.servers.shared.toolExposure"],
+          "approval": null
+        },
+        "details": {
+          "scope": "*",
+          "unchanged": ["mcp.servers.shared.toolExposure"],
+          "agentChanges": []
+        }
+      }
+    },
+    "mcp_remove_environment": {
+      "asked": [],
+      "settingsCalls": [
+        {
+          "scope": "default",
+          "changes": [
+            {
+              "field": "mcp.servers.docs",
+              "value": null,
+              "reset": true,
+              "expected": {
+                "value": null,
+                "inherited": true
+              }
+            }
+          ],
+          "author": {
+            "conversation": 1,
+            "tool": "settings_mcp_remove",
+            "reason": "The reason."
+          },
+          "guard": {
+            "name": "docs",
+            "widening": true
+          }
+        }
+      ],
+      "environmentCalls": [],
+      "logged": [
+        {
+          "tool": "settings_mcp_remove",
+          "field": "mcp.servers.docs",
+          "environmentName": "Default"
+        }
+      ],
+      "reloads": 1,
+      "pushed": ["pushes default"],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Removed MCP server docs for Environment \"Default\" (default). Nothing takes its place.\n- MCP server docs: removed; the server in force for Environment \"Default\" (default) is the Environment's now.\nIt reaches Environment \"Default\" (default).\nThis Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request.\nThe new set was handed to the MCP host of each Environment it reaches (one that never had a server and has none is not woken).\nIts MCP sign-in, if any, stays, listed as unused, until the user signs out on the Settings page; a new server of that name and URL would use it again.\nThe change is recorded with your reason; the user can see and revert it on the Settings page."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "changes": [
+            {
+              "id": 7,
+              "field": "mcp.servers.docs",
+              "before": {
+                "url": "https://docs.example.test/mcp"
+              },
+              "before_truncated": false,
+              "after": null,
+              "after_truncated": false,
+              "before_inherited": false,
+              "after_inherited": false
+            }
+          ],
+          "changes_truncated": false,
+          "unchanged": [],
+          "approval": null
+        },
+        "details": {
+          "scope": "default",
+          "unchanged": [],
+          "agentChanges": [
+            {
+              "id": 7,
+              "scope": "default",
+              "field": "mcp.servers.docs",
+              "before": {
+                "url": "https://docs.example.test/mcp"
+              },
+              "after": null,
+              "environment": {
+                "id": "default",
+                "name": "Default"
+              },
+              "beforeInherited": false,
+              "afterInherited": false
+            }
+          ]
+        }
+      }
+    },
+    "mcp_remove_global_server_at_environment": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "Nothing was changed: \"shared\" is Global's server, which an Environment cannot delete: settings_mcp_disable switches it off here, and settings_mcp_remove at \"*\" removes it for every Environment."
+          }
+        ],
+        "structured": null,
+        "details": null
+      }
+    },
+    "mcp_reload_environment": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": ["pushes default", "pushed default 7"],
+      "result": {
+        "isError": false,
+        "output": [
+          {
+            "type": "text",
+            "text": "Reloaded the MCP servers of Environment \"Default\" (default).\n- Repo app (o/app): .pi/mcp.json read again: the file changed.\nThe set has 2 servers: added docs; removed none; changed none.\nThe new set was sent to the Environment's MCP host.\nThe MCP host dropped its eras and Legacy sessions for shared, docs and rediscovers their HTTP servers now.\nIts tools follow from the next request of a Session in that Environment; the mcp_servers section keeps what it was for a Context Window. This is no Agent change: nothing is recorded."
+          }
+        ],
+        "structured": {
+          "scope": {
+            "id": "default",
+            "name": "Default"
+          },
+          "repos": [
+            {
+              "directory": "app",
+              "slug": "o/app",
+              "path": ".pi/mcp.json",
+              "outcome": "changed",
+              "blob": "abc123",
+              "read_at": 1000,
+              "error": null,
+              "error_since": null,
+              "kept_copy": false,
+              "problem": null
+            }
+          ],
+          "repos_truncated": false,
+          "set": {
+            "servers": 2,
+            "added": ["docs"],
+            "added_truncated": false,
+            "removed": [],
+            "removed_truncated": false,
+            "changed": [],
+            "changed_truncated": false,
+            "problems_added": [],
+            "problems_added_truncated": false,
+            "problems_cleared": [],
+            "problems_cleared_truncated": false
+          },
+          "push": "pushed",
+          "host": {
+            "status": "reloaded",
+            "servers": ["shared", "docs"],
+            "note": null
+          }
+        },
+        "details": {
+          "scope": "default",
+          "servers": 2
+        }
+      }
+    },
+    "mcp_reload_global": {
+      "asked": [],
+      "settingsCalls": [],
+      "environmentCalls": [],
+      "logged": [],
+      "reloads": 0,
+      "pushed": [],
+      "result": {
+        "isError": true,
+        "output": [
+          {
+            "type": "text",
+            "text": "settings_mcp_reload takes an Environment's id: Global has no Repos to read and no MCP host to reload. Give the id as environment_list shows it."
           }
         ],
         "structured": null,

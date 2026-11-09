@@ -9,13 +9,20 @@
  */
 export type Surface = "session" | "endpoint";
 
+/** Whom a tool's words call whoever reads and reverts its changes on the owner's pages. */
+export type Who = "user" | "owner";
+
+/** The user in a Session's words, the owner in the endpoint's (which never says "user"). */
+export const whoWords = (surface: Surface): Who => (surface === "session" ? "user" : "owner");
+
 /**
  * Why a core refused a call, which the endpoint's dispatcher maps to its error codes (`mcp-endpoint.md` → The
  * dispatcher): `not_found` (an id or name that names nothing), `invalid_argument` (an argument that cannot be
- * served) and `unavailable` (a refusal that heals: a try again later may be made, its message says so). A refusal
- * without a code is `unavailable` to the caller too, with a fixed sentence in place of its own.
+ * served), `unsupported` (a change the endpoint does not make: it would widen what an MCP server reaches, or change a
+ * Limit; nothing was changed) and `unavailable` (a refusal that heals: a try again later may be made, its message says
+ * so). A refusal without a code is `unavailable` to the caller too, with a fixed sentence in place of its own.
  */
-export type HarnessErrorCode = "not_found" | "invalid_argument" | "unavailable";
+export type HarnessErrorCode = "not_found" | "invalid_argument" | "unsupported" | "unavailable";
 
 /** The annotations `tools/list` shows (`mcp-endpoint.md` → The tools: RO). */
 export type HarnessAnnotations = {
@@ -47,4 +54,28 @@ export const DESTRUCTIVE_IDEMPOTENT: HarnessAnnotations = {
   idempotentHint: true,
   destructiveHint: true,
   openWorldHint: false,
+};
+
+/** W: a write that a repeat may change again (a reset, a move among keys), reaching nothing outside cloudpid. */
+export const WRITE: HarnessAnnotations = {
+  readOnlyHint: false,
+  idempotentHint: false,
+  destructiveHint: false,
+  openWorldHint: false,
+};
+
+/** D: a destructive write that a repeat may not leave as it is (a removal that falls back to another). */
+export const DESTRUCTIVE: HarnessAnnotations = {
+  readOnlyHint: false,
+  idempotentHint: false,
+  destructiveHint: true,
+  openWorldHint: false,
+};
+
+/** W·idem, open: an idempotent write that reaches the MCP servers (`settings_mcp_reload`). */
+export const WRITE_IDEMPOTENT_OPEN: HarnessAnnotations = {
+  readOnlyHint: false,
+  idempotentHint: true,
+  destructiveHint: false,
+  openWorldHint: true,
 };

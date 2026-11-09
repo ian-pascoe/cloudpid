@@ -17,7 +17,6 @@
 // Approvals run `apply` from the main Worker, and `render` for an Applied they build from recorded Agent changes.
 import {
   DEFAULT_SETTINGS,
-  extensionField,
   instructionsProblem,
   MAX_INSTRUCTIONS_BYTES,
   overrideValue,
@@ -26,6 +25,11 @@ import {
   utf8Bytes,
 } from "@cloudpid/config";
 import type { ApprovalCardContent } from "@cloudpid/protocol";
+import {
+  DEPTH_LIMIT_FIELD,
+  SPEND_LIMIT_FIELD,
+  WORKSPACES_LIMIT_FIELD,
+} from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -190,7 +194,7 @@ export type SettingsLimit = {
 };
 
 export const SPEND_LIMIT: SettingsLimit = {
-  field: "spendLimit.perSession",
+  field: SPEND_LIMIT_FIELD,
   change: "Spend limit",
   name: "the spend limit",
   words: spendWords,
@@ -198,7 +202,7 @@ export const SPEND_LIMIT: SettingsLimit = {
 };
 
 export const DEPTH_LIMIT: SettingsLimit = {
-  field: extensionField("subagents", "maxSubagentDepth"),
+  field: DEPTH_LIMIT_FIELD,
   change: "Subagent depth",
   name: "the subagent depth",
   words: storedDepthWords,
@@ -206,7 +210,7 @@ export const DEPTH_LIMIT: SettingsLimit = {
 };
 
 export const WORKSPACES_LIMIT: SettingsLimit = {
-  field: extensionField("subagents", "maxSubagentWorkspaces"),
+  field: WORKSPACES_LIMIT_FIELD,
   change: "Subagent Workspace limit",
   name: "the Subagent Workspace limit",
   words: storedWorkspacesWords,

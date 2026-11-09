@@ -7,10 +7,12 @@
 // @effect-diagnostics missingPipeableSignature:off
 import type { AgentChange } from "@cloudpid/protocol";
 import {
+  ChangeEndpointOutput,
   GLOBAL_ID,
   GLOBAL_NAME,
   SettingOutput,
   SettingsGetOutput,
+  type Surface,
 } from "@cloudpid/protocol/harness-tools";
 import type * as Schema from "effect/Schema";
 import {
@@ -24,6 +26,7 @@ import {
   overriddenInOutput,
   scopeRef,
 } from "./outputs.ts";
+import { fittedChanges } from "./environment-changes.ts";
 import type { SettingsView } from "./settings-describe.ts";
 import { storedBytes } from "./stored-bytes.ts";
 
@@ -83,25 +86,37 @@ export const scopeRefOf = (view: SettingsView) =>
 
 /**
  * What a Settings tool answers: `changes` made at `view`'s Scope, the `unchanged` fields that already had their value, and
- * the owner's `approval` (null for a change that does not wait for it, or that asked nobody).
+ * the owner's `approval` (null for a change that does not wait for it, or that asked nobody). On the endpoint's `surface`
+ * the answer has no approval (nothing there waits for one) and its values are fitted to what an answer carries.
  */
 export const settingsChangeOutput = ({
   view,
   changes,
   unchanged,
   approval,
+  surface = "session",
 }: {
   readonly view: SettingsView;
   readonly changes: ReadonlyArray<AgentChange>;
   readonly unchanged: ReadonlyArray<string>;
   readonly approval: typeof ApprovalOutcome.Type;
+  readonly surface?: Surface;
 }) =>
-  asOutput(ChangeOutput, {
-    scope: scopeRefOf(view),
-    ...changesOutput(changes),
-    unchanged,
-    approval,
-  });
+  surface === "session"
+    ? asOutput(ChangeOutput, {
+        scope: scopeRefOf(view),
+        ...changesOutput(changes),
+        unchanged,
+        approval,
+      })
+    : asOutput(
+        ChangeEndpointOutput,
+        fittedChanges({
+          scope: scopeRefOf(view),
+          ...changesOutput(changes),
+          unchanged,
+        }),
+      );
 
 /** An Instructions text as a value gives it. */
 export const instructionsOutput = (

@@ -14,7 +14,14 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ContainerSettings, McpExposure, McpResolvedServer, Settings } from "@cloudpid/config";
-import type { AgentChange, SettingsMcpServer, SettingsMcpView } from "@cloudpid/protocol";
+import type { McpApplySet } from "@cloudpid/mcp/types";
+import type {
+  AgentChange,
+  SettingsMcpChangeCheck,
+  SettingsMcpReload,
+  SettingsMcpServer,
+  SettingsMcpView,
+} from "@cloudpid/protocol";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type Extension,
@@ -414,6 +421,7 @@ const secrets = { refresh: Effect.void, redact: (value: string) => value } as Se
 /** The services a scenario of a tool that waits for the owner's Approval stands in for. */
 type Standins = {
   readonly settings?: SettingsAccessService;
+  readonly mcp?: SettingsMcpAccessService;
   readonly approvals?: ApprovalsService;
   readonly log?: { readonly record: (change: RunChange) => Effect.Effect<void> };
   readonly reload?: { readonly apply: Effect.Effect<SettingsApplied> };
@@ -439,7 +447,7 @@ const extensionsOver = (over: EnvironmentsService, standins: Standins = {}) =>
       deleteSecret: () => nothing("deletes"),
     }),
     Effect.provideService(SettingsAccess, standins.settings ?? settings),
-    Effect.provideService(SettingsMcpAccess, mcp),
+    Effect.provideService(SettingsMcpAccess, standins.mcp ?? mcp),
     Effect.provideService(SettingsReload, standins.reload ?? { apply: nothing("reloads") }),
     Effect.provideService(AgentChangeLog, standins.log ?? { record: () => nothing("logs") }),
     Effect.provideService(DeployCredentials, { values: [] }),
@@ -522,6 +530,7 @@ const settle = (actual: {
   readonly tools: Schema.Json;
   readonly reads: Schema.Json;
   readonly approvals: Schema.Json;
+  readonly changes: Schema.Json;
 }) => {
   if (process.env.UPDATE_SNAPSHOT === "1") {
     mkdirSync(dirname(SNAPSHOT), { recursive: true });
@@ -543,6 +552,7 @@ const settle = (actual: {
   expect(text(actual.tools)).toBe(text(recorded.tools));
   expect(text(actual.reads)).toBe(text(recorded.reads));
   expect(text(actual.approvals)).toBe(text(recorded.approvals));
+  expect(text(actual.changes)).toBe(text(recorded.changes));
 };
 
 // --- The tools that wait for the owner's Approval ----------------------------------------------------------------
@@ -561,6 +571,12 @@ type Scenario = {
   readonly over?: EnvironmentsService;
   /** Whether the call is meant to be refused. */
   readonly fails?: boolean;
+  /** What the Session's reload says it picked of its own, of the model and the thinking level. */
+  readonly picked?: SettingsApplied["picked"];
+  /** The MCP tools' world: the Registry's check of what a change reaches, the sets it has to push, and a reload's report. */
+  readonly check?: SettingsMcpChangeCheck;
+  readonly pushes?: ReadonlyArray<McpApplySet> | "fail";
+  readonly reloaded?: SettingsMcpReload;
 };
 
 const asking: Pick<ToolExecutionApi, "taskId" | "conversationId"> = {
@@ -583,8 +599,13 @@ const attempt = ({
   settings: madeSettings = { status: "unchanged" },
   environment: madeEnvironment = { status: "missing" },
   over = environments,
+  picked = { model: false, thinkingLevel: false },
+  check,
+  pushes = [],
+  reloaded,
 }: Scenario) =>
   Effect.gen(function* () {
+    const pushed: string[] = [];
     const asked: ApprovalAsk[] = [];
     const settingsCalls: unknown[] = [];
     const environmentCalls: unknown[] = [];
@@ -623,6 +644,22 @@ const attempt = ({
           },
         },
         approvals,
+        mcp: {
+          ...mcp,
+          check: () => (check === undefined ? nothing("changes") : Effect.succeed(check)),
+          reload: () => (reloaded === undefined ? nothing("reloads") : Effect.succeed(reloaded)),
+          pushes: (environment) => {
+            pushed.push(`pushes ${environment}`);
+
+            return pushes === "fail"
+              ? SettingsAccessError.make({ message: "The Registry did not answer." })
+              : Effect.succeed(pushes);
+          },
+          pushed: ({ environment, revision }) =>
+            Effect.sync(() => {
+              pushed.push(`pushed ${environment} ${revision}`);
+            }),
+        },
         log: {
           record: (change) =>
             Effect.sync(() => {
@@ -633,7 +670,7 @@ const attempt = ({
           apply: Effect.sync(() => {
             reloads += 1;
 
-            return { picked: { model: false, thinkingLevel: false } };
+            return { picked };
           }),
         },
       },
@@ -641,7 +678,7 @@ const attempt = ({
 
     const result = yield* answer(toolOf(built, tool), args, "unchecked", waitingApi);
 
-    return { asked, settingsCalls, environmentCalls, logged, reloads, result };
+    return { asked, settingsCalls, environmentCalls, logged, reloads, pushed, result };
   });
 
 /** A size that no Environment's size is above, an Environment sized cpu-3 inheriting Global's limit, and its list. */
@@ -1145,6 +1182,438 @@ const approvalScenarios = {
   },
 } satisfies Record<string, Scenario>;
 
+/** What a change reaches in the MCP scenarios: Default's Sessions, narrowed. */
+const NARROWING: SettingsMcpChangeCheck = {
+  environments: [{ environment: { id: "default", name: "Default" }, reached: true, widening: [] }],
+};
+
+/** A set the Registry has yet to hand Default's host. */
+const PENDING_SET: McpApplySet = { kind: "set", hash: "hash-default", revision: 7, entries: [] };
+
+const RELOADED: SettingsMcpReload = {
+  scope: "default",
+  name: "Default",
+  repos: [
+    {
+      directory: "app",
+      slug: "o/app",
+      path: ".pi/mcp.json",
+      outcome: "changed",
+      blob: "abc123",
+      readAt: 1_000,
+      error: null,
+      errorSince: null,
+      keptCopy: false,
+      problem: null,
+    },
+  ],
+  set: {
+    added: ["docs"],
+    removed: [],
+    changed: [],
+    problemsAdded: [],
+    problemsCleared: [],
+  },
+  servers: 2,
+};
+
+/** The Settings' and MCP servers' changing tools, which make a change at once: what they asked of the Registry and said. */
+const changeScenarios = {
+  model_global: {
+    tool: "settings_model_set",
+    args: {
+      scope: "*",
+      model: "anthropic/claude-sonnet-5-5",
+      thinking_level: "low",
+      reason: REASON,
+    },
+    settings: {
+      status: "changed",
+      changes: [
+        recordedChange("settings_model_set", {
+          field: "model",
+          before: "anthropic/claude-opus-5-5",
+          after: "anthropic/claude-sonnet-5-5",
+        }),
+        recordedChange("settings_model_set", {
+          id: 8,
+          field: "thinkingLevel",
+          before: "high",
+          after: "low",
+        }),
+      ],
+    },
+  },
+  model_environment_picked: {
+    tool: "settings_model_set",
+    args: { scope: "default", model: "anthropic/claude-sonnet-5-5", reason: REASON },
+    settings: settingsChanged(
+      "settings_model_set",
+      "model",
+      "anthropic/claude-opus-5-5",
+      "anthropic/claude-sonnet-5-5",
+      { scope: "default", beforeInherited: true, afterInherited: false },
+    ),
+    picked: { model: true, thinkingLevel: false },
+  },
+  model_other_environment: {
+    tool: "settings_model_set",
+    args: { scope: "big", thinking_level: "off", reason: REASON },
+    settings: settingsChanged("settings_model_set", "thinkingLevel", "high", "off", {
+      scope: "big",
+      beforeInherited: true,
+      afterInherited: false,
+    }),
+  },
+  model_nothing_given: {
+    tool: "settings_model_set",
+    args: { scope: "*", reason: REASON },
+    fails: true,
+  },
+  model_unchanged: {
+    tool: "settings_model_set",
+    args: { scope: "*", model: "anthropic/claude-opus-5-5", reason: REASON },
+    settings: { status: "unchanged" },
+  },
+  model_rejected: {
+    tool: "settings_model_set",
+    args: { scope: "*", model: "anthropic/claude-sonnet-5-5", reason: REASON },
+    settings: { status: "rejected", message: "model: not a model" },
+    fails: true,
+  },
+  model_unknown_scope: {
+    tool: "settings_model_set",
+    args: { scope: "nope", model: "anthropic/claude-sonnet-5-5", reason: REASON },
+    fails: true,
+  },
+  model_reason_with_reference: {
+    tool: "settings_model_set",
+    args: { scope: "*", model: "anthropic/claude-sonnet-5-5", reason: `Uses ${PLACEHOLDER}.` },
+    fails: true,
+  },
+  role_global_with_hint: {
+    tool: "settings_role_set",
+    args: {
+      scope: "*",
+      role: "small",
+      model: "anthropic/claude-sonnet-5-5",
+      hint: "Quick edits.",
+      reason: REASON,
+    },
+    settings: settingsChanged(
+      "settings_role_set",
+      "roles.small",
+      { model: "anthropic/claude-haiku-5-5", hint: "Cheap and fast." },
+      { model: "anthropic/claude-sonnet-5-5", hint: "Quick edits." },
+    ),
+  },
+  role_environment_keeps_hint: {
+    tool: "settings_role_set",
+    args: { scope: "default", role: "large", model: "anthropic/claude-fable-5-1", reason: REASON },
+    settings: settingsChanged(
+      "settings_role_set",
+      "roles.large",
+      { model: "anthropic/claude-opus-5-5", hint: "Planning and review." },
+      { model: "anthropic/claude-fable-5-1", hint: "Planning and review." },
+      { scope: "default", beforeInherited: true, afterInherited: false },
+    ),
+  },
+  tool_offer_global: {
+    tool: "settings_tool_offer",
+    args: { scope: "*", pattern: "web_fetch", reason: REASON },
+    settings: settingsChanged(
+      "settings_tool_offer",
+      "tools.offered",
+      ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+      ["read", "write", "edit", "bash", "tool_search", "context_rollover", "web_fetch"],
+    ),
+  },
+  tool_offer_already: {
+    tool: "settings_tool_offer",
+    args: { scope: "*", pattern: "bash", reason: REASON },
+  },
+  tool_defer_global: {
+    tool: "settings_tool_defer",
+    args: { scope: "*", pattern: "edit", reason: REASON },
+    settings: settingsChanged(
+      "settings_tool_defer",
+      "tools.offered",
+      ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+      ["read", "write", "bash", "tool_search", "context_rollover"],
+    ),
+  },
+  tool_defer_always_offered: {
+    tool: "settings_tool_defer",
+    args: { scope: "*", pattern: "tool_search", reason: REASON },
+    settings: settingsChanged(
+      "settings_tool_defer",
+      "tools.offered",
+      ["read", "write", "edit", "bash", "tool_search", "context_rollover"],
+      ["read", "write", "edit", "bash", "context_rollover"],
+    ),
+  },
+  tool_defer_absent: {
+    tool: "settings_tool_defer",
+    args: { scope: "*", pattern: "web_fetch", reason: REASON },
+  },
+  compaction_global: {
+    tool: "settings_compaction_set",
+    args: { scope: "*", enabled: false, reserve_tokens: 8_192, reason: REASON },
+    settings: {
+      status: "changed",
+      changes: [
+        recordedChange("settings_compaction_set", {
+          field: "compaction.enabled",
+          before: true,
+          after: false,
+        }),
+        recordedChange("settings_compaction_set", {
+          id: 8,
+          field: "compaction.reserveTokens",
+          before: 16_384,
+          after: 8_192,
+        }),
+      ],
+    },
+  },
+  compaction_nothing_given: {
+    tool: "settings_compaction_set",
+    args: { scope: "default", reason: REASON },
+    fails: true,
+  },
+  compaction_unchanged: {
+    tool: "settings_compaction_set",
+    args: { scope: "default", background_tokens: 32_768, reason: REASON },
+    settings: { status: "unchanged" },
+  },
+  branch_summary_environment: {
+    tool: "settings_branch_summary_set",
+    args: { scope: "default", skip_prompt: true, reason: REASON },
+    settings: settingsChanged(
+      "settings_branch_summary_set",
+      "branchSummary.skipPrompt",
+      false,
+      true,
+      {
+        scope: "default",
+        beforeInherited: true,
+        afterInherited: false,
+      },
+    ),
+  },
+  extension_global: {
+    tool: "settings_extension_set",
+    args: {
+      scope: "*",
+      extension: "subagents",
+      key: "readToolset",
+      value: ["read", "grep"],
+      reason: REASON,
+    },
+    settings: settingsChanged("settings_extension_set", "extensions.subagents.readToolset", null, [
+      "read",
+      "grep",
+    ]),
+  },
+  extension_other: {
+    tool: "settings_extension_set",
+    args: { scope: "*", extension: "notes", key: "limit", value: 3, reason: REASON },
+    settings: settingsChanged("settings_extension_set", "extensions.notes.limit", null, 3),
+  },
+  extension_environment_removed: {
+    tool: "settings_extension_set",
+    args: { scope: "default", extension: "notes", key: "limit", value: null, reason: REASON },
+    settings: settingsChanged("settings_extension_set", "extensions.notes.limit", 3, null, {
+      scope: "default",
+      beforeInherited: false,
+      afterInherited: true,
+    }),
+  },
+  extension_unchanged: {
+    tool: "settings_extension_set",
+    args: { scope: "*", extension: "notes", key: "limit", value: null, reason: REASON },
+    settings: { status: "unchanged" },
+  },
+  extension_mcp: {
+    tool: "settings_extension_set",
+    args: { scope: "*", extension: "mcp", key: "x", value: 1, reason: REASON },
+    fails: true,
+  },
+  extension_depth_limit: {
+    tool: "settings_extension_set",
+    args: { scope: "*", extension: "subagents", key: "maxSubagentDepth", value: 2, reason: REASON },
+    fails: true,
+  },
+  extension_workspaces_limit: {
+    tool: "settings_extension_set",
+    args: {
+      scope: "*",
+      extension: "subagents",
+      key: "maxSubagentWorkspaces",
+      value: 2,
+      reason: REASON,
+    },
+    fails: true,
+  },
+  extension_not_a_list: {
+    tool: "settings_extension_set",
+    args: { scope: "*", extension: "subagents", key: "readToolset", value: 4, reason: REASON },
+    fails: true,
+  },
+  extension_value_with_reference: {
+    tool: "settings_extension_set",
+    args: { scope: "*", extension: "notes", key: "limit", value: PLACEHOLDER, reason: REASON },
+    fails: true,
+  },
+  reset_environment_field: {
+    tool: "settings_reset",
+    args: { scope: "default", field: "roles.small", reason: REASON },
+  },
+  reset_environment_override: {
+    tool: "settings_reset",
+    args: { scope: "default", field: "thinkingLevel", reason: REASON },
+    settings: settingsChanged("settings_reset", "thinkingLevel", "low", "high", {
+      scope: "default",
+      beforeInherited: false,
+      afterInherited: true,
+    }),
+  },
+  reset_global_field: {
+    tool: "settings_reset",
+    args: { scope: "*", field: "compaction.reserveTokens", reason: REASON },
+    settings: settingsChanged("settings_reset", "compaction.reserveTokens", 8_192, 16_384),
+  },
+  reset_instructions: {
+    tool: "settings_reset",
+    args: { scope: "*", field: "instructions", reason: REASON },
+    fails: true,
+  },
+  reset_unknown_field: {
+    tool: "settings_reset",
+    args: { scope: "*", field: "nonsense", reason: REASON },
+    fails: true,
+  },
+  reset_unknown_scope: {
+    tool: "settings_reset",
+    args: { scope: "nope", field: "model", reason: REASON },
+    fails: true,
+  },
+  mcp_disable_global: {
+    tool: "settings_mcp_disable",
+    args: { scope: "*", name: "shared", reason: REASON },
+    check: NARROWING,
+    settings: settingsChanged("settings_mcp_disable", "mcp.servers.shared.enabled", true, false),
+  },
+  mcp_disable_pushed: {
+    tool: "settings_mcp_disable",
+    args: { scope: "default", name: "docs", reason: REASON },
+    check: NARROWING,
+    pushes: [PENDING_SET],
+    settings: settingsChanged("settings_mcp_disable", "mcp.servers.docs.enabled", true, false, {
+      scope: "default",
+      beforeInherited: false,
+      afterInherited: false,
+    }),
+  },
+  mcp_disable_push_failed: {
+    tool: "settings_mcp_disable",
+    args: { scope: "default", name: "docs", reason: REASON },
+    check: NARROWING,
+    pushes: "fail",
+    settings: settingsChanged("settings_mcp_disable", "mcp.servers.docs.enabled", true, false, {
+      scope: "default",
+      beforeInherited: false,
+      afterInherited: false,
+    }),
+  },
+  mcp_disable_unknown_server: {
+    tool: "settings_mcp_disable",
+    args: { scope: "default", name: "ghost", reason: REASON },
+    fails: true,
+  },
+  mcp_disable_reason_with_reference: {
+    tool: "settings_mcp_disable",
+    args: { scope: "*", name: "shared", reason: `Uses ${PLACEHOLDER}.` },
+    fails: true,
+  },
+  mcp_exposure_global: {
+    tool: "settings_mcp_exposure_set",
+    args: { scope: "*", name: "shared", exposure: "deferred", reason: REASON },
+    check: NARROWING,
+    settings: settingsChanged(
+      "settings_mcp_exposure_set",
+      "mcp.servers.shared.exposure",
+      "codemode",
+      "deferred",
+    ),
+  },
+  mcp_exposure_already: {
+    tool: "settings_mcp_exposure_set",
+    args: { scope: "default", name: "docs", exposure: "codemode", reason: REASON },
+    check: NARROWING,
+  },
+  mcp_tool_exposure_hidden: {
+    tool: "settings_mcp_tool_exposure_set",
+    args: { scope: "default", name: "docs", tool: "publish", exposure: "hidden", reason: REASON },
+    check: NARROWING,
+    settings: settingsChanged(
+      "settings_mcp_tool_exposure_set",
+      "mcp.servers.docs.toolExposure",
+      {},
+      { publish: "hidden" },
+      { scope: "default", beforeInherited: false, afterInherited: false },
+    ),
+  },
+  mcp_tool_exposure_pattern: {
+    tool: "settings_mcp_tool_exposure_set",
+    args: { scope: "*", name: "shared", tool: "look*", exposure: "direct", reason: REASON },
+    check: NARROWING,
+    settings: settingsChanged(
+      "settings_mcp_tool_exposure_set",
+      "mcp.servers.shared.toolExposure",
+      {},
+      { "look*": "direct" },
+    ),
+  },
+  mcp_tool_exposure_absent_key_removed: {
+    tool: "settings_mcp_tool_exposure_set",
+    args: { scope: "*", name: "shared", tool: "look*", exposure: null, reason: REASON },
+    check: NARROWING,
+  },
+  mcp_remove_environment: {
+    tool: "settings_mcp_remove",
+    args: { scope: "default", name: "docs", reason: REASON },
+    check: NARROWING,
+    settings: settingsChanged(
+      "settings_mcp_remove",
+      "mcp.servers.docs",
+      { url: "https://docs.example.test/mcp" },
+      null,
+      {
+        scope: "default",
+        beforeInherited: false,
+        afterInherited: false,
+      },
+    ),
+  },
+  mcp_remove_global_server_at_environment: {
+    tool: "settings_mcp_remove",
+    args: { scope: "default", name: "shared", reason: REASON },
+    fails: true,
+  },
+  mcp_reload_environment: {
+    tool: "settings_mcp_reload",
+    args: { scope: "default" },
+    reloaded: RELOADED,
+    pushes: [PENDING_SET],
+  },
+  mcp_reload_global: {
+    tool: "settings_mcp_reload",
+    args: { scope: "*" },
+    fails: true,
+  },
+} satisfies Record<string, Scenario>;
+
 describe("the Session's Environment and Settings tools", () => {
   it("registers the tools and answers the reads exactly as the snapshot records", () =>
     Effect.runPromise(
@@ -1237,13 +1706,34 @@ describe("the Session's Environment and Settings tools", () => {
           },
         );
 
+        const changes = yield* Effect.forEach(Object.entries(changeScenarios), ([name, each]) => {
+          const scenario: Scenario = each;
+
+          return Effect.map(attempt(scenario), (outcome) => {
+            const refused: boolean = scenario.fails === true;
+
+            expect(outcome.result.isError, name).toBe(refused);
+
+            // Nothing here waits for the owner.
+            expect(outcome.asked, name).toEqual([]);
+
+            return [name, outcome] as const;
+          });
+        });
+
         // SAFETY: the registrations and the answers are JSON; undefined keys are left out by the round trip.
         const whole = JSON.parse(
-          JSON.stringify({ tools: registered, reads, approvals: Object.fromEntries(approvals) }),
+          JSON.stringify({
+            tools: registered,
+            reads,
+            approvals: Object.fromEntries(approvals),
+            changes: Object.fromEntries(changes),
+          }),
         ) as {
           readonly tools: Schema.Json;
           readonly reads: Schema.Json;
           readonly approvals: Schema.Json;
+          readonly changes: Schema.Json;
         };
 
         // The registrations are kept whole, so a change to one shows; the answers' long strings are shortened.
@@ -1251,6 +1741,7 @@ describe("the Session's Environment and Settings tools", () => {
           tools: whole.tools,
           reads: shortened(whole.reads),
           approvals: shortened(whole.approvals),
+          changes: shortened(whole.changes),
         });
       }),
     ));

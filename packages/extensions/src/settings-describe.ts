@@ -78,14 +78,19 @@ export type EnvironmentSettingsView = Exclude<SettingsView, GlobalSettingsView>;
 export const isGlobalView = (view: SettingsView): view is GlobalSettingsView =>
   view.scope === GLOBAL_SETTINGS_SCOPE;
 
-/** Reaching the Settings failed; its message is what the model sees. */
+/** Reaching the Settings failed, or a change was refused; its message is what the model sees. */
 export class SettingsAccessError extends Schema.TaggedError<
   SettingsAccessError,
   { readonly brand: unique symbol }
 >()("SettingsAccessError", {
   message: Schema.String,
-  /** Why a read was refused, for the endpoint's dispatcher; none for a refusal that is only a message. */
-  code: Schema.optionalKey(Schema.Literals(["not_found", "invalid_argument"])),
+  /**
+   * Why a read or a change was refused, for the endpoint's dispatcher (`unsupported`: the endpoint does not make that change;
+   * `unavailable`: the Registry could not make it now); none for a refusal that is only a message.
+   */
+  code: Schema.optionalKey(
+    Schema.Literals(["not_found", "invalid_argument", "unsupported", "unavailable"]),
+  ),
 }) {}
 
 /** A Role's value, its model and hint. */

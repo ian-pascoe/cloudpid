@@ -21,6 +21,7 @@
 // Session's after-steps.
 import {
   InstanceType,
+  isMcpField,
   MAX_INSTRUCTIONS_BYTES,
   OVERRIDE_FIELD_NAMES,
   overrideFieldPath,
@@ -52,8 +53,6 @@ import {
   INSTRUCTIONS_FIELD,
   instructionsCore,
   limitOfField,
-  resetAlready,
-  resetIsDone,
   resetLimitCore,
   SETTINGS_LIMITS,
   type SettingsCore,
@@ -99,23 +98,17 @@ import { Secrets } from "./secrets/store.ts";
 import {
   type AppliedSettingsChange,
   CHANGE_NOTE,
-  changedLines,
-  fieldLabel,
-  isGlobalView,
   loggedChange,
-  RECORDED,
   SCOPE_NOTE,
-  scopeWhere,
   SettingsAccess,
   SettingsAccessError,
   SettingsChanges,
-  type SettingsFieldChange,
   SettingsReload,
   type SettingsView,
 } from "./settings.ts";
 import type { SettingsMcpAccess } from "./settings-mcp-access.ts";
 import { McpChanges } from "./settings-mcp-changes.ts";
-import { settingsChangeOutput } from "./settings-outputs.ts";
+import { resetPlain } from "./settings-reset.ts";
 import { DEFAULT_MAX_SUBAGENT_DEPTH } from "./subagents/options.ts";
 import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
 
@@ -255,7 +248,8 @@ export const ApprovalTools: Effect.Effect<
   const log = yield* AgentChangeLog;
 
   const plainText = yield* plainTextCheck;
-  const { apply: applySettings, reach } = yield* SettingsChanges;
+  const settingsEngine = yield* SettingsChanges;
+  const { reach } = settingsEngine;
   const mcp = yield* McpChanges;
 
   const plainReason = (reason: string) => plainText(reason, "the reason", "Say why without it.");
@@ -418,7 +412,7 @@ export const ApprovalTools: Effect.Effect<
         }
 
         // An MCP server's adjustment: only at an Environment; one that falls back to something reachable waits for the user's Approval.
-        if (field.startsWith("mcp.")) {
+        if (isMcpField(field)) {
           return yield* mcp.resetField({ scope, field, reason, api });
         }
 
@@ -430,33 +424,13 @@ export const ApprovalTools: Effect.Effect<
         }
 
         const view = yield* access.get(scope);
-        const global = isGlobalView(view);
-        const label = fieldLabel(field);
-        const fieldChange: SettingsFieldChange = { field, value: null, reset: true };
-        const already = resetAlready(view, field);
 
-        if (resetIsDone(view, field)) {
-          return {
-            output: [{ type: "text" as const, text: already }],
-            structuredOutput: settingsChangeOutput({
-              view,
-              changes: [],
-              unchanged: [field],
-              approval: null,
-            }),
-            details: { scope: view.scope, unchanged: [field], agentChanges: [] },
-          };
-        }
-
-        return yield* applySettings({
-          tool: "settings_reset",
+        return yield* resetPlain(settingsEngine, {
+          surface: "session",
           view,
-          fields: [fieldChange],
+          field,
           reason,
           conversation: api.conversationId,
-          unchanged: already,
-          changed: ({ changes, reach: reached }) =>
-            `Reset the ${label} ${scopeWhere(view)}${global ? " to its default" : ": it inherits Global again"}:\n${changedLines(changes)}\n${reached.text} ${RECORDED}`,
         });
       }),
   });

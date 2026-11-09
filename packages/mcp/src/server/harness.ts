@@ -47,6 +47,19 @@ const TITLES: Readonly<Record<HarnessToolName, string>> = {
   settings_get: "Show Settings",
   settings_mcp_list: "List MCP servers",
   settings_mcp_get: "Show an MCP server",
+  settings_model_set: "Set the default model",
+  settings_role_set: "Set a role's model",
+  settings_tool_offer: "Offer tools to every conversation",
+  settings_tool_defer: "Stop offering tools to every conversation",
+  settings_compaction_set: "Set compaction",
+  settings_branch_summary_set: "Set the branch summary prompt",
+  settings_extension_set: "Set an extension's option",
+  settings_reset: "Reset a setting",
+  settings_mcp_reload: "Reload an Environment's MCP servers",
+  settings_mcp_disable: "Switch an MCP server off",
+  settings_mcp_exposure_set: "Set an MCP server's exposure",
+  settings_mcp_tool_exposure_set: "Set an MCP server's tool exposure",
+  settings_mcp_remove: "Remove an MCP server",
 };
 
 const decode = Schema.decodeUnknownExit(ApiResult(HarnessAnswer));
@@ -106,9 +119,52 @@ const afterChange = nextOf(
       : undefined,
 );
 
+/** What follows a change to the Settings: `settings_get` shows the Scope as it is now, as for a replayed answer. */
+const afterSettingsChange = nextOf(
+  Schema.Struct({
+    scope: Schema.optionalKey(ScopeKey),
+    changes: Schema.Unknown.pipe(Schema.Array, Schema.optionalKey),
+    replayed: Schema.optionalKey(Schema.Boolean),
+  }),
+  (value, enabled) =>
+    enabled.has("settings_get") &&
+    value.scope !== undefined &&
+    (value.replayed === true || (value.changes?.length ?? 0) > 0)
+      ? `Call settings_get with scope="${value.scope.id}" to see the settings as they are now.`
+      : undefined,
+);
+
+/** What follows a change to an MCP server, or a reload: `settings_mcp_list` shows the Scope's servers as they are now. */
+const afterServersChange = nextOf(
+  Schema.Struct({
+    scope: Schema.optionalKey(ScopeKey),
+    changes: Schema.Unknown.pipe(Schema.Array, Schema.optionalKey),
+    replayed: Schema.optionalKey(Schema.Boolean),
+  }),
+  (value, enabled) =>
+    enabled.has("settings_mcp_list") &&
+    value.scope !== undefined &&
+    (value.replayed === true || value.changes === undefined || value.changes.length > 0)
+      ? `Call settings_mcp_list with scope="${value.scope.id}" to see the servers as they are now.`
+      : undefined,
+);
+
 const NEXTS: Readonly<
   Record<HarnessToolName, (structured: Wire, enabled: Enabled) => string | undefined>
 > = {
+  settings_model_set: afterSettingsChange,
+  settings_role_set: afterSettingsChange,
+  settings_tool_offer: afterSettingsChange,
+  settings_tool_defer: afterSettingsChange,
+  settings_compaction_set: afterSettingsChange,
+  settings_branch_summary_set: afterSettingsChange,
+  settings_extension_set: afterSettingsChange,
+  settings_reset: afterSettingsChange,
+  settings_mcp_reload: afterServersChange,
+  settings_mcp_disable: afterServersChange,
+  settings_mcp_exposure_set: afterServersChange,
+  settings_mcp_tool_exposure_set: afterServersChange,
+  settings_mcp_remove: afterServersChange,
   environment_variable_set: afterChange,
   environment_variable_unset: afterChange,
   environment_container_resize: afterChange,

@@ -697,8 +697,12 @@ describe("an MCP server changed over the MCP endpoint", () => {
         session: null,
         conversation: null,
         tool: "settings_mcp_disable",
+        reason: "Not needed",
         via: { auth: "oauth", client: { name: "pi" } },
       });
+      expect(changes.list(SETTINGS_SCOPE)).toMatchObject([
+        { id: made?.id, via: { auth: "oauth" } },
+      ]);
       expect(JSON.stringify(changes.list(SETTINGS_SCOPE))).not.toContain("grant-1");
       expect(revertGlobal(made?.id ?? 0)).toMatchObject({ status: "reverted" });
     }));

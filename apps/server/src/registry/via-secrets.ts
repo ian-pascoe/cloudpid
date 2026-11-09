@@ -52,6 +52,10 @@ export const SECRETS_UNCHECKABLE =
 export const healingRefusal = (message: string): boolean =>
   message === SECRETS_CHANGED || message === SECRETS_UNCHECKABLE;
 
+/** Whether `message` is one of the check's refusals, which say "Nothing was saved" themselves. */
+export const keptSecretRefusal = (message: string): boolean =>
+  message === HOLDS_SECRET || healingRefusal(message);
+
 /** The Scopes an Environment's write reaches: its own Secrets and Global's. */
 export const environmentReach = (environment: string): SecretReach => [environment, GLOBAL_SCOPE];
 
