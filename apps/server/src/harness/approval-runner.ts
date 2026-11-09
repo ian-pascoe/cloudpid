@@ -140,7 +140,17 @@ export const approvalRunner = ({
               )
             : rebuilt;
 
-          yield* background(upkeep(found.changes));
+          // The upkeep of every change the request made: the cut run's, and a multi-write rerun's, which its claim holds now.
+          const rerun = tool.multiWrite
+            ? ((yield* registry.changeRequest({ id: claim.id }))?.changes ?? [])
+            : [];
+
+          const made = Arr.dedupeWith(
+            [...found.changes, ...rerun],
+            (left, right) => left.id === right.id,
+          );
+
+          yield* background(upkeep(made));
 
           return Option.some(yield* finish(built, true));
         });
