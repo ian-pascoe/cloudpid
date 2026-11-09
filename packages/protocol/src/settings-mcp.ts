@@ -188,6 +188,17 @@ export type McpChangeGuard = {
 };
 
 /**
+ * The end of the Registry's refusal of a change made without asking that widens in its transaction (`mcpGuardRefusal`), which
+ * a caller reads (`isWideningRefusal`) to tell it from any other rejection of the write (a bound, a name clash).
+ */
+export const WIDENING_REFUSAL_TAIL =
+  "and something changed since it was checked as narrowing. Call again.";
+
+/** Whether `message` is the Registry's refusal of a change that widens only since it was checked as narrowing. */
+export const isWideningRefusal = (message: string): boolean =>
+  message.endsWith(WIDENING_REFUSAL_TAIL);
+
+/**
  * `mcpChangeCheck`'s answer (`docs/architecture/mcp-configuration.md` → Approval, The check): for each Environment whose set
  * has the server before or after the change, in the Registry's order (only the named one at an Environment's Scope). Null
  * from the Registry when no Environment has the id.

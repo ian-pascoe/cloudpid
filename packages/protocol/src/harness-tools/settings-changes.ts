@@ -5,8 +5,8 @@
 // `packages/extensions/src/harness-session.test.ts` pins them). The endpoint's sentences name the owner and no Session,
 // and no tool the endpoint does not serve (`tool_search`); every endpoint input takes `request_id`, and every endpoint
 // output is a flat object. A Limit's reset asks the owner there, as the Limit tools do (`./approvals.ts`), and answers
-// `pending`; `settings_reset` does not take the Instructions (`settings_instructions_set` clears them); a change that
-// would widen what an MCP server reaches is answered `unsupported`, with nothing changed.
+// `pending`, as does a reset of an MCP field that would widen what a server reaches; `settings_reset` does not take the
+// Instructions (`settings_instructions_set` clears them).
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,
@@ -351,7 +351,7 @@ export const SettingsResetEndpointOutput = Schema.Struct({
   status: Schema.optionalKey(
     Schema.String.annotate({
       description:
-        'For a Limit: "pending" when the owner was asked (approval_wait follows the request), "unchanged" when it is reset already; absent for any other field, which is reset at once',
+        'For a Limit, or an MCP field whose reset widens: "pending" when the owner was asked (approval_wait follows the request), "unchanged" when it is reset already; absent for any other field, which is reset at once',
     }),
   ),
   ...ApprovalRequestFields,
@@ -378,7 +378,7 @@ export const settingsReset = {
   endpoint: {
     description: paragraphs([
       resetLead(RESET_FIELDS),
-      `Resetting a Limit (${Arr.join(SETTINGS_LIMIT_FIELDS, ", ")}) waits for the owner's Approval, as the Limit tools do: the call does not wait for them, but answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires; follow it with approval_wait. Any other field is reset at once. The Instructions are not a field here: settings_instructions_set with an empty text clears them, once the owner approves. ${resetMcpNote} A reset that would make a switched-off server or a hidden tool reachable again is refused as unsupported, and nothing is changed.`,
+      `Resetting a Limit (${Arr.join(SETTINGS_LIMIT_FIELDS, ", ")}) waits for the owner's Approval, as the Limit tools do: the call does not wait for them, but answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires; follow it with approval_wait. Any other field is reset at once. The Instructions are not a field here: settings_instructions_set with an empty text clears them, once the owner approves. ${resetMcpNote} A reset that would make a switched-off server or a hidden tool reachable again waits for the owner's Approval too, as settings_mcp_enable does, and answers the same way.`,
       CHANGE_NOTE_ENDPOINT,
     ]),
     input: Schema.Struct({ ...resetFields, reason: ReasonEndpoint, ...RequestIdField }),

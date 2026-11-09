@@ -46,16 +46,9 @@ const NO_REQUEST_ID: ReadonlyArray<string> = ["settings_mcp_reload"];
 
 /**
  * The tools the endpoint does not serve yet: no endpoint text names them (the stages that serve them take them out, as
- * S3a-2 did the Limit tools and `settings_instructions_set`).
+ * S3a-2 did the Limit tools and `settings_instructions_set`, and S3b-2 the MCP servers' definition tools).
  */
-const UNSERVED_TOOLS = [
-  "tool_search",
-  "settings_mcp_enable",
-  "settings_mcp_add",
-  "settings_mcp_update",
-  "container_restart",
-  "secret_ask",
-];
+const UNSERVED_TOOLS = ["tool_search", "container_restart", "secret_ask"];
 
 /** `schema`'s JSON Schema, as MCP shows it to a client. */
 const jsonSchemaOf = (schema: Schema.Top) => Schema.toJsonSchemaDocument(schema).schema;
@@ -173,6 +166,30 @@ describe("the harness tools' declarations", () => {
         `${name} (${surface})`,
       ).toEqual([]);
     }
+  });
+});
+
+describe("the tools that ask only when they widen", () => {
+  // What the dispatcher answers when it asked the owner: a change's keys with none made, and the request's.
+  const PENDING = {
+    status: "pending",
+    approval_id: "a-1",
+    url: "https://cloudpid.test/settings/all/mcp?request=a-1",
+    expires_at: "2026-11-16T00:00:00.000Z",
+    scope: { id: "*", name: "Global" },
+    changes: [],
+    changes_truncated: false,
+    unchanged: [],
+  };
+
+  it.each([
+    "settings_mcp_exposure_set",
+    "settings_mcp_tool_exposure_set",
+    "settings_mcp_remove",
+  ] as const)("%s has a pending answer in its endpoint output", (name) => {
+    expect(() =>
+      Schema.decodeUnknownSync(HARNESS_TOOLS[name].endpoint.output)(PENDING),
+    ).not.toThrow();
   });
 });
 
