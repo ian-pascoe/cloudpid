@@ -9,15 +9,14 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { ApprovalCore, PlainText } from "./approval-cores.ts";
-import { approvedAlready, changedSince, declinedAnswer, storedText } from "./approvals.ts";
+import { approvedAlready, changedSince, declinedAnswer } from "./approvals.ts";
 import {
-  type AppliedChange,
   type ChangedEnvironment,
-  type ChangedSetting,
-  describeApplied,
-  describeAppliedGlobal,
+  describeLimitReach,
   type EnvironmentsService,
+  type SettingResult,
   sizeWords,
+  storedText,
 } from "./environment.ts";
 import { EnvironmentsError, notFound } from "./environment-describe.ts";
 import { changeOutput, declinedOutput, unchangedOutput } from "./environment-outputs.ts";
@@ -52,16 +51,6 @@ export type SizeLimitKnown = {
   readonly own: boolean;
 };
 
-/**
- * How the write went: the Registry's own answer, or, for an Applied built from the Agent change it recorded, the same
- * with `newBuild` unknown (it is the upkeep's, not the record's), which the text then leaves to `environment_get`.
- */
-export type SizeLimitResult =
-  | Exclude<AppliedChange, { readonly status: "changed" }>
-  | ChangedSetting;
-
-type SizeLimitFailure = EnvironmentsError;
-
 const isInstanceType = Schema.is(InstanceType);
 
 /** A stored size limit as the owner reads it. */
@@ -75,9 +64,8 @@ export const sizeLimitCore = ({
 }: SizeLimitServices): ApprovalCore<
   SizeLimitArgs,
   SizeLimitKnown,
-  SizeLimitResult,
-  undefined,
-  SizeLimitFailure
+  SettingResult,
+  EnvironmentsError
 > => {
   /**
    * The target of the limit: Global, or the Environment `id`, found. With the size settings where the limit is set (an
@@ -130,6 +118,7 @@ export const sizeLimitCore = ({
     });
 
   return {
+    tool: SIZE_LIMIT_TOOL,
     prepare: ({ id, size, reason }) =>
       Effect.gen(function* () {
         yield* plainText(reason, "the reason", "Say why without it.");
@@ -188,9 +177,9 @@ export const sizeLimitCore = ({
         return prepared;
       }),
 
-    apply: ({ id, size }, expected, author, given) =>
+    apply: ({ id, size }, expected, author, known) =>
       Effect.gen(function* () {
-        const known = given ?? (yield* read(id)).known;
+        const target = known ?? (yield* read(id)).known;
 
         const result = yield* environments.change({
           environment: id,
@@ -199,7 +188,7 @@ export const sizeLimitCore = ({
           author: { ...author, approved: true },
         });
 
-        return { known, result };
+        return { known: target, result };
       }),
 
     render: ({ id, size }, expected, { known, result }) => {
@@ -232,7 +221,7 @@ export const sizeLimitCore = ({
           });
         case "changed":
           return Effect.succeed({
-            text: `The user approved: the size limit of ${named(result.environment)} was ${storedText(expected)}, and is ${size} now. environment_container_resize and container_resize may now use sizes up to ${size}. ${describeReach(result, known.own)} The change is recorded as approved, with your reason; the user can revert it on the Environments page.`,
+            text: `The user approved: the size limit of ${named(result.environment)} was ${storedText(expected)}, and is ${size} now. environment_container_resize and container_resize may now use sizes up to ${size}. ${describeLimitReach(result, known.own)} The change is recorded as approved, with your reason; the user can revert it on the Environments page.`,
             structured: asOutput(
               EnvironmentChangeOutput,
               changeOutput(result, known.own, APPROVED),
@@ -259,18 +248,4 @@ export const sizeLimitCore = ({
           asOutput(EnvironmentChangeOutput, declinedOutput(known.environment, approval)),
       ),
   };
-};
-
-/**
- * What a change of the limit says of whom it reaches. A change from the Registry's write says it all; one built from the
- * recorded Agent change does not know the Builds the upkeep asked for, and says where to look.
- */
-const describeReach = (result: ChangedSetting, own: boolean): string => {
-  if (result.global !== undefined) return describeAppliedGlobal("maxInstance", result.global);
-
-  if (result.environment.id === GLOBAL_ID) {
-    return "It applies at the next Container start of every Workspace that inherits it: a Container that runs keeps what it started with. environment_get shows the Builds.";
-  }
-
-  return describeApplied(own, result.newBuild);
 };

@@ -9,7 +9,6 @@ import {
   type ContainerSettingsOverrides,
   type Settings,
 } from "@cloudpid/config";
-import type { AgentChange } from "@cloudpid/protocol";
 import { ROOT_CONVERSATION_ID, type TaskId } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -26,6 +25,7 @@ import {
   subagentWorkspacesCore,
   type SettingsCoreServices,
 } from "./approval-cores.ts";
+import { recordedChange } from "./agent-change.fixture.ts";
 import { type ApprovalAsk, type ApprovalsService, approvedChange } from "./approvals.ts";
 import type {
   AppliedChange,
@@ -45,25 +45,6 @@ import {
 import { resolvedGlobal } from "./settings.fixture.ts";
 
 const AUTHOR: ChangeAuthor = { conversation: 0, tool: "tool", reason: "A reason." };
-
-/** A change as the Registry records it. */
-const recorded = (fields: Partial<AgentChange>): AgentChange => ({
-  id: 3,
-  scope: "settings",
-  at: 1_000,
-  actor: "agent",
-  session: null,
-  conversation: null,
-  tool: "tool",
-  reason: "A reason.",
-  field: "",
-  before: null,
-  after: null,
-  reverts: null,
-  revertedBy: null,
-  approved: true,
-  ...fields,
-});
 
 // --- The Settings ----------------------------------------------------------------------------------------------
 
@@ -246,13 +227,29 @@ describe("the Settings Limit cores", () => {
       }),
     ));
 
+  it("apply refuses an `expected` that is not what prepare gives, rather than guessing what the owner saw", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const seen = newSeen();
+        const core = spendLimitCore(settingsServices(seen, VIEWS));
+
+        // At an Environment `prepare` gives the value and whether it was inherited.
+        expect(
+          yield* failureOf(core.apply({ scope: "e1", per_session: 8, reason: "More." }, 2, AUTHOR)),
+        ).toContain(
+          "what the owner was shown of the Limit was not kept in a form this change reads",
+        );
+        expect(seen.writes).toEqual([]);
+      }),
+    ));
+
   it("render takes an Applied built from the recorded Agent changes", () =>
     Effect.runPromise(
       Effect.gen(function* () {
         const core = spendLimitCore(settingsServices(newSeen(), VIEWS));
 
         const changes = [
-          recorded({
+          recordedChange("tool", {
             field: "spendLimit.perSession",
             before: 5,
             after: 8,
@@ -277,13 +274,13 @@ describe("the Settings Limit cores", () => {
         );
         expect(answer.structured).toMatchObject({
           scope: { id: "*" },
-          changes: [{ id: 3, field: "spendLimit.perSession" }],
+          changes: [{ id: 7, field: "spendLimit.perSession" }],
           approval: { approved: true, reason: null },
         });
         expect(answer.details).toMatchObject({
           scope: "*",
           approval: { approved: true },
-          agentChanges: [{ id: 3, field: "spendLimit.perSession", before: 5, after: 8 }],
+          agentChanges: [{ id: 7, field: "spendLimit.perSession", before: 5, after: 8 }],
         });
       }),
     ));
@@ -393,7 +390,12 @@ describe("the Settings Limit cores", () => {
             result: {
               status: "changed",
               changes: [
-                recorded({ scope: "e1", field: "instructions", before: "Use bun.", after: "" }),
+                recordedChange("tool", {
+                  scope: "e1",
+                  field: "instructions",
+                  before: "Use bun.",
+                  after: "",
+                }),
               ],
             },
           },
@@ -573,7 +575,7 @@ describe("the size limit's core", () => {
 
         const args = { id: "e1", size: "cpu-3" as const, reason: "Bigger." };
 
-        const change = recorded({
+        const change = recordedChange("tool", {
           scope: "e1",
           field: "maxInstance",
           before: "cpu-2",
@@ -728,7 +730,7 @@ describe("the reset of the size limit's core", () => {
       Effect.gen(function* () {
         const seen: EnvironmentSeen = { reads: [], writes: [] };
 
-        const change = recorded({
+        const change = recordedChange("tool", {
           scope: "e1",
           field: "maxInstance",
           before: "cpu-3",

@@ -31,6 +31,7 @@ import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
+import { recordedChange } from "./agent-change.fixture.ts";
 import { ApprovalTools, EnvironmentRemoval } from "./approval-tools.ts";
 import { type ApprovalAsk, Approvals, type ApprovalsService } from "./approvals.ts";
 import { unusedApprovals } from "./approvals.fixture.ts";
@@ -562,25 +563,6 @@ type Scenario = {
   readonly fails?: boolean;
 };
 
-/** An Agent change as the Registry records it. */
-const recorded = (tool: string, fields: Partial<AgentChange>): AgentChange => ({
-  id: 7,
-  scope: "settings",
-  at: 1_000,
-  actor: "agent",
-  session: "s-1",
-  conversation: 0,
-  tool,
-  reason: "The reason.",
-  field: "",
-  before: null,
-  after: null,
-  reverts: null,
-  revertedBy: null,
-  approved: true,
-  ...fields,
-});
-
 const asking: Pick<ToolExecutionApi, "taskId" | "conversationId"> = {
   // SAFETY: a task's id is a number pi-durable brands.
   taskId: 11 as TaskId,
@@ -686,7 +668,7 @@ const PLACEHOLDER = `${"{{"}secret:API_KEY${"}}"}`;
 const GLOBAL_CHANGED: AppliedChange = {
   status: "changed",
   environment: { id: "*", name: "Global" },
-  change: recorded("environment_container_size_limit_set", {
+  change: recordedChange("environment_container_size_limit_set", {
     scope: "*",
     field: "maxInstance",
     before: "cpu-2",
@@ -703,7 +685,7 @@ const GLOBAL_CHANGED: AppliedChange = {
 const OWN_CHANGED: AppliedChange = {
   status: "changed",
   environment: { id: "default", name: "Default" },
-  change: recorded("environment_container_size_limit_set", {
+  change: recordedChange("environment_container_size_limit_set", {
     scope: "default",
     field: "maxInstance",
     before: "cpu-2",
@@ -728,7 +710,7 @@ const settingsChanged = (
   more: Partial<AgentChange> = {},
 ): AppliedSettingsChange => ({
   status: "changed",
-  changes: [recorded(tool, { field, before, after, ...more })],
+  changes: [recordedChange(tool, { field, before, after, ...more })],
 });
 
 const approvalScenarios = {
@@ -1063,7 +1045,7 @@ const approvalScenarios = {
     environment: {
       status: "changed",
       environment: { id: "00bb00bb", name: "Large" },
-      change: recorded("environment_setting_reset", {
+      change: recordedChange("environment_setting_reset", {
         scope: "00bb00bb",
         field: "maxInstance",
         before: "cpu-3",
@@ -1086,7 +1068,7 @@ const approvalScenarios = {
     environment: {
       status: "changed",
       environment: { id: "default", name: "Default" },
-      change: recorded("environment_setting_reset", {
+      change: recordedChange("environment_setting_reset", {
         scope: "default",
         field: "maxInstance",
         before: "cpu-3",

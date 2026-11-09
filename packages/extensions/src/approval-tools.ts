@@ -49,7 +49,6 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import {
   type Applied,
-  DEPTH_LIMIT,
   INSTRUCTIONS_FIELD,
   instructionsCore,
   limitOfField,
@@ -58,12 +57,9 @@ import {
   resetLimitCore,
   SETTINGS_LIMITS,
   type SettingsCore,
-  type SettingsLimit,
-  SPEND_LIMIT,
   spendLimitCore,
   subagentDepthCore,
   subagentWorkspacesCore,
-  WORKSPACES_LIMIT,
 } from "./approval-cores.ts";
 import {
   type ApprovalCall,
@@ -81,14 +77,14 @@ import {
   type ChangedEnvironment,
   type DeployCredentials,
   Environments,
-  EnvironmentsError,
   environmentTarget,
   Id,
   MAX_CHANGE_REASON,
-  notFound,
   plainTextCheck,
+  recordSettingChange,
 } from "./environment.ts";
 import { EnvironmentDeleteOutput, EnvironmentSecretDeleteOutput } from "./environment-outputs.ts";
+import { EnvironmentsError, notFound } from "./environment-describe.ts";
 import { named } from "./environment-skill-results.ts";
 import { SIZE_LIMIT_TOOL, sizeLimitCore } from "./environment-size-limit.ts";
 import {
@@ -289,29 +285,19 @@ export const ApprovalTools: Effect.Effect<
         };
       });
 
-  /** The tool that changes a Limit, from its core: it asks, applies on Approve, and tells the Session. */
-  const limitTool =
-    <Args extends { readonly scope: string; readonly reason: string }>(
-      core: SettingsCore<Args>,
-      tool: string,
-      limit: SettingsLimit,
-    ) =>
+  /** A Settings tool from its core: it asks, applies on Approve, and tells the Session. */
+  const settingsTool =
+    <Args extends { readonly scope: string; readonly reason: string }>(core: SettingsCore<Args>) =>
     (args: Args, api: ApprovalCall) =>
-      approvedChange(approvals, api, core, args, afterSettingsChange(tool, limit.field));
+      approvedChange(approvals, api, core, args, afterSettingsChange(core.tool, core.limit?.field));
 
-  const setSpend = limitTool(spendLimitCore(services), "settings_spend_limit_set", SPEND_LIMIT);
+  const setSpend = settingsTool(spendLimitCore(services));
 
-  const setDepth = limitTool(
-    subagentDepthCore(services),
-    "settings_subagent_depth_set",
-    DEPTH_LIMIT,
-  );
+  const setDepth = settingsTool(subagentDepthCore(services));
 
-  const setWorkspaces = limitTool(
-    subagentWorkspacesCore(services),
-    "settings_subagent_workspaces_set",
-    WORKSPACES_LIMIT,
-  );
+  const setWorkspaces = settingsTool(subagentWorkspacesCore(services));
+
+  const setInstructions = settingsTool(instructionsCore(services));
 
   const sizeCore = sizeLimitCore({ environments, plainText });
 
@@ -440,11 +426,7 @@ export const ApprovalTools: Effect.Effect<
 
         // A Limit's reset waits for the owner's Approval.
         if (Option.isSome(limit)) {
-          return yield* limitTool(
-            resetLimitCore(services, limit.value),
-            "settings_reset",
-            limit.value,
-          )({ scope, reason }, api);
+          return yield* settingsTool(resetLimitCore(services, limit.value))({ scope, reason }, api);
         }
 
         const view = yield* access.get(scope);
@@ -502,14 +484,7 @@ export const ApprovalTools: Effect.Effect<
     executionMode: "sequential",
     // The wait survives an eviction: the rerun finds the same request, or the answer given meanwhile.
     replay: "safe",
-    execute: (args, api) =>
-      approvedChange(
-        approvals,
-        api,
-        instructionsCore(services),
-        args,
-        afterSettingsChange("settings_instructions_set", undefined),
-      ),
+    execute: (args, api) => setInstructions(args, api),
   });
 
   const LimitId = idOrGlobal(
@@ -535,16 +510,12 @@ export const ApprovalTools: Effect.Effect<
     executionMode: "sequential",
     replay: "safe",
     execute: (args, api) =>
-      approvedChange(approvals, api, sizeCore, args, (applied) =>
-        applied.result.status === "changed"
-          ? log
-              .record({
-                tool: SIZE_LIMIT_TOOL,
-                environmentName: applied.result.environment.name,
-                field: "maxInstance",
-              })
-              .pipe(Effect.as(undefined))
-          : Effect.undefined,
+      approvedChange(
+        approvals,
+        api,
+        sizeCore,
+        args,
+        recordSettingChange(log, SIZE_LIMIT_TOOL, "maxInstance"),
       ),
   });
 

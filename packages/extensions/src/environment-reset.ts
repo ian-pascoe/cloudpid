@@ -26,24 +26,23 @@ import {
   type ApprovalsService,
   approvedAlready,
   declinedAnswer,
-  storedText,
 } from "./approvals.ts";
 import {
-  type AppliedChange,
   type ChangedEnvironment,
-  type ChangedSetting,
   describeApplied,
   type EnvironmentDetails,
-  EnvironmentsError,
   type EnvironmentsService,
   IdNotGlobal,
   MAX_CHANGE_REASON,
   pathsLine,
   plainValue,
+  recordSettingChange,
+  type SettingResult,
   sizeWords,
+  storedText,
   textSize,
 } from "./environment.ts";
-import { notFound } from "./environment-describe.ts";
+import { EnvironmentsError, notFound } from "./environment-describe.ts";
 import type { LifecycleDeps } from "./environment-lifecycle.ts";
 import { changeOutput, declinedOutput, unchangedOutput } from "./environment-outputs.ts";
 import { asJsonValue, named } from "./environment-skill-results.ts";
@@ -131,7 +130,7 @@ const resetAnswer = ({
 }: {
   readonly environment: string;
   readonly setting: ResettableSetting;
-  readonly result: ResetResult;
+  readonly result: SettingResult;
   readonly own: boolean;
   readonly approved: boolean;
 }): Effect.Effect<HarnessAnswer, EnvironmentsError> => {
@@ -180,9 +179,6 @@ const resetAnswer = ({
   }
 };
 
-/** How the write of a reset went: the Registry's answer, or one built from the Agent change it recorded. */
-export type ResetResult = Exclude<AppliedChange, { readonly status: "changed" }> | ChangedSetting;
-
 /** What the core of the reset of the size limit reads and writes. */
 export type ResetLimitServices = Pick<LifecycleDeps, "refuseSecrets" | "target"> & {
   readonly environments: Pick<EnvironmentsService, "get" | "change">;
@@ -206,8 +202,7 @@ export const resetLimitCore = ({
 }: ResetLimitServices): ApprovalCore<
   ResetLimitArgs,
   ResetLimitKnown,
-  ResetResult,
-  undefined,
+  SettingResult,
   EnvironmentsError
 > => {
   /** The Environment `id` names, found, and whether it is the Session's own. */
@@ -222,6 +217,7 @@ export const resetLimitCore = ({
     });
 
   return {
+    tool: RESET_TOOL,
     prepare: ({ id, reason }) =>
       Effect.gen(function* () {
         yield* refuseSecrets([{ what: "the reason", text: reason }]);
@@ -258,9 +254,9 @@ export const resetLimitCore = ({
         return prepared;
       }),
 
-    apply: ({ id }, expected, author, given) =>
+    apply: ({ id }, expected, author, known) =>
       Effect.gen(function* () {
-        const known = given ?? (yield* read(id));
+        const target_ = known ?? (yield* read(id));
 
         const result = yield* environments.change({
           environment: id,
@@ -269,7 +265,7 @@ export const resetLimitCore = ({
           author: { ...author, approved: true },
         });
 
-        return { known, result };
+        return { known: target_, result };
       }),
 
     render: ({ id }, _expected, { known, result }) =>
@@ -370,16 +366,12 @@ export const resetTool = ({ environments, approvals, log, refuseSecrets, target 
     execute: ({ id, setting, reason }, api) =>
       Effect.gen(function* () {
         if (setting === "maxInstance") {
-          return yield* approvedChange(approvals, api, limit, { id, reason }, (applied) =>
-            applied.result.status === "changed"
-              ? log
-                  .record({
-                    tool: RESET_TOOL,
-                    environmentName: applied.result.environment.name,
-                    field: "maxInstance",
-                  })
-                  .pipe(Effect.as(undefined))
-              : Effect.undefined,
+          return yield* approvedChange(
+            approvals,
+            api,
+            limit,
+            { id, reason },
+            recordSettingChange(log, RESET_TOOL, "maxInstance"),
           );
         }
 

@@ -322,6 +322,10 @@ export const MAX_CHANGE_REASON = 500;
 const shownValue = (value: Schema.Json | null): string =>
   value === null ? "not set" : JSON.stringify(value);
 
+/** A stored value as a sentence says it: a text as it is, anything else as JSON (`null` when it was not set). */
+export const storedText = (value: Schema.Json | null): string =>
+  Predicate.isString(value) ? value : JSON.stringify(value);
+
 /** When a change applies, and whether a Build was asked for (`newBuild` undefined: not known, so look at the Build). */
 export const describeApplied = (own: boolean, newBuild: boolean | undefined): string =>
   Arr.join(
@@ -374,6 +378,40 @@ export const describeAppliedGlobal = (
     ],
     " ",
   );
+
+/**
+ * What a change of the size limit (`maxInstance`) says of whom it reaches. A change from the Registry's write says it all;
+ * one built from the recorded Agent change does not know the Builds the upkeep asked for, and says where to look.
+ */
+export const describeLimitReach = (result: ChangedSetting, own: boolean): string => {
+  if (result.global !== undefined) return describeAppliedGlobal("maxInstance", result.global);
+
+  if (result.environment.id === GLOBAL_ID) {
+    return "It applies at the next Container start of every Workspace that inherits it: a Container that runs keeps what it started with. environment_get shows the Builds.";
+  }
+
+  return describeApplied(own, result.newBuild);
+};
+
+/** How the write of one Container setting went: the Registry's answer, or one built from the Agent change it recorded. */
+export type SettingResult = Exclude<AppliedChange, { readonly status: "changed" }> | ChangedSetting;
+
+/**
+ * The Session's after-step of a change of one Container setting: tell the Run's Notification of a change that was made
+ * (`applied` of a core, whose `result` is `SettingResult`).
+ */
+export const recordSettingChange =
+  (
+    log: { readonly record: (change: RunChange) => Effect.Effect<void> },
+    tool: string,
+    field: string,
+  ) =>
+  ({ result }: { readonly result: SettingResult }): Effect.Effect<undefined> =>
+    result.status === "changed"
+      ? log
+          .record({ tool, environmentName: result.environment.name, field })
+          .pipe(Effect.as(undefined))
+      : Effect.undefined;
 
 /** What a result says of a Container-setting change's recording, after the setting itself. */
 // The id is written out: `GLOBAL_ID` is not there yet when this module loads first (`idOrGlobal`).

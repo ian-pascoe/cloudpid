@@ -32,7 +32,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { type ApprovalAnswer, approvedAlready, changedSince, declinedAnswer } from "./approvals.ts";
-import type { ChangeAuthor } from "./environment.ts";
+import { type ChangeAuthor, storedText } from "./environment.ts";
 import type { EnvironmentsError } from "./environment-describe.ts";
 import type { HarnessAnswer } from "./harness.ts";
 import { APPROVED } from "./outputs.ts";
@@ -78,9 +78,11 @@ export type DeclinedAnswer = Extract<ApprovalAnswer, { readonly approved: false 
 
 /**
  * A tool's core: `prepare`, `apply` and `render` (#685 L2), and what a decline says. `Args` is the tool's decoded arguments,
- * and `Known` what `prepare` read.
+ * and `Known` what `prepare` read. `How` is what `render` needs of the caller: nothing, unless a core says.
  */
-export type ApprovalCore<Args, Known, Result, How, Failure> = {
+export type ApprovalCore<Args, Known, Result, Failure, How = undefined> = {
+  /** The tool the core is of: its cards and the changes it makes carry the name. */
+  readonly tool: string;
   readonly prepare: (args: Args) => Effect.Effect<Prepared<Known>, Failure>;
   readonly apply: (
     args: Args,
@@ -124,14 +126,14 @@ export type SettingsHow = {
   readonly reach: string;
 };
 
-/** A Settings core for the arguments `Args`. */
+/** A Settings core for the arguments `Args`; a Limit's has the Limit it changes. */
 export type SettingsCore<Args> = ApprovalCore<
   Args,
   SettingsView,
   AppliedSettingsChange,
-  SettingsHow,
-  SettingsCoreFailure
->;
+  SettingsCoreFailure,
+  SettingsHow
+> & { readonly limit?: SettingsLimit | undefined };
 
 // ─── Words ───────────────────────────────────────────────────────────────────
 
@@ -140,15 +142,15 @@ const dollars = (amount: number): string =>
   `$${Number.isInteger(amount) ? amount : amount.toFixed(2)}`;
 
 /** A spend limit as the owner reads it. */
-export const spendWords = (limit: Schema.Json | null): string =>
+const spendWords = (limit: Schema.Json | null): string =>
   Predicate.isNumber(limit) ? `${dollars(limit)} per Session` : "no limit";
 
 /** A subagent depth as the owner reads it. */
-export const depthWords = (depth: number): string =>
+const depthWords = (depth: number): string =>
   `${depth} level${depth === 1 ? "" : "s"} of subagents below the root`;
 
 /** The subagent depth a stored value gives: the default where it is unset or not a depth. */
-export const depthOf = (stored: Schema.Json | null): number =>
+const depthOf = (stored: Schema.Json | null): number =>
   Predicate.isNumber(stored) && Number.isInteger(stored) && stored > 0
     ? stored
     : DEFAULT_MAX_SUBAGENT_DEPTH;
@@ -158,11 +160,11 @@ const storedDepthWords = (stored: Schema.Json | null): string =>
   `${depthWords(depthOf(stored))}${stored === null ? " (the default)" : ""}`;
 
 /** A Subagent Workspace limit as the owner reads it. */
-export const workspacesWords = (limit: number): string =>
+const workspacesWords = (limit: number): string =>
   `${limit} Subagent Workspace${limit === 1 ? "" : "s"} per Session`;
 
 /** The Subagent Workspace limit a stored value gives: the default where it is unset or not a limit. */
-export const workspacesOf = (stored: Schema.Json | null): number =>
+const workspacesOf = (stored: Schema.Json | null): number =>
   Predicate.isNumber(stored) && Number.isInteger(stored) && stored >= 0
     ? stored
     : DEFAULT_MAX_SUBAGENT_WORKSPACES;
@@ -221,7 +223,7 @@ export const INSTRUCTIONS_FIELD = "instructions";
 const instructionsWords = (text: string): string => (text === "" ? "None" : text);
 
 /** A whole number with its thousands grouped, as the owner reads it. */
-export const grouped = (n: number): string => n.toLocaleString("en-US");
+const grouped = (n: number): string => n.toLocaleString("en-US");
 
 /**
  * What a result says of when an approved change of the Instructions applies, to conversations named by `whose` ("its"
@@ -236,16 +238,28 @@ const LimitAtEnvironment = Schema.Struct({
   inherited: Schema.Boolean,
 });
 
-/** `expected` as the write takes it: at Global the value, at an Environment the value and whether it was inherited. */
-const limitSeen = (
+/**
+ * What the owner saw of a Limit, from `expected`: at Global the value, at an Environment the value and whether it was
+ * inherited, as `prepare` gives it. None when `expected` is not that.
+ */
+const seenOf = (
   view: SettingsView,
   expected: Schema.Json | null,
-): { readonly value: Schema.Json | null; readonly inherited?: boolean } =>
+): Option.Option<{ readonly value: Schema.Json | null; readonly inherited?: boolean }> =>
   isGlobalView(view)
-    ? { value: expected }
-    : Option.getOrElse(Schema.decodeUnknownOption(LimitAtEnvironment)(expected), () => ({
-        value: expected,
-      }));
+    ? Option.some({ value: expected })
+    : Schema.decodeUnknownOption(LimitAtEnvironment)(expected);
+
+/** `seenOf`, failing for an `expected` that is not what `prepare` gives: the write must not guess what the owner saw. */
+const limitSeen = (view: SettingsView, expected: Schema.Json | null) =>
+  Effect.fromOption(seenOf(view, expected)).pipe(
+    Effect.mapError(() =>
+      SettingsAccessError.make({
+        message:
+          "Nothing was saved: what the owner was shown of the Limit was not kept in a form this change reads.",
+      }),
+    ),
+  );
 
 /** A Limit's value in force at `view`'s Scope, and at an Environment whether it is inherited (it has no Override). */
 const limitNow = (view: SettingsView, limit: SettingsLimit) => ({
@@ -255,12 +269,11 @@ const limitNow = (view: SettingsView, limit: SettingsLimit) => ({
     : Option.isNone(overrideValue(view.overrides, limit.field)),
 });
 
-/** A Limit's value before, as the card and the results say it. */
-const beforeWords = (limit: SettingsLimit, view: SettingsView, expected: Schema.Json | null) => {
-  const seen = limitSeen(view, expected);
-
-  return `${limit.words(seen.value)}${inheritedWords(seen.inherited)}`;
-};
+/** A Limit's value before, as the card and the results say it, from what the owner saw. */
+const beforeWords = (
+  limit: SettingsLimit,
+  seen: { readonly value: Schema.Json | null; readonly inherited?: boolean },
+) => `${limit.words(seen.value)}${inheritedWords(seen.inherited)}`;
 
 // ─── The Limits ──────────────────────────────────────────────────────────────
 
@@ -292,6 +305,8 @@ const limitCore = <Args extends ScopedArgs>(
   const { tool, limit } = spec;
 
   return {
+    tool,
+    limit,
     prepare: (args) =>
       Effect.gen(function* () {
         yield* plainText(args.reason, "the reason", "Say why without it.");
@@ -330,10 +345,11 @@ const limitCore = <Args extends ScopedArgs>(
     apply: (args, expected, author, known) =>
       Effect.gen(function* () {
         const view = known ?? (yield* access.get(args.scope));
+        const seen = yield* limitSeen(view, expected);
 
         const result = yield* access.change({
           scope: view.scope,
-          changes: [{ ...spec.fieldChange(args), expected: limitSeen(view, expected) }],
+          changes: [{ ...spec.fieldChange(args), expected: seen }],
           author: { ...author, approved: true },
         });
 
@@ -372,8 +388,8 @@ const limitCore = <Args extends ScopedArgs>(
             details: { scope: view.scope, approval: { approved: true }, agentChanges: [] },
           });
         case "changed":
-          return Effect.succeed({
-            text: `The user approved: ${limit.name} ${where} was ${beforeWords(limit, view, expected)}, and is ${after} now. ${how.reach} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
+          return Effect.map(limitSeen(view, expected), (seen) => ({
+            text: `The user approved: ${limit.name} ${where} was ${beforeWords(limit, seen)}, and is ${after} now. ${how.reach} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
             structured: settingsChangeOutput({
               view,
               changes: result.changes,
@@ -385,14 +401,19 @@ const limitCore = <Args extends ScopedArgs>(
               approval: { approved: true },
               agentChanges: agentChangeDetails(view, result.changes),
             },
-          });
+          }));
       }
     },
 
     declined: (args, view, answer) =>
       declinedAnswer(
         answer,
-        `${spec.change} ${scopeWhere(view)}, from ${beforeWords(limit, view, answer.expected)} to ${spec.after(args, view)}`,
+        // Only the words of a decline, which writes nothing: an `expected` that is not what `prepare` gives is said as it is
+        // (`apply` refuses it).
+        `${spec.change} ${scopeWhere(view)}, from ${Option.match(seenOf(view, answer.expected), {
+          onNone: () => storedText(answer.expected),
+          onSome: (seen) => beforeWords(limit, seen),
+        })} to ${spec.after(args, view)}`,
         (approval) => settingsChangeOutput({ view, changes: [], unchanged: [], approval }),
       ),
   };
@@ -529,6 +550,7 @@ export const instructionsCore = ({
   const tool = "settings_instructions_set";
 
   return {
+    tool,
     prepare: ({ scope, text, reason }) =>
       Effect.gen(function* () {
         yield* plainText(reason, "the reason", "Say why without it.");

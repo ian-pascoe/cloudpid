@@ -22,7 +22,6 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { Applied, ApprovalCore } from "./approval-cores.ts";
 import { type HarnessAnswer, toolResult } from "./harness.ts";
@@ -388,7 +387,7 @@ export const approvedChange = <
 >(
   approvals: ApprovalsService,
   api: ApprovalCall,
-  core: ApprovalCore<Args, Known, Result, How, Failure>,
+  core: ApprovalCore<Args, Known, Result, Failure, How>,
   args: Args,
   after: (applied: Applied<Known, Result>) => Effect.Effect<How, Failure>,
 ): Effect.Effect<ReturnType<typeof toolResult>, Failure | ApprovalsError> =>
@@ -410,7 +409,7 @@ export const approvedChange = <
           const applied = yield* core.apply(
             args,
             answer.expected,
-            { conversation: api.conversationId, tool: prepared.card.tool, reason: args.reason },
+            { conversation: api.conversationId, tool: core.tool, reason: args.reason },
             prepared.known,
           );
 
@@ -420,7 +419,3 @@ export const approvedChange = <
         }),
     );
   });
-
-/** A stored value as a sentence says it: a text as it is, anything else as JSON (`null` when it was not set). */
-export const storedText = (value: Schema.Json | null): string =>
-  Predicate.isString(value) ? value : JSON.stringify(value);
