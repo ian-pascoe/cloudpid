@@ -2,8 +2,9 @@
 
 // The Settings page's Triggers section, as values (`docs/architecture/triggers.md` → The owner's UI): the form that makes
 // or edits an Environment trigger, or a Workspace trigger (its name, message, its source, a Schedule with the next Fires
-// it gives or a webhook with its format and `match` rows, and options), what it sends the Registry (an edit sends only
-// what changed, and for a webhook only its `match`), and the words a Trigger's row, its deliveries and its fire log show.
+// it gives or a webhook with its format and `match` rows, and a github one's repo and events for a GitHub-managed hook,
+// and options), what it sends the Registry (an edit sends only what changed, and for a webhook only its `match`), and the
+// words a Trigger's row, its hook, its deliveries and its fire log show.
 
 import {
   defaultWhenBusy,
@@ -12,6 +13,9 @@ import {
   type FireRecord,
   type FireSkip,
   fireTimeWords,
+  type GitHubHookStatus,
+  githubHookOf,
+  githubHookProblem,
   nextFires,
   scheduleOf,
   type ScheduleSource,
@@ -25,6 +29,7 @@ import {
   type TriggerMatch,
   type TriggerSourceInput,
   type WebhookFormat,
+  type WebhookSource,
   type TriggerKind,
   triggerMessageProblem,
   triggerNameProblem,
@@ -55,8 +60,9 @@ export type MatchRow = { readonly path: string; readonly values: string };
  * What is typed in the Trigger form. An option left empty is the Environment's own (`base`: each Repo's default).
  * `scheduled` says the Trigger fires on a Schedule (a new one does), so the form asks for `cron` and `zone`; else it
  * fires on a webhook, signed in `format`, whose deliveries must pass the `match` rows. A Trigger's source type and format
- * are fixed at creation, so editing a webhook Trigger sends only its `match`. A Workspace trigger's form names its
- * Workspace (`workspace`, by id) and has no `base`.
+ * are fixed at creation, so editing a webhook Trigger sends only its `match`. A new github webhook may name a `repo`
+ * and its `events` (typed apart by commas, spaces or lines): cloudpid makes its hook there, as the GitHub App; both are
+ * fixed at creation too. A Workspace trigger's form names its Workspace (`workspace`, by id) and has no `base`.
  */
 export type TriggerDraft = {
   /**
@@ -74,6 +80,10 @@ export type TriggerDraft = {
   readonly zone: string;
   readonly format: WebhookFormat;
   readonly match: ReadonlyArray<MatchRow>;
+  /** A github webhook's repo (`owner/name`) for a GitHub-managed hook; empty for a hook the owner makes. */
+  readonly repo: string;
+  /** The GitHub events that hook is sent, as typed. */
+  readonly events: string;
   readonly whenBusy: TriggerWhenBusy;
   readonly base: string;
   readonly model: string;
@@ -108,6 +118,8 @@ export const emptyTriggerDraft = (
   zone,
   format: "github",
   match: [],
+  repo: "",
+  events: "",
   whenBusy: defaultWhenBusy(workspace === null ? "environment" : "workspace", SCHEDULE_DEFAULT),
   base: "",
   model: "",
@@ -117,6 +129,7 @@ export const emptyTriggerDraft = (
 /** The form holding `definition`, to edit it. A source this version can't read leaves its Schedule empty. */
 export const triggerDraftOf = (definition: TriggerDefinition): TriggerDraft => {
   const schedule = scheduleOf(definition);
+  const hook = githubHookOf(definition);
 
   return {
     kind: definition.kind,
@@ -129,6 +142,8 @@ export const triggerDraftOf = (definition: TriggerDefinition): TriggerDraft => {
     zone: schedule?.zone ?? "",
     format: webhookOf(definition)?.format ?? "github",
     match: rowsOfMatch(webhookOf(definition)?.match),
+    repo: hook?.repo ?? "",
+    events: Arr.join(hook?.events ?? [], ", "),
     whenBusy: definition.whenBusy,
     base: definition.base ?? "",
     model: definition.model ?? "",
@@ -228,6 +243,8 @@ export type TriggerDraftProblems = {
   readonly message: string | null;
   readonly schedule: string | null;
   readonly match: string | null;
+  /** Why a new github webhook's repo and events make no GitHub-managed hook. */
+  readonly hook: string | null;
 };
 
 const problemOf = (problem: string | undefined): string | null => problem ?? null;
@@ -246,6 +263,11 @@ export const triggerDraftProblems = (
     ? problemOf(scheduleProblem({ cron: draft.cron, zone: draft.zone }))
     : null,
   match: draft.scheduled || rowsUnchanged(draft, opened) ? null : matchRowsProblem(draft.match),
+  // Fixed at creation: an edit never sends them.
+  hook:
+    draft.scheduled || opened !== undefined
+      ? null
+      : problemOf(githubHookProblem(webhookSourceOf(draft))),
 });
 
 /** Whether `draft` can be saved (as an edit of `opened`, if it is one). */
@@ -256,7 +278,8 @@ export const triggerDraftReady = (draft: TriggerDraft, opened?: TriggerDefinitio
     problems.name === null &&
     problems.message === null &&
     problems.schedule === null &&
-    problems.match === null
+    problems.match === null &&
+    problems.hook === null
   );
 };
 
@@ -274,18 +297,34 @@ const isThinkingLevel = Schema.is(ThinkingLevel);
 const thinkingOf = (text: string): ThinkingLevel | undefined =>
   isThinkingLevel(text) ? text : undefined;
 
-/** The source `draft` makes: its Schedule, or its webhook with the `match` its rows make (none for no row). */
-const sourceOf = (draft: TriggerDraft): TriggerSourceInput => {
-  if (draft.scheduled) {
-    return { type: "schedule", cron: draft.cron.trim(), zone: draft.zone.trim() };
-  }
+/** The events typed for a GitHub-managed hook: apart by commas, spaces or lines, the empty ones left out. */
+const eventsOf = (text: string): ReadonlyArray<string> =>
+  Arr.filter(text.split(/[\s,]+/u), (event) => event !== "");
 
+/**
+ * The webhook `draft` makes: its format, the `match` its rows make (none for no row), and for a github one the repo and
+ * events typed (neither when both are empty).
+ */
+const webhookSourceOf = (draft: TriggerDraft): WebhookSource => {
+  const source: Types.Mutable<WebhookSource> = { type: "webhook", format: draft.format };
   const match = matchOfRows(draft.match);
+  const repo = draft.repo.trim();
+  const events = eventsOf(draft.events);
 
-  return Rec.isEmptyRecord(match)
-    ? { type: "webhook", format: draft.format }
-    : { type: "webhook", format: draft.format, match };
+  if (!Rec.isEmptyRecord(match)) source.match = match;
+
+  if (draft.format === "github" && repo !== "") source.repo = repo;
+
+  if (draft.format === "github" && events.length > 0) source.events = events;
+
+  return source;
 };
+
+/** The source `draft` makes: its Schedule, or its webhook. */
+const sourceOf = (draft: TriggerDraft): TriggerSourceInput =>
+  draft.scheduled
+    ? { type: "schedule", cron: draft.cron.trim(), zone: draft.zone.trim() }
+    : webhookSourceOf(draft);
 
 /** The new Trigger `draft` makes: the owner's own, active. */
 export const triggerInput = (draft: TriggerDraft): OwnerTriggerInput => {
@@ -372,12 +411,20 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
   return patch;
 };
 
-/** A Trigger's source as its row says it: "0 9 * * 1 · America/Chicago" for a Schedule, "Webhook · github". */
+/**
+ * A Trigger's source as its row says it: "0 9 * * 1 · America/Chicago" for a Schedule, "Webhook · github", and
+ * "Webhook · github · octo-org/octo-repo" for one with a GitHub-managed hook.
+ */
 export const triggerSourceWords = (definition: TriggerDefinition): string => {
   const schedule = scheduleOf(definition);
   const webhook = webhookOf(definition);
+  const hook = githubHookOf(definition);
 
-  if (webhook !== undefined) return `Webhook · ${webhook.format}`;
+  if (webhook !== undefined) {
+    return hook === undefined
+      ? `Webhook · ${webhook.format}`
+      : `Webhook · ${webhook.format} · ${hook.repo}`;
+  }
 
   return schedule === undefined
     ? "A source this version can't read"
@@ -601,6 +648,27 @@ export const deliveryDays = (
       ),
     }),
   );
+
+/** What a row says of its GitHub-managed hook: made, not made yet, or why GitHub refused it so far. */
+export const githubHookWords = (status: GitHubHookStatus): string => {
+  switch (status.state) {
+    case "ready":
+      return `GitHub hook on ${status.repo}: made`;
+    case "pending":
+      return `GitHub hook on ${status.repo}: not made yet, tried again soon`;
+    case "failed":
+      return `GitHub hook on ${status.repo} failed: ${status.problem?.message ?? "GitHub refused it"}`;
+    case "unknown":
+      return `GitHub hook on ${status.repo}: a state this version can't read`;
+  }
+};
+
+/** The events of a GitHub-managed hook, as its row lists them. */
+export const githubEventWords = (definition: TriggerDefinition): string | null => {
+  const hook = githubHookOf(definition);
+
+  return hook === undefined ? null : `Events: ${Arr.join(hook.events, ", ")}`;
+};
 
 /** What a webhook row says of its last authentic delivery, in `zone`. */
 export const lastDeliveryWords = (deliveries: TriggerDeliveries, zone: string): string =>

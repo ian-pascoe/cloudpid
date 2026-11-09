@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   deliveryDays,
   emptyTriggerDraft,
+  githubHookWords,
   matchRowsProblem,
   nextFireOf,
   outcomeWords,
@@ -58,6 +59,7 @@ describe("the Trigger form", () => {
       name: "A Trigger needs a name",
       message: "A Trigger needs a message to send",
       match: null,
+      hook: null,
       schedule: expect.any(String),
     });
   });
@@ -364,6 +366,92 @@ describe("a webhook Trigger's form", () => {
       triggerDraftProblems({ ...draft, match: [{ path: "", values: "x" }, ...draft.match] }, odd)
         .match,
     ).not.toBeNull();
+  });
+});
+
+describe("a GitHub-managed hook", () => {
+  /** A new github webhook draft, ready but for its repo and events. */
+  const hookDraft = (repo: string, events: string): TriggerDraft => ({
+    ...withSource(
+      { ...emptyTriggerDraft("default", "UTC"), name: "CI failed", message: "Look." },
+      "webhook",
+    ),
+    repo,
+    events,
+  });
+
+  const hooked: TriggerDefinition = {
+    ...DEFINITION,
+    name: "CI failed",
+    source: {
+      type: "webhook",
+      format: "github",
+      repo: "octo-org/octo-repo",
+      events: ["workflow_run", "check_suite"],
+    },
+    whenBusy: "start",
+  };
+
+  it("makes a github webhook with the repo and events typed, the events split on commas and spaces", () => {
+    const draft = hookDraft(" octo-org/octo-repo ", "workflow_run, check_suite\n");
+
+    expect(triggerDraftReady(draft)).toBe(true);
+    expect(triggerInput(draft).source).toEqual({
+      type: "webhook",
+      format: "github",
+      repo: "octo-org/octo-repo",
+      events: ["workflow_run", "check_suite"],
+    });
+    // Neither typed: a hook the owner makes.
+    expect(triggerInput(hookDraft("", " ")).source).toEqual({ type: "webhook", format: "github" });
+    // A Standard Webhooks sender has no GitHub hook: what was typed for one is not sent.
+    expect(
+      triggerInput({ ...hookDraft("octo-org/octo-repo", "push"), format: "standard" }).source,
+    ).toEqual({ type: "webhook", format: "standard" });
+  });
+
+  it("holds a repo without events, events without a repo, and a repo not written owner/name", () => {
+    for (const draft of [
+      hookDraft("octo-org/octo-repo", ""),
+      hookDraft("", "push"),
+      hookDraft("octo-repo", "push"),
+      hookDraft("octo-org/octo-repo", "*"),
+    ]) {
+      expect(triggerDraftProblems(draft).hook).not.toBeNull();
+      expect(triggerDraftReady(draft)).toBe(false);
+    }
+  });
+
+  it("opens a Trigger with its repo and events, which an edit never sends", () => {
+    const draft = triggerDraftOf(hooked);
+
+    expect(draft).toMatchObject({
+      repo: "octo-org/octo-repo",
+      events: "workflow_run, check_suite",
+    });
+    expect(triggerDraftProblems(draft, hooked).hook).toBeNull();
+    expect(triggerPatch(hooked, { ...draft, repo: "other/repo", name: "CI broke" })).toEqual({
+      name: "CI broke",
+    });
+    expect(triggerSourceWords(hooked)).toBe("Webhook · github · octo-org/octo-repo");
+  });
+
+  it("says where the hook is on the row: made, being made, or why GitHub refused it", () => {
+    const repo = "octo-org/octo-repo";
+
+    expect(githubHookWords({ repo, state: "ready" })).toBe(
+      "GitHub hook on octo-org/octo-repo: made",
+    );
+    expect(githubHookWords({ repo, state: "pending" })).toBe(
+      "GitHub hook on octo-org/octo-repo: not made yet, tried again soon",
+    );
+    expect(
+      githubHookWords({
+        repo,
+        state: "failed",
+        problem: { code: "refused", message: "GitHub refused to make the webhook" },
+      }),
+    ).toBe("GitHub hook on octo-org/octo-repo failed: GitHub refused to make the webhook");
   });
 });
 

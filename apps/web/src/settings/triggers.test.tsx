@@ -32,7 +32,7 @@ import {
   triggerNoticeAtom,
   triggersAtom,
 } from "../triggers-state.ts";
-import { emptyTriggerDraft, triggerDraftOf, withSource } from "../triggers.ts";
+import { emptyTriggerDraft, type TriggerDraft, triggerDraftOf, withSource } from "../triggers.ts";
 import { TriggersSection } from "./triggers.tsx";
 
 const environment = (id: string, name: string): EnvironmentRecord => ({
@@ -414,6 +414,79 @@ describe("the Triggers section", () => {
 
       expect(markup.match(/data-day="2025-01-05"/g)).toHaveLength(1);
     }),
+  );
+
+  it.effect("shows a GitHub-managed hook's repo, events and why GitHub refused it on its row", () =>
+    Effect.gen(function* () {
+      const hooked: TriggerOverview = {
+        definition: {
+          ...WEBHOOK_TRIGGER,
+          source: {
+            type: "webhook",
+            format: "github",
+            repo: "octo-org/octo-repo",
+            events: ["workflow_run", "check_suite"],
+          },
+        },
+        lastFire: null,
+        reached: true,
+        github: {
+          repo: "octo-org/octo-repo",
+          state: "failed",
+          problem: { code: "permission", message: "Accept Webhooks: write on octo-org" },
+        },
+      };
+
+      const row = rowOf(
+        yield* render("work", undefined, { listTriggers: () => Effect.succeed([hooked]) }),
+        "CI failed",
+      );
+
+      expect(row).toContain("Webhook · github · octo-org/octo-repo");
+      expect(row).toContain("Events: workflow_run, check_suite");
+      expect(row).toContain('data-github-hook="failed"');
+      expect(row).toContain(
+        "GitHub hook on octo-org/octo-repo failed: Accept Webhooks: write on octo-org",
+      );
+      expect(row).toContain("data-reveal");
+    }),
+  );
+
+  it.effect(
+    "asks a new github webhook for the repo and events of its hook, held while only one is typed",
+    () =>
+      Effect.gen(function* () {
+        const draft = withSource(
+          { ...emptyTriggerDraft("work", "America/Chicago"), name: "CI", message: "Look." },
+          "webhook",
+        );
+
+        const open = (typed: TriggerDraft) =>
+          render("work", (registry) => {
+            registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
+            registry.set(triggerDraftAtom("work"), typed);
+          });
+
+        const markup = yield* open({
+          ...draft,
+          repo: "octo-org/octo-repo",
+          events: "workflow_run",
+        });
+
+        expect(markup).toContain('id="trigger-repo-work"');
+        expect(markup).toContain('id="trigger-events-work"');
+        expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+
+        const half = yield* open({ ...draft, repo: "octo-org/octo-repo" });
+
+        expect(half).toContain("A GitHub-managed hook lists the events GitHub sends it");
+        expect(half).toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+
+        // A Standard Webhooks sender has no GitHub hook to ask for.
+        expect(yield* open({ ...draft, format: "standard" })).not.toContain(
+          'id="trigger-repo-work"',
+        );
+      }),
   );
 
   it.effect(

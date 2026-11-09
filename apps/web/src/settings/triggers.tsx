@@ -2,12 +2,14 @@
 
 // The Triggers section of the Settings page (docs/architecture/triggers.md → The owner's UI): an Environment's Triggers,
 // or at Global every Environment's under its name (its Workspace triggers listed under their Workspace, by branch), each
-// with its Schedule, or its webhook's match, last delivery and ping; its last and next Fire; Fire now (a webhook's Fire
+// with its Schedule, or its webhook's match, last delivery and ping (and a GitHub-managed hook's repo, events, and where
+// the hook is or why GitHub refused it); its last and next Fire; Fire now (a webhook's Fire
 // again), Edit, Pause or Resume, Remove behind a confirm; its fire log, with a webhook's refused and filtered deliveries
 // per day; and a webhook's Trigger URL and Signing secret, which the owner reveals, copies and replaces (New URL, New
 // signing secret). And the form that makes or edits an Environment trigger, or a Workspace trigger (made from the
 // Workspaces section's New trigger, which shows the same form): a Schedule, with its zone filled in from the browser
-// and the next 5 Fires it gives, or a webhook, with its format and its `match` rows. The owner's changes never wait for
+// and the next 5 Fires it gives, or a webhook, with its format and its `match` rows, and for a github one the repo and
+// events cloudpid makes its hook on. The owner's changes never wait for
 // Approval, and record no Agent change.
 
 import { SUPPORTED_MODELS, THINKING_LEVELS } from "@cloudpid/config";
@@ -63,6 +65,8 @@ import {
   deliveryDays,
   deliveryOutcomeWords,
   emptyTriggerDraft,
+  githubEventWords,
+  githubHookWords,
   triggerUrl,
   lastDeliveryWords,
   matchWords,
@@ -197,13 +201,20 @@ const ROTATION_WORDS = {
   },
 } as const;
 
+/** What replacing each secret of a Trigger with a GitHub-managed hook does: cloudpid gives GitHub the new one. */
+const MANAGED_ROTATION_WORDS = {
+  url: "The old URL stops working at once; cloudpid points the GitHub hook at the new one. The signing secret stays.",
+  secret:
+    "The old signing secret stops working at once; cloudpid gives the GitHub hook the new one. The URL stays.",
+} as const;
+
 /**
  * Webhook Trigger `id`'s URL and Signing secret, which the owner reveals (nothing is read until they ask), copies, and
  * replaces with **New URL** and **New signing secret** (each applies at once, behind a confirm). The two replacements
  * are there whether or not the values are shown, since a Trigger whose secrets can't be read is mended by them alone.
- * The agent never sees either.
+ * A Trigger with a GitHub-managed hook (`managed`) has GitHub given both. The agent never sees either.
  */
-const TriggerSecretsPanel = ({ id }: { id: string }) => {
+const TriggerSecretsPanel = ({ id, managed }: { id: string; managed: boolean }) => {
   const [secrets, request] = useAtom(triggerSecretsAtom(id));
   const [asking, setAsking] = useAtom(rotateAskAtom(id));
   const shown = AsyncResult.isSuccess(secrets) ? secrets.value : null;
@@ -222,8 +233,11 @@ const TriggerSecretsPanel = ({ id }: { id: string }) => {
           />
           <CopyValue key={shown.secret} label="Signing secret" value={shown.secret} />
           <p className="text-xs text-muted-foreground">
-            Paste both into the sender. Anyone with the URL can reach this trigger, but only a
-            delivery signed with the secret starts a session.
+            {managed
+              ? "GitHub's hook has both: cloudpid gave them to it, and gives it new ones when either is replaced."
+              : "Paste both into the sender."}{" "}
+            Anyone with the URL can reach this trigger, but only a delivery signed with the secret
+            starts a session.
           </p>
         </>
       )}
@@ -278,7 +292,7 @@ const TriggerSecretsPanel = ({ id }: { id: string }) => {
           aria-label={`Confirm: ${ROTATION_WORDS[asking].button}`}
           className="flex flex-col gap-2 text-xs"
         >
-          <p>{ROTATION_WORDS[asking].warning}</p>
+          <p>{managed ? MANAGED_ROTATION_WORDS[asking] : ROTATION_WORDS[asking].warning}</p>
           <div className="flex gap-2">
             <Button
               type="button"
@@ -361,6 +375,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
   const [fired, fire] = useAtom(fireTriggerAtom(definition.id));
   const again = useAtomValue(fireAgainAtom(definition.id));
   const webhook = webhookOf(definition);
+  const events = githubEventWords(definition);
   const [logOpen, setLogOpen] = useAtom(fireLogOpenAtom(definition.id));
   const setForm = useAtomSet(triggerFormAtom(scope));
   const setDraft = useAtomSet(triggerDraftAtom(scope));
@@ -398,6 +413,19 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
           </span>
           {webhook !== undefined && (
             <span className="text-xs text-muted-foreground">{matchWords(webhook.match)}</span>
+          )}
+          {events !== null && <span className="text-xs text-muted-foreground">{events}</span>}
+          {overview.github !== undefined && (
+            <span
+              data-github-hook={overview.github.state}
+              className={
+                overview.github.state === "failed"
+                  ? "text-xs text-destructive"
+                  : "text-xs text-muted-foreground"
+              }
+            >
+              {githubHookWords(overview.github)}
+            </span>
           )}
           <span className="text-xs text-muted-foreground">{lastFireWords(overview, zone)}</span>
           {overview.waiting !== undefined && (
@@ -480,7 +508,9 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
       <DialogProblem problem={settledFailureOf(paused)} />
       <DialogProblem problem={settledFailureOf(fired)} />
       <DialogProblem problem={settledFailureOf(again)} />
-      {webhook !== undefined && <TriggerSecretsPanel id={definition.id} />}
+      {webhook !== undefined && (
+        <TriggerSecretsPanel id={definition.id} managed={events !== null} />
+      )}
       <button
         type="button"
         aria-expanded={logOpen}
@@ -613,8 +643,11 @@ const MatchRowFields = ({
   </li>
 );
 
-/** What a new webhook Trigger asks beyond the rest: its format, and the `match` that filters its deliveries. */
-const WebhookFields = ({
+/**
+ * What a new github webhook Trigger may ask: the repo and events of a GitHub-managed hook, which cloudpid makes as the
+ * GitHub App. Fixed once the Trigger is made, so an edit shows them, held.
+ */
+const GitHubHookFields = ({
   draft,
   editing,
   busy,
@@ -627,6 +660,72 @@ const WebhookFields = ({
   busy: boolean;
   idOf: (field: string) => string;
   problem: string | null;
+  change: (patch: Partial<TriggerDraft>) => void;
+}) => (
+  <div className="grid gap-4 sm:grid-cols-2">
+    <Field
+      label="GitHub repo"
+      htmlFor={idOf("repo")}
+      hint={
+        editing
+          ? "Fixed once the trigger is made."
+          : "Optional: owner/name. cloudpid makes the webhook on it as the GitHub App, so you set nothing up on GitHub. The App's installation needs Webhooks: write."
+      }
+      problem={draft.repo === "" && draft.events === "" ? null : problem}
+    >
+      <Input
+        id={idOf("repo")}
+        value={draft.repo}
+        placeholder="octo-org/octo-repo"
+        spellCheck={false}
+        autoComplete="off"
+        disabled={busy || editing}
+        onChange={(event) => {
+          change({ repo: event.target.value });
+        }}
+        className="font-mono"
+      />
+    </Field>
+    <Field
+      label="GitHub events"
+      htmlFor={idOf("events")}
+      hint="With a repo: the events GitHub sends, apart by commas, such as workflow_run, issue_comment."
+    >
+      <Input
+        id={idOf("events")}
+        value={draft.events}
+        placeholder="workflow_run"
+        spellCheck={false}
+        autoComplete="off"
+        disabled={busy || editing}
+        onChange={(event) => {
+          change({ events: event.target.value });
+        }}
+        className="font-mono"
+      />
+    </Field>
+  </div>
+);
+
+/**
+ * What a new webhook Trigger asks beyond the rest: its format, a github one's GitHub-managed hook, and the `match` that
+ * filters its deliveries.
+ */
+const WebhookFields = ({
+  draft,
+  editing,
+  busy,
+  idOf,
+  problem,
+  hookProblem,
+  change,
+}: {
+  draft: TriggerDraft;
+  editing: boolean;
+  busy: boolean;
+  idOf: (field: string) => string;
+  problem: string | null;
+  hookProblem: string | null;
   change: (patch: Partial<TriggerDraft>) => void;
 }) => (
   <div className="flex flex-col gap-4">
@@ -651,6 +750,16 @@ const WebhookFields = ({
         <option value="standard">Standard Webhooks</option>
       </NativeSelect>
     </Field>
+    {draft.format === "github" && (!editing || draft.repo !== "") && (
+      <GitHubHookFields
+        draft={draft}
+        editing={editing}
+        busy={busy}
+        idOf={idOf}
+        problem={hookProblem}
+        change={change}
+      />
+    )}
     <div className="flex flex-col gap-2">
       <span className="text-sm font-medium">Match</span>
       <p className="text-xs text-muted-foreground">
@@ -823,6 +932,7 @@ export const TriggerFormView = ({
           busy={busy}
           idOf={id}
           problem={problems.match}
+          hookProblem={problems.hook}
           change={change}
         />
       )}
