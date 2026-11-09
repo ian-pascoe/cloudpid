@@ -53,6 +53,13 @@ export const MAX_CARD_CHARS = 16_000;
 export const SKILL_APPROVAL =
   "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the change is made and recorded as approved; on Decline nothing changes, and the result carries their reason. If the Skill of the name was saved again, or the folder's files changed, meanwhile, the approval does not apply and you are told to ask again.";
 
+/**
+ * What the endpoint's Skill tools say of a change to the Skills kept Global (`docs/architecture/mcp-endpoint.md` → Built so
+ * far: S3b-3): the owner approves it in cloudpid, and the call does not wait for them. The words name the owner, never a
+ * Session or the user, and only the tool the endpoint serves to follow the request.
+ */
+export const GLOBAL_SKILL_ASK = `They steer every Session that starts after, so the owner must approve the change, in cloudpid: the call does not wait for them. It answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires (7 days); follow it with approval_wait, which says whether it was approved and applied, declined, or not applied, and on Approve gives the tool's result. Asking again for the same change while one waits answers the same approval_id; at most 10 of yours may wait or be applying at once. Each Environment's Workspaces and spares serve the change from their next readying (an Environment that keeps its own Skill of the name keeps serving that one).`;
+
 /** What a Session's tool description says of the Approval of an install at Global. */
 export const INSTALL_APPROVAL =
   "The user is asked for their Approval on a card in the Session (and a notification): the call waits for the answer, with no deadline. On Approve the Skills shown are installed and recorded as approved; on Decline nothing is installed, and the result carries their reason. A Skill is installed only if it is the one the user was shown (the same folder and files, at the commit shown) and the Skill of its name was not saved again meanwhile; any other is reported, and you are told to ask again.";
