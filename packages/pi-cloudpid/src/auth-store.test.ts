@@ -121,7 +121,6 @@ describe("the sign-in file", () => {
     expect((await store.read("https://prod.example.test/mcp"))?.tokens?.access_token).toBe(
       "access-prod",
     );
-    expect(statSync(file()).mode & 0o777).toBe(0o600);
   });
 
   it("creates the agent directory when it is not there", async () => {

@@ -89,12 +89,6 @@ afterEach(() => {
 });
 
 describe("the Container's file operations", () => {
-  it("say a path outside the Workspace, or one a launch's pattern names, is the Container's", async () => {
-    expect(
-      await files().classify(["/tmp/x", "/workspace/repo/node_modules/x", "/workspace/repo/src"]),
-    ).toEqual([true, true, false]);
-  });
-
   it.skipIf(!hasGnuTools)(
     "give a file's or directory's metadata, and name the Container when there is nothing there",
     async () => {

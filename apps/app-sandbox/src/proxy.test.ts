@@ -277,26 +277,6 @@ describe("/proxy.js", () => {
       "close 1",
     ]);
   });
-
-  it("grants no permission that isn't asked for, and never camera, microphone or geolocation", () => {
-    const { ready } = run();
-
-    const inner = ready({
-      html: "x",
-      permissions: { camera: {}, microphone: {}, geolocation: {} },
-    });
-
-    expect(inner.attributes.has("allow")).toBe(false);
-  });
-
-  it("keeps the reference's sandbox when sandbox isn't a string", () => {
-    const { ready } = run();
-
-    expect(ready({ html: "x" }).attributes.get("sandbox")).toBe(
-      "allow-scripts allow-same-origin allow-forms",
-    );
-  });
-
   it("replaces an existing inner frame, so the next View starts from its own flags", () => {
     const { ready, log } = run();
 

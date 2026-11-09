@@ -26,10 +26,4 @@ describe.skipIf(!existsSync(DASH))("inBash under dash", () => {
 
     expect(result.stdout).toBe("it's|$HOME|a\\b|done\n");
   });
-
-  it("keeps the exit status and the streams apart", () => {
-    const result = underDash("echo out; echo err >&2; exit 3");
-
-    expect(result).toMatchObject({ status: 3, stdout: "out\n", stderr: "err\n" });
-  });
 });

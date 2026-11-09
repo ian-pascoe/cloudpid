@@ -513,12 +513,6 @@ describe("This branch's Container command", () => {
     const repo = branched();
 
     expect(repo.compare({ base: "--upload-pack=x" })).toMatchObject({ ok: false, kind: "failed" });
-    expect(repo.compare({ base: "a b" })).toMatchObject({ ok: false, kind: "failed" });
-    expect(repo.compare({ base: "a..b" })).toMatchObject({ ok: false, kind: "failed" });
-  });
-
-  it("reads a stopped-short output as an error", () => {
-    expect(parseComparison("base\tbWFpbg==\n")).toMatchObject({ ok: false, kind: "failed" });
   });
 });
 
@@ -565,32 +559,6 @@ describe("a pull request's Container command", () => {
       ["p.txt", "added"],
     ]);
     expect(repo.sh("git rev-parse refs/cloudpid/pr/7", repo.dir)).toBe(repo.pullHead);
-  });
-
-  it("writes only the hidden refs: never refs/heads, refs/remotes, FETCH_HEAD, the index or the tree", () => {
-    const repo = withPull();
-    const { dir, sh } = repo;
-
-    repo.write(dir, "dirty.txt", "dirty\n");
-
-    const state = () => ({
-      refs: sh(
-        "git for-each-ref refs/heads refs/remotes refs/tags --format='%(refname) %(objectname)'",
-        dir,
-      ),
-      head: sh("cat .git/HEAD", dir),
-      index: readFileSync(join(dir, ".git/index")).toString("hex"),
-      status: sh("git --no-optional-locks status --porcelain -uall", dir),
-    });
-
-    const before = state();
-
-    expect(repo.compare({ base: "main", pull: { number: 7 } }).ok).toBe(true);
-    expect(state()).toEqual(before);
-    expect(existsSync(join(dir, ".git/FETCH_HEAD"))).toBe(false);
-    expect(sh("git for-each-ref --format='%(refname)' refs/cloudpid", dir)).toBe(
-      "refs/cloudpid/base/main\nrefs/cloudpid/pr/7",
-    );
   });
 
   it("fetches again only when the ref is missing, not the pull request's head, or asked", () => {

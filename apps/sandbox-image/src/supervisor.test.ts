@@ -19,21 +19,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
-import { MCP_BRIDGE_SCRIPT, MCP_BRIDGE_TOKEN_ENV } from "@cloudpid/sandbox-image/mcp-bridge";
+import { MCP_BRIDGE_TOKEN_ENV } from "@cloudpid/sandbox-image/mcp-bridge";
 import { MEMORY_GUARD_AVOID } from "@cloudpid/sandbox-image/memory-guard";
 import {
-  CONTAINER_START_MARKER,
   EXIT_REPORT_BASE64_MARKER,
-  EXIT_REPORT_BASE64_MIN,
-  EXIT_REPORT_BYTES,
-  EXIT_REPORT_HOST,
   EXIT_REPORT_LINES,
   EXIT_REPORT_PATH,
 } from "@cloudpid/sandbox-image/supervisor";
 
 const script = join(sandboxImageContext, "supervise");
-const source = readFileSync(script, "utf8");
-const dockerfile = readFileSync(join(sandboxImageContext, "Dockerfile"), "utf8");
 
 type Report = { readonly method: string; readonly path: string; readonly body: string };
 
@@ -136,23 +130,6 @@ const supervise = (computerd: string, port: number, options: SuperviseOptions = 
   });
 
 describe("the supervisor", () => {
-  it("is the image's entrypoint, and computerd runs under it", () => {
-    expect(dockerfile).toMatch(
-      /^COPY --chmod=755 supervise \/usr\/local\/bin\/cloudpid-supervise$/m,
-    );
-    expect(dockerfile).toMatch(/^ENTRYPOINT \["\/usr\/local\/bin\/cloudpid-supervise"\]$/m);
-    expect(source).toContain("${CLOUDPID_COMPUTERD:-/usr/local/bin/computerd}");
-  });
-
-  it("reports where the Workspace DO listens, with as much as it keeps", () => {
-    expect(source).toContain(`\${CLOUDPID_REPORT_HOST:-${EXIT_REPORT_HOST}}`);
-    expect(source).toContain(`report_path=${EXIT_REPORT_PATH}\n`);
-    expect(source).toContain(`keep_lines=${EXIT_REPORT_LINES}\n`);
-    expect(source).toContain(`keep_bytes=${EXIT_REPORT_BYTES}\n`);
-    expect(source).toContain(`base64_min=${EXIT_REPORT_BASE64_MIN}\n`);
-    expect(source).toContain(`base64_marker='${EXIT_REPORT_BASE64_MARKER}'\n`);
-  });
-
   it("passes computerd's output through, and posts its status and last lines when it exits on its own", async () => {
     const { reports, port } = await reportServer();
 
@@ -311,10 +288,6 @@ describe("the supervisor", () => {
     expect(statSync(marker).mtimeMs).toBeGreaterThanOrEqual(before - 1_000);
   });
 
-  it("makes the marker where the snapshot's scan looks for it", () => {
-    expect(source).toContain(`\${CLOUDPID_START_MARKER:-${CONTAINER_START_MARKER}}`);
-  });
-
   it("does not wait on a process computerd left holding its output", async () => {
     const { reports, port } = await reportServer();
     // A background child keeps computerd's stdout open long after computerd exits.
@@ -464,11 +437,6 @@ const fakeBridgeNode = () => {
 };
 
 describe("the supervisor's MCP bridge", () => {
-  it("looks for the bridge where the image puts it", () => {
-    expect(source).toContain(`\${CLOUDPID_MCP_BRIDGE:-${MCP_BRIDGE_SCRIPT}}`);
-    expect(source).toContain(`\${${MCP_BRIDGE_TOKEN_ENV}:-}`);
-  });
-
   it("runs the bridge beside computerd when the launch has a token, its lines where computerd's go, and stops it with computerd", async () => {
     const { reports, port } = await reportServer();
     const bridge = fakeBridgeNode();

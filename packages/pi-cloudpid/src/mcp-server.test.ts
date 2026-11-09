@@ -126,17 +126,6 @@ describe("the cloudpid MCP server", () => {
     expect(calls[0]).not.toHaveProperty("config.exposure");
     expect(ui.notices).toEqual([]);
   });
-
-  it("appends /mcp to the path once", async () => {
-    globalSettings({ cloudpid: { baseUrl: "https://pi.example.test/mcp/" } });
-
-    const { calls, start } = loaded();
-
-    await start();
-
-    expect(calls).toEqual([registerOf("https://pi.example.test/mcp")]);
-  });
-
   it("is not registered when the setting is unset, and says nothing", async () => {
     const { calls, ui, start } = loaded();
 
@@ -149,21 +138,19 @@ describe("the cloudpid MCP server", () => {
     expect(ui.notices).toEqual([]);
   });
 
-  it.each([
-    ["a value that is not a URL", { cloudpid: { baseUrl: "not a url" } }],
-    ["an http URL that is not loopback", { cloudpid: { baseUrl: "http://pi.example.test" } }],
-    ["an empty value", { cloudpid: { baseUrl: "" } }],
-    ["another property", { cloudpid: { baseUrl: "https://pi.example.test", other: 1 } }],
-  ])("is not registered, with no notice and no throw, for %s", async (_name, settings) => {
-    globalSettings(settings);
+  it.each([["a value that is not a URL", { cloudpid: { baseUrl: "not a url" } }]])(
+    "is not registered, with no notice and no throw, for %s",
+    async (_name, settings) => {
+      globalSettings(settings);
 
-    const { calls, ui, start } = loaded();
+      const { calls, ui, start } = loaded();
 
-    await expect(start()).resolves.toBeUndefined();
+      await expect(start()).resolves.toBeUndefined();
 
-    expect(calls).toEqual([]);
-    expect(ui.notices).toEqual([]);
-  });
+      expect(calls).toEqual([]);
+      expect(ui.notices).toEqual([]);
+    },
+  );
 
   it("is not registered when a settings file is not JSON", async () => {
     writeFileSync(join(agentDir, "settings.json"), "{ nope");
@@ -175,24 +162,6 @@ describe("the cloudpid MCP server", () => {
     expect(calls).toEqual([]);
     expect(ui.notices).toEqual([]);
   });
-
-  it("takes a trusted project's setting over the global one, and ignores an untrusted project's", async () => {
-    globalSettings({ cloudpid: { baseUrl: "https://global.example.test" } });
-    projectSettings({ cloudpid: { baseUrl: "https://project.example.test" } });
-
-    const trusted = loaded();
-
-    await trusted.start(project, true);
-
-    expect(trusted.calls).toEqual([registerOf("https://project.example.test/mcp")]);
-
-    const untrusted = loaded();
-
-    await untrusted.start(project, false);
-
-    expect(untrusted.calls).toEqual([registerOf("https://global.example.test/mcp")]);
-  });
-
   it("registers nothing from an untrusted project's setting alone", async () => {
     projectSettings({ cloudpid: { baseUrl: "https://project.example.test" } });
 

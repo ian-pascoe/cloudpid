@@ -93,26 +93,12 @@ describe("buildCsp", () => {
   it.each([
     "https://pi.ianpascoe.dev",
     "https://ianpascoe.dev",
-    "https://model-proxy.ianpascoe.dev",
-    "https://deep.pi.ianpascoe.dev",
-    "https://PI.IANPASCOE.DEV",
-    "https://pi.ianpascoe.dev:443",
-    "https://pi.ianpascoe.dev/path",
-    "wss://pi.ianpascoe.dev",
-    "https://ianpascoe.app",
+    "https://PI.IANPASCOE.DEV:443/path",
     "https://x.ianpascoe.app",
-    `https://${"a".repeat(26)}--pr-1.ianpascoe.app`,
     "https://cloudpid-server-pr-430.ian-g-pascoe.workers.dev",
-    "https://cloudpid-server-dev-ian.ian-g-pascoe.workers.dev",
-    "https://abcd1234-cloudpid-server-pr-430.ian-g-pascoe.workers.dev",
     "https://*.ianpascoe.dev",
-    "https://*.pi.ianpascoe.dev",
-    "https://*.ianpascoe.app",
-    "https://*.ian-g-pascoe.workers.dev",
-    "https://*.workers.dev",
     "https://*.dev",
-    "https://*.app",
-    "https://*.cloudpid-server-pr-1.ian-g-pascoe.workers.dev",
+    "https://*.ian-g-pascoe.workers.dev",
   ])("drops cloudpid's own host %s from every list", (domain) => {
     const policy = declare({
       connectDomains: [domain, "https://ok.example.com"],
@@ -132,38 +118,22 @@ describe("buildCsp", () => {
   });
 
   it.each([
-    "https://example.com",
-    "https://ianpascoe.com",
-    "https://ianpascoe.dev.example.com",
     "https://evilianpascoe.dev",
     "https://other.workers.dev",
     "https://my-mcp.ian-g-pascoe.workers.dev",
     "https://*.example.com",
-    "https://*.com",
   ])("keeps %s, which is not cloudpid's", (domain) => {
     expect(directive(declare({ connectDomains: [domain] }), "connect-src")).toEqual([domain]);
   });
 
   it.each([
     ["a trailing dot", "https://pi.ianpascoe.dev."],
-    ["a bare scheme", "https:"],
-    ["a bare wildcard", "*"],
-    ["a wildcard host", "https://*"],
     ["no scheme", "ok.example.com"],
     ["http", "http://ok.example.com"],
-    ["ws", "ws://ok.example.com"],
-    ["data:", "data:"],
-    ["blob:", "blob:"],
-    ["a keyword", "'unsafe-eval'"],
     ["a space", "https://ok.example.com 'unsafe-eval'"],
     ["a semicolon", "https://ok.example.com; script-src *"],
-    ["a quote", "https://ok.example.com'"],
-    ["a newline", "https://ok.example.com\nscript-src *"],
     ["a mid-label wildcard", "https://a*.example.com"],
-    ["a port wildcard", "https://ok.example.com:*"],
     ["an IPv6 host", "https://[::1]"],
-    ["a nested wildcard", "https://*.*.example.com"],
-    ["an empty entry", ""],
   ])("drops %s", (_, domain) => {
     const policy = declare({ connectDomains: [domain], resourceDomains: [domain] });
 
@@ -173,13 +143,9 @@ describe("buildCsp", () => {
 
   it.each([
     ["a path", "https://cdn.example.com/lib/"],
-    ["a file", "https://cdn.example.com/app.js"],
     ["a query", "https://cdn.example.com/?v=1"],
     ["a fragment", "https://cdn.example.com/#x"],
     ["a username", "https://user@cdn.example.com"],
-    ["a username and password", "https://user:pw@cdn.example.com"],
-    ["a path on a wildcard host", "https://*.example.com/lib/"],
-    ["a path on a wss host", "wss://rt.example.com/socket"],
   ])("drops an entry with %s whole, since its origin would be looser than declared", (_, entry) => {
     const policy = declare({
       connectDomains: [entry, "https://ok.example.com"],

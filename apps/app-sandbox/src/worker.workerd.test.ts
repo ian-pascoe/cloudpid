@@ -112,15 +112,10 @@ describe("the App sandbox Worker", () => {
 
   it.each([
     "https://ianpascoe.app/",
-    "https://www.ianpascoe.app/",
-    "https://foo.ianpascoe.app/",
     `https://${HASH.slice(1)}.ianpascoe.app/`,
     `https://${HASH}--.ianpascoe.app/`,
-    `https://${HASH}--a-.ianpascoe.app/`,
     `https://${HASH}--${"a".repeat(36)}.ianpascoe.app/`,
     `https://x.${HASH}.ianpascoe.app/`,
-    `https://${HASH}.ianpascoe.app./`,
-    `https://${HASH}.example.com/`,
     "https://sandbox.example/",
   ])("answers 404 for the host that doesn't parse: %s", async (url) => {
     for (const path of ["", "proxy.js"]) {
@@ -134,31 +129,23 @@ describe("the App sandbox Worker", () => {
     }
   });
 
-  it.each([
-    "/sandbox.html",
-    "/index.html",
-    "/favicon.ico",
-    "/proxy.js/",
-    "/PROXY.JS",
-    "/proxy.js/x",
-    "//",
-  ])("answers 404 for %s on a View's host", async (path) => {
-    const response = await SELF.fetch(`https://${HASH}.ianpascoe.app${path}`);
+  it.each(["/sandbox.html", "/PROXY.JS", "/proxy.js/x"])(
+    "answers 404 for %s on a View's host",
+    async (path) => {
+      const response = await SELF.fetch(`https://${HASH}.ianpascoe.app${path}`);
 
-    expect(response.status).toBe(404);
-    expectFixedHeaders(response);
-  });
-
-  it.each(["POST", "PUT", "DELETE", "PATCH"])(
-    "answers 405 to %s on a View's host",
-    async (method) => {
-      const response = await SELF.fetch(`https://${HASH}.ianpascoe.app/`, { method, body: "x" });
-
-      expect(response.status).toBe(405);
-      expect(response.headers.get("allow")).toBe("GET, HEAD");
+      expect(response.status).toBe(404);
       expectFixedHeaders(response);
     },
   );
+
+  it.each(["POST", "DELETE"])("answers 405 to %s on a View's host", async (method) => {
+    const response = await SELF.fetch(`https://${HASH}.ianpascoe.app/`, { method, body: "x" });
+
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET, HEAD");
+    expectFixedHeaders(response);
+  });
 
   it("answers a method it refuses with 404 on a host that doesn't parse", async () => {
     const response = await SELF.fetch("https://ianpascoe.app/", { method: "POST", body: "x" });

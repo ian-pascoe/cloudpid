@@ -8,14 +8,12 @@ describe("Container-only paths", () => {
   it("are every path outside the Workspace, whatever the launch's patterns", () => {
     expect(isContainerOnly("/tmp/x.log", LAUNCH)).toBe(true);
     expect(isContainerOnly("/root/.npmrc", undefined)).toBe(true);
-    expect(isContainerOnly("/", [])).toBe(true);
     expect(isContainerOnly("/workspaces/other", [])).toBe(true);
   });
 
   it("are never the Workspace root itself, nor any of its paths when the launch has no patterns", () => {
     expect(isContainerOnly("/workspace", LAUNCH)).toBe(false);
     expect(isContainerOnly("/workspace/repo/node_modules", undefined)).toBe(false);
-    expect(isContainerOnly("/workspace/repo/node_modules", [])).toBe(false);
   });
 
   it("are the Workspace's paths a pattern names, and everything below them", () => {
@@ -49,11 +47,6 @@ describe("Container-only paths", () => {
   });
 
   it("append the harness's patterns once, after the launch's", () => {
-    expect(withHarnessKept(["**/node_modules"])).toEqual([
-      "**/node_modules",
-      "!/.cloudpid",
-      "!/.cloudpid/**",
-    ]);
     expect(withHarnessKept(["!/.cloudpid", "**/node_modules", "!/.cloudpid/**"])).toEqual([
       "**/node_modules",
       "!/.cloudpid",

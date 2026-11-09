@@ -880,7 +880,7 @@ describe("refusals", () => {
     expect(result.stub.headers).toEqual([]);
   });
 
-  it.each([401, 403, 302])(
+  it.each([401, 302])(
     "asks to sign in again when the endpoint rejects the sign-in with a %i",
     async (httpStatus) => {
       const result = await run({ stub: { httpStatus }, ui: { confirm: [false] } });

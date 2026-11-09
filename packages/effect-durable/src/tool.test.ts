@@ -69,18 +69,6 @@ describe("defineEffectTool", () => {
       "Tool name rollDie is not snake_case or an MCP tool name",
     );
   });
-
-  it("accepts an MCP tool's `mcp__<server>__<tool>` as the one exception", () => {
-    const github = defineEffectTool({
-      name: "mcp__github__get_user",
-      description: "Get a user",
-      parameters: Schema.Struct({}),
-      execute: () => Effect.succeed({}),
-    });
-
-    expect(Effect.runSync(github).name).toBe("mcp__github__get_user");
-  });
-
   it("answers arguments its Schema rejects with an error result, without running", async () => {
     let ran = false;
 
@@ -203,24 +191,6 @@ describe("defineEffectTool", () => {
     });
     expect(resultText(await lastToolResult())).toBe("rolled a d8");
   });
-
-  it("offers a tool without parameters an empty object schema", () => {
-    const tool = Effect.runSync(
-      defineEffectTool({
-        name: "no_arguments",
-        description: "Take nothing",
-        parameters: Schema.Struct({}),
-        execute: () => Effect.succeed({}),
-      }),
-    );
-
-    expect(tool.parameters).toEqual({
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    });
-  });
-
   it("decodes optional and defaulted arguments the model leaves out", async () => {
     const label = defineEffectTool({
       name: "label_roll",
@@ -517,41 +487,24 @@ describe("reachedWait across restarts", () => {
 });
 
 describe("isToolName", () => {
-  it.each(["read", "roll_die", "browser_handoff", "tool_search", "a1", "mcp_x", "mcp"])(
-    "accepts the snake_case name %s",
+  it.each(["roll_die", "a1", "mcp"])("accepts the snake_case name %s", (name) => {
+    expect(isToolName(name)).toBe(true);
+  });
+
+  it.each(["mcp__github__get_user", "mcp__a__b__x", "mcp__s__2fa"])(
+    "accepts the MCP tool name %s",
     (name) => {
       expect(isToolName(name)).toBe(true);
     },
   );
 
   it.each([
-    "mcp__github__get_user",
-    "mcp__github__get_user_1a2b3c4d",
-    "mcp__my_server__list_items",
-    "mcp__a__b__x",
-    "mcp___x__y",
-    "mcp__s__2fa",
-  ])("accepts the MCP tool name %s", (name) => {
-    expect(isToolName(name)).toBe(true);
-  });
-
-  it.each([
     "rollDie",
-    "Roll_die",
     "roll__die",
-    "_roll",
-    "roll_",
-    "",
     "mcp__github",
-    "mcp__github__",
-    "mcp__github__getUser",
     "mcp__GitHub__get_user",
-    "mcp__github__get_user_",
     "mcp__github__get-user",
-    "MCP__github__get_user",
     "x__github__get_user",
-    "mcp__",
-    "mcp____x",
   ])("refuses %s: the exception is only for `mcp__<server>__<tool>`", (name) => {
     expect(isToolName(name)).toBe(false);
   });

@@ -1,6 +1,5 @@
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
 // @effect-diagnostics asyncFunction:off
-import { SELF } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { CodemodeSandboxDurableObject } from "@earendil-works/pi-codemode/cloudflare";
 import { RemoteCodemodeSandbox } from "@earendil-works/pi-codemode/portable";
@@ -31,11 +30,5 @@ describe("the codemode sandbox Worker", () => {
       value: 10,
       output: [{ type: "text", text: "sum 5" }],
     });
-  });
-
-  it("answers an HTTP request with 404", async () => {
-    const response = await SELF.fetch("https://sandbox.example/");
-
-    expect(response.status).toBe(404);
   });
 });

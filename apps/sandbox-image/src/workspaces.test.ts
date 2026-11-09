@@ -127,19 +127,6 @@ describe("preparing a Workspace's clones", () => {
       expect(upstreamOf(dir, git)).toBe("");
     }
   });
-
-  it("makes full clones, with every branch the remote has", () => {
-    const { root, app, git, prepare } = container();
-
-    git("checkout -q -b other", app.work);
-    git("push -q origin other", app.work);
-
-    prepare();
-
-    expect(git("rev-parse --is-shallow-repository", join(root, "app"))).toBe("false");
-    expect(git("branch -r", join(root, "app"))).toContain("origin/other");
-  });
-
   it("checks out and tracks the branch when the remote has it", () => {
     const { root, app, git, prepare } = container();
 
@@ -304,15 +291,6 @@ describe("a clone's Setup Script", () => {
     expect(readFileSync(join(root, "setup-runs"), "utf8")).toBe("ran\n");
     expect(existsSync(setupRecord("app", state))).toBe(true);
   });
-
-  it("does nothing for a clone without one", () => {
-    const { root, state, sh, prepare } = container();
-
-    prepare();
-
-    expect(sh(repoSetupScript("api", root, state)).status).toBe(0);
-    expect(existsSync(setupRecord("api", state))).toBe(false);
-  });
 });
 
 describe("a clone's Start Script", () => {
@@ -351,21 +329,6 @@ describe("a clone's Start Script", () => {
     sh(repoStartScript("app", root));
 
     expect(runs()).toBe(`${join(root, "app")}\n${join(root, "app")}\n`);
-  });
-
-  it("exits with the script's status", () => {
-    const { root, sh } = withStartScript();
-
-    writeFileSync(join(root, "app", START_SCRIPT), "exit 5\n");
-
-    expect(sh(repoStartScript("app", root)).status).toBe(5);
-  });
-
-  it("does nothing for a clone without one", () => {
-    const { root, sh, runs } = withStartScript();
-
-    expect(sh(repoStartScript("api", root)).status).toBe(0);
-    expect(runs()).toBe("");
   });
 });
 

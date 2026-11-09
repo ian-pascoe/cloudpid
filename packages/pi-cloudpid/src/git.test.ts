@@ -60,12 +60,10 @@ const makeChanges = () => {
 
 describe("running git", () => {
   it("fails as GitMissing when git cannot be started", async () => {
-    await expect(gitIn(join(checkout.directory, "gone"))(["status"])).rejects.toBeInstanceOf(
-      GitMissing,
-    );
-    await expect(gitIn(join(checkout.directory, "gone"))(["status"])).rejects.toThrow(
-      /it is not installed, or not on PATH/,
-    );
+    const missing = gitIn(join(checkout.directory, "gone"))(["status"]);
+
+    await expect(missing).rejects.toBeInstanceOf(GitMissing);
+    await expect(missing).rejects.toThrow(/it is not installed, or not on PATH/);
   });
 
   it("has git's own answer for a failed command", async () => {

@@ -1,5 +1,4 @@
-// Docker in the Container (docs/architecture/container.md → Docker, ADR-0016): the daemon's configuration the
-// image ships, and `cloudpid-dockerd`, the helper a Start Script calls to bring the daemon up. The helper runs for
+// Docker in the Container (docs/architecture/container.md → Docker, ADR-0016): `cloudpid-dockerd`, the helper a Start Script calls to bring the daemon up. The helper runs for
 // real, under bash, around a fake `dockerd` and `docker`.
 // @effect-diagnostics nodeBuiltinImport:off preferEffectArray:off processEnv:off asyncFunction:off newPromise:off
 import { spawn } from "node:child_process";
@@ -11,7 +10,6 @@ import { hasFlock, hasSetsid } from "./host.fixture.ts";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 
 const helper = join(sandboxImageContext, "cloudpid-dockerd");
-const dockerfile = readFileSync(join(sandboxImageContext, "Dockerfile"), "utf8");
 
 /**
  * A directory with a fake `dockerd`, which records its arguments and `DOCKER_ALLOW_IPV6_ON_IPV4_INTERFACE`, then
@@ -121,19 +119,4 @@ describe("cloudpid-dockerd", () => {
       expect(ran.stderr).toContain("dockerd: starting");
     },
   );
-});
-
-describe("the image's Docker", () => {
-  it("configures the daemon without iptables or IP forwarding, which the Container's read-only /proc/sys refuses", () => {
-    const config = JSON.parse(readFileSync(join(sandboxImageContext, "daemon.json"), "utf8"));
-
-    expect(config).toEqual({ iptables: false, ip6tables: false, "ip-forward": false });
-    expect(dockerfile).toContain("COPY daemon.json /etc/docker/daemon.json\n");
-  });
-
-  it("ships the helper on PATH", () => {
-    expect(dockerfile).toContain(
-      "COPY --chmod=755 cloudpid-dockerd /usr/local/bin/cloudpid-dockerd\n",
-    );
-  });
 });

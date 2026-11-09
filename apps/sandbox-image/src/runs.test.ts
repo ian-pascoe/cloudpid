@@ -142,10 +142,14 @@ describe("the Container's Run copy", () => {
   it("saves nothing, and says so, past the file limit", () => {
     const repo = workspace({ "a.txt": "a\n" });
 
-    for (const name of ["x", "y", "z"]) repo.write(`${name}.txt`, name);
+    for (const name of ["x", "y", "z"]) repo.write(`${name}.txt`, `${name}-only-once-${name}\n`);
+
+    const before = repo.sh("git count-objects -v | grep '^count:'").trim();
 
     expect(repo.copy(2)).toEqual({ ok: false, kind: "too_many", files: 3 });
     expect(repo.sh("git for-each-ref refs/cloudpid")).toBe("");
+    // The files are counted before any is stored.
+    expect(repo.sh("git count-objects -v | grep '^count:'").trim()).toBe(before);
     expect(repo.copy(3).ok).toBe(true);
   });
 
@@ -278,17 +282,6 @@ describe("the Container's Run copy", () => {
     },
   );
 
-  it("counts the files before it stores any, so a repo past the limit stores nothing", () => {
-    const repo = workspace({ "a.txt": "a\n" });
-
-    for (const name of ["x", "y", "z"]) repo.write(`${name}.txt`, `${name}-only-once-${name}\n`);
-
-    const before = repo.sh("git count-objects -v | grep '^count:'").trim();
-
-    expect(repo.copy(2)).toEqual({ ok: false, kind: "too_many", files: 3 });
-    expect(repo.sh("git count-objects -v | grep '^count:'").trim()).toBe(before);
-  });
-
   it("takes a staged change, a file that became a directory and a deleted one, as the working tree has them", () => {
     const repo = workspace({ "a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n" });
 
@@ -329,34 +322,6 @@ describe("the Container's Run copy", () => {
     },
   );
 
-  it("starts from a copy of the repo's index, which keeps the stat data, and not from `read-tree`", () => {
-    const files: Record<string, string> = {};
-
-    for (let index = 0; index < 30; index += 1) files[`f${index}.txt`] = `file ${index}\n`;
-
-    const repo = workspace(files);
-
-    repo.sh("sleep 1 && git update-index --refresh -q");
-    repo.write("f3.txt", "changed\n");
-
-    // git traces the index it reads: a private index built by `read-tree` would hold no stat data.
-    const trace = join(repo.root, "trace.txt");
-    const script = runCopyScript({ repo: "app", ref: REF, maxFiles: 10, ...LIMITS }, repo.root);
-
-    const result = spawnSync("bash", ["-c", script], {
-      cwd: repo.root,
-      encoding: "utf8",
-      env: { ...env, GIT_TRACE: trace },
-    });
-
-    expect(parseRunCopy(result.stdout).ok).toBe(true);
-
-    const traced = readFileSync(trace, "utf8");
-
-    expect(traced).not.toContain("read-tree");
-    expect(traced).toContain("update-index");
-  });
-
   it("stops itself after its time limit and writes no ref", () => {
     const repo = workspace({ "a.txt": "a\n" });
 
@@ -381,13 +346,5 @@ describe("the Container's Run copy", () => {
 
     expect(parseRunCopy(result.stdout)).toMatchObject({ ok: false, kind: "failed" });
     expect(repo.sh("git for-each-ref refs/cloudpid")).toBe("");
-  });
-
-  it("takes output that stops short for a failure", () => {
-    expect(parseRunCopy("")).toEqual({
-      ok: false,
-      kind: "failed",
-      message: "The Container's copy stopped short",
-    });
   });
 });

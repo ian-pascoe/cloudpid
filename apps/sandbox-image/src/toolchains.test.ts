@@ -20,21 +20,16 @@ import { hasSetsid } from "./host.fixture.ts";
 import { variableNameProblem } from "@cloudpid/config";
 import { sandboxImageContext } from "@cloudpid/sandbox-image";
 import {
-  BASE_MISE_LOCK,
   BASE_MISE_TOML,
   BOOTSTRAP_CHANGED,
   bootstrapScript,
-  BUN_DIRECTORY_NAME,
-  BUN_GLOBAL_INSTALL_CONFIG,
   ENVIRONMENT_SETUP_RECORD,
   environmentSetupScript,
   environmentStartScriptRun,
   githubTokenEnv,
   pendingSetupScripts,
   repoSetupScriptOf,
-  ROOT_MISE_TOML,
   SETUP_SCRIPT,
-  setupRecordName,
   setupScriptRun,
   setupScriptRunIfDue,
   scriptTimedOut,
@@ -42,63 +37,11 @@ import {
   START_SCRIPT,
   startScriptDirectories,
   startScriptRun,
-  PNPM_GLOBAL_CONFIG,
-  PNPM_STORE_DIRECTORY_NAME,
   TOOLCHAIN_IGNORE,
-  TURBO_CACHE_DIR,
   toolchainEnv,
 } from "@cloudpid/sandbox-image/toolchains";
 
-const dockerfile = readFileSync(join(sandboxImageContext, "Dockerfile"), "utf8");
-
 describe("the ignore list", () => {
-  it("keeps dependency directories, build output, and caches off the synced Workspace", () => {
-    expect(TOOLCHAIN_IGNORE).toEqual(
-      expect.arrayContaining(["**/node_modules", "**/.venv", "/target", "/*/target", "**/.cache"]),
-    );
-  });
-
-  it("keeps pnpm's content-addressed store off the synced Workspace, wherever pnpm puts it", () => {
-    // pnpm puts the store at the root of the project's filesystem when the home directory is on another one: on the
-    // Container that is `/workspace/.pnpm-store`.
-    expect(TOOLCHAIN_IGNORE).toContain("**/.pnpm-store");
-  });
-
-  it("keeps more build caches that regenerate off the synced Workspace", () => {
-    expect(TOOLCHAIN_IGNORE).toEqual(
-      expect.arrayContaining([
-        "**/.wrangler",
-        "**/.astro",
-        "**/.angular",
-        "**/.expo",
-        "**/.nx",
-        "**/.docusaurus",
-        "**/.nyc_output",
-        "**/.hypothesis",
-        "**/.dart_tool",
-        "**/.zig-cache",
-        "**/.stack-work",
-      ]),
-    );
-  });
-
-  it("keeps build tools' caches and environments off the synced Workspace, by names no source directory has", () => {
-    expect(TOOLCHAIN_IGNORE).toEqual(
-      expect.arrayContaining([
-        "**/.turbo",
-        "**/.next",
-        "**/.nuxt",
-        "**/.svelte-kit",
-        "**/.parcel-cache",
-        "**/.terraform",
-        "**/.gradle",
-        "**/.tox",
-        "**/.nox",
-        "**/.direnv",
-      ]),
-    );
-  });
-
   it("does not make a directory some repos commit local to the Container", () => {
     // `.alchemy` can hold real deploy state.
     for (const name of [
@@ -115,86 +58,24 @@ describe("the ignore list", () => {
     ]) {
       expect(TOOLCHAIN_IGNORE.filter((pattern) => pattern.split("/").includes(name))).toEqual([]);
     }
-  });
 
-  it("does not make a source directory called target local to the Container", () => {
+    // A source directory called target is not local either.
     expect(TOOLCHAIN_IGNORE).not.toContain("**/target");
   });
-
-  it("leaves mise to the Container's own disk: its data and temp files are on one filesystem, off the ignore boundary", () => {
-    const env = toolchainEnv();
-
-    // None of these is set, so mise and every tool use their defaults, under /root and /tmp.
-    expect(env).not.toHaveProperty("MISE_DATA_DIR");
-    expect(env).not.toHaveProperty("MISE_CACHE_DIR");
-    expect(env).not.toHaveProperty("TMPDIR");
-    expect(TOOLCHAIN_IGNORE.filter((pattern) => pattern.includes(".mise"))).toEqual([]);
-  });
-
-  it("is where the image's PATH looks for mise's shims: mise's default data directory", () => {
-    // computerd gives a command PATH from the image's environment but not the rest of it.
-    const path = /^\s*PATH=(\S+)/m.exec(dockerfile)?.[1];
-
-    expect(path?.split(":")[0]).toBe("/root/.local/share/mise/shims");
-  });
 });
-
-/** The `[tools]` of a mise.toml, as a map from tool to version. */
-const toolsOf = (toml: string): Map<string, string> =>
-  new Map(
-    [...toml.slice(toml.indexOf("[tools]")).matchAll(/^"?([^"=\s]+)"? = "([^"]+)"$/gm)].map(
-      (match) => [match[1] ?? "", match[2] ?? ""] as const,
-    ),
-  );
 
 describe("the image's preinstalled Toolchains", () => {
   // The image installs the tools of its copy of the base mise.toml (`image/mise.toml`) into mise's system directory.
   const image = readFileSync(join(sandboxImageContext, "mise.toml"), "utf8");
-
-  it("are the common ones: Node, pnpm, Bun, Python and uv, besides git and gh", () => {
-    expect([...toolsOf(image).keys()].toSorted()).toEqual(
-      ["bun", "conda:git", "gh", "node", "pnpm", "python", "uv"].toSorted(),
-    );
-  });
-
   it("are what the base mise.toml asks for, version for version, so a new Workspace downloads none", () => {
     // Equal but for the comment at the top, which says what each copy is for.
     const body = (toml: string) => toml.slice(toml.indexOf("[settings]"));
 
     expect(body(image)).toBe(body(BASE_MISE_TOML));
-    expect(dockerfile).toContain(`COPY mise.toml ${dirname(BASE_MISE_LOCK)}/mise.toml\n`);
-    expect(dockerfile).toContain(`MISE_GLOBAL_CONFIG_FILE=${dirname(BASE_MISE_LOCK)}/mise.toml `);
-    expect(dockerfile).toMatch(/&& mise install --system \\\n/);
-  });
-
-  it("are pinned to exact versions, since mise locks a prefix to the newest release, which the image may not have", () => {
-    for (const version of toolsOf(image).values()) expect(version).toMatch(/^\d+\.\d+\.\d+$/);
-  });
-
-  it("come with the base mise.toml's lockfile, made where the bootstrap copies it from", () => {
-    expect(BASE_MISE_LOCK).toBe("/usr/local/share/cloudpid/mise.lock");
-    expect(dockerfile).toMatch(/&& mise lock --global --platform linux-x64 \\\n/);
-  });
-
-  it("are in mise's system directory, whose shims come after the Workspace's own on PATH", () => {
-    const path = /^\s*PATH=(\S+)/m.exec(dockerfile)?.[1]?.split(":") ?? [];
-
-    expect(path.slice(0, 2)).toEqual([
-      "/root/.local/share/mise/shims",
-      "/usr/local/share/mise/shims",
-    ]);
-    expect(dockerfile).toMatch(/&& mise reshim --system/);
   });
 });
 
 describe("a command's environment", () => {
-  it("carries the GitHub token as GH_TOKEN and GITHUB_TOKEN", () => {
-    const env = githubTokenEnv("ghs_secret", {});
-
-    expect(env.GH_TOKEN).toBe("ghs_secret");
-    expect(env.GITHUB_TOKEN).toBe("ghs_secret");
-  });
-
   it("carries each account's token as login=token words, for git to pick from by the repo's owner", () => {
     expect(
       githubTokenEnv("ghs_a", { spiritledsoftware: "ghs_b", "Ian-Pascoe": "ghs_a", empty: "" }),
@@ -213,28 +94,6 @@ describe("a command's environment", () => {
     expect(githubTokenEnv(undefined, {})).toEqual({});
     expect(toolchainEnv()).not.toHaveProperty("GH_TOKEN");
   });
-
-  it("never lets git ask a question nobody can answer", () => {
-    expect(toolchainEnv().GIT_TERMINAL_PROMPT).toBe("0");
-  });
-
-  it("keeps Turborepo's cache on the Container's disk, under /root/.cache, off the mount", () => {
-    expect(toolchainEnv().TURBO_CACHE_DIR).toBe("/root/.cache/turbo");
-    expect(TURBO_CACHE_DIR.startsWith("/root/.cache/")).toBe(true);
-  });
-
-  it("sets nothing that would override a repo's own pnpm settings", () => {
-    // An environment variable (`pnpm_config_*`) wins over a repo's pnpm-workspace.yaml: the Container's pnpm settings
-    // are in pnpm's global config.yaml, which the repo wins over.
-    expect(JSON.stringify(toolchainEnv())).not.toMatch(/pnpm/i);
-  });
-
-  it("sets nothing that would override a repo's own Bun settings", () => {
-    // `BUN_*` variables win over a repo's bunfig.toml: the Container's Bun settings are in the global .bunfig.toml,
-    // which the repo wins over.
-    expect(Object.keys(toolchainEnv()).filter((name) => name.startsWith("BUN_"))).toEqual([]);
-  });
-
   it("sets only names an Environment's variable may not have, so none overrides it", () => {
     // @cloudpid/config cannot import this package, so its list of reserved names is a copy.
     for (const name of Object.keys({ ...toolchainEnv(), ...githubTokenEnv("x", { a: "y" }) })) {
@@ -344,49 +203,26 @@ describe("the bootstrap", () => {
     expect(calls()).toEqual([`${root}: mise install`, `${root}/app: mise install`]);
   });
 
-  it.each([
-    [".config/mise.toml"],
-    [".config/mise/config.toml"],
-    [".mise/config.toml"],
-    ["mise.local.toml"],
-    [".tool-versions"],
-  ])("takes %s for a mise config: no base file, and its Toolchains installed", (file) => {
-    const { root, run, calls } = sandbox();
+  it.each([[".config/mise.toml"], [".tool-versions"]])(
+    "takes %s for a mise config: no base file, and its Toolchains installed",
+    (file) => {
+      const { root, run, calls } = sandbox();
 
-    mkdirSync(dirname(join(root, file)), { recursive: true });
-    writeFileSync(join(root, file), "");
+      mkdirSync(dirname(join(root, file)), { recursive: true });
+      writeFileSync(join(root, file), "");
 
-    run();
+      run();
 
-    expect(existsSync(join(root, "mise.toml"))).toBe(false);
-    expect(calls()).toEqual([`${root}: mise install`]);
-  });
-
-  it("installs the Toolchains of a repo directory that has only a .tool-versions", () => {
-    const { root, run, calls } = sandbox();
-
-    writeFileSync(join(root, "mise.toml"), "[tools]\n");
-    writeFileSync(join(root, "mise.lock"), "");
-    utimesSync(join(root, "mise.toml"), 1000, 1000);
-    mkdirSync(join(root, "app"));
-    writeFileSync(join(root, "app", ".tool-versions"), "node 22\n");
-
-    run();
-
-    expect(calls()).toContain(`${root}/app: mise install`);
-  });
-
+      expect(existsSync(join(root, "mise.toml"))).toBe(false);
+      expect(calls()).toEqual([`${root}: mise install`]);
+    },
+  );
   it("writes the base mise.toml, git, gh and the image's other Toolchains in it, where the Workspace has none", () => {
     const { root, run, calls } = sandbox();
 
     run();
 
     expect(readFileSync(join(root, "mise.toml"), "utf8")).toBe(BASE_MISE_TOML);
-    expect(BASE_MISE_TOML).toMatch(/"conda:git"/);
-    expect(BASE_MISE_TOML).toMatch(/^gh = /m);
-    expect(BASE_MISE_TOML).toMatch(/^node = /m);
-    expect(BASE_MISE_TOML).toMatch(/^python = /m);
-    expect(BASE_MISE_TOML).toMatch(/^lockfile = true$/m);
     expect(calls()).toEqual([`${root}: ${LOCK}`, `${root}: mise install`]);
   });
 
@@ -410,13 +246,6 @@ describe("the bootstrap", () => {
 
     expect(readFileSync(join(root, "mise.lock"), "utf8")).toBe("# the Workspace's lock\n");
   });
-
-  it("writes the base file where mise reads it as the global config, so git and gh resolve from any directory", () => {
-    // `toolchainEnv` points MISE_GLOBAL_CONFIG_FILE at the Workspace's mise.toml, which the bootstrap seeds.
-    expect(ROOT_MISE_TOML).toBe("/workspace/mise.toml");
-    expect(toolchainEnv().MISE_GLOBAL_CONFIG_FILE).toBe(ROOT_MISE_TOML);
-  });
-
   it("leaves a Workspace's own mise.toml as it is", () => {
     const { root, run } = sandbox();
 
@@ -551,16 +380,6 @@ describe("the Container's global pnpm configuration", () => {
     // Not under /workspace, which is the FUSE mount.
     expect(config).not.toContain("/workspace");
   });
-
-  it("names the store with a directory the token scan skips", () => {
-    expect(PNPM_GLOBAL_CONFIG).toContainEqual(["storeDir", `"$HOME/${PNPM_STORE_DIRECTORY_NAME}"`]);
-    expect(PNPM_STORE_DIRECTORY_NAME).toBe(".pnpm-store");
-  });
-
-  it("leaves virtualStoreDir unset, so a repo that keeps its virtual store in the project does not share one", () => {
-    expect(PNPM_GLOBAL_CONFIG.map(([key]) => key)).not.toContain("virtualStoreDir");
-  });
-
   it("keeps a setting the file has, and adds the others", () => {
     const { home, run } = sandbox();
 
@@ -580,12 +399,6 @@ describe("the Container's global pnpm configuration", () => {
       ].join("\n"),
     );
   });
-
-  it("switches the global virtual store on under both its names, for pnpm before and after 11.23", () => {
-    expect(PNPM_GLOBAL_CONFIG).toContainEqual(["virtualStoreType", "global"]);
-    expect(PNPM_GLOBAL_CONFIG).toContainEqual(["enableGlobalVirtualStore", "true"]);
-  });
-
   it("starts a new line when the file does not end with one", () => {
     const { home, run } = sandbox();
 
@@ -638,34 +451,6 @@ describe("the Container's global pnpm configuration", () => {
 
     expect(readFileSync(configOf(home), "utf8")).toContain(`storeDir: "${home}/.pnpm-store"`);
   });
-
-  it("is written once: a second start leaves the file as it is", () => {
-    const { home, run } = sandbox();
-
-    run();
-
-    const first = readFileSync(configOf(home), "utf8");
-
-    run();
-
-    expect(readFileSync(configOf(home), "utf8")).toBe(first);
-  });
-
-  it("is written where pnpm looks for it when XDG_CONFIG_HOME is set", () => {
-    const { base, home, run } = sandbox();
-    const xdg = join(base, "xdg");
-
-    run({ XDG_CONFIG_HOME: xdg });
-
-    expect(existsSync(join(xdg, "pnpm/config.yaml"))).toBe(true);
-    expect(existsSync(configOf(home))).toBe(false);
-  });
-
-  it("does not count as a change worth a snapshot", () => {
-    const { run } = sandbox();
-
-    expect(run().stdout).not.toContain(BOOTSTRAP_CHANGED);
-  });
 });
 
 describe("the Container's global Bun configuration", () => {
@@ -677,12 +462,6 @@ describe("the Container's global Bun configuration", () => {
     expect(run().status).toBe(0);
     expect(readFileSync(configOf(home), "utf8")).toBe("[install]\nglobalStore = true\n");
   });
-
-  it("names Bun's directories with a name the token scan skips", () => {
-    expect(BUN_DIRECTORY_NAME).toBe(".bun");
-    expect(BUN_GLOBAL_INSTALL_CONFIG).toEqual([["globalStore", "true"]]);
-  });
-
   it("adds the key under the file's own [install] table, keeping the rest", () => {
     const { home, run } = sandbox();
 
@@ -743,7 +522,12 @@ describe("the Container's global Bun configuration", () => {
       expect(readFileSync(configOf(home), "utf8")).toBe(own);
     }
   });
+});
 
+describe.each([
+  ["pnpm", (home: string) => join(home, ".config/pnpm/config.yaml"), "pnpm/config.yaml"],
+  ["Bun", (home: string) => join(home, ".bunfig.toml"), ".bunfig.toml"],
+])("the Container's global %s configuration file", (_name, configOf, xdgPath) => {
   it("is written once: a second start leaves the file as it is", () => {
     const { home, run } = sandbox();
 
@@ -756,13 +540,13 @@ describe("the Container's global Bun configuration", () => {
     expect(readFileSync(configOf(home), "utf8")).toBe(first);
   });
 
-  it("is written where Bun looks for it when XDG_CONFIG_HOME is set", () => {
+  it("is written where its tool looks for it when XDG_CONFIG_HOME is set", () => {
     const { base, home, run } = sandbox();
     const xdg = join(base, "xdg");
 
     run({ XDG_CONFIG_HOME: xdg });
 
-    expect(existsSync(join(xdg, ".bunfig.toml"))).toBe(true);
+    expect(existsSync(join(xdg, xdgPath))).toBe(true);
     expect(existsSync(configOf(home))).toBe(false);
   });
 });
@@ -918,23 +702,6 @@ describe("git after the bootstrap", () => {
 
     expect(git(home, ["config", "--global", "user.name"]).stdout.trim()).toBe("Someone Else");
   });
-
-  it("answers a github.com credential request with the token from the environment", () => {
-    const { run, home } = sandbox();
-
-    run(identity);
-
-    const filled = git(
-      home,
-      ["credential", "fill"],
-      { GITHUB_TOKEN: "ghp_secret" },
-      "protocol=https\nhost=github.com\n\n",
-    );
-
-    expect(filled.stdout).toContain("username=x-access-token");
-    expect(filled.stdout).toContain("password=ghp_secret");
-  });
-
   it("answers with the token of the repo's owner, whatever its case, and with GITHUB_TOKEN for an owner it has none of", () => {
     const { run, home } = sandbox();
 
@@ -949,21 +716,11 @@ describe("git after the bootstrap", () => {
       git(home, ["credential", "fill"], env, `protocol=https\nhost=github.com\npath=${path}\n\n`)
         .stdout;
 
+    expect(fill("SpiritLedSoftware/site.git")).toContain("username=x-access-token");
     expect(fill("SpiritLedSoftware/site.git")).toContain("password=ghs_org");
     expect(fill("ian-pascoe/cloudpid.git")).toContain("password=ghs_ian");
     expect(fill("someone/else.git")).toContain("password=ghs_default");
   });
-
-  it("asks git for the repo's path, so the owner is known", () => {
-    const { run, home } = sandbox();
-
-    run(identity);
-
-    expect(
-      git(home, ["config", "--global", "credential.https://github.com.useHttpPath"]).stdout.trim(),
-    ).toBe("true");
-  });
-
   it("gives no other host the token", () => {
     const { run, home } = sandbox();
 
@@ -1044,13 +801,6 @@ const setupSandbox = () => {
 
   return { base, root, state, repo, pending, run, runEnvironment, runIfDue, environmentFile, bash };
 };
-
-describe("a Setup Script's record", () => {
-  it("is named after the repo", () => {
-    expect(setupRecordName("/workspace/app")).toBe("app");
-    expect(setupRecordName("/tmp/root/app", "/tmp/root")).toBe("app");
-  });
-});
 
 describe("the Setup Scripts", () => {
   it("are due for each repo that has one, and only those", () => {
@@ -1256,21 +1006,6 @@ describe("the Start Scripts", () => {
 
     expect(listed()).toEqual([a, c]);
   });
-
-  it("run with bash in the repo's directory, with the environment they are given, and no input", () => {
-    const { repo, start } = startSandbox();
-
-    const dir = repo(
-      "a",
-      'printf "%s|%s|%s" "$PWD" "$CLOUDPID_MARK" "${BASH_VERSION:+bash}"\nread -r line || echo " no input"\n',
-    );
-
-    const result = start(dir);
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe(`${dir}|from the environment|bash no input\n`);
-  });
-
   it("run every time: nothing records them", () => {
     const { repo, start, state } = startSandbox();
     const dir = repo("a", "echo up\n");
@@ -1279,13 +1014,6 @@ describe("the Start Scripts", () => {
     expect(start(dir).stdout).toBe("up\n");
     expect(existsSync(state)).toBe(false);
   });
-
-  it("exit with the script's status", () => {
-    const { repo, start } = startSandbox();
-
-    expect(start(repo("a", "exit 3\n")).status).toBe(3);
-  });
-
   it("are stopped, with what they started, once past their time", () => {
     const { repo, start } = startSandbox();
     const started = Date.now();

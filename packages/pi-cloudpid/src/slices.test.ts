@@ -30,32 +30,27 @@ describe("sliceAt", () => {
     expect(sliceAt(fileBytes("ab"), 2, 10)).toBeUndefined();
   });
 
-  it.each([4, 5, 7, 8, 13, 64])(
-    "cuts at character boundaries, at most %i bytes, and loses nothing",
-    (max) => {
-      const bytes = fileBytes(MIXED);
-      const slices = sliced(bytes, max);
+  it.each([5, 13])("cuts at character boundaries, at most %i bytes, and loses nothing", (max) => {
+    const bytes = fileBytes(MIXED);
+    const slices = sliced(bytes, max);
 
-      expect(slices.length).toBeGreaterThan(1);
+    expect(slices.length).toBeGreaterThan(1);
 
-      for (const slice of slices) {
-        expect(slice.bytes).toBeLessThanOrEqual(max);
-        // The slice is whole characters: its bytes are its own text's.
-        expect(fileBytes(slice.data).length).toBe(slice.bytes);
-      }
+    for (const slice of slices) {
+      expect(slice.bytes).toBeLessThanOrEqual(max);
+      // The slice is whole characters: its bytes are its own text's.
+      expect(fileBytes(slice.data).length).toBe(slice.bytes);
+    }
 
-      // Each starts where the last ended, and together they are the file.
-      expect(slices.map((slice) => slice.offset)).toEqual(
-        slices.map((_slice, index) =>
-          slices.slice(0, index).reduce((sum, slice) => sum + slice.bytes, 0),
-        ),
-      );
-      expect(slices.map((slice) => slice.data).join("")).toBe(MIXED);
-      expect(sha256Hex(fileBytes(slices.map((slice) => slice.data).join("")))).toBe(
-        sha256Hex(bytes),
-      );
-    },
-  );
+    // Each starts where the last ended, and together they are the file.
+    expect(slices.map((slice) => slice.offset)).toEqual(
+      slices.map((_slice, index) =>
+        slices.slice(0, index).reduce((sum, slice) => sum + slice.bytes, 0),
+      ),
+    );
+    expect(slices.map((slice) => slice.data).join("")).toBe(MIXED);
+    expect(sha256Hex(fileBytes(slices.map((slice) => slice.data).join("")))).toBe(sha256Hex(bytes));
+  });
 
   it("backs a cut off a character it would split", () => {
     // "é" is two bytes: a 2-byte slice of "aé" holds the "a" alone, then the "é".

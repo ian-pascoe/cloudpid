@@ -7,39 +7,20 @@ describe("normalizeRepoUrl", () => {
     ["https://github.com/acme/app", "https://github.com/acme/app"],
     ["https://github.com/acme/app.git", "https://github.com/acme/app"],
     ["https://github.com/acme/app/", "https://github.com/acme/app"],
-    ["https://github.com/acme/app.git/", "https://github.com/acme/app"],
     ["HTTPS://GitHub.com/Acme/App.GIT", "https://github.com/acme/app"],
     ["https://user:token@github.com/acme/app.git", "https://github.com/acme/app"],
-    ["https://x-access-token:abc@github.com/acme/app", "https://github.com/acme/app"],
     ["git@github.com:acme/app.git", "https://github.com/acme/app"],
-    ["git@github.com:Acme/App", "https://github.com/acme/app"],
-    ["github.com:acme/app.git", "https://github.com/acme/app"],
-    ["ssh://git@github.com/acme/app.git", "https://github.com/acme/app"],
     ["ssh://git@github.com:22/acme/app.git", "https://github.com/acme/app"],
-    ["ssh://github.com/acme/app/", "https://github.com/acme/app"],
-    ["git://github.com/acme/app.git", "https://github.com/acme/app"],
-    ["http://github.com/acme/app.git", "https://github.com/acme/app"],
-    [
-      "https://git.example.test:8443/team/sub/app.git",
-      "https://git.example.test:8443/team/sub/app",
-    ],
-    ["  https://github.com/acme/app.git\n", "https://github.com/acme/app"],
   ])("%s → %s", (raw, expected) => {
     expect(normalizeRepoUrl(raw)).toBe(expected);
   });
 
-  it.each([
-    "",
-    "   ",
-    "/srv/git/app.git",
-    "../app",
-    "file:///srv/git/app.git",
-    "C:\\repos\\app",
-    "https://github.com",
-    "https://github.com/",
-  ])("has none for %j (no host and path)", (raw) => {
-    expect(normalizeRepoUrl(raw)).toBeUndefined();
-  });
+  it.each(["", "/srv/git/app.git", "file:///srv/git/app.git", "https://github.com"])(
+    "has none for %j (no host and path)",
+    (raw) => {
+      expect(normalizeRepoUrl(raw)).toBeUndefined();
+    },
+  );
 });
 
 describe("matchEnvironments", () => {

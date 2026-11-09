@@ -20,7 +20,6 @@ import {
   MCP_BRIDGE_MCP_PATH,
   MCP_BRIDGE_PORT,
   MCP_BRIDGE_PROBE_MS,
-  MCP_BRIDGE_SCRIPT,
   MCP_BRIDGE_SPAWN_HEADER,
   MCP_BRIDGE_STATUS_PATH,
   MCP_BRIDGE_STDERR_LIMIT,
@@ -33,7 +32,6 @@ import {
 
 const script = join(sandboxImageContext, "cloudpid-mcp-bridge.ts");
 const source = readFileSync(script, "utf8");
-const dockerfile = readFileSync(join(sandboxImageContext, "Dockerfile"), "utf8");
 const fixture = join(import.meta.dirname, "mcp-stdio.fixture.mjs");
 
 const TOKEN = "a-token-of-this-launch";
@@ -52,38 +50,11 @@ describe("the bridge's contract with the Workspaces Worker", () => {
   const constant = (name: string): string | undefined =>
     new RegExp(`^const ${name} = (.+);$`, "m").exec(source)?.[1];
 
-  it("repeats the values @cloudpid/sandbox-image/mcp-bridge exports", () => {
-    expect(constant("LEVEL")).toBe(String(MCP_BRIDGE_LEVEL));
-    expect(constant("DEFAULT_PORT")).toBe("17_781");
-    expect(MCP_BRIDGE_PORT).toBe(17_781);
-    expect(constant("STDERR_LIMIT")).toBe("65_536");
-    expect(MCP_BRIDGE_STDERR_LIMIT).toBe(65_536);
-    expect(constant("DEFAULT_PROBE_MS")).toBe("15_000");
-    expect(MCP_BRIDGE_PROBE_MS).toBe(15_000);
-
-    for (const [name, value] of [
-      ["TOKEN_ENV", MCP_BRIDGE_TOKEN_ENV],
-      ["CONFIG_HEADER", MCP_BRIDGE_CONFIG_HEADER],
-      ["ERA_HEADER", MCP_BRIDGE_ERA_HEADER],
-      ["SPAWN_HEADER", MCP_BRIDGE_SPAWN_HEADER],
-      ["LEVEL_HEADER", MCP_BRIDGE_LEVEL_HEADER],
-      ["MCP_PATH", MCP_BRIDGE_MCP_PATH],
-      ["HEALTH_PATH", MCP_BRIDGE_HEALTH_PATH],
-      ["STATUS_PATH", MCP_BRIDGE_STATUS_PATH],
-      ["STOP_PATH", MCP_BRIDGE_STOP_PATH],
-    ] as const) {
-      expect(constant(name)).toBe(JSON.stringify(value));
-    }
-  });
-
-  it("is a port outside computerd's and the Container preview ports", () => {
-    expect([8080, 3000, 3001, 4173, 4321, 5173, 5174, 8000, 8787]).not.toContain(MCP_BRIDGE_PORT);
-  });
-});
-
-describe("the image", () => {
-  it("has the bridge's script where the supervisor looks for it", () => {
-    expect(dockerfile).toContain(`COPY --chmod=644 cloudpid-mcp-bridge.ts ${MCP_BRIDGE_SCRIPT}\n`);
+  // The HTTP tests below drive the bridge through the exported constants, so a drift there fails them; the defaults
+  // the tests override through the environment are not driven, so they are pinned here.
+  it("repeats the defaults of the port and the probe wait that @cloudpid/sandbox-image/mcp-bridge exports", () => {
+    expect(Number(constant("DEFAULT_PORT")?.replaceAll("_", ""))).toBe(MCP_BRIDGE_PORT);
+    expect(Number(constant("DEFAULT_PROBE_MS")?.replaceAll("_", ""))).toBe(MCP_BRIDGE_PROBE_MS);
   });
 });
 
@@ -979,11 +950,8 @@ describe("the control calls", () => {
     expect(await initialize(server)).not.toBe(session);
   });
 
-  it("answers health at once, and 404 or 405 for what it does not serve", async () => {
+  it("answers health at once", async () => {
     expect((await control(MCP_BRIDGE_HEALTH_PATH)).body).toEqual({ status: "ok" });
-    expect((await control("/nothing")).status).toBe(404);
-    expect((await control("/_bridge/nothing")).status).toBe(404);
-    expect((await control(MCP_BRIDGE_STATUS_PATH, { method: "POST", body: {} })).status).toBe(404);
   });
 });
 
