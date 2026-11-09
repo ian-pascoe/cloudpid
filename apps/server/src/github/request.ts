@@ -10,7 +10,7 @@ export type GithubFetch = (url: string, init: RequestInit) => Promise<Response>;
 /** What is asked: GitHub's media type for the answer, and a request with a JSON body when there is one. */
 export type GithubRequest = {
   readonly accept?: string;
-  readonly method?: "GET" | "POST";
+  readonly method?: "GET" | "POST" | "PATCH" | "DELETE";
   readonly body?: string;
 };
 
