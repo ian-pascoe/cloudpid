@@ -79,3 +79,53 @@ export const matchesDelivery = (
     return found !== undefined && allowed.includes(found);
   });
 };
+
+/** Whether `segment` could reach an object's prototype when used as a key. */
+const unsafeSegment = (segment: string): boolean => segment === "__proto__";
+
+/**
+ * What the paths of `match` read of `body`, as a body of their own, nested by path (`{ "a.b": ["x"] }` over a body
+ * with `a.b` as `7` is `{ a: { b: "7" } }`): a path that holds no scalar is left out. A delivery whose body was not kept
+ * keeps this instead, so a `match` that changed meanwhile can still be checked as far as it reads the same paths; a path
+ * it did not keep never matches. `event` is not a path of the body.
+ */
+export const matchFacts = (
+  match: TriggerMatch,
+  body: Schema.Json | undefined,
+): Schema.JsonObject => {
+  const facts: Record<string, Schema.Json> = {};
+
+  for (const path of Object.keys(match)) {
+    const segments = path.split(".");
+
+    if (path === EVENT_PATH || segments.some(unsafeSegment)) continue;
+
+    const text = scalarText(valueAt(body, path));
+
+    if (text === undefined) continue;
+
+    let level = facts;
+
+    for (const segment of segments.slice(0, -1)) {
+      const next = Object.hasOwn(level, segment) ? level[segment] : undefined;
+
+      if (isJsonObject(next)) {
+        // SAFETY: `level` only ever holds objects this loop made or an ancestor's, which are mutable records of Json.
+        level = next as Record<string, Schema.Json>;
+      } else if (next === undefined) {
+        const made: Record<string, Schema.Json> = {};
+
+        level[segment] = made;
+        level = made;
+      } else {
+        level = {};
+      }
+    }
+
+    const last = segments.at(-1) ?? path;
+
+    if (!Object.hasOwn(level, last)) level[last] = text;
+  }
+
+  return facts;
+};

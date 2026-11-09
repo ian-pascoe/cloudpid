@@ -582,12 +582,14 @@ export type FireRequest = typeof FireRequest.Type;
 
 /**
  * How a delivery to a Trigger URL came out (`triggers.md` → Observability): `accepted` (a pending Fire stored), `filtered`
- * (by `match` or the bot-loop guard), `unauthorized` (no or a wrong signature, a stale timestamp), `too_large`,
+ * (by `match` or the bot-loop guard), `bot_unverified` (a `[bot]` sender dropped because GitHub could not say which bot is
+ * the App's own: the bot-loop guard failed closed), `unauthorized` (no or a wrong signature, a stale timestamp), `too_large`,
  * `unsupported` (content type), `not_found` (an unknown id, a wrong token) and `ping`.
  */
 export const DELIVERY_OUTCOMES = [
   "accepted",
   "filtered",
+  "bot_unverified",
   "unauthorized",
   "too_large",
   "unsupported",
