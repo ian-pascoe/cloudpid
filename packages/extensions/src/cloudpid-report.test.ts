@@ -236,6 +236,15 @@ describe("cloudpid_report", () => {
       { ...valid, title: "ghp_0123456789abcdefghijABCDEFGHIJ012345 leaked" },
       apiOf(),
     ],
+    [
+      // A stateless installation token (`ghs_<app id>_<JWT>`), the shape the App's tokens have now.
+      "an installation token in the body",
+      {
+        ...valid,
+        body: `${BODY} ghs_1234567_eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIifQ.${"aB3-_x9Q".repeat(50)}`,
+      },
+      apiOf(),
+    ],
     ["the GitHub App's key", { ...valid, body: `${BODY} ${APP_KEY}` }, apiOf()],
     ["a Secret Reference", { ...valid, body: `${BODY} ${secretReference("API_KEY")}` }, apiOf()],
     ["a body under 50 characters", { ...valid, body: "too short" }, apiOf()],
