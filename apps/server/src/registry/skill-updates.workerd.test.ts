@@ -739,7 +739,7 @@ describe("the daily check", () => {
     expect(after).toMatchObject({ updateAvailable: false });
   });
 
-  it("shows no update for a Skill pinned to a tag unless the tag moves, and skips a commit", async () => {
+  it("shows no update for a Skill pinned to a tag unless the tag moves", async () => {
     const github = fakeGithub();
 
     github.push(REPO, files(), "v1");

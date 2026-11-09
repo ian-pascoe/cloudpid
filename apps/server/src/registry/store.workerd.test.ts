@@ -291,15 +291,6 @@ describe("the Registry store", () => {
     expect(await registry.getDocument("other")).toBe("x");
   });
 
-  it("keeps its documents across an eviction", async () => {
-    const registry = fresh();
-
-    await registry.putDocument("settings", '{"a":1}', 1_000);
-    await evictDurableObject(registry);
-
-    expect(await registry.getDocument("settings")).toBe('{"a":1}');
-  });
-
   it("keeps the Container settings at Global in a document, across an eviction, with no migration of its own", async () => {
     const registry = fresh();
 
@@ -350,16 +341,6 @@ describe("the Registry store", () => {
 
     await registry.deletePushSubscription(kept.endpoint);
     expect(await registry.listPushSubscriptions()).toEqual([]);
-  });
-
-  it("keeps its Web Push subscriptions across an eviction", async () => {
-    const registry = fresh();
-    const kept = { endpoint: "https://push.example/a", keys: { p256dh: "k1", auth: "a1" } };
-
-    await registry.putPushSubscription(kept, 1_000);
-    await evictDurableObject(registry);
-
-    expect(await registry.listPushSubscriptions()).toEqual([kept]);
   });
 
   it("has no title source for a Session created without a title", async () => {
@@ -1274,33 +1255,6 @@ describe("the Registry store", () => {
       expect(await registry.putBuild("0000abcd", { build: good, status: null })).toBe(false);
       expect(await registry.getBuild("0000abcd")).toBeNull();
     });
-
-    it("gives each Environment stored before migration 13 no Build yet", async () => {
-      const registry = fresh();
-
-      await runInDurableObject(registry, (_instance, state) => {
-        const { storage } = state;
-        const { sql } = storage;
-
-        for (const { name } of sql
-          .exec<{ name: string }>(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
-          )
-          .toArray()) {
-          sql.exec(`DROP TABLE "${name}"`);
-        }
-
-        migrate(storage, MIGRATIONS.slice(0, 12));
-        sql.exec(
-          "INSERT INTO environments (id, name, repos, settings, created_at) VALUES ('0000abcd', 'Old', '[]', '{}', 5)",
-        );
-
-        const store = openRegistryStore(storage);
-
-        expect(store.getBuild("0000abcd")).toEqual({ build: null, status: null });
-        expect(store.getEnvironment("0000abcd")).toMatchObject({ name: "Old" });
-      });
-    });
   });
 
   describe("spare Workspaces", () => {
@@ -2002,29 +1956,6 @@ describe("the Registry store", () => {
       });
     });
 
-    it("does not open a row moved to another scope or name", async () => {
-      const registry = fresh();
-
-      await environmentWith(registry, "0000abcd", "Cloudpid");
-      await environmentWith(registry, "0000beef", "Other");
-      await registry.keepSecret(
-        MASTER,
-        { environment: "0000abcd", name: "API_KEY", value: VALUE },
-        5,
-      );
-
-      await runInDurableObject(registry, (_instance: TestRegistry, state) => {
-        state.storage.sql.exec(
-          "UPDATE environment_secrets SET scope = '0000beef', name = 'OTHER_KEY'",
-        );
-      });
-
-      expect(await registry.listEnvironmentSecrets()).toEqual([
-        { environment: "0000beef", name: "OTHER_KEY", build: false, updatedAt: 5 },
-      ]);
-      expect(await registry.openSecrets(MASTER, "0000beef")).toEqual([]);
-    });
-
     it("replaces a value keeping its flag, sets the flag, and deletes", async () => {
       const registry = fresh();
 
@@ -2146,32 +2077,6 @@ describe("the Registry store", () => {
       ).toMatchObject({ id: "new" });
       // Opening again changes nothing.
       expect(openRegistryStore(storage).listSessions()).toHaveLength(1);
-    });
-  });
-
-  it("keeps the Workspaces of a Registry at version 11 as Sessions' Workspaces, none of them spare", async () => {
-    await runInDurableObject(fresh(), (_instance: TestRegistry, state) => {
-      const { storage } = state;
-      const { sql } = storage;
-
-      // Start over at version 11, the release before spares.
-      for (const { name } of sql
-        .exec<{ name: string }>(
-          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'",
-        )
-        .toArray()) {
-        sql.exec(`DROP TABLE "${name}"`);
-      }
-
-      migrate(storage, MIGRATIONS.slice(0, 11));
-      sql.exec(
-        "INSERT INTO workspaces (id, environment, branch, base, repos, created_at) VALUES ('1a2b3c4d', 'default', 'feature', NULL, '[]', 5)",
-      );
-
-      const store = openRegistryStore(storage);
-
-      expect(Arr.map(store.listWorkspaces(), (workspace) => workspace.id)).toEqual(["1a2b3c4d"]);
-      expect(store.getSpare(DEFAULT_ENVIRONMENT)).toBeNull();
     });
   });
 

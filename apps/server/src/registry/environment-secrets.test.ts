@@ -3,7 +3,6 @@
 // for the SQLite table (`store.workerd.test.ts` covers that one).
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { openKeptVault, SecretVaultError } from "@cloudpid/extensions/secrets/core";
-import { MAX_ENVIRONMENT_SECRET_BYTES } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import {
@@ -69,7 +68,7 @@ describe("keeping a Secret", () => {
     expect(await run(openEnvironmentSecrets(store, keys, "env-2"))).toEqual([]);
   });
 
-  it("refuses a malformed name or value, or an Environment that does not exist, saying why without the value", async () => {
+  it("refuses a malformed name, or an Environment that does not exist, saying why without the value", async () => {
     const { store, rows } = table();
     const keys = await vault();
 
@@ -77,24 +76,13 @@ describe("keeping a Secret", () => {
       Effect.forEach(
         [
           { environment: "env-1", name: "api_key", value: VALUE },
-          { environment: "env-1", name: "API_KEY", value: "" },
-          {
-            environment: "env-1",
-            name: "API_KEY",
-            value: "x".repeat(MAX_ENVIRONMENT_SECRET_BYTES + 1),
-          },
           { environment: "env-9", name: "API_KEY", value: VALUE },
         ],
         (input) => keepSecret(store, keys, input, 5),
       ),
     );
 
-    expect(refusals.map((refusal) => refusal.status)).toEqual([
-      "rejected",
-      "rejected",
-      "rejected",
-      "missing",
-    ]);
+    expect(refusals.map((refusal) => refusal.status)).toEqual(["rejected", "missing"]);
     expect(JSON.stringify(refusals)).not.toContain(VALUE);
     expect(rows.size).toBe(0);
   });

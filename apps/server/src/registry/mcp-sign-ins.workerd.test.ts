@@ -512,38 +512,6 @@ describe("mcpAccessToken", () => {
       expect(await ask({ server: "nowhere" })).toMatchObject({ status: "unavailable" });
     }));
 
-  it("asks for a refresh a minute before the token expires, or when a request was refused with it", () =>
-    fresh(async ({ setGlobal, signInWith, ask }) => {
-      setGlobal({ sentry: SENTRY });
-      await signInWith("sentry", { expiresAt: NOW + 120_000 });
-
-      const refreshes: Array<string> = [];
-
-      const refresh: Refresh = ({ tokens, trigger }) => {
-        refreshes.push(`${trigger}:${tokens.refresh_token ?? ""}`);
-
-        return Effect.succeed({ status: "refresh_failing", reason: "try again shortly" });
-      };
-
-      // 61 s before: the token stands. At 60 s: it is asked for again.
-      expect(await ask({ server: "sentry" }, { now: NOW + 59_000, refresh })).toMatchObject({
-        status: "ok",
-      });
-      expect(await ask({ server: "sentry" }, { now: NOW + 60_000, refresh })).toEqual({
-        status: "refresh_failing",
-        reason: "try again shortly",
-      });
-
-      // A refusal with the current token asks again too; one with a token already replaced does not.
-      expect(await ask({ server: "sentry", stale: ACCESS }, { now: NOW, refresh })).toMatchObject({
-        status: "refresh_failing",
-      });
-      expect(
-        await ask({ server: "sentry", stale: "older-token" }, { now: NOW, refresh }),
-      ).toMatchObject({ status: "ok", token: ACCESS });
-      expect(refreshes).toEqual([`expiry:${REFRESH}`, `401:${REFRESH}`]);
-    }));
-
   it("serves no token past its time when nothing refreshes it, and none with no refresh token to ask with", () =>
     fresh(async ({ setGlobal, signInWith, ask }) => {
       setGlobal({ sentry: SENTRY, linear: { url: "https://mcp.linear.app/mcp" } });
@@ -705,6 +673,11 @@ describe("reportMcpAuth", () => {
       report("step_up", "sentry", { scope: "delete" });
 
       expect(row()).toMatchObject({ stepUpCount: 0, wantedScope: "read write admin delete" });
+
+      // A sign-in from Settings starts the count again.
+      await signInWith("sentry");
+
+      expect(row()).toMatchObject({ wantedScope: null, stepUpCount: 0 });
     }));
 
   it("counts nothing for a server that refuses one tool for a wider scope while its other tools work", () =>

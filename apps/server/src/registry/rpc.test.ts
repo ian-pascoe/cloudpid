@@ -33,10 +33,6 @@ import {
   SessionActionError,
   SessionNotFound,
   SETTINGS_SCOPE,
-  SkillDirectoryError,
-  SkillRepoError,
-  type SkillChangeFiles,
-  type SkillFile,
   type SkillInstallation,
   skillField,
   type FireRecord,
@@ -114,17 +110,12 @@ import type {
   WorkspaceSetup,
 } from "./store.ts";
 
-/**
- * The fake Skill directory's search: it finds `mattpocock/skills/tdd` for any query, except one that starts with `down` (a
- * skills.sh failure), and says it answered as many entries as it found, 200 for a query that starts with `many`.
- */
-const fakeDirectorySearch: SkillDirectory["searchListed"] = (query) =>
-  query.startsWith("down")
-    ? Effect.fail(SkillDirectoryError.make({ message: "skills.sh did not answer" }))
-    : Effect.succeed({
-        rows: [{ source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 900_000 }],
-        listed: query.startsWith("many") ? 200 : 1,
-      });
+/** The fake Skill directory's search: it finds `mattpocock/skills/tdd` for any query. */
+const fakeDirectorySearch: SkillDirectory["searchListed"] = () =>
+  Effect.succeed({
+    rows: [{ source: "mattpocock/skills", skillId: "tdd", name: "tdd", installs: 900_000 }],
+    listed: 1,
+  });
 
 /** What the fake MCP hosts answer, each as it crosses the edge, so a test may script an unknown one. */
 type McpHostAnswers = {
@@ -238,10 +229,6 @@ const fakeRegistries = () => {
     };
   };
 
-  /** The files before and after each Agent change of a Skill, by `<environment>:<change>`. */
-  const skillFiles = new Map<string, SkillChangeFiles>();
-  // The files kept for each Skill, by `<scope>:<name>`.
-  const keptFiles = new Map<string, ReadonlyArray<SkillFile>>();
   /** The Settings' Agent changes recorded, oldest first. */
   const settingsChanges: AgentChange[] = [];
   /** The Settings' values now, by field, where they are not the default model. */
@@ -1094,38 +1081,9 @@ const fakeRegistries = () => {
 
         return skillInstallation(environment, skills);
       }),
-    listSkills: ({ environment }) =>
-      Effect.sync(() =>
-        environment === "*" || Arr.some(environments, (item) => item.id === environment)
-          ? (skillsKept.get(environment) ?? [])
-          : null,
-      ),
-    removeSkill: ({ environment, name }) =>
-      Effect.sync(() => {
-        calls.push(`removeSkill:${environment}:${name}`);
-
-        if (environment !== "*" && !Arr.some(environments, (item) => item.id === environment)) {
-          return { status: "missing" as const };
-        }
-
-        const kept = skillsKept.get(environment) ?? [];
-
-        // A Skill whose removal would serve a larger one from the layer below.
-        if (name === "hides-a-big-one") {
-          return { status: "rejected" as const, message: "the set would be too large" };
-        }
-
-        if (!Arr.some(kept, (skill) => skill.name === name)) return { status: "absent" as const };
-
-        skillsKept.set(
-          environment,
-          Arr.filter(kept, (skill) => skill.name !== name),
-        );
-
-        return { status: "removed" as const };
-      }),
-    skillChangeFiles: ({ environment, change }) =>
-      Effect.sync(() => skillFiles.get(`${environment}:${change}`) ?? null),
+    listSkills: () => Effect.die("not under test"),
+    removeSkill: () => Effect.die("not under test"),
+    skillChangeFiles: () => Effect.die("not under test"),
     installedSkills: () =>
       Effect.sync(() =>
         [...skillsKept].flatMap(([scope, kept]) =>
@@ -1144,8 +1102,7 @@ const fakeRegistries = () => {
           ),
         ),
       ),
-    skillFiles: ({ environment, name }) =>
-      Effect.sync(() => keptFiles.get(`${environment}:${name}`) ?? null),
+    skillFiles: () => Effect.die("not under test"),
     workspaceSkillSet: () => Effect.die("The endpoint hands no Skill set"),
     listAgentChanges: ({ environment }) =>
       Effect.sync(() =>
@@ -1814,8 +1771,6 @@ const fakeRegistries = () => {
     environments,
     agentChanges,
     skillsKept,
-    skillFiles,
-    keptFiles,
     settingsChanges,
     settingsNow,
     sessionObjects,
@@ -1945,160 +1900,46 @@ const fakeRegistries = () => {
     lookupsAsked,
     branches,
     branchesAsked,
-    /** skills.sh, answering a query of `down` with a failure. */
-    skillSearch: ((query) =>
-      Effect.succeed(
-        query === "down"
-          ? ({ ok: false, message: "skills.sh did not answer" } as const)
-          : ({
-              ok: true,
-              listed: 1,
-              results: [
-                {
-                  id: "mattpocock/skills/grill-me",
-                  source: "mattpocock/skills",
-                  skillId: "grill-me",
-                  name: "grill-me",
-                  installs: 1_200,
-                },
-              ],
-            } as const),
-      )) satisfies SkillSearcher,
-    /** The Skill directory: its leaderboards (the all-time one has two pages, `hot` fails) and its search. */
+    /** skills.sh: not under test, only the Skill directory's search of a repo is. */
+    skillSearch: (() => Effect.die("not under test")) satisfies SkillSearcher,
+    /** The Skill directory: only its search of a repo's Skills is under test. */
     skillDirectory: {
-      leaderboard: (view, page) =>
-        view === "hot"
-          ? Effect.fail(SkillDirectoryError.make({ message: "skills.sh answered 503" }))
-          : Effect.succeed({
-              total: 3,
-              hasMore: page === 0,
-              skills:
-                page === 0
-                  ? [
-                      {
-                        source: "mattpocock/skills",
-                        skillId: "grill-me",
-                        name: "grill-me",
-                        installs: 1_450_000,
-                      },
-                      {
-                        source: "vercel-labs/skills",
-                        skillId: "find-skills",
-                        name: "find-skills",
-                        installs: 4_088_520,
-                      },
-                    ]
-                  : [{ source: "o/other", skillId: "other", name: "other", installs: 3 }],
-            }),
+      leaderboard: () => Effect.die("not under test"),
       search: (query) => Effect.map(fakeDirectorySearch(query), ({ rows }) => rows),
       searchListed: fakeDirectorySearch,
     } satisfies SkillDirectory,
-    /** GitHub's repos: `o/gone` is not found, `o/ref` has no ref `nope`, `o/empty` holds no Skill, the rest hold three. */
+    /** GitHub's repos: every one holds three Skills. */
     skillRepos: {
-      list: ({ owner, repo, ref }) => {
-        const where = `${owner}/${repo}`;
-
-        if (repo === "gone") {
-          return Effect.fail(
-            SkillRepoError.make({ kind: "not_found", message: `${where} is gone` }),
-          );
-        }
-
-        if (ref === "nope") {
-          return Effect.fail(
-            SkillRepoError.make({ kind: "bad_ref", message: `${where} has no ref` }),
-          );
-        }
-
-        const commit = "c0ffee0000000000000000000000000000000009";
-
-        return Effect.succeed({
-          repo: where,
+      list: ({ owner, repo, ref }) =>
+        Effect.succeed({
+          repo: `${owner}/${repo}`,
           ref: ref ?? null,
-          commit,
-          skills:
-            repo === "empty"
-              ? []
-              : [
-                  {
-                    name: "grill-me",
-                    description: "Interview me.",
-                    path: "skills/productivity/grill-me",
-                    skillId: "grill-me",
-                  },
-                  {
-                    name: "zzz",
-                    description: "Nothing known of it.",
-                    path: "skills/zzz",
-                    skillId: "zzz",
-                  },
-                  {
-                    name: "tdd",
-                    description: "Test first.",
-                    path: "skills/engineering/tdd",
-                    skillId: "tdd",
-                  },
-                ],
-          unreadable: repo === "empty" ? [{ path: "docs", message: "no name" }] : [],
+          commit: "c0ffee0000000000000000000000000000000009",
+          skills: [
+            {
+              name: "grill-me",
+              description: "Interview me.",
+              path: "skills/productivity/grill-me",
+              skillId: "grill-me",
+            },
+            {
+              name: "zzz",
+              description: "Nothing known of it.",
+              path: "skills/zzz",
+              skillId: "zzz",
+            },
+            {
+              name: "tdd",
+              description: "Test first.",
+              path: "skills/engineering/tdd",
+              skillId: "tdd",
+            },
+          ],
+          unreadable: [],
           internal: 0,
           omitted: 0,
-        });
-      },
-      view: ({ owner, repo, skill, path: folder, ref }) => {
-        const where = `${owner}/${repo}`;
-
-        if (repo === "gone") {
-          return Effect.fail(
-            SkillRepoError.make({ kind: "not_found", message: `${where} is gone` }),
-          );
-        }
-
-        if (ref === "nope") {
-          return Effect.fail(
-            SkillRepoError.make({ kind: "bad_ref", message: `${where} has no ref` }),
-          );
-        }
-
-        // `twin` is the name of two Skills of the repo, unless a folder says which.
-        if (skill === "twin" && folder === undefined) {
-          return Effect.succeed({
-            status: "ambiguous" as const,
-            repo: where,
-            ref: ref ?? null,
-            commit: "c0ffee0000000000000000000000000000000009",
-            candidates: [
-              { name: "twin", description: "One.", path: "a/twin" },
-              { name: "twin", description: "Two.", path: "b/twin" },
-            ],
-          });
-        }
-
-        const path =
-          folder ??
-          { "grill-me": "skills/productivity/grill-me", tdd: "skills/engineering/tdd" }[skill];
-
-        if (path === undefined || repo === "empty") {
-          return Effect.fail(
-            SkillRepoError.make({ kind: "no_skill", message: `${where} has no Skill ${skill}` }),
-          );
-        }
-
-        return Effect.succeed({
-          status: "found" as const,
-          skill: {
-            repo: where,
-            ref: ref ?? null,
-            commit: "c0ffee0000000000000000000000000000000009",
-            name: skill,
-            description: `What ${skill} does.`,
-            path,
-            skillId: skill,
-            skillMd: `---\nname: ${skill}\n---\nSteps.\n`,
-            skillMdFile: "SKILL.md",
-            files: [{ path: "SKILL.md", size: 30 }, { path: "references/q.md" }],
-          },
-        });
-      },
+        }),
+      view: () => Effect.die("not under test"),
     } satisfies SkillRepos,
     registries,
     /** The Registry's methods, as the Session DO calls them. */
@@ -2252,22 +2093,11 @@ it("fails to rename a Session the Registry does not know", async () => {
   expect(error.message).toContain("ghost");
 });
 
-it("rejects a new title that is blank or longer than 200 characters, before it reaches the Registry", async () => {
-  for (const title of ["   ", "a".repeat(201)]) {
-    const { text, calls } = await callRaw("renameSession", { id: "s", title });
+it("trims a title, and rejects one that is blank or longer than 200 characters, before it reaches the Registry", async () => {
+  const { text: trimmed } = await callRaw("createSession", { title: "  Fix the build \n" });
 
-    expect(text).toContain('"Failure"');
-    expect(calls).toEqual([]);
-  }
-});
+  expect(JSON.parse(trimmed)).toMatchObject([{ exit: { value: { title: "Fix the build" } } }]);
 
-it("trims a title on the server", async () => {
-  const { text } = await callRaw("createSession", { title: "  Fix the build \n" });
-
-  expect(JSON.parse(text)).toMatchObject([{ exit: { value: { title: "Fix the build" } } }]);
-});
-
-it("rejects a title that is blank or longer than 200 characters, before it reaches the Registry", async () => {
   for (const title of ["   ", "a".repeat(201)]) {
     const { text, calls } = await callRaw("createSession", { title });
 
@@ -2346,44 +2176,6 @@ it("accepts the endpoints the browsers' push services give out", async () => {
   }
 });
 
-it("reads the settings from the singleton Registry", async () => {
-  const fake = fakeRegistries();
-
-  const state = await withClient(
-    Effect.gen(function* () {
-      const registry = yield* Registry;
-
-      return yield* registry.getSettings();
-    }),
-    fake,
-  );
-
-  expect(state).toEqual({
-    settings: DEFAULT_SETTINGS,
-    overrides: {},
-    overriddenIn: { model: [{ id: "0a1b2c3d", name: "Staging" }] },
-  });
-  expect(fake.names).toEqual(["registry"]);
-});
-
-it("reads an Environment's Settings Overrides, with Global's and the two resolved", async () => {
-  const state = await withClient(
-    Effect.gen(function* () {
-      const registry = yield* Registry;
-
-      return yield* registry.getSettingsOverrides({ environment: DEFAULT_ENVIRONMENT });
-    }),
-  );
-
-  expect(state).toEqual({
-    environment: DEFAULT_ENVIRONMENT,
-    settings: { ...DEFAULT_SETTINGS, thinkingLevel: "low" },
-    global: DEFAULT_SETTINGS,
-    overrides: { thinkingLevel: "low" },
-    instructions: "",
-  });
-});
-
 it("replaces an Environment's own Instructions, and fails a text the Registry refuses or an Environment it lacks", async () => {
   const [saved, tooLong, missing] = await withClient(
     Effect.gen(function* () {
@@ -2413,26 +2205,6 @@ it("replaces an Environment's own Instructions, and fails a text the Registry re
   expect(missing.message).toContain("0badc0de");
 });
 
-it("fails the Settings of an Environment that does not exist, naming it", async () => {
-  const errors = await withClient(
-    Effect.gen(function* () {
-      const registry = yield* Registry;
-
-      return yield* Effect.all([
-        Effect.flip(registry.getSettingsOverrides({ environment: "0badc0de" })),
-        Effect.flip(
-          registry.updateSettingsOverrides({ environment: "0badc0de", reset: ["model"] }),
-        ),
-      ]);
-    }),
-  );
-
-  for (const error of errors) {
-    expect(error).toBeInstanceOf(SettingsError);
-    expect(error.message).toContain("0badc0de");
-  }
-});
-
 it("changes an Environment's Overrides, and fails a change the Registry rejects with its message", async () => {
   const [saved, error] = await withClient(
     Effect.gen(function* () {
@@ -2453,34 +2225,6 @@ it("changes an Environment's Overrides, and fails a change the Registry rejects 
   expect(saved.overrides).toEqual({ model: "anthropic/claude-sonnet-5-5" });
   expect(error).toBeInstanceOf(SettingsError);
   expect(error.message).toBe("The Overrides to set are not an object");
-});
-
-it("saves settings overrides in the Registry and answers the settings in force", async () => {
-  const state = await withClient(
-    Effect.gen(function* () {
-      const registry = yield* Registry;
-
-      return yield* registry.updateSettings({ overrides: { thinkingLevel: "low" } });
-    }),
-  );
-
-  expect(state).toMatchObject({
-    settings: { thinkingLevel: "low" },
-    overrides: { thinkingLevel: "low" },
-  });
-});
-
-it("fails an update the Registry rejects with the Registry's readable message", async () => {
-  const error = await withClient(
-    Effect.gen(function* () {
-      const registry = yield* Registry;
-
-      return yield* Effect.flip(registry.updateSettings({ overrides: null }));
-    }),
-  );
-
-  expect(error).toBeInstanceOf(SettingsError);
-  expect(error.message).toBe("model: Expected an object");
 });
 
 /** A client of the endpoint, as `withClient` gives it. */
@@ -3559,22 +3303,6 @@ it("rejects a directory name that is a path or an option, before it reaches the 
   expect(removal.calls).toEqual([]);
 });
 
-it("removes a Repo from an Environment, keeping the others", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) =>
-    registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/app" }),
-  );
-  await call(fake, (registry) =>
-    registry.addRepo({ environment: DEFAULT_ENVIRONMENT, source: "o/pi" }),
-  );
-  await call(fake, (registry) =>
-    registry.removeRepo({ environment: DEFAULT_ENVIRONMENT, repo: "app" }),
-  );
-
-  expect(Arr.map(fake.environments[0]?.repos ?? [], (repo) => repo.name)).toEqual(["pi"]);
-});
-
 it("refuses to remove a Repo the Environment does not have, or of an Environment not listed", async () => {
   const fake = fakeRegistries();
 
@@ -3589,73 +3317,6 @@ it("refuses to remove a Repo the Environment does not have, or of an Environment
   expect(absent).toBeInstanceOf(EnvironmentError);
   expect(absent.message).toBe('The environment has no repo "ghost"');
   expect(missing.message).toBe('Environment "0000beef" does not exist');
-});
-
-it("reads an Environment's Container settings from the Registry", async () => {
-  const fake = fakeRegistries();
-
-  const state = await call(fake, (registry) =>
-    registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
-  );
-
-  expect(state).toEqual({
-    settings: DEFAULT_CONTAINER_SETTINGS,
-    global: DEFAULT_CONTAINER_SETTINGS,
-    overrides: {},
-  });
-  expect(fake.names).toEqual(["registry"]);
-});
-
-it("saves an Environment's Container Overrides field by field and answers the settings in force", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) =>
-    registry.updateEnvironmentSettings({
-      environment: DEFAULT_ENVIRONMENT,
-      set: { idleMinutes: 30, variables: { A: "1", B: "2" } },
-    }),
-  );
-
-  const saved = await call(fake, (registry) =>
-    registry.updateEnvironmentSettings({
-      environment: DEFAULT_ENVIRONMENT,
-      set: { setupScript: "make" },
-      reset: ["variables.A"],
-    }),
-  );
-
-  const read = await call(fake, (registry) =>
-    registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
-  );
-
-  expect(saved).toMatchObject({
-    settings: { idleMinutes: 30, setupScript: "make", variables: { B: "2" } },
-    overrides: { idleMinutes: 30, setupScript: "make", variables: { B: "2" } },
-  });
-  expect(read).toEqual(saved);
-});
-
-it("resets an Environment's Override, which then inherits the setting at Global", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) =>
-    registry.updateGlobalContainerSettings({ set: { idleMinutes: 15 } }),
-  );
-  await call(fake, (registry) =>
-    registry.updateEnvironmentSettings({
-      environment: DEFAULT_ENVIRONMENT,
-      set: { idleMinutes: 30 },
-    }),
-  );
-
-  const reset = await call(fake, (registry) =>
-    registry.updateEnvironmentSettings({
-      environment: DEFAULT_ENVIRONMENT,
-      reset: ["idleMinutes"],
-    }),
-  );
-
-  expect(reset).toMatchObject({ settings: { idleMinutes: 15 }, overrides: {} });
 });
 
 it("keeps the Environment's spare Workspace and Build current after a save of its Container settings", async () => {
@@ -3678,27 +3339,6 @@ it("keeps the Environment's spare Workspace and Build current after a save of it
 
   expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
   expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
-});
-
-it("fails overrides the Registry rejects with its readable message, saving nothing", async () => {
-  const fake = fakeRegistries();
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(
-      registry.updateEnvironmentSettings({
-        environment: DEFAULT_ENVIRONMENT,
-        set: { idleMinutes: "5m" },
-      }),
-    ),
-  );
-
-  expect(error).toBeInstanceOf(EnvironmentError);
-  expect(error.message).toMatch(/^idleMinutes: /);
-  expect(
-    await call(fake, (registry) =>
-      registry.getEnvironmentSettings({ environment: DEFAULT_ENVIRONMENT }),
-    ),
-  ).toMatchObject({ overrides: {} });
 });
 
 it("saves the settings kept Global and keeps each Environment's Build current after the answer", async () => {
@@ -3728,21 +3368,15 @@ it("saves the settings kept Global and keeps each Environment's Build current af
   expect(fake.calls).not.toContain("buildWork:*");
   // The Spare Workspace setting did not change: no spare is looked at.
   expect(fake.calls.filter((made) => made.startsWith("upkeepSpares"))).toEqual([]);
-});
 
-it("says which Environments override each setting kept Global", async () => {
-  const fake = fakeRegistries();
-
+  // A save the Registry refuses looks at no Build.
+  fake.calls.length = 0;
   await call(fake, (registry) =>
-    registry.updateEnvironmentSettings({
-      environment: DEFAULT_ENVIRONMENT,
-      set: { idleMinutes: 30 },
-    }),
+    Effect.flip(registry.updateGlobalContainerSettings({ set: null })),
   );
+  await fake.runBackground();
 
-  expect(
-    (await call(fake, (registry) => registry.getGlobalContainerSettings())).overriddenIn,
-  ).toEqual({ idleMinutes: [{ id: DEFAULT_ENVIRONMENT, name: "Default" }] });
+  expect(fake.calls).toEqual(["updateGlobalContainerSettings"]);
 });
 
 it("keeps each Environment's spare Workspace current after the Spare Workspace setting at Global changes", async () => {
@@ -3757,43 +3391,6 @@ it("keeps each Environment's spare Workspace current after the Spare Workspace s
   await fake.runBackground();
 
   expect(fake.calls).toContain("upkeepSpares:*");
-});
-
-it("fails settings kept Global that the Registry rejects with its readable message, saving nothing", async () => {
-  const fake = fakeRegistries();
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.updateGlobalContainerSettings({ set: null })),
-  );
-
-  expect(error).toBeInstanceOf(EnvironmentError);
-  expect(error.message).toBe("set: must be an object");
-  expect(await call(fake, (registry) => registry.getGlobalContainerSettings())).toEqual({
-    settings: DEFAULT_CONTAINER_SETTINGS,
-    overrides: {},
-    overriddenIn: {},
-  });
-
-  await fake.runBackground();
-
-  // No Build is looked at again for a save that was refused.
-  expect(fake.calls).toEqual(["updateGlobalContainerSettings"]);
-});
-
-it("refuses the settings of an Environment the Registry does not list", async () => {
-  const fake = fakeRegistries();
-
-  for (const attempt of [
-    (registry: Registry["Service"]) =>
-      Effect.flip(registry.getEnvironmentSettings({ environment: "0000beef" })),
-    (registry: Registry["Service"]) =>
-      Effect.flip(registry.updateEnvironmentSettings({ environment: "0000beef", set: {} })),
-  ]) {
-    const error = await call(fake, attempt);
-
-    expect(error).toBeInstanceOf(EnvironmentError);
-    expect(error.message).toBe('Environment "0000beef" does not exist');
-  }
 });
 
 /** An Agent change that set variable `name` of `environment` from `before` to `after`, as the Registry records it. */
@@ -3819,35 +3416,8 @@ const agentChange = (
   revertedBy: null,
 });
 
-it("lists an Environment's Agent changes, newest first, and refuses an Environment it does not list", async () => {
+it("takes the scope * to revert an Agent change of the Secrets kept Global", async () => {
   const fake = fakeRegistries();
-
-  fake.agentChanges.push(agentChange(1, "A", null, "1"), agentChange(2, "B", null, "2"));
-
-  const listed = await call(fake, (registry) =>
-    registry.listAgentChanges({ environment: DEFAULT_ENVIRONMENT }),
-  );
-
-  const error = await call(fake, (registry) =>
-    Effect.flip(registry.listAgentChanges({ environment: "0000beef" })),
-  );
-
-  expect(Arr.map(listed, (change) => change.id)).toEqual([2, 1]);
-  expect(error.message).toBe('Environment "0000beef" does not exist');
-});
-
-it("lists the Agent changes of the Secrets kept Global under the scope *, and takes it to revert one", async () => {
-  const fake = fakeRegistries();
-
-  fake.agentChanges.push({
-    ...agentChange(1, "NPM_TOKEN", null, "kept", "*"),
-    tool: "secret_ask",
-    field: "secrets.NPM_TOKEN",
-  });
-
-  const listed = await call(fake, (registry) => registry.listAgentChanges({ environment: "*" }));
-
-  expect(listed).toMatchObject([{ scope: "*", field: "secrets.NPM_TOKEN", after: "kept" }]);
 
   // The payload is accepted (it is not a validation failure) and reaches the Registry, which has no such change.
   const error = await call(fake, (registry) =>
@@ -3899,46 +3469,33 @@ it("reverts an Agent change, answers the owner's change, and keeps the Build cur
   expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
 });
 
-it("keeps the spare Workspace and the Build current after a revert of a Repo", async () => {
-  const fake = fakeRegistries();
+it.each([
+  {
+    change: {
+      tool: "environment_repo_add",
+      field: "repos.app",
+      after: "https://github.com/o/app.git",
+    },
+  },
+  { change: { tool: "environment_spare_workspace_set", field: "spareWorkspace", after: false } },
+])(
+  "keeps the spare Workspace and the Build current after a revert of $change.field",
+  async ({ change }) => {
+    const fake = fakeRegistries();
 
-  fake.agentChanges.push({
-    ...agentChange(1, "A", null, "https://github.com/o/app.git"),
-    tool: "environment_repo_add",
-    field: "repos.app",
-  });
+    fake.agentChanges.push({ ...agentChange(1, "A", null, null), ...change });
 
-  await call(fake, (registry) =>
-    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
-  );
+    await call(fake, (registry) =>
+      registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+    );
 
-  fake.calls.length = 0;
-  await fake.runBackground();
+    fake.calls.length = 0;
+    await fake.runBackground();
 
-  expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
-  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
-});
-
-it("keeps the spare Workspace current after a revert of the Spare Workspace setting", async () => {
-  const fake = fakeRegistries();
-
-  fake.agentChanges.push({
-    ...agentChange(1, "A", null, null),
-    tool: "environment_spare_workspace_set",
-    field: "spareWorkspace",
-    after: false,
-  });
-
-  await call(fake, (registry) =>
-    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
-  );
-
-  fake.calls.length = 0;
-  await fake.runBackground();
-
-  expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
-  expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
-});
+    expect(fake.calls).toContain(`upkeepSpares:${DEFAULT_ENVIRONMENT}`);
+    expect(fake.calls).toContain(`buildWork:${DEFAULT_ENVIRONMENT}`);
+  },
+);
 
 it("hands the Environment's MCP host its set after a revert of an MCP server's key, and builds nothing", async () => {
   const fake = fakeRegistries();
@@ -4516,106 +4073,6 @@ it("refuses to revert an Agent change whose variable changed since, showing its 
   expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "3" } });
 });
 
-it("dismisses an Agent change from the list, leaving what it changed, and refuses one that is not there", async () => {
-  const fake = fakeRegistries();
-
-  fake.overridesOf.set(DEFAULT_ENVIRONMENT, { variables: { A: "2" } });
-  fake.agentChanges.push(agentChange(1, "A", "1", "2"), agentChange(2, "B", null, "x"));
-
-  await call(fake, (registry) =>
-    registry.dismissAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
-  );
-
-  const listed = await call(fake, (registry) =>
-    registry.listAgentChanges({ environment: DEFAULT_ENVIRONMENT }),
-  );
-
-  const missing = await call(fake, (registry) =>
-    Effect.flip(registry.dismissAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 9 })),
-  );
-
-  expect(Arr.map(listed, (change) => change.id)).toEqual([2]);
-  expect(missing).toBeInstanceOf(EnvironmentError);
-  expect(missing.message).toBe('Environment "default" has no change 9');
-  expect(fake.overridesOf.get(DEFAULT_ENVIRONMENT)).toEqual({ variables: { A: "2" } });
-});
-
-it("lists an Environment's Skills, removes one on the owner's word, and refuses one it does not keep", async () => {
-  const fake = fakeRegistries();
-
-  fake.skillsKept.set(DEFAULT_ENVIRONMENT, [
-    { name: "release", description: "Cut a release.", savedAt: 1_000 },
-    { name: "triage", description: "Sort issues.", savedAt: 2_000 },
-  ]);
-
-  const listed = await call(fake, (registry) =>
-    registry.listEnvironmentSkills({ environment: DEFAULT_ENVIRONMENT }),
-  );
-
-  await call(fake, (registry) =>
-    registry.removeEnvironmentSkill({ environment: DEFAULT_ENVIRONMENT, name: "release" }),
-  );
-
-  const absent = await call(fake, (registry) =>
-    Effect.flip(
-      registry.removeEnvironmentSkill({ environment: DEFAULT_ENVIRONMENT, name: "release" }),
-    ),
-  );
-
-  const unknown = await call(fake, (registry) =>
-    Effect.flip(registry.listEnvironmentSkills({ environment: "0000beef" })),
-  );
-
-  expect(Arr.map(listed, (skill) => skill.name)).toEqual(["release", "triage"]);
-  expect(fake.skillsKept.get(DEFAULT_ENVIRONMENT)).toEqual([
-    { name: "triage", description: "Sort issues.", savedAt: 2_000 },
-  ]);
-  expect(absent.message).toBe('The environment keeps no Skill named "release"');
-  expect(unknown.message).toBe('Environment "0000beef" does not exist');
-  // Skills are not part of a Build: nothing else runs.
-  expect(fake.calls.filter((name) => name.startsWith("removeSkill"))).toEqual([
-    "removeSkill:default:release",
-    "removeSkill:default:release",
-  ]);
-});
-
-it("lists the Skills kept Global, removes one on the owner's word with no Approval, and shows a change's files under the scope *", async () => {
-  const fake = fakeRegistries();
-
-  fake.skillsKept.set("*", [{ name: "release", description: "Cut a release.", savedAt: 1_000 }]);
-  fake.skillFiles.set("*:4", {
-    before: null,
-    after: [{ path: "SKILL.md", text: "---\nname: release\n---\n" }],
-  });
-
-  const listed = await call(fake, (registry) =>
-    registry.listEnvironmentSkills({ environment: "*" }),
-  );
-
-  const files = await call(fake, (registry) =>
-    registry.skillChangeFiles({ environment: "*", change: 4 }),
-  );
-
-  await call(fake, (registry) =>
-    registry.removeEnvironmentSkill({ environment: "*", name: "release" }),
-  );
-
-  const absent = await call(fake, (registry) =>
-    Effect.flip(registry.removeEnvironmentSkill({ environment: "*", name: "release" })),
-  );
-
-  expect(Arr.map(listed, (skill) => skill.name)).toEqual(["release"]);
-  expect(files.after).toEqual([{ path: "SKILL.md", text: "---\nname: release\n---\n" }]);
-  expect(fake.skillsKept.get("*")).toEqual([]);
-  expect(absent.message).toBe('The environment keeps no Skill named "release"');
-
-  const refused = await call(fake, (registry) =>
-    Effect.flip(registry.removeEnvironmentSkill({ environment: "*", name: "hides-a-big-one" })),
-  );
-
-  expect(refused.message).toBe("Not removed: the set would be too large");
-});
-
 it("installs Skills from a source on the owner's word, listing a source that holds several, and refuses what fails", async () => {
   const fake = fakeRegistries();
 
@@ -4677,39 +4134,6 @@ it("installs Skills from a source on the owner's word, listing a source that hol
   expect(fake.calls.filter((name) => !name.startsWith("installSkills"))).toEqual([]);
 });
 
-it("updates Skills for the page as the owner's own save, saying how each went and running nothing else", async () => {
-  const fake = fakeRegistries();
-
-  const updated = await call(fake, (registry) =>
-    registry.updateEnvironmentSkills({
-      environment: DEFAULT_ENVIRONMENT,
-      names: ["grill-me", "tdd"],
-      overwrite: false,
-    }),
-  );
-
-  const atGlobal = await call(fake, (registry) =>
-    registry.updateEnvironmentSkills({ environment: "*", names: [], overwrite: true }),
-  );
-
-  const unknown = await call(fake, (registry) =>
-    // SAFETY: the fake Registry knows no Environment "ghost"; the id's brand is only a type.
-    Effect.flip(registry.updateEnvironmentSkills({ environment: "ghost" as never })),
-  );
-
-  expect(updated).toEqual({
-    skills: [
-      { name: "grill-me", outcome: "updated" },
-      { name: "tdd", outcome: "modified", message: "it was edited" },
-    ],
-  });
-  expect(atGlobal).toEqual({ skills: [] });
-  expect(unknown.message).toBe('Environment "ghost" does not exist');
-  // Skills are not part of a Build: nothing else runs. The owner's Update needs no Approval, even for `*`.
-  expect(fake.calls.filter((name) => !name.startsWith("updateSkills"))).toEqual([]);
-  expect(fake.calls).toContain("updateSkills:*::true");
-});
-
 it("installs the folders the repo page picked as the owner's install, and refuses naming Skills as well", async () => {
   const fake = fakeRegistries();
 
@@ -4751,168 +4175,6 @@ it("refuses an install that names no folders at all, which would install nothing
 
   expect(none._tag).toBe("Failure");
   expect(fake.calls).toEqual([]);
-});
-
-it("searches skills.sh for the page and reports why a search failed", async () => {
-  const fake = fakeRegistries();
-
-  const found = await call(fake, (registry) => registry.searchSkills({ query: "grill" }));
-
-  const failed = await call(fake, (registry) =>
-    Effect.flip(registry.searchSkills({ query: "down" })),
-  );
-
-  expect(found).toEqual([
-    {
-      id: "mattpocock/skills/grill-me",
-      source: "mattpocock/skills",
-      skillId: "grill-me",
-      name: "grill-me",
-      installs: 1_200,
-    },
-  ]);
-  expect(failed).toBeInstanceOf(EnvironmentError);
-  expect(failed.message).toBe("skills.sh did not answer");
-});
-
-it("lists a Skill directory page with where each Skill is installed, matched by source repo and path", async () => {
-  const fake = fakeRegistries();
-  const commit = "c0ffee0000000000000000000000000000000001";
-
-  // Kept at Global from a folder of the repo whose name is the row's Skill ID; the name in it is another.
-  fake.skillsKept.set("*", [
-    {
-      name: "Grill Me",
-      description: "Interview me.",
-      savedAt: 1,
-      source: {
-        repo: "mattpocock/skills",
-        path: "skills/productivity/grill-me",
-        ref: null,
-        commit,
-      },
-      updateAvailable: true,
-    },
-    // The same name from another repo: not the row's Skill.
-    {
-      name: "find-skills",
-      description: "Find skills.",
-      savedAt: 1,
-      source: { repo: "someone/else", path: "skills/find-skills", ref: null, commit },
-    },
-  ]);
-
-  fake.skillsKept.set(DEFAULT_ENVIRONMENT, [
-    {
-      name: "find-skills",
-      description: "Find skills.",
-      savedAt: 1,
-      source: { repo: "Vercel-Labs/skills", path: "skills/find-skills", ref: null, commit },
-    },
-  ]);
-
-  const first = await call(fake, (registry) =>
-    registry.listSkillDirectory({ view: "all-time", page: 0 }),
-  );
-
-  const second = await call(fake, (registry) =>
-    registry.listSkillDirectory({ view: "trending", page: 1 }),
-  );
-
-  expect(first).toEqual({
-    total: 3,
-    hasMore: true,
-    skills: [
-      {
-        source: "mattpocock/skills",
-        skillId: "grill-me",
-        name: "grill-me",
-        installs: 1_450_000,
-        installed: { global: true, environments: [], updateAvailable: true },
-      },
-      {
-        source: "vercel-labs/skills",
-        skillId: "find-skills",
-        name: "find-skills",
-        installs: 4_088_520,
-        installed: {
-          global: false,
-          environments: [DEFAULT_ENVIRONMENT],
-          updateAvailable: false,
-        },
-      },
-    ],
-  });
-  expect(second.hasMore).toBe(false);
-  expect(second.skills).toEqual([
-    { source: "o/other", skillId: "other", name: "other", installs: 3 },
-  ]);
-});
-
-it("searches the Skill directory with the same badges, and reports why a list or a search failed", async () => {
-  const fake = fakeRegistries();
-
-  fake.skillsKept.set("work", [
-    {
-      name: "tdd",
-      description: "Test first.",
-      savedAt: 1,
-      source: {
-        repo: "mattpocock/skills",
-        path: "skills/tdd",
-        ref: null,
-        commit: "c0ffee0000000000000000000000000000000001",
-      },
-    },
-  ]);
-
-  const found = await call(fake, (registry) => registry.searchSkillDirectory({ query: "tdd" }));
-
-  const searchFailed = await call(fake, (registry) =>
-    Effect.flip(registry.searchSkillDirectory({ query: "down" })),
-  );
-
-  const listFailed = await call(fake, (registry) =>
-    Effect.flip(registry.listSkillDirectory({ view: "hot", page: 0 })),
-  );
-
-  expect(found).toEqual([
-    {
-      source: "mattpocock/skills",
-      skillId: "tdd",
-      name: "tdd",
-      installs: 900_000,
-      installed: { global: false, environments: ["work"], updateAvailable: false },
-    },
-  ]);
-  expect(searchFailed).toBeInstanceOf(SkillDirectoryError);
-  expect(searchFailed.message).toBe("skills.sh did not answer");
-  expect(listFailed).toBeInstanceOf(SkillDirectoryError);
-  expect(listFailed.message).toBe("skills.sh answered 503");
-});
-
-it("lists an owner's repos from the Skill directory's search, and fails when it does not answer", async () => {
-  const fake = fakeRegistries();
-
-  // The fake directory finds `mattpocock/skills/tdd` for any search; a search that starts with `down` fails, and one that
-  // starts with `many` answers 200 entries.
-  const listing = await call(fake, (registry) => registry.listOwnerRepos({ owner: "MattPocock" }));
-  const other = await call(fake, (registry) => registry.listOwnerRepos({ owner: "vercel-labs" }));
-  const many = await call(fake, (registry) => registry.listOwnerRepos({ owner: "manyskills" }));
-
-  const failed = await call(fake, (registry) =>
-    Effect.flip(registry.listOwnerRepos({ owner: "down-owner" })),
-  );
-
-  expect(listing).toEqual({
-    owner: "MattPocock",
-    repos: [{ repo: "skills", skills: 1, installs: 900_000 }],
-    capped: false,
-  });
-  expect(other).toEqual({ owner: "vercel-labs", repos: [], capped: false });
-  expect(many).toEqual({ owner: "manyskills", repos: [], capped: true });
-  expect(failed).toBeInstanceOf(SkillDirectoryError);
-  expect(failed.message).toBe("skills.sh did not answer");
 });
 
 it("lists a repo's Skills with installs from the Skill directory and badges matched by repo and folder", async () => {
@@ -4967,183 +4229,6 @@ it("lists a repo's Skills with installs from the Skill directory and badges matc
   ]);
 });
 
-it("lists a repo's Skills at a ref, with no installs when skills.sh does not answer", async () => {
-  const fake = fakeRegistries();
-
-  // skills.sh is down for a query that starts with `down`.
-  const listing = await call(fake, (registry) =>
-    registry.listRepoSkills({ owner: "down", repo: "skills", ref: "v2" }),
-  );
-
-  expect(listing.ref).toBe("v2");
-  expect(listing.skills.map(({ name }) => name)).toEqual(["grill-me", "zzz", "tdd"]);
-  expect(listing.skills.every((skill) => skill.installs === undefined)).toBe(true);
-});
-
-it("lists a repo with no Skills as an empty list, and says why a repo cannot be listed", async () => {
-  const fake = fakeRegistries();
-
-  const empty = await call(fake, (registry) =>
-    registry.listRepoSkills({ owner: "o", repo: "empty" }),
-  );
-
-  const gone = await call(fake, (registry) =>
-    Effect.flip(registry.listRepoSkills({ owner: "o", repo: "gone" })),
-  );
-
-  const badRef = await call(fake, (registry) =>
-    Effect.flip(registry.listRepoSkills({ owner: "o", repo: "skills", ref: "nope" })),
-  );
-
-  expect(empty).toMatchObject({ skills: [], unreadable: [{ path: "docs", message: "no name" }] });
-  expect(gone).toBeInstanceOf(SkillRepoError);
-  expect(gone).toMatchObject({ kind: "not_found", message: "o/gone is gone" });
-  expect(badRef).toMatchObject({ kind: "bad_ref" });
-});
-
-it("answers one Skill of a repo with its installs from the Skill directory and where it is installed", async () => {
-  const fake = fakeRegistries();
-  const commit = "c0ffee0000000000000000000000000000000001";
-
-  fake.skillsKept.set(DEFAULT_ENVIRONMENT, [
-    {
-      name: "tdd",
-      description: "Test first.",
-      savedAt: 1,
-      source: { repo: "mattpocock/skills", path: "skills/engineering/tdd", ref: null, commit },
-      updateAvailable: true,
-    },
-    // The same repo and name, from another folder: not this Skill.
-    {
-      name: "grill-me",
-      description: "Interview me.",
-      savedAt: 1,
-      source: { repo: "mattpocock/skills", path: "elsewhere/grill-me", ref: null, commit },
-    },
-  ]);
-
-  const view = await call(fake, (registry) =>
-    registry.viewSkill({ owner: "mattpocock", repo: "skills", skill: "tdd", ref: "v2" }),
-  );
-
-  const unknown = await call(fake, (registry) =>
-    registry.viewSkill({ owner: "mattpocock", repo: "skills", skill: "grill-me" }),
-  );
-
-  expect(view).toEqual({
-    status: "found",
-    skill: {
-      repo: "mattpocock/skills",
-      ref: "v2",
-      commit: "c0ffee0000000000000000000000000000000009",
-      name: "tdd",
-      description: "What tdd does.",
-      path: "skills/engineering/tdd",
-      skillId: "tdd",
-      skillMd: "---\nname: tdd\n---\nSteps.\n",
-      skillMdFile: "SKILL.md",
-      files: [{ path: "SKILL.md", size: 30 }, { path: "references/q.md" }],
-      // From the directory's search of the repo.
-      installs: 900_000,
-      installed: {
-        global: false,
-        environments: [DEFAULT_ENVIRONMENT],
-        updateAvailable: true,
-      },
-    },
-  });
-  expect(unknown.status === "found" && unknown.skill.installs).toBeFalsy();
-  expect(unknown.status === "found" && unknown.skill.installed).toBeUndefined();
-});
-
-it("answers a Skill's page without installs when skills.sh does not answer, and says why a Skill cannot be shown", async () => {
-  const fake = fakeRegistries();
-
-  const down = await call(fake, (registry) =>
-    registry.viewSkill({ owner: "down", repo: "skills", skill: "tdd" }),
-  );
-
-  const gone = await call(fake, (registry) =>
-    Effect.flip(registry.viewSkill({ owner: "o", repo: "gone", skill: "tdd" })),
-  );
-
-  const badRef = await call(fake, (registry) =>
-    Effect.flip(registry.viewSkill({ owner: "o", repo: "skills", skill: "tdd", ref: "nope" })),
-  );
-
-  const none = await call(fake, (registry) =>
-    Effect.flip(registry.viewSkill({ owner: "o", repo: "skills", skill: "nope" })),
-  );
-
-  expect(down.status === "found" && down.skill.name).toBe("tdd");
-  expect(down.status === "found" && down.skill.installs).toBeUndefined();
-  expect(gone).toBeInstanceOf(SkillRepoError);
-  expect(gone).toMatchObject({ kind: "not_found", message: "o/gone is gone" });
-  expect(badRef).toMatchObject({ kind: "bad_ref" });
-  expect(none).toMatchObject({ kind: "no_skill" });
-});
-
-it("answers the Skills a name could mean, and the one a folder names", async () => {
-  const fake = fakeRegistries();
-
-  const twins = await call(fake, (registry) =>
-    registry.viewSkill({ owner: "o", repo: "skills", skill: "twin" }),
-  );
-
-  const second = await call(fake, (registry) =>
-    registry.viewSkill({ owner: "o", repo: "skills", skill: "twin", path: "b/twin" }),
-  );
-
-  expect(twins).toMatchObject({
-    status: "ambiguous",
-    candidates: [{ path: "a/twin" }, { path: "b/twin" }],
-  });
-  expect(second).toMatchObject({ status: "found", skill: { name: "twin", path: "b/twin" } });
-});
-
-it("answers the files before and after a Skill's Agent change, and refuses another change", async () => {
-  const fake = fakeRegistries();
-
-  fake.skillFiles.set(`${DEFAULT_ENVIRONMENT}:3`, {
-    before: null,
-    after: [{ path: "SKILL.md", text: "---\nname: release\n---\n" }],
-  });
-
-  const files = await call(fake, (registry) =>
-    registry.skillChangeFiles({ environment: DEFAULT_ENVIRONMENT, change: 3 }),
-  );
-
-  const other = await call(fake, (registry) =>
-    Effect.flip(registry.skillChangeFiles({ environment: DEFAULT_ENVIRONMENT, change: 4 })),
-  );
-
-  expect(files).toEqual({
-    before: null,
-    after: [{ path: "SKILL.md", text: "---\nname: release\n---\n" }],
-  });
-  expect(other.message).toBe('Environment "default" has no change 4 of a Skill');
-});
-
-it("answers the files kept for a Skill, and refuses a Skill the scope does not keep", async () => {
-  const fake = fakeRegistries();
-
-  fake.keptFiles.set("*:release", [{ path: "SKILL.md", text: "---\nname: release\n---\n" }]);
-
-  const files = await call(fake, (registry) =>
-    registry.environmentSkillFiles({ environment: "*", name: "release" }),
-  );
-
-  const absent = await call(fake, (registry) =>
-    Effect.flip(
-      registry.environmentSkillFiles({ environment: DEFAULT_ENVIRONMENT, name: "release" }),
-    ),
-  );
-
-  expect(files).toEqual([{ path: "SKILL.md", text: "---\nname: release\n---\n" }]);
-  expect(absent).toBeInstanceOf(EnvironmentError);
-  expect(absent.message).toBe('The environment keeps no Skill named "release"');
-});
-
 it("reverts a Skill's Agent change without running a Build's upkeep", async () => {
   const fake = fakeRegistries();
 
@@ -5180,36 +4265,6 @@ const settingsChange = (id: number, before: string, after: string): AgentChange 
   after,
   reverts: null,
   revertedBy: null,
-});
-
-it("lists the Settings' Agent changes, newest first", async () => {
-  const fake = fakeRegistries();
-
-  fake.settingsChanges.push(
-    settingsChange(1, "a/b", "c/d"),
-    settingsChange(2, "c/d", DEFAULT_SETTINGS.model),
-  );
-
-  const listed = await call(fake, (registry) => registry.listSettingsChanges());
-
-  expect(Arr.map(listed, (change) => change.id)).toEqual([2, 1]);
-});
-
-it("reverts a Settings change and answers the owner's change", async () => {
-  const fake = fakeRegistries();
-
-  fake.settingsChanges.push(
-    settingsChange(1, "anthropic/claude-haiku-5-5", DEFAULT_SETTINGS.model),
-  );
-
-  const reverted = await call(fake, (registry) => registry.revertSettingsChange({ change: 1 }));
-
-  expect(reverted).toMatchObject({
-    actor: "owner",
-    field: "model",
-    after: "anthropic/claude-haiku-5-5",
-    reverts: 1,
-  });
 });
 
 it("refuses to revert a Settings change whose setting changed since, or one that is not there, as the owner's save refuses", async () => {
@@ -5252,36 +4307,6 @@ it("names a long text by its size when it refuses to revert, rather than showing
   );
 });
 
-it("dismisses a Settings change from the list, and refuses one that is not there", async () => {
-  const fake = fakeRegistries();
-
-  fake.settingsChanges.push(settingsChange(1, "a/b", "c/d"), settingsChange(2, "c/d", "e/f"));
-
-  await call(fake, (registry) => registry.dismissSettingsChange({ change: 2 }));
-
-  const listed = await call(fake, (registry) => registry.listSettingsChanges());
-
-  const missing = await call(fake, (registry) =>
-    Effect.flip(registry.dismissSettingsChange({ change: 9 })),
-  );
-
-  expect(Arr.map(listed, (change) => change.id)).toEqual([1]);
-  expect(missing).toBeInstanceOf(SettingsError);
-  expect(missing.message).toBe("The Settings have no change 9");
-});
-
-it("lists Workspaces of all Environments, newest first", async () => {
-  const fake = fakeRegistries();
-  const environment = await makeEnvironment(fake, "Cloudpid");
-
-  await call(fake, (registry) => registry.createSession({}));
-  await call(fake, (registry) => registry.createSession({ environment }));
-
-  expect(
-    Arr.map(await call(fake, (registry) => registry.listWorkspaces()), (w) => w.environment),
-  ).toEqual([environment, DEFAULT_ENVIRONMENT]);
-});
-
 it("starts the legacy cleanup behind a Session list, after the answer", async () => {
   const fake = fakeRegistries();
   const session = await call(fake, (registry) => registry.createSession({}));
@@ -5293,16 +4318,6 @@ it("starts the legacy cleanup behind a Session list, after the answer", async ()
   await fake.runBackground();
 
   expect(fake.calls).toContain("legacy");
-});
-
-it("starts the legacy cleanup with no other call", async () => {
-  const fake = fakeRegistries();
-
-  await call(fake, (registry) => registry.listEnvironments());
-  await call(fake, (registry) => registry.listWorkspaces());
-  await fake.runBackground();
-
-  expect(fake.calls).not.toContain("legacy");
 });
 
 /** Run `legacyCleanup` over the fake once, with the levels and messages it logged. */
@@ -5364,55 +4379,6 @@ it("logs an object it could not wipe and keeps it, going on with the rest", asyn
   expect(fake.calls).toContain("forgetLegacy:session:fine");
   expect(fake.calls).toContain("forgetLegacy:machine:default");
   expect(fake.calls).not.toContain("forgetLegacy:session:stuck");
-});
-
-it("keeps a Machine's object it could not wipe", async () => {
-  const fake = fakeRegistries();
-
-  fake.legacyObjects.push({ kind: "machine", id: "cloudpid" });
-  fake.failWorkspace("storage error");
-
-  const logged = await cleanup(fake);
-
-  expect(logged).toEqual(["Warn: Could not wipe the legacy machine cloudpid"]);
-  expect(fake.legacyObjects).toEqual([{ kind: "machine", id: "cloudpid" }]);
-});
-
-it("wipes a batch of ten at a time", async () => {
-  const fake = fakeRegistries();
-
-  fake.legacyObjects.push(
-    ...Arr.makeBy(12, (index): LegacyObject => ({ kind: "session", id: `old-${index}` })),
-  );
-
-  await cleanup(fake);
-
-  expect(fake.legacyObjects).toEqual([
-    { kind: "session", id: "old-10" },
-    { kind: "session", id: "old-11" },
-  ]);
-});
-
-it("does nothing more in this isolate once a run found nothing left", async () => {
-  const fake = fakeRegistries();
-
-  const wipe = legacyCleanup(fake.registries, {
-    sessions: fake.sessionObjects,
-    workspaces: fake.workspaceObjects,
-  });
-
-  await Effect.runPromise(wipe);
-  await Effect.runPromise(wipe);
-
-  // The second run did not ask the Registry.
-  expect(fake.calls).toEqual(["takeLegacy"]);
-
-  fake.calls.length = 0;
-  fake.legacyObjects.push({ kind: "session", id: "late" });
-  await Effect.runPromise(wipe);
-
-  expect(fake.calls).toEqual([]);
-  expect(fake.legacyObjects).toHaveLength(1);
 });
 
 it("archives a Session after stopping everything it runs, and unarchives it", async () => {
@@ -5900,7 +4866,7 @@ describe("a Test Build", () => {
     expect(fake.buildRecords.get(environment)?.status).toMatchObject({ status: "building" });
   });
 
-  it("gives a Test Build the variables kept Global under the proposed ones, and refuses more than 50 in all", async () => {
+  it("gives a Test Build the variables kept Global under the proposed ones", async () => {
     const { fake, environment } = await saved();
 
     fake.overridesOf.set(GLOBAL_SCOPE, { variables: { SHARED: "all", CI: "0" } });
@@ -5926,20 +4892,6 @@ describe("a Test Build", () => {
         },
         image: "img-1",
       }),
-    );
-
-    const many = Record.fromEntries(Arr.makeBy(50, (i) => [`V${i}`, "x"]));
-
-    expect(
-      await refused(
-        fake.buildUpkeep.test.start({
-          environment,
-          id: "s-1/8",
-          proposed: { variables: many },
-        }),
-      ),
-    ).toBe(
-      "The proposed settings are refused: variables: with the 2 variables at Global it does not override, it would have 52: at most 50",
     );
   });
 

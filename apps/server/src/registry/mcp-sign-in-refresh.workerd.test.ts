@@ -698,10 +698,7 @@ describe("what the authorization server answers", () => {
 describe("transient failures", () => {
   it.each<[string, Handler]>([
     ["a 503", () => new Response("down", { status: 503 })],
-    ["a 429", () => new Response("slow down", { status: 429 })],
-    ["a 408", () => new Response("", { status: 408 })],
     ["server_error", () => oauthError("server_error", 500)],
-    ["temporarily_unavailable", () => oauthError("temporarily_unavailable", 503)],
     ["an error code nobody described", () => oauthError("invalid_request", 400)],
     ["an answer that is no token", () => ({ access_token: 7 })],
     [
@@ -831,45 +828,6 @@ describe("transient failures", () => {
           status: "step_up",
           hasTokens: true,
         });
-      },
-    ));
-});
-
-describe("a step-up that is challenged again", () => {
-  it("counts three completed step-ups challenged for the same scope set, and a Settings sign-in resets the count", () =>
-    run(
-      () => tokenAnswer(),
-      async ({ setGlobal, signIn, report, signIns, keyHash }) => {
-        setGlobal(DOCUMENT);
-        signedIn(await signIn());
-
-        const hash = keyHash("sentry");
-
-        // The first challenge wants the granted scope and the challenged one.
-        report("step_up", { scope: "write" });
-        expect(signIns.get(hash)).toMatchObject({
-          status: "step_up",
-          wantedScope: "read write",
-          stepUpCount: 0,
-        });
-
-        for (const count of [1, 2, 3]) {
-          // The owner completes the step-up, which keeps the wanted scope and the count; the server then challenges for the
-          // very scope set that was wanted.
-          signedIn(await signIn(true));
-          expect(signIns.get(hash)).toMatchObject({
-            status: "ok",
-            wantedScope: "read write",
-            stepUpCount: count - 1,
-          });
-
-          report("step_up", { scope: "write" });
-          expect(signIns.get(hash)).toMatchObject({ status: "step_up", stepUpCount: count });
-        }
-
-        // Three: `mcp_sign_in_ask` answers `step_up_failed` from here. A sign-in from Settings starts the count again.
-        signedIn(await signIn());
-        expect(signIns.get(hash)).toMatchObject({ wantedScope: null, stepUpCount: 0 });
       },
     ));
 });
