@@ -5,7 +5,7 @@
 // (`packages/extensions/src/settings-reads.ts`).
 // @effect-diagnostics missingPipeableSignature:off
 import * as Schema from "effect/Schema";
-import { FieldPageFields, PageOffset, SettingsField } from "./field-page.ts";
+import { FieldPageFields, NextField, PageOffset, SettingsField } from "./field-page.ts";
 import { InstructionsOutput, SettingOutput, SettingsGetOutput } from "./settings-output.ts";
 import { GLOBAL_SETTINGS_SCOPE, ScopeRef, SettingsScope } from "./scope.ts";
 import { READ_ONLY } from "./surface.ts";
@@ -36,6 +36,7 @@ const optional = <S extends Schema.Top>(schema: S) => Schema.optionalKey(schema)
  */
 export const SettingsGetEndpointOutput = Schema.Struct({
   ...FieldPageFields,
+  ...NextField,
   scope: optional(
     ScopeRef.annotate({ description: "The Scope the settings are of: Global, or an Environment" }),
   ),

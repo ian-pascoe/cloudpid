@@ -15,6 +15,7 @@ import {
   EnvironmentListEndpointOutput,
   EnvironmentListOutput,
   ENVIRONMENT_FIELD_PATTERN,
+  ENVIRONMENT_FIELD_WORDS,
   GLOBAL_ID,
   GLOBAL_NAME,
   type HARNESS_TOOLS,
@@ -71,8 +72,7 @@ const CUT_NOTE = cutNote("pass `field` to read a long text whole.");
 const LIST_CUT_NOTE = cutNote("environment_get shows one Environment.");
 
 /** The sentence that says some of an answer is cut, and how to read it whole. */
-const PASS_FIELD =
-  "Some of this is cut: pass `field` (setupScript, startScript, toolchains, ignore or variables.<NAME>) to read a long text whole.";
+const PASS_FIELD = `Some of this is cut: pass \`field\` (${ENVIRONMENT_FIELD_WORDS}) to read a long text whole.`;
 
 /** A Build's standing in a line, from its value. */
 const buildWords = (build: typeof BuildOutput.Type): string => {
@@ -232,7 +232,7 @@ const readField = (
     // The tool's schema holds `field` to the pattern; the core holds it again, as a path it can read.
     if (!ENVIRONMENT_FIELD_PATTERN.test(field)) {
       return yield* EnvironmentsError.make({
-        message: `${JSON.stringify(field)} is not a field to read: pass setupScript, startScript, toolchains, ignore or variables.<NAME>.`,
+        message: `${JSON.stringify(field)} is not a field to read: pass ${ENVIRONMENT_FIELD_WORDS}.`,
         code: INVALID_ARGUMENT,
       });
     }

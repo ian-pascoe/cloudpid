@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
@@ -37,6 +38,7 @@ import {
   spareUpkeep,
 } from "./registry/rpc.ts";
 import { PushConfigLive } from "./push/config.ts";
+import { APP_ORIGIN_VAR } from "./deployment.ts";
 import { attachmentRoute, isMcpRoute } from "./routes.ts";
 import { GitHubAppConfig, GitHubAppConfigLive } from "./github/config.ts";
 import { serveOwnerCalls } from "./same-origin.ts";
@@ -208,6 +210,9 @@ export const serverInit = Effect.gen(function* () {
   const mcpRoute = serveMcpRoute({
     registries,
     sessions,
+    mcpHosts,
+    // The Self-use rule's origin: set on live stages only, never taken from a request.
+    appOrigin: Predicate.isString(worker[APP_ORIGIN_VAR]) ? worker[APP_ORIGIN_VAR] : undefined,
     objects: { workspaces, sessions: sessionObjects, triggers },
     spares,
     builds,

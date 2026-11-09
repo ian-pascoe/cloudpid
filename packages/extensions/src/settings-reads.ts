@@ -49,7 +49,7 @@ const CUT_NOTE = cutNote('pass `field: "instructions"` to read the Instructions 
 type Whole = Required<
   Omit<
     typeof SettingsGetEndpointOutput.Type,
-    "id" | "field" | "text" | "offset" | "total_chars" | "next_offset"
+    "id" | "field" | "text" | "offset" | "total_chars" | "next_offset" | "next"
   >
 >;
 

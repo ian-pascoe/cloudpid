@@ -184,8 +184,9 @@ const keptFor = (
 export const environmentReads = (
   registry: EnvironmentReadsRegistry,
 ): Pick<EnvironmentsService, "list" | "get" | "global"> => {
+  // Asked when a read runs, not when the reads are built: the endpoint builds them once per request.
   const buildsById = Effect.map(
-    registry.listBuilds(),
+    Effect.suspend(() => registry.listBuilds()),
     (builds) => new Map(Arr.map(builds, ({ environment, build }) => [environment, build] as const)),
   );
 

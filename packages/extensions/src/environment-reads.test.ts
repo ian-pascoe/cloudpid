@@ -6,7 +6,7 @@
 import type { ContainerSettings } from "@cloudpid/config";
 import {
   ENDPOINT_STRUCTURED_BYTES,
-  ENDPOINT_TEXT_CHARS,
+  ENDPOINT_CORE_TEXT_CHARS,
   EnvironmentGetEndpointOutput,
   EnvironmentListEndpointOutput,
   MAX_PAGE_BYTES,
@@ -100,7 +100,7 @@ describe("environment_list on the endpoint", () => {
         expect(answer.text).not.toContain("this Session's");
         expect(answer.text).toContain("default");
         expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
-        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
       }),
     ));
 
@@ -126,9 +126,9 @@ describe("environment_list on the endpoint", () => {
         expect(value.environments_truncated).toBe(true);
         expect(value.environments.length).toBeLessThan(400);
         expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
-        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
         expect(answer.text).toContain(
-          "[Cut at 12,000 characters: environment_get shows one Environment.]",
+          "[Cut at 11,500 characters: environment_get shows one Environment.]",
         );
         expect(answer.text).not.toContain("field");
       }),
@@ -225,7 +225,7 @@ describe("environment_get on the endpoint", () => {
         expect(value.settings?.setup_script.value_truncated).toBe(true);
         expect(value.settings_truncated).toBe(true);
         expect(answer.text).toContain('pass field "setupScript"');
-        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
         expect(value.settings?.setup_script.value.length).toBeLessThan(5_000 * 11);
       }),
     ));
@@ -273,7 +273,7 @@ describe("environment_get on the endpoint", () => {
         const answer = yield* getEndpoint(servicesOf([huge]), { id: "default" });
 
         expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
-        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
         expect(decoded(answer.structured).skills_truncated).toBe(true);
         expect(answer.text).toContain("pass `field`");
       }),

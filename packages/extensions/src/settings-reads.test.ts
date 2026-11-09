@@ -6,7 +6,7 @@
 import { DEFAULT_SETTINGS, type Settings } from "@cloudpid/config";
 import {
   ENDPOINT_STRUCTURED_BYTES,
-  ENDPOINT_TEXT_CHARS,
+  ENDPOINT_CORE_TEXT_CHARS,
   GLOBAL_SETTINGS_SCOPE,
   MAX_PAGE_BYTES,
   MAX_PAGE_CHARS,
@@ -98,7 +98,7 @@ describe("settings_get on the endpoint", () => {
           expect(JSON.stringify(answer.structured)).not.toContain("is_own");
           expect(answer.text).not.toContain("This Session");
           expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
-          expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+          expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
         }
 
         expect(decoded(global.structured)).toMatchObject({
@@ -136,7 +136,7 @@ describe("settings_get on the endpoint", () => {
         expect(value.instructions?.global.bytes).toBe(65_536);
         expect(value.instructions?.environment?.text_truncated).toBe(true);
         expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
-        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
         expect(answer.text).toContain('Pass field "instructions"');
       }),
     ));

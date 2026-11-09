@@ -6,7 +6,7 @@
 import type { McpExposure, McpResolvedServer } from "@cloudpid/config";
 import {
   ENDPOINT_STRUCTURED_BYTES,
-  ENDPOINT_TEXT_CHARS,
+  ENDPOINT_CORE_TEXT_CHARS,
   GLOBAL_SETTINGS_SCOPE,
   SettingsMcpGetEndpointOutput,
   SettingsMcpListEndpointOutput,
@@ -153,7 +153,7 @@ describe("settings_mcp_list on the endpoint", () => {
         expect(value.servers_truncated).toBe(true);
         expect(value.servers.length).toBeLessThan(300);
         expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
-        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
         expect(answer.text).toContain("Cut");
       }),
     ));
@@ -202,7 +202,7 @@ describe("settings_mcp_get on the endpoint", () => {
         expect(value.layers.environment).toBeNull();
         expect(value.layers.truncated).toBe(true);
         expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
-        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
         expect(answer.text).toContain("too large to show here");
       }),
     ));
@@ -217,7 +217,7 @@ describe("settings_mcp_get on the endpoint", () => {
         expect(value.tools_truncated).toBe(true);
         expect(value.tools.length).toBeLessThan(500);
         expect(storedBytes(answer.structured)).toBeLessThanOrEqual(ENDPOINT_STRUCTURED_BYTES);
-        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_TEXT_CHARS);
+        expect(answer.text.length).toBeLessThanOrEqual(ENDPOINT_CORE_TEXT_CHARS);
       }),
     ));
 

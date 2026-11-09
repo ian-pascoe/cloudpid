@@ -10,6 +10,12 @@ import * as Effect from "effect/Effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { describe, expect, it } from "vitest";
 import { AccessCaller, type Caller } from "../access.ts";
+import {
+  type HostCalls,
+  harnessHosts,
+  harnessRegistry,
+  type RegistryCalls,
+} from "../harness/registry.fixture.ts";
 import { serveMcpRoute, type McpEndpoint } from "./endpoint.ts";
 
 type Serve = McpEndpoint["server"]["serve"];
@@ -129,6 +135,14 @@ describe("the request McpServer gets", () => {
         "importAppend",
         "importFinish",
         "importCancel",
+        "harness",
+      ],
+      harness: [
+        "environment_list",
+        "environment_get",
+        "settings_get",
+        "settings_mcp_list",
+        "settings_mcp_get",
       ],
     });
   });
@@ -387,6 +401,123 @@ describe("waiting on a Session through the target", () => {
 
     expect(asked.statuses).toEqual([undefined]);
     expect(result).toMatchObject({ ok: true, value: { interrupted: true, cursor: "c2" } });
+  });
+});
+
+/** The arguments of a management tool, as the cases here send them. */
+type HarnessInput = Readonly<Record<string, string | number>>;
+
+/** The target's `harness`, which the test calls as `McpServer` would over RPC. */
+type Harness = {
+  readonly harness: (request: {
+    readonly tool: string;
+    readonly input: HarnessInput;
+    readonly via: { readonly client: { readonly name: string }; readonly era: "modern" };
+  }) => Promise<{
+    readonly ok: boolean;
+    readonly value?: { readonly text: string; readonly structured: object };
+    readonly error?: { readonly code: string };
+  }>;
+};
+
+/** The route over a stand-in Registry and McpHost namespace, and its target's `harness`. */
+const harnessThrough = async () => {
+  const registryCalls: RegistryCalls = [];
+  const hostCalls: HostCalls = [];
+  const targets: Array<Served["target"]> = [];
+
+  const base = endpointOf((_request, target) => {
+    targets.push(target);
+
+    return Promise.resolve(new Response(null, { status: 202 }));
+  });
+
+  const registry = harnessRegistry(registryCalls);
+
+  // SAFETY: serving the route and calling `harness` read the Registry and the hosts through the stand-ins' methods only.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- see above.
+  const endpoint = {
+    ...base,
+    registries: { getByName: () => registry },
+    mcpHosts: harnessHosts(hostCalls),
+    appOrigin: "https://cloudpid.test",
+  } as unknown as McpEndpoint;
+
+  await call(endpoint, mcpRequest(), { kind: "owner", clientId: "dcr-1" });
+
+  // SAFETY: the route's target is its own class, whose `harness` is the one `Harness` names.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- see above.
+  const target = targets[0] as unknown as Harness;
+
+  return {
+    registryCalls,
+    hostCalls,
+    ask: (tool: string, input: HarnessInput) =>
+      target.harness({ tool, input, via: { client: { name: "pi" }, era: "modern" } }),
+  };
+};
+
+describe("the management tools through the target", () => {
+  it("answers all five reads from the Registry and the hosts alone, with nothing marked a Session's own", async () => {
+    const { ask, registryCalls, hostCalls } = await harnessThrough();
+
+    const asked: ReadonlyArray<readonly [string, HarnessInput]> = [
+      ["environment_list", {}],
+      ["environment_get", { id: "default" }],
+      ["settings_get", { scope: "default" }],
+      ["settings_mcp_list", { scope: "default" }],
+      ["settings_mcp_get", { scope: "default", name: "docs" }],
+    ];
+
+    for (const [tool, input] of asked) {
+      const answer = await ask(tool, input);
+
+      expect(answer.ok, tool).toBe(true);
+      expect(answer.value?.text.length, tool).toBeGreaterThan(0);
+      expect(answer.value?.text, tool).not.toContain("this Session's");
+
+      const structured = JSON.stringify(answer.value?.structured);
+
+      for (const mark of ["is_own", "own_environment", '"current"']) {
+        expect(structured, `${tool} ${mark}`).not.toContain(mark);
+      }
+    }
+
+    // Only reads reached the Registry, and only the Environment's own host was asked.
+    expect(registryCalls.length).toBeGreaterThan(0);
+    expect(registryCalls.every((method) => /^(list|get|mcp)/.test(method))).toBe(true);
+    expect(new Set(hostCalls.map(({ host }) => host))).toEqual(new Set(["mcp:default"]));
+  });
+
+  it("answers an id that names nothing as not_found, and a tool it does not serve as unsupported", async () => {
+    const { ask } = await harnessThrough();
+
+    expect(await ask("environment_get", { id: "ghost" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(await ask("settings_get", { scope: "ghost" })).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
+    expect(await ask("environment_variable_set", { id: "default" })).toMatchObject({
+      ok: false,
+      error: { code: "unsupported" },
+    });
+  });
+
+  it("reads a page of a field, whole, with where the next begins", async () => {
+    const { ask } = await harnessThrough();
+
+    const answer = await ask("environment_get", { id: "default", field: "setupScript" });
+
+    expect(answer.value?.structured).toMatchObject({
+      id: "default",
+      field: "setupScript",
+      offset: 0,
+      next_offset: 40_000,
+    });
+    expect(answer.value?.text).toContain("pass offset 40000 for the next page");
   });
 });
 

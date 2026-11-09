@@ -285,9 +285,20 @@ export const ApiDescription = Schema.Struct({
    * uses its own version id then (`docs/architecture/mcp-endpoint.md` → The handler).
    */
   version: Schema.optionalKey(Schema.String),
+  /**
+   * The management tools `harness` serves (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools → The
+   * dispatcher and `describe().harness`): `McpServer` offers one only when it knows its declaration and it is listed here.
+   * An older `Server` sends none, which reads as serving none ({@link harnessServed}).
+   */
+  harness: Schema.String.pipe(Schema.Array, Schema.optionalKey),
 });
 
 export type ApiDescription = typeof ApiDescription.Type;
+
+/** The management tools `description` says `harness` serves: none from an older `Server`. */
+export const harnessServed = (
+  description: Pick<ApiDescription, "harness">,
+): ReadonlyArray<string> => description.harness ?? [];
 
 /** The limits `describe()` reports. */
 export const MCP_API_LIMITS: ApiDescription["limits"] = {
@@ -311,7 +322,35 @@ export const MCP_API_OPERATIONS = [
   "importAppend",
   "importFinish",
   "importCancel",
+  "harness",
 ] as const;
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The management tools (`docs/architecture/mcp-endpoint.md` → Environment and Settings tools)
+
+/**
+ * `harness`'s argument, as `McpApi.harness` takes it: the tool's name, its input as the caller sent it (the dispatcher
+ * decodes it again with the shared schema), and, for a tool that changes something, the caller's `request_id`.
+ */
+export const HarnessRequest = Schema.Struct({
+  tool: Schema.String,
+  input: Schema.Json,
+  requestId: Schema.optionalKey(Schema.String),
+  via: Via,
+});
+
+export type HarnessRequest = typeof HarnessRequest.Type;
+
+/**
+ * What `harness` answers: the tool's result text and its structured value, which `McpServer` only wraps. The structured
+ * value is a flat object (`@cloudpid/protocol/harness-tools`), so both MCP lanes carry the same shape.
+ */
+export const HarnessAnswer = Schema.Struct({
+  text: Schema.String,
+  structured: Schema.Json,
+});
+
+export type HarnessAnswer = typeof HarnessAnswer.Type;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Cursors
@@ -972,6 +1011,8 @@ export interface McpApi {
   importAppend(request: ImportAppendRequest): Promise<ApiResult<ImportAppendResult>>;
   importFinish(request: ImportFinishRequest): Promise<ApiResult<ImportFinishResult>>;
   importCancel(request: ImportCancelRequest): Promise<ApiResult<ImportCancelResult>>;
+  /** The management tools `describe().harness` lists. */
+  harness(request: HarnessRequest): Promise<ApiResult<HarnessAnswer>>;
   /**
    * Present when the caller is over its rate; `McpServer` answers `rate_limited` with it. A getter of the `RpcTarget`,
    * read once per `tools/call` (and counted then): over RPC it is awaited, so an older `Server` that has none reads as

@@ -84,6 +84,10 @@ export const apiTarget = async (
       return this.#run(this.#service.importCancel(request));
     }
 
+    harness(request: Parameters<McpApi["harness"]>[0]) {
+      return this.#run(this.#service.harness(request));
+    }
+
     /** Over RPC `await api.limited`: counts the call, and is present only when the caller is over its rate. */
     get limited() {
       return this.#run(this.#service.limited);
