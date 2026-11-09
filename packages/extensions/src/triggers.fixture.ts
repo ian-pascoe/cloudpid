@@ -121,11 +121,21 @@ export const fakeTriggers = (
   const patched = (definition: TriggerDefinition, patch: TriggerPatch): TriggerDefinition => {
     const { base: _base, model: _model, thinking: _thinking, ...rest } = definition;
 
+    // A `match` patch changes a webhook source's filter alone (null: none).
+    const held = patch.source ?? definition.source;
+
+    const source =
+      patch.match === undefined || held.type !== "webhook"
+        ? held
+        : patch.match === null
+          ? { type: held.type, format: held.format }
+          : { ...held, match: patch.match };
+
     const next: Types.Mutable<TriggerDefinition> = {
       ...rest,
       name: patch.name ?? definition.name,
       message: patch.message ?? definition.message,
-      source: patch.source ?? definition.source,
+      source,
       whenBusy: patch.whenBusy ?? definition.whenBusy,
     };
 

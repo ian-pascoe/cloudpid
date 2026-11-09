@@ -4,7 +4,14 @@
 // the fields that already had their value, the owner's Approval) with the Trigger after it. A Trigger message is cut as
 // `boundText` cuts it, and the list as `boundItems` cuts it, each with a `<field>_truncated` flag. Times are ISO 8601.
 // @effect-diagnostics missingPipeableSignature:off globalDate:off -- plain functions that write times as ISO text.
-import { type EnvironmentRef, scheduleOf, type TriggerDefinition } from "@cloudpid/protocol";
+import {
+  type EnvironmentRef,
+  scheduleOf,
+  type TriggerDefinition,
+  TriggerMatch,
+  webhookOf,
+  WebhookFormat,
+} from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import {
@@ -48,11 +55,26 @@ const TriggerSummaryFields = {
       zone: Schema.String.annotate({ description: "The IANA time zone it is read in" }),
     }),
   ).annotate({
-    description: "The Schedule it fires on; null for a source this version can't read",
+    description:
+      "The Schedule it fires on; null for a webhook Trigger, and for a source this version can't read",
+  }),
+  webhook: Schema.NullOr(
+    Schema.Struct({
+      format: WebhookFormat.annotate({
+        description: '"github" or "standard": how its deliveries are signed',
+      }),
+      match: Schema.NullOr(TriggerMatch).annotate({
+        description:
+          "Only deliveries that match start a Session: dotted body paths, each with the values it may have (every path must match, any of its values will do); null for none, so every delivery signed right fires",
+      }),
+    }),
+  ).annotate({
+    description:
+      "The webhook it fires on, whose URL and Signing secret are never given to you (the user has them on the Trigger's page); null for a Schedule's Trigger",
   }),
   when_busy: Schema.String.annotate({
     description:
-      '"skip": a Fire while the last Fire\'s Session (a Workspace trigger\'s: any Session in its Workspace) is still at work is skipped; "start": it starts a Session anyway; "wait" (a Workspace trigger\'s default): it stays pending until the Workspace is idle',
+      '"skip" (an Environment trigger\'s default for a Schedule): a Fire while the last Fire\'s Session (a Workspace trigger\'s: any Session in its Workspace) is still at work is skipped; "start" (an Environment trigger\'s default for a webhook): it starts a Session anyway; "wait" (a Workspace trigger\'s default): it stays pending until the Workspace is idle',
   }),
   base: Schema.NullOr(Schema.String).annotate({
     description:
@@ -109,6 +131,7 @@ export const triggerSummaryOutput = (
   next: ReadonlyArray<number>,
 ): typeof TriggerSummaryOutput.Type => {
   const schedule = scheduleOf(definition);
+  const webhook = webhookOf(definition);
 
   return {
     id: definition.id,
@@ -117,6 +140,8 @@ export const triggerSummaryOutput = (
     environment: scopeRef(environment),
     workspace: definition.workspace === undefined ? null : { ...definition.workspace },
     schedule: schedule === undefined ? null : { cron: schedule.cron, zone: schedule.zone },
+    webhook:
+      webhook === undefined ? null : { format: webhook.format, match: webhook.match ?? null },
     when_busy: definition.whenBusy,
     base: definition.base ?? null,
     model: definition.model ?? null,

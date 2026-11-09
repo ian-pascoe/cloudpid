@@ -360,6 +360,67 @@ describe("the owner's revert of a Trigger change", () => {
     });
   });
 
+  it("records a webhook Trigger's new match, and the owner's revert puts the old one back", async () => {
+    const registry = fresh();
+    const old = { event: ["workflow_run"], "workflow_run.conclusion": ["failure"] };
+    const wanted = { event: ["push"] };
+
+    await registry.agentCreateTrigger(
+      "t1",
+      { ...weekly, source: { type: "webhook", format: "github", match: old } },
+      author("trigger_create", true),
+      1_000,
+    );
+
+    const changed = await registry.agentUpdateTrigger(
+      "t1",
+      { match: wanted },
+      {
+        ...weeklyValue,
+        source: { type: "webhook", format: "github", match: old },
+        whenBusy: "start",
+      },
+      author("trigger_match_set", true),
+      2_000,
+    );
+
+    if (changed.status !== "changed") throw new Error("not changed");
+
+    expect(changed.change).toMatchObject({
+      tool: "trigger_match_set",
+      field: triggerField("t1"),
+      before: { source: { type: "webhook", format: "github", match: old } },
+      after: { source: { type: "webhook", format: "github", match: wanted } },
+    });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      source: { type: "webhook", format: "github", match: wanted },
+    });
+
+    expect(
+      await registry.revertAgentChange(DEFAULT_ENVIRONMENT, changed.change.id, 3_000),
+    ).toMatchObject({
+      status: "reverted",
+    });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      source: { type: "webhook", format: "github", match: old },
+    });
+
+    // null takes the match away.
+    const cleared = await registry.agentUpdateTrigger(
+      "t1",
+      { match: null },
+      undefined,
+      author("trigger_match_set", true),
+      4_000,
+    );
+
+    expect(cleared.status).toBe("changed");
+    expect((await registry.triggerDefinition("t1"))?.source).toEqual({
+      type: "webhook",
+      format: "github",
+    });
+  });
+
   it("removes a Trigger the agent made", async () => {
     const { registry, creation } = await made();
 

@@ -606,6 +606,383 @@ describe("the reads", () => {
   });
 });
 
+const MATCH = { event: ["workflow_run"], "workflow_run.conclusion": ["failure", "timed_out"] };
+
+const CI = {
+  owner: "default",
+  name: "CI failures",
+  message: "Find out why the run failed and say what to fix.",
+  webhook: { format: "github" },
+  match: MATCH,
+  reason: "the user wants failed CI runs looked into",
+};
+
+/** A webhook Trigger held by the fake: it takes the failed workflow runs of GitHub. */
+const hook = (fields: Partial<TriggerDefinition> = {}): TriggerDefinition =>
+  weekly({
+    id: "h1",
+    name: "CI failures",
+    message: CI.message,
+    source: { type: "webhook", format: "github", match: MATCH },
+    whenBusy: "start",
+    ...fields,
+  });
+
+describe("a webhook Trigger", () => {
+  it("is made once the owner approves a card showing its format and match, and gives no URL or secret", async () => {
+    const { call, triggers, logged, asked } = await setUp();
+
+    const { result, text } = await call("trigger_create", CI);
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({
+      tool: "trigger_create",
+      change: "Create a Trigger",
+      before: "None",
+      expected: { id: "0190-a" },
+    });
+    expect(asked[0]?.after).toContain("Webhook: a webhook (github format)");
+    expect(asked[0]?.after).toContain(
+      'Match: "event" is "workflow_run"; "workflow_run.conclusion" is "failure" or "timed_out"',
+    );
+    expect(asked[0]?.after).toContain("when busy: start");
+    expect(asked[0]?.after).not.toContain("Schedule:");
+    expect(asked[0]?.notes?.join("\n")).toContain("shown only to the user");
+    expect(asked[0]?.notes?.join("\n")).not.toContain("Next Fires");
+
+    for (const note of asked[0]?.notes ?? []) expect(note.length).toBeLessThanOrEqual(200);
+
+    expect(triggers.held.get("0190-a")).toMatchObject({
+      environment: "default",
+      source: { type: "webhook", format: "github", match: MATCH },
+      whenBusy: "start",
+    });
+    expect(triggers.changes).toMatchObject([
+      { field: triggerField("0190-a"), before: null, approved: true },
+    ]);
+    expect(logged).toHaveLength(1);
+
+    expect(text).toContain('made the Trigger "CI failures" (id 0190-a)');
+    expect(text).toContain("Trigger's page");
+    expect(text).toContain("never shown to you");
+    expect(text).not.toContain("/hooks/");
+    expect(text).not.toContain("Next Fires");
+
+    const output = decodeChange(result.structuredOutput);
+
+    expect(output.trigger).toMatchObject({
+      id: "0190-a",
+      schedule: null,
+      webhook: { format: "github", match: MATCH },
+      next_fires: [],
+      when_busy: "start",
+    });
+    expect(JSON.stringify(result.structuredOutput)).not.toContain("/hooks/");
+  });
+
+  it("is made without a match, which takes every delivery signed right", async () => {
+    const { call, triggers, asked } = await setUp();
+
+    const { match: _match, ...unfiltered } = CI;
+
+    const { result } = await call("trigger_create", {
+      ...unfiltered,
+      webhook: { format: "standard" },
+    });
+
+    expect(asked[0]?.after).toContain("Webhook: a webhook (standard format)");
+    expect(asked[0]?.after).toContain(
+      "Match: none: every delivery that is signed right starts a Session",
+    );
+    expect(triggers.held.get("0190-a")?.source).toEqual({ type: "webhook", format: "standard" });
+    expect(decodeChange(result.structuredOutput).trigger).toMatchObject({
+      webhook: { format: "standard", match: null },
+    });
+  });
+
+  it("refuses a source it can't make, and a match it can't keep, without asking", async () => {
+    const { call, asked, triggers } = await setUp();
+
+    const { match: _match, webhook: _webhook, ...bare } = CI;
+
+    const refused = [
+      // Neither a schedule nor a webhook.
+      bare,
+      // Both.
+      { ...CI, schedule: WEEKLY.schedule },
+      // A match belongs to a webhook.
+      { ...WEEKLY, match: MATCH },
+      // A path of no name, a path of an empty segment, a path that lists no values.
+      { ...CI, match: { "": ["x"] } },
+      { ...CI, match: { "a..b": ["x"] } },
+      { ...CI, match: { event: [] } },
+      // A Secret held, or a deploy credential, in a value.
+      { ...CI, match: { "head.ref": [HELD] } },
+      { ...CI, match: { "head.ref": [GITHUB_TOKEN] } },
+    ];
+
+    for (const args of refused) {
+      const { error, text } = await call("trigger_create", args);
+
+      expect(error).toBe(true);
+      expect(text).toContain("Nothing was asked or saved");
+    }
+
+    expect(asked).toEqual([]);
+    expect(triggers.held.size).toBe(0);
+  });
+
+  it("is listed and read with its format and match, and without a Schedule", async () => {
+    const { call } = await setUp([hook(), weekly()]);
+
+    const listed = await call("trigger_list", {});
+
+    expect(listed.text).toContain("a webhook (github format)");
+    expect(listed.text).not.toContain("/hooks/");
+    expect(decodeList(listed.result.structuredOutput)).toMatchObject({
+      triggers: [
+        { id: "h1", schedule: null, webhook: { format: "github", match: MATCH } },
+        { id: "t1", webhook: null, schedule: { cron: "0 9 * * MON" } },
+      ],
+    });
+
+    const got = await call("trigger_get", { id: "h1" });
+
+    expect(got.text).toContain("Webhook: a webhook (github format)");
+    expect(got.text).toContain('Match: "event" is "workflow_run"');
+    expect(got.text).toContain("Signing secret are the user's alone");
+    expect(got.text).not.toContain("Next Fires");
+    expect(decodeTrigger(got.result.structuredOutput)).toMatchObject({
+      webhook: { format: "github", match: MATCH },
+      next_fires: [],
+    });
+  });
+
+  it("trigger_match_set shows the match before and after, and changes it once approved", async () => {
+    const { call, triggers, asked, logged } = await setUp([hook()]);
+
+    const { result, text } = await call("trigger_match_set", {
+      id: "h1",
+      match: { event: ["workflow_run"], "workflow_run.head_branch": ["main"] },
+      reason: "only the main branch matters",
+    });
+
+    expect(asked[0]).toMatchObject({
+      tool: "trigger_match_set",
+      change: "Change a Trigger's match",
+      before: '"event" is "workflow_run"; "workflow_run.conclusion" is "failure" or "timed_out"',
+      after: '"event" is "workflow_run"; "workflow_run.head_branch" is "main"',
+      reason: "only the main branch matters",
+    });
+    expect(text).toContain("The user approved");
+    expect(text).toContain("answered and counted");
+    expect(triggers.held.get("h1")?.source).toEqual({
+      type: "webhook",
+      format: "github",
+      match: { event: ["workflow_run"], "workflow_run.head_branch": ["main"] },
+    });
+    expect(triggers.changes).toMatchObject([
+      { field: triggerField("h1"), approved: true, author: { tool: "trigger_match_set" } },
+    ]);
+    expect(logged).toHaveLength(1);
+    expect(decodeChange(result.structuredOutput)).toMatchObject({
+      approval: { approved: true },
+      trigger: { webhook: { match: { "workflow_run.head_branch": ["main"] } } },
+    });
+  });
+
+  it("trigger_match_set takes the match away with null or an empty one", async () => {
+    const { call, triggers, asked } = await setUp([hook(), hook({ id: "h2" })]);
+
+    await call("trigger_match_set", { id: "h1", match: null, reason: "take everything" });
+
+    expect(asked[0]).toMatchObject({
+      after: "none: every delivery that is signed right starts a Session",
+    });
+    expect(asked[0]?.notes?.join("\n")).toContain("No match");
+    expect(triggers.held.get("h1")?.source).toEqual({ type: "webhook", format: "github" });
+
+    await call("trigger_match_set", { id: "h2", match: {}, reason: "take everything" });
+
+    expect(triggers.held.get("h2")?.source).toEqual({ type: "webhook", format: "github" });
+  });
+
+  it("trigger_match_set asks nothing for the match the Trigger has, nor for a bad one", async () => {
+    const { call, asked, triggers } = await setUp([hook()]);
+
+    const same = await call("trigger_match_set", { id: "h1", match: MATCH, reason: "r" });
+
+    expect(same.text).toContain("has that match already");
+    expect(same.text).toContain("nothing was changed or recorded");
+
+    for (const match of [{ "a..b": ["x"] }, { event: [] }, { "head.ref": [HELD] }]) {
+      expect((await call("trigger_match_set", { id: "h1", match, reason: "r" })).error).toBe(true);
+    }
+
+    expect(
+      (await call("trigger_match_set", { id: "nope", match: null, reason: "r" })).text,
+    ).toContain("trigger_list");
+    expect(asked).toEqual([]);
+    expect(triggers.changes).toEqual([]);
+  });
+
+  it("trigger_match_set compares matches as the Trigger holds them, not as the card reads them", async () => {
+    // Two values read as one on a card that doesn't quote them; they are two matches.
+    const { call, triggers, asked } = await setUp([
+      hook({ source: { type: "webhook", format: "github", match: { a: ["x or y"] } } }),
+    ]);
+
+    await call("trigger_match_set", { id: "h1", match: { a: ["x", "y"] }, reason: "two values" });
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ before: '"a" is "x or y"', after: '"a" is "x" or "y"' });
+    expect(triggers.held.get("h1")?.source).toMatchObject({ match: { a: ["x", "y"] } });
+
+    // The same paths in another order is the same match: nothing is asked.
+    const { call: again, asked: none } = await setUp([
+      hook({ source: { type: "webhook", format: "github", match: { a: ["x"], b: ["y"] } } }),
+    ]);
+
+    const same = await again("trigger_match_set", {
+      id: "h1",
+      match: { b: ["y"], a: ["x"] },
+      reason: "r",
+    });
+
+    expect(same.text).toContain("has that match already");
+    expect(none).toEqual([]);
+  });
+
+  it("quotes a match's paths and values on the card, so none can fake a line or blur two values", async () => {
+    const { call, asked } = await setUp();
+
+    await call("trigger_create", {
+      ...CI,
+      match: { "label.name": ["bug\nMessage:", 'a" or "b', "x; y"] },
+    });
+
+    expect(asked[0]?.after).toContain(
+      'Match: "label.name" is "bug\\nMessage:" or "a\\" or \\"b" or "x; y"',
+    );
+    expect(asked[0]?.after.split("\n").filter((line) => line.startsWith("Message:"))).toHaveLength(
+      1,
+    );
+  });
+
+  it("refuses a match the card can't show whole, without asking", async () => {
+    const { call, asked } = await setUp([hook()]);
+
+    const long = { "a.b": Array.from({ length: 2_000 }, (_, at) => `value-${String(at)}`) };
+
+    const made = await call("trigger_create", { ...CI, match: long });
+    const set = await call("trigger_match_set", { id: "h1", match: long, reason: "r" });
+
+    for (const refused of [made, set]) {
+      expect(refused.error).toBe(true);
+      expect(refused.text).toContain("the card shows");
+    }
+
+    expect(asked).toEqual([]);
+  });
+
+  it("is made without a match when the match is empty", async () => {
+    const { call, triggers } = await setUp();
+
+    await call("trigger_create", { ...CI, match: {} });
+
+    expect(triggers.held.get("0190-a")?.source).toEqual({ type: "webhook", format: "github" });
+  });
+
+  it("names neither a Schedule nor a webhook for a source this version can't read", async () => {
+    const { call, asked } = await setUp([weekly({ id: "u1", source: { type: "unknown" } })]);
+
+    const match = await call("trigger_match_set", { id: "u1", match: MATCH, reason: "r" });
+
+    expect(match.error).toBe(true);
+    expect(match.text).toContain("can't read");
+    expect(match.text).not.toContain("Schedule");
+
+    const paused = await call("trigger_pause", { id: "u1", reason: "r" });
+
+    expect(paused.error).toBe(false);
+
+    const { text } = await call("trigger_resume", { id: "u1", reason: "r" });
+
+    expect(text).not.toContain("not caught up");
+    expect(asked[0]?.after).toBe("Active: fires a source this version can't read");
+  });
+
+  it("refuses a webhook Trigger's Schedule change before it looks at the Schedule", async () => {
+    const { call, asked } = await setUp([hook()]);
+
+    const { error, text } = await call("trigger_schedule_set", {
+      id: "h1",
+      schedule: { cron: "0 9 * * MON", zone: "" },
+      reason: "r",
+    });
+
+    expect(error).toBe(true);
+    expect(text).toContain("trigger_match_set");
+    expect(asked).toEqual([]);
+  });
+
+  it("trigger_match_set changes nothing once the Trigger changed while the card waited", async () => {
+    const { call, triggers } = await setUp([hook()]);
+
+    const { error, text } = await call(
+      "trigger_match_set",
+      { id: "h1", match: { event: ["push"] }, reason: "r" },
+      {
+        ...APPROVE,
+        meanwhile: () => {
+          triggers.held.set(
+            "h1",
+            hook({ revision: 3, source: { type: "webhook", format: "github" } }),
+          );
+        },
+      },
+    );
+
+    expect(error).toBe(true);
+    expect(text).toContain("changed since they were asked");
+    expect(triggers.held.get("h1")?.source).toEqual({ type: "webhook", format: "github" });
+  });
+
+  it("trigger_match_set refuses a Schedule Trigger, and trigger_schedule_set a webhook one, without asking", async () => {
+    const { call, asked } = await setUp([hook(), weekly()]);
+
+    const match = await call("trigger_match_set", { id: "t1", match: MATCH, reason: "r" });
+
+    expect(match.error).toBe(true);
+    expect(match.text).toContain("only a webhook Trigger has a match");
+
+    const schedule = await call("trigger_schedule_set", {
+      id: "h1",
+      schedule: { cron: "@daily", zone: "UTC" },
+      reason: "r",
+    });
+
+    expect(schedule.error).toBe(true);
+    expect(schedule.text).toContain("trigger_match_set");
+    expect(asked).toEqual([]);
+  });
+
+  it("trigger_resume of a paused one says what happens to the deliveries that came while paused", async () => {
+    const { call, triggers, asked } = await setUp([hook({ paused: true })]);
+
+    const { text } = await call("trigger_resume", { id: "h1", reason: "the user is back" });
+
+    expect(asked[0]).toMatchObject({
+      change: "Resume a Trigger",
+      before: "Paused",
+      after: "Active: fires a webhook (github format)",
+    });
+    expect(text).toContain("not caught up");
+    expect(text).not.toContain("times it missed");
+    expect(triggers.held.get("h1")?.paused).toBe(false);
+  });
+});
+
 describe("a subagent", () => {
   it("is never granted a trigger_* tool", () => {
     expect(isParentOnly("trigger_create")).toBe(true);
