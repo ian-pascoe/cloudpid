@@ -14,7 +14,7 @@ export const payloadNote = (chip: TriggerPayloadChip): string => {
   const kept =
     chip.path === undefined
       ? "body not kept: too large"
-      : chip.shown < chip.size
+      : chip.truncated === true
         ? `first ${String(chip.shown)} bytes shown, all of it in a file`
         : "all of it shown, and in a file";
 

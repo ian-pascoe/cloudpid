@@ -1,7 +1,8 @@
 // The Settings page's Triggers section, as atoms (`docs/architecture/triggers.md` → The owner's UI): a Scope's Triggers
 // with their last Fire, asked again while the page is visible (the agent makes and changes Triggers too); the form that
-// makes or edits one; Pause, Resume, Remove and Fire now; and each Trigger's fire log, asked for while it is open. None
-// of the owner's own changes waits for Approval. A new Trigger's id is drawn when its form opens, and a Fire now's key
+// makes or edits one; Pause, Resume, Remove and Fire now (a webhook Trigger's Fire again); each Trigger's fire log, asked
+// for while it is open; and a webhook Trigger's deliveries, and the URL and Signing secret the owner reveals or replaces.
+// None of the owner's own changes waits for Approval. A new Trigger's id is drawn when its form opens, and a Fire's key
 // at each press, so a call sent again makes no second one.
 
 import {
@@ -241,7 +242,7 @@ export const triggerDeliveriesAtom = Atom.family((id: string) =>
 );
 
 /** What the owner asks of webhook Trigger `id`'s URL and Signing secret: to see them, or to replace one. */
-export type HookRequest =
+export type TriggerSecretsRequest =
   | { readonly kind: "reveal" }
   | { readonly kind: "rotate"; readonly what: TriggerRotation };
 
@@ -250,9 +251,9 @@ export type HookRequest =
  * row shows them, and gone (`Atom.Reset`) when it hides them. The answer of a rotation is the new pair, and the old
  * value stopped working before it came.
  */
-export const hookAtom = Atom.family((id: string) =>
+export const triggerSecretsAtom = Atom.family((id: string) =>
   appRuntime.fn(
-    (request: HookRequest) =>
+    (request: TriggerSecretsRequest) =>
       RegistryClient.use((registry) =>
         request.kind === "reveal"
           ? registry("revealTrigger", { id })

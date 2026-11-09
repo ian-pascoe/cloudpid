@@ -1,8 +1,9 @@
-// @effect-diagnostics missingPipeableSignature:off preferEffectRecord:off preferEffectArray:off -- plain functions over a Trigger and its form, not combinators; a match's paths are the sender's own keys.
+// @effect-diagnostics missingPipeableSignature:off -- plain functions over a Trigger and its form, not combinators.
 
 // The Settings page's Triggers section, as values (`docs/architecture/triggers.md` → The owner's UI): the form that makes
-// or edits an Environment trigger, or a Workspace trigger (its name, message, Schedule with the next Fires it gives,
-// and options), what it sends the Registry, and the words a Trigger's row and its fire log show.
+// or edits an Environment trigger, or a Workspace trigger (its name, message, its source, a Schedule with the next Fires
+// it gives or a webhook with its format and `match` rows, and options), what it sends the Registry (an edit sends only
+// what changed, and for a webhook only its `match`), and the words a Trigger's row, its deliveries and its fire log show.
 
 import {
   defaultWhenBusy,
@@ -37,6 +38,7 @@ import { ThinkingLevel } from "@cloudpid/config";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 
@@ -136,15 +138,15 @@ export const triggerDraftOf = (definition: TriggerDefinition): TriggerDraft => {
 
 /** The rows that hold `match`, in its order; none for no match. */
 export const rowsOfMatch = (match: TriggerMatch | undefined): ReadonlyArray<MatchRow> =>
-  Arr.map(Object.entries(match ?? {}), ([path, values]) => ({
+  Arr.map(Rec.toEntries(match ?? {}), ([path, values]) => ({
     path,
     values: Arr.join(values, "\n"),
   }));
 
-/** The values typed in a row: one to a line, a line's trailing carriage return and empty lines left out. */
+/** The values typed in a row: one to a line, each trimmed, and the empty lines left out. */
 const valuesOfRow = (row: MatchRow): ReadonlyArray<string> =>
   Arr.filter(
-    Arr.map(row.values.split("\n"), (line) => line.replace(/\r$/u, "")),
+    Arr.map(row.values.split("\n"), (line) => line.trim()),
     (line) => line !== "",
   );
 
@@ -159,7 +161,7 @@ export const matchOfRows = (rows: ReadonlyArray<MatchRow>): TriggerMatch => {
   for (const row of rows) {
     const path = row.path.trim();
 
-    if (blankRow(row) || Object.hasOwn(match, path)) continue;
+    if (blankRow(row) || Rec.has(match, path)) continue;
 
     match[path] = valuesOfRow(row);
   }
@@ -167,7 +169,10 @@ export const matchOfRows = (rows: ReadonlyArray<MatchRow>): TriggerMatch => {
   return match;
 };
 
-/** Why the rows can't make a `match` the Registry keeps (a path typed twice, a path with no values, a value with no path), or null. */
+/**
+ * Why the rows can't make a `match` the Registry keeps, or null: a path typed twice is the form's own refusal, the rest
+ * (a path with no values, a value with no path, an empty part of a path) are `matchProblem`'s words.
+ */
 export const matchRowsProblem = (rows: ReadonlyArray<MatchRow>): string | null => {
   const paths = Arr.map(
     Arr.filter(rows, (row) => !blankRow(row)),
@@ -182,30 +187,31 @@ export const matchRowsProblem = (rows: ReadonlyArray<MatchRow>): string | null =
   return problemOf(matchProblem(matchOfRows(rows)));
 };
 
-/** Whether two matches filter the same: the same paths, each with the same values in order (the paths' order is free). */
-const sameMatch = (a: TriggerMatch | undefined, b: TriggerMatch | undefined): boolean => {
-  const left = Object.entries(a ?? {});
-  const right = b ?? {};
+/**
+ * Whether the rows of `draft` are the ones `opened` is held as, as typed. A match is compared by its rows and not by
+ * what they make, which can't hold everything a match can (an empty value, a value with a line break, a path with edge
+ * spaces: the agent's `match` may), so a Trigger edited in another field never has its `match` rewritten.
+ */
+const rowsUnchanged = (draft: TriggerDraft, opened: TriggerDefinition | undefined): boolean => {
+  const held = rowsOfMatch(webhookOf(opened)?.match);
 
   return (
-    left.length === Object.keys(right).length &&
-    left.every(([path, values]) => {
-      const other = Object.hasOwn(right, path) ? right[path] : undefined;
-
-      return (
-        other !== undefined &&
-        other.length === values.length &&
-        values.every((value, at) => value === other[at])
-      );
-    })
+    opened !== undefined &&
+    held.length === draft.match.length &&
+    Arr.every(
+      held,
+      (row, at) => row.path === draft.match[at]?.path && row.values === draft.match[at]?.values,
+    )
   );
 };
 
 /**
- * `draft` with its source switched to a Schedule (`scheduled`) or a webhook: `when_busy` follows to the new source's
- * default while it still is the old one's (a webhook Trigger starts a Session for each delivery, a Schedule's skips).
+ * `draft` with its source switched to a Schedule or a webhook: `when_busy` follows to the new source's default while it
+ * still is the old one's (a webhook Trigger starts a Session for each delivery, a Schedule's skips).
  */
-export const withSource = (draft: TriggerDraft, scheduled: boolean): TriggerDraft => {
+export const withSource = (draft: TriggerDraft, source: "schedule" | "webhook"): TriggerDraft => {
+  const scheduled = source === "schedule";
+
   if (draft.scheduled === scheduled) return draft;
 
   const kind = draft.workspace === null ? "environment" : "workspace";
@@ -225,19 +231,25 @@ export type TriggerDraftProblems = {
 
 const problemOf = (problem: string | undefined): string | null => problem ?? null;
 
-/** What keeps `draft` from being saved, field by field, as the Registry would refuse it. */
-export const triggerDraftProblems = (draft: TriggerDraft): TriggerDraftProblems => ({
+/**
+ * What keeps `draft` from being saved, field by field, as the Registry would refuse it. The rows of a Trigger being
+ * edited (`opened`) that were not touched are never refused: its `match` is not sent.
+ */
+export const triggerDraftProblems = (
+  draft: TriggerDraft,
+  opened?: TriggerDefinition,
+): TriggerDraftProblems => ({
   name: problemOf(triggerNameProblem(draft.name)),
   message: problemOf(triggerMessageProblem(draft.message)),
   schedule: draft.scheduled
     ? problemOf(scheduleProblem({ cron: draft.cron, zone: draft.zone }))
     : null,
-  match: draft.scheduled ? null : matchRowsProblem(draft.match),
+  match: draft.scheduled || rowsUnchanged(draft, opened) ? null : matchRowsProblem(draft.match),
 });
 
-/** Whether `draft` can be saved. */
-export const triggerDraftReady = (draft: TriggerDraft): boolean => {
-  const problems = triggerDraftProblems(draft);
+/** Whether `draft` can be saved (as an edit of `opened`, if it is one). */
+export const triggerDraftReady = (draft: TriggerDraft, opened?: TriggerDefinition): boolean => {
+  const problems = triggerDraftProblems(draft, opened);
 
   return (
     problems.name === null &&
@@ -269,7 +281,7 @@ const sourceOf = (draft: TriggerDraft): TriggerSourceInput => {
 
   const match = matchOfRows(draft.match);
 
-  return Object.keys(match).length === 0
+  return Rec.isEmptyRecord(match)
     ? { type: "webhook", format: draft.format }
     : { type: "webhook", format: draft.format, match };
 };
@@ -324,7 +336,6 @@ export const triggerInput = (draft: TriggerDraft): OwnerTriggerInput => {
 export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft): TriggerPatch => {
   const input = triggerInput(draft);
   const schedule = scheduleOf(definition);
-  const webhook = webhookOf(definition);
   const patch: Types.Mutable<TriggerPatch> = {};
   const base = optional(draft.base);
 
@@ -333,17 +344,19 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
   if (input.message !== definition.message) patch.message = input.message;
 
   // A source's type and format are fixed at creation: a Schedule's source is sent when it changed, a webhook's `match`
-  // alone, null once its rows are all gone.
+  // alone and only when its rows were edited (null once they are all gone).
   if (draft.scheduled && input.source.type === "schedule") {
     if (schedule?.cron !== input.source.cron || schedule.zone !== input.source.zone) {
       patch.source = input.source;
     }
-  } else if (!draft.scheduled && webhook !== undefined) {
+  } else if (
+    !draft.scheduled &&
+    webhookOf(definition) !== undefined &&
+    !rowsUnchanged(draft, definition)
+  ) {
     const match = matchOfRows(draft.match);
 
-    if (!sameMatch(webhook.match, match)) {
-      patch.match = Object.keys(match).length === 0 ? null : match;
-    }
+    patch.match = Rec.isEmptyRecord(match) ? null : match;
   }
 
   if (input.whenBusy !== definition.whenBusy) patch.whenBusy = input.whenBusy;
@@ -537,7 +550,7 @@ export const workspaceTriggersOf = (
 
 /** What a webhook Trigger's `match` says on its row: each path with the values it may have, or that there is none. */
 export const matchWords = (match: TriggerMatch | undefined): string => {
-  const entries = Object.entries(match ?? {});
+  const entries = Rec.toEntries(match ?? {});
 
   return entries.length === 0
     ? "No match: every signed delivery starts a session"
@@ -548,7 +561,7 @@ export const matchWords = (match: TriggerMatch | undefined): string => {
 };
 
 /** What a delivery counter's outcome says: the answer the sender got, and why; an outcome a later version names says itself. */
-const outcomeWordsOf = (outcome: string): string => {
+const deliveryOutcomeWords = (outcome: string): string => {
   switch (outcome) {
     case "filtered":
       return "filtered out by the match";
@@ -572,7 +585,7 @@ const dayWords = (
   counts: ReadonlyArray<{ readonly outcome: string; readonly n: number }>,
 ): string =>
   Arr.join(
-    Arr.map(counts, ({ outcome, n }) => `${String(n)} ${outcomeWordsOf(outcome)}`),
+    Arr.map(counts, ({ outcome, n }) => `${String(n)} ${deliveryOutcomeWords(outcome)}`),
     ", ",
   );
 
@@ -601,5 +614,5 @@ export const pingWords = (deliveries: TriggerDeliveries, zone: string): string |
     : `GitHub reached this trigger (${fireTimeWords(deliveries.pingAt, zone)})`;
 
 /** A Trigger URL as the sender is given it: the stage's origin before the path, or just the path where the page's own is the one. */
-export const hookUrl = (hook: TriggerHook, pageOrigin: string): string =>
+export const triggerUrl = (hook: TriggerHook, pageOrigin: string): string =>
   `${hook.origin ?? pageOrigin}${hook.path}`;

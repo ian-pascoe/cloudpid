@@ -59,6 +59,7 @@ describe("fencePayload", () => {
     });
 
     expect(made.chip.shown).toBe(MAX_INLINE_PAYLOAD_BYTES);
+    expect(made.chip.truncated).toBe(true);
     expect(made.block).toContain('truncated="true"');
     expect(made.block).toContain(`>${"a".repeat(MAX_INLINE_PAYLOAD_BYTES)}</payload>`);
   });
@@ -119,6 +120,8 @@ describe("fencePayload", () => {
 
     expect(exact.block).not.toContain('truncated="true"');
     expect(shorter.block).not.toContain('truncated="true"');
+    expect(exact.chip.truncated).toBeUndefined();
+    expect(shorter.chip.truncated).toBeUndefined();
     expect(shorter.chip.shown).toBe(5);
   });
 

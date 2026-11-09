@@ -1,11 +1,12 @@
 // The Triggers section of the Settings page at a Scope, rendered with `react-dom/server` over the fake Registry: the
 // queries it reads are settled first, so the markup shows what they answered.
 
-import type {
-  EnvironmentRecord,
-  FireRecord,
-  TriggerDefinition,
-  TriggerOverview,
+import {
+  EnvironmentError,
+  type EnvironmentRecord,
+  type FireRecord,
+  type TriggerDefinition,
+  type TriggerOverview,
 } from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
@@ -20,7 +21,7 @@ import { sessionsAtom } from "../sessions.ts";
 import {
   fireLogAtom,
   fireLogOpenAtom,
-  hookAtom,
+  triggerSecretsAtom,
   rotateAskAtom,
   triggerDeliveriesAtom,
   triggerDraftAtom,
@@ -327,6 +328,9 @@ describe("the Triggers section", () => {
       expect(hidden).toContain("Show URL and signing secret");
       expect(hidden).not.toContain("abcDEF");
       expect(hidden).not.toContain("s3cr3t-value");
+      // The replacements are there before anything is shown: they mend a Trigger whose secrets can't be read.
+      expect(hidden).toContain("New URL");
+      expect(hidden).toContain("New signing secret");
     }),
   );
 
@@ -336,13 +340,13 @@ describe("the Triggers section", () => {
       Effect.gen(function* () {
         const registry = registryWith(HANDLERS);
 
-        registry.mount(hookAtom("t3"));
+        registry.mount(triggerSecretsAtom("t3"));
         registry.mount(triggersAtom("work"));
         registry.mount(environmentsAtom);
         registry.mount(sessionsAtom);
         registry.mount(triggerDeliveriesAtom("t3"));
-        registry.set(hookAtom("t3"), { kind: "reveal" });
-        yield* settled(registry, hookAtom("t3"));
+        registry.set(triggerSecretsAtom("t3"), { kind: "reveal" });
+        yield* settled(registry, triggerSecretsAtom("t3"));
         yield* settled(registry, triggersAtom("work"));
         yield* settled(registry, environmentsAtom);
         yield* settled(registry, sessionsAtom);
@@ -379,10 +383,72 @@ describe("the Triggers section", () => {
         );
 
         expect(asking).toContain("The old URL stops working at once");
-        expect(asking).toContain('role="alertdialog"');
+        expect(asking).toContain('role="group" aria-label="Confirm: New URL"');
+        // Its confirm button takes the focus when it opens.
+        expect(asking).toMatch(/<button[^>]*autofocus=""[^>]*>New URL<\/button>/);
 
         registry.dispose();
       }),
+  );
+
+  it.effect("offers New URL and New signing secret when the reveal failed, with why", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({
+        ...HANDLERS,
+        revealTrigger: () =>
+          Effect.fail(
+            EnvironmentError.make({
+              message: "This trigger's URL and signing secret can't be read: make new ones",
+            }),
+          ),
+      });
+
+      registry.mount(triggerSecretsAtom("t3"));
+      registry.mount(triggersAtom("work"));
+      registry.mount(environmentsAtom);
+      registry.mount(sessionsAtom);
+      registry.mount(triggerDeliveriesAtom("t3"));
+      registry.set(triggerSecretsAtom("t3"), { kind: "reveal" });
+      yield* settled(registry, triggerSecretsAtom("t3"));
+      yield* settled(registry, triggersAtom("work"));
+      yield* settled(registry, environmentsAtom);
+      yield* settled(registry, sessionsAtom);
+      yield* settled(registry, triggerDeliveriesAtom("t3"));
+
+      const row = rowOf(
+        renderToStaticMarkup(
+          <RegistryContext.Provider value={registry}>
+            <TriggersSection scope="work" />
+          </RegistryContext.Provider>,
+        ),
+        "CI failed",
+      );
+
+      registry.dispose();
+
+      expect(row).toContain("can&#x27;t be read");
+      expect(row).toContain("New URL");
+      expect(row).toContain("New signing secret");
+      expect(row).toContain("Show URL and signing secret");
+    }),
+  );
+
+  it.effect("holds Fire again until the Trigger has accepted a delivery", () =>
+    Effect.gen(function* () {
+      const none = yield* render("work", undefined, {
+        triggerDeliveries: () => Effect.succeed({ counts: [], lastDeliveryAt: null, pingAt: null }),
+      });
+
+      expect(rowOf(none, "CI failed")).toMatch(
+        /<button[^>]*disabled=""[^>]*>[^]*Fire again<\/button>/,
+      );
+
+      const some = yield* render("work");
+
+      expect(rowOf(some, "CI failed")).not.toMatch(
+        /<button[^>]*disabled=""[^>]*>[^]*Fire again<\/button>/,
+      );
+    }),
   );
 
   it.effect("shows the refused and filtered deliveries per day in an open fire log", () =>
@@ -407,7 +473,7 @@ describe("the Triggers section", () => {
           message: "Look.",
           match: [{ path: "event", values: "push" }],
         },
-        false,
+        "webhook",
       );
 
       const markup = yield* render("work", (registry) => {
@@ -436,6 +502,36 @@ describe("the Triggers section", () => {
 
       // A new Trigger asks which source; an existing one does not.
       expect(markup).toContain('id="trigger-source-work"');
+    }),
+  );
+
+  it.effect("saves an edit of another field of a Trigger whose match the form can't hold", () =>
+    Effect.gen(function* () {
+      // The agent's match may have a path that is no path to the form.
+      const odd: TriggerDefinition = {
+        ...WEBHOOK_TRIGGER,
+        source: { type: "webhook", format: "github", match: { "": ["x"] } },
+      };
+
+      const markup = yield* render("work", (registry) => {
+        registry.set(triggerFormAtom("work"), { kind: "edit", opened: odd });
+        registry.set(triggerDraftAtom("work"), { ...triggerDraftOf(odd), name: "Renamed" });
+      });
+
+      expect(markup).not.toContain("is not a path");
+      expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Save/);
+
+      // Touching its rows asks them to be right.
+      const edited = yield* render("work", (registry) => {
+        registry.set(triggerFormAtom("work"), { kind: "edit", opened: odd });
+        registry.set(triggerDraftAtom("work"), {
+          ...triggerDraftOf(odd),
+          match: [{ path: "", values: "y" }],
+        });
+      });
+
+      expect(edited).toContain("is not a path");
+      expect(edited).toMatch(/<button[^>]*disabled=""[^>]*>Save/);
     }),
   );
 

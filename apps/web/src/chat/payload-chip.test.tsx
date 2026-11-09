@@ -12,6 +12,7 @@ const CHIP: TriggerPayloadChip = {
   delivery: "d-1",
   size: 40_000,
   shown: 16_384,
+  truncated: true,
   path: "/workspace/.cloudpid/triggers/t1-d-1-ab12cd34.json",
 };
 
@@ -27,7 +28,13 @@ describe("a webhook payload's chip", () => {
   });
 
   it("says when the whole body was shown, or was too large to keep", () => {
-    expect(payloadNote({ ...CHIP, size: 300, shown: 300 })).toBe(
+    const { truncated: _truncated, ...whole } = CHIP;
+
+    expect(payloadNote({ ...whole, size: 300, shown: 300 })).toBe(
+      "300 bytes · all of it shown, and in a file",
+    );
+    // Redaction can leave less than the size without any cut: only `truncated` says the text was cut.
+    expect(payloadNote({ ...whole, size: 300, shown: 120 })).toBe(
       "300 bytes · all of it shown, and in a file",
     );
 

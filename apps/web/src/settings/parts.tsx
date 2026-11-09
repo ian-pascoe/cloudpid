@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off -- JSX lists of Environments are native arrays.
+// @effect-diagnostics preferEffectArray:off globalTimers:off -- JSX lists of Environments are native arrays, and Copy's "Copied" goes back after a moment, timed by a React effect.
 
 // The pieces every section of the Settings page is made of (docs/architecture/client-and-protocol.md → Settings page):
 // the section's frame (its heading and what it is for), a ruled group of fields, a field with its label, hint or
@@ -11,10 +11,12 @@
 import type { OverridingEnvironment } from "@cloudpid/protocol";
 import { useAtom, useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
-import { type FormEvent, Fragment, type ReactNode, useState } from "react";
+import { Check, Copy, X } from "lucide-react";
+import { type FormEvent, Fragment, type ReactNode, useEffect, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Dialog, DialogActions } from "../components/ui/dialog.tsx";
 import { Input } from "../components/ui/input.tsx";
+import { copyToClipboard } from "../lib/clipboard.ts";
 import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
@@ -550,5 +552,70 @@ export const SectionFormView = <Fields, E>({
         )}
       </div>
     </form>
+  );
+};
+
+/** How long Copy says it copied. */
+const COPIED_MS = 2000;
+
+const COPY_STATES = {
+  idle: { label: "Copy", Icon: Copy },
+  copied: { label: "Copied", Icon: Check },
+  failed: { label: "Not copied", Icon: X },
+} as const;
+
+/** A value cloudpid shows (a redirect URI, a client name) with a Copy button, whose result a status says too. */
+export const CopyValue = ({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: ReactNode;
+}) => {
+  const [copied, setCopied] = useState<keyof typeof COPY_STATES>("idle");
+
+  useEffect(() => {
+    if (copied === "idle") return;
+
+    const timer = setTimeout(() => {
+      setCopied("idle");
+    }, COPIED_MS);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [copied]);
+
+  const { label: said, Icon } = COPY_STATES[copied];
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <span className="text-sm font-medium">{label}</span>
+      <div className="flex min-w-0 items-center gap-2">
+        <code className="min-w-0 flex-1 rounded-md border bg-muted/40 px-2 py-1.5 text-xs break-all">
+          {value}
+        </code>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={`Copy ${label.toLowerCase()}`}
+          onClick={() => {
+            void copyToClipboard(value).then((done) => {
+              setCopied(done ? "copied" : "failed");
+            });
+          }}
+        >
+          <Icon aria-hidden />
+          {said}
+        </Button>
+        <span role="status" className="sr-only">
+          {copied === "idle" ? "" : `${said}: ${label.toLowerCase()}`}
+        </span>
+      </div>
+      {hint !== undefined && <p className="max-w-prose text-xs text-muted-foreground">{hint}</p>}
+    </div>
   );
 };

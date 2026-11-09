@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   deliveryDays,
   emptyTriggerDraft,
-  hookUrl,
+  triggerUrl,
   lastDeliveryWords,
   matchOfRows,
   matchWords,
@@ -264,9 +264,9 @@ describe("a webhook Trigger's row", () => {
 
   it("gives the URL the stage's origin, or the page's own where the stage has none", () => {
     expect(
-      hookUrl({ origin: "https://c.example", path: "/hooks/a/b", secret: "s" }, "http://x"),
+      triggerUrl({ origin: "https://c.example", path: "/hooks/a/b", secret: "s" }, "http://x"),
     ).toBe("https://c.example/hooks/a/b");
-    expect(hookUrl({ path: "/hooks/a/b", secret: "s" }, "http://localhost:5173")).toBe(
+    expect(triggerUrl({ path: "/hooks/a/b", secret: "s" }, "http://localhost:5173")).toBe(
       "http://localhost:5173/hooks/a/b",
     );
   });
@@ -291,11 +291,11 @@ describe("a webhook Trigger's form", () => {
         format: "standard",
         match: [
           { path: "event", values: "workflow_run" },
-          { path: "workflow_run.conclusion", values: "failure\ntimed_out\n" },
+          { path: "workflow_run.conclusion", values: "failure\n  timed_out \r\n" },
           { path: "", values: "" },
         ],
       },
-      false,
+      "webhook",
     );
 
     expect(draft.whenBusy).toBe("start");
@@ -319,7 +319,7 @@ describe("a webhook Trigger's form", () => {
         message: "Go.",
         match: [{ path: " ", values: "" }],
       },
-      false,
+      "webhook",
     );
 
     expect(triggerDraftReady(draft)).toBe(true);
@@ -329,11 +329,13 @@ describe("a webhook Trigger's form", () => {
   it("moves when_busy with the source only while it is the old source's default", () => {
     const draft = emptyTriggerDraft("default", "UTC");
 
-    expect(withSource(draft, false).whenBusy).toBe("start");
-    expect(withSource(withSource(draft, false), true).whenBusy).toBe("skip");
+    expect(withSource(draft, "webhook").whenBusy).toBe("start");
+    expect(withSource(withSource(draft, "webhook"), "schedule").whenBusy).toBe("skip");
     // Chosen on purpose, it stays; a Workspace trigger waits either way.
-    expect(withSource({ ...draft, whenBusy: "start" }, false).whenBusy).toBe("start");
-    expect(withSource(emptyTriggerDraft("default", "UTC", "ab12"), false).whenBusy).toBe("wait");
+    expect(withSource({ ...draft, whenBusy: "start" }, "webhook").whenBusy).toBe("start");
+    expect(withSource(emptyTriggerDraft("default", "UTC", "ab12"), "webhook").whenBusy).toBe(
+      "wait",
+    );
   });
 
   it("refuses the rows the Registry would refuse, naming why", () => {
@@ -360,7 +362,7 @@ describe("a webhook Trigger's form", () => {
         message: "m",
         match: [{ path: "a", values: "" }],
       },
-      false,
+      "webhook",
     );
 
     expect(triggerDraftProblems(draft).match).toContain("lists no values");
@@ -382,11 +384,8 @@ describe("a webhook Trigger's form", () => {
   it("sends only the match, once its rows changed, and null once none is left", () => {
     const draft = triggerDraftOf(webhookTrigger);
 
-    // Unchanged rows, or the same match in another order of paths, change nothing.
+    // Unchanged rows change nothing.
     expect(triggerPatch(webhookTrigger, draft)).toEqual({});
-    expect(triggerPatch(webhookTrigger, { ...draft, match: [...draft.match].reverse() })).toEqual(
-      {},
-    );
 
     expect(
       triggerPatch(webhookTrigger, {
@@ -413,6 +412,35 @@ describe("a webhook Trigger's form", () => {
     ).toEqual({
       match: { event: ["workflow_run"], "workflow_run.conclusion": ["timed_out", "failure"] },
     });
+  });
+
+  it("never rewrites a match the form can't hold as it was set, nor refuses an edit of another field for it", () => {
+    // The agent's match can hold an empty value, a line break and a path with edge spaces.
+    const odd: TriggerDefinition = {
+      ...webhookTrigger,
+      source: {
+        type: "webhook",
+        format: "github",
+        match: { " body ": ["line\nbreak", ""], "": ["x"] },
+      },
+    };
+
+    const draft = triggerDraftOf(odd);
+
+    expect(triggerDraftProblems(draft, odd).match).toBeNull();
+    expect(triggerDraftReady({ ...draft, name: "Renamed" }, odd)).toBe(true);
+    expect(triggerPatch(odd, { ...draft, name: "Renamed" })).toEqual({ name: "Renamed" });
+
+    // A new draft with the same rows is refused, and so is an edit of the rows themselves.
+    expect(triggerDraftProblems(draft).match).not.toBeNull();
+    expect(
+      triggerDraftProblems({ ...draft, match: [{ path: "", values: "x" }, ...draft.match] }, odd)
+        .match,
+    ).not.toBeNull();
+  });
+
+  it("trims each value, so the agent's untrimmed match is the only one that can hold edge spaces", () => {
+    expect(matchOfRows([{ path: " a ", values: "  x \n\ty\t\n\n" }])).toEqual({ a: ["x", "y"] });
   });
 });
 

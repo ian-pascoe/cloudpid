@@ -15,7 +15,7 @@ import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { type RegistryHandlers, registryWith, settled } from "./registry.testing.ts";
 import {
   fireAgainAtom,
-  hookAtom,
+  triggerSecretsAtom,
   saveTriggerAtom,
   sessionTriggersAtom,
   type TriggerForm,
@@ -214,7 +214,7 @@ describe("a Session's triggers", () => {
 });
 
 describe("a webhook Trigger's URL, secret, deliveries and Fire again", () => {
-  const HOOK = { path: "/hooks/t1/tok", secret: "whsec_abc" };
+  const SECRETS = { path: "/hooks/t1/tok", secret: "whsec_abc" };
 
   it.effect("reveals the URL and Signing secret, and shows the new pair once one is replaced", () =>
     Effect.gen(function* () {
@@ -225,26 +225,26 @@ describe("a webhook Trigger's URL, secret, deliveries and Fire again", () => {
           Effect.sync(() => {
             asked.push(`reveal ${id}`);
 
-            return HOOK;
+            return SECRETS;
           }),
         rotateTrigger: ({ id, what }) =>
           Effect.sync(() => {
             asked.push(`rotate ${id} ${what}`);
 
-            return { ...HOOK, path: "/hooks/t1/new" };
+            return { ...SECRETS, path: "/hooks/t1/new" };
           }),
       });
 
-      registry.mount(hookAtom("t1"));
-      registry.set(hookAtom("t1"), { kind: "reveal" });
+      registry.mount(triggerSecretsAtom("t1"));
+      registry.set(triggerSecretsAtom("t1"), { kind: "reveal" });
 
-      const revealed = yield* settled(registry, hookAtom("t1"));
+      const revealed = yield* settled(registry, triggerSecretsAtom("t1"));
 
-      expect(AsyncResult.isSuccess(revealed) && revealed.value).toEqual(HOOK);
+      expect(AsyncResult.isSuccess(revealed) && revealed.value).toEqual(SECRETS);
 
-      registry.set(hookAtom("t1"), { kind: "rotate", what: "url" });
+      registry.set(triggerSecretsAtom("t1"), { kind: "rotate", what: "url" });
 
-      const rotated = yield* settled(registry, hookAtom("t1"));
+      const rotated = yield* settled(registry, triggerSecretsAtom("t1"));
 
       expect(AsyncResult.isSuccess(rotated) && rotated.value.path).toBe("/hooks/t1/new");
       expect(asked).toEqual(["reveal t1", "rotate t1 url"]);
