@@ -945,6 +945,40 @@ describe("the Skills kept Global", () => {
     });
   });
 
+  // C3: the Registry's check of what an endpoint's write keeps (`openCheck`) runs at the apply, not only at the ask.
+  it("skips on Approve a Skill whose files hold a Secret kept Global since the ask, keeping the others", async () => {
+    // A value no check of a Skill's files takes for a credential: only the kept Secret makes it one.
+    const KEY = "correct-horse-battery-staple";
+
+    const { ask, call, apply, kept } = await startedWith({
+      files: { ...TWO, "skills/grill-me/SKILL.md": skillMd("grill-me", `Call with ${KEY}.`) },
+      commit: COMMIT,
+    });
+
+    const id = approvalIdOf(await ask("environment_skill_install", INSTALL));
+
+    // Asked with both: no Secret held the text then.
+    expect((await requestOf(call, id)).expected).toMatchObject({
+      skills: [{ name: "grill-me" }, { name: "tdd" }],
+    });
+
+    // The owner keeps the key Global after they were asked, then approves.
+    await call("setEnvironmentSecret", { environment: null, name: "API_KEY", value: KEY });
+    await call("answerApproval", { id, approved: true });
+
+    expect(await apply(id)).toMatchObject({
+      status: "finished",
+      result: {
+        structured: {
+          changed: true,
+          installed: [{ name: "tdd" }],
+          refused: [{ name: "grill-me", path: "skills/grill-me" }],
+        },
+      },
+    });
+    expect(await kept()).toEqual(["tdd"]);
+  });
+
   it("ends changed_since, keeping nothing, when no Skill is still as the owner was shown it", async () => {
     const { ask, call, apply, serve, keep } = await startedWith({ files: TWO, commit: COMMIT });
 

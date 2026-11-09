@@ -21,8 +21,21 @@ export type ServedRepo = {
   readonly commit: string;
 };
 
-/** A reader over the repo `served` gives when read; a blob's SHA names its commit, so a folder changes with its commit. */
-const servedReader = (served: () => ServedRepo): RepoReader => {
+/**
+ * A reader over the repo `served` gives when read; a blob's SHA names its commit, so a folder changes with its commit.
+ * Reading with no repo served throws: a test that reads Skills serves them first.
+ */
+const servedReader = (current: () => ServedRepo | undefined): RepoReader => {
+  const served = () => {
+    const repo = current();
+
+    if (repo === undefined) {
+      throw new Error("RealRegistry: Skills were read with no repo served; call serveRepo first");
+    }
+
+    return repo;
+  };
+
   const listing = async () => {
     const { files, commit } = served();
 
@@ -58,8 +71,8 @@ type RegistryAnswer<K extends keyof RegistryMethods> = Effect.Success<
 
 export class RealRegistry extends DurableObject {
   readonly #methods: Promise<RegistryMethods>;
-  /** The repo the Registry reads Skills from: none until a test serves one. */
-  #repo: ServedRepo = { files: {}, commit: "0".repeat(40) };
+  /** The repo the Registry reads Skills from: none until a test serves one, and a read before then throws. */
+  #repo: ServedRepo | undefined;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
