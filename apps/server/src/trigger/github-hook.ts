@@ -52,6 +52,11 @@ export type RepoHooks = {
   ) => Effect.Effect<"updated" | "gone", GitHubHookFailed>;
   /** Delete hook `id`; one GitHub no longer has is deleted already. */
   readonly delete: (repo: string, id: number) => Effect.Effect<void, GitHubHookFailed>;
+  /**
+   * Ask GitHub again at the next call for `repo`'s owner rather than tell the App's last failure to mint again: after
+   * the owner may have accepted the permission (a resume, a change, a rotation).
+   */
+  readonly forgetFailure: (repo: string) => Effect.Effect<void>;
 };
 
 /** How long one request to GitHub may take. */
@@ -101,6 +106,14 @@ const githubWords = async (response: Response): Promise<string> => {
     .filter((part) => part !== "")
     .join(": ");
 };
+
+/** The `trigger.github_hook` span's attributes of `error`: its code as the outcome, and GitHub's status when it answered. */
+export const annotateHookFailure = (error: GitHubHookFailed): Effect.Effect<void> =>
+  Effect.annotateCurrentSpan(
+    error.status === undefined
+      ? { "trigger.outcome": error.code }
+      : { "trigger.outcome": error.code, "http.status": error.status },
+  );
 
 const failed = (code: GitHubHookProblemCode, message: string, status?: number): GitHubHookFailed =>
   status === undefined
@@ -168,7 +181,7 @@ const hookBody = (config: HookConfig): string =>
  * uses the installation on the repo's owner, and a 401 drops the token and asks once more with a new one.
  */
 export const githubRepoHooks = (options: {
-  readonly github: Pick<GitHubTokens, "token" | "invalidate">;
+  readonly github: Pick<GitHubTokens, "token" | "invalidate" | "forget">;
   readonly fetch: GithubFetch;
 }): RepoHooks => {
   /** `path` of `repo`'s hooks asked as the App: GitHub's answer, or throws why it could not be asked. */
@@ -215,13 +228,7 @@ export const githubRepoHooks = (options: {
       Effect.tap(({ status }) =>
         Effect.annotateCurrentSpan({ "trigger.outcome": "ok", "http.status": status }),
       ),
-      Effect.tapError((error) =>
-        Effect.annotateCurrentSpan(
-          error.status === undefined
-            ? { "trigger.outcome": error.code }
-            : { "trigger.outcome": error.code, "http.status": error.status },
-        ),
-      ),
+      Effect.tapError(annotateHookFailure),
       Effect.map(({ value }) => value),
       Effect.withSpan("trigger.github_hook", { attributes: { "trigger.github_hook.op": op } }),
     );
@@ -284,6 +291,10 @@ export const githubRepoHooks = (options: {
         }
 
         return { status: response.status, value: undefined };
+      }),
+    forgetFailure: (repo) =>
+      Effect.sync(() => {
+        options.github.forget(ownerOf(repo));
       }),
   };
 };

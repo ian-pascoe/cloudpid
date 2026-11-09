@@ -1,7 +1,7 @@
 // @effect-diagnostics asyncFunction:off nodeBuiltinImport:off globalDate:off preferEffectArray:off preferEffectRecord:off -- WebCrypto and `fetch` are Promise APIs; node:crypto makes the test keys.
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { GitHubApp, githubAppKeyProblem, type MintedToken } from "./app.ts";
+import { GitHubApp, githubAppKeyProblem, GitHubRefused, type MintedToken } from "./app.ts";
 
 const MINUTE = 60_000;
 
@@ -293,6 +293,32 @@ describe("GitHubApp", () => {
 
     now += 1_000;
     expect(await app.token()).toBe("ghs_token1");
+  });
+
+  it("asks again at once for an account whose last failure it was told to forget", async () => {
+    const now = Date.UTC(2026, 0, 1, 12);
+    let refusing = true;
+    const github = fakeGitHub({ now: () => now });
+
+    const app = new GitHubApp({
+      appId: "1",
+      privateKey: KEYS.privateKey,
+      fetch: (url, init) =>
+        refusing
+          ? Promise.resolve(Response.json({ message: "Unprocessable" }, { status: 422 }))
+          : github.fetch(url, init),
+      now: () => now,
+    });
+
+    await expect(app.token("ian-pascoe")).rejects.toBeInstanceOf(GitHubRefused);
+
+    // The owner accepted what GitHub wanted: without `forget`, the failure is told again for a minute.
+    refusing = false;
+    await expect(app.token("ian-pascoe")).rejects.toBeInstanceOf(GitHubRefused);
+
+    app.forget("IAN-pascoe");
+
+    expect(await app.token("ian-pascoe")).toBe("ghs_token1");
   });
 
   it("mints for an account as soon as the installations are listed again, however often it was asked meanwhile", async () => {
