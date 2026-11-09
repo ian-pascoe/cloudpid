@@ -1433,6 +1433,21 @@ export const registryMethods = Effect.suspend(() =>
           ),
         );
 
+        /**
+         * `method`, run after `refreshCatalog`: every method that writes a model (the Settings, an Environment's Overrides,
+         * Triggers, the Agent changes of either and their reverts) is wrapped in it, so its model is checked against a
+         * catalog read lately, not the fallback a new object starts with (ADR-0051).
+         */
+        const catalogFirst =
+          <Args extends ReadonlyArray<unknown>, A, E, R>(
+            method: (...args: Args) => Effect.Effect<A, E, R>,
+          ) =>
+          (...args: Args): Effect.Effect<A, E, R> =>
+            Effect.andThen(
+              refreshCatalog,
+              Effect.suspend(() => method(...args)),
+            );
+
         const changes = openAgentChanges(state.raw.storage);
         const triggers = openTriggers(state.raw.storage, store);
         const triggerChanges = openTriggerChanges(state.raw.storage, store, triggers, changes);
@@ -2043,7 +2058,7 @@ export const registryMethods = Effect.suspend(() =>
                 ? null
                 : changes.list(environment),
             ),
-          revertAgentChange: ({ environment, change }) =>
+          revertAgentChange: catalogFirst(({ environment, change }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
 
@@ -2056,6 +2071,7 @@ export const registryMethods = Effect.suspend(() =>
                 skills,
               );
             }),
+          ),
           dismissAgentChange: ({ environment, change }) =>
             Effect.sync(() => changes.dismiss(environment, change)),
           changeRequest: ({ id }) =>
@@ -2425,9 +2441,8 @@ export const registryMethods = Effect.suspend(() =>
               ...readSettings(store),
               overriddenIn: settingsOverriddenIn(store),
             })),
-          // A write of a model is checked against a catalog read lately, not the fallback a new object starts with.
-          updateSettings: ({ overrides }) =>
-            Effect.andThen(refreshCatalog, Clock.currentTimeMillis).pipe(
+          updateSettings: catalogFirst(({ overrides }) =>
+            Clock.currentTimeMillis.pipe(
               Effect.map((now): SettingsUpdate => {
                 const saved = writeSettings(store, overrides, now);
 
@@ -2438,17 +2453,16 @@ export const registryMethods = Effect.suspend(() =>
                   : SettingsUpdate.Rejected({ message: saved.failure.message });
               }),
             ),
+          ),
           getSettingsOverrides: ({ environment }) =>
             Effect.sync(() => readSettingsOverrides(store, environment)),
-          updateSettingsOverrides: ({ environment, set, reset }) =>
-            Effect.andThen(
-              refreshCatalog,
-              Effect.sync(() =>
-                settingsOverridesUpdate(
-                  updateSettingsOverrides(state.raw.storage, store, environment, { set, reset }),
-                ),
+          updateSettingsOverrides: catalogFirst(({ environment, set, reset }) =>
+            Effect.sync(() =>
+              settingsOverridesUpdate(
+                updateSettingsOverrides(state.raw.storage, store, environment, { set, reset }),
               ),
             ),
+          ),
           updateEnvironmentInstructions: ({ environment, instructions }) =>
             Effect.sync(() =>
               settingsOverridesUpdate(putEnvironmentInstructions(store, environment, instructions)),
@@ -2467,7 +2481,7 @@ export const registryMethods = Effect.suspend(() =>
 
               return sessionSettingsSource(store, session);
             }),
-          getModelCatalog: () => Effect.andThen(refreshCatalog, Effect.sync(catalog.current)),
+          getModelCatalog: catalogFirst(() => Effect.sync(catalog.current)),
           mcpServerSet: (input) =>
             checkHanded.pipe(
               Effect.andThen(Clock.currentTimeMillis),
@@ -2543,49 +2557,48 @@ export const registryMethods = Effect.suspend(() =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => recordMcpDestroyed(store, environment, now)),
             ),
-          changeSettings: (args) =>
+          changeSettings: catalogFirst((args) =>
             // The Settings at Global are the `*` scope's: every Secret may be held in a text of theirs.
-            Effect.andThen(
-              refreshCatalog,
-              viaWrite<SettingsChange>(
-                args,
-                args.environment === undefined ? "every" : reachOf(args.environment),
-                rejected,
-                (now) => {
-                  const { environment, changes: wanted, author, guard } = args;
+            viaWrite<SettingsChange>(
+              args,
+              args.environment === undefined ? "every" : reachOf(args.environment),
+              rejected,
+              (now) => {
+                const { environment, changes: wanted, author, guard } = args;
 
-                  const refuse =
-                    guard === undefined ? undefined : mcpGuard(store, environment, guard);
+                const refuse =
+                  guard === undefined ? undefined : mcpGuard(store, environment, guard);
 
-                  return environment === undefined
-                    ? changeSettings(
-                        state.raw.storage,
-                        store,
-                        changes,
-                        { changes: wanted, author },
-                        now,
-                        refuse,
-                      )
-                    : changeSettingsOverrides(
-                        state.raw.storage,
-                        store,
-                        changes,
-                        { environment, changes: wanted, author },
-                        now,
-                        refuse,
-                      );
-                },
-                // The MCP hosts' revision the change is checked against, not what it keeps.
-                ["guard"],
-              ),
+                return environment === undefined
+                  ? changeSettings(
+                      state.raw.storage,
+                      store,
+                      changes,
+                      { changes: wanted, author },
+                      now,
+                      refuse,
+                    )
+                  : changeSettingsOverrides(
+                      state.raw.storage,
+                      store,
+                      changes,
+                      { environment, changes: wanted, author },
+                      now,
+                      refuse,
+                    );
+              },
+              // The MCP hosts' revision the change is checked against, not what it keeps.
+              ["guard"],
             ),
+          ),
           listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),
-          revertSettingsChange: ({ change }) =>
+          revertSettingsChange: catalogFirst(({ change }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
                 revertSettingsChange(state.raw.storage, store, changes, { id: change }, now),
               ),
             ),
+          ),
           dismissSettingsChange: ({ change }) =>
             Effect.sync(() => changes.dismiss(SETTINGS_SCOPE, change)),
           getPush: ({ endpoint }) =>
@@ -2600,16 +2613,15 @@ export const registryMethods = Effect.suspend(() =>
           unsubscribePush: ({ endpoint }) =>
             Effect.sync(() => store.deletePushSubscription(endpoint)),
           notify: ({ sessionId, event }) => notify(sessionId, event),
-          createTrigger: ({ id, trigger }) =>
+          createTrigger: catalogFirst(({ id, trigger }) =>
             Effect.gen(function* () {
-              yield* refreshCatalog;
-
               const made = id ?? (yield* newTriggerId);
 
               return triggers.create(made, trigger, yield* Clock.currentTimeMillis);
             }),
-          updateTrigger: ({ id, patch, expected }) =>
-            Effect.andThen(refreshCatalog, Clock.currentTimeMillis).pipe(
+          ),
+          updateTrigger: catalogFirst(({ id, patch, expected }) =>
+            Clock.currentTimeMillis.pipe(
               Effect.map((now) =>
                 triggers.update(
                   id,
@@ -2621,28 +2633,24 @@ export const registryMethods = Effect.suspend(() =>
                 ),
               ),
             ),
+          ),
           setTriggerPaused: ({ id, paused }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => triggers.setPaused(id, paused, now))),
           removeTrigger: ({ id }) => Effect.sync(() => triggers.remove(id)),
-          agentCreateTrigger: (args) =>
-            Effect.andThen(
-              refreshCatalog,
-              viaWrite<TriggerChanged>(args, createReach(args.trigger), invalid, (now) =>
-                triggerChanges.create(args.id, args.trigger, args.author, now),
-              ),
+          agentCreateTrigger: catalogFirst((args) =>
+            viaWrite<TriggerChanged>(args, createReach(args.trigger), invalid, (now) =>
+              triggerChanges.create(args.id, args.trigger, args.author, now),
             ),
-          agentUpdateTrigger: (args) =>
-            Effect.andThen(
-              refreshCatalog,
-              viaWrite<TriggerChanged>(
-                args,
-                triggerReach(args.id),
-                invalid,
-                (now) =>
-                  triggerChanges.update(args.id, args.patch, args.expected, args.author, now),
-                ["expected"],
-              ),
+          ),
+          agentUpdateTrigger: catalogFirst((args) =>
+            viaWrite<TriggerChanged>(
+              args,
+              triggerReach(args.id),
+              invalid,
+              (now) => triggerChanges.update(args.id, args.patch, args.expected, args.author, now),
+              ["expected"],
             ),
+          ),
           agentSetTriggerPaused: (args) =>
             viaWrite<TriggerChanged>(
               args,

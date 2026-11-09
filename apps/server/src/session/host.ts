@@ -240,7 +240,7 @@ import { branchIds } from "./tree.ts";
 import type { ExportPage, ExportRequest, ForkPlan, ForkSourceRequest } from "./fork.ts";
 import { admissionLines } from "./admission.ts";
 import { fillingRefusal, sessionForks, type WrittenTranslation } from "./fork-host.ts";
-import { type AgentPick, PICK_KEY, pickedIn, withChange } from "./pick.ts";
+import { type AgentPick, PICK_KEY, pickedIn, storedPick, withChange } from "./pick.ts";
 
 const context = BACKGROUND_CONTEXT;
 
@@ -4542,7 +4542,8 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           }),
         ),
         Effect.flatMap((wanted) =>
-          Effect.sync(() => kv.put(PICK_KEY, withChange(picked(), wanted))).pipe(
+          // Applied to the pick as stored: a model ignored for now stays picked unless this change replaces it.
+          Effect.sync(() => kv.put(PICK_KEY, withChange(storedPick(kv), wanted))).pipe(
             Effect.andThen(applyAgent),
             serially,
           ),

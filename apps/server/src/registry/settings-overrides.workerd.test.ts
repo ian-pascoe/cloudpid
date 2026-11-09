@@ -246,14 +246,16 @@ describe("a write of a model, checked against the Model catalog (ADR-0051)", () 
 
       const global = writeSettings(store, { model: HAIKU }, 6);
 
-      expect(Result.isFailure(global) && global.failure.message).toContain(
-        `model: ${HAIKU} is not one of the models the model proxy serves`,
+      // The refusal names the field and the model, one line each; its wording is free.
+      expect(Result.isFailure(global) ? global.failure.message : "").toMatch(
+        new RegExp(`^model: ${HAIKU} `),
       );
 
-      const own = update(STAGING, { set: { roles: { small: { model: HAIKU } } } });
+      // A model the Role does not run already (its default is Haiku).
+      const own = update(STAGING, { set: { roles: { small: { model: OPUS } } } });
 
-      expect(own !== null && Result.isFailure(own) && own.failure.message).toContain(
-        `roles.small.model: ${HAIKU} is not one`,
+      expect(own !== null && Result.isFailure(own) ? own.failure.message : "").toMatch(
+        new RegExp(`^roles\\.small\\.model: ${OPUS} `),
       );
       expect(store.getSettingsOverrides(STAGING)).toEqual({});
     }));
@@ -267,6 +269,23 @@ describe("a write of a model, checked against the Model catalog (ADR-0051)", () 
       expect(changed.overrides).toEqual({
         model: "anthropic/claude-fable-5-2",
         thinkingLevel: "low",
+      });
+    }));
+
+  it("takes a Role's hint alone at an Environment whose Role runs Global's model, kept under the fallback", () =>
+    inRegistry(({ store, update, change }) => {
+      store.putDocument(
+        SETTINGS_DOCUMENT,
+        JSON.stringify({ roles: { small: { model: "anthropic/claude-fable-5-2" } } }),
+        1,
+      );
+
+      // The owner's save, and the agent's settings_role_set, each complete the Role with the model it runs.
+      expect(
+        saved(update(STAGING, { set: { roles: { small: { hint: "Staging's" } } } })).overrides,
+      ).toEqual({ roles: { small: { model: "anthropic/claude-fable-5-2", hint: "Staging's" } } });
+      expect(change([{ field: "roles.small", value: { hint: "The agent's" } }])).toMatchObject({
+        status: "changed",
       });
     }));
 

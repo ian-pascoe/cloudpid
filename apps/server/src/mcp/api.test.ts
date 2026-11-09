@@ -730,6 +730,19 @@ describe("start", () => {
     expect(createSession).not.toHaveBeenCalled();
   });
 
+  it("checks a model against the fallback catalog when the Registry can't say, as environments_list lists it", async () => {
+    const createSession = vi.fn(backend().createSession);
+    const api = service({ createSession, models: Effect.die(new Error("Registry is down")) });
+
+    expect(
+      await run(api.start({ text: "go", model: "anthropic/claude-fable-5-2", via: VIA })),
+    ).toMatchObject({ ok: false, error: { code: "invalid_argument" } });
+    expect(createSession).not.toHaveBeenCalled();
+    expect(
+      await run(api.start({ text: "go", model: "anthropic/claude-opus-5-5", via: VIA })),
+    ).toMatchObject({ ok: true });
+  });
+
   it("answers the cap, a taken branch and a missing Environment with their codes, and sends nothing", async () => {
     const submit = vi.fn(backend().submit);
 

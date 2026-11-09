@@ -17,6 +17,7 @@ import {
   resolveSettings,
   type McpSettingsProblem,
   type ModelCatalog,
+  type ModelsInForce,
   type Settings,
   SettingsError,
   type SettingsOverrides,
@@ -65,8 +66,8 @@ const defaults: SettingsState = { settings: DEFAULT_SETTINGS, overrides: {}, mcp
 
 /**
  * The settings in force. Saved overrides that no longer resolve (a model the proxy no longer serves, a setting a
- * release renamed) cost only themselves: the rest still apply, and `problem` lists what was left out, so saving the form that shows the
- * survivors is the user's choice to forget the rest. Text that is not JSON gives the defaults, with the `problem`.
+ * release renamed) cost only themselves: the rest still apply, and `problem` lists what was left out, so saving the
+ * form that shows the survivors is the user's choice to forget the rest. Text that is not JSON gives the defaults, with the `problem`.
  */
 export const readSettings = (documents: DocumentStore): SettingsState => {
   const body = documents.getDocument(SETTINGS_DOCUMENT);
@@ -94,16 +95,16 @@ export const readSettings = (documents: DocumentStore): SettingsState => {
 
 /**
  * `checked`, a write's strict resolution of `layer`, refused too for each model `layer` gives that `catalog` does not
- * list (`unservedModelLines`; one `kept`, the layer as saved, already holds is not given by the write), with one line
- * per problem.
+ * list (`unservedModelLines`; one the Scope already runs with at that field, `inForce`, is not one the write changes),
+ * with one line per problem.
  */
 const servedOnly = <A>(
   checked: Result.Result<A, SettingsError>,
   layer: Schema.Json,
   catalog: ModelCatalog,
-  kept: Schema.Json,
+  inForce: ModelsInForce | undefined,
 ): Result.Result<A, SettingsError> => {
-  const lines = unservedModelLines(layer, catalog, kept);
+  const lines = unservedModelLines(layer, catalog, inForce);
 
   if (lines.length === 0) return checked;
 
@@ -142,7 +143,7 @@ export const writeSettings = (
     resolveSettings(overrides),
     overrides,
     readModelCatalog(documents),
-    savedGlobalSettings(documents),
+    readSettings(documents).settings,
   );
 
   return Result.map(checked, (settings) => {
@@ -227,7 +228,7 @@ export const putSettingsOverrides = (
     resolveOverrides(savedGlobalSettings(store), overrides),
     overrides,
     readModelCatalog(store),
-    store.getSettingsOverrides(environment) ?? {},
+    readSettingsOverrides(store, environment)?.settings,
   );
 
   if (Result.isFailure(checked)) return Result.fail(checked.failure);

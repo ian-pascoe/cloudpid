@@ -15,6 +15,7 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type { ModelProxy } from "../model-proxy.ts";
 import type { DocumentStore } from "./settings.ts";
 
 /** The document the catalog is kept in. */
@@ -94,12 +95,9 @@ export const parseCommissaryPage = (
   };
 };
 
-/** The model proxy, as the catalog is read from it. */
-export type CatalogProxy = { readonly url: string; readonly apiKey: string };
-
 /** Read every model the proxy lists, a page at a time, or throw an `Error` that says why not. */
 export const fetchCommissaryCatalog = async (
-  proxy: CatalogProxy,
+  proxy: ModelProxy,
   fetcher: typeof fetch,
   signal: AbortSignal,
 ): Promise<ReadonlyArray<CatalogModel>> => {
@@ -174,10 +172,9 @@ export type ModelCatalogKeeper = {
  */
 export const modelCatalogKeeper = (options: {
   readonly documents: DocumentStore;
-  readonly proxy: CatalogProxy | undefined;
+  readonly proxy: ModelProxy | undefined;
   readonly fetcher?: typeof fetch;
   readonly now: () => number;
-  readonly timeoutMs?: number;
 }): ModelCatalogKeeper => {
   const { documents, proxy, now } = options;
   let failedAt: number | undefined;
@@ -194,12 +191,12 @@ export const modelCatalogKeeper = (options: {
     return fetchedAt === null || at - fetchedAt >= CATALOG_TTL_MS;
   };
 
-  const read = async (target: CatalogProxy): Promise<CatalogRefresh> => {
+  const read = async (target: ModelProxy): Promise<CatalogRefresh> => {
     try {
       const models = await fetchCommissaryCatalog(
         target,
         options.fetcher ?? fetch,
-        AbortSignal.timeout(options.timeoutMs ?? CATALOG_FETCH_TIMEOUT_MS),
+        AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS),
       );
 
       const at = now();

@@ -177,6 +177,13 @@ export const HARNESS_TOOLS_SERVED = [
 ] as const satisfies ReadonlyArray<DispatchedToolName>;
 
 /** What the endpoint reads of the Registry and the Sessions. Each is one RPC; a failure of any is `unavailable`. */
+/**
+ * The Model catalog `backend` gives, or the built-in fallback when the Registry can't say (a failure or a defect): what
+ * `environments_list` lists and `session_start` checks a model against, the same in both (ADR-0051).
+ */
+const catalogOf = (backend: Pick<McpBackend, "models">): Effect.Effect<ModelCatalog> =>
+  backend.models.pipe(Effect.catchCause(() => Effect.succeed(FALLBACK_CATALOG)));
+
 export interface McpBackend {
   readonly environments: Effect.Effect<ReadonlyArray<EnvironmentRecord>>;
   /** Every Session, newest first: for each Environment's running count. */
@@ -661,7 +668,7 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
             Effect.asSome,
             Effect.catchCause(() => Effect.succeed(Option.none<string>())),
           ),
-          backend.models.pipe(Effect.catchCause(() => Effect.succeed(FALLBACK_CATALOG))),
+          catalogOf(backend),
         ]);
 
         const available = Arr.map(catalog.models, (each) => each.id);
@@ -812,7 +819,7 @@ export const mcpApiService = (backend: McpBackend, context: McpApiContext): McpA
 
           const model = request.model;
 
-          if (model !== undefined && !catalogHas(yield* backend.models, model)) {
+          if (model !== undefined && !catalogHas(yield* catalogOf(backend), model)) {
             return apiFailure(
               "invalid_argument",
               `model: ${unservedModel(model)}; environments_list's models.available lists them too.`,

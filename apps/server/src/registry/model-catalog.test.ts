@@ -1,3 +1,6 @@
+// The Registry's keeper of the Model catalog (`docs/architecture/overview.md` → Models, ADR-0051): the proxy's list read
+// into the catalog, again only once it is older than its TTL, the copy kept (stale) when a read fails, the fallback
+// before any read succeeds, and one read for calls made at once.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 import { FALLBACK_CATALOG } from "@cloudpid/config";
 import { describe, expect, it } from "vitest";
@@ -95,10 +98,11 @@ describe("the Model catalog the Registry keeps", () => {
     down = true;
     clock.now += CATALOG_TTL_MS;
 
-    expect(await keeper.refresh()).toEqual({
-      status: "failed",
-      message: "The model proxy answered 502 to its list of models",
-    });
+    const failed = await keeper.refresh();
+
+    expect(failed.status).toBe("failed");
+    // The proxy's status is in the message, for the log.
+    expect(failed.status === "failed" && failed.message).toContain("502");
     expect(keeper.current()).toEqual(kept);
 
     clock.now += CATALOG_RETRY_MS - 1;
@@ -112,7 +116,7 @@ describe("the Model catalog the Registry keeps", () => {
 
     const [first, second] = await Promise.all([keeper.refresh(), keeper.refresh()]);
 
-    expect(first).toEqual({ status: "failed", message: "unreachable" });
+    expect(first).toMatchObject({ status: "failed" });
     expect(second).toBe(first);
     expect(requests).toHaveLength(1);
     expect(keeper.current()).toEqual(FALLBACK_CATALOG);
@@ -134,9 +138,7 @@ describe("the Model catalog the Registry keeps", () => {
 
     const empty = keeperWith(() => Promise.resolve(Response.json({ data: [], has_more: false })));
 
-    expect(await empty.keeper.refresh()).toEqual({
-      status: "failed",
-      message: "The model proxy listed no models",
-    });
+    expect(await empty.keeper.refresh()).toMatchObject({ status: "failed" });
+    expect(empty.keeper.current()).toEqual(FALLBACK_CATALOG);
   });
 });

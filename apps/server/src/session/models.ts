@@ -14,9 +14,7 @@ import { createModels, type Model, type MutableModels } from "@earendil-works/pi
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
-
-/** The model proxy: its base URL and API key, from the `MODEL_PROXY_URL` and `MODEL_PROXY_API_KEY` secrets. */
-export type ModelProxy = { readonly url: string; readonly apiKey: string };
+import type { ModelProxy } from "../model-proxy.ts";
 
 type AnthropicModel = Model<"anthropic-messages">;
 
@@ -86,7 +84,7 @@ const windowOf = (entry: CatalogModel, capped: boolean): number =>
   capped ? Math.min(entry.contextWindow, CLAUDE_CONTEXT_WINDOW) : entry.contextWindow;
 
 /** pi-ai's model for one entry of the catalog, against pi-ai's own anthropic models `known`. */
-const catalogModel = (
+const piAiModelOf = (
   entry: CatalogModel,
   known: ReadonlyArray<AnthropicModel>,
   baseUrl: string,
@@ -147,7 +145,7 @@ export const catalogModels = (
   known: ReadonlyArray<AnthropicModel> = ANTHROPIC_MODELS,
 ): ReadonlyArray<AnthropicModel> =>
   Arr.flatMap(catalog.models, (entry) =>
-    parseModelId(entry.id).provider === "anthropic" ? [catalogModel(entry, known, baseUrl)] : [],
+    parseModelId(entry.id).provider === "anthropic" ? [piAiModelOf(entry, known, baseUrl)] : [],
   );
 
 /**

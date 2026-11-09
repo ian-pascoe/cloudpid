@@ -707,6 +707,23 @@ describe("a Session's agent", () => {
     expect(await requests(stub)).toEqual([{ model: "claude-opus-5-5", thinking: "low" }]);
   });
 
+  it("keeps an ignored pick of a model through a change of the thinking level alone", async () => {
+    const { stub } = await registered();
+    const retired = { provider: "anthropic", modelId: "claude-retired" };
+
+    await runInDurableObject(stub, async (instance: TestSession, state) => {
+      state.storage.kv.put("agent-pick", { model: retired, thinkingLevel: "low" });
+      await instance.configure({ thinkingLevel: "medium" });
+    });
+
+    // Ignored while the catalog does not list it, it is still the Session's until a model is picked again.
+    expect(
+      await runInDurableObject(stub, (_instance: TestSession, state) =>
+        state.storage.kv.get("agent-pick"),
+      ),
+    ).toEqual({ model: retired, thinkingLevel: "medium" });
+  });
+
   it("carries on with the settings it last read while the Registry is down", async () => {
     const { stub, registry } = await registered();
 

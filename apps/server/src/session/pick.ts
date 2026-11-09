@@ -29,11 +29,17 @@ export const withChange = (pick: AgentPick, change: AgentChange): AgentPick => {
 };
 
 /**
- * What the Session in `kv` picked: a field is absent while it follows the default. `catalog` is the Model catalog the
- * Session last read (ADR-0051).
+ * The pick as the Session in `kv` keeps it, a model its catalog no longer lists included: what a change of the pick
+ * applies to, so a pick ignored for now is kept until a model is picked again (the catalog may list it again).
+ */
+export const storedPick = (kv: SettingsKv): AgentPick => kv.get<AgentPick>(PICK_KEY) ?? {};
+
+/**
+ * What the Session in `kv` picked, as it runs: a field is absent while it follows the default. `catalog` is the Model
+ * catalog the Session last read (ADR-0051).
  */
 export const pickedIn = (kv: SettingsKv, catalog: ModelCatalog): AgentPick => {
-  const kept = kv.get<AgentPick>(PICK_KEY) ?? {};
+  const kept = storedPick(kv);
 
   // A model the catalog does not list is ignored: the Session follows the default rather than fail every request. Unlike
   // a saved setting, a pick is not kept under the fallback: the Session could not run it, and losing it costs only the

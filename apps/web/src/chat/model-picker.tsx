@@ -27,7 +27,7 @@ import {
   agentSelect,
   FOLLOW_DEFAULT,
   modelGroups,
-  modelLabel as catalogLabel,
+  modelLabel,
   modelName,
   pickedChange,
 } from "../models.ts";
@@ -99,8 +99,8 @@ const Picker = ({
   const groups = modelGroups(catalog, model);
   const levels = [FOLLOW_DEFAULT, ...THINKING_LEVELS];
 
-  const modelLabel = (choice: string) =>
-    choice === FOLLOW_DEFAULT ? modelChoice.defaultLabel : catalogLabel(catalog, choice);
+  const modelRowLabel = (choice: string) =>
+    choice === FOLLOW_DEFAULT ? modelChoice.defaultLabel : modelLabel(catalog, choice);
 
   const levelLabel = (choice: string) =>
     choice === FOLLOW_DEFAULT ? levelChoice.defaultLabel : choice;
@@ -217,14 +217,14 @@ const Picker = ({
         className={cn(row, open && "sm:bg-accent/60")}
       >
         <Mark checked={checked} />
-        <span className="min-w-0 flex-1 truncate">{modelLabel(choice)}</span>
+        <span className="min-w-0 flex-1 truncate">{modelRowLabel(choice)}</span>
         <ChevronRight className="text-muted-foreground" aria-hidden />
       </button>
     );
   };
 
   const following = (isPicked: boolean) => (isPicked ? "" : ", the default");
-  const submenuFor = modelLabel(state.model);
+  const submenuFor = modelRowLabel(state.model);
 
   return (
     <>

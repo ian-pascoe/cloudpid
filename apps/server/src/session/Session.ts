@@ -174,9 +174,6 @@ const NAME_KEY = "session-name";
  */
 const PLACEMENT_KEY = "workspace-placement";
 
-/** The model proxy's configuration, which the Registry reads the Model catalog with too (`../model-proxy.ts`). */
-export { ModelProxyConfig, ModelProxyConfigLive } from "../model-proxy.ts";
-
 /**
  * What the Session DO answers: its alarm, and its clients' sockets (`docs/architecture/client-and-protocol.md`). `fetch`
  * accepts a socket upgrade the main Worker forwards; the socket's events then reach the object directly.

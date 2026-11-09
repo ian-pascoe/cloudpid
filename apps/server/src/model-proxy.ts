@@ -5,6 +5,9 @@ import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 
+/** The model proxy as it is called: its base URL and API key, read out of `ModelProxyConfig`. */
+export type ModelProxy = { readonly url: string; readonly apiKey: string };
+
 /** The model proxy's base URL and API key: deploy-time secrets, bound to the Worker by `Config.Redacted`. */
 export class ModelProxyConfig extends Context.Service<
   ModelProxyConfig,

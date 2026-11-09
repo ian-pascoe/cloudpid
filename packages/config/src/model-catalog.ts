@@ -177,31 +177,71 @@ const withoutLeaf = (value: Schema.Json, keys: ReadonlyArray<string>): Schema.Js
   return Record.map(value, (child, key) => (key === head ? withoutLeaf(child, rest) : child));
 };
 
+/** The models a Scope's settings run with: its default model and each Role's (the resolved `Settings` are one). */
+export type ModelsInForce = {
+  readonly model: string;
+  readonly roles: Readonly<Record<string, { readonly model: string }>>;
+};
+
+/** The model `inForce` runs with at `keys` (`model`, or `roles.<name>.model`), if any. */
+const modelInForceAt = (
+  inForce: ModelsInForce | undefined,
+  keys: ReadonlyArray<string>,
+): string | undefined => {
+  if (inForce === undefined) return undefined;
+
+  const [head, role] = keys;
+
+  return head === "model"
+    ? inForce.model
+    : role === undefined
+      ? undefined
+      : inForce.roles[role]?.model;
+};
+
+/** One model a write gives that the catalog does not list: the field, and the model. */
+export type UnservedModel = { readonly field: string; readonly model: string };
+
 /**
- * One line for each model of `layer` (a Scope's overrides as written: the default model, each Role's) that `catalog`
- * does not list, as `field: why`; empty when the proxy serves them all. A write is refused with them (ADR-0051). A model
- * `kept` (the layer as saved before the write) already holds at the same field is not one the write gives, and is not
- * checked: it was checked when it was written, and a read decides whether it still applies (`withServedModels`).
+ * Each model of `layer` (a Scope's overrides as written: the default model, each Role's) that `catalog` does not list;
+ * none when the proxy serves them all. A write is refused for them (ADR-0051). A model the Scope already runs with at
+ * the same field (`inForce`, its settings as resolved before the write, inherited ones included) is not one the write
+ * changes, and is not checked: it was checked when it was written, and a read decides whether it still applies
+ * (`withServedModels`). So writing a Role's hint alone, which completes the Role with its model, is never refused.
  */
-export const unservedModelLines = (
+export const unservedModels = (
   layer: Schema.Json,
   catalog: ModelCatalog,
-  kept: Schema.Json = {},
-): ReadonlyArray<string> =>
+  inForce?: ModelsInForce,
+): ReadonlyArray<UnservedModel> =>
   Arr.flatMap(modelKeysOf(layer), (keys) => {
     const value = valueAt(layer, keys);
 
     return Predicate.isString(value) &&
       isModelId(value) &&
-      valueAt(kept, keys) !== value &&
+      modelInForceAt(inForce, keys) !== value &&
       !catalogHas(catalog, value)
-      ? [`${Arr.join(keys, ".")}: ${unservedModel(value)}`]
+      ? [{ field: Arr.join(keys, "."), model: value }]
       : [];
   });
+
+/** `unservedModels` as the lines a write's refusal shows, `field: why`. */
+export const unservedModelLines = (
+  layer: Schema.Json,
+  catalog: ModelCatalog,
+  inForce?: ModelsInForce,
+): ReadonlyArray<string> =>
+  Arr.map(
+    unservedModels(layer, catalog, inForce),
+    ({ field, model }) => `${field}: ${unservedModel(model)}`,
+  );
 
 /** A layer of the settings with the models the proxy no longer serves left out, and a line for each. */
 export type ServedModels = {
   readonly document: Schema.Json;
+  /** The models left out, each with its field. */
+  readonly unserved: ReadonlyArray<UnservedModel>;
+  /** A line for each, as a read's `problem` lists it. */
   readonly dropped: ReadonlyArray<string>;
 };
 
@@ -210,7 +250,7 @@ export type ServedModels = {
  * each left out: what a lenient read does before it resolves, so a model the proxy dropped costs only itself.
  */
 export const withServedModels = (layer: Schema.Json, catalog: ModelCatalog): ServedModels => {
-  const unserved = Arr.flatMap(modelKeysOf(layer), (keys) => {
+  const left = Arr.flatMap(modelKeysOf(layer), (keys) => {
     const value = valueAt(layer, keys);
 
     return Predicate.isString(value) && isModelId(value) && !keepsSavedModel(catalog, value)
@@ -218,12 +258,14 @@ export const withServedModels = (layer: Schema.Json, catalog: ModelCatalog): Ser
       : [];
   });
 
+  const unserved = Arr.map(left, ({ keys, model }) => ({ field: Arr.join(keys, "."), model }));
+
   return {
-    document: Arr.reduce(unserved, layer, (document, { keys }) => withoutLeaf(document, keys)),
+    document: Arr.reduce(left, layer, (document, { keys }) => withoutLeaf(document, keys)),
+    unserved,
     dropped: Arr.map(
       unserved,
-      ({ keys, model }) =>
-        `${Arr.join(keys, ".")}: ${model} is no longer served by the model proxy`,
+      ({ field, model }) => `${field}: ${model} is no longer served by the model proxy`,
     ),
   };
 };
