@@ -24,6 +24,9 @@ import {
   type AgentChange,
   KnownWhenBusy,
   fireTimeWords,
+  type GitHubHookStatus,
+  githubHookOf,
+  githubHookProblem,
   matchProblem,
   nextFires,
   ownOptionsProblem,
@@ -45,6 +48,7 @@ import {
   type TriggerPatch,
   type TriggerSourceInput,
   webhookOf,
+  type WebhookSource,
   WebhookFormat,
   defaultWhenBusy,
   type SessionTriggerInput,
@@ -138,11 +142,15 @@ export type TriggerAccessService = {
   readonly newId: Effect.Effect<string>;
   /** The Workspace this Session works in, with its Environment: all a Workspace trigger made here can mean. */
   readonly workspace: Effect.Effect<TriggerWorkspace, EnvironmentsError>;
+  /**
+   * Make Trigger `id`. For one with a GitHub-managed hook, the access refuses while the Registry can't keep the hook, and
+   * answers where the hook is once the Trigger's object made its first try.
+   */
   readonly create: (input: {
     readonly id: string;
     readonly trigger: OwnTriggerInput;
     readonly author: ChangeAuthor;
-  }) => Effect.Effect<TriggerChanged, EnvironmentsError>;
+  }) => Effect.Effect<TriggerCreated, EnvironmentsError>;
   /** Change Trigger `id`'s fields; with `expected`, only while it is as the owner saw it. */
   readonly update: (input: {
     readonly id: string;
@@ -161,6 +169,12 @@ export type TriggerAccessService = {
     readonly id: string;
     readonly author: ChangeAuthor;
   }) => Effect.Effect<TriggerChanged, EnvironmentsError>;
+};
+
+/** What `TriggerAccessService.create` answers: the change, and where a GitHub-managed hook is (absent for none). */
+export type TriggerCreated = {
+  readonly applied: TriggerChanged;
+  readonly github?: GitHubHookStatus | undefined;
 };
 
 /** A Session trigger of the Session that makes it: the access gives it that Session's id. */
@@ -204,9 +218,21 @@ const Webhook = Schema.Struct({
     description:
       '"github": GitHub signs each delivery with X-Hub-Signature-256 (the repo or App webhook\'s secret); "standard": Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature), which Svix-based senders use',
   }),
+  repo: Schema.optionalKey(
+    Schema.String.annotate({
+      description:
+        'A github webhook only: the GitHub repo (owner/name, such as "octo-org/octo-repo") cloudpid makes the hook on, as its GitHub App, so the user sets up nothing. Give it with events, or leave both out for a hook the user makes',
+    }),
+  ),
+  events: Schema.optionalKey(
+    Schema.Array(Schema.String).annotate({
+      description:
+        'With repo: the GitHub events the hook is sent, each by its name, such as ["workflow_run"] or ["issue_comment", "pull_request"]; no "*"',
+    }),
+  ),
 }).annotate({
   description:
-    "Fire on each signed delivery to the Trigger's URL instead of on a Schedule (an Environment trigger or a Workspace trigger only). cloudpid makes the URL and the Signing secret when the Trigger is made and shows them only to the user, on the Trigger's page: you never see either",
+    "Fire on each signed delivery to the Trigger's URL instead of on a Schedule (an Environment trigger or a Workspace trigger only). cloudpid makes the URL and the Signing secret when the Trigger is made and shows them only to the user, on the Trigger's page: you never see either. A github webhook that names a repo and events has its hook made on that repo by cloudpid",
 });
 
 const Match = TriggerMatch.annotate({
@@ -282,9 +308,26 @@ const matchKey = (match: TriggerMatch | undefined): string =>
 const sourceWords = (holder: { readonly source: TriggerChangeValue["source"] }): string => {
   const webhook = webhookOf(holder);
 
-  return webhook === undefined
-    ? scheduleWords(scheduleOf(holder))
-    : `a webhook (${webhook.format} format)`;
+  if (webhook === undefined) return scheduleWords(scheduleOf(holder));
+
+  const github = githubHookOf(holder);
+
+  return github === undefined
+    ? `a webhook (${webhook.format} format)`
+    : `a webhook (${webhook.format} format), its hook made on GitHub repo ${JSON.stringify(github.repo)} for ${Arr.join(
+        Arr.map(github.events, (event) => JSON.stringify(event)),
+        ", ",
+      )}`;
+};
+
+/** Where a GitHub-managed hook is, as a result tells the agent: made, or why not yet. */
+const hookWords = (repo: string, github: GitHubHookStatus | undefined): string => {
+  if (github?.state === "ready")
+    return `GitHub has its hook on ${repo}: there is nothing to set up.`;
+
+  const why = github?.problem?.message.replace(/\.$/u, "");
+
+  return `GitHub has no hook on ${repo} yet${why === undefined ? "" : `: ${why}`}. cloudpid keeps trying, and the Trigger's page in Settings shows where it is.`;
 };
 
 /** Where a webhook Trigger's URL and Signing secret are, which the agent never sees. */
@@ -631,10 +674,20 @@ export const TriggerTools: Effect.Effect<
 
       if (match !== undefined) yield* plainMatch(match);
 
-      const source: TriggerSourceInput = { type: "webhook", format: webhook.format };
+      const source: Types.Mutable<WebhookSource> = { type: "webhook", format: webhook.format };
 
       // An empty match is none, as the Trigger holds it.
-      return match === undefined || Rec.isEmptyRecord(match) ? source : { ...source, match };
+      if (match !== undefined && !Rec.isEmptyRecord(match)) source.match = match;
+
+      if (webhook.repo !== undefined) source.repo = webhook.repo;
+
+      if (webhook.events !== undefined) source.events = webhook.events;
+
+      const problem = githubHookProblem(source);
+
+      if (problem !== undefined) return yield* refuse(problem);
+
+      return source;
     });
 
   /** Trigger `id`, or a refusal naming the tool that lists them. */
@@ -667,6 +720,7 @@ export const TriggerTools: Effect.Effect<
     approval,
     made,
     already,
+    github,
   }: {
     readonly tool: string;
     readonly id: string;
@@ -675,6 +729,8 @@ export const TriggerTools: Effect.Effect<
     readonly approval: typeof APPROVED | null;
     readonly made: (definition: TriggerDefinition | null) => string;
     readonly already: string;
+    /** Where the Trigger's GitHub-managed hook is after the call, for one that has one. */
+    readonly github?: GitHubHookStatus | undefined;
   }) =>
     Effect.gen(function* () {
       switch (applied.status) {
@@ -707,6 +763,7 @@ export const TriggerTools: Effect.Effect<
                 unchanged: [triggerField(id)],
                 approval,
                 trigger: yield* outputOf(applied.definition, environment),
+                github,
               }),
             ),
             details: { approval, agentChanges: [] },
@@ -737,6 +794,7 @@ export const TriggerTools: Effect.Effect<
                   applied.definition === null
                     ? null
                     : yield* outputOf(applied.definition, applied.environment),
+                github,
               }),
             ),
             details: {
@@ -1022,6 +1080,7 @@ export const TriggerTools: Effect.Effect<
         yield* plainMessage(message);
 
         const source = yield* createSource({ schedule, webhook, match });
+        const hook = githubHookOf({ source });
         const kind = kindOfOwner(owner);
         const words = KIND_WORDS[kind];
 
@@ -1110,7 +1169,9 @@ export const TriggerTools: Effect.Effect<
                     source.match === undefined
                       ? "No match: every delivery that is signed right starts a Session."
                       : "Only deliveries that pass the match start a Session.",
-                    "Its URL and Signing secret are made with it and shown only to the user, on its page.",
+                    hook === undefined
+                      ? "Its URL and Signing secret are made with it and shown only to the user, on its page."
+                      : `cloudpid makes its hook on ${hook.repo} as the GitHub App, with its URL and Signing secret: the user sets up nothing.`,
                   ]),
               ...cutMessageNotes(message),
             ],
@@ -1137,7 +1198,7 @@ export const TriggerTools: Effect.Effect<
                 });
               }
 
-              const applied = yield* access.create({
+              const { applied, github } = yield* access.create({
                 id: asked.value.id,
                 trigger,
                 author: {
@@ -1160,8 +1221,9 @@ export const TriggerTools: Effect.Effect<
                 name: trigger.name,
                 applied,
                 approval: APPROVED,
+                github,
                 made: (definition) =>
-                  `made the Trigger "${trigger.name}" (id ${asked.value.id}) in ${where}. ${definition === null ? "" : source.type === "schedule" ? `It fires ${scheduleWords(source)}; ${nextFiresNote(source, now)}.` : `It fires on each ${source.format} delivery to its URL that passes its match. ${SECRETS_NOTE} Tell the user to open the Trigger's page and set up the sender there.`} ${words.madeNote(value.whenBusy)}; the user is notified when its Run ends, or if a Fire fails. trigger_pause stops it at once.`,
+                  `made the Trigger "${trigger.name}" (id ${asked.value.id}) in ${where}. ${definition === null ? "" : source.type === "schedule" ? `It fires ${scheduleWords(source)}; ${nextFiresNote(source, now)}.` : `It fires on each ${source.format} delivery to its URL that passes its match. ${SECRETS_NOTE} ${hook === undefined ? "Tell the user to open the Trigger's page and set up the sender there." : hookWords(hook.repo, github)}`} ${words.madeNote(value.whenBusy)}; the user is notified when its Run ends, or if a Fire fails. trigger_pause stops it at once.`,
                 already: `The Trigger "${trigger.name}" exists`,
               });
             }),

@@ -992,6 +992,98 @@ describe("a webhook Trigger", () => {
   });
 });
 
+const HOOKED = {
+  ...CI,
+  webhook: { format: "github", repo: "octo-org/octo-repo", events: ["workflow_run"] },
+};
+
+describe("a GitHub-managed hook", () => {
+  it("is made with its repo and events once the owner approves a card naming them, and needs no setting up", async () => {
+    const { call, triggers, asked } = await setUp();
+
+    const { result, text, error } = await call("trigger_create", HOOKED);
+
+    expect(error).toBe(false);
+    expect(asked[0]?.after).toContain(
+      'Webhook: a webhook (github format), its hook made on GitHub repo "octo-org/octo-repo" for "workflow_run"',
+    );
+    expect(asked[0]?.notes?.join("\n")).toContain(
+      "cloudpid makes its hook on octo-org/octo-repo as the GitHub App",
+    );
+    expect(triggers.held.get("0190-a")?.source).toEqual({
+      type: "webhook",
+      format: "github",
+      match: MATCH,
+      repo: "octo-org/octo-repo",
+      events: ["workflow_run"],
+    });
+    expect(text).toContain(
+      "GitHub has its hook on octo-org/octo-repo: there is nothing to set up.",
+    );
+    expect(text).not.toContain("set up the sender");
+
+    const output = decodeChange(result.structuredOutput);
+
+    expect(output.trigger?.webhook).toEqual({
+      format: "github",
+      match: MATCH,
+      repo: "octo-org/octo-repo",
+      events: ["workflow_run"],
+    });
+    expect(output.github_hook).toEqual({
+      repo: "octo-org/octo-repo",
+      state: "ready",
+      problem: null,
+    });
+  });
+
+  it("says why GitHub has no hook yet, which cloudpid keeps trying", async () => {
+    const { call, triggers } = await setUp();
+
+    triggers.hookAnswers.set("0190-a", {
+      repo: "octo-org/octo-repo",
+      state: "failed",
+      problem: {
+        code: "permission",
+        message: "The GitHub App can't make hooks: accept Webhooks: write on its installation",
+      },
+    });
+
+    const { result, text, error } = await call("trigger_create", HOOKED);
+
+    expect(error).toBe(false);
+    expect(text).toContain(
+      "GitHub has no hook on octo-org/octo-repo yet: The GitHub App can't make hooks: accept Webhooks: write on its installation. cloudpid keeps trying",
+    );
+    expect(decodeChange(result.structuredOutput).github_hook).toMatchObject({
+      state: "failed",
+      problem: "The GitHub App can't make hooks: accept Webhooks: write on its installation",
+    });
+  });
+
+  it("refuses a repo or events it can't make a hook of, without asking", async () => {
+    const { call, asked, triggers } = await setUp();
+
+    const refused = [
+      { ...HOOKED, webhook: { ...HOOKED.webhook, format: "standard" } },
+      { ...HOOKED, webhook: { format: "github", repo: "octo-org/octo-repo" } },
+      { ...HOOKED, webhook: { format: "github", events: ["push"] } },
+      { ...HOOKED, webhook: { ...HOOKED.webhook, repo: "octo-repo" } },
+      { ...HOOKED, webhook: { ...HOOKED.webhook, events: ["*"] } },
+    ];
+
+    for (const args of refused) {
+      const { error, text } = await call("trigger_create", args);
+
+      expect(error).toBe(true);
+      expect(text).toContain("Nothing was asked or saved");
+    }
+
+    expect(asked).toEqual([]);
+    expect(triggers.held.size).toBe(0);
+  });
+});
+
 describe("Session triggers", () => {
   const CHECK_CI = {
     owner: "session",
