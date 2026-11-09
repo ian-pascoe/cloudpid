@@ -53,7 +53,7 @@ export default defineConfig({
         defineProject({ test: { name: "node", exclude: [...configDefaults.exclude, workerd] } }),
       ),
       defineProject({
-        // Project-wide: every `workerd` test file resolves `@alchemy.run/cloudflare` to `registry/alchemy.fixture.ts`, a stub of
+        // Project-wide, for the `workerd` project only: every `workerd` test file resolves `@alchemy.run/cloudflare` to `registry/alchemy.fixture.ts`, a stub of
         // only what `registry/Registry.ts` reads when it loads (the package itself cannot load in workerd). The real Registry
         // runs in a test Durable Object (`registry/registry.fixture.ts`); a test that needs more from Alchemy extends the stub.
         resolve: {
@@ -91,7 +91,7 @@ export default defineConfig({
       defineProject({
         plugins: [
           cloudflareTest({
-            main: "./src/workerd.fixture.ts",
+            main: "./src/assets-worker.fixture.ts",
             miniflare: {
               compatibilityDate: "2026-08-31",
               compatibilityFlags: ["nodejs_compat"],
