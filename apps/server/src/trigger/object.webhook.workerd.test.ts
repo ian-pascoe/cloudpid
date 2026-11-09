@@ -30,7 +30,18 @@ declare global {
 
 const DAY = 24 * 60 * 60_000;
 
-const start = Date.parse("2026-11-09T08:00:00Z");
+/**
+ * 8:00 UTC on a day a week after the real clock, as `object.workerd.test.ts` has it: it follows the real clock, since
+ * workerd runs an alarm set in the past at once.
+ */
+const start = (() => {
+  const day = new Date(Date.now() + 7 * DAY);
+
+  return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), 8);
+})();
+
+/** The UTC day of `at`, as the per-day counts name it. */
+const dayOf = (at: number): string => new Date(at).toISOString().slice(0, 10);
 
 const encoder = new TextEncoder();
 
@@ -271,7 +282,7 @@ describe("a delivery to a Trigger URL", () => {
       outcome: "not_found",
     });
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-09", outcome: "not_found", n: 1 },
+      { day: dayOf(start), outcome: "not_found", n: 1 },
     ]);
   });
 
@@ -300,7 +311,7 @@ describe("a delivery to a Trigger URL", () => {
     ).toEqual({ status: 401, outcome: "unauthorized" });
 
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-09", outcome: "unauthorized", n: 5 },
+      { day: dayOf(start), outcome: "unauthorized", n: 5 },
     ]);
     expect(await trigger.registryCalls()).toEqual(before);
     expect(await trigger.state()).toMatchObject({ pending: 0 });
@@ -330,7 +341,7 @@ describe("a delivery to a Trigger URL", () => {
     }
 
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-09", outcome: "unauthorized", n: 4 },
+      { day: dayOf(start), outcome: "unauthorized", n: 4 },
     ]);
   });
 
@@ -345,7 +356,7 @@ describe("a delivery to a Trigger URL", () => {
     }
 
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-09", outcome: "unsupported", n: 3 },
+      { day: dayOf(start), outcome: "unsupported", n: 3 },
     ]);
   });
 
@@ -365,8 +376,8 @@ describe("a delivery to a Trigger URL", () => {
       outcome: "not_found",
     });
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-09", outcome: "not_found", n: 1 },
-      { day: "2026-11-09", outcome: "too_large", n: 1 },
+      { day: dayOf(start), outcome: "not_found", n: 1 },
+      { day: dayOf(start), outcome: "too_large", n: 1 },
     ]);
     expect(secret).toBeTruthy();
   });
@@ -598,7 +609,7 @@ describe("a Trigger's filter and the bot-loop guard", () => {
       outcome: "filtered",
     });
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-09", outcome: "filtered", n: 3 },
+      { day: dayOf(start), outcome: "filtered", n: 3 },
     ]);
     expect(await trigger.state()).toMatchObject({ pending: 0 });
     expect(await trigger.registryCalls()).toEqual(before);
@@ -634,7 +645,7 @@ describe("a Trigger's filter and the bot-loop guard", () => {
       outcome: "accepted",
     });
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-09", outcome: "filtered", n: 1 },
+      { day: dayOf(start), outcome: "filtered", n: 1 },
     ]);
     expect(await trigger.state()).toMatchObject({ pending: 2 });
   });
@@ -710,8 +721,8 @@ describe("the counts of refused and filtered deliveries", () => {
     await trigger.deliver(await github(token, secret, issue()));
 
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-09", outcome: "not_found", n: 1 },
-      { day: "2026-11-10", outcome: "filtered", n: 2 },
+      { day: dayOf(start), outcome: "not_found", n: 1 },
+      { day: dayOf(start + DAY), outcome: "filtered", n: 2 },
     ]);
 
     // 29 days after the first, both are kept; 30 days after, the first day is gone.
@@ -720,14 +731,14 @@ describe("the counts of refused and filtered deliveries", () => {
 
     await trigger.setNow(start + 30 * DAY);
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-10", outcome: "filtered", n: 2 },
+      { day: dayOf(start + DAY), outcome: "filtered", n: 2 },
     ]);
 
     // The next count drops the rows that went out of the window.
     await trigger.deliver(await github(bad, secret, issue()));
     expect((await trigger.deliveries()).counts).toEqual([
-      { day: "2026-11-10", outcome: "filtered", n: 2 },
-      { day: "2026-12-09", outcome: "not_found", n: 1 },
+      { day: dayOf(start + DAY), outcome: "filtered", n: 2 },
+      { day: dayOf(start + 30 * DAY), outcome: "not_found", n: 1 },
     ]);
     await trigger.setNow(start + 75 * DAY);
     expect((await trigger.deliveries()).counts).toEqual([]);
