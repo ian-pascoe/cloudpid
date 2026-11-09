@@ -737,6 +737,40 @@ describe("the lifecycle, Skill and reset tools", () => {
       }),
     ));
 
+  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in's targets are not overridden, so the
+  // ask answers `unchanged` (a `status` only the ask gives), with the keys of the tool's change answer and no probe.
+  it.each([
+    [
+      "settings_reset of a Limit",
+      "settings_reset",
+      { scope: "*", field: "spendLimit.perSession", reason },
+      { changes: [], changes_truncated: false },
+    ],
+    [
+      "environment_setting_reset of the size limit",
+      "environment_setting_reset",
+      { id: "default", setting: "maxInstance", reason },
+      { changes: [], changes_truncated: false, global: null },
+    ],
+  ] as const)(
+    "hands %s to the ask for the owner's Approval, writing nothing",
+    (_, tool, input, keys) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, registryCalls, ledger } = changing();
+
+          const result = yield* call(tool, input);
+
+          expect(result).toMatchObject({
+            ok: true,
+            value: { structured: { status: "unchanged", ...keys } },
+          });
+          expect(registryCalls).not.toContain("agentChangeFeatures");
+          expect(ledger.changes).toEqual([]);
+        }),
+      ),
+  );
+
   it.each([
     [
       "a Skill install at Global",
@@ -749,11 +783,6 @@ describe("the lifecycle, Skill and reset tools", () => {
       "a Test Build of proposed changes",
       "environment_rebuild",
       { id: "default", reason, proposed: { setup_script: "echo hi" } },
-    ],
-    [
-      "the reset of the size limit",
-      "environment_setting_reset",
-      { id: "default", setting: "maxInstance", reason },
     ],
   ] as const)(
     "answers %s as unsupported, before the Registry is asked anything",
@@ -774,6 +803,8 @@ describe("the lifecycle, Skill and reset tools", () => {
   it.each([
     ["environment_rename", { id: "*", name: "X", reason }],
     ["environment_setting_reset", { id: "*", setting: "setupScript", reason }],
+    // The size limit's reset asks the owner, and its ask refuses Global as the reset of any other setting does.
+    ["environment_setting_reset", { id: "*", setting: "maxInstance", reason }],
   ] as const)("refuses %s at Global as invalid_argument", (tool, input) =>
     Effect.runPromise(
       Effect.gen(function* () {
@@ -962,9 +993,11 @@ describe("a change to the Settings or an MCP server", () => {
       Effect.gen(function* () {
         const { call, ledger, registryCalls, upkeep } = changing();
 
-        const result = yield* call("settings_reset", {
+        const result = yield* call("settings_extension_set", {
           scope: "*",
-          field: "spendLimit.perSession",
+          extension: "subagents",
+          key: "maxSubagentDepth",
+          value: 2,
           reason,
         });
 

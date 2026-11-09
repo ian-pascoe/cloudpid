@@ -59,6 +59,24 @@ describe("ApprovalCard", () => {
     expect(inside).not.toContain("Runs: node");
     expect(render("after")).not.toContain("What it runs, sends and reaches");
   });
+
+  it("says who asked a request no Session asked, by its byline, and nothing more for a Session's", () => {
+    // A request asked over the MCP endpoint is no Session's: its card takes its id and card, with no conversation.
+    const { conversationId: _conversation, ...card } = request("after");
+
+    const asked = renderToStaticMarkup(
+      <ApprovalCard
+        request={card}
+        disabled={false}
+        byline="Asked via pi (MCP)"
+        onAnswer={() => {}}
+      />,
+    );
+
+    expect(asked).toContain("Asked via pi (MCP)");
+    expect(asked).toMatch(/<section[^>]*id="request-r1"/);
+    expect(render("after")).not.toContain("Asked via");
+  });
 });
 
 describe("a card's anchor", () => {

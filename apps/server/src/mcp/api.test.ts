@@ -3,6 +3,7 @@
 // @effect-diagnostics asyncFunction:off globalDate:off preferEffectArray:off missedPipeableOpportunity:off
 import {
   apiFailure,
+  apiOk,
   decodeCursor,
   DEFAULT_ENVIRONMENT,
   encodeCursor,
@@ -134,8 +135,19 @@ const backend = (overrides: Partial<McpBackend> = {}): McpBackend => ({
     Effect.succeed({ ok: true as const, value: { cancelled: true as const } }),
   deleteSession: () => Effect.void,
   harness: () => Effect.succeed({ ok: true as const, value: { text: "ok", structured: {} } }),
+  approvalWait: () => Effect.succeed(apiOk(APPROVAL_STATE)),
+  approvalWithdraw: () => Effect.succeed(apiOk(APPROVAL_STATE)),
   ...overrides,
 });
+
+/** A request as `approval_wait` reads it: waiting. */
+const APPROVAL_STATE = {
+  approval_id: "a-1",
+  tool: "settings_spend_limit_set",
+  status: "pending",
+  finished: false,
+  expires_at: "2026-01-08T00:00:00.000Z",
+};
 
 const service = (overrides: Partial<McpBackend> = {}, context: Partial<McpApiContext> = {}) =>
   mcpApiService(backend(overrides), {
@@ -192,7 +204,60 @@ describe("describe", () => {
       "settings_mcp_exposure_set",
       "settings_mcp_tool_exposure_set",
       "settings_mcp_remove",
+      "settings_spend_limit_set",
+      "settings_subagent_depth_set",
+      "settings_subagent_workspaces_set",
+      "settings_instructions_set",
+      "environment_container_size_limit_set",
     ]);
+  });
+
+  it("lists the operations of approval_wait and approval_withdraw, which harness does not serve", () => {
+    const described = service().describe();
+
+    expect(described.operations).toEqual(
+      expect.arrayContaining(["harness", "approvalWait", "approvalWithdraw"]),
+    );
+    expect(described.harness).not.toContain("approval_wait");
+    expect(described.harness).not.toContain("approval_withdraw");
+  });
+});
+
+describe("approvalWait and approvalWithdraw", () => {
+  it("hand the backend the request, and approvalWait the verified caller's auth, never an argument's", async () => {
+    const asked: Array<unknown> = [];
+
+    const waited = await run(
+      service(
+        {
+          approvalWait: (request, caller) => {
+            asked.push([request, caller]);
+
+            return Effect.succeed(apiOk(APPROVAL_STATE));
+          },
+        },
+        { caller: { kind: "local" } },
+      ).approvalWait({ approval_id: "a-1", timeout_s: 0 }),
+    );
+
+    expect(asked).toEqual([[{ approval_id: "a-1", timeout_s: 0 }, { auth: "local" }]]);
+    expect(waited).toEqual({ ok: true, value: APPROVAL_STATE });
+  });
+
+  it("answer unavailable when the backend dies", async () => {
+    const api = service({
+      approvalWait: () => Effect.die("rpc cut"),
+      approvalWithdraw: () => Effect.die("rpc cut"),
+    });
+
+    expect(await run(api.approvalWait({ approval_id: "a-1" }))).toMatchObject({
+      ok: false,
+      error: { code: "unavailable" },
+    });
+    expect(await run(api.approvalWithdraw({ approval_id: "a-1" }))).toMatchObject({
+      ok: false,
+      error: { code: "unavailable" },
+    });
   });
 });
 

@@ -11,7 +11,9 @@
 //   open) the first is shown, so the common link, one Pane, has no `shown`.
 // - `panes=hidden`: the Pane area is hidden, its Panes still open. Written only beside an open Pane.
 // - `?request=<request_id>`: the request waiting for the owner that the page scrolls to (the `url` of `session_wait`'s and
-//   `session_get`'s `waiting[]`: docs/architecture/mcp-endpoint.md → Waiting requests). It is read only; the page never writes it.
+//   `session_get`'s `waiting[]`: docs/architecture/mcp-endpoint.md → Waiting requests; on the Settings page, the `url` of
+//   an Approval asked over the MCP endpoint, `/settings/:scope/:section?request=<id>`: → Approvals with no Session). It is
+//   read only; the page never writes it.
 // - Anything else in the query is kept as it was, whatever opens or closes a Pane.
 //
 // Opening, closing and switching Panes *replace* the history entry (`replaceSearch`) instead of pushing one. A Pane is

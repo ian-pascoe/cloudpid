@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
+import { ApprovalNotFound, RegistryApproval } from "./approval-requests.ts";
 import { AttachedResource } from "./attached-resources.ts";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
 import { McpAuth, McpClient, MarkedOrigin } from "./mcp-api.ts";
@@ -1406,4 +1407,33 @@ export class RegistryRpcs extends RpcGroup.make(
   Rpc.make("subscribePush", { payload: { subscription: PushSubscription } }),
   /** Forget the subscription at `endpoint`: that browser stops being notified. */
   Rpc.make("unsubscribePush", { payload: { endpoint: Schema.String } }),
+  /**
+   * The Approvals asked over the MCP endpoint that the Registry keeps (`docs/architecture/mcp-endpoint.md` → Approvals with
+   * no Session), oldest first: those waiting for the owner, those approved and not yet applied, and those settled in the
+   * last 24 h; only Scope `scope`'s when one is named. An approved change a cut left unapplied is resumed after the answer.
+   */
+  Rpc.make("listApprovals", {
+    payload: { scope: Schema.optionalKey(Schema.String) },
+    success: Schema.Array(RegistryApproval),
+  }),
+  /**
+   * The owner's answer to request `id`: Approve applies its change (with what the owner saw, and only while the target
+   * still has it), Decline changes nothing, with the owner's `reason`. Answers the request as it stands after: a request
+   * no longer waiting (expired, withdrawn, answered) is answered as it is, and nothing changes.
+   */
+  Rpc.make("answerApproval", {
+    payload: {
+      id: Schema.String,
+      approved: Schema.Boolean,
+      reason: Schema.optionalKey(Schema.String),
+    },
+    success: RegistryApproval,
+    error: ApprovalNotFound,
+  }),
+  /** Apply again an approved request whose change a cut left unapplied (Try again); one that is done is answered as it is. */
+  Rpc.make("retryApproval", {
+    payload: { id: Schema.String },
+    success: RegistryApproval,
+    error: ApprovalNotFound,
+  }),
 ) {}

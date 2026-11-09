@@ -1,6 +1,8 @@
 // The client ↔ server contract (`docs/architecture/client-and-protocol.md`), shared by the server and the web app.
 export * from "./annotations.ts";
 
+export * from "./approval-requests.ts";
+
 export * from "./attached-pages.ts";
 
 export * from "./attached-resources.ts";

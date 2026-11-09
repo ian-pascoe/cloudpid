@@ -12,6 +12,7 @@
 import {
   GLOBAL_SETTINGS_SCOPE,
   type HARNESS_TOOLS,
+  type SessionHarnessToolName,
   SettingsMcpReloadEndpointOutput,
   type Surface,
 } from "@cloudpid/protocol/harness-tools";
@@ -44,7 +45,7 @@ import {
 } from "./settings.ts";
 
 /** The arguments of tool `Name`, as a Session's call decodes them (the endpoint's add only `request_id`). */
-type ArgsOf<Name extends keyof typeof HARNESS_TOOLS> =
+type ArgsOf<Name extends SessionHarnessToolName> =
   (typeof HARNESS_TOOLS)[Name]["session"]["input"]["Type"];
 
 /** What the cores run over: the Registry's MCP read and checks and the hosts, the Settings, and the check of a text. */

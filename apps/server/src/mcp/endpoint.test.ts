@@ -137,6 +137,8 @@ describe("the request McpServer gets", () => {
         "importFinish",
         "importCancel",
         "harness",
+        "approvalWait",
+        "approvalWithdraw",
       ],
       // The pass-through: the management tools `api.ts` serves reach `McpServer` through the target.
       harness: expect.arrayContaining(["environment_get", "environment_variable_set"]),

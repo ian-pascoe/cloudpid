@@ -266,6 +266,8 @@ export const serverInit = Effect.gen(function* () {
               skillDirectory: skillDirectoryOver({ cache: caches.default }),
               skillRepos,
               background: (effect) => execution.waitUntil(effect),
+              // An approved Approval's change keeps no GitHub App's key, as on the MCP endpoint.
+              credentials: githubAppKeyForms(github.privateKey.pipe(Redacted.value)),
             }),
         });
 

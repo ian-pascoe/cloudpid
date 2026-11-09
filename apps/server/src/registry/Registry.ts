@@ -18,6 +18,7 @@ import { type KeptSecret, openKeptVault } from "@cloudpid/extensions/secrets/cor
 import type {
   AgentChange,
   AgentChangeVia,
+  ApprovalStatus,
   EnvironmentBuildState,
   EnvironmentRepo,
   EnvironmentSecretRecord,
@@ -149,6 +150,16 @@ import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.
 import { type BuildWork, buildView } from "./builds.ts";
 import { type ChangeAnswer, type ChangeRequest, openChangeRequests } from "./change-requests.ts";
 import {
+  APPROVAL_WAIT_POLL_MS,
+  type ApprovalAsk,
+  type ApprovalAsked,
+  type ApprovalClaim,
+  type ApprovalEnd,
+  MAX_APPROVAL_WAITS,
+  openApprovals,
+  type StoredApproval,
+} from "./approvals.ts";
+import {
   guardedViaWrite,
   keptOf,
   type KeptTexts,
@@ -159,8 +170,20 @@ import {
 import { GitHubAppConfig } from "../github/config.ts";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier, pushOwner } from "../push/notify.ts";
-import { describeTriggerFailure, type PushEvent, type PushPayload } from "../push/notification.ts";
-import { newEnvironmentId, newSessionId, newTriggerId, newWorkspaceId, shortId } from "./ids.ts";
+import {
+  describeApproval,
+  describeTriggerFailure,
+  type PushEvent,
+  type PushPayload,
+} from "../push/notification.ts";
+import {
+  newApprovalId,
+  newEnvironmentId,
+  newSessionId,
+  newTriggerId,
+  newWorkspaceId,
+  shortId,
+} from "./ids.ts";
 import { openTriggerChanges } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
@@ -684,6 +707,63 @@ export type RegistryMethods = {
   readonly notifyMcpChanges: (input: {
     readonly via: AgentChangeVia;
   }) => Effect.Effect<PushPayload | null>;
+  /**
+   * Ask for the owner's Approval of a change made over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → Approvals
+   * with no Session; `./approvals.ts`): a new request, or the one there is for the same `request_id` or the same change.
+   * Refused, writing nothing, when an argument holds a kept Secret of the Scope's reach, and past the caller's cap.
+   */
+  readonly requestApproval: (input: ApprovalAsk) => Effect.Effect<ApprovalAsked>;
+  /** Request `id` as it stands (expired when its days are past); null when it is not kept. */
+  readonly approval: (input: { readonly id: string }) => Effect.Effect<StoredApproval | null>;
+  /** Every request kept, oldest first; only Scope `scope`'s when one is named. */
+  readonly listApprovals: (input: {
+    readonly scope?: string | undefined;
+  }) => Effect.Effect<ReadonlyArray<StoredApproval>>;
+  /** The owner's answer: a waiting request becomes `approved` or `declined`; any other is answered as it is. */
+  readonly answerApproval: (input: {
+    readonly id: string;
+    readonly approved: boolean;
+    readonly reason?: string | undefined;
+  }) => Effect.Effect<StoredApproval | null>;
+  /** The caller's withdrawal: a waiting request becomes `withdrawn`; any other is answered as it is. */
+  readonly withdrawApproval: (input: {
+    readonly id: string;
+  }) => Effect.Effect<StoredApproval | null>;
+  /** Claim approved request `id` for the run `token` (`APPROVAL_LEASE_MS`): whether the run holds it now. */
+  readonly claimApproval: (input: {
+    readonly id: string;
+    readonly token: string;
+  }) => Effect.Effect<ApprovalClaim | null>;
+  /** Settle approved request `id` as its run `token` ends it, while the run holds its lease. */
+  readonly finishApproval: (input: {
+    readonly id: string;
+    readonly token: string;
+    readonly status: ApprovalEnd;
+    readonly reason?: string | undefined;
+    readonly result?: ChangeAnswer | undefined;
+  }) => Effect.Effect<StoredApproval | null>;
+  /** The approved requests no run is applying: what the owner's next visit resumes. */
+  readonly staleApprovals: () => Effect.Effect<ReadonlyArray<StoredApproval>>;
+  /**
+   * Tell the owner a request waits for them (`input`), tagged `approval:<id>` and opening its card; nothing for one no
+   * longer waiting. Answers what was sent; the send never fails.
+   */
+  readonly notifyApproval: (input: { readonly id: string }) => Effect.Effect<PushPayload | null>;
+  /**
+   * Wait until request `id`'s status is no longer `seen` (what the caller last read; it answers at once when it changed
+   * since), or `deadline` (ms since the epoch) passes, re-reading it every half second; answers it then. At most
+   * `MAX_APPROVAL_WAITS` waits at once per caller `auth` (`too_many_waits`). Null when it is not kept.
+   */
+  readonly waitApproval: (input: {
+    readonly id: string;
+    readonly seen: ApprovalStatus;
+    readonly auth: string;
+    readonly deadline: number;
+  }) => Effect.Effect<
+    | { readonly status: "answered"; readonly approval: StoredApproval }
+    | { readonly status: "too_many_waits" }
+    | null
+  >;
   /**
    * An Agent change (`docs/architecture/workspace.md` → The Environment's own Skills): save the Skill in folder `folder` with `files` (each by
    * its path in the folder) for `environment` (an Environment's id, or `*` at Global), in place of one of its
@@ -1415,6 +1495,9 @@ export const registryMethods = Effect.suspend(() =>
           Effect.runPromise(viaCheck({ author, reach }));
 
         const changeRequests = openChangeRequests(state.raw.storage, store, changes);
+        const approvals = openApprovals(state.raw.storage);
+        // The `approval_wait`s each caller holds now: an eviction ends them, and the count with them.
+        const approvalWaits = new Map<string, number>();
 
         /**
          * Run `write(now)` for the endpoint's or a Session's `args`, which are the call's own arguments: checked against the
@@ -1662,7 +1745,7 @@ export const registryMethods = Effect.suspend(() =>
           deleteEnvironment: ({ id }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => {
-                const deletion = store.deleteEnvironment(id);
+                const deletion = store.deleteEnvironment(id, now);
 
                 // The host is wiped by the main Worker's next sync: the Registry never calls out.
                 if (deletion === "deleted") recordMcpDeleted(store, id, now);
@@ -1915,6 +1998,83 @@ export const registryMethods = Effect.suspend(() =>
               if (notice !== null) yield* notifyOwner(notice);
 
               return notice;
+            }),
+          requestApproval: (ask) =>
+            Effect.gen(function* () {
+              const id = yield* newApprovalId;
+
+              // Every text of the arguments (the reason among them) is checked against the kept Secrets the Scope reaches,
+              // as the write it asks for will be: a refusal writes no row.
+              return yield* viaWrite(
+                {
+                  author: { via: ask.via, tool: ask.tool, reason: ask.card.reason },
+                  args: ask.args,
+                },
+                reachOf(ask.scope),
+                (message): ApprovalAsked => ({ status: "refused", message }),
+                (now) => approvals.ask(ask, id, now),
+              );
+            }),
+          approval: ({ id }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.get(id, now))),
+          listApprovals: ({ scope }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.list(now, scope))),
+          answerApproval: (answer) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.answer(answer, now))),
+          withdrawApproval: ({ id }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.withdraw(id, now))),
+          claimApproval: ({ id, token }) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.claim(id, token, now))),
+          finishApproval: (ended) =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.finish(ended, now))),
+          staleApprovals: () =>
+            Clock.currentTimeMillis.pipe(Effect.map((now) => approvals.stale(now))),
+          notifyApproval: ({ id }) =>
+            Effect.gen(function* () {
+              const now = yield* Clock.currentTimeMillis;
+              const asked = approvals.get(id, now);
+
+              if (asked === null || asked.status !== "pending") return null;
+
+              const notice = describeApproval(asked);
+
+              yield* notifyOwner(notice);
+
+              return notice;
+            }),
+          waitApproval: ({ id, seen, auth, deadline }) =>
+            Effect.gen(function* () {
+              const first = approvals.get(id, yield* Clock.currentTimeMillis);
+
+              if (first === null) return null;
+
+              const held = approvalWaits.get(auth) ?? 0;
+
+              if (held >= MAX_APPROVAL_WAITS) return { status: "too_many_waits" as const };
+
+              approvalWaits.set(auth, held + 1);
+
+              return yield* Effect.gen(function* () {
+                let now = yield* Clock.currentTimeMillis;
+                let current: StoredApproval | null = first;
+
+                while (current !== null && current.status === seen && now < deadline) {
+                  yield* Effect.sleep(Math.min(APPROVAL_WAIT_POLL_MS, deadline - now));
+                  now = yield* Clock.currentTimeMillis;
+                  current = approvals.get(id, now);
+                }
+
+                return current === null ? null : { status: "answered" as const, approval: current };
+              }).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    const left = (approvalWaits.get(auth) ?? 1) - 1;
+
+                    if (left <= 0) approvalWaits.delete(auth);
+                    else approvalWaits.set(auth, left);
+                  }),
+                ),
+              );
             }),
           getWorkspace: ({ id }) => Effect.sync(() => store.getWorkspace(id)),
           getWorkspaceSetup: ({ id, skillSetHash }) =>
@@ -2436,7 +2596,7 @@ export const registryMethods = Effect.suspend(() =>
           deleteEnvironmentWithTriggers: ({ id }) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((now) => {
-                const removal = triggers.deleteEnvironment(id);
+                const removal = triggers.deleteEnvironment(id, now);
 
                 // The host is wiped by the main Worker's next sync: the Registry never calls out.
                 if (removal.deletion === "deleted") recordMcpDeleted(store, id, now);

@@ -20,7 +20,12 @@ import {
   validateHostHeader,
   validateOriginHeader,
 } from "@modelcontextprotocol/server";
-import { HARNESS_TOOL_NAMES, HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
+import {
+  APPROVAL_ASK_TOOLS,
+  HARNESS_TOOL_NAMES,
+  HARNESS_TOOLS,
+  isApprovalFollowTool,
+} from "@cloudpid/protocol/harness-tools";
 import * as Exit from "effect/Exit";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
@@ -197,10 +202,15 @@ export const instructionsFor = (enabled: Enabled): string => {
   // A management tool served: line 1 says the endpoint manages Environments and Settings too.
   const manages = HARNESS_TOOL_NAMES.some(has);
 
-  // A management tool that changes something served: `request_id` and the change clause name it.
+  // A management tool that changes something served: `request_id` and the change clause name it. `approval_withdraw`
+  // takes no `request_id`, and the change clause names no follow tool.
   const changing = HARNESS_TOOL_NAMES.filter(
-    (name) => has(name) && !HARNESS_TOOLS[name].annotations.readOnlyHint,
+    (name) =>
+      has(name) && !HARNESS_TOOLS[name].annotations.readOnlyHint && !isApprovalFollowTool(name),
   );
+
+  // A tool that asks for the owner's Approval served, with `approval_wait` to follow it.
+  const asks = has("approval_wait") && Record.keys(APPROVAL_ASK_TOOLS).some(has);
 
   const changes = changing.length > 0;
 
@@ -267,7 +277,13 @@ export const instructionsFor = (enabled: Enabled): string => {
     );
   }
 
-  if (has("session_get") || has("session_wait")) {
+  if (asks) {
+    lines.push(
+      "A change that needs the owner's Approval answers pending with an approval_id: follow it with approval_wait.",
+    );
+  }
+
+  if (has("session_get") || has("session_wait") || asks) {
     lines.push(
       "A request waiting for the owner (an approval, a secret, a sign-in) is answered by the owner in cloudpid at the url shown, never by you.",
     );

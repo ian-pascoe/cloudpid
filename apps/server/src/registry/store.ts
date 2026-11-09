@@ -29,6 +29,7 @@ import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { SessionStatus } from "../session/status.ts";
 import type { BuildProgress, EnvironmentBuild } from "../workspace/build-record.ts";
+import { withdrawEnvironmentApprovals } from "./approvals.ts";
 import type { McpRepoFileRecord } from "./mcp-repo-files.ts";
 import { dropUnreferencedSkillFiles } from "./skills.ts";
 
@@ -305,9 +306,9 @@ export type RegistryStore = {
   readonly renameEnvironment: (id: string, name: string) => EnvironmentNaming;
   /**
    * Forget an Environment and its Secrets, only while no Workspace is made from it. The default Environment is never
-   * forgotten, so a new Session always has one to start in.
+   * forgotten, so a new Session always has one to start in. Its Approvals still waiting are withdrawn, at `now`.
    */
-  readonly deleteEnvironment: (id: string) => EnvironmentDeletion;
+  readonly deleteEnvironment: (id: string, now?: number) => EnvironmentDeletion;
   /** Add a Repo to an Environment; `taken` when it has one with that directory name. */
   readonly addRepo: (environment: string, repo: EnvironmentRepo) => RepoChange;
   /** Take a Repo out of an Environment; `absent` when it has none of that name. */
@@ -1274,6 +1275,43 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     // A Session's deletion deletes the rows of its Fires: they are found by Session.
     sql.exec("CREATE INDEX trigger_sends_by_session ON trigger_sends (session)");
   },
+  // 39: the Approvals asked over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → Approvals with no Session,
+  // #685 D5, L5, L18; `./approvals.ts`): the tool, the Scope and its Settings page section, the decoded arguments, the card,
+  // the target as it was asked against (`expected`), the dedupe digest, who asked (as an Agent change's `via` is kept) and
+  // their `request_id`, where it stands and when, the apply's lease, why it ended as it did, and the applied change's
+  // answer. Kept until 24 h after it is settled. None before.
+  (sql) => {
+    sql.exec(`CREATE TABLE approval_requests (
+      id TEXT PRIMARY KEY,
+      tool TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      section TEXT NOT NULL,
+      args TEXT NOT NULL,
+      card TEXT NOT NULL,
+      expected TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      long INTEGER NOT NULL DEFAULT 0,
+      via_auth TEXT NOT NULL,
+      via_client_name TEXT,
+      via_client_version TEXT,
+      via_client_id TEXT,
+      request_id TEXT,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      answered_at INTEGER,
+      settled_at INTEGER,
+      lease_until INTEGER,
+      lease_token TEXT,
+      reason TEXT,
+      withdrawal TEXT,
+      result TEXT
+    ) STRICT`);
+    sql.exec("CREATE INDEX approval_requests_by_status ON approval_requests (status)");
+    sql.exec("CREATE INDEX approval_requests_by_digest ON approval_requests (digest)");
+    sql.exec("CREATE INDEX approval_requests_by_request ON approval_requests (request_id)");
+    sql.exec("CREATE INDEX approval_requests_by_scope ON approval_requests (scope)");
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */
@@ -1695,7 +1733,7 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       return { status: "named", environment: { ...known, name } };
     },
 
-    deleteEnvironment: (id) => {
+    deleteEnvironment: (id, now) => {
       if (id === DEFAULT_ENVIRONMENT) return "refused";
 
       if (getEnvironment(id) === null) return "missing";
@@ -1715,6 +1753,8 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
       sql.exec("DELETE FROM mcp_repo_files WHERE environment = ?", id);
       // Its Triggers go with it; their objects heal at their next touch (`docs/architecture/triggers.md` → Cascades).
       sql.exec("DELETE FROM triggers WHERE environment = ?", id);
+      // Its Approvals still waiting are withdrawn: no Approve can apply them now.
+      withdrawEnvironmentApprovals(sql, id, now);
       dropUnreferencedSkillFiles(sql);
 
       return "deleted";

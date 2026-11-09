@@ -1,8 +1,8 @@
 // docs/architecture/mcp-endpoint.md → Environment and Settings tools → The tools, Approvals with no Session: the Settings'
 // and the MCP servers' changing tools as the endpoint serves them (`settingsEndpointCores`). Each makes its change as the
-// Session's tool does, in the endpoint's words (the owner, no Session; `harness-tools.test.ts` keeps unserved tools out); a Limit, the
-// Instructions and a change that would make something reachable that is not answer `unsupported` with nothing asked,
-// saved or recorded. The world is the MCP fixture's: Settings at two Scopes, the real widening check, a fake host.
+// Session's tool does, in the endpoint's words (the owner, no Session; `harness-tools.test.ts` keeps unserved tools out); a Limit
+// (whose reset the dispatcher asks for before the core) and a change that would make something reachable that is not
+// answer `unsupported`, and a reset of the Instructions `invalid_argument`, with nothing asked, saved or recorded. The world is the MCP fixture's: Settings at two Scopes, the real widening check, a fake host.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
 import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
@@ -106,11 +106,11 @@ describe("settings_reset on the endpoint", () => {
   });
 
   it.each([
-    ["spendLimit.perSession"],
-    ["extensions.subagents.maxSubagentDepth"],
-    ["extensions.subagents.maxSubagentWorkspaces"],
-    ["instructions"],
-  ])("answers a reset of %s as unsupported", async (name) => {
+    ["spendLimit.perSession", "unsupported"],
+    ["extensions.subagents.maxSubagentDepth", "unsupported"],
+    ["extensions.subagents.maxSubagentWorkspaces", "unsupported"],
+    ["instructions", "invalid_argument"],
+  ])("refuses a reset of %s as %s, with nothing saved", async (name, code) => {
     const { cores, call, recorded } = await world();
 
     const refused = await call(
@@ -120,7 +120,7 @@ describe("settings_reset on the endpoint", () => {
       ),
     );
 
-    expect(refused).toMatchObject({ ok: false, error: { code: "unsupported" } });
+    expect(refused).toMatchObject({ ok: false, error: { code } });
     expect(recorded).toEqual([]);
   });
 

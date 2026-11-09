@@ -2,6 +2,7 @@ import { SettingsError, textSize } from "@cloudpid/config";
 import type { McpQuestionCopy } from "@cloudpid/extensions/mcp";
 import { unpushedWork, unsettledClone } from "@cloudpid/extensions/subagents/workspaces";
 import {
+  ApprovalNotFound,
   DEFAULT_ENVIRONMENT,
   EnvironmentError,
   fieldSkill,
@@ -34,7 +35,9 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 import type * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
@@ -83,6 +86,9 @@ import {
 import type { McpPushes } from "../mcp/push.ts";
 import type { McpSignInManage } from "../mcp/sign-in-manage.ts";
 import type { McpStatus } from "../mcp/status.ts";
+import { approvalRunner } from "../harness/approval-runner.ts";
+import { endpointWrites } from "../harness/services.ts";
+import { shownApproval } from "./approvals.ts";
 import { removals } from "./removal.ts";
 import { REGISTRY_NAME, type Registry, type SettingsOverridesUpdate } from "./Registry.ts";
 import {
@@ -193,6 +199,11 @@ export type RegistryRpcObjects<R = never> = {
   readonly skillRepos: SkillRepos;
   /** Runs `effect` once the answer is sent, keeping the request alive until it is done (`waitUntil`). */
   readonly background: (effect: Effect.Effect<void>) => Effect.Effect<void, never, R>;
+  /**
+   * The deploy-time credentials no text an approved Approval's change keeps may hold (`DeployCredentials`): the GitHub
+   * App's key, in its forms, as on the MCP endpoint. None by default.
+   */
+  readonly credentials?: ReadonlyArray<string> | undefined;
 };
 
 /**
@@ -460,10 +471,48 @@ export const serveRegistryRpc = <R = never>(
     skillDirectory,
     skillRepos,
     background,
+    credentials = [],
   }: RegistryRpcObjects<R>,
 ) =>
   Effect.gen(function* () {
     const registry = registries.getByName(REGISTRY_NAME);
+    const requestServices = yield* Effect.context<R>();
+
+    /** `background` with the request's services, for what runs it with none (the Approvals' apply). */
+    const afterAnswer = (effect: Effect.Effect<void>) =>
+      Effect.provideContext(background(effect), requestServices);
+
+    // The owner's answer to an Approval asked over the MCP endpoint applies it here, as `approval_wait` does there
+    // (`docs/architecture/mcp-endpoint.md` → Approvals with no Session).
+    const approvalRuns = approvalRunner({
+      registry,
+      writes: endpointWrites({ registry, builds, spares, background: afterAnswer, credentials }),
+      upkeep: (changes) =>
+        upkeepFor({ registry, builds, spares, mcp, background: afterAnswer }, changes),
+      background: afterAnswer,
+    });
+
+    /**
+     * Apply approved request `id` inline, as the owner's own delete runs (#688 C2, A4.b): forked, and handed to
+     * `background` too, so a browser that drops the call leaves it the request's last 30 s to finish.
+     */
+    const applyApproval = (id: string) =>
+      Effect.gen(function* () {
+        const run = yield* Effect.forkDetach(approvalRuns.apply(id));
+
+        yield* afterAnswer(run.pipe(Fiber.await, Effect.asVoid));
+
+        return yield* Fiber.join(run);
+      });
+
+    const noApproval = (id: string) =>
+      ApprovalNotFound.make({
+        message: `No request ${id} is kept: it ended more than a day ago, or was never asked`,
+      });
+
+    /** Request `approval` as the page shows it now. */
+    const shownNow = <A extends Parameters<typeof shownApproval>[0]>(approval: A) =>
+      Clock.currentTimeMillis.pipe(Effect.map((now) => shownApproval(approval, now)));
 
     const failed = (message: string) => EnvironmentError.make({ message });
 
@@ -748,6 +797,38 @@ export const serveRegistryRpc = <R = never>(
     };
 
     const handlers = RegistryRpcs.toLayer({
+      // The approved requests no run is applying are resumed behind the list the page polls (L4).
+      listApprovals: ({ scope }) =>
+        registry.listApprovals({ scope }).pipe(
+          Effect.tap(() => afterAnswer(approvalRuns.resumeStale)),
+          Effect.flatMap((approvals) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map((now) => Arr.map(approvals, (approval) => shownApproval(approval, now))),
+            ),
+          ),
+        ),
+      answerApproval: ({ id, approved, reason }) =>
+        Effect.gen(function* () {
+          const answered = yield* registry.answerApproval({ id, approved, reason });
+
+          if (answered === null) return yield* noApproval(id);
+
+          const after = answered.status === "approved" ? yield* applyApproval(id) : answered;
+
+          return yield* shownNow(after ?? answered);
+        }),
+      // Try again: an approved request whose apply was cut (no run holds it) is applied again, inline; any other is
+      // answered as it is.
+      retryApproval: ({ id }) =>
+        Effect.gen(function* () {
+          const found = yield* registry.approval({ id });
+
+          if (found === null) return yield* noApproval(id);
+
+          const after = found.status === "approved" ? yield* applyApproval(id) : found;
+
+          return yield* shownNow(after ?? found);
+        }),
       listSessions: () =>
         registry.listSessions().pipe(
           // What is left from before Environments is wiped behind the Session list the web app polls, the spares are
@@ -755,6 +836,8 @@ export const serveRegistryRpc = <R = never>(
           Effect.tap(() => background(legacy)),
           Effect.tap(() => background(spares.all)),
           Effect.tap(() => background(builds.all)),
+          // The approved requests a cut left unapplied resume on the owner's next visit, whichever page it is (L4).
+          Effect.tap(() => afterAnswer(approvalRuns.resumeStale)),
         ),
       createSession: ({ title, environment, workspace, branch, base }) =>
         Effect.gen(function* () {

@@ -2,7 +2,8 @@
 // tools → Approvals with no Session; #685 L2): `prepare` only reads and gives the card and what the target is now;
 // `apply` runs from `(args, expected, author)` with `known` optional, writing against what the owner saw; and `render`
 // takes an Applied built from the Agent changes the Registry recorded, as a resume after a committed write has. What the
-// Session's wrappers answer is pinned by `harness-session.test.ts` and `approval-tools.test.ts`.
+// Session's wrappers answer is pinned by `harness-session.test.ts` and `approval-tools.test.ts`; what the cores built for
+// the endpoint say is held to the endpoint's words (`expectEndpointWords`).
 // @effect-diagnostics preferEffectArray:off strictEffectProvide:off globalJsonInEffect:off
 import {
   DEFAULT_CONTAINER_SETTINGS,
@@ -27,9 +28,11 @@ import {
 } from "./approval-cores.ts";
 import { recordedChange } from "./agent-change.fixture.ts";
 import { type ApprovalAsk, type ApprovalsService, approvedChange } from "./approvals.ts";
+import { expectEndpointWords } from "./endpoint-words.fixture.ts";
 import type {
   AppliedChange,
   ChangeAuthor,
+  ContainerSettingResult,
   EnvironmentDetails,
   EnvironmentsService,
 } from "./environment.ts";
@@ -771,6 +774,132 @@ describe("the reset of the size limit's core", () => {
           'The user approved: reset the size limit of Environment "Env e1" (e1): it was cpu-3 (its own), and inherits Global\'s cpu-2 now',
         );
         expect(answer.text).toContain("environment_get shows the Build.");
+      }),
+    ));
+});
+
+// --- The endpoint's words ------------------------------------------------------------------------------------------
+
+describe("the cores built for the endpoint", () => {
+  const known = { environment: { id: "e1", name: "Env e1" }, own: false };
+
+  const sizeChange = recordedChange("tool", {
+    scope: "e1",
+    field: "maxInstance",
+    before: "cpu-2",
+    after: "cpu-3",
+  });
+
+  const settingsChange = recordedChange("tool", {
+    field: "spendLimit.perSession",
+    before: 5,
+    after: 8,
+  });
+
+  it("answer an approved change, and refuse one not made, in the endpoint's words", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const services = { ...settingsServices(newSeen(), VIEWS), surface: "endpoint" as const };
+        const spend = spendLimitCore(services);
+        const instructions = instructionsCore(services);
+        const spendArgs = { scope: "*", per_session: 8, reason: "More." };
+        const instructionsArgs = { scope: "e1", text: "Use pnpm.", reason: "Change." };
+        const how = { reach: "" };
+
+        const spendRender = (result: AppliedSettingsChange) =>
+          spend.render(spendArgs, 5, { known: globalView, result }, how);
+
+        const instructionsRender = (result: AppliedSettingsChange) =>
+          instructions.render(
+            instructionsArgs,
+            "Use bun.",
+            { known: environmentView(), result },
+            how,
+          );
+
+        const size = sizeLimitCore({
+          environments: environmentServices({ reads: [], writes: [] }, []),
+          plainText,
+          surface: "endpoint",
+        });
+
+        const sizeArgs = { id: "e1", size: "cpu-3" as const, reason: "Bigger." };
+
+        const sizeRender = (result: ContainerSettingResult) =>
+          size.render(sizeArgs, "cpu-2", { known, result }, undefined);
+
+        const said = [
+          (yield* spendRender({ status: "changed", changes: [settingsChange] })).text,
+          (yield* spendRender({ status: "unchanged" })).text,
+          (yield* Effect.flip(spendRender({ status: "rejected", message: "no" }))).message,
+          (yield* Effect.flip(
+            spendRender({ status: "changed-since", field: "spendLimit.perSession", current: 6 }),
+          )).message,
+          (yield* instructionsRender({
+            status: "changed",
+            changes: [recordedChange("tool", { scope: "e1", field: "instructions" })],
+          })).text,
+          (yield* instructionsRender({ status: "unchanged" })).text,
+          (yield* sizeRender({
+            status: "changed",
+            environment: known.environment,
+            change: sizeChange,
+          })).text,
+          (yield* sizeRender({
+            status: "unchanged",
+            environment: known.environment,
+            value: "cpu-3",
+          })).text,
+          (yield* Effect.flip(sizeRender({ status: "rejected", message: "no" }))).message,
+          (yield* Effect.flip(sizeRender({ status: "changed-since", current: "cpu-1" }))).message,
+        ];
+
+        for (const text of said) expectEndpointWords(text);
+      }),
+    ));
+
+  it("answer the size limit's reset, asked, applied or found done, in the endpoint's words", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const own = environmentOf("e1", {
+          overrides: { maxInstance: "cpu-3" } satisfies ContainerSettingsOverrides,
+          settings: { ...DEFAULT_CONTAINER_SETTINGS, maxInstance: "cpu-3" },
+        });
+
+        const reset = resetLimitCore({
+          environments: environmentServices({ reads: [], writes: [] }, [own, environmentOf("e2")]),
+          refuseSecrets: () => Effect.void,
+          target: (id) => Effect.succeed({ environment: id, own: false }),
+          surface: "endpoint",
+        });
+
+        const render = (result: ContainerSettingResult) =>
+          reset.render(
+            { id: "e1", reason: "Back." },
+            "cpu-3",
+            { known: { details: own, own: false }, result },
+            undefined,
+          );
+
+        const inherited = yield* reset.prepare({ id: "e2", reason: "Back." });
+
+        // The answer of a reset with nothing to do is the endpoint's own value, as the plain reset's is there.
+        expect(inherited.unchanged?.structured).toMatchObject({
+          scope: { id: "e2" },
+          unchanged: ["maxInstance"],
+        });
+
+        const said = [
+          inherited.unchanged?.text ?? "",
+          (yield* render({ status: "changed", environment: known.environment, change: sizeChange }))
+            .text,
+          (yield* render({ status: "unchanged", environment: known.environment, value: "cpu-2" }))
+            .text,
+          (yield* Effect.flip(render({ status: "rejected", message: "no" }))).message,
+          (yield* Effect.flip(render({ status: "changed-since", current: "cpu-1" }))).message,
+        ];
+
+        for (const text of said) expectEndpointWords(text);
       }),
     ));
 });

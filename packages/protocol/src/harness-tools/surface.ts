@@ -59,8 +59,8 @@ export const DESTRUCTIVE_IDEMPOTENT: HarnessAnnotations = {
 };
 
 /**
- * W: a write that a repeat may change again (a reset, a move among keys, a new Environment, a Build asked for), reaching
- * nothing outside cloudpid.
+ * W: a write that a repeat may change again (a reset, a move among keys, a new Environment, a Build asked for, an ask
+ * for the owner's Approval, which a repeat may ask again), reaching nothing outside cloudpid.
  */
 export const WRITE: HarnessAnnotations = {
   readOnlyHint: false,

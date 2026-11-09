@@ -6,6 +6,7 @@ import {
   type AgentChangeVia,
   agentChangesPath,
   agentChangeViaLabel,
+  approvalPath,
   sessionPagePath,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -130,6 +131,27 @@ export const describeTriggerFailure = (
   body: brief(`Trigger failed: ${reason}`, MAX_BODY),
   url: `/settings/${encodeURIComponent(trigger.environment)}/triggers`,
   tag: `trigger:${trigger.id}:failed`,
+});
+
+/**
+ * The push for an Approval asked over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → After a change, and
+ * Notifications; Approvals with no Session): titled by the change and its target, its body who asked and why, opening
+ * its card (`approvalPath`). Tagged `approval:<id>`, so it is one Notification per request.
+ */
+export const describeApproval = (approval: {
+  readonly id: string;
+  readonly scope: string;
+  readonly section: string;
+  readonly card: { readonly change: string; readonly target: string; readonly reason: string };
+  readonly via: Pick<AgentChangeVia, "client">;
+}): PushPayload => ({
+  title: brief(`Approve? ${approval.card.change} · ${approval.card.target}`, MAX_TITLE),
+  body: brief(
+    `Asked via ${approval.via.client === undefined ? "MCP" : `${approval.via.client.name} (MCP)`}: ${approval.card.reason}`,
+    MAX_BODY,
+  ),
+  url: approvalPath(approval.scope, approval.section, approval.id),
+  tag: `approval:${approval.id}`,
 });
 
 /** One of the changes an agent made over the MCP endpoint, as a Notification lists it. */
