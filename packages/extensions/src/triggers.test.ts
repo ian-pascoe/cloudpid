@@ -983,6 +983,157 @@ describe("a webhook Trigger", () => {
   });
 });
 
+describe("Session triggers", () => {
+  const CHECK_CI = {
+    owner: "session",
+    name: "Check CI",
+    message: "Check the current state of CI, and fix what is red.",
+    schedule: { cron: "0 * * * *", zone: "UTC" },
+    reason: "the user asked to keep an eye on CI while they are away",
+  };
+
+  /** A Session trigger held by the fake: this Session's own. */
+  const checkCi = (fields: Partial<TriggerDefinition> = {}): TriggerDefinition =>
+    weekly({
+      id: "t3",
+      kind: "session",
+      session: "s-1",
+      name: "Check CI",
+      message: CHECK_CI.message,
+      source: { type: "schedule", cron: "0 * * * *", zone: "UTC" },
+      whenBusy: "queue",
+      ...fields,
+    });
+
+  it("trigger_create with the owner session makes one for this Session once the owner approves", async () => {
+    const { call, triggers, logged, asked } = await setUp();
+
+    const { result, text } = await call("trigger_create", CHECK_CI);
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({
+      tool: "trigger_create",
+      target: "This Session",
+      change: "Create a Trigger",
+      reason: CHECK_CI.reason,
+      expected: { id: "0190-a" },
+    });
+    expect(asked[0]?.after).toContain("Kind: Session trigger");
+    expect(asked[0]?.after).toContain("Options: when busy: queue");
+    expect(asked[0]?.after).not.toContain("base:");
+    expect(asked[0]?.notes?.join("\n")).toContain("this Session's root conversation");
+
+    expect(text).toContain(
+      'The user approved: made the Trigger "Check CI" (id 0190-a) in This Session',
+    );
+    expect(triggers.held.get("0190-a")).toMatchObject({
+      kind: "session",
+      session: "s-1",
+      environment: "default",
+      whenBusy: "queue",
+    });
+    expect(triggers.changes).toMatchObject([
+      { field: triggerField("0190-a"), before: null, approved: true },
+    ]);
+    expect(logged).toEqual([
+      { tool: "trigger_create", environmentName: "Default", field: triggerField("0190-a") },
+    ]);
+    expect(decodeChange(result.structuredOutput)).toMatchObject({
+      scope: { id: "default" },
+      trigger: { id: "0190-a", kind: "session", session: "s-1", when_busy: "queue" },
+    });
+  });
+
+  it("takes steer and skip, and refuses a when_busy or an option its kind doesn't take, without asking", async () => {
+    const { call, asked, triggers } = await setUp();
+
+    for (const args of [
+      { ...CHECK_CI, when_busy: "start" },
+      { ...CHECK_CI, base: "develop" },
+      { ...CHECK_CI, model: "anthropic/claude-sonnet-5-5" },
+      { ...CHECK_CI, thinking: "low" },
+      { ...WEEKLY, when_busy: "queue" },
+      { ...WEEKLY, when_busy: "steer" },
+    ]) {
+      expect((await call("trigger_create", args)).error).toBe(true);
+    }
+
+    expect(asked).toEqual([]);
+    expect(triggers.held.size).toBe(0);
+
+    await call("trigger_create", { ...CHECK_CI, when_busy: "steer" });
+
+    expect(triggers.held.get("0190-a")).toMatchObject({ whenBusy: "steer" });
+  });
+
+  it("takes a Schedule only: a webhook or a match is refused without asking, and trigger_match_set finds no match to change", async () => {
+    const { call, asked, triggers } = await setUp([checkCi()]);
+
+    const { schedule: _schedule, ...bare } = CHECK_CI;
+
+    for (const args of [
+      { ...bare, webhook: { format: "github" } },
+      { ...bare, webhook: { format: "github" }, match: MATCH },
+      { ...CHECK_CI, match: MATCH },
+    ]) {
+      const { error, text } = await call("trigger_create", args);
+
+      expect(error).toBe(true);
+      expect(text).toMatch(/Session trigger fires on a Schedule only|a Schedule has none/);
+    }
+
+    const match = await call("trigger_match_set", { id: "t3", match: MATCH, reason: "r" });
+
+    expect(match.error).toBe(true);
+    expect(match.text).toContain("only a webhook Trigger has a match");
+    expect(asked).toEqual([]);
+    expect(triggers.held.size).toBe(1);
+  });
+
+  it("trigger_options_set changes a Session trigger's when_busy alone", async () => {
+    const { call, triggers, asked } = await setUp([checkCi()]);
+
+    for (const args of [
+      { id: "t3", when_busy: "start", reason: "r" },
+      { id: "t3", base: "develop", reason: "r" },
+      { id: "t3", model: "anthropic/claude-sonnet-5-5", reason: "r" },
+    ]) {
+      expect((await call("trigger_options_set", args)).error).toBe(true);
+    }
+
+    expect(asked).toEqual([]);
+
+    await call("trigger_options_set", { id: "t3", when_busy: "skip", reason: "no pile-up" });
+
+    expect(asked[0]).toMatchObject({
+      target: "This Session",
+      before: "when busy: queue",
+      after: "when busy: skip",
+    });
+    expect(triggers.held.get("t3")).toMatchObject({ whenBusy: "skip" });
+  });
+
+  it("pause, resume and the reads treat it as this Session's own", async () => {
+    const { call, triggers, asked } = await setUp([checkCi()]);
+
+    await call("trigger_pause", { id: "t3", reason: "not now" });
+    expect(triggers.held.get("t3")?.paused).toBe(true);
+
+    await call("trigger_resume", { id: "t3", reason: "again" });
+    expect(asked[0]).toMatchObject({ target: "This Session", change: "Resume a Trigger" });
+
+    const listed = await call("trigger_list", {});
+
+    expect(listed.text).toContain("Session trigger of this Session");
+    expect(decodeList(listed.result.structuredOutput)).toMatchObject({
+      triggers: [{ id: "t3", kind: "session", session: "s-1" }],
+    });
+    expect((await call("trigger_get", { id: "t3" })).text).toContain(
+      "Session trigger t3 of this Session",
+    );
+  });
+});
+
 describe("a subagent", () => {
   it("is never granted a trigger_* tool", () => {
     expect(isParentOnly("trigger_create")).toBe(true);
@@ -1058,7 +1209,7 @@ describe("a Workspace trigger", () => {
     const waiting = await call("trigger_create", { ...WEEKLY, when_busy: "wait" });
 
     expect(waiting.error).toBe(true);
-    expect(waiting.text).toContain("Only a Workspace trigger can wait");
+    expect(waiting.text).toContain("when_busy is skip or start, not wait");
     expect(asked).toEqual([]);
     expect(triggers.held.size).toBe(0);
   });

@@ -165,3 +165,49 @@ export const fireLogAtom = Atom.family((id: string) =>
     Atom.makeRefreshOnSignal(visibleTickAtom),
   ),
 );
+
+/**
+ * The Session triggers of Session `session` (`docs/architecture/triggers.md` → The owner's UI), as the Session details
+ * list them: definitions alone (`listSessionTriggers` reads no object), asked again while the page is visible, since
+ * the agent makes and changes them too, for as long as the Session details are open and show them. Empty until the
+ * first answer, and when it fails (the Settings page says why).
+ */
+export const sessionTriggersAtom = Atom.family((session: string) =>
+  RegistryClient.query("listSessionTriggers", { session }, { reactivityKeys: ["triggers"] }).pipe(
+    Atom.makeRefreshOnSignal(visibleTickAtom),
+    Atom.map((result): ReadonlyArray<TriggerDefinition> =>
+      result.pipe(
+        AsyncResult.value,
+        Option.getOrElse(() => []),
+      ),
+    ),
+  ),
+);
+
+/** What a Subagent page lists of Session triggers: none, which are the Session's, so nothing is asked. */
+export const NO_SESSION_TRIGGERS: Atom.Atom<ReadonlyArray<TriggerDefinition>> = Atom.make([]);
+
+/**
+ * Pause or resume a Trigger of Session `session` from the Session details; the owner's change, at once. One atom per
+ * Session, so a failure shown for one Session does not follow the owner to another.
+ */
+export const setSessionTriggerPausedAtom = Atom.family((_session: string) =>
+  appRuntime.fn(
+    (change: { readonly id: string; readonly paused: boolean }) =>
+      RegistryClient.use((registry) => registry("setTriggerPaused", change)).pipe(
+        changing(["triggers"]),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** Remove a Trigger of Session `session` from the Session details, with its fire log; the owner's change, at once. */
+export const removeSessionTriggerAtom = Atom.family((_session: string) =>
+  appRuntime.fn(
+    (id: string) =>
+      RegistryClient.use((registry) => registry("removeTrigger", { id })).pipe(
+        changing(["triggers"]),
+      ),
+    { concurrent: true },
+  ),
+);

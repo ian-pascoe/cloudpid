@@ -73,6 +73,7 @@ const open = (
     session: "s1",
     kv: { get: () => undefined, put: () => undefined },
     archived: Effect.succeed(false),
+    registered: Effect.succeed(true),
   }).pipe(
     Layer.provide(
       Layer.mergeAll(

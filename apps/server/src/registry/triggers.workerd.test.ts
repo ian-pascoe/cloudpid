@@ -3,6 +3,7 @@
 import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentTriggerInput,
+  type SessionTriggerInput,
   triggerChangeValue,
   type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
@@ -1075,5 +1076,420 @@ describe("a Workspace trigger", () => {
         triggers: [],
       });
     });
+  });
+});
+
+/** A Session in the default Environment, which a Session trigger belongs to. */
+const sessionIn = async (registry: ReturnType<typeof fresh>, id = "s-1") => {
+  await registry.createSession(
+    {
+      id,
+      title: null,
+      workspace: {
+        kind: "new",
+        id: `ws-${id}`,
+        environment: DEFAULT_ENVIRONMENT,
+        branch: null,
+        base: null,
+      },
+    },
+    1_000,
+  );
+};
+
+const daily = (session = "s-1"): SessionTriggerInput => ({
+  kind: "session",
+  session,
+  name: "Check CI",
+  message: "Check the current state of CI.",
+  source: { type: "schedule", cron: "0 * * * *", zone: "UTC" },
+});
+
+describe("a Session trigger's definition", () => {
+  it("belongs to its Session and the Session's Environment, queueing by default", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+
+    expect(await registry.createTrigger("t1", daily(), 2_000)).toMatchObject({ status: "ok" });
+    expect(await registry.triggerDefinition("t1")).toEqual({
+      id: "t1",
+      revision: 1,
+      kind: "session",
+      environment: DEFAULT_ENVIRONMENT,
+      session: "s-1",
+      name: "Check CI",
+      message: "Check the current state of CI.",
+      source: { type: "schedule", cron: "0 * * * *", zone: "UTC" },
+      whenBusy: "queue",
+      paused: false,
+      createdAt: 2_000,
+      updatedAt: 2_000,
+    });
+  });
+
+  it("is refused for a Session that isn't there, and for options its kind doesn't take", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+
+    expect(await registry.createTrigger("t1", daily("nope"), 2_000)).toMatchObject({
+      status: "invalid",
+      problem: "There is no Session nope",
+    });
+    expect(
+      await registry.createTrigger("t1", { ...daily(), whenBusy: "start" }, 2_000),
+    ).toMatchObject({ status: "invalid", problem: expect.stringContaining("when_busy") });
+    expect(
+      await registry.createTrigger("t1", { ...weekly, whenBusy: "queue" }, 2_000),
+    ).toMatchObject({ status: "invalid", problem: expect.stringContaining("when_busy") });
+    expect(await registry.listTriggers()).toEqual([]);
+  });
+
+  it("takes queue, steer and skip, and no base, model or thinking", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+
+    expect(await registry.updateTrigger("t1", { whenBusy: "steer" }, 3_000)).toMatchObject({
+      status: "ok",
+      definition: { whenBusy: "steer", revision: 2 },
+    });
+    expect(await registry.updateTrigger("t1", { whenBusy: "skip" }, 3_000)).toMatchObject({
+      status: "ok",
+    });
+    expect(await registry.updateTrigger("t1", { whenBusy: "start" }, 3_000)).toMatchObject({
+      status: "invalid",
+    });
+    expect(await registry.updateTrigger("t1", { model: "openai/gpt-5" }, 3_000)).toMatchObject({
+      status: "invalid",
+    });
+    expect(await registry.updateTrigger("t1", { base: "main" }, 3_000)).toMatchObject({
+      status: "invalid",
+    });
+  });
+
+  it("is listed under its Session, and its Environment's", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry, "s-1");
+    await sessionIn(registry, "s-2");
+    await registry.createTrigger("t1", daily("s-1"), 2_000);
+    await registry.createTrigger("t2", daily("s-2"), 3_000);
+    await registry.createTrigger("t3", weekly, 4_000);
+
+    expect((await registry.listSessionTriggers("s-1")).map((each) => each.id)).toEqual(["t1"]);
+    expect((await registry.listTriggers(DEFAULT_ENVIRONMENT)).map((each) => each.id)).toEqual([
+      "t3",
+      "t2",
+      "t1",
+    ]);
+  });
+});
+
+describe("admitFire for a Session trigger", () => {
+  const sessionFire = (revision = 1, requestId = "t1:2026-11-09T15:00:00.000Z") => ({
+    trigger: "t1",
+    revision,
+    requestId,
+    scheduledAt: monday,
+    sessionTriggers: true as const,
+  });
+
+  it("answers the Session itself, registering none and taking no Workspace", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+
+    expect(await registry.admitFire(sessionFire(), ids(1), monday)).toEqual({
+      status: "send",
+      session: "s-1",
+      environment: DEFAULT_ENVIRONMENT,
+    });
+    expect((await registry.listSessions()).map((session) => session.id)).toEqual(["s-1"]);
+    expect(await registry.listWorkspaces()).toHaveLength(1);
+  });
+
+  it("does not look at the Session's status: the Session decides the overlap", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.setSessionStatus("s-1", "running", monday - 1_000);
+    await registry.createTrigger("t1", { ...daily(), whenBusy: "skip" }, 2_000);
+
+    expect(await registry.admitFire(sessionFire(), ids(1), monday)).toMatchObject({
+      status: "send",
+      session: "s-1",
+    });
+  });
+
+  it("is never answered to a caller that does not know Session triggers: its Fire fails, to be tried again", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+
+    const { sessionTriggers: _known, ...older } = sessionFire();
+
+    expect(await registry.admitFire(older, ids(1), monday)).toEqual({ status: "unsupported" });
+    // Nothing was kept of it: the same Fire from a caller that knows them is let through.
+    expect(await registry.admitFire(sessionFire(), ids(1), monday)).toMatchObject({
+      status: "send",
+    });
+  });
+
+  it("answers a Fire it let through before its Session again, whatever came since", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+
+    const admitted = {
+      status: "send",
+      session: "s-1",
+      environment: DEFAULT_ENVIRONMENT,
+    } as const;
+
+    expect(await registry.admitFire(sessionFire(), ids(1), monday)).toEqual(admitted);
+
+    // Paused: the Fire admitted before goes on, as an Environment trigger's does; a new one does not.
+    await registry.setTriggerPaused("t1", true, 3_000);
+    expect(await registry.admitFire(sessionFire(), ids(2), monday + 1)).toEqual({
+      ...admitted,
+      repeated: true,
+    });
+    expect(await registry.admitFire(sessionFire(2, "t1:another"), ids(3), monday + 1)).toEqual({
+      status: "paused",
+    });
+
+    // Archived, and its revision since changed: still answered.
+    await registry.archiveSession("s-1", 4_000);
+    expect(await registry.admitFire(sessionFire(1), ids(4), monday + 2)).toEqual({
+      ...admitted,
+      repeated: true,
+    });
+  });
+
+  it("answers a removed Trigger's admitted Fire its Session again, and none once the Session is gone", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+    await registry.admitFire(sessionFire(), ids(1), monday);
+    await registry.removeTrigger("t1");
+
+    expect(await registry.admitFire(sessionFire(), ids(2), monday + 1)).toMatchObject({
+      status: "send",
+      session: "s-1",
+      repeated: true,
+    });
+
+    await registry.deleteSessionWithTriggers("s-1");
+
+    expect(await registry.admitFire(sessionFire(), ids(3), monday + 2)).toEqual({
+      status: "removed",
+    });
+  });
+
+  it("forgets a Fire it let through after a day, as a start's request id is", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+    await registry.admitFire(sessionFire(), ids(1), monday);
+    await registry.setTriggerPaused("t1", true, 3_000);
+
+    expect(
+      await registry.admitFire(sessionFire(), ids(2), monday + 24 * 60 * 60 * 1000 + 1),
+    ).toEqual({ status: "paused" });
+  });
+
+  it("lets nothing through for a paused Trigger, and answers stale for an old revision", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+
+    expect(await registry.admitFire(sessionFire(5), ids(1), monday)).toMatchObject({
+      status: "stale",
+      definition: { id: "t1", kind: "session" },
+    });
+
+    await registry.setTriggerPaused("t1", true, 3_000);
+
+    expect(await registry.admitFire(sessionFire(2), ids(1), monday)).toEqual({ status: "paused" });
+  });
+
+  it("is let through for an archived Session, which refuses the Fire itself", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+    await registry.archiveSession("s-1", 3_000);
+
+    expect(await registry.admitFire(sessionFire(), ids(1), monday)).toMatchObject({
+      status: "send",
+      session: "s-1",
+    });
+  });
+});
+
+describe("a Fork or Clone of a Session with a Session trigger", () => {
+  it("has none of its own: the Trigger stays its source's alone", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry, "s-1");
+    await registry.createTrigger("t1", daily("s-1"), 2_000);
+
+    for (const [id, kind] of [
+      ["s-2", "fork"],
+      ["s-3", "clone"],
+    ] as const) {
+      await registry.createSession(
+        {
+          id,
+          title: `Check CI (${kind})`,
+          workspace: { kind: "existing", id: "ws-s-1" },
+          origin: { session: "s-1", kind },
+        },
+        3_000,
+      );
+    }
+
+    expect(await registry.listSessionTriggers("s-2")).toEqual([]);
+    expect(await registry.listSessionTriggers("s-3")).toEqual([]);
+    expect((await registry.listSessionTriggers("s-1")).map((each) => each.id)).toEqual(["t1"]);
+    expect(await registry.storedTriggerIds()).toEqual(["t1"]);
+  });
+});
+
+describe("deleting a Session", () => {
+  it("deletes its Session triggers in the same step, and answers their ids", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry, "s-1");
+    await sessionIn(registry, "s-2");
+    await registry.createTrigger("t1", daily("s-1"), 2_000);
+    await registry.createTrigger("t2", daily("s-1"), 2_000);
+    await registry.createTrigger("t3", daily("s-2"), 2_000);
+    await registry.createTrigger("t4", weekly, 2_000);
+
+    expect(await registry.deleteSessionWithTriggers("s-1")).toEqual({
+      deleted: true,
+      triggers: expect.arrayContaining(["t1", "t2"]),
+    });
+    expect(await registry.storedTriggerIds()).toEqual(["t3", "t4"]);
+    expect(await registry.triggerDefinition("t1")).toBeNull();
+  });
+
+  it("deletes only the Session triggers with deleteSessionTriggers, leaving the Session", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry, "s-1");
+    await registry.createTrigger("t1", daily("s-1"), 2_000);
+    await registry.createTrigger("t2", weekly, 2_000);
+
+    expect(await registry.deleteSessionTriggers("s-1")).toEqual(["t1"]);
+    expect(await registry.storedTriggerIds()).toEqual(["t2"]);
+    expect((await registry.listSessions()).map((session) => session.id)).toEqual(["s-1"]);
+    // A Fire on its way finds no Trigger to let through.
+    expect(
+      await registry.admitFire(
+        { trigger: "t1", revision: 1, requestId: "r", sessionTriggers: true },
+        ids(1),
+        monday,
+      ),
+    ).toEqual({ status: "removed" });
+  });
+
+  it("forgets the Fires it let through with the Session triggers, so a repeat finds none", async () => {
+    const registry = fresh();
+
+    const fire = {
+      trigger: "t1",
+      revision: 1,
+      requestId: "t1:2026-11-09T15:00:00.000Z",
+      sessionTriggers: true as const,
+    };
+
+    await sessionIn(registry, "s-1");
+    await registry.createTrigger("t1", daily("s-1"), 2_000);
+    expect(await registry.admitFire(fire, ids(1), monday)).toMatchObject({ status: "send" });
+
+    await registry.deleteSessionTriggers("s-1");
+
+    expect(await registry.admitFire(fire, ids(2), monday + 1)).toEqual({ status: "removed" });
+  });
+
+  it("leaves another Session's admitted Fires when one Session's Triggers go", async () => {
+    const registry = fresh();
+
+    const fire = (trigger: string) => ({
+      trigger,
+      revision: 1,
+      requestId: `${trigger}:2026-11-09T15:00:00.000Z`,
+      sessionTriggers: true as const,
+    });
+
+    await sessionIn(registry, "s-1");
+    await sessionIn(registry, "s-2");
+    await registry.createTrigger("t1", daily("s-1"), 2_000);
+    await registry.createTrigger("t2", daily("s-2"), 2_000);
+    await registry.admitFire(fire("t1"), ids(1), monday);
+    await registry.admitFire(fire("t2"), ids(2), monday);
+
+    await registry.deleteSessionTriggers("s-1");
+    await registry.setTriggerPaused("t2", true, 3_000);
+
+    expect(await registry.admitFire(fire("t2"), ids(3), monday + 1)).toMatchObject({
+      status: "send",
+      session: "s-2",
+      repeated: true,
+    });
+  });
+
+  it("deletes one the agent removed too", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+    await registry.agentRemoveTrigger(
+      "t1",
+      { session: "s-1", conversation: 0, tool: "trigger_remove", reason: "r" },
+      3_000,
+    );
+
+    // The removed one's row is kept for a revert; its Session's deletion drops it, and its object was wiped already.
+    expect(await registry.deleteSessionWithTriggers("s-1")).toEqual({
+      deleted: true,
+      triggers: [],
+    });
+    expect(await registry.storedTriggerIds()).toEqual([]);
+  });
+
+  it("deletes them with the old deleteSession too", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+    await registry.createTrigger("t1", daily(), 2_000);
+
+    expect(await registry.deleteSession("s-1")).toBe(true);
+    expect(await registry.storedTriggerIds()).toEqual([]);
+  });
+
+  it("keeps a Session's Triggers when another Session is deleted", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry, "s-1");
+    await sessionIn(registry, "s-2");
+    await registry.createTrigger("t1", daily("s-1"), 2_000);
+
+    expect(await registry.deleteSessionWithTriggers("s-2")).toEqual({
+      deleted: true,
+      triggers: [],
+    });
+    expect(await registry.triggerDefinition("t1")).not.toBeNull();
   });
 });

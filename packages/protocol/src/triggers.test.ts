@@ -4,11 +4,11 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   armsTrigger,
-  baseProblem,
   defaultWhenBusy,
   sourceProblem,
   webhookOf,
   FireOutcome,
+  FireResult,
   FireSource,
   fireText,
   fireTitle,
@@ -16,10 +16,15 @@ import {
   renderFireHeader,
   scheduledFireKey,
   scheduleOf,
+  SessionFireRequest,
+  takesBase,
+  takesModel,
   TriggerDefinition,
   fieldTrigger,
   fireTimeWords,
+  heldBySession,
   holdsEditedFields,
+  ownOptionsProblem,
   triggerChangeJson,
   triggerChangeValue,
   triggerField,
@@ -27,6 +32,7 @@ import {
   triggerMessageProblem,
   triggerNameProblem,
   whenBusyProblem,
+  whenBusyValues,
 } from "./triggers.ts";
 import { cleanPayload } from "./trigger-payload.ts";
 
@@ -131,11 +137,29 @@ describe("a value a later slice added", () => {
       }),
     ).toMatchObject({ kind: "unknown", source: { type: "unknown" }, whenBusy: "skip" });
     expect(read(FireSource, { type: "slack", delivery: "d1" })).toEqual({ type: "unknown" });
-    expect(read(FireOutcome, { type: "sent", delivery: "queued" })).toEqual({ type: "unknown" });
-    expect(read(FireOutcome, { type: "skipped", reason: "later-reason" })).toEqual({
+    expect(read(FireOutcome, { type: "retried" })).toEqual({ type: "unknown" });
+    expect(read(FireOutcome, { type: "skipped", reason: "a later reason" })).toEqual({
       type: "skipped",
       reason: "unknown",
     });
+    expect(read(FireOutcome, { type: "sent", delivery: "a later delivery" })).toEqual({
+      type: "sent",
+      delivery: "unknown",
+    });
+  });
+
+  it("reads a Session trigger, its Session and its outcomes", () => {
+    expect(
+      read(TriggerDefinition, { ...definition, kind: "session", session: "s1", whenBusy: "steer" }),
+    ).toMatchObject({ kind: "session", session: "s1", whenBusy: "steer" });
+    expect(read(FireOutcome, { type: "sent", delivery: "queued" })).toEqual({
+      type: "sent",
+      delivery: "queued",
+    });
+
+    for (const reason of ["coalesced", "archived", "importing"]) {
+      expect(read(FireOutcome, { type: "skipped", reason })).toEqual({ type: "skipped", reason });
+    }
   });
 
   it("has no Schedule for a source it doesn't know", () => {
@@ -145,6 +169,110 @@ describe("a value a later slice added", () => {
     expect(scheduleOf(known)).toEqual({ type: "schedule", cron: "@daily", zone: "UTC" });
     expect(scheduleOf(later)).toBeUndefined();
     expect(scheduleOf(undefined)).toBeUndefined();
+  });
+});
+
+const schedule = { type: "schedule", cron: "@daily", zone: "UTC" } as const;
+
+describe("whenBusyProblem", () => {
+  it("takes skip and start for an Environment trigger, and queue, steer and skip for a Session trigger", () => {
+    for (const whenBusy of ["skip", "start"] as const) {
+      expect(whenBusyProblem("environment", whenBusy)).toBeUndefined();
+    }
+
+    for (const whenBusy of ["queue", "steer", "skip"] as const) {
+      expect(whenBusyProblem("session", whenBusy)).toBeUndefined();
+    }
+
+    expect(whenBusyProblem("environment", "queue")).toBe(
+      "An Environment trigger's when_busy is skip or start, not queue",
+    );
+    expect(whenBusyProblem("session", "start")).toBe(
+      "A Session trigger's when_busy is queue, steer or skip, not start",
+    );
+  });
+
+  it("lists the default first, and the default is the first", () => {
+    expect(whenBusyValues("session")[0]).toBe("queue");
+    expect(whenBusyValues("environment")[0]).toBe("skip");
+    expect(defaultWhenBusy("session", schedule)).toBe("queue");
+    expect(defaultWhenBusy("environment", schedule)).toBe("skip");
+    // A kind a later version added is read as an Environment trigger's.
+    expect(defaultWhenBusy("unknown", schedule)).toBe("skip");
+  });
+});
+
+describe("what a kind takes", () => {
+  it("gives an Environment trigger a base, model and thinking of its own, a Workspace trigger no base, and a Session trigger none", () => {
+    expect(takesBase("environment")).toBe(true);
+    expect(takesModel("environment")).toBe(true);
+    expect(takesBase("workspace")).toBe(false);
+    expect(takesModel("workspace")).toBe(true);
+    expect(takesBase("session")).toBe(false);
+    expect(takesModel("session")).toBe(false);
+    expect(ownOptionsProblem("environment", { base: "main", model: "m", thinking: "high" })).toBe(
+      undefined,
+    );
+    expect(ownOptionsProblem("session", {})).toBeUndefined();
+    expect(ownOptionsProblem("session", { base: undefined })).toBeUndefined();
+    expect(ownOptionsProblem("session", { thinking: "high" })).toBe(
+      "A Session trigger has no base, model or thinking: it sends to a Session that has its own",
+    );
+    // `null` puts an option back to its default, which the Registry accepts for any kind.
+    expect(
+      ownOptionsProblem("session", { base: null, model: null, thinking: null }),
+    ).toBeUndefined();
+  });
+
+  it("holds a Session trigger for its own Session alone", () => {
+    const base = {
+      id: "t1",
+      revision: 1,
+      environment: "default",
+      name: "n",
+      message: "m",
+      source: { type: "schedule", cron: "@daily", zone: "UTC" },
+      whenBusy: "queue",
+      paused: false,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const mine = read(TriggerDefinition, { ...base, kind: "session", session: "s-1" });
+    const environment = read(TriggerDefinition, { ...base, kind: "environment", whenBusy: "skip" });
+
+    expect(heldBySession(mine, "s-1")).toBe(true);
+    expect(heldBySession(mine, "s-2")).toBe(false);
+    expect(heldBySession(mine, undefined)).toBe(false);
+    expect(heldBySession(environment, "s-2")).toBe(true);
+    expect(heldBySession(environment, undefined)).toBe(true);
+  });
+});
+
+describe("what fireSession answers", () => {
+  it("reads a delivery or a skip (a later reason as unknown), and refuses anything else", () => {
+    expect(read(FireResult, { delivery: "queued", cursor: "c-1" })).toEqual({
+      delivery: "queued",
+      cursor: "c-1",
+    });
+    expect(read(FireResult, { skipped: "coalesced" })).toEqual({ skipped: "coalesced" });
+    expect(read(FireResult, { skipped: "later" })).toEqual({ skipped: "unknown" });
+    expect(() => read(FireResult, { nothing: true })).toThrow();
+  });
+
+  it("takes a when_busy a Session trigger has, and no other", () => {
+    const request = {
+      trigger: { id: "t1", name: "n" },
+      requestId: "r",
+      message: "m",
+      header: { name: "n", zone: "UTC", firedAt: 1 },
+    };
+
+    expect(read(SessionFireRequest, { ...request, whenBusy: "steer" })).toMatchObject({
+      whenBusy: "steer",
+    });
+    expect(() => read(SessionFireRequest, { ...request, whenBusy: "start" })).toThrow();
+    expect(() => read(SessionFireRequest, request)).toThrow();
   });
 });
 
@@ -317,14 +445,17 @@ describe("the options a kind takes", () => {
       "wait",
     );
     expect(whenBusyProblem("workspace", "wait")).toBeUndefined();
-    expect(whenBusyProblem("environment", "wait")).toContain("Only a Workspace trigger");
+    expect(whenBusyProblem("environment", "wait")).toBe(
+      "An Environment trigger's when_busy is skip or start, not wait",
+    );
     expect(whenBusyProblem("environment", "start")).toBeUndefined();
   });
 
   it("takes a base only as an Environment trigger", () => {
-    expect(baseProblem("environment", "develop")).toBeUndefined();
-    expect(baseProblem("workspace", undefined)).toBeUndefined();
-    expect(baseProblem("workspace", null)).toBeUndefined();
-    expect(baseProblem("workspace", "develop")).toContain("takes no base");
+    expect(ownOptionsProblem("environment", { base: "develop" })).toBeUndefined();
+    expect(ownOptionsProblem("workspace", { base: undefined })).toBeUndefined();
+    expect(ownOptionsProblem("workspace", { base: null })).toBeUndefined();
+    expect(ownOptionsProblem("workspace", { base: "develop" })).toContain("takes no base");
+    expect(ownOptionsProblem("workspace", { model: "m", thinking: "high" })).toBeUndefined();
   });
 });

@@ -1261,6 +1261,19 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     ) STRICT`);
     sql.exec("CREATE INDEX change_requests_by_at ON change_requests (at)");
   },
+  // 38: the Session a Session trigger belongs to (`docs/architecture/triggers.md` → Kinds and what a Fire delivers to): its
+  // `environment` is that Session's. Null for every Trigger stored before, which are Environment triggers. A Session's
+  // deletion deletes its Triggers. And the Fires `admitFire` let through to such a Session (`trigger_sends`), which no
+  // Session was made for, so `session_requests` cannot remember them: a retried Fire is answered its Session again.
+  (sql) => {
+    sql.exec("ALTER TABLE triggers ADD COLUMN session TEXT");
+    sql.exec("CREATE INDEX triggers_by_session ON triggers (session)");
+    sql.exec(
+      "CREATE TABLE trigger_sends (request_id TEXT PRIMARY KEY, session TEXT NOT NULL, at INTEGER NOT NULL)",
+    );
+    // A Session's deletion deletes the rows of its Fires: they are found by Session.
+    sql.exec("CREATE INDEX trigger_sends_by_session ON trigger_sends (session)");
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */

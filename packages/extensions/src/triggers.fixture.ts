@@ -10,7 +10,6 @@ import {
   type TriggerChangeValue,
   type TriggerDefinition,
   triggerField,
-  type TriggerInput,
   type TriggerPatch,
   defaultWhenBusy,
 } from "@cloudpid/protocol";
@@ -20,7 +19,12 @@ import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import type { ChangeAuthor } from "./environment.ts";
 import { EnvironmentsError } from "./environment.ts";
-import type { TriggerAccessService, TriggerWorkspace } from "./triggers.ts";
+import type { OwnTriggerInput, TriggerAccessService, TriggerWorkspace } from "./triggers.ts";
+
+/** The Environment and the Session the fake's Session triggers belong to: the Session that calls the tools. */
+const OWN_ENVIRONMENT = "default";
+
+const OWN_SESSION = "s-1";
 
 const sameValue = Schema.toEquivalence(Schema.NullOr(Schema.Json));
 
@@ -152,12 +156,19 @@ export const fakeTriggers = (
     return next;
   };
 
-  const create = (id: string, input: TriggerInput, author: ChangeAuthor): TriggerChanged => {
+  /** The Environment a Trigger made here belongs to: the one it names, its Workspace's, or this Session's own. */
+  const ownEnvironmentOf = (input: OwnTriggerInput): string | undefined => {
+    if (input.kind === "environment") return input.environment;
+
+    return input.kind === "workspace" ? here?.environment : OWN_ENVIRONMENT;
+  };
+
+  const create = (id: string, input: OwnTriggerInput, author: ChangeAuthor): TriggerChanged => {
     const known = held.get(id);
 
     if (known !== undefined) return { status: "unchanged", definition: known };
 
-    const environment = input.kind === "workspace" ? here?.environment : input.environment;
+    const environment = ownEnvironmentOf(input);
 
     if (environment === undefined || environments[environment] === undefined) {
       return { status: "missing" };
@@ -167,7 +178,7 @@ export const fakeTriggers = (
       return { status: "invalid", problem: `There is no Workspace ${input.workspace}` };
     }
 
-    const { kind, name, message, source, whenBusy, model, thinking } = input;
+    const { kind, name, message, source, whenBusy } = input;
 
     const definition: Types.Mutable<TriggerDefinition> = {
       id,
@@ -187,11 +198,15 @@ export const fakeTriggers = (
       definition.workspace = { id: here.id, branch: here.branch };
     }
 
-    if (input.kind === "environment" && input.base !== undefined) definition.base = input.base;
+    if (input.kind === "session") {
+      definition.session = OWN_SESSION;
+    } else {
+      if (input.kind === "environment" && input.base !== undefined) definition.base = input.base;
 
-    if (model !== undefined) definition.model = model;
+      if (input.model !== undefined) definition.model = input.model;
 
-    if (thinking !== undefined) definition.thinking = thinking;
+      if (input.thinking !== undefined) definition.thinking = input.thinking;
+    }
 
     held.set(id, definition);
 

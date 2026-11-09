@@ -29,7 +29,7 @@ import { McpReconnectView, McpServerLogView, McpServersView } from "./mcp-status
 import { BranchName, EnvironmentError, RepoName, WorkspaceId } from "./repo.ts";
 import { Catalog, FileMatches, MAX_FILE_QUERY_LENGTH, TreePoint } from "./session.ts";
 import {
-  TriggerInput,
+  OwnerTriggerInput,
   FireNowQueued,
   FireRecord,
   MAX_FIRE_LOG,
@@ -1301,13 +1301,22 @@ export class RegistryRpcs extends RpcGroup.make(
     success: Schema.Array(TriggerOverview),
   }),
   /**
+   * The Session triggers of Session `session`, newest first: the Session details' list. Their definitions alone, with no
+   * Fire read from their objects, which the list never shows. A method of its own, so a Registry from before Session
+   * triggers fails it loudly rather than answer `listTriggers`'s every Trigger into a list of one Session's.
+   */
+  Rpc.make("listSessionTriggers", {
+    payload: { session: Schema.String },
+    success: Schema.Array(TriggerDefinition),
+  }),
+  /**
    * Make an Environment or Workspace trigger as the owner, under `id`, which the form draws when it opens: a retry with the same
    * input answers the Trigger made, and one with other input is refused. No Approval, and no Agent change. Its object is
    * woken to schedule it; one that never answers fails the call with `TriggerUnscheduled`, the Trigger saved. A
    * Schedule, name or message the Registry refuses, or an Environment that does not exist, fails with its reason.
    */
   Rpc.make("createTrigger", {
-    payload: { id: TriggerKey, trigger: TriggerInput },
+    payload: { id: TriggerKey, trigger: OwnerTriggerInput },
     success: TriggerDefinition,
     error: Schema.Union([EnvironmentError, TriggerUnscheduled]),
   }),

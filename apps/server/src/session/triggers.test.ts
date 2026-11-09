@@ -1,10 +1,11 @@
 // The Session's `TriggerAccess` over a fake Registry and fake Trigger objects: each change is the Registry's Agent change
 // by this Session, and the Trigger's object is woken after one that changed something.
-// @effect-diagnostics asyncFunction:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off
 import type {
   AgentChange,
   EnvironmentTriggerInput,
   SessionRecord,
+  SessionTriggerInput,
   TriggerChanged,
   TriggerDefinition,
   WorkspaceRecord,
@@ -53,7 +54,15 @@ const CHANGED: TriggerChanged = {
 
 const setUp = (
   answer: TriggerChanged = CHANGED,
-  { listed = true, unreachable = 0 }: { listed?: boolean; unreachable?: number } = {},
+  {
+    listed = true,
+    unreachable = 0,
+    held = [DEFINITION],
+  }: {
+    listed?: boolean;
+    unreachable?: number;
+    held?: ReadonlyArray<TriggerDefinition>;
+  } = {},
 ) => {
   /** How many more wakes fail, as an object that doesn't answer after all its tries. */
   let failing = unreachable;
@@ -81,8 +90,10 @@ const setUp = (
 
   const registry: TriggersRegistry = {
     listTriggers: ({ environment }) =>
-      Effect.succeed(environment === undefined || environment === "default" ? [DEFINITION] : []),
-    triggerDefinition: ({ id }) => Effect.succeed(id === "t1" ? DEFINITION : null),
+      Effect.succeed(
+        held.filter((each) => environment === undefined || each.environment === environment),
+      ),
+    triggerDefinition: ({ id }) => Effect.succeed(held.find((each) => each.id === id) ?? null),
     // SAFETY: the Triggers read only a Session's Workspace and a Workspace's branch and Environment.
     getSession: ({ id }) =>
       Effect.succeed(id === "s-1" ? ({ id, workspace: "0f0f0f0f" } as SessionRecord) : null),
@@ -239,5 +250,58 @@ describe("the Session's Triggers", () => {
 
     expect(failed.message).toContain("not one the Registry lists");
     expect(calls).toEqual([]);
+  });
+
+  describe("Session triggers", () => {
+    const mine: TriggerDefinition = {
+      ...DEFINITION,
+      id: "t2",
+      kind: "session",
+      session: "s-1",
+      whenBusy: "queue",
+    };
+
+    const another: TriggerDefinition = { ...mine, id: "t3", session: "s-2" };
+
+    it("lists and finds this Session's own Session triggers beside the Environment's, and not another Session's", async () => {
+      const { access } = setUp(CHANGED, { held: [DEFINITION, mine, another] });
+
+      expect((await Effect.runPromise(access.list(undefined))).map((each) => each.id)).toEqual([
+        "t1",
+        "t2",
+      ]);
+      expect((await Effect.runPromise(access.list("default"))).map((each) => each.id)).toEqual([
+        "t1",
+        "t2",
+      ]);
+      expect(await Effect.runPromise(access.get("t2"))).toEqual(mine);
+      expect(await Effect.runPromise(access.get("t3"))).toBeNull();
+      expect(await Effect.runPromise(access.get("t1"))).toEqual(DEFINITION);
+    });
+
+    it("makes a Session trigger for this Session, and wakes its object to schedule it", async () => {
+      const { access, calls, woken } = setUp();
+
+      const own: Omit<SessionTriggerInput, "session"> = {
+        kind: "session",
+        name: "Check CI",
+        message: "Check CI.",
+        source: { type: "schedule", cron: "0 * * * *", zone: "UTC" },
+      };
+
+      await Effect.runPromise(access.create({ id: "t2", trigger: own, author }));
+
+      expect(calls).toEqual([
+        {
+          method: "agentCreateTrigger",
+          input: {
+            id: "t2",
+            trigger: { ...own, session: "s-1" },
+            author: { session: "s-1", ...author },
+          },
+        },
+      ]);
+      expect(woken).toEqual(["t2"]);
+    });
   });
 });

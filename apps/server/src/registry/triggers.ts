@@ -8,6 +8,7 @@ import { ThinkingLevel } from "@cloudpid/config";
 import {
   defaultWhenBusy,
   fireTitle,
+  ownOptionsProblem,
   senderText,
   type TriggerSource,
   webhookFireTitle,
@@ -20,9 +21,8 @@ import {
   type TriggerKind,
   type TriggerPatch,
   type TriggerSourceInput,
-  baseProblem,
-  whenBusyProblem,
   type WorkspaceRef,
+  whenBusyProblem,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -30,12 +30,14 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import type {
-  Deletion,
-  EnvironmentDeletion,
-  RegistryStorage,
-  RegistryStore,
-  SessionRefusal,
+import {
+  type Deletion,
+  type EnvironmentDeletion,
+  type RegistryStorage,
+  type RegistryStore,
+  REQUEST_MEMORY_MS,
+  type SessionRecord,
+  type SessionRefusal,
 } from "./store.ts";
 import { noWorkspace, subagentWorkspaceHoldsNoTrigger, triggerIdTaken } from "./messages.ts";
 
@@ -59,16 +61,30 @@ export type FireAdmission = {
   readonly scheduledAt?: number | undefined;
   /** The event of the delivery the Fire is for (a webhook's), which its Session's title carries. */
   readonly event?: string | undefined;
+  /**
+   * Whether the caller knows Session triggers, which are answered `send`. A caller that doesn't say so is never
+   * answered a status it can't read: a Session trigger's Fire fails for it, to be tried again once it is replaced.
+   */
+  readonly sessionTriggers?: true | undefined;
 };
 
 /**
- * What `admitFire` answers: the Session to send the Fire to (`started`; `repeated` for a Fire admitted before, whose
- * Session is answered again), `stale` with the current definition for the object to check again, or why the Fire does
- * not go: `busy` (a Workspace trigger's `wait`: tried again later), `removed`, `paused`, `skipped` (`overlap`) or `failed`. A reader treats a status it does not know as `failed`.
+ * What `admitFire` answers: the Session to send the Fire to (`started`, a new one; `repeated` for a Fire admitted
+ * before, whose Session is answered again), a Session trigger's own Session to send it to (`send`, only to a caller
+ * that said it knows Session triggers: no Session or Workspace is made, so no upkeep follows), `stale` with the current
+ * definition for the object to check again, or why the Fire does not go: `busy` (a Workspace trigger's `wait`: tried
+ * again later), `removed`, `paused`, `skipped` (`overlap`) or `failed`. A reader treats a status it does not know as
+ * `failed`.
  */
 export type FireAdmitted =
   | {
       readonly status: "started";
+      readonly session: string;
+      readonly environment: string;
+      readonly repeated?: true | undefined;
+    }
+  | {
+      readonly status: "send";
       readonly session: string;
       readonly environment: string;
       readonly repeated?: true | undefined;
@@ -80,6 +96,13 @@ export type FireAdmitted =
   | { readonly status: "paused" }
   | { readonly status: "skipped"; readonly reason: "overlap" }
   | { readonly status: "failed"; readonly reason: string };
+
+/**
+ * What `admit` answers a caller that does not know Session triggers for one: not a `FireAdmitted` status, which that
+ * caller could not read, but a refusal `admitFire` turns into a failed call, so its Fire is tried again once it runs
+ * newer code.
+ */
+export type FireUnsupported = { readonly status: "unsupported" };
 
 type TriggerRow = {
   readonly id: string;
@@ -95,6 +118,7 @@ type TriggerRow = {
   readonly base: string | null;
   readonly model: string | null;
   readonly thinking: string | null;
+  readonly session: string | null;
   readonly paused: number;
   readonly created_at: number;
   readonly updated_at: number;
@@ -130,6 +154,8 @@ const toDefinition = (row: TriggerRow, workspace?: WorkspaceRef): TriggerDefinit
   const definition: Types.Mutable<TriggerDefinition> = toFields(row);
 
   if (workspace !== undefined) definition.workspace = workspace;
+
+  if (row.session !== null) definition.session = row.session;
 
   if (row.base !== null) definition.base = row.base;
 
@@ -203,6 +229,8 @@ const fieldsProblem = (
     readonly source: TriggerSourceInput;
     readonly when_busy: string;
     readonly base: string | null;
+    readonly model: string | null;
+    readonly thinking: string | null;
   },
 ): string | undefined =>
   triggerNameProblem(fields.name) ??
@@ -212,7 +240,11 @@ const fieldsProblem = (
   (fields.base !== null && fields.base.trim() === ""
     ? "A base branch can't be empty"
     : undefined) ??
-  baseProblem(kind, fields.base);
+  ownOptionsProblem(kind, {
+    base: fields.base ?? undefined,
+    model: fields.model ?? undefined,
+    thinking: fields.thinking ?? undefined,
+  });
 
 /** Why `refusal` kept a Fire's Session from being registered, as the fire log says it. */
 const refusalReason = (refusal: SessionRefusal): string => {
@@ -287,6 +319,7 @@ export const openTriggers = (
     | "deleteEnvironment"
     | "deleteWorkspace"
     | "deleteWorkspaceWithTriggers"
+    | "deleteSession"
   >,
 ) => {
   const { sql } = storage;
@@ -318,6 +351,23 @@ export const openTriggers = (
     sql
       .exec<TriggerRow>("SELECT * FROM triggers WHERE id = ? AND removed_at IS NULL", id)
       .toArray()[0];
+
+  /**
+   * The Session a Fire was let through to as a Session trigger's, less than `REQUEST_MEMORY_MS` ago, if it is still
+   * listed. Rows past the memory are dropped as they are found.
+   */
+  const sentSession = (requestId: string, now: number): SessionRecord | null => {
+    sql.exec("DELETE FROM trigger_sends WHERE at <= ?", now - REQUEST_MEMORY_MS);
+
+    const sent = sql
+      .exec<{ session: string }>(
+        "SELECT session FROM trigger_sends WHERE request_id = ?",
+        requestId,
+      )
+      .toArray()[0];
+
+    return sent === undefined ? null : store.getSession(sent.session);
+  };
 
   const definition = (id: string): TriggerDefinition | null => {
     const found = row(id);
@@ -370,6 +420,29 @@ export const openTriggers = (
       (session) => busy(session.id, now, startingMs),
     );
 
+  /**
+   * Delete Session `id`'s Session triggers, and the memory of the Fires let through to it (`trigger_sends`), which
+   * would keep answering `send` while the Session is listed; answer the ids of the active ones.
+   */
+  const deleteOfSession = (id: string): ReadonlyArray<string> =>
+    storage.transactionSync((): ReadonlyArray<string> => {
+      // Only the active ones answered: a Trigger the agent removed has its object wiped already, or wipes itself at its next alarm.
+      const held = Arr.map(
+        sql
+          .exec<{ id: string }>(
+            "SELECT id FROM triggers WHERE session = ? AND removed_at IS NULL",
+            id,
+          )
+          .toArray(),
+        (found) => found.id,
+      );
+
+      sql.exec("DELETE FROM triggers WHERE session = ?", id);
+      sql.exec("DELETE FROM trigger_sends WHERE session = ?", id);
+
+      return held;
+    });
+
   return {
     /**
      * Keep Trigger `id` made of `input`, at revision 1. Made again under the same id (a retry) with the same input, it
@@ -378,7 +451,7 @@ export const openTriggers = (
      */
     create: (id: string, input: TriggerInput, now: number): TriggerWrite =>
       storage.transactionSync((): TriggerWrite => {
-        let environment: string;
+        let environment: string | undefined;
         let workspace: string | null = null;
         let base: string | null = null;
 
@@ -397,6 +470,13 @@ export const openTriggers = (
 
           environment = kept.environment;
           workspace = kept.id;
+        } else if (input.kind === "session") {
+          // A Session trigger belongs to its Session's Environment.
+          environment = store.getSession(input.session)?.environment;
+
+          if (environment === undefined) {
+            return { status: "invalid", problem: `There is no Session ${input.session}` };
+          }
         } else {
           environment = input.environment;
           base = input.base ?? null;
@@ -407,7 +487,17 @@ export const openTriggers = (
         }
 
         const whenBusy = input.whenBusy ?? defaultWhenBusy(input.kind, input.source);
-        const problem = fieldsProblem(input.kind, { ...input, when_busy: whenBusy, base });
+        // A Session trigger's input has no options of its own, and an Environment trigger's alone has a base.
+        const model = "model" in input ? (input.model ?? null) : null;
+        const thinking = "thinking" in input ? (input.thinking ?? null) : null;
+
+        const problem = fieldsProblem(input.kind, {
+          ...input,
+          when_busy: whenBusy,
+          base,
+          model,
+          thinking,
+        });
 
         if (problem !== undefined) return { status: "invalid", problem };
 
@@ -422,8 +512,9 @@ export const openTriggers = (
           source: sourceText(input.source),
           when_busy: whenBusy,
           base: base?.trim() ?? null,
-          model: input.model ?? null,
-          thinking: input.thinking ?? null,
+          model,
+          thinking,
+          session: input.kind === "session" ? input.session : null,
           paused: input.paused === true ? 1 : 0,
           created_at: now,
           updated_at: now,
@@ -438,6 +529,7 @@ export const openTriggers = (
             known.kind === made.kind &&
             known.environment === made.environment &&
             known.workspace === made.workspace &&
+            known.session === made.session &&
             sameFields(known, made)
             ? { status: "unchanged", definition: toDef(known) }
             : { status: "invalid", problem: triggerIdTaken };
@@ -445,7 +537,7 @@ export const openTriggers = (
 
         sql.exec(
           `INSERT INTO triggers (id, revision, kind, environment, workspace, name, message, source, when_busy, base, model,
-             thinking, paused, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             thinking, session, paused, created_at, updated_at) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
           made.kind,
           made.environment,
@@ -457,6 +549,7 @@ export const openTriggers = (
           made.base,
           made.model,
           made.thinking,
+          made.session,
           made.paused,
           now,
           now,
@@ -482,6 +575,18 @@ export const openTriggers = (
                 environment,
               )
               .toArray(),
+        toDef,
+      ),
+
+    /** The Session triggers of Session `session`, newest first. */
+    listOfSession: (session: string): Array<TriggerDefinition> =>
+      Arr.map(
+        sql
+          .exec<TriggerRow>(
+            "SELECT * FROM triggers WHERE removed_at IS NULL AND session = ? ORDER BY created_at DESC, id",
+            session,
+          )
+          .toArray(),
         toDef,
       ),
 
@@ -656,11 +761,24 @@ export const openTriggers = (
       ids: { readonly session: string; readonly workspace: string },
       now: number,
       startingMs: number,
-    ): FireAdmitted =>
-      storage.transactionSync((): FireAdmitted => {
+    ): FireAdmitted | FireUnsupported =>
+      storage.transactionSync((): FireAdmitted | FireUnsupported => {
         // A Fire let through before (a retried alarm) is answered its Session again, whatever came since: its Session
         // is registered, and an empty one would be left if it were abandoned now.
         const earlier = store.requestedSession(fire.requestId, now);
+
+        // Likewise a Fire let through to a Session trigger's Session, whether its Trigger is paused or gone by now: the
+        // Session still lists it, and the Fire goes on to it.
+        const sent = fire.sessionTriggers === true ? sentSession(fire.requestId, now) : null;
+
+        if (sent !== null) {
+          return {
+            status: "send",
+            session: sent.id,
+            environment: sent.environment,
+            repeated: true,
+          };
+        }
 
         if (earlier !== null) {
           return {
@@ -680,6 +798,31 @@ export const openTriggers = (
         const current = toDef(known);
 
         if (known.revision !== fire.revision) return { status: "stale", definition: current };
+
+        // A Session trigger sends to its own Session, which no Fire makes: the Session decides the overlap, since only
+        // it knows whether its Run is going on (`session/fire.ts`).
+        if (current.kind === "session") {
+          // Not for a caller that can't read `send`: nothing is kept, and `admitFire` fails its call (`Registry.ts`).
+          if (fire.sessionTriggers !== true) return { status: "unsupported" };
+
+          const own = current.session === undefined ? null : store.getSession(current.session);
+
+          if (own === null || current.source.type !== "schedule") {
+            return {
+              status: "failed",
+              reason: own === null ? "its Session is gone" : "this version can't fire its source",
+            };
+          }
+
+          sql.exec(
+            "INSERT OR REPLACE INTO trigger_sends (request_id, session, at) VALUES (?, ?, ?)",
+            fire.requestId,
+            own.id,
+            now,
+          );
+
+          return { status: "send", session: own.id, environment: own.environment };
+        }
 
         // A Workspace trigger is busy while any Session in its Workspace is at work; the rest, while their last Fire's
         // Session is.
@@ -763,6 +906,24 @@ export const openTriggers = (
       }),
 
     /**
+     * Delete Session `id` (`store.deleteSession`) with its Session triggers, in the same transaction, and answer their
+     * ids, whose objects the caller wipes (`docs/architecture/triggers.md` → Cascades), as an Environment's deletion
+     * does.
+     */
+    deleteSession: (id: string): SessionRemoval =>
+      storage.transactionSync((): SessionRemoval => {
+        const held = deleteOfSession(id);
+
+        return { deleted: store.deleteSession(id), triggers: held };
+      }),
+
+    /**
+     * Delete the Session triggers of Session `id`, which stays, and answer their ids, whose objects the caller wipes:
+     * the first step of a Session's deletion, so no Fire reaches a Session whose object is about to be wiped.
+     */
+    deleteOfSession,
+
+    /**
      * Delete Environment `id` (`store.deleteEnvironment`, which deletes its Triggers in the same transaction) and answer
      * the ids of the Triggers that went with it (`docs/architecture/triggers.md` → Cascades).
      */
@@ -786,6 +947,12 @@ export type Triggers = ReturnType<typeof openTriggers>;
 /** A Workspace's deletion by the owner's Remove, with the ids of the Triggers that went with it, whose objects the caller wipes. */
 export type WorkspaceRemoval = {
   readonly deletion: Deletion;
+  readonly triggers: ReadonlyArray<string>;
+};
+
+/** A Session's deletion, with the ids of the Session triggers that went with it, whose objects the caller wipes. */
+export type SessionRemoval = {
+  readonly deleted: boolean;
   readonly triggers: ReadonlyArray<string>;
 };
 

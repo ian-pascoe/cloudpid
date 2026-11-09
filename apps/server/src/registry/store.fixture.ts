@@ -86,7 +86,9 @@ import { openTriggerChanges, type TriggerChanges } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
   type WorkspaceRemoval,
+  type SessionRemoval,
   type FireAdmission,
+  type FireUnsupported,
   type FireAdmitted,
   openTriggers,
   type Triggers,
@@ -185,7 +187,15 @@ export class TestRegistry extends DurableObject {
   }
 
   deleteSession(id: string): boolean {
-    return this.#store.deleteSession(id);
+    return this.#triggers.deleteSession(id).deleted;
+  }
+
+  deleteSessionTriggers(session: string): ReadonlyArray<string> {
+    return this.#triggers.deleteOfSession(session);
+  }
+
+  deleteSessionWithTriggers(id: string): SessionRemoval {
+    return this.#triggers.deleteSession(id);
   }
 
   createEnvironment(id: string, name: string, now: number): EnvironmentNaming {
@@ -277,6 +287,10 @@ export class TestRegistry extends DurableObject {
     return this.#triggers.list(environment);
   }
 
+  listSessionTriggers(session: string): Array<TriggerDefinition> {
+    return this.#triggers.listOfSession(session);
+  }
+
   updateTrigger(
     id: string,
     patch: TriggerPatch,
@@ -304,7 +318,7 @@ export class TestRegistry extends DurableObject {
     fire: FireAdmission,
     ids: { session: string; workspace: string },
     now: number,
-  ): FireAdmitted {
+  ): FireAdmitted | FireUnsupported {
     return this.#triggers.admit(fire, ids, now, STARTING_MS);
   }
 

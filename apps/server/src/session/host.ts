@@ -848,6 +848,12 @@ export type SessionHostService = {
   readonly admitted: (
     requestId: string,
   ) => Effect.Effect<{ readonly id: number; readonly queued: boolean } | undefined, SessionError>;
+  /**
+   * Why the spend limit stops a request now, in a clause, or undefined when it does not (as the Harness's requests and a
+   * Sampling request are held to it): what a Trigger's Fire asks before it sends, so a Session at its limit fails the Fire
+   * at no cost. A spend that cannot be read lets it through.
+   */
+  readonly overLimit: Effect.Effect<string | undefined>;
   /** Show `notice` in the active branch's transcript, as a line of its own. */
   readonly note: (notice: string) => Effect.Effect<void, SessionError>;
   /**
@@ -1399,20 +1405,22 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
   /** What watches of the Session's usage run when it or its limit changes outside the Harness's ledgers. */
   const usageListeners = new Set<() => void>();
 
+  // The spend limit as a Sampling request and a Trigger's Fire are held to it: checked before they are made, so a refusal
+  // costs nothing and says why.
+  const spendGate = ledgerGate({
+    limit: () => settings.current().spendLimit,
+    ledger: () => harness.harness,
+    kv: storage.kv,
+  });
+
   // A server's Sampling requests run on these models under the same spend gate as the Harness's, and cost what they cost
   // in the Session's usage (`docs/architecture/mcp-server-requests.md` → Sampling requests).
   if (options.mcp?.bindSampling !== undefined) {
-    const gate = ledgerGate({
-      limit: () => settings.current().spendLimit,
-      ledger: () => harness.harness,
-      kv: storage.kv,
-    });
-
     options.mcp.bindSampling({
-      models: limitingModels(models, gate),
+      models: limitingModels(models, spendGate),
       roles: () => Record.map(settings.current().subagents.roles, (role) => role.model),
       // Checked before the sample is made, so a refusal costs nothing and says why.
-      overLimit: () => overLimitReason(gate),
+      overLimit: () => overLimitReason(spendGate),
       usage: (who, usage) => {
         recordSamplingUsage(storage.kv, who, usage);
 
@@ -4399,6 +4407,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
           }),
         ),
       ),
+    overLimit: Effect.promise(() => overLimitReason(spendGate)),
     admitted: (requestId) =>
       active.pipe(
         Effect.flatMap((conversation) =>

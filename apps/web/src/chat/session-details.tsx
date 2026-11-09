@@ -1,7 +1,7 @@
 // Session details (GLOSSARY.md → Session details): a small panel over the top right of the chat with what the owner
 // follows of the Session while reading, in sections: the root agent's Todo List, the Session's subagents, each
 // subagent opening its Subagent Pane (or its Subagent page), and the Changes in its Workspace, each file opening the
-// Diff pane at it, the Session's grants for MCP servers' Sampling requests, and the Resource watches its agent holds. On a Subagent page they are the subagent's: its Todo List, the subagents below it, and the Changes
+// Diff pane at it, the Session's grants for MCP servers' Sampling requests, the Resource watches its agent holds, and the Session's triggers (on its own page only: they belong to the Session). On a Subagent page they are the subagent's: its Todo List, the subagents below it, and the Changes
 // of its Workspace. An icon button in the page's header opens and closes it, whatever there is to show; whether it is
 // open is kept in the page's layout.
 
@@ -20,6 +20,7 @@ import { Button } from "../components/ui/button.tsx";
 import { ChangesSection } from "../diff-pane/changes-summary.tsx";
 import { changesTotalsAtom } from "../diff-pane/watch.ts";
 import { cn } from "../lib/utils.ts";
+import { settledFailureOf } from "../registry.ts";
 import { SUBAGENTS_PANE, subagentPaneKey } from "../panes.ts";
 import { panesAtom } from "../panes-state.ts";
 import { childrenOf } from "../session/agents.ts";
@@ -37,6 +38,12 @@ import {
 } from "../session/atoms.ts";
 import { detailsOpenAtom } from "../session-layout-state.ts";
 import {
+  NO_SESSION_TRIGGERS,
+  removeSessionTriggerAtom,
+  sessionTriggersAtom,
+  setSessionTriggerPausedAtom,
+} from "../triggers-state.ts";
+import {
   conversationKey,
   useShownChanges,
   useShownLayoutKey,
@@ -46,6 +53,7 @@ import {
 import { followedTasks, followingLabel, liveTasks } from "./mcp-task.ts";
 import { McpTaskStrip } from "./mcp-task-strip.tsx";
 import { AgentStatus, OpenPageLink } from "./subagent-card.tsx";
+import { SessionTriggers } from "./session-triggers.tsx";
 import { TodoList } from "./todo-list.tsx";
 import { WatchedResources } from "./watched-resources.tsx";
 
@@ -390,13 +398,10 @@ const WatchedResourcesSection = () => {
   return <WatchedResources watches={watches} holder={holder} live={live} onEnd={end} />;
 };
 
-/**
- * The Session details of the Session shown, while the owner has them open: one section per thing to follow, each
- * headed by what it is, with no title of their own. Escape closes them and gives the focus back to the header's button.
- */
-export const SessionDetails = () => {
+/** What the Session details hold while they are open: the hooks of every section, none of them kept while closed. */
+const OpenDetails = () => {
   const sessionId = useShownSessionId();
-  const [open, setOpen] = useAtom(detailsOpenAtom(useShownLayoutKey()));
+  const setOpen = useAtomSet(detailsOpenAtom(useShownLayoutKey()));
   const { items, agents } = useDetails();
   const live = useAtomValue(sessionStatusAtom(sessionId), (status) => status === "live");
   const changed = useAtomValue(changesTotalsAtom(useShownChanges()), (totals) => totals.files > 0);
@@ -405,7 +410,15 @@ export const SessionDetails = () => {
   const tasked = useAtomValue(mcpTasksAtom(sessionId), (tasks) => tasks.length > 0);
   const watched = useAtomValue(mcpWatchesAtom(sessionId), (watches) => watches.length > 0);
 
-  if (!open) return null;
+  // The Session's own triggers: a Subagent page asks for none, and they are asked for only while the details are open.
+  const triggers = useAtomValue(
+    useShownSubagent() === undefined ? sessionTriggersAtom(sessionId) : NO_SESSION_TRIGGERS,
+  );
+
+  // A failed change is shown for this Session alone, even when the list it was made from is now empty.
+  const [paused, pause] = useAtom(setSessionTriggerPausedAtom(sessionId));
+  const [removed, remove] = useAtom(removeSessionTriggerAtom(sessionId));
+  const problem = settledFailureOf(paused) ?? settledFailureOf(removed);
 
   const onKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== "Escape") return;
@@ -433,7 +446,9 @@ export const SessionDetails = () => {
         !granted &&
         !declined &&
         !tasked &&
-        !watched && <p className="text-sm text-muted-foreground">Nothing to show yet.</p>}
+        !watched &&
+        triggers.length === 0 &&
+        problem === null && <p className="text-sm text-muted-foreground">Nothing to show yet.</p>}
       {items.length > 0 && <TodoList tasks={items} />}
       {agents.length > 0 && <SubagentsSection agents={agents} />}
       {changed && <ChangesSection />}
@@ -441,6 +456,26 @@ export const SessionDetails = () => {
       <SamplingGrantsSection />
       <DeclinedServersSection />
       <WatchedResourcesSection />
+      <SessionTriggers
+        triggers={triggers}
+        problem={problem}
+        onPause={(trigger) => {
+          pause({ id: trigger.id, paused: !trigger.paused });
+        }}
+        onRemove={(trigger) => {
+          remove(trigger.id);
+        }}
+      />
     </aside>
   );
+};
+
+/**
+ * The Session details of the Session shown, while the owner has them open: one section per thing to follow, each
+ * headed by what it is, with no title of their own. Escape closes them and gives the focus back to the header's button.
+ */
+export const SessionDetails = () => {
+  const open = useAtomValue(detailsOpenAtom(useShownLayoutKey()));
+
+  return open ? <OpenDetails /> : null;
 };

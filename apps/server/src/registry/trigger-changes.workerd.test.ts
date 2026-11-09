@@ -6,13 +6,14 @@ import {
   DEFAULT_ENVIRONMENT,
   type EnvironmentTriggerInput,
   MAX_AGENT_CHANGES,
+  type SessionTriggerInput,
   type TriggerChangeValue,
   triggerField,
   type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import type { AgentChangeAuthor } from "./agent-changes.ts";
+import type { SessionChangeAuthor } from "./agent-changes.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 
 declare global {
@@ -44,7 +45,7 @@ const weeklyValue: TriggerChangeValue = {
   paused: false,
 };
 
-const author = (tool: string, approved?: true): AgentChangeAuthor => ({
+const author = (tool: string, approved?: true): SessionChangeAuthor => ({
   session: "s-1",
   conversation: 0,
   tool,
@@ -632,5 +633,134 @@ describe("the agent's Workspace triggers", () => {
       ),
     ).toMatchObject({ status: "invalid" });
     expect(await registry.listAgentChanges(DEFAULT_ENVIRONMENT)).toEqual([]);
+  });
+});
+
+describe("the agent's Session triggers", () => {
+  const checkCi: SessionTriggerInput = {
+    kind: "session",
+    session: "s-1",
+    name: "Check CI",
+    message: "Check the current state of CI.",
+    source: { type: "schedule", cron: "0 * * * *", zone: "UTC" },
+  };
+
+  const checkCiValue: TriggerChangeValue = {
+    kind: "session",
+    name: "Check CI",
+    message: "Check the current state of CI.",
+    source: { type: "schedule", cron: "0 * * * *", zone: "UTC" },
+    whenBusy: "queue",
+    session: "s-1",
+    paused: false,
+  };
+
+  /** A Registry with Session s-1 in the default Environment. */
+  const inSession = async () => {
+    const registry = fresh();
+
+    await registry.createSession(
+      {
+        id: "s-1",
+        title: null,
+        workspace: {
+          kind: "new",
+          id: "00000001",
+          environment: DEFAULT_ENVIRONMENT,
+          branch: null,
+          base: null,
+        },
+      },
+      500,
+    );
+
+    return registry;
+  };
+
+  it("records making one under its Session's Environment, naming the Session", async () => {
+    const registry = await inSession();
+
+    expect(
+      await registry.agentCreateTrigger("t1", checkCi, author("trigger_create", true), 1_000),
+    ).toMatchObject({
+      status: "changed",
+      definition: { id: "t1", kind: "session", session: "s-1" },
+      environment: { id: DEFAULT_ENVIRONMENT },
+      change: {
+        scope: DEFAULT_ENVIRONMENT,
+        session: "s-1",
+        field: triggerField("t1"),
+        before: null,
+        after: checkCiValue,
+      },
+    });
+  });
+
+  it("are made only by their own Session", async () => {
+    const registry = await inSession();
+
+    expect(
+      await registry.agentCreateTrigger(
+        "t1",
+        { ...checkCi, session: "s-2" },
+        author("trigger_create", true),
+        1_000,
+      ),
+    ).toMatchObject({ status: "invalid", problem: expect.stringContaining("own Session") });
+    expect(
+      await registry.agentCreateTrigger(
+        "t1",
+        { ...checkCi, session: "s-1" },
+        { ...author("trigger_create", true), session: "s-2" },
+        1_000,
+      ),
+    ).toMatchObject({ status: "invalid" });
+    expect(await registry.storedTriggerIds()).toEqual([]);
+  });
+
+  it("are changed by their own Session alone: another Session finds none", async () => {
+    const registry = await inSession();
+    const other = { ...author("trigger_pause"), session: "s-2" };
+
+    await registry.agentCreateTrigger("t1", checkCi, author("trigger_create", true), 1_000);
+
+    expect(await registry.agentSetTriggerPaused("t1", true, undefined, other, 2_000)).toEqual({
+      status: "missing",
+    });
+    expect(
+      await registry.agentUpdateTrigger("t1", { message: "Other" }, undefined, other, 2_000),
+    ).toEqual({ status: "missing" });
+    expect(await registry.agentRemoveTrigger("t1", other, 2_000)).toEqual({ status: "missing" });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({ paused: false, revision: 1 });
+
+    expect(
+      await registry.agentSetTriggerPaused("t1", true, undefined, author("trigger_pause"), 2_000),
+    ).toMatchObject({ status: "changed" });
+  });
+
+  it("are changed and reverted like any Trigger, keeping their Session", async () => {
+    const registry = await inSession();
+
+    await registry.agentCreateTrigger("t1", checkCi, author("trigger_create", true), 1_000);
+
+    const changed = await registry.agentUpdateTrigger(
+      "t1",
+      { whenBusy: "steer" },
+      checkCiValue,
+      author("trigger_options_set", true),
+      2_000,
+    );
+
+    if (changed.status !== "changed") throw new Error("not changed");
+
+    expect(changed.change.after).toEqual({ ...checkCiValue, whenBusy: "steer" });
+    expect(
+      await registry.revertAgentChange(DEFAULT_ENVIRONMENT, changed.change.id, 3_000),
+    ).toMatchObject({ status: "reverted" });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      session: "s-1",
+      whenBusy: "queue",
+      revision: 3,
+    });
   });
 });

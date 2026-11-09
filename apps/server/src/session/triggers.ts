@@ -8,7 +8,8 @@
 // saying how to schedule it; after any other change one that doesn't answer is left to its next alarm.
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import type { TriggerAccessService } from "@cloudpid/extensions/triggers";
-import type { TriggerChanged } from "@cloudpid/protocol";
+import { heldBySession, type TriggerChanged } from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { newTriggerId } from "../registry/ids.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
@@ -73,9 +74,18 @@ export const sessionTriggers = ({
             : Effect.void,
         );
 
+  // Another Session's Session trigger is neither listed nor found (`heldBySession`).
   return {
-    list: (environment) => registry.listTriggers({ environment }),
-    get: (id) => registry.triggerDefinition({ id }),
+    list: (environment) =>
+      registry
+        .listTriggers({ environment })
+        .pipe(Effect.map(Arr.filter((definition) => heldBySession(definition, session)))),
+    get: (id) =>
+      registry
+        .triggerDefinition({ id })
+        .pipe(
+          Effect.map((found) => (found !== null && heldBySession(found, session) ? found : null)),
+        ),
     newId: newTriggerId,
     // This Session's own Workspace: the agent can't name another until a tool lists them.
     workspace: Effect.gen(function* () {
@@ -95,7 +105,12 @@ export const sessionTriggers = ({
     }),
     create: ({ id, trigger, author }) =>
       changing(id, true, (by) =>
-        registry.agentCreateTrigger({ id, trigger, author: { session: by, ...author } }),
+        registry.agentCreateTrigger({
+          id,
+          // A Session trigger is made for this Session.
+          trigger: trigger.kind === "session" ? { ...trigger, session: by } : trigger,
+          author: { session: by, ...author },
+        }),
       ),
     update: ({ id, patch, expected, author }) =>
       changing(id, false, (by) =>

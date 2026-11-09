@@ -8,6 +8,7 @@ import {
   type EnvironmentTriggerInput,
   MAX_FIRE_LOG,
   type WorkspaceTriggerInput,
+  type SessionTriggerInput,
 } from "@cloudpid/protocol";
 import { abortAllDurableObjects, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -808,5 +809,224 @@ describe("a Workspace trigger's object", () => {
     expect(await starting.trigger.fireLog()).toMatchObject([
       { key: keyAt(starting.id, nine), outcome: { type: "started", session: "s-1" } },
     ]);
+  });
+});
+
+describe("a Session trigger's object", () => {
+  const hourly: SessionTriggerInput = {
+    kind: "session",
+    session: "s-1",
+    name: "Check CI",
+    message: "Check the current state of CI.",
+    source: { type: "schedule", cron: "0 9 * * *", zone: "UTC" },
+  };
+
+  /** A Session trigger in a Registry that holds its Session s-1, and its object, synced at `start`. */
+  const inSession = async (input: SessionTriggerInput = hourly) => {
+    const id = `t${String(counter++)}`;
+    const registry = env.REGISTRIES.get(env.REGISTRIES.newUniqueId());
+
+    await registry.createSession(
+      {
+        id: "s-1",
+        title: null,
+        workspace: {
+          kind: "new",
+          id: "00000001",
+          environment: DEFAULT_ENVIRONMENT,
+          branch: null,
+          base: null,
+        },
+      },
+      start,
+    );
+    expect(await registry.createTrigger(id, input, start)).toMatchObject({ status: "ok" });
+
+    const trigger = env.TRIGGERS.getByName(`trigger:${id}`);
+
+    await trigger.use(registry.id.toString());
+    await trigger.setNow(start);
+    await trigger.sync();
+
+    return { id, registry, trigger };
+  };
+
+  const delivered = (delivery: "started" | "queued" | "steered") =>
+    ({ ok: true, value: { delivery, cursor: "c-1" } }) as const;
+
+  it("sends its message to its own Session with its when_busy, and starts no Session or upkeep", async () => {
+    const { id, registry, trigger } = await inSession({ ...hourly, whenBusy: "steer" });
+
+    await trigger.scriptFires([delivered("started")]);
+    await trigger.setNow(nine + 5_000);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.sent()).toEqual([
+      {
+        session: "s-1",
+        request: {
+          trigger: { id, name: "Check CI" },
+          requestId: keyAt(id, nine),
+          message: "Check the current state of CI.",
+          header: { name: "Check CI", zone: "UTC", firedAt: nine + 5_000, scheduledAt: nine },
+          whenBusy: "steer",
+        },
+      },
+    ]);
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: keyAt(id, nine), outcome: { type: "sent", delivery: "started" } },
+    ]);
+    expect((await registry.listSessions()).map((session) => session.id)).toEqual(["s-1"]);
+    expect(await trigger.upkeep()).toEqual([]);
+    expect(await trigger.alarmAt()).toBe(nine + DAY);
+  });
+
+  it("records how the Fire met the Session's Run: queued, steered", async () => {
+    const { id, trigger } = await inSession();
+
+    await trigger.scriptFires([delivered("queued"), delivered("steered")]);
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+    await trigger.setNow(nine + DAY);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: keyAt(id, nine + DAY), outcome: { type: "sent", delivery: "steered" } },
+      { key: keyAt(id, nine), outcome: { type: "sent", delivery: "queued" } },
+    ]);
+    expect(await trigger.failedNotices()).toEqual([]);
+  });
+
+  it("records the Session's skips: overlap, coalesced", async () => {
+    const { id, trigger } = await inSession();
+
+    await trigger.scriptFires([
+      { ok: true, value: { skipped: "overlap" } },
+      { ok: true, value: { skipped: "coalesced" } },
+    ]);
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+    await trigger.setNow(nine + DAY);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: keyAt(id, nine + DAY), outcome: { type: "skipped", reason: "coalesced" } },
+      { key: keyAt(id, nine), outcome: { type: "skipped", reason: "overlap" } },
+    ]);
+    expect(await trigger.failedNotices()).toEqual([]);
+  });
+
+  it("records a Fire to an archived or importing Session skipped, pushing nothing", async () => {
+    const { id, trigger } = await inSession();
+
+    await trigger.scriptFires([
+      { ok: false, error: { code: "session_archived", message: "Archived", retryable: false } },
+      { ok: false, error: { code: "session_importing", message: "Importing", retryable: false } },
+    ]);
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+    await trigger.setNow(nine + DAY);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: keyAt(id, nine + DAY), outcome: { type: "skipped", reason: "importing" } },
+      { key: keyAt(id, nine), outcome: { type: "skipped", reason: "archived" } },
+    ]);
+    expect(await trigger.failedNotices()).toEqual([]);
+    expect(await trigger.state()).toMatchObject({ pending: 0 });
+  });
+
+  it("records another refusal failed, and pushes it", async () => {
+    const { id, trigger } = await inSession();
+
+    await trigger.scriptFires([
+      { ok: false, error: { code: "unavailable", message: "Out of budget", retryable: false } },
+    ]);
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: keyAt(id, nine), outcome: { type: "failed", reason: "Out of budget" } },
+    ]);
+    expect(await trigger.failedNotices()).toEqual([{ trigger: id, reason: "Out of budget" }]);
+  });
+
+  it("records a Fire failed when its Session is gone", async () => {
+    const { id, registry, trigger } = await inSession();
+
+    // Gone without the cascade: a Registry from before it, say.
+    await runInDurableObject(registry, (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM sessions");
+    });
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.sent()).toEqual([]);
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: keyAt(id, nine), outcome: { type: "failed", reason: "its Session is gone" } },
+    ]);
+    expect(await trigger.failedNotices()).toEqual([{ trigger: id, reason: "its Session is gone" }]);
+  });
+
+  it("completes a Fire already admitted after its Trigger was paused, to the same Session", async () => {
+    const { id, registry, trigger } = await inSession();
+
+    await trigger.scriptFires(["unreachable"]);
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+    await registry.setTriggerPaused(id, true, nine + 1_000);
+    await trigger.setNow(nine + 1_000);
+
+    expect(await trigger.sync()).toMatchObject({
+      definition: { paused: true },
+      pending: 1,
+      nextFireAt: nine + RETRY_MS,
+    });
+
+    await trigger.scriptFires([delivered("queued")]);
+    await trigger.setNow(nine + RETRY_MS);
+    await runDurableObjectAlarm(trigger);
+
+    expect((await trigger.sent()).map((fire) => [fire.session, fire.request.requestId])).toEqual([
+      ["s-1", keyAt(id, nine)],
+      ["s-1", keyAt(id, nine)],
+    ]);
+    expect(await trigger.fireLog()).toMatchObject([
+      { key: keyAt(id, nine), outcome: { type: "sent", delivery: "queued" } },
+    ]);
+    expect(await trigger.state()).toMatchObject({ pending: 0, nextFireAt: null });
+    expect(await trigger.alarmAt()).toBeNull();
+  });
+
+  it("sends nothing to a Session deleted between its Fire's admission and its retry", async () => {
+    const { id, registry, trigger } = await inSession();
+
+    await trigger.scriptFires(["unreachable"]);
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+    expect(await trigger.sent()).toHaveLength(1);
+
+    // The Session's Triggers and record are gone by the retry: its Fire is dropped, not sent to an empty object.
+    expect(await registry.deleteSessionWithTriggers("s-1")).toMatchObject({ triggers: [id] });
+    await trigger.setNow(nine + RETRY_MS);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.sent()).toHaveLength(1);
+    expect(await trigger.state()).toMatchObject({ definition: null });
+  });
+
+  it("is wiped when its Session is deleted, and answers nothing to a Fire after", async () => {
+    const { id, registry, trigger } = await inSession();
+
+    expect(await registry.deleteSessionWithTriggers("s-1")).toEqual({
+      deleted: true,
+      triggers: [id],
+    });
+    await trigger.setNow(nine);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.sent()).toEqual([]);
+    expect(await trigger.state()).toMatchObject({ definition: null });
+    expect(await trigger.alarmAt()).toBeNull();
   });
 });

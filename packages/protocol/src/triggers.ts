@@ -8,7 +8,7 @@ import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { MAX_MCP_INPUT_BYTES, TriggerMark } from "./mcp-api.ts";
+import { Delivery, MAX_MCP_INPUT_BYTES, SubmitResult, TriggerMark } from "./mcp-api.ts";
 import type { AgentChange, EnvironmentRef } from "./registry.ts";
 import { openLiterals } from "./open-literals.ts";
 import { scheduleProblem } from "./trigger-schedule.ts";
@@ -46,10 +46,11 @@ export const triggerMessageProblem = (message: string): string | undefined => {
 
 /**
  * What keeps a Trigger, and so what each Fire does: an Environment trigger starts a new Session in a new Workspace of its
- * Environment, a Workspace trigger one in its Workspace. Session triggers are a later slice's member.
+ * Environment, a Workspace trigger one in its Workspace; a Session trigger sends its message to one Session's root
+ * conversation.
  */
 export const TriggerKind = openLiterals(
-  Schema.Literals(["environment", "workspace", "unknown"]),
+  Schema.Literals(["environment", "workspace", "session", "unknown"]),
   "unknown",
 );
 
@@ -110,39 +111,138 @@ export const scheduleOf = (
   holder: { readonly source: TriggerSource } | undefined,
 ): ScheduleSource | undefined => (holder?.source.type === "schedule" ? holder.source : undefined);
 
+/** The `when_busy` values this version knows, which a tool takes; `TriggerWhenBusy` reads others as `skip`. */
+export const KnownWhenBusy = Schema.Literals(["skip", "start", "wait", "queue", "steer"]);
+
 /**
+
  * What a Fire does while the work of the last one is still going on (`triggers.md` → Overlap): `skip` records it
- * `skipped: overlap`, `start` starts its Session anyway, and `wait` (a Workspace trigger's, its default) keeps it pending
- * until the Workspace is idle. A value a later kind adds reads as `skip`.
+ * `skipped: overlap`; an Environment or Workspace trigger's `start` starts its Session anyway; a Workspace trigger's
+ * `wait` (its default) keeps it pending until the Workspace is idle; a Session trigger's `queue` waits behind the Run
+ * and `steer` joins it at its next boundary, as `session_send`'s do. A value a later kind adds reads as `skip`.
  */
-export const TriggerWhenBusy = openLiterals(Schema.Literals(["skip", "start", "wait"]), "skip");
+export const TriggerWhenBusy = openLiterals(KnownWhenBusy, "skip");
 
 export type TriggerWhenBusy = typeof TriggerWhenBusy.Type;
 
-/**
- * What a Trigger of `kind` on `source` does by default while busy: a Workspace trigger waits; an Environment trigger skips
- * for a Schedule and starts for a webhook, whose deliveries are each their own event.
- */
-export const defaultWhenBusy = (kind: TriggerKind, source: TriggerSourceInput): TriggerWhenBusy => {
-  if (kind === "workspace") return "wait";
+/** What a Session trigger's Fire does while its Session's Run goes on: the values of `TriggerWhenBusy` it takes. */
+export const SessionWhenBusy = Schema.Literals(["queue", "steer", "skip"]);
 
-  return source.type === "webhook" ? "start" : "skip";
+export type SessionWhenBusy = typeof SessionWhenBusy.Type;
+
+const isSessionWhenBusy = Schema.is(SessionWhenBusy);
+
+/** A Session trigger's `when_busy` as its Session takes it: a value this version doesn't know is the kind's default. */
+export const sessionWhenBusyOf = (whenBusy: TriggerWhenBusy): SessionWhenBusy =>
+  isSessionWhenBusy(whenBusy) ? whenBusy : SessionWhenBusy.literals[0];
+
+/** What a kind of Trigger takes and is called (`triggers.md` → Kinds and what a Fire delivers to). */
+type KindTraits = {
+  /** The `when_busy` values it takes, its default first (an Environment trigger's depends on its source). */
+  readonly whenBusy: readonly [TriggerWhenBusy, ...ReadonlyArray<TriggerWhenBusy>];
+  /** Why it takes no `base`, or undefined when it has one. */
+  readonly noBase: string | undefined;
+  /** Why it takes no `model` or `thinking`, or undefined when it has them. */
+  readonly noModel: string | undefined;
+  /** What a refusal calls it, with its article. */
+  readonly noun: string;
 };
 
-/** Why a Trigger of `kind` can't take `whenBusy`, or undefined when it can: only a Workspace trigger waits. */
-export const whenBusyProblem = (kind: TriggerKind, whenBusy: string): string | undefined =>
-  whenBusy === "wait" && kind !== "workspace"
-    ? "Only a Workspace trigger can wait for a busy Workspace"
-    : undefined;
+const SESSION_TAKES_NO_OPTIONS =
+  "A Session trigger has no base, model or thinking: it sends to a Session that has its own";
 
-/** Why a Trigger of `kind` can't take `base`, or undefined when it can: a Workspace trigger works on its Workspace's branch. */
-export const baseProblem = (
+const ENVIRONMENT_TRAITS: KindTraits = {
+  whenBusy: ["skip", "start"],
+  noBase: undefined,
+  noModel: undefined,
+  noun: "An Environment trigger",
+};
+
+/** Each kind's traits: the one place a kind's rules differ, so a later kind is one more entry. */
+const KIND_TRAITS: Record<TriggerKind, KindTraits> = {
+  environment: ENVIRONMENT_TRAITS,
+  workspace: {
+    whenBusy: ["wait", "skip", "start"],
+    noBase: "A Workspace trigger works on its Workspace's branch: it takes no base",
+    noModel: undefined,
+    noun: "A Workspace trigger",
+  },
+  session: {
+    whenBusy: SessionWhenBusy.literals,
+    noBase: SESSION_TAKES_NO_OPTIONS,
+    noModel: SESSION_TAKES_NO_OPTIONS,
+    noun: "A Session trigger",
+  },
+  // A kind a later version added is read as an Environment trigger's.
+  unknown: ENVIRONMENT_TRAITS,
+};
+
+/** The `when_busy` values a Trigger of `kind` takes, its default first (`triggers.md` → Overlap). */
+export const whenBusyValues = (kind: TriggerKind): Arr.NonEmptyReadonlyArray<TriggerWhenBusy> =>
+  KIND_TRAITS[kind].whenBusy;
+
+/**
+ * What a Trigger of `kind` on `source` does by default while busy: the first value its kind takes (a Workspace trigger
+ * waits, a Session trigger queues), but an Environment trigger on a webhook starts, as each of its deliveries is its
+ * own event.
+ */
+export const defaultWhenBusy = (kind: TriggerKind, source: TriggerSourceInput): TriggerWhenBusy =>
+  (kind === "environment" || kind === "unknown") && source.type === "webhook"
+    ? "start"
+    : KIND_TRAITS[kind].whenBusy[0];
+
+/** Whether a Trigger of `kind` has a `base` of its own: a Workspace trigger works on its Workspace's branch. */
+export const takesBase = (kind: TriggerKind): boolean => KIND_TRAITS[kind].noBase === undefined;
+
+/** Whether a Trigger of `kind` has a `model` and `thinking` of its own, else it sends to a Session that has them. */
+export const takesModel = (kind: TriggerKind): boolean => KIND_TRAITS[kind].noModel === undefined;
+
+/** Why a Trigger of `kind` can't have `whenBusy`, or undefined when it can. */
+export const whenBusyProblem = (kind: TriggerKind, whenBusy: string): string | undefined => {
+  const taken: Arr.NonEmptyReadonlyArray<string> = whenBusyValues(kind);
+
+  if (taken.includes(whenBusy)) return undefined;
+
+  const list =
+    taken.length === 1
+      ? Arr.headNonEmpty(taken)
+      : `${Arr.join(Arr.initNonEmpty(taken), ", ")} or ${Arr.lastNonEmpty(taken)}`;
+
+  return `${KIND_TRAITS[kind].noun}'s when_busy is ${list}, not ${whenBusy}`;
+};
+
+/** Why a Trigger of `kind` can't have the options given (each undefined when not given), or undefined when it can. */
+export const ownOptionsProblem = (
   kind: TriggerKind,
-  base: string | null | undefined,
-): string | undefined =>
-  kind === "workspace" && base !== null && base !== undefined
-    ? "A Workspace trigger works on its Workspace's branch: it takes no base"
+  options: {
+    readonly base?: string | null | undefined;
+    readonly model?: string | null | undefined;
+    readonly thinking?: string | null | undefined;
+  },
+): string | undefined => {
+  const { noBase, noModel } = KIND_TRAITS[kind];
+
+  // `null` puts an option back to its default, which the Registry accepts for any kind: only a value is refused.
+  const given = (value: string | null | undefined): boolean =>
+    value !== undefined && value !== null;
+
+  if (noBase !== undefined && given(options.base)) return noBase;
+
+  return noModel !== undefined && (given(options.model) || given(options.thinking))
+    ? noModel
     : undefined;
+};
+
+/**
+ * Whether `session` (none, for a Session the Registry does not list) may see and change `definition`: a Session trigger
+ * is its own Session's alone, and to another Session it is as if there were none (`triggers.md` → Kinds and what a Fire
+ * delivers to).
+ */
+export const heldBySession = (
+  definition: TriggerDefinition,
+  session: string | undefined,
+): boolean =>
+  definition.kind !== "session" || (session !== undefined && definition.session === session);
 
 /** A Workspace as a Trigger names it: its id, and its branch, which is how the owner reads it. */
 export const WorkspaceRef = Schema.Struct({ id: Schema.String, branch: Schema.String });
@@ -163,6 +263,8 @@ export const TriggerDefinition = Schema.Struct({
   message: Schema.String,
   source: TriggerSource,
   whenBusy: TriggerWhenBusy,
+  /** The Session a Session trigger belongs to (its `environment` is that Session's); absent for the other kinds. */
+  session: Schema.optionalKey(Schema.String),
   /** The branch each Fire's Workspace starts from (an Environment trigger's); absent: each Repo's default branch. */
   base: Schema.optionalKey(Schema.String),
   /** The model and thinking level of each Fire's Session; absent: the Environment's Settings at the Fire. */
@@ -211,8 +313,34 @@ export const WorkspaceTriggerInput = Schema.Struct({
 
 export type WorkspaceTriggerInput = typeof WorkspaceTriggerInput.Type;
 
-/** A new Trigger of any kind the owner's form or `trigger_create` makes. */
-export const TriggerInput = Schema.Union([EnvironmentTriggerInput, WorkspaceTriggerInput]);
+/**
+ * A new Session trigger, as `trigger_create` gives it with the owner `session`: made by its own Session (the Registry
+ * refuses another's), in that Session's Environment, which the Registry reads. It has no `base`, `model` or `thinking`.
+ */
+export const SessionTriggerInput = Schema.Struct({
+  kind: Schema.Literal("session"),
+  session: Schema.String,
+  name: Schema.String,
+  message: Schema.String,
+  source: ScheduleSource,
+  /** `defaultWhenBusy("session", source)` when absent (`triggers.md` → Overlap). */
+  whenBusy: TriggerWhenBusy.pipe(Schema.optional),
+  paused: Schema.Boolean.pipe(Schema.optional),
+});
+
+export type SessionTriggerInput = typeof SessionTriggerInput.Type;
+
+/** A new Trigger the owner's form makes: an Environment trigger or a Workspace trigger. */
+export const OwnerTriggerInput = Schema.Union([EnvironmentTriggerInput, WorkspaceTriggerInput]);
+
+export type OwnerTriggerInput = typeof OwnerTriggerInput.Type;
+
+/** A new Trigger of any kind the Registry makes. */
+export const TriggerInput = Schema.Union([
+  EnvironmentTriggerInput,
+  WorkspaceTriggerInput,
+  SessionTriggerInput,
+]);
 
 export type TriggerInput = typeof TriggerInput.Type;
 
@@ -269,6 +397,7 @@ export const TriggerChangeValue = Schema.Struct({
   message: Schema.String,
   source: TriggerSource,
   whenBusy: TriggerWhenBusy,
+  session: Schema.optionalKey(Schema.String),
   base: Schema.optionalKey(Schema.String),
   model: Schema.optionalKey(Schema.String),
   thinking: Schema.optionalKey(ThinkingLevel),
@@ -364,19 +493,24 @@ export const FireSource = Schema.Union([
 export type FireSource = typeof FireSource.Type;
 
 /**
- * Why a Fire was skipped: `overlap`, `missed`, `paused` (its Trigger was paused before it went out), or `coalesced` (a
- * Workspace trigger's Fire that came while another waited, merged into it); a later slice adds `archived` and `importing`.
+ * Why a Fire was skipped: `overlap`, `missed`, `paused` (its Trigger was paused before it went out), `coalesced` (a
+ * Workspace trigger's Fire that came while another waited, merged into it; or a Session trigger's, while an earlier one
+ * is still queued in its Session), or a Session trigger's `archived` and `importing`.
  */
 export const FireSkip = openLiterals(
-  Schema.Literals(["overlap", "missed", "paused", "coalesced", "unknown"]),
+  Schema.Literals(["overlap", "missed", "paused", "coalesced", "archived", "importing", "unknown"]),
   "unknown",
 );
 
 export type FireSkip = typeof FireSkip.Type;
 
-/** What came of a Fire: `started <session>`, `skipped: <why>` or `failed: <reason>`. */
+/**
+ * What came of a Fire: `started <session>` (a new Session), `sent (<delivery>)` (to a Session trigger's Session),
+ * `skipped: <why>` or `failed: <reason>`.
+ */
 export const FireOutcome = Schema.Union([
   Schema.Struct({ type: Schema.Literal("started"), session: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("sent"), delivery: Delivery }),
   Schema.Struct({
     type: Schema.Literal("skipped"),
     reason: FireSkip,
@@ -598,3 +732,34 @@ export const DELIVERY_OUTCOMES = [
 ] as const;
 
 export type DeliveryOutcome = (typeof DELIVERY_OUTCOMES)[number];
+
+/**
+ * The Session's `fireSession` argument (`triggers.md` → Overlap): a Session trigger's Fire, which goes to a Session
+ * that has a history and perhaps a Run going on. A method of its own, never a field on `fire`, so a Session on older
+ * code fails loudly rather than start a Run for a Fire that should have waited or been skipped. `whenBusy`: `queue`
+ * waits behind the Run, `steer` joins it, `skip` records the Fire `skipped: overlap`; and a Fire is not sent while an
+ * earlier one of its Trigger is still queued (`coalesced`). The model and thinking level are the Session's own, so none
+ * is given.
+ */
+export const SessionFireRequest = Schema.Struct({
+  trigger: FireRequest.fields.trigger,
+  requestId: FireRequest.fields.requestId,
+  message: FireRequest.fields.message,
+  header: FireRequest.fields.header,
+  whenBusy: SessionWhenBusy,
+});
+
+export type SessionFireRequest = typeof SessionFireRequest.Type;
+
+/**
+ * What `fireSession` answers when it sent nothing: the Fire was skipped, as `overlap` or `coalesced` today. A reason a
+ * later Session adds reads as `unknown` (`FireSkip`), so an older object records it and does not retry it for good.
+ */
+export const FireSkipped = Schema.Struct({ skipped: FireSkip });
+
+export type FireSkipped = typeof FireSkipped.Type;
+
+/** What `fireSession` answers: how the message was delivered, or that the Fire was skipped. */
+export const FireResult = Schema.Union([SubmitResult, FireSkipped]);
+
+export type FireResult = typeof FireResult.Type;

@@ -76,6 +76,7 @@ import type {
   Comparison,
   ConfigureRequest,
   FireRequest,
+  SessionFireRequest,
   ConversationId,
   EntriesPage,
   FileMatches,
@@ -1319,6 +1320,7 @@ export class TestSession extends DurableObject {
               session: ctx.id.name,
               kv: ctx.storage.kv,
               archived: Effect.sync(() => ctx.storage.kv.get<boolean>("archived") === true),
+              registered: Effect.sync(() => ctx.storage.kv.get<boolean>("unregistered") !== true),
               pollMs: 20,
               stopWaitMs: ctx.storage.kv.get<number>("mcp-stop-wait") ?? 30_000,
             }),
@@ -1630,6 +1632,16 @@ export class TestSession extends DurableObject {
   /** `SessionMethods.fire`. */
   fire(request: FireRequest) {
     return Effect.runPromise(this.#mcp.fire(request));
+  }
+
+  /** `SessionMethods.fireSession`. */
+  fireSession(request: SessionFireRequest) {
+    return Effect.runPromise(this.#mcp.fireSession(request));
+  }
+
+  /** Make the Registry stop listing this Session, as its deletion does while a Fire is on its way. */
+  unregister(): void {
+    this.ctx.storage.kv.put("unregistered", true);
   }
 
   /** `SessionMethods.stageImportBegin`. */
@@ -1991,7 +2003,8 @@ export class TestSession extends DurableObject {
         getSession: ({ id }: { id: string }) => Effect.promise(() => registry.getSession(id)),
         listSubagentWorkspaces: ({ session }: { session: string }) =>
           Effect.promise(() => registry.listSubagentWorkspaces(session)),
-        deleteSession: ({ id }: { id: string }) => Effect.promise(() => registry.deleteSession(id)),
+        deleteSessionWithTriggers: ({ id }: { id: string }) =>
+          Effect.promise(() => registry.deleteSessionWithTriggers(id)),
         listSessions: () => Effect.promise(() => registry.listSessions()),
         deleteWorkspace: ({ id }: { id: string }) =>
           Effect.promise(() => registry.deleteWorkspace(id)),
