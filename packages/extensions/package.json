@@ -33,6 +33,7 @@
     "./environment-lifecycle": "./src/environment-lifecycle.ts",
     "./environment-lifecycle-changes": "./src/environment-lifecycle-changes.ts",
     "./environment-skill-changes": "./src/environment-skill-changes.ts",
+    "./environment-skill-approvals": "./src/environment-skill-approvals.ts",
     "./environment-reset": "./src/environment-reset.ts",
     "./environment-reads": "./src/environment-reads.ts",
     "./github-tokens": "./src/github-tokens.ts",

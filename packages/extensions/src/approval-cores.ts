@@ -84,6 +84,12 @@ export type Prepared<Known> = {
    * anyway, as it does for `unchanged`.
    */
   readonly immediate?: boolean | undefined;
+  /**
+   * What the caller is told besides the request, when one is asked: what the change leaves out of what was asked for (a
+   * Skill installed already, or refused) and what the card could not show. Only the Skill tools at Global set it
+   * (`./environment-skill-approvals.ts`).
+   */
+  readonly note?: string | undefined;
 };
 
 /** What `apply` did: what it knew of the target, and how the write went (`Result` is the target's own kind of answer). */
