@@ -1,9 +1,11 @@
 // The Settings' and the MCP servers' tools as the endpoint serves them (`docs/architecture/mcp-endpoint.md` → Environment and
 // Settings tools → Shared definitions and the core/wrapper split, → Retries: `request_id`): every core `/mcp`'s dispatcher
 // runs for them over the endpoint's services, and the answer a repeat of a `request_id` gets that an earlier call recorded
-// changes for. A Limit, the Instructions, a widening and `settings_mcp_enable` are not served: the cores answer a Limit, the
-// Instructions and a widening `unsupported` (the dispatcher maps that code through), and `settings_mcp_enable` has no core.
-// The Limit options of `settings_extension_set` are refused by its core in the same way.
+// changes for. A Limit and the Instructions wait for the owner's Approval, which the dispatcher asks before it runs these
+// cores (`./approval-cores.ts`); the cores answer one `unsupported` (the dispatcher maps that code through). So do the MCP
+// servers' changes that widen what is reachable, and `settings_mcp_add`, `_update` and `_enable`, which always ask: their cores
+// are `./settings-mcp-approvals.ts`, and these make only the change that narrows. The Limit options of `settings_extension_set`
+// are refused by its core in the same way.
 // @effect-diagnostics missingPipeableSignature:off
 import { SETTINGS_SCOPE } from "@cloudpid/protocol";
 import { GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/protocol/harness-tools";
@@ -26,8 +28,8 @@ export type SettingsEndpointServices = {
   readonly settingsMcp: SettingsMcpAccessService;
   /** Whether a text holds a deploy-time credential (the Registry checks the kept Secrets in the write itself). */
   readonly holdsSecret: (value: string) => Effect.Effect<boolean>;
-  /** Told of an Environment whose host a change's new set could not be handed to, so the set is sent again after the answer. */
-  readonly pushFailed?: ((environment: string) => Effect.Effect<void>) | undefined;
+  /** The main Worker's push of an Environment's new set to its host (`mcp.sync`), after the answer, for each one a change reaches. */
+  readonly sync?: ((environment: string) => Effect.Effect<void>) | undefined;
 };
 
 /** The changing tools the endpoint serves for the Settings and the MCP servers. */
@@ -49,7 +51,7 @@ export const settingsEndpointCores = (services: SettingsEndpointServices) => {
     access: services.settingsMcp,
     settings: services.settings,
     holdsSecret: services.holdsSecret,
-    pushFailed: services.pushFailed,
+    sync: services.sync,
   });
 
   const { resetField, ...mcpTools } = mcp;

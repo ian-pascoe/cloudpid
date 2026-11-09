@@ -20,7 +20,7 @@ import {
   matchesToolPattern,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
-import type { AgentChange, McpChangeGuard } from "@cloudpid/protocol";
+import { type AgentChange, isWideningRefusal, type McpChangeGuard } from "@cloudpid/protocol";
 import {
   CHANGE_NOTE,
   GLOBAL_SETTINGS_SCOPE,
@@ -490,6 +490,23 @@ export const settingsChanges = ({
 
       switch (answer.status) {
         case "rejected":
+          // A change made without asking, which the Registry's guard found widening in the transaction (a save landed since the
+          // check; `isWideningRefusal`, not any other rejection of the write): on the endpoint, where the dispatcher asks the owner
+          // for a widening change, that is a state that moved from what the call read, so a call again is answered by its ask (the
+          // Registry's own words name the Session's user).
+          if (
+            surface === "endpoint" &&
+            approved !== true &&
+            guard?.widening === true &&
+            isWideningRefusal(answer.message)
+          ) {
+            return yield* SettingsAccessError.make({
+              message:
+                "Nothing was saved: the change would now make something reachable that is switched off or hidden, which waits for the owner's Approval, and something changed since it was read as narrowing. Call again.",
+              code: "unavailable",
+            });
+          }
+
           return yield* SettingsAccessError.make({
             message: `${approved === true ? "The user approved, but nothing was saved" : "Nothing was saved"}: ${answer.message}`,
             code: "invalid_argument",
