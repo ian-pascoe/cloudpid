@@ -13,7 +13,10 @@ const CALL: NestedCall = { id: "1", name: "read", args: { path: "a.ts" }, status
 
 /** A settled `codemode` card whose artifact is `artifact`. */
 const render = (
-  artifact: { nested: NestedCall[]; omittedCalls?: OmittedCalls } | { samplings: unknown[] },
+  artifact:
+    | { nested: NestedCall[]; omittedCalls?: OmittedCalls }
+    | { samplings: unknown[] }
+    | { number: number; url: string; title?: string; kind?: string },
   toolName = "codemode",
 ) => {
   const registry = AtomRegistry.make();
@@ -66,6 +69,29 @@ describe("ToolCallCard's omitted calls", () => {
 
     expect(markup).toContain(">Calls<");
     expect(markup).not.toContain("more call");
+  });
+});
+
+describe("ToolCallCard of a cloudpid report", () => {
+  it("links the GitHub issue it filed", () => {
+    const markup = render(
+      {
+        number: 123,
+        url: "https://github.com/ian-pascoe/cloudpid/issues/123",
+        title: "bash ignores its timeout",
+        kind: "bug",
+      },
+      "cloudpid_report",
+    );
+
+    expect(markup).toContain('href="https://github.com/ian-pascoe/cloudpid/issues/123"');
+    expect(markup).toContain(">#123<");
+  });
+
+  it("links nothing that is not a GitHub issue", () => {
+    const markup = render({ number: 1, url: "https://evil.example/x" }, "cloudpid_report");
+
+    expect(markup).not.toContain("evil.example");
   });
 });
 

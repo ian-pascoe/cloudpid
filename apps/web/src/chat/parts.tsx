@@ -223,6 +223,14 @@ const decodeNested = Schema.decodeUnknownOption(
 
 const decodeShownVisual = Schema.decodeUnknownOption(Schema.Struct({ visual: ShownVisual }));
 
+/** The issue a `cloudpid_report` call filed, from its details (`docs/architecture/agent-capabilities.md` → cloudpid reports). */
+const decodeFiledReport = Schema.decodeUnknownOption(
+  Schema.Struct({
+    number: Schema.Int,
+    url: Schema.String.check(Schema.isStartingWith("https://github.com/")),
+  }),
+);
+
 const decodeOmitted = Schema.decodeUnknownOption(Schema.Struct({ omittedCalls: OmittedCalls }));
 
 /** What a card says of the calls its script's result left out of the list: "1,234 more calls, 1,200 failed". */
@@ -443,6 +451,10 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
 
   const path = Option.getOrUndefined(Option.map(decodePath(args), (found) => found.path));
 
+  // The issue a cloudpid report filed, which its card links.
+  const report =
+    toolName === "cloudpid_report" ? Option.getOrUndefined(decodeFiledReport(artifact)) : undefined;
+
   // The screenshots a call returned, which show beside its card rather than inside it.
   const images = Option.getOrElse(
     Option.map(decodeImages(artifact), (found) => found.images),
@@ -500,6 +512,18 @@ export const ToolCallCard: ToolCallMessagePartComponent = ({
           <span className="font-mono text-[0.8125rem] text-foreground">{toolName}</span>
           {summary !== undefined && (
             <span className="min-w-0 truncate font-mono text-xs">{summary}</span>
+          )}
+          {report !== undefined && (
+            <a
+              href={report.url}
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 text-xs underline underline-offset-2"
+              // Opens the issue without opening or closing the card.
+              onClick={(event) => event.stopPropagation()}
+            >
+              #{report.number}
+            </a>
           )}
           {mcpStatus !== undefined && (
             <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs">

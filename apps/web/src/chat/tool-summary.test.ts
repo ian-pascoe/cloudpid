@@ -9,6 +9,16 @@ describe("toolSummary", () => {
     expect(toolSummary("ls", { path: "src" })).toBe("src");
   });
 
+  it("names a cloudpid report by its title's first line", () => {
+    expect(
+      toolSummary("cloudpid_report", {
+        title: "bash ignores its timeout",
+        body: "long text",
+        kind: "bug",
+      }),
+    ).toBe("bash ignores its timeout");
+  });
+
   it("names the pattern a search looks for, and where", () => {
     expect(toolSummary("grep", { pattern: "needle" })).toBe("needle");
     expect(toolSummary("grep", { pattern: "needle", path: "src" })).toBe("needle in src");
