@@ -23,6 +23,9 @@ import {
   triggerChangeJson,
   triggerChangeValue,
   triggerField,
+  MAX_TRIGGER_MESSAGE_BYTES,
+  triggerMessageProblem,
+  triggerNameProblem,
   whenBusyProblem,
 } from "./triggers.ts";
 import { cleanPayload } from "./trigger-payload.ts";
@@ -35,6 +38,24 @@ const read = <S extends Schema.Top & { readonly DecodingServices: never }>(
 ) => Effect.runSync(Schema.decodeUnknownEffect(schema)(input));
 
 const at = (iso: string) => Date.parse(iso);
+
+describe("triggerNameProblem", () => {
+  it("takes 1 to 80 characters after trimming", () => {
+    expect(triggerNameProblem("Weekly report")).toBeUndefined();
+    expect(triggerNameProblem(` ${"x".repeat(80)} `)).toBeUndefined();
+    expect(triggerNameProblem("  ")).toBeDefined();
+    expect(triggerNameProblem("x".repeat(81))).toBeDefined();
+  });
+});
+
+describe("triggerMessageProblem", () => {
+  it("takes any words up to an input's bound in UTF-8 bytes, and refuses none or more", () => {
+    expect(triggerMessageProblem("Summarize last week's PRs.")).toBeUndefined();
+    expect(triggerMessageProblem("x".repeat(MAX_TRIGGER_MESSAGE_BYTES))).toBeUndefined();
+    expect(triggerMessageProblem(" \n")).toBeDefined();
+    expect(triggerMessageProblem("é".repeat(MAX_TRIGGER_MESSAGE_BYTES / 2 + 1))).toBeDefined();
+  });
+});
 
 describe("a Fire's words", () => {
   it("title its Session by the Trigger's name and the time in its zone", () => {

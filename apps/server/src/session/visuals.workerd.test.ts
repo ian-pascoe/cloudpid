@@ -486,6 +486,7 @@ describe("a Visual shown in a Session", () => {
         instance.toolResults(),
       );
 
+      // The model tells an unavailable check from a failed one only by these words, so they are the contract.
       expect(text).toContain("visual_check is unavailable");
     });
 
