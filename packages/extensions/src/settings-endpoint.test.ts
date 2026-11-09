@@ -303,11 +303,7 @@ describe("the MCP servers' tools on the endpoint", () => {
     const { access, call } = await world();
 
     const refused = await call(
-      settingsMcpReloadRead({
-        settings: (await world()).settings,
-        settingsMcp: access,
-        holdsSecret: () => Effect.succeed(false),
-      })({ scope: GLOBAL_SETTINGS_SCOPE }, "endpoint"),
+      settingsMcpReloadRead(access)({ scope: GLOBAL_SETTINGS_SCOPE }, "endpoint"),
     );
 
     expect(refused).toMatchObject({ ok: false, error: { code: "invalid_argument" } });

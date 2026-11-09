@@ -70,8 +70,7 @@ type CoresServeTools = [SettingsEndpointToolName] extends [keyof SettingsEndpoin
 export const CORES_SERVE_TOOLS: CoresServeTools = true;
 
 /** `settings_mcp_reload`'s core over the endpoint's access to the MCP servers: it takes no `request_id` and records nothing. */
-export const settingsMcpReloadRead = (services: SettingsEndpointServices) =>
-  mcpReloadCore(services.settingsMcp);
+export const settingsMcpReloadRead = (access: SettingsMcpAccessService) => mcpReloadCore(access);
 
 /** A record of Global's Settings, as an answer names its Scope: the Registry keeps them under `settings`. */
 const atGlobal = (changes: ReadonlyArray<RecordedChange>): ReadonlyArray<RecordedChange> =>
