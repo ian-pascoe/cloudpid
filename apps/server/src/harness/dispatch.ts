@@ -10,12 +10,17 @@
 // @effect-diagnostics missingPipeableSignature:off preferTypedSchemaDecoder:off cryptoRandomUUID:off -- the input is the caller's JSON, read again; an attempt is a plain UUID.
 import { sha256Hex, sortedJson } from "@cloudpid/config";
 import {
-  type EnvironmentChangeCores,
-  type EnvironmentChangeToolName,
   environmentChangeCores,
-  REPLAYED,
   type Replayed,
+  REPLAYED as SETTING_REPLAYED,
+  replayedSetting,
 } from "@cloudpid/extensions/environment-changes";
+import {
+  LIFECYCLE_REPLAYED,
+  lifecycleCores,
+} from "@cloudpid/extensions/environment-lifecycle-changes";
+import { RESET_LIMIT_UNSUPPORTED, resetCore } from "@cloudpid/extensions/environment-reset";
+import { SKILL_REPLAYED, skillCores } from "@cloudpid/extensions/environment-skill-changes";
 import { environmentGetRead, environmentListRead } from "@cloudpid/extensions/environment-reads";
 import type { HarnessRead, HarnessWrite } from "@cloudpid/extensions/harness";
 import {
@@ -37,8 +42,10 @@ import {
 } from "@cloudpid/protocol/mcp-api";
 import {
   APPROVAL_REQUEST_PREFIX,
+  GLOBAL_ID,
   HARNESS_TOOLS,
   type HarnessToolName,
+  RESET_LIMIT_SETTING,
 } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -48,7 +55,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { ChangeClaim, ChangeRequest } from "../registry/change-requests.ts";
 import type { AuthorSource } from "../session/change-author.ts";
-import type { HarnessServices } from "./services.ts";
+import type { HarnessChangeServices, HarnessServices } from "./services.ts";
 
 /** What a core's refusal carries that the dispatcher reads: the message the model sees, and the code that maps. */
 type CoreError = {
@@ -82,6 +89,33 @@ type Served = (
   request: HarnessRequest,
   caller: AgentChangeVia,
 ) => Effect.Effect<ApiResult<HarnessAnswer>>;
+
+/** Every change tool's core, by name: the Container settings' and the Secret marks', the Environment's record and Build, its Skills, and the reset. */
+const changeCores = (services: HarnessChangeServices) => ({
+  ...environmentChangeCores(services),
+  ...lifecycleCores(services),
+  ...skillCores(services),
+  environment_setting_reset: resetCore(services),
+});
+
+type EnvironmentCores = ReturnType<typeof changeCores>;
+
+type EnvironmentToolName = keyof EnvironmentCores;
+
+/** Each Environment change tool's answer built from the records of an earlier call (#687 L17), by name. */
+const ENVIRONMENT_REPLAYED: Readonly<Record<EnvironmentToolName, Replayed>> = {
+  ...SETTING_REPLAYED,
+  ...LIFECYCLE_REPLAYED,
+  ...SKILL_REPLAYED,
+  environment_setting_reset: replayedSetting,
+};
+
+/**
+ * The words of what a tool is asked for that this stage does not serve (`unsupported`), or undefined for a call it does:
+ * a change to the Skills kept Global and the reset of the size limit wait for the owner's Approval (S3b, S3a-2), and a Test
+ * Build of `proposed` is S4a's. They are answered before anything is claimed or written.
+ */
+type Unsupported<Name extends HarnessToolName> = (args: InputOf<Name>) => string | undefined;
 
 /** What a tool's endpoint input decodes to. */
 type InputOf<Name extends HarnessToolName> =
@@ -147,7 +181,7 @@ const otherArguments = (id: string) =>
   );
 
 /** The changing tools the dispatcher serves: the Environments', and the Settings' and MCP servers'. */
-type ChangeToolName = EnvironmentChangeToolName | SettingsEndpointToolName;
+type ChangeToolName = EnvironmentToolName | SettingsEndpointToolName;
 
 /** What a family of changing tools is served over: its cores for an author, where its scope is named, and its replays. */
 type ChangeFamily<Cores, Args> = {
@@ -174,6 +208,7 @@ const serveChange = <Name extends ChangeToolName, Cores>(
   family: ChangeFamily<Cores, InputOf<Name>>,
   coreOf: (cores: Cores) => HarnessWrite<InputOf<Name>, CoreError>,
   newAttempt: () => string,
+  unsupported: Unsupported<Name> = () => undefined,
 ): Served => {
   const decode = decoder(tool);
 
@@ -333,6 +368,11 @@ const serveChange = <Name extends ChangeToolName, Cores>(
       if (Result.isFailure(decoded)) return decoded.failure;
 
       const args = decoded.success;
+      const refusedAsUnsupported = unsupported(args);
+
+      if (refusedAsUnsupported !== undefined)
+        return apiFailure("unsupported", refusedAsUnsupported);
+
       // The dispatcher reads the `request_id` from the request (`McpServer` copies it there), else from the input.
       const requestId = given ?? args.request_id;
 
@@ -381,20 +421,23 @@ export const harnessDispatch = (
   services: HarnessServices,
   { newAttempt = () => crypto.randomUUID() }: DispatchOptions = {},
 ) => {
-  const change = <Name extends EnvironmentChangeToolName>(
+  const change = <Name extends EnvironmentToolName>(
     tool: Name,
-    coreOf: (cores: EnvironmentChangeCores) => HarnessWrite<InputOf<Name>, CoreError>,
+    coreOf: (cores: EnvironmentCores) => HarnessWrite<InputOf<Name>, CoreError>,
+    unsupported?: Unsupported<Name>,
   ) =>
     serveChange(
       services,
       tool,
       {
-        cores: (source) => environmentChangeCores(services.changes(source)),
-        replay: REPLAYED[tool],
-        scope: (args) => args.id,
+        cores: (source) => changeCores(services.changes(source)),
+        replay: ENVIRONMENT_REPLAYED[tool],
+        // `environment_create` names no Environment: its change is recorded at the one it makes.
+        scope: (args) => ("id" in args ? args.id : ""),
       },
       coreOf,
       newAttempt,
+      unsupported,
     );
 
   // The Settings' and the MCP servers' tools: their scope is `scope`. A push of a server set that fails is handed on to
@@ -414,6 +457,12 @@ export const harnessDispatch = (
       coreOf,
       newAttempt,
     );
+
+  /** The words of a Skill tool's call at Global, or none for a call at an Environment: the Skills kept Global wait for the owner's Approval, which is S3b's. */
+  const globalSkillsWords = ({ id }: { readonly id: string }) =>
+    id === GLOBAL_ID
+      ? `The Skills kept Global (id "${GLOBAL_ID}") wait for the owner's Approval, which is not offered yet: name an Environment's id.`
+      : undefined;
 
   // The tools `harness` serves: the same names as `HARNESS_TOOLS_SERVED` (`../mcp/api.ts`), which `dispatch.test.ts` checks.
   const table: Record<HarnessToolName, Served> = {
@@ -504,6 +553,41 @@ export const harnessDispatch = (
     settings_mcp_remove: settingsChange(
       "settings_mcp_remove",
       (cores) => cores.settings_mcp_remove,
+    ),
+    environment_create: change("environment_create", (cores) => cores.environment_create),
+    environment_rename: change("environment_rename", (cores) => cores.environment_rename),
+    environment_repo_add: change("environment_repo_add", (cores) => cores.environment_repo_add),
+    environment_repo_remove: change(
+      "environment_repo_remove",
+      (cores) => cores.environment_repo_remove,
+    ),
+    environment_rebuild: change(
+      "environment_rebuild",
+      (cores) => cores.environment_rebuild,
+      ({ proposed }) =>
+        proposed === undefined
+          ? undefined
+          : "A Test Build of proposed changes is not offered yet: call environment_rebuild without proposed for a Build of the saved settings.",
+    ),
+    environment_skill_install: change(
+      "environment_skill_install",
+      (cores) => cores.environment_skill_install,
+      globalSkillsWords,
+    ),
+    environment_skill_update: change(
+      "environment_skill_update",
+      (cores) => cores.environment_skill_update,
+      globalSkillsWords,
+    ),
+    environment_skill_remove: change(
+      "environment_skill_remove",
+      (cores) => cores.environment_skill_remove,
+      globalSkillsWords,
+    ),
+    environment_setting_reset: change(
+      "environment_setting_reset",
+      (cores) => cores.environment_setting_reset,
+      ({ setting }) => (setting === RESET_LIMIT_SETTING ? RESET_LIMIT_UNSUPPORTED : undefined),
     ),
   };
 

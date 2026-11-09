@@ -3593,6 +3593,38 @@ it.each([
   },
 );
 
+it.each([
+  [
+    "a Repo put back, looks at its .pi/mcp.json and then pushes the set",
+    { before: "https://github.com/o/app.git", after: null },
+    [`added ${DEFAULT_ENVIRONMENT} app`, `sync ${DEFAULT_ENVIRONMENT}`],
+  ],
+  [
+    "a Repo taken out, only pushes the set",
+    { before: null, after: "https://github.com/o/app.git" },
+    [`sync ${DEFAULT_ENVIRONMENT}`],
+  ],
+])("after a revert of %s", async (_, values, steps) => {
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "environment_repo_add",
+    field: "repos.app",
+    ...values,
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  expect(fake.mcpLooks).toEqual([]);
+
+  await fake.runBackground();
+
+  expect(fake.mcpLooks).toEqual(steps);
+});
+
 it("hands the Environment's MCP host its set after a revert of an MCP server's key, and builds nothing", async () => {
   const fake = fakeRegistries();
 

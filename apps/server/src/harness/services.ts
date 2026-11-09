@@ -12,6 +12,9 @@ import {
   endpointTextCheck,
   type TextCheck,
 } from "@cloudpid/extensions/environment-changes";
+import type { LifecycleChangeServices } from "@cloudpid/extensions/environment-lifecycle-changes";
+import type { ResetCoreServices } from "@cloudpid/extensions/environment-reset";
+import type { SkillChangeServices } from "@cloudpid/extensions/environment-skill-changes";
 import type { EnvironmentReadServices } from "@cloudpid/extensions/environment-reads";
 import type { SettingsMcpReadServices } from "@cloudpid/extensions/settings-mcp-reads";
 import type { SettingsReadServices } from "@cloudpid/extensions/settings-reads";
@@ -23,7 +26,7 @@ import type { McpPushes } from "../mcp/push.ts";
 import type { Builds } from "../registry/builds.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { Spares } from "../registry/rpc.ts";
-import { type UpkeepChange, upkeepFor } from "../registry/upkeep.ts";
+import { afterRepos, type UpkeepChange, upkeepFor } from "../registry/upkeep.ts";
 import { type AuthorSource, sessionSource } from "../session/change-author.ts";
 import { type LifecycleRegistry, sessionLifecycle } from "../session/environment-lifecycle.ts";
 import {
@@ -60,6 +63,7 @@ export type HarnessRegistry = EnvironmentReadsRegistry &
   LifecycleRegistry &
   SettingsRegistry &
   SettingsMcpRegistry &
+  Pick<RegistryMethods, "mcpLookRepoFiles"> &
   HarnessChangeRegistry;
 
 /** What the services are built from: the Registry, the Environments' McpHosts, the upkeep, and this stage's app origin. */
@@ -81,6 +85,12 @@ export type HarnessDeps = {
   readonly credentials: ReadonlyArray<string>;
 };
 
+/** What the change tools' cores run over: each family's services (one `Environments`, written as the Session writes it). */
+export type HarnessChangeServices = EnvironmentChangeServices &
+  LifecycleChangeServices &
+  SkillChangeServices &
+  ResetCoreServices;
+
 /** The services of the management tools, with no Session: nothing is a Session's own, so nothing is marked as one. */
 export type HarnessServices = {
   readonly environments: EnvironmentReadServices;
@@ -90,7 +100,7 @@ export type HarnessServices = {
    * What the change tools' cores run over for a call made by `source`'s author (the verified caller, and the claim of
    * its `request_id`): the Environments, written as the Session writes them, and the endpoint's check of a kept text.
    */
-  readonly changes: (source: AuthorSource) => EnvironmentChangeServices;
+  readonly changes: (source: AuthorSource) => HarnessChangeServices;
   /**
    * What the Settings' and the MCP servers' cores run over for a call made by `source`: the Settings and the servers written
    * as the Session writes them, with the endpoint's check of a kept text and no `SettingsReload`; the sets a change reaches are
@@ -146,9 +156,12 @@ export const harnessServices = ({
         lifecycle: sessionLifecycle({
           registry,
           author: source,
-          // No Test Builds: the lifecycle refuses one on the endpoint (S4a serves them).
+          // No Test Builds: the lifecycle refuses one on the endpoint (S4a serves them). The Build a rebuild asks for is
+          // awaited, as the owner's Rebuild awaits it: the answer says whether one was asked for.
           builds: { ...afterAnswer.builds, rebuild: builds.rebuild },
           spares: afterAnswer.spares,
+          // As after the owner's `addRepo` and `removeRepo`: a Repo's `.pi/mcp.json` is looked at, then the set is pushed.
+          afterRepos: (repos) => afterRepos({ registry, mcp, background }, repos),
         }),
       }),
       holdsSecret,

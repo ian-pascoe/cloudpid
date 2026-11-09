@@ -3,7 +3,7 @@
 // one row per kind of change, each step handed to `background` and nothing run before it is.
 // @effect-diagnostics missedPipeableOpportunity:off
 import { SPARE_WORKSPACE_FIELD } from "@cloudpid/config";
-import { GLOBAL_SCOPE, SETTINGS_SCOPE } from "@cloudpid/protocol";
+import { CREATED_FIELD, GLOBAL_SCOPE, SETTINGS_SCOPE } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { type UpkeepChange, type UpkeepDeps, upkeepFor } from "./upkeep.ts";
@@ -19,6 +19,8 @@ const upkeeping = () => {
     registry: {
       // SAFETY: the upkeep reads only the ids of the Environments listed.
       listEnvironments: () => Effect.succeed([{ id: "default" }, { id: "other" }] as never),
+      mcpLookRepoFiles: ({ environment, repo }) =>
+        noted(`mcp.look:${environment}:${repo ?? "all"}`).pipe(Effect.as(null)),
     },
     builds: { of: (environment) => noted(`builds.of:${environment}`) },
     spares: { of: (environment) => noted(`spares.of:${environment}`), all: noted("spares.all") },
@@ -60,7 +62,6 @@ describe("the upkeep after a recorded change", () => {
       ["builds.of:default", "builds.of:other"],
     ],
     ["an MCP server's key", "default", "mcp.servers.docs", ["mcp.sync:default"]],
-    ["a Repo", "default", "repos.api", ["spares.of:default", "builds.of:default"]],
     [
       "the Spare Workspace setting",
       "default",
@@ -90,6 +91,39 @@ describe("the upkeep after a recorded change", () => {
     expect(after).toEqual(steps);
   });
 
+  it.each([
+    [
+      "a Repo added",
+      { field: "repos.api", after: "https://github.com/o/api.git" },
+      ["spares.of:default", "builds.of:default", "mcp.look:default:api", "mcp.sync:default"],
+    ],
+    [
+      "a Repo whose change does not say",
+      { field: "repos.api" },
+      ["spares.of:default", "builds.of:default", "mcp.look:default:api", "mcp.sync:default"],
+    ],
+    [
+      "a Repo taken out, which has no file to look at",
+      { field: "repos.api", after: null },
+      ["spares.of:default", "builds.of:default", "mcp.sync:default"],
+    ],
+    [
+      "an Environment made with Repos",
+      { field: CREATED_FIELD, after: { name: "N", repos: [{ name: "api", url: "u" }] } },
+      ["spares.of:default", "builds.of:default", "mcp.look:default:all", "mcp.sync:default"],
+    ],
+    [
+      "an Environment made with no Repos",
+      { field: CREATED_FIELD, after: { name: "N", repos: [] } },
+      ["spares.of:default", "builds.of:default"],
+    ],
+  ] as const)("of %s runs the owner's after-steps, in the background only", (_, change, steps) => {
+    const { before, after } = upkeeping().run([{ scope: "default", ...change }]);
+
+    expect(before).toEqual([]);
+    expect(after).toEqual(steps);
+  });
+
   it("runs each change's steps once, however many records name it", () => {
     const change = { scope: "default", field: "variables.API_URL" };
 
@@ -97,6 +131,8 @@ describe("the upkeep after a recorded change", () => {
       "builds.of:default",
       "spares.of:default",
       "builds.of:default",
+      "mcp.look:default:api",
+      "mcp.sync:default",
     ]);
   });
 });

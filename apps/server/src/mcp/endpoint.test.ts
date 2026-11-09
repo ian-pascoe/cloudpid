@@ -478,7 +478,7 @@ describe("the management tools through the target", () => {
       ok: false,
       error: { code: "not_found" },
     });
-    expect(await ask("environment_rename", { id: "default" })).toMatchObject({
+    expect(await ask("environment_skill_save", { id: "default" })).toMatchObject({
       ok: false,
       error: { code: "unsupported" },
     });
