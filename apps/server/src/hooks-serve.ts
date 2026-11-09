@@ -50,6 +50,10 @@ export const hooksTracing = Layer.succeed(HttpMiddleware.TracerDisabledWhen)(
  */
 export const hooksTelemetry = AlchemyTelemetry.layer(hooksTracing);
 
+/** `layer` with `hooksTelemetry` registered: what the Worker's init is wrapped in (`worker-init.ts`). */
+export const withHooksTelemetry = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
+  layer.pipe(Layer.provideMerge(hooksTelemetry));
+
 /**
  * The body of a request, read to the end or to `max` bytes: `size` is the bytes received, or `max + 1` when it went
  * over (the reading stops there, so a body that is larger is never held), and then `body` is empty.
@@ -147,7 +151,8 @@ const serveDelivery = (
       ...received,
     }).pipe(
       Effect.catch((error) =>
-        Effect.logWarning("A delivery could not reach its Trigger's object", error.message).pipe(
+        // Only the error's kind: its message names the Trigger, whose id is in the URL's path.
+        Effect.logWarning("A delivery could not reach its Trigger's object", error._tag).pipe(
           Effect.as({ status: 503, outcome: "unavailable" } as const satisfies DeliveryAnswer),
         ),
       ),

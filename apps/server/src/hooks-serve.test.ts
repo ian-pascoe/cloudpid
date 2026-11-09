@@ -1,7 +1,8 @@
-// @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off globalDate:off
+// @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off globalDate:off nodeBuiltinImport:off
 import { MAX_DELIVERY_BODY_BYTES } from "@cloudpid/protocol";
 import { type BaseRuntimeContext, RuntimeContext } from "alchemy/RuntimeContext";
 import { buildEventTelemetry } from "alchemy/TelemetryRuntime";
+import { readFileSync } from "node:fs";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Arr from "effect/Array";
@@ -16,9 +17,16 @@ import * as References from "effect/References";
 import * as Scope from "effect/Scope";
 import * as Tracer from "effect/Tracer";
 import { describe, expect, it, vi } from "vitest";
-import { type HookDeliver, hooksTelemetry, readBounded, serveHooks } from "./hooks-serve.ts";
+import {
+  type HookDeliver,
+  hooksTelemetry,
+  readBounded,
+  serveHooks,
+  withHooksTelemetry,
+} from "./hooks-serve.ts";
 import type { Delivery, DeliveryAnswer } from "./trigger/object.ts";
 import { TriggerUnreachable } from "./trigger/object.ts";
+import { triggerObjects } from "./trigger/objects.ts";
 import { guardedRoutes } from "./sign-in-routes.ts";
 
 const id = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
@@ -433,7 +441,12 @@ describe("what its spans and logs record", () => {
   it("logs neither the token nor the id when its object does not answer or the body breaks off", async () => {
     const unreachable = await observe(`/hooks/${id}/${token}`, {
       registered: true,
-      deliver: () => Effect.fail(TriggerUnreachable.make({ message: "no answer" })),
+      // The real object calls, whose failure's message names the Trigger.
+      deliver: (target, delivery) =>
+        triggerObjects(
+          // SAFETY: the Trigger objects call only `getByName`, and on its result only `deliver`.
+          { getByName: () => ({ deliver: () => Effect.die(new Error("boom")) }) } as never,
+        ).deliver(target, delivery),
     });
 
     expect(unreachable.response.status).toBe(503);
@@ -452,5 +465,30 @@ describe("what its spans and logs record", () => {
       expect(line).not.toContain(id);
       expect(line).not.toContain("/hooks/");
     }
+  });
+});
+
+describe("the Worker's init", () => {
+  it("registers hooksTelemetry on the runtime context for whatever it provides", async () => {
+    // SAFETY: registering reads and writes only the context's `telemetry`; nothing else of it is touched.
+    const runtime = {} as BaseRuntimeContext;
+    const scope = await Effect.runPromise(Scope.make());
+
+    await Effect.runPromise(
+      Layer.buildWithScope(withHooksTelemetry(Layer.empty), scope).pipe(
+        Effect.provideService(RuntimeContext, runtime),
+      ),
+    );
+
+    expect(runtime.telemetry).toBeDefined();
+  });
+
+  // `worker-init.ts` is evaluated only with the deployed Worker's bindings (its Layers need the Registry, Session and
+  // Trigger namespaces, the vault and the App's config), so a test cannot build its composition: it checks instead
+  // that the init is wrapped in the helper the test above covers.
+  it("wraps its init in withHooksTelemetry", () => {
+    const source = readFileSync(`${import.meta.dirname}/worker-init.ts`, "utf8");
+
+    expect(source).toMatch(/Effect\.provide\(\s*(\/\/[^\n]*\n\s*)*withHooksTelemetry\(/u);
   });
 });

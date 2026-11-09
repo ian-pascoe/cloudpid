@@ -9,7 +9,7 @@ import * as Predicate from "effect/Predicate";
 import * as Scope from "effect/Scope";
 import { workspaceAttachmentFiles } from "./attachments.ts";
 import { connectSession } from "./connect.ts";
-import { hooksTelemetry, serveHooks } from "./hooks-serve.ts";
+import { serveHooks, withHooksTelemetry } from "./hooks-serve.ts";
 import { guardedRoutes, isStartRequest } from "./sign-in-routes.ts";
 import {
   serveCallback,
@@ -284,21 +284,22 @@ export const serverInit = Effect.gen(function* () {
   // The Worker's init is its entry point.
   // @effect-diagnostics-next-line strictEffectProvide:off
   Effect.provide(
-    TriggerLive.pipe(
-      // A Trigger's object calls the Registry and its Fires' Sessions.
-      Layer.provideMerge(SessionLive),
-      Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
-      // The Session DOs call their Environment's MCP host.
-      Layer.provideMerge(McpHostLive),
-      // The Session DOs refuse the app's key in a variable; the Worker asks GitHub for the draft's branches as the app.
-      Layer.provideMerge(GitHubAppConfigLive),
-      Layer.provideMerge(
-        RegistryLive.pipe(
-          Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive, GitHubAppConfigLive)),
+    // The Worker's own server span records the whole path, and a Trigger URL's path holds its token: none for `/hooks`.
+    withHooksTelemetry(
+      TriggerLive.pipe(
+        // A Trigger's object calls the Registry and its Fires' Sessions.
+        Layer.provideMerge(SessionLive),
+        Layer.provide(Layer.mergeAll(ModelProxyConfigLive, SecretsConfigLive, WebConfigLive)),
+        // The Session DOs call their Environment's MCP host.
+        Layer.provideMerge(McpHostLive),
+        // The Session DOs refuse the app's key in a variable; the Worker asks GitHub for the draft's branches as the app.
+        Layer.provideMerge(GitHubAppConfigLive),
+        Layer.provideMerge(
+          RegistryLive.pipe(
+            Layer.provide(Layer.mergeAll(PushConfigLive, SecretsConfigLive, GitHubAppConfigLive)),
+          ),
         ),
       ),
-      // The Worker's own server span records the whole path, and a Trigger URL's path holds its token: none for `/hooks`.
-      Layer.provideMerge(hooksTelemetry),
     ),
   ),
 );
