@@ -10,6 +10,11 @@ import {
   type OwnerTabDrivers,
 } from "@cloudpid/extensions/browser";
 import { CodingTools } from "@cloudpid/extensions/coding-tools";
+import {
+  type CloudpidReportLog,
+  type CloudpidReports,
+  CloudpidReportTools,
+} from "@cloudpid/extensions/cloudpid-report";
 import { ContainerTools, WorkspaceContainer } from "@cloudpid/extensions/container";
 import { ContextManagement } from "@cloudpid/extensions/context";
 import {
@@ -77,7 +82,9 @@ import { Codemode, CodemodeSandbox } from "./codemode.ts";
  * `environment_container_size_limit_set`, `environment_delete`, `environment_secret_delete`), which ask through the Session's `Approvals` and delete through `EnvironmentRemoval`
  * (`docs/architecture/agent-changes.md` → Approval); the `trigger_*` tools, which read and change the Registry's
  * Triggers (`TriggerAccess`), making or widening one only with the owner's Approval (`docs/architecture/triggers.md` →
- * Agent tools and Approval); `mcp`, the Environment's MCP tools, which the Session builds at each
+ * Agent tools and Approval); `cloudpid_report`, which files a public issue about cloudpid itself through the Registry
+ * (`CloudpidReports`) and keeps each for the Run's Notification (`CloudpidReportLog`; `docs/architecture/agent-capabilities.md`
+ * → cloudpid reports); `mcp`, the Environment's MCP tools, which the Session builds at each
  * request start and installs again with `codemode` and `tool_search` (`./mcp-host.ts`); and `tool_search`, last: it defers every tool above that the settings' offered set (`ToolSearchSettings`) does not name, so
  * the model is offered only the core tools and loads the rest by searching, while scripts call all of them
  * (`docs/architecture/agent-capabilities.md` → Tool discovery). Needs `WebConfig`: the search keys, which the Session DO reads with
@@ -109,6 +116,8 @@ export const sessionExtensions: Effect.Effect<
   | Approvals
   | EnvironmentRemoval
   | TriggerAccess
+  | CloudpidReports
+  | CloudpidReportLog
   | VisualRecorder
   | ToolSpans
 > = Effect.all([
@@ -137,6 +146,8 @@ export const sessionExtensions: Effect.Effect<
   ApprovalTools,
   // The `trigger_*` tools, over the Registry's Triggers and their objects.
   TriggerTools,
+  // `cloudpid_report`, which the Registry posts as the GitHub App.
+  CloudpidReportTools,
   // The MCP tools, none until the first request start builds them from the Environment's `McpHost` (`./mcp-host.ts`).
   Effect.succeed(emptyMcpExtension),
   // Every tool result's images held to one result's budget before it is stored.

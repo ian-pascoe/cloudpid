@@ -9,6 +9,7 @@ import {
   browserSessionLayer,
   imageLimitedModels,
 } from "@cloudpid/extensions/browser";
+import { CloudpidReports } from "@cloudpid/extensions/cloudpid-report";
 import { WorkspaceContainer } from "@cloudpid/extensions/container";
 import { EnvironmentRemoval } from "@cloudpid/extensions/approval-tools";
 import { TriggerAccess } from "@cloudpid/extensions/triggers";
@@ -66,6 +67,7 @@ import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { triggerObjects, triggersOfEnvironment } from "../trigger/objects.ts";
 import { sessionTriggers } from "./triggers.ts";
+import { reportStage, sessionCloudpidReports } from "./cloudpid-reports.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpRecords } from "./mcp-records.ts";
@@ -515,6 +517,15 @@ export const SessionLive = Session.make(
           registry: registryObject,
           session: name,
           objects: triggers,
+        });
+
+        // `cloudpid_report`'s reports, which the Registry posts as the GitHub App: this stage and version in their footer.
+        const cloudpidReports = sessionCloudpidReports({
+          registry: registryObject,
+          session: name,
+          stage: reportStage(worker),
+          // SAFETY: the deploy binds the version metadata as `CF_VERSION_METADATA` (an `{ id }`); `alchemy dev` may lack it.
+          version: (worker["CF_VERSION_METADATA"] as { readonly id?: string } | undefined)?.id,
         });
 
         // The deletes the owner approved: an Environment with its Workspaces and Sessions, wiped as the owner's delete
@@ -1096,6 +1107,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(Environments, environments),
                   Effect.provideService(EnvironmentRemoval, environmentRemoval),
                   Effect.provideService(TriggerAccess, triggerAccess),
+                  Effect.provideService(CloudpidReports, cloudpidReports),
                   Effect.provideService(SettingsAccess, settingsAccess),
                   // The `settings_mcp_*` tools: the Registry's MCP servers, and the hosts of the Environments they name.
                   Effect.provideService(SettingsMcpAccess, settingsMcp),
@@ -1111,6 +1123,7 @@ export const SessionLive = Session.make(
                   Effect.provideService(OwnerNotifications, { notify: notifyOwner }),
                   Effect.provideService(CodemodeSandbox, sandbox),
                   Effect.provideService(BrowserHost, browser),
+                ).pipe(
                   Effect.provideServiceEffect(SubagentSettings, subagentSettings),
                   Effect.provideServiceEffect(ToolSearchSettings, toolSearchSettings),
                   Effect.provideServiceEffect(InstructionsSettings, instructionsSettings),

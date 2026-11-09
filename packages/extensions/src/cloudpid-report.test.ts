@@ -18,9 +18,11 @@ import { describe, expect, it } from "vitest";
 import {
   CLOUDPID_REPORT_TOOL,
   type CloudpidReportAnswer,
+  CloudpidReportLog,
   type CloudpidReportRequest,
   CloudpidReports,
   CloudpidReportTools,
+  type RunReport,
 } from "./cloudpid-report.ts";
 import { DeployCredentials } from "./environment-change-parts.ts";
 import { secretReference } from "./secrets/references.ts";
@@ -51,9 +53,10 @@ const FILED: CloudpidReportAnswer = {
   labelled: true,
 };
 
-/** A fake Registry that answers `answer` and records each request. */
+/** A fake Registry that answers `answer` and records each request, and the reports kept for the Run's end. */
 const toolOver = async (answer: CloudpidReportAnswer = FILED) => {
   const asked: CloudpidReportRequest[] = [];
+  const logged: RunReport[] = [];
 
   const extension = await Effect.runPromise(
     CloudpidReportTools.pipe(
@@ -63,6 +66,12 @@ const toolOver = async (answer: CloudpidReportAnswer = FILED) => {
             asked.push(request);
 
             return answer;
+          }),
+      }),
+      Effect.provideService(CloudpidReportLog, {
+        record: (report) =>
+          Effect.sync(() => {
+            logged.push(report);
           }),
       }),
       Effect.provideService(Secrets, heldSecrets({ API_KEY: "sk-held-value-123" })),
@@ -75,7 +84,7 @@ const toolOver = async (answer: CloudpidReportAnswer = FILED) => {
 
   if (tool._tag === "None") throw new Error("no cloudpid_report");
 
-  return { tool: tool.value, asked, extension };
+  return { tool: tool.value, asked, logged, extension };
 };
 
 const CHILD = 42 as ConversationId;
@@ -153,8 +162,8 @@ describe("cloudpid_report", () => {
     expect(isOffered({ offered: [] }, CLOUDPID_REPORT_TOOL)).toBe(false);
   });
 
-  it("files the report with cloudpid's footer, and says where it is", async () => {
-    const { tool, asked } = await toolOver();
+  it("files the report with cloudpid's footer, says where it is, and keeps it for the Run's end", async () => {
+    const { tool, asked, logged } = await toolOver();
 
     const result = await run(tool, { ...valid, tool: "bash" }, apiOf({ child: true }));
 
@@ -180,6 +189,7 @@ describe("cloudpid_report", () => {
       title: "bash ignores its timeout",
       kind: "bug",
     });
+    expect(logged).toEqual([{ number: 123, title: "bash ignores its timeout" }]);
   });
 
   it("names the root conversation's agent root, and takes a deferred tool or cloudpid's own MCP tools", async () => {
@@ -226,12 +236,13 @@ describe("cloudpid_report", () => {
     ["a cap reached", { status: "refused", code: "session_cap", message: "3 already" }, true],
     ["a failure", { status: "failed", message: "GitHub answered 503" }, true],
   ])("fails on %s", async (_, answer, final) => {
-    const { tool } = await toolOver(answer);
+    const { tool, logged } = await toolOver(answer);
 
     const result = await run(tool, valid);
 
     expect(result.isError).toBe(true);
     expect(text(result).endsWith(NO_RETRY)).toBe(final);
+    expect(logged).toEqual([]);
   });
 
   it("says a call with no answer may have been filed, and not to file it again", async () => {

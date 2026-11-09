@@ -5,7 +5,8 @@
 // the calling conversation's tools; the Registry, which posts as the GitHub App (`CloudpidReports`, which the Session
 // provides over it), refuses names of the owner's Repos, counts the caps, adds cloudpid's footer and posts once per call.
 // The model's alone (`callers: ["model"]`), safe to replay: a rerun is answered the same issue, or that it may have been
-// filed, never posted again. Not an Agent change; the Session tells the Run's end of each report itself.
+// filed, never posted again. Not an Agent change: each one filed is kept for the Run's end Notification
+// (`CloudpidReportLog`), beside the Agent changes.
 // @effect-diagnostics missingPipeableSignature:off
 import { isMcpToolName } from "@cloudpid/config";
 import {
@@ -111,6 +112,15 @@ export class CloudpidReports extends Context.Service<
   }
 >()("@cloudpid/extensions/cloudpid-report/CloudpidReports") {}
 
+/** A report filed in the Run, for the Notification its end sends: the issue's number and its title. */
+export type RunReport = { readonly number: number; readonly title: string };
+
+/** Where the Session keeps the Run's reports until its end notifies the owner of them, as it keeps its Agent changes. */
+export class CloudpidReportLog extends Context.Service<
+  CloudpidReportLog,
+  { readonly record: (report: RunReport) => Effect.Effect<void> }
+>()("@cloudpid/extensions/cloudpid-report/CloudpidReportLog") {}
+
 /** A report the tool refused, or that was not filed: its message is what the model sees. */
 export class CloudpidReportError extends Schema.TaggedError<
   CloudpidReportError,
@@ -192,9 +202,10 @@ const refusalOutcome = (code: CloudpidReportRefusal): Outcome => {
 export const CloudpidReportTools: Effect.Effect<
   Extension,
   never,
-  CloudpidReports | Secrets | DeployCredentials | ToolSpans
+  CloudpidReports | CloudpidReportLog | Secrets | DeployCredentials | ToolSpans
 > = Effect.gen(function* () {
   const reports = yield* CloudpidReports;
+  const log = yield* CloudpidReportLog;
   const secrets = yield* Secrets;
   const holdsCredential = yield* credentialCheck;
 
@@ -283,6 +294,7 @@ export const CloudpidReportTools: Effect.Effect<
             api.diagnostic({ severity: "warn", message: warning });
           }
 
+          yield* log.record({ number: answer.number, title });
           yield* annotate(answer.labelled ? "filed" : "unlabelled");
 
           return {
