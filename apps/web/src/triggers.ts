@@ -561,7 +561,7 @@ export const matchWords = (match: TriggerMatch | undefined): string => {
 };
 
 /** What a delivery counter's outcome says: the answer the sender got, and why; an outcome a later version names says itself. */
-const deliveryOutcomeWords = (outcome: string): string => {
+export const deliveryOutcomeWords = (outcome: string): string => {
   switch (outcome) {
     case "filtered":
       return "filtered out by the match";
@@ -580,25 +580,25 @@ const deliveryOutcomeWords = (outcome: string): string => {
   }
 };
 
-/** The words for the deliveries refused or filtered on one day: "3 filtered out by the match, 1 unauthorized (401)". */
-const dayWords = (
-  counts: ReadonlyArray<{ readonly outcome: string; readonly n: number }>,
-): string =>
-  Arr.join(
-    Arr.map(counts, ({ outcome, n }) => `${String(n)} ${deliveryOutcomeWords(outcome)}`),
-    ", ",
-  );
-
 /**
- * The per-day counts of the deliveries a Trigger refused or filtered, newest day first, each day as one line of words
- * ("2026-11-08": "3 filtered out by the match, 1 unauthorized (401)"): the days are UTC's, as they are counted.
+ * The per-day counts of the deliveries a Trigger refused or filtered, newest day first, each day with its counts in the
+ * order they came: the days are UTC's, as they are counted.
  */
 export const deliveryDays = (
   counts: TriggerDeliveries["counts"],
-): ReadonlyArray<{ readonly day: string; readonly words: string }> =>
+): ReadonlyArray<{
+  readonly day: string;
+  readonly counts: ReadonlyArray<{ readonly outcome: string; readonly n: number }>;
+}> =>
   Arr.map(
     Arr.sort(Arr.dedupe(Arr.map(counts, (count) => count.day)), Order.flip(Order.String)),
-    (day) => ({ day, words: dayWords(Arr.filter(counts, (count) => count.day === day)) }),
+    (day) => ({
+      day,
+      counts: Arr.map(
+        Arr.filter(counts, (count) => count.day === day),
+        ({ outcome, n }) => ({ outcome, n }),
+      ),
+    }),
   );
 
 /** What a webhook row says of its last authentic delivery, in `zone`. */

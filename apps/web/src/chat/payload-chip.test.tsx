@@ -1,4 +1,5 @@
-// The chip of a webhook payload in the transcript, rendered with `react-dom/server`.
+// The chip of a webhook payload in the transcript, rendered with `react-dom/server`: the file the whole body is in is
+// named only when there is one, and what the note says of the cut follows the chip's `truncated`. The words are copy.
 
 import type { TriggerPayloadChip } from "@cloudpid/protocol";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -17,36 +18,22 @@ const CHIP: TriggerPayloadChip = {
 };
 
 describe("a webhook payload's chip", () => {
-  it("names where it came from, how big it was, and the file that holds all of it", () => {
+  it("names the file that holds the whole body, when there is one, and the size", () => {
     const markup = renderToStaticMarkup(<PayloadChip chip={CHIP} />);
 
-    expect(markup).toContain('aria-label="Webhook payload"');
-    expect(markup).toContain("GitHub · workflow_run.completed");
-    expect(markup).toContain('title="Delivery d-1"');
-    expect(markup).toContain("40000 bytes · first 16384 bytes shown, all of it in a file");
-    expect(markup).toContain("/workspace/.cloudpid/triggers/t1-d-1-ab12cd34.json");
-  });
-
-  it("says when the whole body was shown, or was too large to keep", () => {
-    const { truncated: _truncated, ...whole } = CHIP;
-
-    expect(payloadNote({ ...whole, size: 300, shown: 300 })).toBe(
-      "300 bytes · all of it shown, and in a file",
-    );
-    // Redaction can leave less than the size without any cut: only `truncated` says the text was cut.
-    expect(payloadNote({ ...whole, size: 300, shown: 120 })).toBe(
-      "300 bytes · all of it shown, and in a file",
-    );
+    expect(markup).toContain(CHIP.path);
+    expect(markup).toContain(String(CHIP.size));
 
     const { path: _path, ...unkept } = CHIP;
 
-    expect(payloadNote({ ...unkept, size: 2_000_000, shown: 0 })).toBe(
-      "2000000 bytes · body not kept: too large",
-    );
-    expect(
-      renderToStaticMarkup(
-        <PayloadChip chip={{ ...unkept, format: "standard", size: 2_000_000, shown: 0 }} />,
-      ),
-    ).not.toContain("/workspace");
+    expect(renderToStaticMarkup(<PayloadChip chip={unkept} />)).not.toContain("/workspace");
+  });
+
+  it("says the bytes shown only of a body that was cut", () => {
+    const { truncated: _truncated, ...whole } = CHIP;
+
+    expect(payloadNote(CHIP)).toContain(String(CHIP.shown));
+    // Redaction can leave less than the size without any cut: only `truncated` says the text was cut.
+    expect(payloadNote({ ...whole, shown: 120 })).not.toContain("120");
   });
 });

@@ -1,5 +1,7 @@
 // The Triggers section of the Settings page at a Scope, rendered with `react-dom/server` over the fake Registry: the
-// queries it reads are settled first, so the markup shows what they answered.
+// queries it reads are settled first, so the markup shows what they answered. A webhook Trigger's row and form are held
+// by the elements and attributes they carry (`data-fire-again`, `data-rotate`, `data-match-row`, ids), one pass-through
+// each: the rules behind them (the rows, the patch, the per-day counts) are in `triggers.test.ts`.
 
 import {
   EnvironmentError,
@@ -302,106 +304,31 @@ describe("the Triggers section", () => {
   );
 
   it.effect(
-    "shows a webhook Trigger's match, last delivery and GitHub's ping, and Fire again",
+    "gives a webhook row Fire again and its secrets' controls, with no value shown until asked",
     () =>
       Effect.gen(function* () {
         const markup = yield* render("work");
         const row = rowOf(markup, "CI failed");
 
-        expect(row).toContain(
-          "Match: event is workflow_run; workflow_run.conclusion is failure or timed_out",
-        );
-        expect(row).toContain("Last delivery: ");
-        expect(row).toContain("GitHub reached this trigger (");
-        expect(row).toContain("Fire again</button>");
-        expect(row).not.toContain("Fire now</button>");
-        expect(row).not.toContain("No next fire");
-        expect(rowOf(markup, "Weekly report")).not.toContain("Last delivery");
-        expect(rowOf(markup, "Weekly report")).not.toContain("Fire again");
+        expect(row).toContain("data-fire-again");
+        expect(row).toContain("data-reveal");
+        // The replacements are there before anything is shown: they mend a Trigger whose secrets can't be read.
+        expect(row).toContain('data-rotate="url"');
+        expect(row).toContain('data-rotate="secret"');
+        expect(row).not.toContain("abcDEF");
+        expect(row).not.toContain("s3cr3t-value");
+        expect(rowOf(markup, "Weekly report")).not.toContain("data-fire-again");
+        expect(rowOf(markup, "Weekly report")).not.toContain("data-rotate");
       }),
   );
 
-  it.effect("keeps the URL and Signing secret hidden until the owner asks", () =>
+  /** The section at `work` once `triggerSecretsAtom("t3")` was asked of `handlers`, and its row of "CI failed". */
+  const afterReveal = (
+    handlers: Partial<RegistryHandlers>,
+    before: (registry: AtomRegistry.AtomRegistry) => void = () => undefined,
+  ) =>
     Effect.gen(function* () {
-      const hidden = rowOf(yield* render("work"), "CI failed");
-
-      expect(hidden).toContain("Show URL and signing secret");
-      expect(hidden).not.toContain("abcDEF");
-      expect(hidden).not.toContain("s3cr3t-value");
-      // The replacements are there before anything is shown: they mend a Trigger whose secrets can't be read.
-      expect(hidden).toContain("New URL");
-      expect(hidden).toContain("New signing secret");
-    }),
-  );
-
-  it.effect(
-    "shows a revealed URL (the stage's origin first) and secret with Copy, New URL and New signing secret",
-    () =>
-      Effect.gen(function* () {
-        const registry = registryWith(HANDLERS);
-
-        registry.mount(triggerSecretsAtom("t3"));
-        registry.mount(triggersAtom("work"));
-        registry.mount(environmentsAtom);
-        registry.mount(sessionsAtom);
-        registry.mount(triggerDeliveriesAtom("t3"));
-        registry.set(triggerSecretsAtom("t3"), { kind: "reveal" });
-        yield* settled(registry, triggerSecretsAtom("t3"));
-        yield* settled(registry, triggersAtom("work"));
-        yield* settled(registry, environmentsAtom);
-        yield* settled(registry, sessionsAtom);
-        yield* settled(registry, triggerDeliveriesAtom("t3"));
-
-        const markup = renderToStaticMarkup(
-          <RegistryContext.Provider value={registry}>
-            <TriggersSection scope="work" />
-          </RegistryContext.Provider>,
-        );
-
-        const row = rowOf(markup, "CI failed");
-
-        expect(row).toContain("https://cloudpid.example/hooks/0190-t3/abcDEF");
-        expect(row).toContain("s3cr3t-value");
-        expect(row).toContain('aria-label="Copy trigger url"');
-        expect(row).toContain('aria-label="Copy signing secret"');
-        expect(row).toContain("New URL");
-        expect(row).toContain("New signing secret");
-        expect(row).toContain("Hide");
-        expect(row).not.toContain("Show URL and signing secret");
-        // Nothing is replaced until the owner confirms.
-        expect(row).not.toContain("stops working at once");
-
-        registry.set(rotateAskAtom("t3"), "url");
-
-        const asking = rowOf(
-          renderToStaticMarkup(
-            <RegistryContext.Provider value={registry}>
-              <TriggersSection scope="work" />
-            </RegistryContext.Provider>,
-          ),
-          "CI failed",
-        );
-
-        expect(asking).toContain("The old URL stops working at once");
-        expect(asking).toContain('role="group" aria-label="Confirm: New URL"');
-        // Its confirm button takes the focus when it opens.
-        expect(asking).toMatch(/<button[^>]*autofocus=""[^>]*>New URL<\/button>/);
-
-        registry.dispose();
-      }),
-  );
-
-  it.effect("offers New URL and New signing secret when the reveal failed, with why", () =>
-    Effect.gen(function* () {
-      const registry = registryWith({
-        ...HANDLERS,
-        revealTrigger: () =>
-          Effect.fail(
-            EnvironmentError.make({
-              message: "This trigger's URL and signing secret can't be read: make new ones",
-            }),
-          ),
-      });
+      const registry = registryWith({ ...HANDLERS, ...handlers });
 
       registry.mount(triggerSecretsAtom("t3"));
       registry.mount(triggersAtom("work"));
@@ -409,6 +336,7 @@ describe("the Triggers section", () => {
       registry.mount(sessionsAtom);
       registry.mount(triggerDeliveriesAtom("t3"));
       registry.set(triggerSecretsAtom("t3"), { kind: "reveal" });
+      before(registry);
       yield* settled(registry, triggerSecretsAtom("t3"));
       yield* settled(registry, triggersAtom("work"));
       yield* settled(registry, environmentsAtom);
@@ -426,83 +354,117 @@ describe("the Triggers section", () => {
 
       registry.dispose();
 
-      expect(row).toContain("can&#x27;t be read");
-      expect(row).toContain("New URL");
-      expect(row).toContain("New signing secret");
-      expect(row).toContain("Show URL and signing secret");
+      return row;
+    });
+
+  it.effect(
+    "shows a revealed URL (the stage's origin first) and secret, and asks before it replaces one",
+    () =>
+      Effect.gen(function* () {
+        const row = yield* afterReveal({});
+
+        expect(row).toContain("https://cloudpid.example/hooks/0190-t3/abcDEF");
+        expect(row).toContain("s3cr3t-value");
+        expect(row).not.toContain("data-reveal");
+        expect(row).not.toContain("data-confirm-rotate");
+
+        const asking = yield* afterReveal({}, (registry) => {
+          registry.set(rotateAskAtom("t3"), "url");
+        });
+
+        expect(asking).toContain('data-confirm-rotate="url"');
+        // The confirm button takes the focus when it opens.
+        expect(asking).toMatch(/<button[^>]*autofocus=""/);
+      }),
+  );
+
+  it.effect("still offers to replace the URL and secret when the reveal failed", () =>
+    Effect.gen(function* () {
+      const row = yield* afterReveal({
+        revealTrigger: () => Effect.fail(EnvironmentError.make({ message: "unreadable" })),
+      });
+
+      expect(row).toContain('data-rotate="url"');
+      expect(row).toContain('data-rotate="secret"');
+      expect(row).toContain("data-reveal");
+      expect(row).not.toContain("s3cr3t-value");
     }),
   );
 
   it.effect("holds Fire again until the Trigger has accepted a delivery", () =>
     Effect.gen(function* () {
+      const held =
+        /<button[^>]*data-fire-again=""[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-fire-again=""/;
+
       const none = yield* render("work", undefined, {
         triggerDeliveries: () => Effect.succeed({ counts: [], lastDeliveryAt: null, pingAt: null }),
       });
 
-      expect(rowOf(none, "CI failed")).toMatch(
-        /<button[^>]*disabled=""[^>]*>[^]*Fire again<\/button>/,
-      );
-
-      const some = yield* render("work");
-
-      expect(rowOf(some, "CI failed")).not.toMatch(
-        /<button[^>]*disabled=""[^>]*>[^]*Fire again<\/button>/,
-      );
+      expect(rowOf(none, "CI failed")).toMatch(held);
+      expect(rowOf(yield* render("work"), "CI failed")).not.toMatch(held);
     }),
   );
 
-  it.effect("shows the refused and filtered deliveries per day in an open fire log", () =>
+  it.effect("lists the refused and filtered deliveries per day in an open fire log", () =>
     Effect.gen(function* () {
       const markup = yield* render("work", (registry) => {
         registry.set(fireLogOpenAtom("t3"), true);
         registry.mount(fireLogAtom("t3"));
       });
 
-      expect(markup).toContain('aria-label="Refused and filtered deliveries"');
-      expect(markup).toContain("2025-01-05");
-      expect(markup).toContain("3 filtered out by the match, 1 unauthorized (401)");
+      expect(markup.match(/data-day="2025-01-05"/g)).toHaveLength(1);
     }),
   );
 
-  it.effect("makes a webhook Trigger from the form: its format, match rows, and no schedule", () =>
-    Effect.gen(function* () {
-      const draft = withSource(
-        {
-          ...emptyTriggerDraft("work", "America/Chicago"),
-          name: "CI",
-          message: "Look.",
-          match: [{ path: "event", values: "push" }],
-        },
-        "webhook",
-      );
+  it.effect(
+    "shows a new webhook Trigger's source, format and match rows, with no Schedule fields",
+    () =>
+      Effect.gen(function* () {
+        const draft = withSource(
+          {
+            ...emptyTriggerDraft("work", "America/Chicago"),
+            name: "CI",
+            message: "Look.",
+            match: [{ path: "event", values: "push" }],
+          },
+          "webhook",
+        );
 
-      const markup = yield* render("work", (registry) => {
-        registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
-        registry.set(triggerDraftAtom("work"), draft);
-      });
+        const markup = yield* render("work", (registry) => {
+          registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
+          registry.set(triggerDraftAtom("work"), draft);
+        });
 
-      expect(markup).toContain("Fires on");
-      expect(markup).toContain('<option value="webhook" selected="">A webhook</option>');
-      expect(markup).toContain("Standard Webhooks");
-      expect(markup).toContain('aria-label="Match path 1"');
-      expect(markup).toContain('aria-label="Match values 1"');
-      expect(markup).toContain("Add a path");
-      expect(markup).not.toContain("Time zone");
-      expect(markup).not.toContain('aria-label="Next fires"');
-      expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+        expect(markup).toContain('id="trigger-source-work"');
+        expect(markup).toContain('id="trigger-format-work"');
+        expect(markup.match(/data-match-row/g)).toHaveLength(1);
+        expect(markup).not.toContain('id="trigger-cron-work"');
+        expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
 
-      // A path with no values can't be saved, and says why.
-      const bad = yield* render("work", (registry) => {
-        registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
-        registry.set(triggerDraftAtom("work"), { ...draft, match: [{ path: "a", values: "" }] });
-      });
+        // Rows no match can come of hold Create, with a problem shown.
+        const bad = yield* render("work", (registry) => {
+          registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
+          registry.set(triggerDraftAtom("work"), { ...draft, match: [{ path: "a", values: "" }] });
+        });
 
-      expect(bad).toContain("lists no values");
-      expect(bad).toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+        expect(bad).toContain('role="alert"');
+        expect(bad).toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+      }),
+  );
 
-      // A new Trigger asks which source; an existing one does not.
-      expect(markup).toContain('id="trigger-source-work"');
-    }),
+  it.effect(
+    "edits a webhook Trigger's match rows, its format fixed and its source not offered",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", (registry) => {
+          registry.set(triggerFormAtom("work"), { kind: "edit", opened: WEBHOOK_TRIGGER });
+          registry.set(triggerDraftAtom("work"), triggerDraftOf(WEBHOOK_TRIGGER));
+        });
+
+        expect(markup).not.toContain('id="trigger-source-work"');
+        expect(markup).toMatch(/<select[^>]*id="trigger-format-work"[^>]*disabled=""/);
+        expect(markup.match(/data-match-row/g)).toHaveLength(2);
+      }),
   );
 
   it.effect("saves an edit of another field of a Trigger whose match the form can't hold", () =>
@@ -518,34 +480,8 @@ describe("the Triggers section", () => {
         registry.set(triggerDraftAtom("work"), { ...triggerDraftOf(odd), name: "Renamed" });
       });
 
-      expect(markup).not.toContain("is not a path");
+      expect(markup).not.toContain('role="alert"');
       expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Save/);
-
-      // Touching its rows asks them to be right.
-      const edited = yield* render("work", (registry) => {
-        registry.set(triggerFormAtom("work"), { kind: "edit", opened: odd });
-        registry.set(triggerDraftAtom("work"), {
-          ...triggerDraftOf(odd),
-          match: [{ path: "", values: "y" }],
-        });
-      });
-
-      expect(edited).toContain("is not a path");
-      expect(edited).toMatch(/<button[^>]*disabled=""[^>]*>Save/);
-    }),
-  );
-
-  it.effect("edits a webhook Trigger's match, with its format fixed and no source to choose", () =>
-    Effect.gen(function* () {
-      const markup = yield* render("work", (registry) => {
-        registry.set(triggerFormAtom("work"), { kind: "edit", opened: WEBHOOK_TRIGGER });
-        registry.set(triggerDraftAtom("work"), triggerDraftOf(WEBHOOK_TRIGGER));
-      });
-
-      expect(markup).not.toContain('id="trigger-source-work"');
-      expect(markup).toMatch(/<select[^>]*id="trigger-format-work"[^>]*disabled=""/);
-      expect(markup).toContain('aria-label="Match path 2"');
-      expect(markup).toContain("workflow_run.conclusion");
     }),
   );
 

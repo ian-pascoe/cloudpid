@@ -318,7 +318,7 @@ Following [`AGENTS.md`](../../AGENTS.md)'s conventions.
   - **The Session's `fire`, and `fireSession` for a Session trigger:** fenced untrusted content, the file in the Workspace, the chip's data; the `notify-submissions` entry; for `fireSession`, `queue`, `steer` and `skip`, coalescing, and the refusals (archived, importing, deleted, over the spend limit). A Session trigger takes a Schedule only: the Registry and the tool each refuse a webhook source.
   - **The tools:** the Approval flows, over the existing approvals fixtures.
   - **Migration manifests** for the Registry and the Trigger object.
-- **Web tests** (`apps/web`, Node): the form's draft and what it sends (`triggers.test.ts`: match rows, `withSource`, the patch of a match), the section rendered over the fake Registry (`settings/triggers.test.tsx`: the webhook row, the revealed URL and secret, the confirm of a rotation, the per-day counts, the webhook form), the atoms (`triggers-state.test.ts`), and the transcript's chip (`chat/payload-chip.test.tsx`, `session/thread-messages.test.ts`).
+- **Web tests** (`apps/web`, Node): the rules of the form's values, held once where they live (`triggers.test.ts`: the rows of a `match`, `withSource`, when an edit sends the `match`, the per-day counts, the Trigger URL), one pass-through per entry point over the fake Registry — the form's requests and the reveal, rotation and Fire again of a webhook Trigger (`triggers-state.test.ts`), the section's markup by its elements and `data-*` attributes rather than its words (`settings/triggers.test.tsx`), and the transcript's chip (`chat/payload-chip.test.tsx`, `session/thread-messages.test.ts`).
 - **A deployed stage** (S6), on a preview and then on `prod`: see [_Slices_](#slices).
 
 ## Slices

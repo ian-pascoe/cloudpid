@@ -1,4 +1,5 @@
-// The Triggers section's form over the fake Registry: what it sends to make or change a Trigger, and when it closes.
+// The Triggers section's form over the fake Registry: what it sends to make or change a Trigger, and when it closes; and
+// one pass-through each for a webhook Trigger's reveal and rotation and its Fire again.
 
 import {
   EnvironmentError,
@@ -19,7 +20,6 @@ import {
   saveTriggerAtom,
   sessionTriggersAtom,
   type TriggerForm,
-  triggerDeliveriesAtom,
   triggerDraftAtom,
   triggerFormAtom,
   triggerNoticeAtom,
@@ -213,46 +213,44 @@ describe("a Session's triggers", () => {
   );
 });
 
-describe("a webhook Trigger's URL, secret, deliveries and Fire again", () => {
+describe("a webhook Trigger's URL, secret and Fire again", () => {
   const SECRETS = { path: "/hooks/t1/tok", secret: "whsec_abc" };
 
-  it.effect("reveals the URL and Signing secret, and shows the new pair once one is replaced", () =>
-    Effect.gen(function* () {
-      const asked: string[] = [];
+  it.effect(
+    "asks the RPC the request names: reveal or rotate, and the new pair is the answer",
+    () =>
+      Effect.gen(function* () {
+        const asked: string[] = [];
 
-      const registry = registryWith({
-        revealTrigger: ({ id }) =>
-          Effect.sync(() => {
-            asked.push(`reveal ${id}`);
+        const registry = registryWith({
+          revealTrigger: ({ id }) =>
+            Effect.sync(() => {
+              asked.push(`reveal ${id}`);
 
-            return SECRETS;
-          }),
-        rotateTrigger: ({ id, what }) =>
-          Effect.sync(() => {
-            asked.push(`rotate ${id} ${what}`);
+              return SECRETS;
+            }),
+          rotateTrigger: ({ id, what }) =>
+            Effect.sync(() => {
+              asked.push(`rotate ${id} ${what}`);
 
-            return { ...SECRETS, path: "/hooks/t1/new" };
-          }),
-      });
+              return { ...SECRETS, path: "/hooks/t1/new" };
+            }),
+        });
 
-      registry.mount(triggerSecretsAtom("t1"));
-      registry.set(triggerSecretsAtom("t1"), { kind: "reveal" });
+        registry.mount(triggerSecretsAtom("t1"));
+        registry.set(triggerSecretsAtom("t1"), { kind: "reveal" });
+        yield* settled(registry, triggerSecretsAtom("t1"));
+        registry.set(triggerSecretsAtom("t1"), { kind: "rotate", what: "url" });
 
-      const revealed = yield* settled(registry, triggerSecretsAtom("t1"));
+        const rotated = yield* settled(registry, triggerSecretsAtom("t1"));
 
-      expect(AsyncResult.isSuccess(revealed) && revealed.value).toEqual(SECRETS);
-
-      registry.set(triggerSecretsAtom("t1"), { kind: "rotate", what: "url" });
-
-      const rotated = yield* settled(registry, triggerSecretsAtom("t1"));
-
-      expect(AsyncResult.isSuccess(rotated) && rotated.value.path).toBe("/hooks/t1/new");
-      expect(asked).toEqual(["reveal t1", "rotate t1 url"]);
-      registry.dispose();
-    }),
+        expect(AsyncResult.isSuccess(rotated) && rotated.value.path).toBe("/hooks/t1/new");
+        expect(asked).toEqual(["reveal t1", "rotate t1 url"]);
+        registry.dispose();
+      }),
   );
 
-  it.effect("asks for a Fire again under the key it is given, and for the deliveries", () =>
+  it.effect("asks for a Fire again under the key it is given", () =>
     Effect.gen(function* () {
       const asked: string[] = [];
 
@@ -263,24 +261,13 @@ describe("a webhook Trigger's URL, secret, deliveries and Fire again", () => {
 
             return { key };
           }),
-        triggerDeliveries: () =>
-          Effect.succeed({
-            counts: [{ day: "2026-11-08", outcome: "filtered", n: 2 }],
-            lastDeliveryAt: 5,
-            pingAt: null,
-          }),
       });
 
       registry.mount(fireAgainAtom("t1"));
-      registry.mount(triggerDeliveriesAtom("t1"));
       registry.set(fireAgainAtom("t1"), "press-1");
+      yield* settled(registry, fireAgainAtom("t1"));
 
-      const fired = yield* settled(registry, fireAgainAtom("t1"));
-      const deliveries = yield* settled(registry, triggerDeliveriesAtom("t1"));
-
-      expect(AsyncResult.isSuccess(fired) && fired.value).toEqual({ key: "press-1" });
       expect(asked).toEqual(["t1 press-1"]);
-      expect(AsyncResult.isSuccess(deliveries) && deliveries.value.lastDeliveryAt).toBe(5);
       registry.dispose();
     }),
   );

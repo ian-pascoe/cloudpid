@@ -61,6 +61,7 @@ import {
 } from "../triggers-state.ts";
 import {
   deliveryDays,
+  deliveryOutcomeWords,
   emptyTriggerDraft,
   triggerUrl,
   lastDeliveryWords,
@@ -146,10 +147,14 @@ const DeliveryCounts = ({ id }: { id: string }) => {
         <p className="text-muted-foreground">None.</p>
       ) : (
         <ul aria-label="Refused and filtered deliveries" className="flex flex-col gap-0.5">
-          {days.map(({ day, words }) => (
-            <li key={day} className="flex flex-wrap gap-x-2">
+          {days.map(({ day, counts }) => (
+            <li key={day} data-day={day} className="flex flex-wrap gap-x-2">
               <span className="text-muted-foreground">{day}</span>
-              <span>{words}</span>
+              <span>
+                {counts
+                  .map(({ outcome, n }) => `${String(n)} ${deliveryOutcomeWords(outcome)}`)
+                  .join(", ")}
+              </span>
             </li>
           ))}
         </ul>
@@ -228,6 +233,7 @@ const TriggerSecretsPanel = ({ id }: { id: string }) => {
             type="button"
             size="sm"
             variant="outline"
+            data-reveal=""
             disabled={secrets.waiting}
             onClick={() => {
               request({ kind: "reveal" });
@@ -254,6 +260,7 @@ const TriggerSecretsPanel = ({ id }: { id: string }) => {
             type="button"
             size="sm"
             variant="outline"
+            data-rotate={what}
             disabled={secrets.waiting}
             onClick={() => {
               setAsking(what);
@@ -267,6 +274,7 @@ const TriggerSecretsPanel = ({ id }: { id: string }) => {
       {asking !== null && (
         <div
           role="group"
+          data-confirm-rotate={asking}
           aria-label={`Confirm: ${ROTATION_WORDS[asking].button}`}
           className="flex flex-col gap-2 text-xs"
         >
@@ -332,6 +340,7 @@ const FireAgain = ({ id, paused }: { id: string; paused: boolean }) => {
           ? "No delivery has been accepted yet, so there is nothing to fire again"
           : "Fire again with the last delivery this trigger accepted"
       }
+      data-fire-again=""
       disabled={paused || none || again.waiting}
       onClick={() => {
         fireAgain(newTriggerKey());
@@ -562,7 +571,10 @@ const MatchRowFields = ({
   onChange: (next: MatchRow) => void;
   onRemove: () => void;
 }) => (
-  <li className="grid items-start gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+  <li
+    data-match-row=""
+    className="grid items-start gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]"
+  >
     <Input
       aria-label={`Match path ${String(at + 1)}`}
       value={row.path}

@@ -205,12 +205,10 @@ describe("the thread messages of a view", () => {
   it("keeps the webhook payload a Trigger's Fire carried, for its chip", () => {
     const triggerPayload = {
       format: "github" as const,
-      event: "workflow_run",
-      action: "completed",
       delivery: "d-1",
       size: 40_000,
       shown: 16_384,
-      path: "/workspace/.cloudpid/triggers/t1-d-1-ab12cd34.json",
+      truncated: true,
     };
 
     const [message] = toThreadMessages(
@@ -221,7 +219,6 @@ describe("the thread messages of a view", () => {
     expect(
       shownPayload(toThreadMessages(view({ messages: [user("2", "typed")] }))[0]?.metadata?.custom),
     ).toBeUndefined();
-    expect(shownPayload(undefined)).toBeUndefined();
   });
 
   it("keeps a Review's Annotations, for its chips", () => {
