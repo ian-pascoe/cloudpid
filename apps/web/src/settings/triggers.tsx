@@ -11,6 +11,7 @@ import { SUPPORTED_MODELS, THINKING_LEVELS } from "@cloudpid/config";
 import {
   type EnvironmentRecord,
   fireTimeWords,
+  webhookOf,
   GLOBAL_SCOPE,
   MAX_TRIGGER_NAME_LENGTH,
   takesBase,
@@ -24,22 +25,27 @@ import {
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Atom from "effect/reactivity/Atom";
-import { Pause, Pencil, Play, Plus, Trash2, Zap } from "lucide-react";
-import type { FormEvent } from "react";
+import { Check, Copy, Pause, Pencil, Play, Plus, RotateCw, Trash2, Zap } from "lucide-react";
+import { type FormEvent, useState } from "react";
 import { Button } from "../components/ui/button.tsx";
 import { Dialog, DialogActions, DialogProblem } from "../components/ui/dialog.tsx";
 import { Input } from "../components/ui/input.tsx";
 import { NativeSelect } from "../components/ui/native-select.tsx";
 import { environmentsErrorAtom, environmentsInOrderAtom } from "../environments-state.ts";
 import { InAppLink } from "../in-app-link.tsx";
+import { copyToClipboard } from "../lib/clipboard.ts";
 import { modelName } from "../models.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
 import { sessionPath } from "../router.ts";
 import { sessionListAtom } from "../sessions.ts";
 import {
+  fireAgainAtom,
   fireLogAtom,
   fireLogOpenAtom,
   fireTriggerAtom,
+  hookAtom,
+  rotateAskAtom,
+  triggerDeliveriesAtom,
   newTriggerKey,
   removeTriggerAtom,
   removeTriggerDialogAtom,
@@ -52,12 +58,19 @@ import {
   triggersInAtom,
 } from "../triggers-state.ts";
 import {
+  deliveryDays,
   emptyTriggerDraft,
+  hookUrl,
+  lastDeliveryWords,
+  matchWords,
   nextFireOf,
+  pingWords,
+  withSource,
   outcomeWords,
   previewFires,
   triggerSourceWords,
   sourceWords,
+  type MatchRow,
   type TriggerDraft,
   triggerDraftOf,
   triggerDraftProblems,
@@ -106,6 +119,205 @@ const FireLog = ({ id, kind, zone }: { id: string; kind: TriggerKind; zone: stri
   );
 };
 
+/**
+ * Webhook Trigger `id`'s refused and filtered deliveries over the last 30 days, a line for each UTC day: the counts a
+ * delivery leaves when it starts no Session, kept per day only.
+ */
+const DeliveryCounts = ({ id }: { id: string }) => {
+  const deliveries = useAtomValue(triggerDeliveriesAtom(id));
+  const days = AsyncResult.isSuccess(deliveries) ? deliveryDays(deliveries.value.counts) : null;
+
+  if (days === null) return <Pending problem={failureOf(deliveries)} />;
+
+  return (
+    <div className="flex flex-col gap-1 text-xs">
+      <span className="font-medium">Deliveries that started nothing, last 30 days (UTC days)</span>
+      {days.length === 0 ? (
+        <p className="text-muted-foreground">None.</p>
+      ) : (
+        <ul aria-label="Refused and filtered deliveries" className="flex flex-col gap-0.5">
+          {days.map(({ day, words }) => (
+            <li key={day} className="flex flex-wrap gap-x-2">
+              <span className="text-muted-foreground">{day}</span>
+              <span>{words}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+/** What webhook Trigger `id`'s row says of its deliveries: the last one's time, and GitHub's ping. */
+const DeliveryStatus = ({ id, zone }: { id: string; zone: string }) => {
+  const deliveries = useAtomValue(triggerDeliveriesAtom(id));
+
+  if (!AsyncResult.isSuccess(deliveries)) {
+    return <Pending problem={failureOf(deliveries)} />;
+  }
+
+  const ping = pingWords(deliveries.value, zone);
+
+  return (
+    <>
+      <span className="text-xs text-muted-foreground">
+        {lastDeliveryWords(deliveries.value, zone)}
+      </span>
+      {ping !== null && <span className="text-xs text-muted-foreground">{ping}</span>}
+    </>
+  );
+};
+
+/** What the Copy button says in each state. */
+const COPY_WORDS = { idle: "Copy", copied: "Copied", failed: "Copy failed" } as const;
+
+/** A value the owner copies: shown whole, with a Copy button that says whether it worked. */
+const CopyValue = ({ label, value }: { label: string; value: string }) => {
+  const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
+
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <span className="text-xs font-medium">{label}</span>
+      <div className="flex min-w-0 items-center gap-2">
+        <code className="min-w-0 flex-1 rounded-md border bg-muted/40 px-2 py-1.5 text-xs break-all">
+          {value}
+        </code>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={`Copy ${label.toLowerCase()}`}
+          onClick={() => {
+            void copyToClipboard(value).then((done) => {
+              setCopied(done ? "copied" : "failed");
+            });
+          }}
+        >
+          {copied === "copied" ? <Check aria-hidden /> : <Copy aria-hidden />}
+          {COPY_WORDS[copied]}
+        </Button>
+      </div>
+    </div>
+  );
+};
+
+/** What replacing each of a webhook Trigger's two secrets does, said before it is done. */
+const ROTATION_WORDS = {
+  url: {
+    button: "New URL",
+    warning:
+      "The old URL stops working at once, and the sender must be given the new one. The signing secret stays.",
+  },
+  secret: {
+    button: "New signing secret",
+    warning:
+      "The old signing secret stops working at once, and deliveries signed with it are refused until the sender is given the new one. The URL stays.",
+  },
+} as const;
+
+/**
+ * Webhook Trigger `id`'s URL and Signing secret, which the owner reveals (nothing is read until they ask), copies, and
+ * replaces with **New URL** and **New signing secret** (each applies at once, behind a confirm). The agent never sees
+ * either.
+ */
+const HookPanel = ({ id }: { id: string }) => {
+  const [hook, request] = useAtom(hookAtom(id));
+  const [asking, setAsking] = useAtom(rotateAskAtom(id));
+  const shown = AsyncResult.isSuccess(hook) ? hook.value : null;
+  // Not known before the page is in a browser; a Trigger URL is only shown there.
+  const pageOrigin = typeof window === "undefined" ? "" : window.location.origin;
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border bg-muted/20 p-2">
+      {shown === null ? (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="self-start"
+          disabled={hook.waiting}
+          onClick={() => {
+            request({ kind: "reveal" });
+          }}
+        >
+          {hook.waiting ? "Revealing…" : "Show URL and signing secret"}
+        </Button>
+      ) : (
+        <>
+          <CopyValue label="Trigger URL" value={hookUrl(shown, pageOrigin)} />
+          <CopyValue label="Signing secret" value={shown.secret} />
+          <p className="text-xs text-muted-foreground">
+            Paste both into the sender. Anyone with the URL can reach this trigger, but only a
+            delivery signed with the secret starts a session.
+          </p>
+          <div className="flex flex-wrap items-center gap-1">
+            {(["url", "secret"] as const).map((what) => (
+              <Button
+                key={what}
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={hook.waiting}
+                onClick={() => {
+                  setAsking(what);
+                }}
+              >
+                <RotateCw />
+                {ROTATION_WORDS[what].button}
+              </Button>
+            ))}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setAsking(null);
+                request(Atom.Reset);
+              }}
+            >
+              Hide
+            </Button>
+          </div>
+        </>
+      )}
+      {asking !== null && (
+        <div
+          role="alertdialog"
+          aria-label={ROTATION_WORDS[asking].button}
+          className="flex flex-col gap-2 text-xs"
+        >
+          <p>{ROTATION_WORDS[asking].warning}</p>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="destructive"
+              disabled={hook.waiting}
+              onClick={() => {
+                request({ kind: "rotate", what: asking });
+                setAsking(null);
+              }}
+            >
+              {ROTATION_WORDS[asking].button}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setAsking(null);
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+      <DialogProblem problem={settledFailureOf(hook)} />
+    </div>
+  );
+};
+
 /** What a row says of a Trigger's last Fire. */
 const lastFireWords = (overview: TriggerOverview, zone: string): string => {
   if (!overview.reached) return "Last fire: unknown, its object didn't answer";
@@ -122,6 +334,8 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
   const next = nextFireOf(definition, Date.now());
   const [paused, setPaused] = useAtom(setTriggerPausedAtom(definition.id));
   const [fired, fire] = useAtom(fireTriggerAtom(definition.id));
+  const [again, fireAgain] = useAtom(fireAgainAtom(definition.id));
+  const webhook = webhookOf(definition);
   const [logOpen, setLogOpen] = useAtom(fireLogOpenAtom(definition.id));
   const setForm = useAtomSet(triggerFormAtom(scope));
   const setDraft = useAtomSet(triggerDraftAtom(scope));
@@ -157,19 +371,25 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
           <span className="font-mono text-xs text-muted-foreground">
             {triggerSourceWords(definition)}
           </span>
+          {webhook !== undefined && (
+            <span className="text-xs text-muted-foreground">{matchWords(webhook.match)}</span>
+          )}
           <span className="text-xs text-muted-foreground">{lastFireWords(overview, zone)}</span>
           {overview.waiting !== undefined && (
             <span className="text-xs text-muted-foreground">
               {waitingWords(overview.waiting, zone)}
             </span>
           )}
-          <span className="text-xs text-muted-foreground">
-            {next === null ? "No next fire" : `Next fire: ${fireTimeWords(next, zone)}`}
-          </span>
+          {webhook === undefined ? (
+            <span className="text-xs text-muted-foreground">
+              {next === null ? "No next fire" : `Next fire: ${fireTimeWords(next, zone)}`}
+            </span>
+          ) : (
+            <DeliveryStatus id={definition.id} zone={zone} />
+          )}
         </span>
         <span className="flex shrink-0 flex-wrap items-center gap-1">
-          {/* A webhook Trigger fires when a delivery comes; the owner's "Fire again" is a later part's. */}
-          {definition.source.type !== "webhook" && (
+          {webhook === undefined ? (
             <Button
               type="button"
               size="sm"
@@ -181,6 +401,20 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             >
               <Zap />
               {fired.waiting ? "Firing…" : "Fire now"}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              title="Fire again with the last delivery this trigger accepted"
+              disabled={definition.paused || again.waiting}
+              onClick={() => {
+                fireAgain(newTriggerKey());
+              }}
+            >
+              <Zap />
+              {again.waiting ? "Firing…" : "Fire again"}
             </Button>
           )}
           <Button
@@ -224,13 +458,16 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
           </Button>
         </span>
       </div>
-      {AsyncResult.isSuccess(fired) && !fired.waiting && (
+      {((AsyncResult.isSuccess(fired) && !fired.waiting) ||
+        (AsyncResult.isSuccess(again) && !again.waiting)) && (
         <p className="text-xs text-muted-foreground">
           Fired: the fire shows in its log once it went out.
         </p>
       )}
       <DialogProblem problem={settledFailureOf(paused)} />
       <DialogProblem problem={settledFailureOf(fired)} />
+      <DialogProblem problem={settledFailureOf(again)} />
+      {webhook !== undefined && <HookPanel id={definition.id} />}
       <button
         type="button"
         aria-expanded={logOpen}
@@ -241,7 +478,12 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
       >
         {logOpen ? "Hide fire log" : "Show fire log"}
       </button>
-      {logOpen && <FireLog id={definition.id} kind={definition.kind} zone={zone} />}
+      {logOpen && (
+        <>
+          {webhook !== undefined && <DeliveryCounts id={definition.id} />}
+          <FireLog id={definition.id} kind={definition.kind} zone={zone} />
+        </>
+      )}
     </li>
   );
 };
@@ -301,6 +543,145 @@ const EnvironmentTriggers = ({
     </>
   );
 };
+
+/** A row of the `match` rows: a path of the delivery's body, the values it may have (one to a line), and a Remove. */
+const MatchRowFields = ({
+  row,
+  at,
+  busy,
+  onChange,
+  onRemove,
+}: {
+  row: MatchRow;
+  at: number;
+  busy: boolean;
+  onChange: (next: MatchRow) => void;
+  onRemove: () => void;
+}) => (
+  <li className="grid items-start gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+    <Input
+      aria-label={`Match path ${String(at + 1)}`}
+      value={row.path}
+      placeholder="workflow_run.conclusion"
+      spellCheck={false}
+      autoComplete="off"
+      disabled={busy}
+      onChange={(event) => {
+        onChange({ ...row, path: event.target.value });
+      }}
+      className="font-mono"
+    />
+    <textarea
+      aria-label={`Match values ${String(at + 1)}`}
+      rows={2}
+      value={row.values}
+      placeholder="failure"
+      spellCheck={false}
+      disabled={busy}
+      onChange={(event) => {
+        onChange({ ...row, values: event.target.value });
+      }}
+      className={`${TEXT_AREA} font-mono`}
+    />
+    <Button
+      type="button"
+      size="icon"
+      variant="ghost"
+      className="size-8"
+      aria-label={`Remove match row ${String(at + 1)}`}
+      disabled={busy}
+      onClick={onRemove}
+    >
+      <Trash2 />
+    </Button>
+  </li>
+);
+
+/** What a new webhook Trigger asks beyond the rest: its format, and the `match` that filters its deliveries. */
+const WebhookFields = ({
+  draft,
+  editing,
+  busy,
+  idOf,
+  problem,
+  change,
+}: {
+  draft: TriggerDraft;
+  editing: boolean;
+  busy: boolean;
+  idOf: (field: string) => string;
+  problem: string | null;
+  change: (patch: Partial<TriggerDraft>) => void;
+}) => (
+  <div className="flex flex-col gap-4">
+    <Field
+      label="Format"
+      htmlFor={idOf("format")}
+      hint={
+        editing
+          ? "Fixed once the trigger is made."
+          : "How the sender signs each delivery: GitHub's X-Hub-Signature-256, or the Standard Webhooks headers. The URL and signing secret come with the trigger, on its row."
+      }
+    >
+      <NativeSelect
+        id={idOf("format")}
+        value={draft.format}
+        disabled={busy || editing}
+        onChange={(event) => {
+          change({ format: event.target.value === "standard" ? "standard" : "github" });
+        }}
+      >
+        <option value="github">GitHub</option>
+        <option value="standard">Standard Webhooks</option>
+      </NativeSelect>
+    </Field>
+    <div className="flex flex-col gap-2">
+      <span className="text-sm font-medium">Match</span>
+      <p className="text-xs text-muted-foreground">
+        Only deliveries that match start a session; the others are answered and counted. Every path
+        must match, and any one of its values will do, one to a line. <code>event</code> is the
+        event's name, such as <code>pull_request</code>. With no rows, every delivery signed right
+        starts a session.
+      </p>
+      {draft.match.length > 0 && (
+        <ul aria-label="Match rows" className="flex flex-col gap-2">
+          {draft.match.map((row, at) => (
+            <MatchRowFields
+              key={at}
+              row={row}
+              at={at}
+              busy={busy}
+              onChange={(next) => {
+                change({ match: draft.match.map((each, index) => (index === at ? next : each)) });
+              }}
+              onRemove={() => {
+                change({ match: draft.match.filter((_, index) => index !== at) });
+              }}
+            />
+          ))}
+        </ul>
+      )}
+      {problem !== null && (
+        <p role="alert" className="text-xs text-destructive">
+          {problem}
+        </p>
+      )}
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="self-start"
+        disabled={busy}
+        onClick={() => {
+          change({ match: [...draft.match, { path: "", values: "" }] });
+        }}
+      >
+        <Plus />
+        Add a path
+      </Button>
+    </div>
+  </div>
+);
 
 /**
  * The form that makes a Trigger, or edits one: at Global it names the Environment of a new one; an edited Trigger's
@@ -392,6 +773,35 @@ export const TriggerFormView = ({
           className={TEXT_AREA}
         />
       </Field>
+      {!editing && (
+        <Field
+          label="Fires on"
+          htmlFor={id("source")}
+          hint="A schedule, or each signed delivery a webhook sender makes to the trigger's URL. It can't be changed once the trigger is made."
+        >
+          <NativeSelect
+            id={id("source")}
+            value={draft.scheduled ? "schedule" : "webhook"}
+            disabled={busy}
+            onChange={(event) => {
+              setDraft(withSource(draft, event.target.value !== "webhook"));
+            }}
+          >
+            <option value="schedule">A schedule</option>
+            <option value="webhook">A webhook</option>
+          </NativeSelect>
+        </Field>
+      )}
+      {!draft.scheduled && (
+        <WebhookFields
+          draft={draft}
+          editing={editing}
+          busy={busy}
+          idOf={id}
+          problem={problems.match}
+          change={change}
+        />
+      )}
       {draft.scheduled && (
         <div className="grid gap-4 sm:grid-cols-2">
           <Field

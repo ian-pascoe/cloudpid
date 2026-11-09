@@ -20,13 +20,16 @@ import { sessionsAtom } from "../sessions.ts";
 import {
   fireLogAtom,
   fireLogOpenAtom,
+  hookAtom,
+  rotateAskAtom,
+  triggerDeliveriesAtom,
   triggerDraftAtom,
   triggerFormAtom,
   removeTriggerDialogAtom,
   triggerNoticeAtom,
   triggersAtom,
 } from "../triggers-state.ts";
-import { emptyTriggerDraft, triggerDraftOf } from "../triggers.ts";
+import { emptyTriggerDraft, triggerDraftOf, withSource } from "../triggers.ts";
 import { TriggersSection } from "./triggers.tsx";
 
 const environment = (id: string, name: string): EnvironmentRecord => ({
@@ -52,7 +55,11 @@ const definition = (id: string, environmentId: string, name: string): TriggerDef
 
 const WEBHOOK_TRIGGER: TriggerDefinition = {
   ...definition("t3", "work", "CI failed"),
-  source: { type: "webhook", format: "github" },
+  source: {
+    type: "webhook",
+    format: "github",
+    match: { event: ["workflow_run"], "workflow_run.conclusion": ["failure", "timed_out"] },
+  },
   whenBusy: "start",
 };
 
@@ -107,6 +114,21 @@ const HANDLERS: Partial<RegistryHandlers> = {
         (trigger) => environment === undefined || trigger.definition.environment === environment,
       ),
     ),
+  triggerDeliveries: () =>
+    Effect.succeed({
+      counts: [
+        { day: "2025-01-05", outcome: "filtered", n: 3 },
+        { day: "2025-01-05", outcome: "unauthorized", n: 1 },
+      ],
+      lastDeliveryAt: Date.parse("2025-01-06T15:00:05Z"),
+      pingAt: Date.parse("2025-01-01T10:00:00Z"),
+    }),
+  revealTrigger: () =>
+    Effect.succeed({
+      origin: "https://cloudpid.example",
+      path: "/hooks/0190-t3/abcDEF",
+      secret: "s3cr3t-value",
+    }),
   triggerFireLog: () =>
     Effect.succeed([
       STARTED,
@@ -118,6 +140,12 @@ const HANDLERS: Partial<RegistryHandlers> = {
       },
     ]),
 };
+
+/** The markup of the row of the Trigger named `name`, from its Remove button's list item. */
+const rowOf = (markup: string, name: string): string =>
+  Arr.findFirst(markup.split("<li "), (row) => row.includes(`aria-label="Remove ${name}"`)).pipe(
+    Option.getOrElse(() => ""),
+  );
 
 /** The section at Scope `scope`, once its queries answered; `before` sets atoms first. */
 const render = (
@@ -134,11 +162,13 @@ const render = (
     registry.mount(triggersAtom(scope));
     registry.mount(environmentsAtom);
     registry.mount(fireLogAtom("t1"));
+    registry.mount(triggerDeliveriesAtom("t3"));
     registry.mount(sessionsAtom);
     yield* settled(registry, sessionsAtom);
     yield* settled(registry, triggersAtom(scope));
     yield* settled(registry, environmentsAtom);
     yield* settled(registry, fireLogAtom("t1"));
+    yield* settled(registry, triggerDeliveriesAtom("t3"));
 
     const markup = renderToStaticMarkup(
       <RegistryContext.Provider value={registry}>
@@ -267,6 +297,159 @@ describe("the Triggers section", () => {
       expect(rowOf("Weekly report")).toContain("Fire now</button>");
       expect(rowOf("Lint sweep")).toContain("Fire now</button>");
       expect(rowOf("Check the build")).toContain("Fire now</button>");
+    }),
+  );
+
+  it.effect(
+    "shows a webhook Trigger's match, last delivery and GitHub's ping, and Fire again",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work");
+        const row = rowOf(markup, "CI failed");
+
+        expect(row).toContain(
+          "Match: event is workflow_run; workflow_run.conclusion is failure or timed_out",
+        );
+        expect(row).toContain("Last delivery: ");
+        expect(row).toContain("GitHub reached this trigger (");
+        expect(row).toContain("Fire again</button>");
+        expect(row).not.toContain("Fire now</button>");
+        expect(row).not.toContain("No next fire");
+        expect(rowOf(markup, "Weekly report")).not.toContain("Last delivery");
+        expect(rowOf(markup, "Weekly report")).not.toContain("Fire again");
+      }),
+  );
+
+  it.effect("keeps the URL and Signing secret hidden until the owner asks", () =>
+    Effect.gen(function* () {
+      const hidden = rowOf(yield* render("work"), "CI failed");
+
+      expect(hidden).toContain("Show URL and signing secret");
+      expect(hidden).not.toContain("abcDEF");
+      expect(hidden).not.toContain("s3cr3t-value");
+    }),
+  );
+
+  it.effect(
+    "shows a revealed URL (the stage's origin first) and secret with Copy, New URL and New signing secret",
+    () =>
+      Effect.gen(function* () {
+        const registry = registryWith(HANDLERS);
+
+        registry.mount(hookAtom("t3"));
+        registry.mount(triggersAtom("work"));
+        registry.mount(environmentsAtom);
+        registry.mount(sessionsAtom);
+        registry.mount(triggerDeliveriesAtom("t3"));
+        registry.set(hookAtom("t3"), { kind: "reveal" });
+        yield* settled(registry, hookAtom("t3"));
+        yield* settled(registry, triggersAtom("work"));
+        yield* settled(registry, environmentsAtom);
+        yield* settled(registry, sessionsAtom);
+        yield* settled(registry, triggerDeliveriesAtom("t3"));
+
+        const markup = renderToStaticMarkup(
+          <RegistryContext.Provider value={registry}>
+            <TriggersSection scope="work" />
+          </RegistryContext.Provider>,
+        );
+
+        const row = rowOf(markup, "CI failed");
+
+        expect(row).toContain("https://cloudpid.example/hooks/0190-t3/abcDEF");
+        expect(row).toContain("s3cr3t-value");
+        expect(row).toContain('aria-label="Copy trigger url"');
+        expect(row).toContain('aria-label="Copy signing secret"');
+        expect(row).toContain("New URL");
+        expect(row).toContain("New signing secret");
+        expect(row).toContain("Hide");
+        expect(row).not.toContain("Show URL and signing secret");
+        // Nothing is replaced until the owner confirms.
+        expect(row).not.toContain("stops working at once");
+
+        registry.set(rotateAskAtom("t3"), "url");
+
+        const asking = rowOf(
+          renderToStaticMarkup(
+            <RegistryContext.Provider value={registry}>
+              <TriggersSection scope="work" />
+            </RegistryContext.Provider>,
+          ),
+          "CI failed",
+        );
+
+        expect(asking).toContain("The old URL stops working at once");
+        expect(asking).toContain('role="alertdialog"');
+
+        registry.dispose();
+      }),
+  );
+
+  it.effect("shows the refused and filtered deliveries per day in an open fire log", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", (registry) => {
+        registry.set(fireLogOpenAtom("t3"), true);
+        registry.mount(fireLogAtom("t3"));
+      });
+
+      expect(markup).toContain('aria-label="Refused and filtered deliveries"');
+      expect(markup).toContain("2025-01-05");
+      expect(markup).toContain("3 filtered out by the match, 1 unauthorized (401)");
+    }),
+  );
+
+  it.effect("makes a webhook Trigger from the form: its format, match rows, and no schedule", () =>
+    Effect.gen(function* () {
+      const draft = withSource(
+        {
+          ...emptyTriggerDraft("work", "America/Chicago"),
+          name: "CI",
+          message: "Look.",
+          match: [{ path: "event", values: "push" }],
+        },
+        false,
+      );
+
+      const markup = yield* render("work", (registry) => {
+        registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
+        registry.set(triggerDraftAtom("work"), draft);
+      });
+
+      expect(markup).toContain("Fires on");
+      expect(markup).toContain('<option value="webhook" selected="">A webhook</option>');
+      expect(markup).toContain("Standard Webhooks");
+      expect(markup).toContain('aria-label="Match path 1"');
+      expect(markup).toContain('aria-label="Match values 1"');
+      expect(markup).toContain("Add a path");
+      expect(markup).not.toContain("Time zone");
+      expect(markup).not.toContain('aria-label="Next fires"');
+      expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+
+      // A path with no values can't be saved, and says why.
+      const bad = yield* render("work", (registry) => {
+        registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
+        registry.set(triggerDraftAtom("work"), { ...draft, match: [{ path: "a", values: "" }] });
+      });
+
+      expect(bad).toContain("lists no values");
+      expect(bad).toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+
+      // A new Trigger asks which source; an existing one does not.
+      expect(markup).toContain('id="trigger-source-work"');
+    }),
+  );
+
+  it.effect("edits a webhook Trigger's match, with its format fixed and no source to choose", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", (registry) => {
+        registry.set(triggerFormAtom("work"), { kind: "edit", opened: WEBHOOK_TRIGGER });
+        registry.set(triggerDraftAtom("work"), triggerDraftOf(WEBHOOK_TRIGGER));
+      });
+
+      expect(markup).not.toContain('id="trigger-source-work"');
+      expect(markup).toMatch(/<select[^>]*id="trigger-format-work"[^>]*disabled=""/);
+      expect(markup).toContain('aria-label="Match path 2"');
+      expect(markup).toContain("workflow_run.conclusion");
     }),
   );
 
