@@ -79,7 +79,9 @@ export const approvalRunner = ({
               .pipe(Effect.ignore)
           : Effect.void
         ).pipe(
-          Effect.andThen(registry.finishApproval({ id, token, status: "finished", result: answer })),
+          Effect.andThen(
+            registry.finishApproval({ id, token, status: "finished", result: answer }),
+          ),
         );
 
       /**
@@ -172,7 +174,7 @@ export const approvalRunner = ({
    * Resume the approved requests no run is applying (L4: behind the owner's `listApprovals`), each in `background`. A long
    * apply is resumed by the owner's Try again or visit only; none is long before S3b.
    */
-  const resumeStale: Effect.Effect<void> = registry.staleApprovals().pipe(
+  const resumeStale: Effect.Effect<void> = Effect.suspend(() => registry.staleApprovals()).pipe(
     Effect.flatMap((stale) =>
       Effect.forEach(stale, (approval) => background(apply(approval.id).pipe(Effect.asVoid)), {
         discard: true,

@@ -140,7 +140,7 @@ export const endpointWrites = ({
           // awaited, as the owner's Rebuild awaits it: the answer says whether one was asked for.
           builds: { ...afterAnswer.builds, rebuild: builds.rebuild },
           spares: afterAnswer.spares,
-          ...(reposChanged === undefined ? {} : { afterRepos: reposChanged }),
+          afterRepos: reposChanged,
         }),
       }),
     settings: (source) => sessionSettingsAccess({ registry, author: source }),

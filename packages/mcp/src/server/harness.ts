@@ -190,6 +190,10 @@ const afterAsk = nextOf(
 const afterReset = (structured: Wire, enabled: Enabled): string | undefined =>
   afterAsk(structured, enabled) ?? afterSettingsChange(structured, enabled);
 
+/** What follows an Environment's reset: `approval_wait` for the size limit's, which waits for the owner, else `environment_get`. */
+const afterEnvironmentReset = (structured: Wire, enabled: Enabled): string | undefined =>
+  afterAsk(structured, enabled) ?? afterChange(structured, enabled);
+
 const NEXTS: Readonly<
   Record<DispatchedToolName, (structured: Wire, enabled: Enabled) => string | undefined>
 > = {
@@ -229,7 +233,7 @@ const NEXTS: Readonly<
   environment_skill_install: afterChange,
   environment_skill_update: afterChange,
   environment_skill_remove: afterChange,
-  environment_setting_reset: afterChange,
+  environment_setting_reset: afterEnvironmentReset,
   environment_list: nextOf(
     Schema.Struct({ environments: Schema.Array(Schema.Unknown) }),
     ({ environments }, enabled) =>

@@ -21,6 +21,12 @@ import {
 } from "./approvals.ts";
 import { WaitingApprovalsList, WaitingForYou } from "./waiting-approvals.tsx";
 
+/** The client that asked, a name only the request carries: a card that shows it says who asked. */
+const CLIENT = "client-7f3";
+
+/** What a target is now, as only the request's `reason` carries it. */
+const NOW = "value-now-9c2";
+
 const approval = (
   id: string,
   status: ApprovalStatus,
@@ -37,7 +43,7 @@ const approval = (
     after: "$20",
     reason: "The runs need more",
   },
-  via: { client: { name: "pi" }, auth: "oauth" },
+  via: { client: { name: CLIENT }, auth: "oauth" },
   status,
   applying: false,
   createdAt: 1,
@@ -76,7 +82,7 @@ describe("the Waiting for you area", () => {
 
     expect(markup).toContain('aria-label="Waiting for you"');
     expect(card).toContain('aria-label="Approval requested"');
-    expect(card).toContain("Asked via pi (MCP)");
+    expect(card).toContain(CLIENT);
     expect(buttons(card)).toEqual(["Decline", "Approve"]);
   });
 
@@ -85,7 +91,7 @@ describe("the Waiting for you area", () => {
     ["cut before it was applied", approval("a", "approved"), ["Try again"]],
     ["applied", approval("a", "finished", { text: "The spend limit is $20 now." }), []],
     ["declined", approval("a", "declined"), []],
-    ["changed since", approval("a", "changed_since", { reason: "it is $30 now" }), []],
+    ["changed since", approval("a", "changed_since", { reason: NOW }), []],
     ["refused", approval("a", "refused", { reason: "a Secret" }), []],
     ["expired", approval("a", "expired"), []],
     ["withdrawn", approval("a", "withdrawn", { withdrawal: "withdrawn" }), []],
@@ -93,14 +99,14 @@ describe("the Waiting for you area", () => {
     const row = cardOf(render([request]), "a");
 
     expect(row).toContain('aria-label="Approval answered"');
-    expect(row).toContain("Asked via pi (MCP)");
+    expect(row).toContain(CLIENT);
     expect(buttons(row)).toEqual(offered);
   });
 
   it("says a change not applied with what the target is now", () => {
-    const row = cardOf(render([approval("a", "changed_since", { reason: "it is $30 now" })]), "a");
+    const row = cardOf(render([approval("a", "changed_since", { reason: NOW })]), "a");
 
-    expect(row).toContain("Not applied: it is $30 now");
+    expect(row).toContain(NOW);
   });
 
   it("holds Try again while an answer is on its way", () => {

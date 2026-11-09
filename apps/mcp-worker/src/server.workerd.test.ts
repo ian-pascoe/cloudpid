@@ -105,6 +105,9 @@ const CHANGED = {
 };
 
 /** Canned answers for the `api` target of one request, as the main Worker's `McpApi` would give. */
+/** What an applied request's change says, as the server's answer carries it: the endpoint shows it as it is. */
+const APPLIED_TEXT = "The owner approved, and the change was made.";
+
 class FakeApi extends RpcTarget {
   readonly calls: Array<string> = [];
   /** What `limited` answers: over the rate when set. */
@@ -203,7 +206,7 @@ class FakeApi extends RpcTarget {
       tool: "settings_spend_limit_set",
       status: "finished",
       finished: true,
-      result: { text: "The user approved: the spend limit is $20 now.", structured: {} },
+      result: { text: APPLIED_TEXT, structured: {} },
       expires_at: "2026-01-08T00:00:00.000Z",
     });
   }
@@ -442,7 +445,7 @@ describe("McpServer", () => {
       expect(waited.structuredContent).toMatchObject({ status: "finished", finished: true });
       expect(waited.content[0]).toMatchObject({
         type: "text",
-        text: expect.stringContaining("$20"),
+        text: expect.stringContaining(APPLIED_TEXT),
       });
       expect(seen[0]).toMatchObject({ progress: 0 });
     } finally {

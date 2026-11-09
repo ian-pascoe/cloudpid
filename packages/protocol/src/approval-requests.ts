@@ -67,7 +67,9 @@ export const approvalApproved = (status: ApprovalStatus): boolean =>
  * Why a request was withdrawn, as a clause the caller (`approval_wait`'s `reason`) and the owner (the Settings page) both
  * read after "Withdrawn: ": the one source of the words. Undefined when the cause is not known.
  */
-export const withdrawalReason = (withdrawal: ApprovalWithdrawal | undefined): string | undefined => {
+export const withdrawalReason = (
+  withdrawal: ApprovalWithdrawal | undefined,
+): string | undefined => {
   switch (withdrawal) {
     case "withdrawn":
       return "the agent that asked took it back";

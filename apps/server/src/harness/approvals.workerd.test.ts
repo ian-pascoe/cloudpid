@@ -44,31 +44,32 @@ const PI: AgentChangeVia = { auth: "oauth", client: { name: "pi" }, clientId: "g
 /** A size the Global size limit does not have by default, above every default size. */
 const LARGER = DEFAULT_CONTAINER_SETTINGS.maxInstance === "standard-4" ? "mem-12" : "standard-4";
 
-/** The methods a row puts in place of the real Registry's. */
-type Overrides = Partial<Record<keyof HarnessRegistry, (...input: ReadonlyArray<never>) => unknown>>;
+/** A call of the real Registry's method `method` over the Durable Object `stub`, as the stub calls it. */
+const callOn =
+  (stub: DurableObjectStub<RealRegistry>) =>
+  async <K extends keyof RegistryMethods>(method: K, ...input: Parameters<RegistryMethods[K]>) =>
+    runInDurableObject(stub, (registry: RealRegistry) => registry.call(method, ...input));
+
+type RegistryCall = ReturnType<typeof callOn>;
+
+/** The methods a row puts in place of the real Registry's, over its `call`. */
+type Overrides = (call: RegistryCall) => Partial<HarnessRegistry>;
 
 /** A fresh real Registry, and the asking, applying and following parts over it, with `overrides` in place of its own. */
-const started = async (overrides: Overrides = {}) => {
-  const stub = env.REAL_REGISTRIES.get(env.REAL_REGISTRIES.newUniqueId());
-
-  const call = async <K extends keyof RegistryMethods>(
-    method: K,
-    ...input: Parameters<RegistryMethods[K]>
-  ) => runInDurableObject(stub, (registry: RealRegistry) => registry.call(method, ...input));
+const started = async (overrides: Overrides = () => ({})) => {
+  const call = callOn(env.REAL_REGISTRIES.get(env.REAL_REGISTRIES.newUniqueId()));
+  const replaced = overrides(call);
 
   await call("agentChangeFeatures");
 
-  /** The real Registry's method, called by name over the test's Durable Object, as the stub calls it. */
-  const real =
-    (method: string) =>
-    (...input: ReadonlyArray<unknown>) =>
-      Effect.promise(() => call(method as keyof RegistryMethods, ...(input as [never])));
-
-  // SAFETY: each method is the real Registry's, or the row's own of the same signature.
+  // SAFETY: each method is the row's own or the real Registry's, called by name with the input the caller gave it.
   const registry = new Proxy(
     {},
     {
-      get: (_target, method: string) => overrides[method as keyof Overrides] ?? real(method),
+      get: (_target, method: string) =>
+        replaced[method as keyof HarnessRegistry] ??
+        ((...input: ReadonlyArray<unknown>) =>
+          Effect.promise(() => call(method as keyof RegistryMethods, ...(input as [never])))),
     },
   ) as HarnessRegistry;
 
@@ -90,7 +91,6 @@ const started = async (overrides: Overrides = {}) => {
 
   return {
     call,
-    real,
     /** Ask for `tool`'s change with `args`, as the dispatcher hands it over. */
     ask: async (
       tool: string,
@@ -216,9 +216,9 @@ describe("an ask", () => {
   });
 
   it("answers the Registry's refusal of a check that heals (the kept Secrets changed meanwhile) as unavailable", async () => {
-    const { ask } = await started({
+    const { ask } = await started(() => ({
       requestApproval: () => Effect.succeed({ status: "refused", message: SECRETS_CHANGED }),
-    });
+    }));
 
     expect(await ask("settings_spend_limit_set", SPEND)).toMatchObject({
       ok: false,
@@ -314,14 +314,17 @@ describe("an approved request's apply", () => {
 
   it("finishes from the claim a run that overlapped a lapsed lease committed, when its own write finds the target changed", async () => {
     let lookups = 0;
+
     // The first look at the claim misses the overlapping run's write, which commits right after it.
-    const { ask, call, apply, real } = await started({
-      changeRequest: (input: { readonly id: string }) => {
+    const { ask, call, apply } = await started((registry) => ({
+      changeRequest: (input) => {
         lookups += 1;
 
-        return lookups === 1 ? Effect.succeed(null) : real("changeRequest")(input);
+        return lookups === 1
+          ? Effect.succeed(null)
+          : Effect.promise(() => registry("changeRequest", input));
       },
-    });
+    }));
 
     const id = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
     const approved = await call("answerApproval", { id, approved: true });
@@ -465,7 +468,10 @@ describe("approval_wait", () => {
   });
 
   it("answers a wait cut short (a deploy) with the request as read once after, interrupted", async () => {
-    const { ask, wait } = await started({ waitApproval: () => Effect.die("the RPC was cut") });
+    const { ask, wait } = await started(() => ({
+      waitApproval: () => Effect.die("the RPC was cut"),
+    }));
+
     const id = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
 
     expect(okValue(await wait(id, 30))).toMatchObject({

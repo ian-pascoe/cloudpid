@@ -17,12 +17,7 @@ import type * as Types from "effect/Types";
 import type { StoredApproval } from "../registry/approvals.ts";
 import type { ChangeClaim } from "../registry/change-requests.ts";
 import { healingRefusal } from "../registry/via-secrets.ts";
-import {
-  approvalTools,
-  type CoreError,
-  isoTime,
-  type ScopeRef,
-} from "./approval-tools.ts";
+import { approvalTools, type CoreError, isoTime, type ScopeRef } from "./approval-tools.ts";
 import type { ApprovalsRegistry, EndpointWrites } from "./services.ts";
 
 /** An ask as the dispatcher hands it over: the tool, its decoded input, who asks, and its digests. */

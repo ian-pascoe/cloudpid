@@ -552,8 +552,7 @@ export const harnessDispatch = (
 
   const ask = askApproval(services);
 
-  const asking = <Name extends ApprovalAskToolName>(tool: Name) =>
-    serveAsk(ask, tool, newAttempt);
+  const asking = <Name extends ApprovalAskToolName>(tool: Name) => serveAsk(ask, tool, newAttempt);
 
   // `settings_reset` of a Limit asks the owner, as the Limit tools do; any other field is reset at once.
   const resetChange = settingsChange("settings_reset", (cores) => cores.settings_reset);

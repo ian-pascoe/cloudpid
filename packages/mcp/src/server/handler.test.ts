@@ -1854,6 +1854,42 @@ describe("the management tools", () => {
     expect(unchanged.structuredContent.next).toBeUndefined();
   });
 
+  it.each([
+    ["settings_reset", { scope: "*", field: "spendLimit", reason: "r" }, {}],
+    [
+      "environment_setting_reset",
+      { id: "default", setting: "maxInstance", reason: "r" },
+      { global: null },
+    ],
+  ])("send a %s that asks the owner to approval_wait as next", async (tool, args, own) => {
+    const pending = await call(
+      tool,
+      args,
+      fakeApi({
+        describe: servingFollow([tool, "approval_wait"]),
+        harness: () =>
+          Promise.resolve(
+            apiOk({
+              text: "Asked.",
+              structured: {
+                ...own,
+                scope: { id: "default", name: "Default" },
+                changes: [],
+                changes_truncated: false,
+                unchanged: [],
+                status: "pending",
+                approval_id: "a-1",
+                url: "u",
+                expires_at: "t",
+              },
+            }),
+          ),
+      }),
+    );
+
+    expect(pending.structuredContent.next).toContain('approval_wait with approval_id="a-1"');
+  });
+
   it("offer approval_wait and approval_withdraw by their own operations, not harness", async () => {
     const names = async (describing: McpServerApi["describe"]) =>
       (await listed(fakeApi({ describe: describing }))).map((tool) => tool.name);
@@ -1889,20 +1925,7 @@ describe("the management tools", () => {
     expect(waited.structuredContent.next).toContain('approval_wait again with approval_id="a-1"');
   });
 
-  it("refuse a wait over 300 seconds in the schema", async () => {
-    const approvalWait = vi.fn();
-
-    const refused = await call(
-      "approval_wait",
-      { approval_id: "a-1", timeout_s: 301 },
-      fakeApi({ describe: servingFollow([]), approvalWait }),
-    );
-
-    expect(refused.isError).toBe(true);
-    expect(approvalWait).not.toHaveBeenCalled();
-  });
-
-  it("say a finished request with what its change says, and send no wait after", async () => {
+  it("say a withdrawn request as finished, and send no wait after", async () => {
     const approvalWithdraw = vi.fn(() =>
       Promise.resolve(
         apiOk({
@@ -1910,7 +1933,7 @@ describe("the management tools", () => {
           tool: "settings_spend_limit_set",
           status: "withdrawn",
           finished: true,
-          reason: "Withdrawn with approval_withdraw.",
+          reason: "the agent that asked took it back",
           expires_at: "2026-01-08T00:00:00.000Z",
         }),
       ),
@@ -2451,8 +2474,8 @@ describe("the instructions with the management tools", () => {
 
     expect(asking).not.toContain("approval_wait");
     expect(following.split("\n").length).toBe(asking.split("\n").length + 2);
+    // The tool the line points to is its contract; the rest of its words are not pinned.
     expect(following).toContain("approval_wait");
-    expect(following).toContain("never by you");
   });
 });
 

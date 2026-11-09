@@ -16,14 +16,15 @@ import {
   SettingsField,
 } from "./harness-tools/index.ts";
 
-/** A declaration's surfaces: the endpoint's, and the Session's where it has one. */
-const surfacesOf = (
-  name: (typeof HARNESS_TOOL_NAMES)[number],
-): ReadonlyArray<{
+/** One surface of a declaration: which, and its input and output schemas. */
+type DeclaredSurface = {
   readonly surface: "session" | "endpoint";
   readonly input: Schema.Top;
   readonly output: Schema.Top;
-}> => {
+};
+
+/** A declaration's surfaces: the endpoint's, and the Session's where it has one. */
+const surfacesOf = (name: (typeof HARNESS_TOOL_NAMES)[number]): ReadonlyArray<DeclaredSurface> => {
   const tool: (typeof HARNESS_TOOLS)[typeof name] = HARNESS_TOOLS[name];
   const endpoint = { surface: "endpoint" as const, ...tool.endpoint };
 
@@ -43,13 +44,12 @@ const SCHEMAS = Arr.flatMap(HARNESS_TOOL_NAMES, (name) =>
 /** The writes that are no Agent change, so they take no `request_id` and have no replayed answer. */
 const NO_REQUEST_ID: ReadonlyArray<string> = ["settings_mcp_reload"];
 
-/** The tools the endpoint does not serve yet: no endpoint text names them (the stages that serve them add them). */
+/**
+ * The tools the endpoint does not serve yet: no endpoint text names them (the stages that serve them take them out, as
+ * S3a-2 did the Limit tools and `settings_instructions_set`).
+ */
 const UNSERVED_TOOLS = [
   "tool_search",
-  "settings_spend_limit_set",
-  "settings_subagent_depth_set",
-  "settings_subagent_workspaces_set",
-  "settings_instructions_set",
   "settings_mcp_enable",
   "settings_mcp_add",
   "settings_mcp_update",

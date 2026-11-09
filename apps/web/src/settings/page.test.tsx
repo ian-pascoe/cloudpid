@@ -427,6 +427,36 @@ describe("the requests waiting for the owner", () => {
       registry.dispose();
     }),
   );
+
+  it.effect(
+    "shows an Environment's size limit request in its Limits section, where the size limit is edited",
+    () =>
+      Effect.gen(function* () {
+        const sizeLimit: RegistryApproval = {
+          ...asked("work", "limits", "s1"),
+          card: {
+            tool: "environment_container_size_limit_set",
+            target: "Work",
+            change: "Size limit",
+            before: "standard-2",
+            after: "standard-4",
+            reason: "r",
+          },
+        };
+
+        const registry = fakeRegistry(DEFAULT_CONTAINER_SETTINGS, undefined, {
+          listApprovals: ({ scope }) => Effect.succeed(scope === "work" ? [sizeLimit] : []),
+        });
+
+        yield* loaded(registry);
+        registry.mount(approvalsAtom("work"));
+        yield* settled(registry, approvalsAtom("work"));
+
+        expect(render(registry, "work", section("limits"))).toContain(requestCardId("s1"));
+        expect(render(registry, "work", section("container"))).not.toContain(requestCardId("s1"));
+        registry.dispose();
+      }),
+  );
 });
 
 describe("every section", () => {

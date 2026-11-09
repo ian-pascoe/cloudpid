@@ -410,11 +410,9 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
         core: resetSizeLimitCore({
           environments,
           refuseSecrets: (texts) =>
-            Effect.forEach(
-              texts,
-              ({ what, text }) => plainText(text, what, "Say it without it."),
-              { discard: true },
-            ),
+            Effect.forEach(texts, ({ what, text }) => plainText(text, what, "Say it without it."), {
+              discard: true,
+            }),
           target: (id) => Effect.succeed({ environment: id, own: false }),
         }),
         section: "limits",
