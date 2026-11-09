@@ -68,15 +68,109 @@ export type ScheduleSource = typeof ScheduleSource.Type;
 /**
  * A webhook source: deliveries to the Trigger's URL, signed in `format`, and passed on only when they match `match`
  * (`docs/architecture/triggers.md` → Webhooks, Filters). The URL and Signing secret are the Trigger object's alone, never
- * part of the definition.
+ * part of the definition. A `github` source may name a GitHub `repo` (`owner/name`) and the `events` it is sent: a
+ * GitHub-managed hook, which the Trigger's object makes on that repo as the GitHub App (`triggers.md` → GitHub-managed
+ * hooks). They are fixed at creation, as the format is. A caller offers them only to a Registry whose
+ * `triggerFeatures` lists `githubHooks`, since an older one would drop them and keep a Trigger with no hook.
  */
 export const WebhookSource = Schema.Struct({
   type: Schema.Literal("webhook"),
   format: WebhookFormat,
   match: Schema.optionalKey(TriggerMatch),
+  repo: Schema.optionalKey(Schema.String),
+  events: Schema.Array(Schema.String).pipe(Schema.optionalKey),
 });
 
 export type WebhookSource = typeof WebhookSource.Type;
+
+/** The repo and events of a GitHub-managed hook. */
+export type GitHubHookSource = { readonly repo: string; readonly events: ReadonlyArray<string> };
+
+/** `owner/name`: GitHub's owner starts with a letter or digit, and no repo is named `.` or `..`. */
+const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/u;
+
+const EVENT_PATTERN = /^[a-z][a-z_]{0,63}$/u;
+
+/**
+ * Why a webhook source's GitHub-managed hook can't be made, or undefined when it can (or it names none): a `github`
+ * source names a repo as `owner/name` and at least one event, each a GitHub event's name, or neither.
+ */
+export const githubHookProblem = (source: WebhookSource): string | undefined => {
+  const { repo, events } = source;
+
+  if (repo === undefined && events === undefined) return undefined;
+
+  if (source.format !== "github") {
+    return "Only a github webhook names a repo and events: GitHub makes its hook";
+  }
+
+  if (repo === undefined || !REPO_PATTERN.test(repo)) {
+    return "A GitHub-managed hook names its repo as owner/name, like octo-org/octo-repo";
+  }
+
+  if (events === undefined || events.length === 0) {
+    return "A GitHub-managed hook lists the events GitHub sends it, like workflow_run";
+  }
+
+  const odd = Arr.findFirst(events, (event) => !EVENT_PATTERN.test(event));
+
+  if (Option.isSome(odd)) {
+    return `${JSON.stringify(odd.value)} is not a GitHub event's name: list each one, like workflow_run or issue_comment`;
+  }
+
+  return new Set(events).size === events.length
+    ? undefined
+    : "A GitHub-managed hook lists each event once";
+};
+
+/** The GitHub-managed hook `holder` has (its repo and events), or undefined for none. */
+export const githubHookOf = (
+  holder: { readonly source: TriggerSource } | undefined,
+): GitHubHookSource | undefined => {
+  const source = holder?.source;
+
+  return source?.type === "webhook" &&
+    source.format === "github" &&
+    source.repo !== undefined &&
+    source.events !== undefined
+    ? { repo: source.repo, events: source.events }
+    : undefined;
+};
+
+/**
+ * Why a GitHub-managed hook is not in place: `permission` (its installation hasn't accepted Webhooks: write),
+ * `not_installed` (the App is not on the repo's owner), `refused` (GitHub said no, in its words: a repo it doesn't
+ * know, its 20 hooks per event), `unreachable` (GitHub could not be asked; tried again), `no_origin` (the stage has no
+ * public origin, as under `alchemy dev`). A code a later version adds reads as `unknown`.
+ */
+export const GitHubHookProblemCode = openLiterals(
+  Schema.Literals([
+    "permission",
+    "not_installed",
+    "refused",
+    "unreachable",
+    "no_origin",
+    "unknown",
+  ]),
+  "unknown",
+);
+
+export type GitHubHookProblemCode = typeof GitHubHookProblemCode.Type;
+
+/**
+ * Where a Trigger's GitHub-managed hook is (`triggers.md` → GitHub-managed hooks): `ready` (made, and current with the
+ * Trigger URL and Signing secret), `pending` (not made or updated yet: tried at the next touch), or `failed` with
+ * `problem`, tried again with backoff and at each change. A state a later version adds reads as `unknown`.
+ */
+export const GitHubHookStatus = Schema.Struct({
+  repo: Schema.String,
+  state: openLiterals(Schema.Literals(["ready", "pending", "failed", "unknown"]), "unknown"),
+  problem: Schema.optionalKey(
+    Schema.Struct({ code: GitHubHookProblemCode, message: Schema.String }),
+  ),
+});
+
+export type GitHubHookStatus = typeof GitHubHookStatus.Type;
 
 /** A source this version does not know (a later slice's, say): its Trigger is listed, and never fired here. */
 export const UnknownSource = Schema.Struct({ type: Schema.Literal("unknown") });
@@ -97,9 +191,8 @@ export type TriggerSourceInput = typeof TriggerSourceInput.Type;
 export const sourceProblem = (source: TriggerSourceInput): string | undefined =>
   source.type === "schedule"
     ? scheduleProblem(source)
-    : source.match === undefined
-      ? undefined
-      : matchProblem(source.match);
+    : (githubHookProblem(source) ??
+      (source.match === undefined ? undefined : matchProblem(source.match)));
 
 /** The webhook `holder` fires on, or undefined for none. */
 export const webhookOf = (
@@ -546,6 +639,8 @@ export const TriggerOverview = Schema.Struct({
    * many later Fires were merged into it. Absent for none, and from a server that doesn't say.
    */
   waiting: Schema.optionalKey(Schema.Struct({ since: Schema.Finite, merged: Schema.Int })),
+  /** Where its GitHub-managed hook is, for a Trigger that has one; absent for none, and from an object that doesn't say. */
+  github: Schema.optionalKey(GitHubHookStatus),
 });
 
 export type TriggerOverview = typeof TriggerOverview.Type;
@@ -559,12 +654,15 @@ export type FireNowQueued = typeof FireNowQueued.Type;
  * A webhook Trigger's URL and Signing secret, as the owner reveals them (`triggers.md` → Secrets): the URL's `path`
  * (`/hooks/<id>/<token>`), and the stage's `origin` before it, absent where the page's own is the one (`alchemy dev`).
  * The `secret` is as the sender is given it: `whsec_<base64>` for a `standard` Trigger, else the key itself. The agent
- * never reads this.
+ * never reads this. Despite the type's name, `github` is a different thing: the Trigger's GitHub-managed hook
+ * (`triggers.md` → GitHub-managed hooks), the hook GitHub keeps on a repo with its own copy of the Trigger URL and
+ * Signing secret. It is present for a Trigger that has one, and after a rotation says whether that copy was updated.
  */
 export const TriggerHook = Schema.Struct({
   origin: Schema.optionalKey(Schema.String),
   path: Schema.String,
   secret: Schema.String,
+  github: Schema.optionalKey(GitHubHookStatus),
 });
 
 export type TriggerHook = typeof TriggerHook.Type;

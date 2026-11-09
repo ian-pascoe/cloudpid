@@ -5,7 +5,8 @@ import { GITHUB_APP_PERMISSIONS } from "@cloudpid/config";
 
 /**
  * The manifest GitHub registers the app from: public (so it can be installed on the owner's organizations too), with
- * `GITHUB_APP_PERMISSIONS`, no webhook until the triggers need one, and back to the setup once registered.
+ * `GITHUB_APP_PERMISSIONS`, no webhook of its own (Triggers make repo webhooks instead, ADR-0049), and back to the setup
+ * once registered.
  */
 export const githubAppManifest = (options: {
   readonly name: string;

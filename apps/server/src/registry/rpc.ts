@@ -56,6 +56,7 @@ import type { Builds } from "./builds.ts";
 import { hookPath } from "../hooks-path.ts";
 import type { HookAnswer, TriggerUnreachable } from "../trigger/object.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
+import { githubHookRefusal } from "./trigger-features.ts";
 import type { TriggerWrite } from "./triggers.ts";
 import type { DraftBranches } from "./draft-branches.ts";
 import { withInstalled } from "./skill-badges.ts";
@@ -225,6 +226,8 @@ const triggerHook = (
       };
 
       if (origin !== undefined && origin !== "") hook.origin = origin;
+
+      if (answer.github !== undefined) hook.github = answer.github;
 
       return Effect.succeed(hook);
     }
@@ -1031,7 +1034,7 @@ export const serveRegistryRpc = <R = never>(
               definitions,
               (definition) =>
                 triggers.state(definition.id).pipe(
-                  Effect.map(({ lastFire, waiting }): TriggerOverview => {
+                  Effect.map(({ lastFire, waiting, github }): TriggerOverview => {
                     const overview: Mutable<TriggerOverview> = {
                       definition,
                       lastFire,
@@ -1040,6 +1043,8 @@ export const serveRegistryRpc = <R = never>(
 
                     // An object older than this Worker says nothing of it.
                     if (Predicate.isNotNullish(waiting)) overview.waiting = waiting;
+
+                    if (Predicate.isNotNullish(github)) overview.github = github;
 
                     return overview;
                   }),
@@ -1052,7 +1057,11 @@ export const serveRegistryRpc = <R = never>(
         ),
       listSessionTriggers: ({ session }) => registry.listSessionTriggers({ session }),
       createTrigger: ({ id, trigger }) =>
-        registry.createTrigger({ id, trigger }).pipe(
+        githubHookRefusal(registry, trigger.source).pipe(
+          Effect.flatMap((refused) =>
+            refused === undefined ? Effect.void : Effect.fail(failed(refused)),
+          ),
+          Effect.andThen(registry.createTrigger({ id, trigger })),
           Effect.flatMap((write) =>
             triggerWritten(
               write,

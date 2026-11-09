@@ -27,9 +27,9 @@ export type TriggerNamespace = Pick<Cloudflare.DurableObject<Trigger>, "getByNam
 export type TriggerObjects = {
   /**
    * Wake Trigger `id`'s object to read its definition again: arm, re-arm, disarm or wipe it. Tried `WAKE_RETRIES` more
-   * times, then fails.
+   * times, then fails. Answers what the object says of itself once woken (its GitHub-managed hook's first try, say).
    */
-  readonly wake: (id: string) => Effect.Effect<void, TriggerUnreachable>;
+  readonly wake: (id: string) => Effect.Effect<TriggerState, TriggerUnreachable>;
   /** Wake Trigger `id`'s object once, a failure logged and left to its next alarm. Never fails. */
   readonly sync: (id: string) => Effect.Effect<void>;
   /** Wipe Trigger `id`'s object: its alarm and its storage. Never fails. */
@@ -93,12 +93,13 @@ export const triggerObjects = (
       ),
     );
 
-  const once = (id: string) => reach(id, (stub) => stub.sync()).pipe(Effect.asVoid);
+  const once = (id: string) => reach(id, (stub) => stub.sync());
 
   return {
     wake: (id) => once(id).pipe(Effect.retry({ schedule: wakeSchedule, times: WAKE_RETRIES })),
     sync: (id) =>
       once(id).pipe(
+        Effect.asVoid,
         Effect.catchCause((cause) =>
           Effect.logWarning("A Trigger's object could not be woken", cause),
         ),

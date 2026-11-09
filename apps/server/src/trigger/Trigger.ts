@@ -5,7 +5,10 @@
 // answers `send`), and the spare and Build upkeep after a Fire took a spare, as after the owner's start
 // (`upkeepAfterStart`). A webhook Trigger's secrets are sealed with `SecretsConfig`'s key under the purpose
 // `trigger:<id>`, and the App's own bot account (for the bot-loop guard) is asked of GitHub as the App
-// (`GitHubAppConfig`). Every span is a custom span of the Worker's trace.
+// (`GitHubAppConfig`). A GitHub-managed hook is made, updated and deleted as the App too, with tokens that ask for
+// `repository_hooks: write` alone (`github-hook.ts`), at the stage's own origin (`CLOUDPID_APP_ORIGIN`, none under
+// `alchemy dev`), and its orphan sweep asks the Registry's `knownTriggers`. Every span is a custom span of the Worker's
+// trace.
 // @effect-diagnostics globalFetch:off globalDate:off -- GitHub is asked with `fetch`, as `GitHubApp` is everywhere.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { openKeptVault } from "@cloudpid/extensions/secrets/core";
@@ -13,10 +16,11 @@ import { ApiResult, FireResult, SubmitResult, TriggerDefinition } from "@cloudpi
 import { workersTelemetry } from "@cloudpid/telemetry";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
-import { GitHubApp } from "../github/app.ts";
+import { APP_ORIGIN_VAR } from "../deployment.ts";
 import { GitHubAppConfig } from "../github/config.ts";
 import { buildUpkeep } from "../registry/builds.ts";
 import { REGISTRY_NAME, Registry } from "../registry/Registry.ts";
@@ -26,6 +30,7 @@ import { Session } from "../session/Session.ts";
 import { workersTracing } from "../tracing.ts";
 import { WORKSPACE_BINDING } from "../workspace/binding.ts";
 import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
+import { triggerGitHub } from "./github-hook.ts";
 import { TRIGGER_CLASS, triggerOfObject } from "./name.ts";
 import {
   type TriggerHandlers,
@@ -91,13 +96,17 @@ export const TriggerLive = Trigger.make(
           ),
         );
 
-        // The App's own bot account, asked of GitHub once (`GET /app`); the guard falls back to any bot while it can't.
-        const app = new GitHubApp({
+        // The App, its tokens asking for Webhooks: write alone, for the hook; its own bot account is asked of GitHub once
+        // (`GET /app`, no token), and the guard falls back to any bot while it can't.
+        const { app, hooks } = triggerGitHub({
           appId: Redacted.value(github.appId),
           privateKey: Redacted.value(github.privateKey),
           fetch: (url, init) => fetch(url, init),
           now: () => Date.now(),
         });
+
+        // A live stage's Trigger URLs start with its origin; `alchemy dev` has none GitHub could reach.
+        const origin = worker[APP_ORIGIN_VAR];
 
         const ports: TriggerPorts = {
           definition: (id) =>
@@ -145,6 +154,14 @@ export const TriggerLive = Trigger.make(
               ).pipe(Effect.as(undefined)),
             ),
           ),
+          github: {
+            hooks,
+            origin: Predicate.isString(origin) && origin !== "" ? origin : undefined,
+            known: (ids) =>
+              registry()
+                .knownTriggers({ ids })
+                .pipe(Effect.catchCause(unreachable("The Registry's knownTriggers"))),
+          },
         };
 
         const handlers = triggerHandlers({

@@ -9,7 +9,10 @@ export type GitHubPermissionLevel = "read" | "write";
 /** A set of GitHub permissions: each permission's name and its level. */
 export type GitHubPermissions = Readonly<Record<string, GitHubPermissionLevel>>;
 
-/** The permissions the GitHub App asks for (ADR-0025): what the agent's git and gh need, and CI's state to read. */
+/**
+ * The permissions the GitHub App asks for (ADR-0025): what the agent's git and gh need, CI's state to read, and the repo
+ * webhooks a Trigger's object makes (`repository_hooks`, ADR-0049), which only its own token asks for.
+ */
 export const GITHUB_APP_PERMISSIONS = {
   contents: "write",
   pull_requests: "write",
@@ -19,12 +22,13 @@ export const GITHUB_APP_PERMISSIONS = {
   checks: "read",
   statuses: "read",
   metadata: "read",
+  repository_hooks: "write",
 } as const satisfies GitHubPermissions;
 
 /**
  * The permissions of the tokens a Container's commands and the Diff pane's GitHub calls get: asked for explicitly, since
- * GitHub reads a request with none as all of the installation's. The same values as the App's until the App gains
- * `repository_hooks` (ADR-0049); that permission is never listed here.
+ * GitHub reads a request with none as all of the installation's. The App's, but `repository_hooks` (ADR-0049), which is
+ * never listed here: a prompt-injected `gh api` could otherwise add a hook that sends a repo's events anywhere.
  */
 export const CONTAINER_GITHUB_PERMISSIONS = {
   contents: "write",

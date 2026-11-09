@@ -5,6 +5,8 @@
 import {
   type AgentChange,
   asChangeJson,
+  type GitHubHookStatus,
+  githubHookOf,
   triggerChangeJson,
   type TriggerChanged,
   type TriggerChangeValue,
@@ -41,6 +43,8 @@ export type FakeTriggers = {
   readonly ids: Array<string>;
   /** The changing methods called, in turn: a call answered `unchanged` too. */
   readonly reached: Array<string>;
+  /** Where a Trigger made with a GitHub-managed hook has it, by id: `ready` for one not set. */
+  readonly hookAnswers: Map<string, GitHubHookStatus>;
 };
 
 /** A fake `TriggerAccess` over `environments` (id → name), its Triggers made at `now`. */
@@ -54,6 +58,7 @@ export const fakeTriggers = (
   const changes: Array<AgentChange & { readonly author: ChangeAuthor }> = [];
   const ids = ["0190-a", "0190-b", "0190-c"];
   const reached: Array<string> = [];
+  const hookAnswers = new Map<string, GitHubHookStatus>();
   let drawn = 0;
 
   const record = (
@@ -231,7 +236,15 @@ export const fakeTriggers = (
       Effect.sync(() => {
         reached.push("create");
 
-        return create(id, trigger, author);
+        const applied = create(id, trigger, author);
+        const hook = githubHookOf(trigger);
+
+        return hook === undefined
+          ? { applied }
+          : {
+              applied,
+              github: hookAnswers.get(id) ?? { repo: hook.repo, state: "ready" as const },
+            };
       }),
     update: ({ id, patch, expected, author }) =>
       Effect.sync(() => {
@@ -259,5 +272,5 @@ export const fakeTriggers = (
       }),
   };
 
-  return { access, held, changes, ids, reached };
+  return { access, held, changes, ids, reached, hookAnswers };
 };

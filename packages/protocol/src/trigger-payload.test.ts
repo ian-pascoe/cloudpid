@@ -49,6 +49,31 @@ describe("fencePayload", () => {
     });
   });
 
+  it("shows a GitHub body trimmed of its links, and says so; another format's as it came", () => {
+    const body = JSON.stringify({
+      action: "opened",
+      repository: { full_name: "o/r" },
+      hooks_url: "h",
+    });
+
+    const path = payloadFilePath("t1:d1");
+
+    const trimmed = fencePayload({ payload: github({ body }), path, redact: keep });
+
+    const standard = fencePayload({
+      payload: github({ format: "standard", body }),
+      path,
+      redact: keep,
+    });
+
+    expect(trimmed.block).toContain('trimmed="true"');
+    expect(trimmed.block).toContain(
+      "{&quot;action&quot;:&quot;opened&quot;,&quot;repository&quot;:&quot;o/r&quot;}<",
+    );
+    expect(standard.block).not.toContain('trimmed="true"');
+    expect(standard.block).toContain("hooks_url");
+  });
+
   it("puts at most 16 KiB inline and says the rest is in the file", () => {
     const body = "a".repeat(MAX_INLINE_PAYLOAD_BYTES + 5000);
 

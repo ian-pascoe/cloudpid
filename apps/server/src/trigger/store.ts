@@ -1,9 +1,11 @@
 // The `Trigger` object's storage (`docs/architecture/triggers.md` → The Trigger object and the Registry): the definition
 // it caches at a revision, how far its Schedule was handled, its pending Fires and its fire log (the last
 // `MAX_FIRE_LOG`). Synchronous over the object's SQLite. Migrations only add, and each shipped one has its digest in
-// `migrations.manifest.ts`. The webhook parts (migration 2): the token and Signing secret, sealed, with the token's
+// `migrations.manifest.ts`. The webhook parts (migration 3): the token and Signing secret, sealed, with the token's
 // keyed hash; the per-day counts of refused and filtered deliveries (kept `COUNT_DAYS`); the time of the last delivery
-// and of GitHub's ping; the last delivered body, for Fire again; and the payload a pending Fire carries. The object opens it at its first use (`object.ts`), and a read of an object that has no
+// and of GitHub's ping; the last delivered body, for Fire again; and the payload a pending Fire carries. A GitHub-managed
+// hook (migration 4): its id at GitHub, what it was last set with and its last failure, and the hooks still to delete,
+// which outlive a wipe. The object opens it at its first use (`object.ts`), and a read of an object that has no
 // storage (never synced, or wiped) answers empty without opening it (`hasTriggerStore`), so a read never makes the
 // tables of a removed Trigger again.
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off globalDate:off -- store operations over SQLite and JSON text.
@@ -13,6 +15,7 @@ import {
   FireOutcome,
   FirePayload,
   type FireRecord,
+  GitHubHookProblemCode,
   FireSource,
   MAX_FIRE_LOG,
   TriggerDefinition,
@@ -85,13 +88,66 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       last_body BLOB
     ) STRICT`);
   },
+  // 4: a GitHub-managed hook (`docs/architecture/triggers.md` → GitHub-managed hooks): `trigger_github_hook`, the one row
+  // of its repo, its id at GitHub (null until made), what it was last set with (`synced`, the URL's origin, the token's
+  // keyed hash and the sealed Signing secret, so a rotation shows it out of date), the last failure (JSON `{code,
+  // message}`) and when to try again; and `trigger_github_deletes`, the hooks still to delete, each with when the first
+  // try was (given up a day later), its tries and the next. The deletes outlive the object's wipe.
+  (sql) => {
+    sql.exec(`CREATE TABLE trigger_github_hook (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      repo TEXT NOT NULL,
+      hook_id INTEGER,
+      synced TEXT,
+      problem TEXT,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_try_at INTEGER
+    ) STRICT`);
+    sql.exec(`CREATE TABLE trigger_github_deletes (
+      repo TEXT NOT NULL,
+      hook_id INTEGER NOT NULL,
+      since INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_try_at INTEGER NOT NULL,
+      PRIMARY KEY (repo, hook_id)
+    ) STRICT`);
+  },
 ];
+
+/** The table a wipe keeps: the hooks still to delete at GitHub. */
+const KEPT_BY_WIPE = "trigger_github_deletes";
 
 /** How long a delivery's Fire is held against a repeat once it is in the fire log: the Registry's memory of its key. */
 export const DEDUPE_MS = 24 * 60 * 60_000;
 
 /** How many UTC days the per-day counts of refused and filtered deliveries are kept, today's included. */
 export const COUNT_DAYS = 30;
+
+/**
+ * What the object keeps of its GitHub-managed hook: its repo, its id at GitHub once made, what it was last set with
+ * (`synced`), and the last failure with when it is tried again.
+ */
+export type KeptGitHubHook = {
+  readonly repo: string;
+  readonly hookId: number | undefined;
+  readonly synced: string | undefined;
+  readonly problem: { readonly code: GitHubHookProblemCode; readonly message: string } | undefined;
+  readonly attempts: number;
+  readonly nextTryAt: number | undefined;
+};
+
+/** A hook still to delete at GitHub: its repo and id, when the first try was, its tries, and the next. */
+export type HookDelete = {
+  readonly repo: string;
+  readonly hookId: number;
+  readonly since: number;
+  readonly attempts: number;
+  readonly nextTryAt: number;
+};
+
+const HookProblem = Schema.Struct({ code: GitHubHookProblemCode, message: Schema.String });
+
+const decodeHookProblem = Schema.decodeUnknownOption(Schema.fromJsonString(HookProblem));
 
 /** What the object keeps of a Trigger's token and Signing secret: both sealed, and the token's keyed hash. */
 export type KeptSecrets = {
@@ -471,6 +527,124 @@ export const openTriggerStore = (storage: MigrationStorage) => {
       const payload = firePayloadOf(row?.last_payload ?? null);
 
       return payload === undefined ? undefined : { payload, body: bytesOf(row?.last_body ?? null) };
+    },
+
+    /** The GitHub-managed hook, or undefined for none (a failure that no longer reads is none). */
+    githubHook: (): KeptGitHubHook | undefined => {
+      const row = sql
+        .exec<{
+          repo: string;
+          hook_id: number | null;
+          synced: string | null;
+          problem: string | null;
+          attempts: number;
+          next_try_at: number | null;
+        }>(
+          "SELECT repo, hook_id, synced, problem, attempts, next_try_at FROM trigger_github_hook WHERE id = 1",
+        )
+        .toArray()[0];
+
+      if (row === undefined) return undefined;
+
+      return {
+        repo: row.repo,
+        hookId: row.hook_id ?? undefined,
+        synced: row.synced ?? undefined,
+        problem:
+          row.problem === null ? undefined : Option.getOrUndefined(decodeHookProblem(row.problem)),
+        attempts: row.attempts,
+        nextTryAt: row.next_try_at ?? undefined,
+      };
+    },
+
+    /** Keep `hook` as the GitHub-managed hook, in place of any. */
+    keepGitHubHook: (hook: KeptGitHubHook): void => {
+      sql.exec(
+        `INSERT INTO trigger_github_hook (id, repo, hook_id, synced, problem, attempts, next_try_at)
+           VALUES (1, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET repo = excluded.repo, hook_id = excluded.hook_id, synced = excluded.synced,
+             problem = excluded.problem, attempts = excluded.attempts, next_try_at = excluded.next_try_at`,
+        hook.repo,
+        hook.hookId ?? null,
+        hook.synced ?? null,
+        hook.problem === undefined ? null : JSON.stringify(hook.problem),
+        hook.attempts,
+        hook.nextTryAt ?? null,
+      );
+    },
+
+    /** Forget the GitHub-managed hook (its delete is kept apart, `deleteLater`). */
+    dropGitHubHook: (): void => {
+      sql.exec("DELETE FROM trigger_github_hook");
+    },
+
+    /** The hooks still to delete at GitHub, the next due first. */
+    hookDeletes: (): Array<HookDelete> =>
+      Arr.map(
+        sql
+          .exec<{
+            repo: string;
+            hook_id: number;
+            since: number;
+            attempts: number;
+            next_try_at: number;
+          }>("SELECT * FROM trigger_github_deletes ORDER BY next_try_at, repo, hook_id")
+          .toArray(),
+        (row) => ({
+          repo: row.repo,
+          hookId: row.hook_id,
+          since: row.since,
+          attempts: row.attempts,
+          nextTryAt: row.next_try_at,
+        }),
+      ),
+
+    /** Keep `hook` to delete at GitHub, in place of the same hook's row. */
+    deleteLater: (hook: HookDelete): void => {
+      sql.exec(
+        `INSERT INTO trigger_github_deletes (repo, hook_id, since, attempts, next_try_at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (repo, hook_id) DO UPDATE SET attempts = excluded.attempts, next_try_at = excluded.next_try_at`,
+        hook.repo,
+        hook.hookId,
+        hook.since,
+        hook.attempts,
+        hook.nextTryAt,
+      );
+    },
+
+    /** Keep hook `hookId` on `repo` to delete at GitHub, its first try due at `at`. */
+    deleteHook: (repo: string, hookId: number, at: number): void => {
+      sql.exec(
+        `INSERT INTO trigger_github_deletes (repo, hook_id, since, attempts, next_try_at) VALUES (?, ?, ?, 0, ?)
+           ON CONFLICT (repo, hook_id) DO NOTHING`,
+        repo,
+        hookId,
+        at,
+        at,
+      );
+    },
+
+    /**
+     * Wipe everything but the hooks still to delete, in one transaction: what a removed Trigger's object keeps until
+     * its alarm deleted them at GitHub.
+     */
+    wipeKeepingDeletes: (): void => {
+      storage.transactionSync(() => {
+        // Every table of the object's, read from its schema, so a table a later migration adds is wiped too.
+        const tables = sql
+          .exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'trigger\\_%' ESCAPE '\\' AND name != ?",
+            KEPT_BY_WIPE,
+          )
+          .toArray();
+
+        for (const { name } of tables) sql.exec(`DELETE FROM ${name}`);
+      });
+    },
+
+    /** Hook `hookId` on `repo` is deleted at GitHub, or given up on. */
+    hookDeleted: (repo: string, hookId: number): void => {
+      sql.exec("DELETE FROM trigger_github_deletes WHERE repo = ? AND hook_id = ?", repo, hookId);
     },
 
     /** The fire log, newest first, at most `limit` records. */

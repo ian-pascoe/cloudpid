@@ -1,7 +1,7 @@
 // cloudpid's GitHub App (ADR-0025, GLOSSARY.md → GitHub App): GitHub tokens minted on demand from the app's private
 // key, one per installation (an account the app is installed on). A Worker or a Workspace DO holds one `GitHubApp`,
 // which keeps the installations it found and the tokens it minted.
-// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off -- WebCrypto and `fetch` are Promise APIs, over native arrays.
+// @effect-diagnostics asyncFunction:off globalFetch:off preferEffectArray:off missingPipeableSignature:off extendsNativeError:off -- WebCrypto and `fetch` are Promise APIs, over native arrays. `GitHubNotInstalled` and `GitHubRefused` are thrown from that Promise code, kept by `#once` and thrown again to every caller in its wait, and read with `instanceof` by the callers that act on them (the hooks client's codes): plain `Error`s, as every failure `#once` keeps is.
 
 import type { GitHubPermissions } from "@cloudpid/config";
 import * as Option from "effect/Option";
@@ -71,6 +71,29 @@ export const tokenFor = (
 export const notInstalledOn = (account: string): string =>
   `The GitHub App is not installed on ${account}: install it there, on all repositories`;
 
+/** The app is not installed on `account`, so no token can be minted for it. */
+export class GitHubNotInstalled extends Error {
+  readonly account: string;
+
+  constructor(account: string) {
+    super(notInstalledOn(account));
+    this.account = account;
+  }
+}
+
+/**
+ * GitHub refused the app's own request (`status`): a mint, its installations, the app. A mint whose permissions the
+ * installation hasn't accepted is a 422.
+ */
+export class GitHubRefused extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 /** `cause` as a sentence. */
 const messageOf = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
@@ -88,6 +111,11 @@ export type GitHubTokens = {
   readonly live: () => ReadonlyArray<string>;
   /** Tell it GitHub refused `token` (a 401), so the next `token()` does not hand it out again. */
   readonly invalidate: (token: string) => void;
+  /**
+   * Forget the last failure to mint for `account` and to list the installations, so the next `token(account)` asks
+   * GitHub at once rather than telling it again: after the owner says something changed (a permission accepted).
+   */
+  readonly forget: (account: string) => void;
 };
 
 /** What a `GitHubApp` is made with. */
@@ -237,10 +265,11 @@ type Answer =
   | { readonly ok: false; readonly status: number; readonly message: string };
 
 /** What a refusal is told as. */
-const refusal = (status: number, said: string): Error => {
+const refusal = (status: number, said: string): GitHubRefused => {
   const why = said === "" ? `${status}` : `${status}: ${said}`;
 
-  return new Error(
+  return new GitHubRefused(
+    status,
     status === 401
       ? `GitHub refused the GitHub App (${why}): check CLOUDPID_GITHUB_APP_ID and CLOUDPID_GITHUB_APP_PRIVATE_KEY`
       : `GitHub refused the GitHub App's request (${why})`,
@@ -295,7 +324,7 @@ export class GitHubApp implements GitHubTokens {
       // Found before the mint's own wait, so a failure to list waits only on the list's.
       const installation = (await this.#installationIds()).get(name);
 
-      if (installation === undefined) throw new Error(notInstalledOn(name));
+      if (installation === undefined) throw new GitHubNotInstalled(name);
 
       return (await this.#once(`token:${name}`, () => this.#mint(name, installation))).token;
     } catch (cause) {
@@ -351,6 +380,11 @@ export class GitHubApp implements GitHubTokens {
     if (this.#minted.findLast(({ account }) => account === refused.account)?.token === token) {
       this.#refused.add(token);
     }
+  }
+
+  forget(account: string): void {
+    this.#failed.delete(`token:${account.toLowerCase()}`);
+    this.#failed.delete("installations");
   }
 
   /** The tokens minted that have not expired, oldest first: what output and snapshots must not hold. */

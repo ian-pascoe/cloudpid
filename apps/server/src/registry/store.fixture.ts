@@ -283,6 +283,10 @@ export class TestRegistry extends DurableObject {
     return this.#triggers.get(id);
   }
 
+  knownTriggers(ids: ReadonlyArray<string>): Array<string> {
+    return this.#triggers.known(ids);
+  }
+
   listTriggers(environment?: string): Array<TriggerDefinition> {
     return this.#triggers.list(environment);
   }
@@ -311,6 +315,11 @@ export class TestRegistry extends DurableObject {
 
   removeTrigger(id: string): boolean {
     return this.#triggers.remove(id);
+  }
+
+  /** The agent's removal of Trigger `id`: its row kept for a revert. */
+  retireTrigger(id: string, now: number): boolean {
+    return this.#triggers.retire(id, now);
   }
 
   /** `admitFire` at `now`, registering a Fire's Session under `ids`. */

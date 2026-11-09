@@ -6,6 +6,8 @@
 // @effect-diagnostics missingPipeableSignature:off globalDate:off -- plain functions that write times as ISO text.
 import {
   type EnvironmentRef,
+  type GitHubHookStatus,
+  githubHookOf,
   scheduleOf,
   type TriggerDefinition,
   TriggerMatch,
@@ -71,6 +73,13 @@ const TriggerSummaryFields = {
         description:
           "Only deliveries that match start a Session: dotted body paths, each with the values it may have (every path must match, any of its values will do); null for none, so every delivery signed right fires",
       }),
+      repo: Schema.NullOr(Schema.String).annotate({
+        description:
+          "The GitHub repo (owner/name) cloudpid made the hook on, as its GitHub App; null for a hook the user made",
+      }),
+      events: Schema.String.pipe(Schema.Array, Schema.NullOr).annotate({
+        description: "The GitHub events that hook is sent; null for a hook the user made",
+      }),
     }),
   ).annotate({
     description:
@@ -120,11 +129,30 @@ export const TriggerListOutput = Schema.Struct({
   }),
 });
 
-/** A Trigger changed: the change at its Environment's Scope, and the Trigger after it (null once removed). */
+/** Where a Trigger's GitHub-managed hook is, as a change's outcome gives it. */
+const GitHubHookOutput = Schema.Struct({
+  repo: Schema.String.annotate({ description: "The GitHub repo (owner/name) the hook is on" }),
+  state: Schema.String.annotate({
+    description:
+      '"ready": GitHub has the hook; "pending": not made yet, cloudpid keeps trying; "failed": GitHub refused it so far (problem says why), cloudpid keeps trying',
+  }),
+  problem: Schema.NullOr(Schema.String).annotate({
+    description: "Why GitHub has no hook yet, in words; null when it has one or none is known",
+  }),
+});
+
+/**
+ * A Trigger changed: the change at its Environment's Scope, and the Trigger after it (null once removed), with where its
+ * GitHub-managed hook is when the call made one.
+ */
 export const TriggerChangeOutput = Schema.Struct({
   ...ChangeOutputFields,
   trigger: Schema.NullOr(TriggerOutput).annotate({
     description: "The Trigger after the call; null once it is removed, or when nothing was made",
+  }),
+  github_hook: Schema.optionalKey(GitHubHookOutput).annotate({
+    description:
+      "Where the GitHub-managed hook of a Trigger just made is; absent for a Trigger that has none",
   }),
 });
 
@@ -136,6 +164,7 @@ export const triggerSummaryOutput = (
 ): typeof TriggerSummaryOutput.Type => {
   const schedule = scheduleOf(definition);
   const webhook = webhookOf(definition);
+  const github = githubHookOf(definition);
 
   return {
     id: definition.id,
@@ -146,7 +175,14 @@ export const triggerSummaryOutput = (
     workspace: definition.workspace === undefined ? null : { ...definition.workspace },
     schedule: schedule === undefined ? null : { cron: schedule.cron, zone: schedule.zone },
     webhook:
-      webhook === undefined ? null : { format: webhook.format, match: webhook.match ?? null },
+      webhook === undefined
+        ? null
+        : {
+            format: webhook.format,
+            match: webhook.match ?? null,
+            repo: github?.repo ?? null,
+            events: github?.events ?? null,
+          },
     when_busy: definition.whenBusy,
     base: definition.base ?? null,
     model: definition.model ?? null,
@@ -189,16 +225,32 @@ export const triggerChangeOutput = ({
   unchanged = [],
   approval,
   trigger,
+  github,
 }: {
   readonly environment: EnvironmentRef;
   readonly changes: ReadonlyArray<AgentChange>;
   readonly unchanged?: ReadonlyArray<string>;
   readonly approval: typeof ApprovalOutcome.Type;
   readonly trigger: typeof TriggerOutput.Type | null;
-}): typeof TriggerChangeOutput.Type => ({
-  scope: scopeRef(environment),
-  ...changesOutput(changes),
-  unchanged,
-  approval,
-  trigger,
-});
+  /** Where the Trigger's GitHub-managed hook is, when the call made one. */
+  readonly github?: GitHubHookStatus | undefined;
+}): typeof TriggerChangeOutput.Type => {
+  const output = {
+    scope: scopeRef(environment),
+    ...changesOutput(changes),
+    unchanged,
+    approval,
+    trigger,
+  };
+
+  return github === undefined
+    ? output
+    : {
+        ...output,
+        github_hook: {
+          repo: github.repo,
+          state: github.state,
+          problem: github.problem?.message ?? null,
+        },
+      };
+};

@@ -4,6 +4,7 @@
 import type {
   AgentChange,
   EnvironmentTriggerInput,
+  GitHubHookStatus,
   SessionRecord,
   SessionTriggerInput,
   TriggerChanged,
@@ -12,7 +13,9 @@ import type {
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { TriggerUnreachable } from "../trigger/object.ts";
+import type { Mutable } from "effect/Types";
+import { type TriggerState, TriggerUnreachable } from "../trigger/object.ts";
+import { triggerGitHubHooksUnavailable } from "../registry/messages.ts";
 import { sessionTriggers, type TriggersRegistry } from "./triggers.ts";
 
 const DEFINITION: TriggerDefinition = {
@@ -58,10 +61,16 @@ const setUp = (
     listed = true,
     unreachable = 0,
     held = [DEFINITION],
+    github = null,
+    features = { githubHooks: true },
   }: {
     listed?: boolean;
     unreachable?: number;
     held?: ReadonlyArray<TriggerDefinition>;
+    /** What a woken object says of its GitHub-managed hook: `absent` for an object older than the server. */
+    github?: GitHubHookStatus | null | "absent";
+    /** What the Registry's `triggerFeatures` answers. */
+    features?: { githubHooks: boolean };
   } = {},
 ) => {
   /** How many more wakes fail, as an object that doesn't answer after all its tries. */
@@ -108,7 +117,18 @@ const setUp = (
     agentUpdateTrigger: (input) => answered("agentUpdateTrigger", input),
     agentSetTriggerPaused: (input) => answered("agentSetTriggerPaused", input),
     agentRemoveTrigger: (input) => answered("agentRemoveTrigger", input),
+    triggerFeatures: () => Effect.succeed(features),
   };
+
+  /** What a woken object says of itself. */
+  const state: Mutable<TriggerState> = {
+    definition: DEFINITION,
+    nextFireAt: null,
+    lastFire: null,
+    pending: 0,
+  };
+
+  if (github !== "absent") state.github = github;
 
   const access = sessionTriggers({
     registry,
@@ -124,7 +144,7 @@ const setUp = (
             return Effect.fail(TriggerUnreachable.make({ message: "no answer" }));
           }
 
-          return Effect.void;
+          return Effect.succeed(state);
         }),
       sync: (id) =>
         Effect.sync(() => {
@@ -250,6 +270,59 @@ describe("the Session's Triggers", () => {
 
     expect(failed.message).toContain("not one the Registry lists");
     expect(calls).toEqual([]);
+  });
+
+  describe("a GitHub-managed hook", () => {
+    const HOOKED: EnvironmentTriggerInput = {
+      ...INPUT,
+      source: {
+        type: "webhook",
+        format: "github",
+        repo: "octo-org/octo-repo",
+        events: ["workflow_run"],
+      },
+    };
+
+    const READY: GitHubHookStatus = { repo: "octo-org/octo-repo", state: "ready" };
+
+    it("is made once the Registry lists it, and the create answers where its object put it", async () => {
+      const { access, calls, woken } = setUp(CHANGED, { github: READY });
+
+      expect(await Effect.runPromise(access.create({ id: "t1", trigger: HOOKED, author }))).toEqual(
+        { applied: CHANGED, github: READY },
+      );
+      expect(calls).toHaveLength(1);
+      expect(woken).toEqual(["t1"]);
+
+      // A Trigger without one says nothing of it.
+      expect(await Effect.runPromise(access.create({ id: "t1", trigger: INPUT, author }))).toEqual({
+        applied: CHANGED,
+      });
+    });
+
+    it("is refused while the Registry doesn't list it, before anything is saved", async () => {
+      // How each answer of `triggerFeatures` reads is `trigger-features.test.ts`'s: one passes through here.
+      const { access, calls, woken } = setUp(CHANGED, { features: { githubHooks: false } });
+
+      const refused = await Effect.runPromise(
+        access.create({ id: "t1", trigger: HOOKED, author }).pipe(Effect.flip),
+      );
+
+      expect(refused.message).toContain(triggerGitHubHooksUnavailable);
+      expect([...calls, ...woken]).toEqual([]);
+    });
+
+    it("fails the create when its object is too old to make the hook, saying to resume it later", async () => {
+      const { access, calls } = setUp(CHANGED, { github: "absent" });
+
+      const failed = await Effect.runPromise(
+        access.create({ id: "t1", trigger: HOOKED, author }).pipe(Effect.flip),
+      );
+
+      expect(calls).toHaveLength(1);
+      // The contract with the agent: the tool to call, and the Trigger to call it on.
+      expect(failed.message).toContain("trigger_resume with id t1");
+    });
   });
 
   describe("Session triggers", () => {

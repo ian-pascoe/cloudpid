@@ -10,7 +10,9 @@
 // Sessions (`Trigger.ts`). A webhook Trigger's object also holds its token and Signing secret (sealed, made at its
 // first adopt), checks each delivery to its URL (`deliver`: token, signature, size, content type, then `match` and the
 // bot-loop guard), counts what it refuses or filters per day without calling the Registry, and keeps an accepted
-// delivery as a pending Fire (`docs/architecture/triggers.md` → Webhooks).
+// delivery as a pending Fire (`docs/architecture/triggers.md` → Webhooks). A Trigger with a GitHub-managed hook keeps it
+// in line with its definition at each adopt and rotation, and deletes it when it goes (`hook-sync.ts`,
+// `docs/architecture/triggers.md` → GitHub-managed hooks).
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- the object's methods, over a Promise-based alarm.
 import type { KeptVault } from "@cloudpid/extensions/secrets/core";
 import {
@@ -23,6 +25,7 @@ import {
   type FireRequest,
   type FireResult,
   type FireSource,
+  type GitHubHookStatus,
   matchesDelivery,
   matchFacts,
   MAX_DELIVERY_BODY_BYTES,
@@ -56,6 +59,7 @@ import {
   keyedDelivery,
   senderLogin,
 } from "./delivery.ts";
+import { type HookGitHub, hookSync } from "./hook-sync.ts";
 import {
   checkGitHubSignature,
   checkStandardSignature,
@@ -104,6 +108,8 @@ export type TriggerPorts = {
    * while GitHub cannot say. Never fails.
    */
   readonly botLogin: Effect.Effect<string | undefined>;
+  /** What a GitHub-managed hook needs (`triggers.md` → GitHub-managed hooks, `hook-sync.ts`). */
+  readonly github: HookGitHub;
 };
 
 /** The object's alarm and storage, as the platform gives them (`ctx.storage`). */
@@ -125,6 +131,8 @@ export type TriggerState = {
    * Fires were merged into it.
    */
   readonly waiting?: { readonly since: number; readonly merged: number } | null;
+  /** Where its GitHub-managed hook is, for a Trigger that has one; null for none. An older object omits it. */
+  readonly github?: GitHubHookStatus | null;
 };
 
 /** What the owner's Fire now answers: the Fire's key once it waits, or why there is none. */
@@ -180,7 +188,12 @@ export type HookSecrets = { readonly token: string; readonly secret: string };
  * for one whose kept secrets no longer read (never replaced but by the owner's rotation).
  */
 export type HookAnswer =
-  | { readonly status: "ok"; readonly secrets: HookSecrets }
+  | {
+      readonly status: "ok";
+      readonly secrets: HookSecrets;
+      /** Where its GitHub-managed hook is after the call (a rotation updates it), for a Trigger that has one. */
+      readonly github?: GitHubHookStatus | undefined;
+    }
   | { readonly status: "none" }
   | { readonly status: "unreadable" };
 
@@ -308,6 +321,7 @@ const NO_STATE: TriggerState = {
   lastFire: null,
   pending: 0,
   waiting: null,
+  github: null,
 };
 
 /** The outcome a span and its readers name: `started`, `skipped:<why>` or `failed`. */
@@ -349,7 +363,14 @@ export const triggerHandlers = (options: {
    * (`failed: removed`); one already admitted was completed first, as far as it could be (`retire`).
    */
   const wipe = Effect.gen(function* () {
-    for (const pending of existing()?.pending() ?? []) {
+    const at = yield* now;
+    const kept = existing();
+
+    // Its GitHub-managed hook goes first; a delete that fails is kept past the wipe, for the alarm to try again.
+    hooks.drop(at);
+    yield* hooks.deleteDue(at);
+
+    for (const pending of kept?.pending() ?? []) {
       yield* Effect.logWarning("A removed Trigger dropped a pending Fire").pipe(
         Effect.annotateLogs({
           "trigger.id": id,
@@ -359,21 +380,32 @@ export const triggerHandlers = (options: {
       );
     }
 
-    yield* Effect.promise(async () => {
-      await storage.deleteAlarm();
-      await storage.deleteAll();
-      opened = undefined;
-    });
+    const left = hooks.nextTryAt(undefined, at);
+
+    if (kept === undefined || left === undefined) {
+      yield* Effect.promise(async () => {
+        await storage.deleteAlarm();
+        await storage.deleteAll();
+        opened = undefined;
+      });
+
+      return;
+    }
+
+    // The deletes still to try stay, everything else goes in the same transaction.
+    kept.wipeKeepingDeletes();
+    yield* Effect.promise(() => storage.setAlarm(left));
   });
 
   /**
    * The time the next Fire is due: the Schedule's next after the cursor, or a pending Fire's next try. A paused Trigger
    * has only its admitted Fires to complete.
    */
-  const nextAt = (): number | undefined => {
+  const nextAt = (at: number): number | undefined => {
     const definition = store().definition();
+    const hookAt = hooks.nextTryAt(definition, at);
 
-    if (definition === undefined) return undefined;
+    if (definition === undefined) return hookAt;
 
     const pending = Arr.filter(
       store().pending(),
@@ -382,6 +414,9 @@ export const triggerHandlers = (options: {
 
     const times = Arr.map(pending, (fire) => fire.nextTryAt);
     const schedule = scheduleOf(definition);
+
+    if (hookAt !== undefined) times.push(hookAt);
+
     const cursor = store().cursor();
 
     if (!definition.paused && schedule !== undefined && cursor !== undefined) {
@@ -391,11 +426,13 @@ export const triggerHandlers = (options: {
     return times.length === 0 ? undefined : Math.min(...times);
   };
 
-  const arm = Effect.promise(async () => {
-    const at = nextAt();
+  const arm = Effect.flatMap(now, (at) =>
+    Effect.promise(async () => {
+      const next = nextAt(at);
 
-    await (at === undefined ? storage.deleteAlarm() : storage.setAlarm(at));
-  });
+      await (next === undefined ? storage.deleteAlarm() : storage.setAlarm(next));
+    }),
+  );
 
   const tokenBinding = { owner: id, name: "token" } as const;
 
@@ -451,11 +488,31 @@ export const triggerHandlers = (options: {
 
   /** An object never synced (or wiped) reads its definition first, as a manual Fire does, so it can answer as the Trigger's. */
   const known = Effect.gen(function* () {
-    if (existing() !== undefined) return;
+    if (existing()?.definition() !== undefined) return;
 
     const definition = yield* ports.definition(id);
 
     if (definition !== null) yield* adopt(definition, yield* now);
+  });
+
+  /** The Trigger's GitHub-managed hook, kept in line with its definition (`hook-sync.ts`). */
+  const hooks = hookSync({
+    id,
+    store,
+    existing,
+    github: ports.github,
+    opened: (secrets) =>
+      vaulted(
+        Effect.gen(function* () {
+          const vault = yield* ports.vault;
+
+          return {
+            token: yield* vault.open(tokenBinding, secrets.token),
+            secret: yield* vault.open(secretBinding, secrets.secret),
+          };
+        }),
+      ),
+    backoff,
   });
 
   /**
@@ -486,6 +543,7 @@ export const triggerHandlers = (options: {
           token,
           secret: webhook.format === "standard" ? standardSecretText(secret) : secret,
         },
+        github: hooks.status(existing()?.definition()) ?? undefined,
       } as const;
     }).pipe(vaulted);
 
@@ -495,7 +553,11 @@ export const triggerHandlers = (options: {
    * ones (it never catches up on resume); an active one is kept with its cursor, which a new or changed Schedule (or a
    * resume) starts at `at`, and the alarm is armed for its next Fire. Answers whether the object still holds a Trigger.
    */
-  const adopt = (definition: TriggerDefinition | null, at: number): Effect.Effect<boolean> =>
+  const adopt = (
+    definition: TriggerDefinition | null,
+    at: number,
+    force = false,
+  ): Effect.Effect<boolean> =>
     Effect.gen(function* () {
       if (definition === null) {
         yield* retire(at);
@@ -528,12 +590,13 @@ export const triggerHandlers = (options: {
       }
 
       yield* ensureSecrets(definition);
+      yield* hooks.reconcile(definition, at, force);
       yield* arm;
 
       return true;
     });
 
-  const state = (): TriggerState => {
+  const state = (at: number): TriggerState => {
     const kept = existing();
 
     if (kept === undefined) return NO_STATE;
@@ -548,13 +611,14 @@ export const triggerHandlers = (options: {
 
     return {
       definition: kept.definition() ?? null,
-      nextFireAt: nextAt() ?? null,
+      nextFireAt: nextAt(at) ?? null,
       lastFire: kept.fires(1)[0] ?? null,
       pending: pending.length,
       waiting: Option.match(waiting, {
         onNone: () => null,
         onSome: (fire) => ({ since: fire.queuedAt, merged: fire.waiting?.merged ?? 0 }),
       }),
+      github: hooks.status(kept.definition()),
     };
   };
 
@@ -971,6 +1035,10 @@ export const triggerHandlers = (options: {
   const alarm = (info?: { readonly retryCount?: number }) =>
     Effect.gen(function* () {
       const at = yield* now;
+
+      // The hooks still to delete at GitHub, a removed Trigger's among them, whatever its definition says now.
+      yield* hooks.deleteDue(at);
+
       const read = yield* Effect.result(ports.definition(id));
 
       if (Result.isFailure(read)) {
@@ -1307,9 +1375,12 @@ export const triggerHandlers = (options: {
       Effect.gen(function* () {
         const definition = yield* ports.definition(id);
 
-        yield* adopt(definition, yield* now);
+        // A sync follows a change: a GitHub hook that failed is tried again at once.
+        const at = yield* now;
 
-        return definition === null ? NO_STATE : state();
+        yield* adopt(definition, at, true);
+
+        return definition === null ? NO_STATE : state(at);
       }).pipe(serially),
 
     remove: () => serially(Effect.flatMap(now, retire)),
@@ -1363,12 +1434,19 @@ export const triggerHandlers = (options: {
 
         yield* renew({ token: what === "url", secret: what === "secret" });
 
+        // Its GitHub-managed hook takes the new URL or Signing secret in the same call.
+        const definition = existing()?.definition();
+
+        if (definition !== undefined) yield* hooks.reconcile(definition, yield* now, true);
+
+        yield* arm;
+
         return yield* revealed();
       }).pipe(serially),
 
     fireLog: (input) => Effect.sync(() => existing()?.fires(input?.limit) ?? []),
 
-    state: () => Effect.sync(state),
+    state: () => Effect.map(now, state),
 
     alarm,
   };
