@@ -47,7 +47,8 @@ export type FirePayload = typeof FirePayload.Type;
 
 /**
  * What the owner's entry keeps of a Fire's payload, for the transcript's chip: where it came from, how much of the body
- * went inline (`shown`, in bytes), and its file (`path`) when one was written. A body that was not kept has none.
+ * went inline (`shown`, in bytes), whether that is only the start of the text (`truncated`: the block says so too), and
+ * its file (`path`) when one was written. A body that was not kept has none.
  */
 export const TriggerPayloadChip = Schema.Struct({
   format: WebhookFormat,
@@ -56,6 +57,7 @@ export const TriggerPayloadChip = Schema.Struct({
   delivery: Schema.String,
   size: Schema.Int,
   shown: Schema.Int,
+  truncated: Schema.optionalKey(Schema.Boolean),
   path: Schema.optionalKey(Schema.String),
 });
 
@@ -190,6 +192,8 @@ export const fencePayload = (input: {
   if (payload.event !== undefined) chip.event = payload.event;
 
   if (payload.action !== undefined) chip.action = payload.action;
+
+  if (text !== whole) chip.truncated = true;
 
   if (path !== undefined) chip.path = path;
 

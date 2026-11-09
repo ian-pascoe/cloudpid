@@ -385,9 +385,7 @@ const NewWorkspaceTrigger = ({ workspace }: { workspace: WorkspaceRecord }) => {
         description="Each fire starts a new session in this workspace, on its files and branch. The workspace stays while the trigger exists, even without sessions."
         className="max-w-xl"
       >
-        {draft !== null && (
-          <TriggerFormView formKey={key} draft={draft} editing={false} environments={[]} />
-        )}
+        {draft !== null && <TriggerFormView formKey={key} draft={draft} environments={[]} />}
       </Dialog>
     </>
   );

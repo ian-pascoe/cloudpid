@@ -1,4 +1,5 @@
-// The Triggers section's form over the fake Registry: what it sends to make or change a Trigger, and when it closes.
+// The Triggers section's form over the fake Registry: what it sends to make or change a Trigger, and when it closes; and
+// one pass-through each for a webhook Trigger's reveal and rotation and its Fire again.
 
 import {
   EnvironmentError,
@@ -14,6 +15,8 @@ import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { type RegistryHandlers, registryWith, settled } from "./registry.testing.ts";
 import {
+  fireAgainAtom,
+  triggerSecretsAtom,
   saveTriggerAtom,
   sessionTriggersAtom,
   type TriggerForm,
@@ -205,6 +208,66 @@ describe("a Session's triggers", () => {
       yield* Effect.yieldNow;
 
       expect(registry.get(sessionTriggersAtom("s-1"))).toEqual([]);
+      registry.dispose();
+    }),
+  );
+});
+
+describe("a webhook Trigger's URL, secret and Fire again", () => {
+  const SECRETS = { path: "/hooks/t1/tok", secret: "whsec_abc" };
+
+  it.effect(
+    "asks the RPC the request names: reveal or rotate, and the new pair is the answer",
+    () =>
+      Effect.gen(function* () {
+        const asked: string[] = [];
+
+        const registry = registryWith({
+          revealTrigger: ({ id }) =>
+            Effect.sync(() => {
+              asked.push(`reveal ${id}`);
+
+              return SECRETS;
+            }),
+          rotateTrigger: ({ id, what }) =>
+            Effect.sync(() => {
+              asked.push(`rotate ${id} ${what}`);
+
+              return { ...SECRETS, path: "/hooks/t1/new" };
+            }),
+        });
+
+        registry.mount(triggerSecretsAtom("t1"));
+        registry.set(triggerSecretsAtom("t1"), { kind: "reveal" });
+        yield* settled(registry, triggerSecretsAtom("t1"));
+        registry.set(triggerSecretsAtom("t1"), { kind: "rotate", what: "url" });
+
+        const rotated = yield* settled(registry, triggerSecretsAtom("t1"));
+
+        expect(AsyncResult.isSuccess(rotated) && rotated.value.path).toBe("/hooks/t1/new");
+        expect(asked).toEqual(["reveal t1", "rotate t1 url"]);
+        registry.dispose();
+      }),
+  );
+
+  it.effect("asks for a Fire again under the key it is given", () =>
+    Effect.gen(function* () {
+      const asked: string[] = [];
+
+      const registry = registryWith({
+        fireTriggerAgain: ({ id, key }) =>
+          Effect.sync(() => {
+            asked.push(`${id} ${key}`);
+
+            return { key };
+          }),
+      });
+
+      registry.mount(fireAgainAtom("t1"));
+      registry.set(fireAgainAtom("t1"), "press-1");
+      yield* settled(registry, fireAgainAtom("t1"));
+
+      expect(asked).toEqual(["t1 press-1"]);
       registry.dispose();
     }),
   );

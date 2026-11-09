@@ -142,6 +142,7 @@ describe("a webhook Fire's payload", () => {
     ).toMatchObject({
       size: body.length,
       shown: MAX_INLINE_PAYLOAD_BYTES,
+      truncated: true,
     });
     expect(await read(look, payloadFilePath(request.requestId))).toBe(body);
   });

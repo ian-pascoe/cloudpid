@@ -13,6 +13,7 @@ import {
   shownApps,
   shownMcpPrompt,
   shownPages,
+  shownPayload,
   shownResources,
   shownReview,
   shownSkills,
@@ -199,6 +200,25 @@ describe("the thread messages of a view", () => {
       shownVia(toThreadMessages(view({ messages: [user("2", "typed")] }))[0]?.metadata?.custom),
     ).toBeUndefined();
     expect(shownVia(undefined)).toBeUndefined();
+  });
+
+  it("keeps the webhook payload a Trigger's Fire carried, for its chip", () => {
+    const triggerPayload = {
+      format: "github" as const,
+      delivery: "d-1",
+      size: 40_000,
+      shown: 16_384,
+      truncated: true,
+    };
+
+    const [message] = toThreadMessages(
+      view({ messages: [{ ...user("1", "Look into it."), triggerPayload }] }),
+    );
+
+    expect(shownPayload(message?.metadata?.custom)).toEqual(triggerPayload);
+    expect(
+      shownPayload(toThreadMessages(view({ messages: [user("2", "typed")] }))[0]?.metadata?.custom),
+    ).toBeUndefined();
   });
 
   it("keeps a Review's Annotations, for its chips", () => {

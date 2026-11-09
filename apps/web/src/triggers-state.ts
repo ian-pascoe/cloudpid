@@ -1,10 +1,16 @@
 // The Settings page's Triggers section, as atoms (`docs/architecture/triggers.md` → The owner's UI): a Scope's Triggers
 // with their last Fire, asked again while the page is visible (the agent makes and changes Triggers too); the form that
-// makes or edits one; Pause, Resume, Remove and Fire now; and each Trigger's fire log, asked for while it is open. None
-// of the owner's own changes waits for Approval. A new Trigger's id is drawn when its form opens, and a Fire now's key
+// makes or edits one; Pause, Resume, Remove and Fire now (a webhook Trigger's Fire again); each Trigger's fire log, asked
+// for while it is open; and a webhook Trigger's deliveries, and the URL and Signing secret the owner reveals or replaces.
+// None of the owner's own changes waits for Approval. A new Trigger's id is drawn when its form opens, and a Fire's key
 // at each press, so a call sent again makes no second one.
 
-import { GLOBAL_SCOPE, triggerChangeValue, type TriggerDefinition } from "@cloudpid/protocol";
+import {
+  GLOBAL_SCOPE,
+  triggerChangeValue,
+  type TriggerDefinition,
+  type TriggerRotation,
+} from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -211,3 +217,51 @@ export const removeSessionTriggerAtom = Atom.family((_session: string) =>
     { concurrent: true },
   ),
 );
+
+/**
+ * The owner's Fire again of webhook Trigger `id` with its last accepted delivery, under `key` (drawn at the press): a
+ * Fire recorded `manual`, which its fire log shows once it went out.
+ */
+export const fireAgainAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    (key: string) =>
+      RegistryClient.use((registry) => registry("fireTriggerAgain", { id, key })).pipe(
+        changing(["triggers", `trigger-fires:${id}`, `trigger-deliveries:${id}`]),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** What a webhook Trigger says of its deliveries (the counts of 30 days, the last one, GitHub's ping), asked again while the page is visible. */
+export const triggerDeliveriesAtom = Atom.family((id: string) =>
+  RegistryClient.query(
+    "triggerDeliveries",
+    { id },
+    { reactivityKeys: [`trigger-deliveries:${id}`] },
+  ).pipe(Atom.makeRefreshOnSignal(visibleTickAtom)),
+);
+
+/** What the owner asks of webhook Trigger `id`'s URL and Signing secret: to see them, or to replace one. */
+export type TriggerSecretsRequest =
+  | { readonly kind: "reveal" }
+  | { readonly kind: "rotate"; readonly what: TriggerRotation };
+
+/**
+ * The URL and Signing secret of webhook Trigger `id` the owner asked to see, or got new ones of: held only while the
+ * row shows them, and gone (`Atom.Reset`) when it hides them. The answer of a rotation is the new pair, and the old
+ * value stopped working before it came.
+ */
+export const triggerSecretsAtom = Atom.family((id: string) =>
+  appRuntime.fn(
+    (request: TriggerSecretsRequest) =>
+      RegistryClient.use((registry) =>
+        request.kind === "reveal"
+          ? registry("revealTrigger", { id })
+          : registry("rotateTrigger", { id, what: request.what }),
+      ),
+    { concurrent: true },
+  ),
+);
+
+/** The rotation of Trigger `id` the owner is being asked to confirm (it stops the old value at once); null when none is. */
+export const rotateAskAtom = Atom.family((_id: string) => Atom.make<TriggerRotation | null>(null));

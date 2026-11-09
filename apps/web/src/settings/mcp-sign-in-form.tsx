@@ -1,4 +1,4 @@
-// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off globalTimers:off -- JSX lists are native arrays, and Copy's "Copied" goes back after a moment, timed by a React effect.
+// @effect-diagnostics preferEffectArray:off missingPipeableSignature:off -- JSX lists are native arrays.
 
 // The "Sign-in (OAuth)" disclosure of the MCP server form (docs/architecture/mcp-sign-in.md → Settings, The `oauth` fields;
 // docs/architecture/mcp-configuration.md → The Settings page's "MCP servers" section): `clientId`, `clientSecret` and
@@ -7,11 +7,8 @@
 // Never a secret's value: the two secret fields hold a `${NAME}` that the Scope's Secrets or Variables resolve.
 
 import { useAtomValue } from "@effect/atom-react";
-import { Check, Copy, X } from "lucide-react";
-import { type ReactNode, useEffect, useState } from "react";
-import { Button } from "../components/ui/button.tsx";
+import { type ReactNode, useState } from "react";
 import { Input } from "../components/ui/input.tsx";
-import { copyToClipboard } from "../lib/clipboard.ts";
 import {
   MCP_CLIENT_REGISTRATIONS,
   MCP_GRANT_TYPES,
@@ -23,7 +20,7 @@ import {
 import { mcpSignInNames } from "./mcp-sign-in-model.ts";
 import { mcpSignInsStateAtom } from "./mcp-sign-in-state.ts";
 import { OptionSelect } from "./mcp-parts.tsx";
-import { Field, noteId } from "./parts.tsx";
+import { CopyValue, Field, noteId } from "./parts.tsx";
 
 const REGISTRATION_LABELS: Readonly<Record<McpClientRegistration, string>> = {
   auto: "Automatic",
@@ -34,71 +31,6 @@ const REGISTRATION_LABELS: Readonly<Record<McpClientRegistration, string>> = {
 const GRANT_LABELS: Readonly<Record<McpGrantType, string>> = {
   authorization_code: "You sign in (authorization code)",
   client_credentials: "It signs in on its own (client credentials)",
-};
-
-/** How long Copy says it copied. */
-const COPIED_MS = 2000;
-
-const COPY_STATES = {
-  idle: { label: "Copy", Icon: Copy },
-  copied: { label: "Copied", Icon: Check },
-  failed: { label: "Not copied", Icon: X },
-} as const;
-
-/** A value cloudpid shows (a redirect URI, a client name) with a Copy button, whose result a status says too. */
-export const CopyValue = ({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint?: ReactNode;
-}) => {
-  const [copied, setCopied] = useState<keyof typeof COPY_STATES>("idle");
-
-  useEffect(() => {
-    if (copied === "idle") return;
-
-    const timer = setTimeout(() => {
-      setCopied("idle");
-    }, COPIED_MS);
-
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [copied]);
-
-  const { label: said, Icon } = COPY_STATES[copied];
-
-  return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <span className="text-sm font-medium">{label}</span>
-      <div className="flex min-w-0 items-center gap-2">
-        <code className="min-w-0 flex-1 rounded-md border bg-muted/40 px-2 py-1.5 text-xs break-all">
-          {value}
-        </code>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          aria-label={`Copy ${label.toLowerCase()}`}
-          onClick={() => {
-            void copyToClipboard(value).then((done) => {
-              setCopied(done ? "copied" : "failed");
-            });
-          }}
-        >
-          <Icon aria-hidden />
-          {said}
-        </Button>
-        <span role="status" className="sr-only">
-          {copied === "idle" ? "" : `${said}: ${label.toLowerCase()}`}
-        </span>
-      </div>
-      {hint !== undefined && <p className="max-w-prose text-xs text-muted-foreground">{hint}</p>}
-    </div>
-  );
 };
 
 /** The disclosure: every field of `oauth` the form edits, and the redirect URI and client name beside them. */

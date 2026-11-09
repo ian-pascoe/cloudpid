@@ -1,11 +1,14 @@
 // The Triggers section of the Settings page at a Scope, rendered with `react-dom/server` over the fake Registry: the
-// queries it reads are settled first, so the markup shows what they answered.
+// queries it reads are settled first, so the markup shows what they answered. A webhook Trigger's row and form are held
+// by the elements and attributes they carry (`data-fire-again`, `data-rotate`, `data-match-row`, ids), one pass-through
+// each: the rules behind them (the rows, the patch, the per-day counts) are in `triggers.test.ts`.
 
-import type {
-  EnvironmentRecord,
-  FireRecord,
-  TriggerDefinition,
-  TriggerOverview,
+import {
+  EnvironmentError,
+  type EnvironmentRecord,
+  type FireRecord,
+  type TriggerDefinition,
+  type TriggerOverview,
 } from "@cloudpid/protocol";
 import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
@@ -20,13 +23,16 @@ import { sessionsAtom } from "../sessions.ts";
 import {
   fireLogAtom,
   fireLogOpenAtom,
+  triggerSecretsAtom,
+  rotateAskAtom,
+  triggerDeliveriesAtom,
   triggerDraftAtom,
   triggerFormAtom,
   removeTriggerDialogAtom,
   triggerNoticeAtom,
   triggersAtom,
 } from "../triggers-state.ts";
-import { emptyTriggerDraft, triggerDraftOf } from "../triggers.ts";
+import { emptyTriggerDraft, triggerDraftOf, withSource } from "../triggers.ts";
 import { TriggersSection } from "./triggers.tsx";
 
 const environment = (id: string, name: string): EnvironmentRecord => ({
@@ -52,7 +58,11 @@ const definition = (id: string, environmentId: string, name: string): TriggerDef
 
 const WEBHOOK_TRIGGER: TriggerDefinition = {
   ...definition("t3", "work", "CI failed"),
-  source: { type: "webhook", format: "github" },
+  source: {
+    type: "webhook",
+    format: "github",
+    match: { event: ["workflow_run"], "workflow_run.conclusion": ["failure", "timed_out"] },
+  },
   whenBusy: "start",
 };
 
@@ -107,6 +117,21 @@ const HANDLERS: Partial<RegistryHandlers> = {
         (trigger) => environment === undefined || trigger.definition.environment === environment,
       ),
     ),
+  triggerDeliveries: () =>
+    Effect.succeed({
+      counts: [
+        { day: "2025-01-05", outcome: "filtered", n: 3 },
+        { day: "2025-01-05", outcome: "unauthorized", n: 1 },
+      ],
+      lastDeliveryAt: Date.parse("2025-01-06T15:00:05Z"),
+      pingAt: Date.parse("2025-01-01T10:00:00Z"),
+    }),
+  revealTrigger: () =>
+    Effect.succeed({
+      origin: "https://cloudpid.example",
+      path: "/hooks/0190-t3/abcDEF",
+      secret: "s3cr3t-value",
+    }),
   triggerFireLog: () =>
     Effect.succeed([
       STARTED,
@@ -118,6 +143,12 @@ const HANDLERS: Partial<RegistryHandlers> = {
       },
     ]),
 };
+
+/** The markup of the row of the Trigger named `name`, from its Remove button's list item. */
+const rowOf = (markup: string, name: string): string =>
+  Arr.findFirst(markup.split("<li "), (row) => row.includes(`aria-label="Remove ${name}"`)).pipe(
+    Option.getOrElse(() => ""),
+  );
 
 /** The section at Scope `scope`, once its queries answered; `before` sets atoms first. */
 const render = (
@@ -134,11 +165,13 @@ const render = (
     registry.mount(triggersAtom(scope));
     registry.mount(environmentsAtom);
     registry.mount(fireLogAtom("t1"));
+    registry.mount(triggerDeliveriesAtom("t3"));
     registry.mount(sessionsAtom);
     yield* settled(registry, sessionsAtom);
     yield* settled(registry, triggersAtom(scope));
     yield* settled(registry, environmentsAtom);
     yield* settled(registry, fireLogAtom("t1"));
+    yield* settled(registry, triggerDeliveriesAtom("t3"));
 
     const markup = renderToStaticMarkup(
       <RegistryContext.Provider value={registry}>
@@ -267,6 +300,188 @@ describe("the Triggers section", () => {
       expect(rowOf("Weekly report")).toContain("Fire now</button>");
       expect(rowOf("Lint sweep")).toContain("Fire now</button>");
       expect(rowOf("Check the build")).toContain("Fire now</button>");
+    }),
+  );
+
+  it.effect(
+    "gives a webhook row Fire again and its secrets' controls, with no value shown until asked",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work");
+        const row = rowOf(markup, "CI failed");
+
+        expect(row).toContain("data-fire-again");
+        expect(row).toContain("data-reveal");
+        // The replacements are there before anything is shown: they mend a Trigger whose secrets can't be read.
+        expect(row).toContain('data-rotate="url"');
+        expect(row).toContain('data-rotate="secret"');
+        expect(row).not.toContain("abcDEF");
+        expect(row).not.toContain("s3cr3t-value");
+        expect(rowOf(markup, "Weekly report")).not.toContain("data-fire-again");
+        expect(rowOf(markup, "Weekly report")).not.toContain("data-rotate");
+      }),
+  );
+
+  /** The section at `work` once `triggerSecretsAtom("t3")` was asked of `handlers`, and its row of "CI failed". */
+  const afterReveal = (
+    handlers: Partial<RegistryHandlers>,
+    before: (registry: AtomRegistry.AtomRegistry) => void = () => undefined,
+  ) =>
+    Effect.gen(function* () {
+      const registry = registryWith({ ...HANDLERS, ...handlers });
+
+      registry.mount(triggerSecretsAtom("t3"));
+      registry.mount(triggersAtom("work"));
+      registry.mount(environmentsAtom);
+      registry.mount(sessionsAtom);
+      registry.mount(triggerDeliveriesAtom("t3"));
+      registry.set(triggerSecretsAtom("t3"), { kind: "reveal" });
+      before(registry);
+      yield* settled(registry, triggerSecretsAtom("t3"));
+      yield* settled(registry, triggersAtom("work"));
+      yield* settled(registry, environmentsAtom);
+      yield* settled(registry, sessionsAtom);
+      yield* settled(registry, triggerDeliveriesAtom("t3"));
+
+      const row = rowOf(
+        renderToStaticMarkup(
+          <RegistryContext.Provider value={registry}>
+            <TriggersSection scope="work" />
+          </RegistryContext.Provider>,
+        ),
+        "CI failed",
+      );
+
+      registry.dispose();
+
+      return row;
+    });
+
+  it.effect(
+    "shows a revealed URL (the stage's origin first) and secret, and asks before it replaces one",
+    () =>
+      Effect.gen(function* () {
+        const row = yield* afterReveal({});
+
+        expect(row).toContain("https://cloudpid.example/hooks/0190-t3/abcDEF");
+        expect(row).toContain("s3cr3t-value");
+        expect(row).not.toContain("data-reveal");
+        expect(row).not.toContain("data-confirm-rotate");
+
+        const asking = yield* afterReveal({}, (registry) => {
+          registry.set(rotateAskAtom("t3"), "url");
+        });
+
+        expect(asking).toContain('data-confirm-rotate="url"');
+        // The confirm button takes the focus when it opens.
+        expect(asking).toMatch(/<button[^>]*autofocus=""/);
+      }),
+  );
+
+  it.effect("still offers to replace the URL and secret when the reveal failed", () =>
+    Effect.gen(function* () {
+      const row = yield* afterReveal({
+        revealTrigger: () => Effect.fail(EnvironmentError.make({ message: "unreadable" })),
+      });
+
+      expect(row).toContain('data-rotate="url"');
+      expect(row).toContain('data-rotate="secret"');
+      expect(row).toContain("data-reveal");
+      expect(row).not.toContain("s3cr3t-value");
+    }),
+  );
+
+  it.effect("holds Fire again until the Trigger has accepted a delivery", () =>
+    Effect.gen(function* () {
+      const held =
+        /<button[^>]*data-fire-again=""[^>]*disabled=""|<button[^>]*disabled=""[^>]*data-fire-again=""/;
+
+      const none = yield* render("work", undefined, {
+        triggerDeliveries: () => Effect.succeed({ counts: [], lastDeliveryAt: null, pingAt: null }),
+      });
+
+      expect(rowOf(none, "CI failed")).toMatch(held);
+      expect(rowOf(yield* render("work"), "CI failed")).not.toMatch(held);
+    }),
+  );
+
+  it.effect("lists the refused and filtered deliveries per day in an open fire log", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", (registry) => {
+        registry.set(fireLogOpenAtom("t3"), true);
+        registry.mount(fireLogAtom("t3"));
+      });
+
+      expect(markup.match(/data-day="2025-01-05"/g)).toHaveLength(1);
+    }),
+  );
+
+  it.effect(
+    "shows a new webhook Trigger's source, format and match rows, with no Schedule fields",
+    () =>
+      Effect.gen(function* () {
+        const draft = withSource(
+          {
+            ...emptyTriggerDraft("work", "America/Chicago"),
+            name: "CI",
+            message: "Look.",
+            match: [{ path: "event", values: "push" }],
+          },
+          "webhook",
+        );
+
+        const markup = yield* render("work", (registry) => {
+          registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
+          registry.set(triggerDraftAtom("work"), draft);
+        });
+
+        expect(markup).toContain('id="trigger-source-work"');
+        expect(markup).toContain('id="trigger-format-work"');
+        expect(markup.match(/data-match-row/g)).toHaveLength(1);
+        expect(markup).not.toContain('id="trigger-cron-work"');
+        expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+
+        // Rows no match can come of hold Create, with a problem shown.
+        const bad = yield* render("work", (registry) => {
+          registry.set(triggerFormAtom("work"), { kind: "create", id: "0190-new" });
+          registry.set(triggerDraftAtom("work"), { ...draft, match: [{ path: "a", values: "" }] });
+        });
+
+        expect(bad).toContain('role="alert"');
+        expect(bad).toMatch(/<button[^>]*disabled=""[^>]*>Create trigger/);
+      }),
+  );
+
+  it.effect(
+    "edits a webhook Trigger's match rows, its format fixed and its source not offered",
+    () =>
+      Effect.gen(function* () {
+        const markup = yield* render("work", (registry) => {
+          registry.set(triggerFormAtom("work"), { kind: "edit", opened: WEBHOOK_TRIGGER });
+          registry.set(triggerDraftAtom("work"), triggerDraftOf(WEBHOOK_TRIGGER));
+        });
+
+        expect(markup).not.toContain('id="trigger-source-work"');
+        expect(markup).toMatch(/<select[^>]*id="trigger-format-work"[^>]*disabled=""/);
+        expect(markup.match(/data-match-row/g)).toHaveLength(2);
+      }),
+  );
+
+  it.effect("saves an edit of another field of a Trigger whose match the form can't hold", () =>
+    Effect.gen(function* () {
+      // The agent's match may have a path that is no path to the form.
+      const odd: TriggerDefinition = {
+        ...WEBHOOK_TRIGGER,
+        source: { type: "webhook", format: "github", match: { "": ["x"] } },
+      };
+
+      const markup = yield* render("work", (registry) => {
+        registry.set(triggerFormAtom("work"), { kind: "edit", opened: odd });
+        registry.set(triggerDraftAtom("work"), { ...triggerDraftOf(odd), name: "Renamed" });
+      });
+
+      expect(markup).not.toContain('role="alert"');
+      expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Save/);
     }),
   );
 
