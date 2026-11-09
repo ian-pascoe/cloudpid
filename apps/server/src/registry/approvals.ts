@@ -506,6 +506,22 @@ export const openApprovals = (storage: Pick<RegistryStorage, "sql" | "transactio
       return get(id, now);
     },
 
+    /**
+     * Let go of approved request `id`'s lease for the run `token` that holds it, leaving it approved: the run ended
+     * without settling it (a long apply that stopped, a defect), so the next run need not wait for the lease to lapse.
+     * Answers the request as it stands.
+     */
+    release: (id: string, token: string, now: number): StoredApproval | null => {
+      sql.exec(
+        `UPDATE approval_requests SET lease_until = NULL, lease_token = NULL
+         WHERE id = ? AND status = 'approved' AND lease_token = ?`,
+        id,
+        token,
+      );
+
+      return get(id, now);
+    },
+
     /** The approved requests whose apply is not under way (none started, or its lease lapsed): what a resume picks up. */
     stale: (now: number): ReadonlyArray<StoredApproval> => {
       sweep(now);

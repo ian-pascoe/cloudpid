@@ -73,11 +73,13 @@ export type SecretDeleted =
   | { readonly status: "changed-since"; readonly environment: ChangedEnvironment }
   | { readonly status: "missing" };
 
-/** What the caller of a long delete is told as it goes (the main Worker renews its lease after each step). */
-export type DeleteProgress = {
-  /** Runs after each Workspace is removed, and after the spare and the Build; its failure stops the delete there. */
-  readonly onStep?: Effect.Effect<void, EnvironmentsError> | undefined;
-};
+/**
+ * What the caller of a long delete is told as it goes: `onStep` runs after each Workspace is removed, and after the spare
+ * and the Build. The main Worker renews its lease there, and dies when another run holds it, which stops the delete
+ * with what is left listed for the next run. One type for each layer it passes through: the core, the removal
+ * (`apps/server/src/registry/removal.ts`) and an approved request's run.
+ */
+export type StepProgress = { readonly onStep?: Effect.Effect<void> | undefined };
 
 /**
  * What the deletes that need the owner's Approval run over: the Registry and the objects. An Environment is deleted as
@@ -95,8 +97,13 @@ export type EnvironmentRemovalService = {
    */
   readonly deleteEnvironment: (
     environment: string,
-    progress?: DeleteProgress,
+    progress?: StepProgress,
   ) => Effect.Effect<void, EnvironmentsError>;
+  /**
+   * What runs after an Environment's delete, run again for one found gone: a run cut after its record went may not have
+   * run it (on the endpoint, the push of the hosts' MCP server sets, after the answer; nothing in a Session).
+   */
+  readonly afterGone: (environment: string) => Effect.Effect<void>;
   /** The Secrets kept in `scope` (an Environment's id, or `GLOBAL_ID`); null for an unknown Environment. */
   readonly keptSecrets: (
     scope: string,
@@ -127,6 +134,13 @@ const SecretAsked = Schema.Struct({ updatedAt: Schema.Finite });
 const decodeFootprint = Schema.decodeUnknownOption(EnvironmentFootprint);
 
 const decodeSecretAsked = Schema.decodeUnknownOption(SecretAsked);
+
+/** A name as a card's target quotes it (`JSON.stringify`). */
+const decodeQuoted = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.String));
+
+/** The refusal of a reason that holds a Secret, which both deletes make first. */
+const plainReason = (plainText: PlainText, reason: string) =>
+  plainText(reason, "the reason", "Say why without it.");
 
 const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
@@ -190,12 +204,21 @@ export type EnvironmentDeleteCore = ApprovalCore<
   >;
   /** The card the owner is shown, from what is known of the target. */
   readonly card: (known: DeleteKnown, reason: string) => ApprovalCardContent;
+  /**
+   * What the card the owner approved says of the target, for an apply that has only the stored request: the Environment
+   * by the name the card quotes (by its id, should the card not say it), and the footprint approved.
+   */
+  readonly knownFromCard: (
+    args: DeleteArgs,
+    expected: Schema.Json | null,
+    card: ApprovalCardContent,
+  ) => DeleteKnown;
   /** `apply`, told of each step (`progress`): the main Worker renews its lease there. */
   readonly applyWith: (
     args: DeleteArgs,
     expected: Schema.Json | null,
     known: DeleteKnown | undefined,
-    progress: DeleteProgress | undefined,
+    progress: StepProgress | undefined,
   ) => Effect.Effect<
     { readonly known: DeleteKnown; readonly result: EnvironmentDeletion },
     EnvironmentsError
@@ -214,7 +237,7 @@ export const environmentDeleteCore = ({
 
   const check = ({ id, reason }: DeleteArgs) =>
     Effect.gen(function* () {
-      yield* plainText(reason, "the reason", "Say why without it.");
+      yield* plainReason(plainText, reason);
 
       if (id === DEFAULT_ENVIRONMENT) {
         return yield* EnvironmentsError.make({
@@ -257,22 +280,41 @@ export const environmentDeleteCore = ({
     };
   };
 
+  const knownFromCard = (
+    { id }: DeleteArgs,
+    expected: Schema.Json | null,
+    { target }: ApprovalCardContent,
+  ): DeleteKnown => {
+    const prefix = "Environment ";
+
+    const name = target.startsWith(prefix)
+      ? Option.getOrElse(decodeQuoted(target.slice(prefix.length)), () => id)
+      : id;
+
+    return { environment: { id, name }, footprint: Option.getOrNull(decodeFootprint(expected)) };
+  };
+
   const applyWith = (
     { id }: DeleteArgs,
     expected: Schema.Json | null,
     known: DeleteKnown | undefined,
-    progress: DeleteProgress | undefined,
+    progress: StepProgress | undefined,
   ) =>
     Effect.gen(function* () {
       const now = yield* read(id);
 
-      // Not known (an apply with no Session, after the ask): the Environment as it is now, or by its id once it is gone.
+      // Not known (a rerun in a Session that asked before): the Environment as it is now, or by its id once it is gone.
       const found: DeleteKnown = known ?? {
         environment: now?.details ?? { id, name: id },
         footprint: now?.footprint ?? null,
       };
 
-      if (now === null) return { known: found, result: { status: "absent" as const } };
+      // Gone: a run cut after its record went, or the owner's own delete. What runs after a delete runs again.
+      if (now === null) {
+        yield* removal.afterGone(id);
+
+        return { known: found, result: { status: "absent" as const } };
+      }
 
       const approved = decodeFootprint(expected);
 
@@ -302,6 +344,7 @@ export const environmentDeleteCore = ({
     check,
     read,
     card,
+    knownFromCard,
     applyWith,
     prepare: (args) =>
       Effect.gen(function* () {
@@ -396,6 +439,12 @@ export type SecretDeleteKnown = {
   readonly marked: boolean;
 };
 
+/** What the owner is asked to delete a kept Secret: the card, and what the Secret is now (`expected`). */
+export type SecretAsk = {
+  readonly card: ApprovalCardContent;
+  readonly expected: Schema.Json | null;
+};
+
 /** The core of `environment_secret_delete`, with the read its Session wrapper runs on its own. */
 export type SecretDeleteCore = ApprovalCore<
   SecretDeleteArgs,
@@ -420,7 +469,12 @@ export type SecretDeleteCore = ApprovalCore<
     args: SecretDeleteArgs,
     known: SecretDeleteKnown,
     secret: Option.Option<KeptSecretMark>,
-  ) => { readonly card: ApprovalCardContent; readonly expected: Schema.Json | null };
+  ) => SecretAsk;
+  /**
+   * What a delete recorded under a request's claim says of its target: the scope from the record, and no Build mark,
+   * which the record does not keep.
+   */
+  readonly knownFromClaim: (args: SecretDeleteArgs, scope: ChangedEnvironment) => SecretDeleteKnown;
 };
 
 /** The core of `environment_secret_delete`. */
@@ -439,7 +493,7 @@ export const secretDeleteCore = ({
 
   const read = ({ id, name, reason }: SecretDeleteArgs) =>
     Effect.gen(function* () {
-      yield* plainText(reason, "the reason", "Say why without it.");
+      yield* plainReason(plainText, reason);
 
       const environment = id === GLOBAL_ID ? GLOBAL_ID : (yield* target(id)).environment;
 
@@ -474,7 +528,7 @@ export const secretDeleteCore = ({
     args: SecretDeleteArgs,
     known: SecretDeleteKnown,
     secret: Option.Option<KeptSecretMark>,
-  ) => ({
+  ): SecretAsk => ({
     card: {
       tool: SECRET_DELETE_TOOL,
       target:
@@ -502,6 +556,7 @@ export const secretDeleteCore = ({
     read,
     notKept,
     card,
+    knownFromClaim: ({ id }, scope) => ({ environment: id, scope, marked: false }),
     prepare: (args) =>
       Effect.gen(function* () {
         const { known, secret } = yield* read(args);

@@ -1,8 +1,7 @@
-// The Environment delete's progress (`./removal.ts` → `RemovalProgress`), over a fake Registry: `onStep` runs after each
-// Workspace and after the spare and the Build, a failing step stops the delete with the record kept, and the delete run
-// again finishes what the cut one left (`docs/architecture/mcp-endpoint.md` → Approvals with no Session; #688 C2).
+// The Environment delete's progress (`./removal.ts`, `StepProgress`), over a fake Registry: `onStep` runs after each
+// Workspace and after the spare and the Build, a step that dies (a run that lost its lease) stops the delete with the
+// record kept, and the delete run again finishes what the cut one left (`docs/architecture/mcp-endpoint.md` → Approvals with no Session; #688 C2).
 // @effect-diagnostics asyncFunction:off newPromise:off
-import { EnvironmentError } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
@@ -96,13 +95,15 @@ describe("an Environment's delete, step by step", () => {
     ]);
   });
 
-  it("stops where a step fails, keeping the record, and finishes when it runs again", async () => {
+  it("stops where a step dies, keeping the record, and finishes when it runs again", async () => {
     const { removal, done } = fakeRegistry(["w1", "w2"]);
 
-    const lost = EnvironmentError.make({ message: "The run lost its lease" });
+    const lost = new Error("The run lost its lease");
 
     const cut = await Effect.runPromise(
-      removal.deleteEnvironment(ENVIRONMENT, { onStep: Effect.fail(lost) }).pipe(Effect.flip),
+      removal
+        .deleteEnvironment(ENVIRONMENT, { onStep: Effect.die(lost) })
+        .pipe(Effect.catchDefect((defect) => Effect.succeed(defect))),
     );
 
     expect(cut).toBe(lost);

@@ -8,7 +8,10 @@
 // is settled, then the request. A run cut anywhere leaves it approved, and the next (Try again, `approval_wait`, the
 // owner's next visit: `resumeStale`) picks it up from the claim. A long apply (an Environment's delete, #688 C2) renews
 // the lease after each step it reports, and stops when another run took it; `approval_wait` never runs one, and
-// `resumeStale` runs at most one per request, since each shares the request's 30 s of `waitUntil`.
+// `resumeStale` runs at most one per request, since each shares the request's 30 s of `waitUntil`. A long apply that
+// fails is not refused: what it left is still to delete, so the request stays approved. A run that ends without
+// settling the request (that failure, or a defect) lets go of its lease (`releaseApproval`), so the card stops showing
+// it applying and Try again runs at once.
 // @effect-diagnostics missingPipeableSignature:off cryptoRandomUUID:off -- a run's token is a plain UUID.
 import { APPROVAL_REQUEST_PREFIX } from "@cloudpid/protocol/harness-tools";
 import type { HarnessAnswer } from "@cloudpid/protocol/mcp-api";
@@ -59,8 +62,11 @@ export const approvalRunner = ({
    * when another run holds it, or when this one was cut (the next resumes it). Null for a request not kept.
    */
   const apply = (id: string): Effect.Effect<StoredApproval | null> =>
+    Effect.suspend(() => applyAs(id, newToken()));
+
+  /** `apply` as the run `token`. */
+  const applyAs = (id: string, token: string): Effect.Effect<StoredApproval | null> =>
     Effect.gen(function* () {
-      const token = newToken();
       const claimed = yield* registry.claimApproval({ id, token });
 
       if (claimed === null) return null;
@@ -149,12 +155,7 @@ export const approvalRunner = ({
         );
 
       const outcome = yield* tool
-        .apply(
-          approval.args,
-          approval.expected,
-          { tool: approval.tool, reason: approval.card.reason },
-          { onStep },
-        )
+        .apply(approval, { tool: approval.tool, reason: approval.card.reason }, { onStep })
         .pipe(Effect.result);
 
       if (
@@ -171,8 +172,21 @@ export const approvalRunner = ({
 
       if (Option.isSome(overlapped)) return overlapped.value;
 
-      // A refusal of the write (the Environment gone, an `expected` it cannot read): nothing was changed.
-      if (Result.isFailure(outcome)) return yield* end("refused", outcome.failure.message);
+      if (Result.isFailure(outcome)) {
+        // A long apply's failure is a step it did not finish (a Session's object that could not be wiped): what it left
+        // is still to delete, and every step is safe to repeat, so the request stays approved for the next run.
+        if (tool.long) {
+          yield* Effect.logWarning(
+            `Applying approved request ${id} stopped; it is resumed later`,
+            outcome.failure.message,
+          );
+
+          return yield* registry.releaseApproval({ id, token });
+        }
+
+        // A refusal of the write (the Environment gone, an `expected` it cannot read): nothing was changed.
+        return yield* end("refused", outcome.failure.message);
+      }
 
       const ended = outcome.success;
 
@@ -180,12 +194,12 @@ export const approvalRunner = ({
         ? yield* finish(ended.answer, false)
         : yield* end(ended.status, ended.reason);
     }).pipe(
-      // A run that failed for no reason it can say (a Registry call cut) leaves the request approved: its lease lapses,
-      // and the next run picks it up from the claim.
+      // A run that failed for no reason it can say (a Registry call cut, a lease another run took) leaves the request
+      // approved, and lets go of the lease if it still holds it; the next run picks it up from the claim.
       Effect.catchCause((cause) =>
         Effect.logWarning("Applying an approved request was cut; it is resumed later", cause).pipe(
-          Effect.andThen(registry.approval({ id })),
-          Effect.orElseSucceed(() => null),
+          Effect.andThen(registry.releaseApproval({ id, token })),
+          Effect.catchCause(() => Effect.succeed(null)),
         ),
       ),
     );

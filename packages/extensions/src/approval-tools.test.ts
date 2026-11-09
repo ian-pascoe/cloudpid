@@ -362,6 +362,7 @@ const setUp = async ({
           Effect.sync(() => {
             calls.deleted.push(environment);
           }),
+        afterGone: () => Effect.void,
         keptSecrets: (scope) => Effect.sync(() => state.kept[scope] ?? null),
         deleteSecret: ({ environment, name, expected, author }) =>
           Effect.sync(() => {
@@ -2009,6 +2010,7 @@ describe("the deletes' cores, built for the endpoint", () => {
 
           if (progress?.onStep !== undefined) yield* progress.onStep;
         }),
+      afterGone: (id) => Effect.sync(() => void done.push({ afterGone: id })),
       keptSecrets: (scope) =>
         Effect.succeed(
           scope === "*" || state.environments.has(scope) ? (state.kept[scope] ?? []) : null,
@@ -2115,10 +2117,49 @@ describe("the deletes' cores, built for the endpoint", () => {
 
     state.environments.delete("0000abcd");
 
-    const gone = await Effect.runPromise(remove.apply(args, FOOTPRINT, AUTHOR));
+    // A run cut after the record went has only the stored request: the card names the Environment.
+    const known = remove.knownFromCard(args, FOOTPRINT, {
+      tool: "environment_delete",
+      target: 'Environment "Web"',
+      change: "Delete the Environment",
+      before: "",
+      after: "",
+      reason: "r",
+    });
 
-    expect(gone.result).toEqual({ status: "absent" });
-    expect(done).toHaveLength(1);
+    const gone = await Effect.runPromise(remove.applyWith(args, FOOTPRINT, known, undefined));
+
+    expect(gone).toEqual({
+      known: { environment: { id: "0000abcd", name: "Web" }, footprint: FOOTPRINT },
+      result: { status: "absent" },
+    });
+    // What runs after a delete runs again; nothing more is deleted.
+    expect(done).toEqual([{ deleted: "0000abcd" }, { afterGone: "0000abcd" }]);
+  });
+
+  it("name an Environment from the card the owner approved, or by its id when the card does not say it", () => {
+    const { remove } = cores();
+    const args = { id: "0000abcd", reason: "r" };
+
+    const card = (target: string) => ({
+      tool: "environment_delete",
+      target,
+      change: "",
+      before: "",
+      after: "",
+      reason: "r",
+    });
+
+    expect(
+      remove.knownFromCard(args, FOOTPRINT, card(`Environment ${JSON.stringify('Web "two"')}`)),
+    ).toEqual({
+      environment: { id: "0000abcd", name: 'Web "two"' },
+      footprint: FOOTPRINT,
+    });
+    expect(remove.knownFromCard(args, null, card("Something else"))).toEqual({
+      environment: { id: "0000abcd", name: "0000abcd" },
+      footprint: null,
+    });
   });
 
   it("delete a Secret against the updatedAt the owner saw, as approved", async () => {

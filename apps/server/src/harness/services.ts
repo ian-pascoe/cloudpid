@@ -74,6 +74,7 @@ export type ApprovalsRegistry = Pick<
   | "withdrawApproval"
   | "claimApproval"
   | "finishApproval"
+  | "releaseApproval"
   | "staleApprovals"
   | "notifyApproval"
   | "waitApproval"

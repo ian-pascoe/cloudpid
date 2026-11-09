@@ -325,6 +325,25 @@ describe("the apply's lease", () => {
     expect(stale).toEqual([]);
   });
 
+  it("is let go of by the run that holds it only, leaving the request approved for the next", async () => {
+    const [other, released, next] = await inRegistry(({ approvals }) => {
+      approvals.ask(spendAsk(20), "a-1", 0);
+      approvals.answer({ id: "a-1", approved: true }, 0);
+      approvals.claim("a-1", "run-1", 10);
+
+      return [
+        approvals.release("a-1", "run-2", 20),
+        approvals.release("a-1", "run-1", 30),
+        approvals.claim("a-1", "run-2", 40),
+      ];
+    });
+
+    expect(other).toMatchObject({ status: "approved", leaseToken: "run-1" });
+    expect(released).toMatchObject({ status: "approved", leaseToken: null, leaseUntil: null });
+    // Taken at once, long before run-1's lease would have lapsed.
+    expect(next?.leased).toBe(true);
+  });
+
   it("is never taken on a request that is not approved", async () => {
     const claimed = await inRegistry(({ approvals }) => {
       approvals.ask(spendAsk(20), "a-1", 0);

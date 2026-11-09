@@ -1750,12 +1750,21 @@ const fakeRegistries = () => {
             : { ...held, status: "declined", reason: reason ?? null },
       ),
     withdrawApproval: () => Effect.die("The owner's endpoint withdraws no Approval"),
+    // A lease holds until its run finishes or lets go of it: no time passes here, so none lapses.
     claimApproval: ({ id, token }) =>
       Effect.map(
         changeApproval(id, (held) =>
-          held.status === "approved" ? { ...held, leaseToken: token, leaseUntil: 1 } : held,
+          held.status === "approved" && (held.leaseToken === null || held.leaseToken === token)
+            ? { ...held, leaseToken: token, leaseUntil: 1 }
+            : held,
         ),
         (held) => (held === null ? null : { approval: held, leased: held.leaseToken === token }),
+      ),
+    releaseApproval: ({ id, token }) =>
+      changeApproval(id, (held) =>
+        held.status === "approved" && held.leaseToken === token
+          ? { ...held, leaseToken: null, leaseUntil: null }
+          : held,
       ),
     finishApproval: ({ id, token, status, reason, result }) =>
       changeApproval(id, (held) =>
@@ -6826,7 +6835,7 @@ describe("the Approvals asked over the MCP endpoint", () => {
   const environmentIds = (fake: ReturnType<typeof fakeRegistries>) =>
     call(fake, (registry) => registry.listEnvironments()).then((all) => Arr.map(all, (e) => e.id));
 
-  it("finishes on Try again an Environment's delete a failed step cut, inline", async () => {
+  it("finishes on Try again, inline, an Environment's delete a failed step stopped", async () => {
     const fake = fakeRegistries();
     const id = await makeEnvironment(fake, "Web");
     const session = await call(fake, (registry) => registry.createSession({ environment: id }));
@@ -6840,6 +6849,8 @@ describe("the Approvals asked over the MCP endpoint", () => {
     );
 
     expect(cut.status).toBe("approved");
+    // The run let go of its lease: the fake holds a lease until then, so Try again could not run otherwise.
+    expect(fake.approvalsHeld.get("a-1")?.leaseToken).toBeNull();
     expect(await environmentIds(fake)).toContain(id);
 
     fake.mendSession(session.id);

@@ -100,11 +100,11 @@ import { DEFAULT_MAX_SUBAGENT_WORKSPACES } from "./subagents/workspaces.ts";
 export const extensionName = "approval-tools";
 
 export {
-  type DeleteProgress,
   EnvironmentFootprint,
   type EnvironmentRemovalService,
   type KeptSecretMark,
   type SecretDeleted,
+  type StepProgress,
 } from "./environment-deletes.ts";
 
 export class EnvironmentRemoval extends Context.Service<

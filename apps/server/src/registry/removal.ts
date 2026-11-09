@@ -6,6 +6,7 @@
 // Approvals with no Session), whose run renews its lease after each step (`onStep`). Every step is safe to repeat: a
 // wiped object still listed is wiped again, then forgotten, so a delete cut anywhere finishes when it runs again.
 // @effect-diagnostics missingPipeableSignature:off
+import type { StepProgress } from "@cloudpid/extensions/environment-deletes";
 import { DEFAULT_ENVIRONMENT, EnvironmentError, SessionActionError } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Cause from "effect/Cause";
@@ -45,15 +46,6 @@ export type RemovalObjects = {
   readonly workspaces: Pick<WorkspaceObjects, "destroy">;
   readonly sessions: Pick<SessionObjects, "destroy">;
   readonly triggers: Pick<TriggerObjects, "remove">;
-};
-
-/**
- * What a caller of a long delete is told as it goes: `onStep` runs after each Workspace is removed, and after the spare
- * and the Build objects, before the next step. Its failure stops the delete there (a run that lost its lease), leaving
- * what is left to the next run.
- */
-export type RemovalProgress = {
-  readonly onStep?: Effect.Effect<void, EnvironmentError> | undefined;
 };
 
 /** Why the default Environment is not deleted. */
@@ -299,9 +291,10 @@ export const removals = (
    * too), its spare Workspace and its Build object, then its record, which takes its kept Secrets, Agent changes and
    * Triggers (`docs/architecture/triggers.md` → Cascades), whose objects are wiped after it. A Workspace made
    * meanwhile is removed the same way, a few rounds; a failure says what is left. The default
-   * Environment is never deleted. `onStep` runs after each Workspace, and after the spare and the Build (`RemovalProgress`).
+   * Environment is never deleted. `onStep` runs after each Workspace, and after the spare and the Build (`StepProgress`);
+   * one that dies (a run that lost its lease) stops the delete there, leaving what is left to the next run.
    */
-  const deleteEnvironment = (environment: string, { onStep = Effect.void }: RemovalProgress = {}) =>
+  const deleteEnvironment = (environment: string, { onStep = Effect.void }: StepProgress = {}) =>
     Effect.gen(function* () {
       // A new Session always has an Environment to start in.
       if (environment === DEFAULT_ENVIRONMENT) return yield* failed(DEFAULT_KEPT);

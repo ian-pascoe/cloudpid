@@ -1945,10 +1945,13 @@ describe("the management tools", () => {
       fakeApi({ describe: servingFollow([]), approvalWait }),
     );
 
-    expect(waited.structuredContent).toMatchObject({ status: "approved", long: true });
-    expect(waited.structuredContent.next).toContain(
-      'approval_wait again later with approval_id="a-1"',
-    );
+    // The contract: the state says the apply is long, and `next` still sends the caller back to approval_wait for it.
+    expect(waited.structuredContent).toMatchObject({
+      status: "approved",
+      long: true,
+      next: expect.stringContaining("approval_wait"),
+    });
+    expect(waited.structuredContent.next).toContain('approval_id="a-1"');
   });
 
   it("say a withdrawn request as finished, and send no wait after", async () => {

@@ -7,7 +7,6 @@
 // hands the upkeep to `background` and pushes the MCP server sets after an Environment's delete, as the owner's does.
 import type { EnvironmentRemovalService } from "@cloudpid/extensions/environment-deletes";
 import { EnvironmentsError } from "@cloudpid/extensions/environment";
-import { EnvironmentError } from "@cloudpid/protocol";
 import { GLOBAL_ID } from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -64,6 +63,9 @@ export const sessionEnvironmentRemoval = ({
   const afterwards = (effect: Effect.Effect<void>) =>
     background === undefined ? effect : background(effect);
 
+  /** After an Environment's delete: the push that wipes its host, and every one an earlier push did not (none in a Session). */
+  const afterGone = () => (mcp === undefined ? Effect.void : afterwards(mcp.sync(undefined)));
+
   /** The Secrets kept in `scope` alone: an Environment's id, or each Environment's (`*`). */
   const keptIn = (scope: string) =>
     Effect.map(registry.listEnvironmentSecrets(), (records) =>
@@ -98,15 +100,11 @@ export const sessionEnvironmentRemoval = ({
     deleteEnvironment: (environment, progress) =>
       !listed
         ? unlisted
-        : deleteEnvironment(environment, {
-            onStep: progress?.onStep?.pipe(
-              Effect.mapError((error) => EnvironmentError.make({ message: error.message })),
-            ),
-          }).pipe(
+        : deleteEnvironment(environment, progress).pipe(
             Effect.mapError((error) => EnvironmentsError.make({ message: error.message })),
-            // The Registry noted the host to wipe; the sync wipes it, and every one an earlier sync did not.
-            Effect.tap(() => (mcp === undefined ? Effect.void : afterwards(mcp.sync(undefined)))),
+            Effect.tap(afterGone),
           ),
+    afterGone,
     keptSecrets: (scope) =>
       Effect.gen(function* () {
         if (scope !== GLOBAL_ID && (yield* registry.getEnvironment({ id: scope })) === null) {

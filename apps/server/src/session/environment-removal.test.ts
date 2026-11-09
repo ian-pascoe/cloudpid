@@ -2,8 +2,8 @@
 // says deleting an Environment takes (its Workspaces, their Sessions, its kept Secrets and its Triggers), and the two
 // author sources (#685 L1): a Session's, which deletes nothing when the Registry does not list it, and the endpoint's,
 // whose Secret delete is recorded as its caller's with its claim, its upkeep after the answer, and whose Environment
-// delete reports each step and pushes the hosts' sets after it (`docs/architecture/mcp-endpoint.md` → Approvals with no
-// Session).
+// delete hands its progress through to `removals` (whose steps `../registry/removal.test.ts` owns) and pushes the hosts'
+// sets after it, and again for one found gone (`docs/architecture/mcp-endpoint.md` → Approvals with no Session).
 // @effect-diagnostics asyncFunction:off newPromise:off
 import type { EnvironmentSecretRecord, TriggerDefinition } from "@cloudpid/protocol";
 import type { SessionRecord, WorkspaceRecord } from "../registry/store.ts";
@@ -203,10 +203,10 @@ describe("the deletes, by author source", () => {
     expect(done).toEqual(["delete secret 0000abcd", "build 0000abcd"]);
   });
 
-  it("reports the endpoint's Environment delete step by step, then pushes the hosts' sets after the answer", async () => {
+  it("hands the endpoint's Environment delete its progress, then pushes the hosts' sets after the answer", async () => {
     const { removal, done, held, runLater } = setUp(ENDPOINT);
 
-    // Its Workspaces' removal is `removal.test.ts`'s: here it has none.
+    // Where each step falls is `removal.test.ts`'s: here, with no Workspace, only that the progress reaches it.
     held.workspaces = [];
 
     await Effect.runPromise(
@@ -217,10 +217,24 @@ describe("the deletes, by author source", () => {
       }),
     );
 
-    expect(done).toEqual(["step", "forget environment"]);
+    expect(done).toContain("step");
+    expect(done).not.toContain("sync all");
 
     await runLater();
 
-    expect(done).toEqual(["step", "forget environment", "sync all"]);
+    expect(done.at(-1)).toBe("sync all");
+  });
+
+  it("pushes the hosts' sets again for an Environment found gone on the endpoint, and nothing in a Session", async () => {
+    const endpoint = setUp(ENDPOINT);
+    const inSession = setUp(sessionSource("s-9"));
+
+    await Effect.runPromise(endpoint.removal.afterGone("0000abcd"));
+    await Effect.runPromise(inSession.removal.afterGone("0000abcd"));
+    await endpoint.runLater();
+    await inSession.runLater();
+
+    expect(endpoint.done).toEqual(["sync all"]);
+    expect(inSession.done).toEqual([]);
   });
 });
