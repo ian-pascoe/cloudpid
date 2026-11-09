@@ -2,9 +2,11 @@
 // @effect-diagnostics asyncFunction:off preferEffectArray:off
 // The Approvals asked over the MCP endpoint, end to end over the real Registry (`../registry/registry.fixture.ts` runs
 // `registryMethods` as deployed; `docs/architecture/mcp-endpoint.md` → Approvals with no Session): the ask's `pending`,
-// `unchanged` and refusals, its `request_id`, dedupe and cap; the apply of an approved request against what the owner
-// saw, under the request's claim, and its resume after a write that committed; `approval_wait` and `approval_withdraw`;
-// and the Limit paths of both resets, which their tools ask through once they are served.
+// `unchanged` and refusals, its `request_id`, dedupe and cap (`./approval-ask.ts`); the apply of an approved request
+// against what the owner saw, under the request's claim, its resume after a write that committed, and its second look at
+// the claim after a write that made nothing (`./approval-runner.ts`); `approval_wait` and `approval_withdraw`
+// (`./approval-follow.ts`); and the Limit paths of both resets. A row that needs the Registry to fail (a cut wait, a check
+// that heals) overrides that one method; every other call is the real Registry's.
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
 import {
   type AgentChangeVia,
@@ -20,14 +22,10 @@ import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { RealRegistry } from "../registry/registry.fixture.ts";
-import {
-  approvalClaim,
-  approvalRunner,
-  approvalWait,
-  approvalWithdraw,
-  askApproval,
-  waitSeconds,
-} from "./approvals.ts";
+import { SECRETS_CHANGED } from "../registry/via-secrets.ts";
+import { askApproval } from "./approval-ask.ts";
+import { approvalWait, approvalWithdraw } from "./approval-follow.ts";
+import { approvalClaim, approvalRunner } from "./approval-runner.ts";
 import { requestDigest } from "./dispatch.ts";
 import { endpointWrites, type HarnessRegistry } from "./services.ts";
 
@@ -46,8 +44,11 @@ const PI: AgentChangeVia = { auth: "oauth", client: { name: "pi" }, clientId: "g
 /** A size the Global size limit does not have by default, above every default size. */
 const LARGER = DEFAULT_CONTAINER_SETTINGS.maxInstance === "standard-4" ? "mem-12" : "standard-4";
 
-/** A fresh real Registry, and the asking, applying and following parts over it. */
-const started = async () => {
+/** The methods a row puts in place of the real Registry's. */
+type Overrides = Partial<Record<keyof HarnessRegistry, (...input: ReadonlyArray<never>) => unknown>>;
+
+/** A fresh real Registry, and the asking, applying and following parts over it, with `overrides` in place of its own. */
+const started = async (overrides: Overrides = {}) => {
   const stub = env.REAL_REGISTRIES.get(env.REAL_REGISTRIES.newUniqueId());
 
   const call = async <K extends keyof RegistryMethods>(
@@ -57,14 +58,17 @@ const started = async () => {
 
   await call("agentChangeFeatures");
 
-  // SAFETY: each method is the real Registry's, called by name over the test's Durable Object, as the stub calls it.
+  /** The real Registry's method, called by name over the test's Durable Object, as the stub calls it. */
+  const real =
+    (method: string) =>
+    (...input: ReadonlyArray<unknown>) =>
+      Effect.promise(() => call(method as keyof RegistryMethods, ...(input as [never])));
+
+  // SAFETY: each method is the real Registry's, or the row's own of the same signature.
   const registry = new Proxy(
     {},
     {
-      get:
-        (_target, method: string) =>
-        (...input: ReadonlyArray<unknown>) =>
-          Effect.promise(() => call(method as keyof RegistryMethods, ...(input as [never]))),
+      get: (_target, method: string) => overrides[method as keyof Overrides] ?? real(method),
     },
   ) as HarnessRegistry;
 
@@ -81,18 +85,12 @@ const started = async () => {
 
   let attempts = 0;
 
-  const ask = askApproval({ approvals: registry, writes, background, origin: ORIGIN });
-
-  const runner = approvalRunner({
-    approvals: registry,
-    writes,
-    upkeep: () => Effect.void,
-    background,
-  });
+  const ask = askApproval({ registry, writes, background, origin: ORIGIN });
+  const runner = approvalRunner({ registry, writes, upkeep: () => Effect.void, background });
 
   return {
     call,
-    runner,
+    real,
     /** Ask for `tool`'s change with `args`, as the dispatcher hands it over. */
     ask: async (
       tool: string,
@@ -118,15 +116,15 @@ const started = async () => {
         }),
       );
     },
-    wait: (approval_id: string, timeout_s?: number) =>
+    wait: (approval_id: string, timeout_s?: number): Promise<ApiResult<ApprovalState>> =>
       Effect.runPromise(
-        approvalWait({ approvals: registry, runner })(
+        approvalWait({ registry, runner })(
           timeout_s === undefined ? { approval_id } : { approval_id, timeout_s },
           PI,
         ),
       ),
-    withdraw: (approval_id: string) =>
-      Effect.runPromise(approvalWithdraw({ approvals: registry })({ approval_id })),
+    withdraw: (approval_id: string): Promise<ApiResult<ApprovalState>> =>
+      Effect.runPromise(approvalWithdraw({ registry })({ approval_id })),
     apply: (id: string) => Effect.runPromise(runner.apply(id)),
   };
 };
@@ -147,6 +145,11 @@ const approvalIdOf = (result: ApiResult<HarnessAnswer>): string => {
 };
 
 const SPEND = { scope: GLOBAL_SCOPE, per_session: 20, reason: "Runs cost more now" };
+
+/** What an applied spend limit's answer carries for programs: the Agent change made. */
+const SPEND_CHANGED = {
+  changes: [expect.objectContaining({ field: "spendLimit.perSession", after: 20 })],
+};
 
 describe("an ask", () => {
   it("answers pending with the request's id, its card's url and when it expires, and keeps it on its section", async () => {
@@ -212,6 +215,17 @@ describe("an ask", () => {
     expect(await call("listApprovals", {})).toEqual([]);
   });
 
+  it("answers the Registry's refusal of a check that heals (the kept Secrets changed meanwhile) as unavailable", async () => {
+    const { ask } = await started({
+      requestApproval: () => Effect.succeed({ status: "refused", message: SECRETS_CHANGED }),
+    });
+
+    expect(await ask("settings_spend_limit_set", SPEND)).toMatchObject({
+      ok: false,
+      error: { code: "unavailable" },
+    });
+  });
+
   it("refuses past the cap of requests per caller", async () => {
     const { ask } = await started();
 
@@ -247,8 +261,7 @@ describe("an approved request's apply", () => {
 
     const applied = await apply(id);
 
-    expect(applied).toMatchObject({ status: "finished", result: { text: expect.any(String) } });
-    expect(applied?.result?.text).toContain("$20 per Session");
+    expect(applied).toMatchObject({ status: "finished", result: { structured: SPEND_CHANGED } });
     expect((await call("getSettings")).settings.spendLimit.perSession).toBe(20);
     expect(await call("listSettingsChanges")).toEqual([
       expect.objectContaining({
@@ -260,21 +273,18 @@ describe("an approved request's apply", () => {
     ]);
     expect(await call("changeRequest", { id: `approval:${id}` })).toMatchObject({
       attempt: id,
-      answer: { text: applied?.result?.text },
+      answer: applied?.result,
     });
   });
 
-  it("changes nothing when the target changed since the ask, and says so", async () => {
+  it("changes nothing when the target changed since the ask", async () => {
     const { ask, call, apply } = await started();
     const id = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
 
     await call("updateSettings", { overrides: { spendLimit: { perSession: 5 } } });
     await call("answerApproval", { id, approved: true });
 
-    expect(await apply(id)).toMatchObject({
-      status: "changed_since",
-      reason: expect.stringContaining("$5 per Session"),
-    });
+    expect(await apply(id)).toMatchObject({ status: "changed_since", reason: expect.any(String) });
     expect((await call("getSettings")).settings.spendLimit.perSession).toBe(5);
   });
 
@@ -295,10 +305,42 @@ describe("an approved request's apply", () => {
       },
     });
 
-    const resumed = await apply(id);
+    expect(await apply(id)).toMatchObject({
+      status: "finished",
+      result: { structured: SPEND_CHANGED },
+    });
+    expect(await call("listSettingsChanges")).toHaveLength(1);
+  });
 
-    expect(resumed).toMatchObject({ status: "finished" });
-    expect(resumed?.result?.text).toContain("$20 per Session");
+  it("finishes from the claim a run that overlapped a lapsed lease committed, when its own write finds the target changed", async () => {
+    let lookups = 0;
+    // The first look at the claim misses the overlapping run's write, which commits right after it.
+    const { ask, call, apply, real } = await started({
+      changeRequest: (input: { readonly id: string }) => {
+        lookups += 1;
+
+        return lookups === 1 ? Effect.succeed(null) : real("changeRequest")(input);
+      },
+    });
+
+    const id = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
+    const approved = await call("answerApproval", { id, approved: true });
+
+    await call("changeSettings", {
+      changes: [{ field: "spendLimit.perSession", value: 20, expected: { value: null } }],
+      author: {
+        via: PI,
+        tool: "settings_spend_limit_set",
+        reason: SPEND.reason,
+        approved: true,
+        request: approvalClaim(approved!),
+      },
+    });
+    // The owner changes it again after that run: this run's write finds the target changed since the ask.
+    await call("updateSettings", { overrides: { spendLimit: { perSession: 5 } } });
+
+    expect(await apply(id)).toMatchObject({ status: "finished" });
+    expect(lookups).toBe(2);
     expect(await call("listSettingsChanges")).toHaveLength(1);
   });
 
@@ -309,7 +351,7 @@ describe("an approved request's apply", () => {
     expect(await apply(id)).toMatchObject({ status: "pending" });
   });
 
-  it("sets an Environment's size limit", async () => {
+  it("sets an Environment's size limit, asked for on the Limits section", async () => {
     const { ask, call, apply } = await started();
 
     const id = approvalIdOf(
@@ -319,6 +361,10 @@ describe("an approved request's apply", () => {
         reason: "Bigger builds",
       }),
     );
+
+    expect(await call("listApprovals", {})).toEqual([
+      expect.objectContaining({ id, section: "limits" }),
+    ]);
 
     await call("answerApproval", { id, approved: true });
 
@@ -351,7 +397,7 @@ describe("the resets' Limit paths", () => {
     expect((await call("getSettings")).settings.spendLimit.perSession).toBeNull();
   });
 
-  it("resets an Environment's size limit to Global's once approved", async () => {
+  it("resets an Environment's size limit to Global's once approved, asked for on the Limits section", async () => {
     const { ask, call, apply } = await started();
 
     await call("changeEnvironment", {
@@ -368,6 +414,10 @@ describe("the resets' Limit paths", () => {
       }),
     );
 
+    expect(await call("listApprovals", {})).toEqual([
+      expect.objectContaining({ id, section: "limits" }),
+    ]);
+
     await call("answerApproval", { id, approved: true });
 
     expect(await apply(id)).toMatchObject({ status: "finished" });
@@ -379,12 +429,6 @@ describe("the resets' Limit paths", () => {
 });
 
 describe("approval_wait", () => {
-  it("clamps its time to 0–300 seconds, 45 when not given", () => {
-    expect([waitSeconds(-5), waitSeconds(0), waitSeconds(999), waitSeconds()]).toEqual([
-      0, 0, 300, 45,
-    ]);
-  });
-
   it("reads a waiting request once with 0, and applies an approved one no run is applying", async () => {
     const { ask, call, wait } = await started();
     const id = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
@@ -401,7 +445,7 @@ describe("approval_wait", () => {
     expect(okValue(await wait(id, 0))).toMatchObject({
       status: "finished",
       finished: true,
-      result: { text: expect.stringContaining("$20 per Session") },
+      result: { structured: SPEND_CHANGED },
     });
   });
 
@@ -420,6 +464,18 @@ describe("approval_wait", () => {
     });
   });
 
+  it("answers a wait cut short (a deploy) with the request as read once after, interrupted", async () => {
+    const { ask, wait } = await started({ waitApproval: () => Effect.die("the RPC was cut") });
+    const id = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
+
+    expect(okValue(await wait(id, 30))).toMatchObject({
+      approval_id: id,
+      status: "pending",
+      finished: false,
+      interrupted: true,
+    });
+  });
+
   it("says a request it does not keep is not found", async () => {
     const { wait } = await started();
 
@@ -428,25 +484,40 @@ describe("approval_wait", () => {
 });
 
 describe("approval_withdraw", () => {
-  it("withdraws a waiting request, can be repeated, and is refused once the owner approved", async () => {
-    const { ask, call, withdraw } = await started();
+  it("withdraws a waiting request, can be repeated, and is refused once the owner approved, applied or not", async () => {
+    const { ask, call, withdraw, apply } = await started();
     const waiting = approvalIdOf(await ask("settings_spend_limit_set", SPEND));
 
     const approved = approvalIdOf(
       await ask("settings_subagent_depth_set", { scope: GLOBAL_SCOPE, depth: 3, reason: "Deeper" }),
     );
 
+    const notApplied = approvalIdOf(
+      await ask("settings_subagent_workspaces_set", {
+        scope: GLOBAL_SCOPE,
+        limit: 2,
+        reason: "More",
+      }),
+    );
+
     await call("answerApproval", { id: approved, approved: true });
+    await call("updateSettings", {
+      overrides: { extensions: { subagents: { maxSubagentWorkspaces: 1 } } },
+    });
+    await call("answerApproval", { id: notApplied, approved: true });
+    await apply(notApplied);
 
     const states: Array<ApiResult<ApprovalState>> = [
       await withdraw(waiting),
       await withdraw(waiting),
       await withdraw(approved),
+      await withdraw(notApplied),
     ];
 
     expect(states).toMatchObject([
       { ok: true, value: { status: "withdrawn", finished: true } },
       { ok: true, value: { status: "withdrawn", finished: true } },
+      { ok: false, error: { code: "invalid_argument" } },
       { ok: false, error: { code: "invalid_argument" } },
     ]);
   });

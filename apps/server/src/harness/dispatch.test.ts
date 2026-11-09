@@ -737,32 +737,38 @@ describe("the lifecycle, Skill and reset tools", () => {
       }),
     ));
 
-  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in answers every ask as a caller at its
-  // cap (`too_many_approvals`), which only the ask gives.
+  // The routing only: what an ask does is `approvals.workerd.test.ts`'s. The stand-in's targets are not overridden, so the
+  // ask answers `unchanged` (a `status` only the ask gives), with the keys of the tool's change answer and no probe.
   it.each([
     [
       "settings_reset of a Limit",
       "settings_reset",
       { scope: "*", field: "spendLimit.perSession", reason },
+      { changes: [], changes_truncated: false },
     ],
     [
       "environment_setting_reset of the size limit",
       "environment_setting_reset",
       { id: "default", setting: "maxInstance", reason },
+      { changes: [], changes_truncated: false, global: null },
     ],
-  ] as const)("hands %s to the ask for the owner's Approval, writing nothing", (_, tool, input) =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const { call, registryCalls, ledger } = changing();
+  ] as const)(
+    "hands %s to the ask for the owner's Approval, writing nothing",
+    (_, tool, input, keys) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, registryCalls, ledger } = changing();
 
-        const result = yield* call(tool, input);
+          const result = yield* call(tool, input);
 
-        expect(result).toMatchObject({ ok: false, error: { code: "too_many_approvals" } });
-        expect(registryCalls).toContain("requestApproval");
-        expect(registryCalls).not.toContain("agentChangeFeatures");
-        expect(ledger.changes).toEqual([]);
-      }),
-    ),
+          expect(result).toMatchObject({
+            ok: true,
+            value: { structured: { status: "unchanged", ...keys } },
+          });
+          expect(registryCalls).not.toContain("agentChangeFeatures");
+          expect(ledger.changes).toEqual([]);
+        }),
+      ),
   );
 
   it.each([
@@ -985,9 +991,11 @@ describe("a change to the Settings or an MCP server", () => {
       Effect.gen(function* () {
         const { call, ledger, registryCalls, upkeep } = changing();
 
-        const result = yield* call("settings_reset", {
+        const result = yield* call("settings_extension_set", {
           scope: "*",
-          field: "spendLimit.perSession",
+          extension: "subagents",
+          key: "maxSubagentDepth",
+          value: 2,
           reason,
         });
 

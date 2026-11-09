@@ -5,7 +5,7 @@
 // checking every text of the arguments against the kept Secrets, deduping, superseding, capping), the owner is pushed a
 // Notification for a new one, and the call answers `pending` with the request's id and its card's `url`, settling the
 // caller's `request_id` with that answer before it is sent.
-// @effect-diagnostics missingPipeableSignature:off
+// @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- an id quoted in a sentence.
 import { type AgentChangeVia, approvalPath } from "@cloudpid/protocol";
 import { type ApiResult, apiFailure, apiOk, type HarnessAnswer } from "@cloudpid/protocol/mcp-api";
 import * as Effect from "effect/Effect";

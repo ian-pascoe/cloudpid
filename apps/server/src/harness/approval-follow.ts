@@ -13,7 +13,7 @@ import { DEFAULT_APPROVAL_WAIT_S, MAX_APPROVAL_WAIT_S } from "@cloudpid/protocol
 import { type ApiResult, type ApprovalState, apiFailure, apiOk } from "@cloudpid/protocol/mcp-api";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
-import * as Result from "effect/Result";
+import * as Exit from "effect/Exit";
 import type * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
 import { awaitsApply, MAX_APPROVAL_WAITS, type StoredApproval } from "../registry/approvals.ts";
@@ -102,10 +102,10 @@ export const approvalWait =
 
         const waited = yield* registry
           .waitApproval({ id, seen: current.status, auth: caller.auth, deadline })
-          .pipe(Effect.result);
+          .pipe(Effect.exit);
 
-        // Cut (a deploy): read once again, and say so.
-        if (Result.isFailure(waited)) {
+        // Cut (a deploy, which fails the RPC as a defect): read once again, and say so.
+        if (Exit.isFailure(waited)) {
           const after = yield* registry.approval({ id });
 
           return after === null
@@ -113,16 +113,16 @@ export const approvalWait =
             : apiOk({ ...approvalState(after), interrupted: true as const });
         }
 
-        if (waited.success === null) return notFound(id);
+        if (waited.value === null) return notFound(id);
 
-        if (waited.success.status === "too_many_waits") {
+        if (waited.value.status === "too_many_waits") {
           return apiFailure(
             "too_many_waits",
             `${MAX_APPROVAL_WAITS} of your approval_waits run already, as many as may at once: wait for one to end.`,
           );
         }
 
-        current = waited.success.approval;
+        current = waited.value.approval;
       }
 
       return current === null ? notFound(id) : apiOk(approvalState(current));

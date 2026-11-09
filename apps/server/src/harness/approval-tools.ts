@@ -5,7 +5,7 @@
 // as how the write went, and the answer rebuilt from the Agent changes a write recorded before its run was cut. The asking
 // (`./approval-ask.ts`) and applying (`./approval-runner.ts`) parts look a tool up by name in `approvalTools`' table,
 // built once, and bind it to the caller's author source per call.
-// @effect-diagnostics missingPipeableSignature:off globalDate:off
+// @effect-diagnostics missingPipeableSignature:off globalDate:off globalJsonInEffect:off -- ISO times of epoch numbers; an id quoted in a sentence.
 import {
   type Applied,
   type ApprovalCore,
@@ -144,7 +144,7 @@ const writeStatus = (result: { readonly status: string }): "made" | ApprovalEnd 
 const approvalTool = <
   Args extends { readonly reason: string },
   Known,
-  Res,
+  Res extends { readonly status: string },
   E extends CoreError,
   How,
 >({

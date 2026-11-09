@@ -240,6 +240,9 @@ const resetsSizeLimit = (input: HarnessRequest["input"]): boolean =>
     onSome: ({ setting }) => setting === RESET_LIMIT_SETTING,
   });
 
+/** An answer's structured value as a JSON object, or none for any other value. */
+const decodeJsonObject = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Json));
+
 /** The keys a Settings change's endpoint answer always has, as an ask that changed nothing yet gives them. */
 const SETTINGS_CHANGE_KEYS = { changes: [], changes_truncated: false, unchanged: [] };
 
@@ -253,11 +256,12 @@ const ENVIRONMENT_CHANGE_KEYS = { ...SETTINGS_CHANGE_KEYS, global: null };
 const asChangeAnswer =
   (keys: Readonly<Record<string, Schema.Json>>) =>
   (result: ApiResult<HarnessAnswer>): ApiResult<HarnessAnswer> => {
-    const structured = result.ok ? result.value.structured : null;
+    if (!result.ok) return result;
 
-    if (!result.ok || !Predicate.isObject(structured) || Array.isArray(structured)) return result;
-
-    return apiOk({ ...result.value, structured: { ...keys, ...structured } });
+    return Option.match(decodeJsonObject(result.value.structured), {
+      onNone: () => result,
+      onSome: (structured) => apiOk({ ...result.value, structured: { ...keys, ...structured } }),
+    });
   };
 
 /** The refusal of a `request_id` an earlier call holds with another tool or other arguments. */
