@@ -691,6 +691,9 @@ const fakeRegistries = () => {
   /** The token and Signing secret each webhook Trigger's object holds, and what it says of its deliveries. */
   const triggerHooks = new Map<string, HookSecrets>();
 
+  /** The webhook Triggers whose object holds secrets that no longer read. */
+  const unreadableHooks = new Set<string>();
+
   const triggerDeliveries = new Map<string, DeliveryStats>();
 
   /** Whether a Trigger's object holds a delivery to send again. */
@@ -723,7 +726,13 @@ const fakeRegistries = () => {
       reachTrigger(id, () => {
         calls.push(`revealTriggerObject:${id}`);
 
-        return triggerHooks.get(id) ?? null;
+        const held = triggerHooks.get(id);
+
+        if (unreadableHooks.has(id)) return { status: "unreadable" as const };
+
+        return held === undefined
+          ? { status: "none" as const }
+          : { status: "ok" as const, secrets: held };
       }),
     rotate: (id, what) =>
       reachTrigger(id, () => {
@@ -731,16 +740,19 @@ const fakeRegistries = () => {
 
         const held = triggerHooks.get(id);
 
-        if (held === undefined) return null;
+        if (held === undefined) return { status: "none" as const };
+
+        // Secrets that no longer read are replaced, both of them, whichever is asked.
+        const replaced = unreadableHooks.delete(id);
 
         const next = {
-          token: what === "url" ? `${held.token}+` : held.token,
-          secret: what === "secret" ? `${held.secret}+` : held.secret,
+          token: what === "url" || replaced ? `${held.token}+` : held.token,
+          secret: what === "secret" || replaced ? `${held.secret}+` : held.secret,
         };
 
         triggerHooks.set(id, next);
 
-        return next;
+        return { status: "ok" as const, secrets: next };
       }),
     fireNow: (id, key) =>
       reachTrigger(id, () => {
@@ -1801,6 +1813,7 @@ const fakeRegistries = () => {
     triggerFires,
     triggerWaiting,
     triggerHooks,
+    unreadableHooks,
     triggerDeliveries,
     lastDeliveries,
     breakSession: (id: string, message: string) => {
@@ -3986,6 +3999,11 @@ it("wakes the object of a Trigger a revert brought back now, and tells the owner
 
   expect(reverted.after).toEqual(asChangeJson(value));
   expect(fake.calls).toContain("wakeTriggerObject:t1");
+  // The object is wiped first, so a wipe the removal lost cannot give the brought back Trigger the old secrets.
+  expect(fake.calls.indexOf("removeTriggerObject:t1")).toBeGreaterThanOrEqual(0);
+  expect(fake.calls.indexOf("removeTriggerObject:t1")).toBeLessThan(
+    fake.calls.indexOf("wakeTriggerObject:t1"),
+  );
 
   const unscheduled = await call(fake, (registry) =>
     Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 2 })),
@@ -4001,6 +4019,34 @@ it("wakes the object of a Trigger a revert brought back now, and tells the owner
   await fake.runBackground();
 
   expect(fake.calls).not.toContain("syncTriggerObject:t1");
+});
+
+it("does not wipe the object of a Trigger a revert only resumed", async () => {
+  const value: TriggerChangeValue = {
+    kind: "environment",
+    name: "Weekly report",
+    message: "Summarize last week's PRs.",
+    source: { type: "schedule", cron: "0 9 * * 1", zone: "America/Chicago" },
+    whenBusy: "skip",
+    paused: false,
+  };
+
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "trigger_pause",
+    field: triggerField("t1"),
+    before: asChangeJson(value),
+    after: asChangeJson({ ...value, paused: true }),
+  });
+
+  await call(fake, (registry) =>
+    registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 }),
+  );
+
+  expect(fake.calls).toContain("wakeTriggerObject:t1");
+  expect(fake.calls).not.toContain("removeTriggerObject:t1");
 });
 
 describe("the owner's Triggers", () => {
@@ -4294,6 +4340,29 @@ describe("the owner's Triggers", () => {
     );
 
     expect(unreachable.message).toBe("The trigger's object didn't answer: try again");
+  });
+
+  it("says kept secrets that no longer read can't be shown, and makes new ones when asked to rotate", async () => {
+    const fake = fakeRegistries();
+
+    await create(fake, "t1");
+    fake.triggerHooks.set("t1", { token: "tok", secret: "sec" });
+    fake.unreadableHooks.add("t1");
+
+    const unreadable = await call(fake, (registry) =>
+      Effect.flip(registry.revealTrigger({ id: "t1" })),
+    );
+
+    expect(unreadable.message).toBe(
+      "This trigger's URL and signing secret can't be read: make new ones with New URL or New signing secret",
+    );
+    expect(
+      await call(fake, (registry) => registry.rotateTrigger({ id: "t1", what: "url" })),
+    ).toEqual({
+      origin: "https://cloudpid.example.com",
+      path: "/hooks/t1/tok+",
+      secret: "sec+",
+    });
   });
 
   it("fires a Trigger again under the page's key, and refuses a paused one, a removed one and one with no delivery", async () => {

@@ -28,6 +28,10 @@ export const triggerPaused = "The trigger is paused: resume it to fire it";
 export const triggerNoWebhook =
   "This trigger has no URL or signing secret: only a webhook trigger does";
 
+/** That a Trigger's kept URL and Signing secret no longer read: the owner makes new ones. */
+export const triggerSecretsUnreadable =
+  "This trigger's URL and signing secret can't be read: make new ones with New URL or New signing secret";
+
 /** That Fire again was asked of a Trigger that has accepted no delivery yet. */
 export const triggerNoDelivery =
   "No delivery has been accepted yet: there is nothing to send again";
