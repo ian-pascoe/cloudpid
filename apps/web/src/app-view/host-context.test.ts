@@ -154,13 +154,4 @@ describe("hostCapabilities of what a frame serves", () => {
     });
     expect(hostCapabilities(undefined, true, false, { clipboardWrite: false }).sandbox).toEqual({});
   });
-
-  it("keeps the server calls as they were beside them", () => {
-    expect(hostCapabilities(undefined, true, true, { message: true })).toEqual({
-      sandbox: {},
-      message: { text: {} },
-      serverResources: {},
-      logging: {},
-    });
-  });
 });

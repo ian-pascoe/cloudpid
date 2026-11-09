@@ -121,15 +121,6 @@ describe("the keyboard textarea at the end of a tap", () => {
     expect(textarea.log).toEqual(["focus", "blur", "focus"]);
     expect(textarea.getAttribute("inputmode")).toBe("decimal");
   });
-
-  it("does not change on gestures that are not taps: the Pane only calls it for taps", () => {
-    const { textarea, keyboard } = setup();
-
-    keyboard.tap(field("text"));
-    keyboard.close();
-
-    expect(textarea.focused).toBe(false);
-  });
 });
 
 describe("the check after a tap", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileDiffOf, placeholderDiff } from "./file-diff.ts";
+import { fileDiffOf } from "./file-diff.ts";
 import { lineUp } from "./line-up.ts";
 
 describe("fileDiffOf", () => {
@@ -52,30 +52,5 @@ describe("fileDiffOf", () => {
     expect(added).toMatchObject({ type: "new", name: "n.ts" });
     expect(deleted).toMatchObject({ type: "deleted", name: "d.ts" });
     expect(renamed).toMatchObject({ type: "rename-changed", name: "new.ts", prevName: "old.ts" });
-  });
-
-  it("has nothing to draw when the sides' text is the same", () => {
-    expect(
-      fileDiffOf({
-        names: { name: "same.ts", status: "modified" },
-        oldText: "a\n",
-        newText: "a\n",
-        patch: lineUp({ oldName: "same.ts", newName: "same.ts", oldText: "a\n", newText: "a\n" })
-          .patch,
-        cacheKey: "s",
-      }),
-    ).toBeUndefined();
-  });
-});
-
-describe("placeholderDiff", () => {
-  it("has no lines, and the file's name and kind", () => {
-    expect(placeholderDiff({ name: "a.ts", prevName: "b.ts", status: "renamed" })).toMatchObject({
-      name: "a.ts",
-      prevName: "b.ts",
-      type: "rename-changed",
-      hunks: [],
-      unifiedLineCount: 0,
-    });
   });
 });

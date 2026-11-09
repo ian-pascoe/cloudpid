@@ -105,25 +105,9 @@ describe("a Live View's connection", () => {
     }).pipe(Effect.scoped),
   );
 
-  it.effect("ends when the link source is over", () =>
-    Effect.gen(function* () {
-      const { view, finish, killAll, state } = yield* setup();
-
-      finish();
-      killAll();
-
-      const returned = yield* Effect.forkChild(view.returned);
-
-      yield* TestClock.adjust(RETURN_PING_MS);
-      yield* Fiber.join(returned);
-
-      expect(state().status).toBe("ended");
-    }).pipe(Effect.scoped),
-  );
-
   it.effect("says when it has ended, and not before", () =>
     Effect.gen(function* () {
-      const { view, finish, killAll } = yield* setup();
+      const { view, finish, killAll, state } = yield* setup();
       const ended = yield* Effect.forkChild(whenEnded(view));
 
       yield* settle;
@@ -137,6 +121,8 @@ describe("a Live View's connection", () => {
       yield* TestClock.adjust(RETURN_PING_MS);
       yield* Fiber.join(returned);
       yield* Fiber.join(ended);
+
+      expect(state().status).toBe("ended");
     }).pipe(Effect.scoped),
   );
 

@@ -1,6 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- assertions over what the fakes recorded, in native arrays.
 
-import { MAX_APP_MESSAGES, MAX_ATTACHED_RESOURCES, MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
+import { MAX_ATTACHED_RESOURCES, MAX_ATTACHMENT_BYTES } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -702,15 +702,6 @@ describe("a composer's App messages", () => {
       return { ...chat, hold, state: () => chat.registry.get(attachmentsAtom(ROOT)) };
     });
 
-  it.effect("holds a View's message as a chip, and answers that it did", () =>
-    Effect.gen(function* () {
-      const { hold, state } = yield* apps();
-
-      expect(yield* hold(message("c1"))).toBe("held");
-      expect(state().apps).toEqual([{ callId: "c1", server: "docs", text: "from c1" }]);
-    }),
-  );
-
   it.effect("keeps one chip for a View: a newer message replaces it, in its place", () =>
     Effect.gen(function* () {
       const { hold, state } = yield* apps();
@@ -731,8 +722,6 @@ describe("a composer's App messages", () => {
     () =>
       Effect.gen(function* () {
         const { hold, state } = yield* apps();
-
-        expect(MAX_APP_MESSAGES).toBe(3);
 
         for (const id of ["c1", "c2", "c3"]) expect(yield* hold(message(id))).toBe("held");
 

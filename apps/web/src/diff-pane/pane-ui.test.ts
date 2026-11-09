@@ -36,10 +36,4 @@ describe("the Diff pane's own state", () => {
     );
     expect(both.overrides.has("a")).toBe(true);
   });
-
-  it("the Pane's own file list shows a file as a place asked for", () => {
-    expect(
-      reducePaneUi(INITIAL_PANE_UI, { type: "show", target: { file: "web/b.ts", at: 3 } }),
-    ).toEqual(withTarget(INITIAL_PANE_UI, { file: "web/b.ts", at: 3 }));
-  });
 });

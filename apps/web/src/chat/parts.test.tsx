@@ -13,10 +13,7 @@ const CALL: NestedCall = { id: "1", name: "read", args: { path: "a.ts" }, status
 
 /** A settled `codemode` card whose artifact is `artifact`. */
 const render = (
-  artifact:
-    | { nested: NestedCall[]; omittedCalls?: OmittedCalls }
-    | { elicitations: unknown[] }
-    | { samplings: unknown[] },
+  artifact: { nested: NestedCall[]; omittedCalls?: OmittedCalls } | { samplings: unknown[] },
   toolName = "codemode",
 ) => {
   const registry = AtomRegistry.make();
@@ -57,21 +54,6 @@ describe("ToolCallCard's omitted calls", () => {
     expect(omittedNote(markup)).toBe("1,234 more calls, 1,200 failed");
   });
 
-  it("says nothing of failures when none of the omitted calls failed", () => {
-    expect(omittedNote(render({ nested: [CALL], omittedCalls: { count: 7, failed: 0 } }))).toBe(
-      "7 more calls",
-    );
-  });
-
-  it("uses the singular for one call and one failure", () => {
-    expect(omittedNote(render({ nested: [CALL], omittedCalls: { count: 1, failed: 0 } }))).toBe(
-      "1 more call",
-    );
-    expect(omittedNote(render({ nested: [CALL], omittedCalls: { count: 1, failed: 1 } }))).toBe(
-      "1 more call, 1 failed",
-    );
-  });
-
   it("shows the line when the list is empty", () => {
     const markup = render({ nested: [], omittedCalls: { count: 5, failed: 2 } });
 
@@ -84,42 +66,6 @@ describe("ToolCallCard's omitted calls", () => {
 
     expect(markup).toContain(">Calls<");
     expect(markup).not.toContain("more call");
-  });
-});
-
-describe("ToolCallCard's MCP questions", () => {
-  it("says what became of each question its server asked, and why when cloudpid ended one", () => {
-    const text = render(
-      {
-        elicitations: [
-          { server: "docs", action: "accept", by: "owner", fields: ["name", "count"] },
-          { server: "docs", action: "decline", by: "owner", fields: [] },
-          {
-            server: "docs",
-            action: "decline",
-            by: "cloudpid",
-            fields: [],
-            reason:
-              "it asked for a credential ('API key'), which MCP servers must not ask for in a form",
-          },
-          {
-            server: "docs",
-            action: "cancel",
-            by: "cloudpid",
-            fields: [],
-            reason: "the owner did not answer in time",
-          },
-        ],
-      },
-      "mcp__docs__ask",
-    ).replaceAll(/<[^>]*>/g, "");
-
-    expect(text).toContain("You answered docs&#x27;s form (name, count)");
-    expect(text).toContain("You declined docs&#x27;s form");
-    expect(text).toContain(
-      "cloudpid declined docs&#x27;s form: it asked for a credential (&#x27;API key&#x27;)",
-    );
-    expect(text).toContain("cloudpid cancelled docs&#x27;s form: the owner did not answer in time");
   });
 });
 

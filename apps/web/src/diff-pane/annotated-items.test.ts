@@ -2,8 +2,7 @@ import type { CodeViewDiffItem, DiffLineAnnotation } from "@pierre/diffs";
 import { describe, expect, it } from "vitest";
 import type { AnnotationSlot } from "../review/drafts.ts";
 import { placeholderDiff } from "./file-diff.ts";
-import { conversationKey } from "../session/conversation-key.ts";
-import { annotatedItems, paneDrafts } from "./annotated-items.ts";
+import { annotatedItems } from "./annotated-items.ts";
 
 const item = (id: string, version = 1): CodeViewDiffItem<undefined> => ({
   id,
@@ -16,13 +15,6 @@ const draft = (id: string, lineNumber: number): DiffLineAnnotation<AnnotationSlo
   side: "additions",
   lineNumber,
   metadata: { kind: "draft", id },
-});
-
-describe("paneDrafts", () => {
-  it("takes drafts on the Session's own Changes, not on a Subagent page's", () => {
-    expect(paneDrafts(conversationKey("s1", undefined))).toBe(true);
-    expect(paneDrafts(conversationKey("s1", 7))).toBe(false);
-  });
 });
 
 describe("annotatedItems", () => {

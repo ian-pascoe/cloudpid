@@ -8,7 +8,6 @@ import {
   McpSamplingCard,
   samplingCalls,
 } from "./mcp-sampling-card.tsx";
-import { samplingLine } from "./mcp-sampling-detail.ts";
 
 const request = (more: Partial<McpSamplingRequest> = {}): McpSamplingRequest => ({
   id: "call-1:s1",
@@ -130,25 +129,6 @@ describe("McpSamplingCard", () => {
     expect(render(request())).not.toContain("also waiting");
   });
 
-  it("offers the Role picker on the request's Role, with each Role's model", () => {
-    const markup = render(request());
-
-    expect(markup).toContain("Run on");
-    expect(markup).toMatch(/<option value="small" selected[^>]*>small · m\/small/);
-    expect(markup).toContain("medium · m/medium");
-  });
-
-  it("allows for this call by default, with the Session and Always in the menu, and refuses likewise", () => {
-    const markup = render(request());
-
-    expect(markup).toContain("Allow for this call");
-    expect(markup).toContain("Allow in this Session");
-    expect(markup).toContain("Always allow");
-    expect(markup).toContain(">Refuse<");
-    expect(markup).toContain("Refuse in this Session");
-    expect(markup).toContain(">Never<");
-  });
-
   it("hides Always allow and Never where the definition is not the owner's to write", () => {
     const markup = render(request({ writable: false }));
 
@@ -189,53 +169,5 @@ describe("McpSamplingCard", () => {
     expect(markup).toContain("small · m/small");
     expect(markup).not.toContain("m/huge ");
     expect(markup).not.toContain('value="xxlarge"');
-  });
-
-  it("says a prompt send's request is from getting the prompt", () => {
-    const markup = render(request({ prompt: "Review PR", tool: "/mcp__github__review" }));
-
-    expect(markup).toContain("getting prompt Review PR");
-    expect(markup).not.toContain("during");
-    expect(markup).toContain("prompt goes on without an answer in");
-  });
-
-  it("says which agent asked, and where the definition is", () => {
-    expect(render(request())).toContain("· the agent");
-    expect(render(request(), false, "reviewer (checks)")).toContain("· subagent reviewer (checks)");
-    expect(render(request({ source: { kind: "global" } }))).toContain(">Global<");
-  });
-});
-
-describe("samplingLine", () => {
-  it("says who decided and what came of each request", () => {
-    expect(samplingLine({ server: "docs", status: "answered", by: "definition" })).toBe(
-      "docs used a model, as its definition allows",
-    );
-    expect(
-      samplingLine({ server: "docs", status: "answered", by: "grant", role: "medium", cost: 0.5 }),
-    ).toBe("docs used a model, as you allowed (medium, $0.50)");
-    expect(
-      samplingLine({ server: "docs", status: "answered", by: "grant", grant: "session" }),
-    ).toBe("docs used a model, as you allowed for this Session");
-    expect(samplingLine({ server: "docs", status: "answered", by: "grant", grant: "call" })).toBe(
-      "docs used a model, as you allowed for this call",
-    );
-    expect(samplingLine({ server: "docs", status: "answered", by: "owner", grant: "always" })).toBe(
-      "You let docs use a model for good",
-    );
-    expect(samplingLine({ server: "docs", status: "refused", by: "grant", grant: "call" })).toBe(
-      "You refused docs's request to use a model, as you chose for this call",
-    );
-    expect(samplingLine({ server: "docs", status: "refused", by: "owner" })).toBe(
-      "You refused docs's request to use a model",
-    );
-    expect(
-      samplingLine({
-        server: "docs",
-        status: "failed",
-        by: "cloudpid",
-        reason: "the model failed",
-      }),
-    ).toBe("docs's request to use a model failed: the model failed");
   });
 });

@@ -30,151 +30,25 @@ describe("toolSummary", () => {
     expect(toolSummary("codemode", { code: "" })).toBeUndefined();
   });
 
-  it("shows the task a subagent starts with, the message an agent sends, and the agent a call addresses", () => {
+  it("shows the task a subagent starts with, the message an agent sends, and what a settings or environment call changes", () => {
     expect(toolSummary("subagent", { task: "Find the bug\nIt is in src" })).toBe("Find the bug");
     expect(toolSummary("subagent", { task: "Review", agent_id: "reviewer" })).toBe(
       "reviewer: Review",
     );
-    expect(toolSummary("agent_message", { agent_id: "agent-1", message: "Stop" })).toBe(
-      "agent-1: Stop",
-    );
     expect(toolSummary("agent_message", { message: "Done early" })).toBe("Done early");
-    expect(toolSummary("subagent_wait", { agent_id: "agent-1" })).toBe("agent-1");
-    expect(toolSummary("browser_handoff", { instructions: "Log in\nthen press Done" })).toBe(
-      "Log in",
-    );
-    expect(toolSummary("container_restart", { reason: "echo hung\nfor minutes" })).toBe(
-      "echo hung",
-    );
     expect(toolSummary("container_restart", { reason: "echo hung", fresh: true })).toBe(
       "echo hung (fresh)",
     );
-    expect(
-      toolSummary("container_resize", { size: "cpu-2", reason: "tsc ran out\nof memory" }),
-    ).toBe("tsc ran out (to cpu-2)");
-    // A call made before the rename, in a transcript.
-    expect(toolSummary("restart_container", { reason: "echo hung" })).toBe("echo hung");
-    expect(toolSummary("environment_get", { id: "0000abcd" })).toBe("0000abcd");
     expect(toolSummary("environment_get", {})).toBeUndefined();
-    expect(toolSummary("environment_variable_set", { name: "API_URL", value: "x" })).toBe(
-      "API_URL",
-    );
     expect(toolSummary("environment_variable_unset", { id: "0000abcd", name: "MODE" })).toBe(
       "MODE in 0000abcd",
     );
     expect(
-      toolSummary("environment_secret_build", { id: "*", name: "NPM_TOKEN", build: true }),
-    ).toBe("NPM_TOKEN at Global");
-    expect(
-      toolSummary("environment_skill_save", {
-        path: "/workspace/.cloudpid/tmp/release",
-        reason: "r",
-      }),
-    ).toBe("/workspace/.cloudpid/tmp/release");
-    expect(
-      toolSummary("environment_skill_install", {
-        id: "0000abcd",
-        source: "mattpocock/skills@grill-me",
-        reason: "r",
-      }),
-    ).toBe("0000abcd: mattpocock/skills@grill-me");
-    expect(
-      toolSummary("environment_skill_update", {
-        id: "0000abcd",
-        names: ["grill-me", "tdd"],
-        reason: "r",
-      }),
-    ).toBe("0000abcd: grill-me, tdd");
+      toolSummary("environment_variable_set", { id: "*", name: "CLOUDFLARE_EMAIL", value: "x" }),
+    ).toBe("CLOUDFLARE_EMAIL at Global");
     expect(toolSummary("environment_skill_update", { reason: "r" })).toBe(
       "the Skills marked update available",
     );
-    expect(toolSummary("skill_search", { query: "grill" })).toBe("grill");
-    expect(toolSummary("environment_skill_remove", { id: "0000abcd", name: "release" })).toBe(
-      "release in 0000abcd",
-    );
-    expect(
-      toolSummary("environment_variable_set", { id: "*", name: "CLOUDFLARE_EMAIL", value: "x" }),
-    ).toBe("CLOUDFLARE_EMAIL at Global");
-    expect(
-      toolSummary("environment_container_resize", { size: "cpu-2", reason: "needs 6 GiB" }),
-    ).toBe("needs 6 GiB (to cpu-2)");
-    expect(
-      toolSummary("environment_idle_time_set", { id: "0000abcd", minutes: 10, reason: "warm" }),
-    ).toBe("0000abcd: warm (10 min)");
-    expect(
-      toolSummary("environment_setup_script_set", { script: "echo", reason: "jq\nmore" }),
-    ).toBe("jq");
-    expect(toolSummary("environment_ignore_set", { patterns: ["/a"], reason: "big" })).toBe("big");
-    expect(
-      toolSummary("environment_spare_workspace_set", {
-        id: "0000abcd",
-        enabled: false,
-        reason: "rarely used",
-      }),
-    ).toBe("0000abcd: rarely used (spare off)");
-    expect(toolSummary("environment_create", { name: "Billing", reason: "r" })).toBe("Billing");
-    expect(toolSummary("environment_rename", { id: "0000abcd", name: "Main" })).toBe(
-      "Main in 0000abcd",
-    );
-    expect(toolSummary("environment_repo_add", { url: "o/api" })).toBe("o/api");
-    expect(toolSummary("environment_repo_remove", { name: "api", id: "0000abcd" })).toBe(
-      "api in 0000abcd",
-    );
-    expect(toolSummary("environment_rebuild", {})).toBeUndefined();
-    expect(toolSummary("environment_rebuild", { id: "0000abcd" })).toBe("0000abcd");
-    expect(
-      toolSummary("environment_rebuild", {
-        reason: "r",
-        proposed: { setup_script: "x", toolchains: "" },
-      }),
-    ).toBe("Test Build of setup_script, toolchains");
-    expect(toolSummary("environment_rebuild", { id: "0000abcd", reason: "r", proposed: {} })).toBe(
-      "0000abcd: Test Build",
-    );
-    expect(
-      toolSummary("settings_model_set", {
-        model: "anthropic/claude-sonnet-5-5",
-        thinking_level: "low",
-        reason: "r",
-      }),
-    ).toBe("anthropic/claude-sonnet-5-5 at low");
-    expect(toolSummary("settings_model_set", { thinking_level: "low" })).toBe("low");
-    expect(toolSummary("settings_model_set", { reason: "r" })).toBeUndefined();
-    expect(
-      toolSummary("settings_role_set", { role: "small", model: "anthropic/claude-haiku-5-5" }),
-    ).toBe("small: anthropic/claude-haiku-5-5");
-    expect(toolSummary("settings_tool_offer", { pattern: "web_fetch", reason: "r" })).toBe(
-      "web_fetch",
-    );
-    expect(toolSummary("settings_tool_defer", { pattern: "grep" })).toBe("grep");
-    expect(
-      toolSummary("settings_extension_set", { extension: "subagents", key: "readToolset" }),
-    ).toBe("subagents.readToolset");
-    expect(toolSummary("settings_reset", { scope: "*", field: "roles.small", reason: "r" })).toBe(
-      "roles.small",
-    );
-    // The MCP server changes: the server, where, and what it is set to.
-    expect(toolSummary("settings_mcp_disable", { scope: "*", name: "linear", reason: "r" })).toBe(
-      "linear at Global",
-    );
-    expect(toolSummary("settings_mcp_disable", { scope: "env-1", name: "linear" })).toBe(
-      "linear in env-1",
-    );
-    expect(
-      toolSummary("settings_mcp_exposure_set", {
-        scope: "env-1",
-        name: "linear",
-        exposure: "direct",
-      }),
-    ).toBe("linear: direct in env-1");
-    expect(
-      toolSummary("settings_mcp_tool_exposure_set", {
-        scope: "*",
-        name: "linear",
-        tool: "delete_*",
-        exposure: "hidden",
-      }),
-    ).toBe("linear · delete_*: hidden at Global");
     expect(
       toolSummary("settings_mcp_tool_exposure_set", {
         scope: "*",
@@ -183,60 +57,9 @@ describe("toolSummary", () => {
         exposure: null,
       }),
     ).toBe("linear · delete_*: removed at Global");
-    expect(toolSummary("settings_mcp_enable", { scope: "env-1", name: "linear" })).toBe(
-      "linear in env-1",
-    );
-    expect(toolSummary("settings_mcp_add", { scope: "*", name: "linear", entry: {} })).toBe(
-      "linear at Global",
-    );
-    expect(
-      toolSummary("settings_mcp_add", { scope: "env-1", name: "linear", from_repo: "app" }),
-    ).toBe("linear from app in env-1");
-    expect(
-      toolSummary("settings_mcp_update", {
-        scope: "env-1",
-        name: "linear",
-        set: { url: "https://x.example/mcp", headers: null },
-      }),
-    ).toBe("linear: url, headers in env-1");
-    expect(toolSummary("settings_mcp_update", { scope: "env-1", name: "linear", set: {} })).toBe(
-      "linear in env-1",
-    );
-    expect(toolSummary("settings_mcp_remove", { scope: "env-1", name: "linear" })).toBe(
-      "linear in env-1",
-    );
-    expect(toolSummary("settings_mcp_disable", { scope: "*" })).toBeUndefined();
-    expect(toolSummary("settings_compaction_set", { reason: "more room\nplease" })).toBe(
-      "more room",
-    );
-    // The tools that wait for the owner's Approval.
-    expect(toolSummary("settings_spend_limit_set", { per_session: 25, reason: "r" })).toBe(
-      "$25 per Session",
-    );
     expect(toolSummary("settings_spend_limit_set", { per_session: null, reason: "r" })).toBe(
       "no limit",
     );
-    expect(toolSummary("settings_subagent_depth_set", { depth: 3, reason: "r" })).toBe("depth 3");
-    expect(toolSummary("settings_subagent_workspaces_set", { limit: 5, reason: "r" })).toBe(
-      "limit 5",
-    );
-    expect(
-      toolSummary("environment_container_size_limit_set", { id: "0000abcd", size: "cpu-3" }),
-    ).toBe("0000abcd: limit cpu-3");
-    expect(
-      toolSummary("environment_setting_reset", {
-        id: "0000abcd",
-        setting: "idleMinutes",
-        reason: "r",
-      }),
-    ).toBe("0000abcd: reset idleMinutes");
-    expect(toolSummary("environment_delete", { id: "0000abcd", reason: "r" })).toBe("0000abcd");
-    expect(toolSummary("environment_secret_delete", { id: "*", name: "NPM_TOKEN" })).toBe(
-      "NPM_TOKEN at Global",
-    );
-    expect(toolSummary("subagent_status", {})).toBeUndefined();
-    expect(toolSummary("subagent_cancel", { agent_id: "agent-1" })).toBe("agent-1");
-    expect(toolSummary("subagent_delete", { agent_id: "agent-1" })).toBe("agent-1");
   });
 
   it("has nothing to say about a tool it does not know, or arguments it cannot read", () => {

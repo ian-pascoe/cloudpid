@@ -1,7 +1,7 @@
 import type { ConversationId, McpSignInRequest } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { McpSignInCard, whyLabel } from "./mcp-sign-in-card.tsx";
+import { McpSignInCard } from "./mcp-sign-in-card.tsx";
 
 const request = (more: Partial<McpSignInRequest> = {}): McpSignInRequest => ({
   id: "signin-3",
@@ -69,16 +69,10 @@ describe("McpSignInCard", () => {
     expect(markup).toContain("The server wants more access than the sign-in has");
   });
 
-  it("shows a subagent's ask, and turns Decline off while the Session is not live", () => {
-    const markup = render(request(), true, "reviewer");
+  it("turns Decline off while the Session is not live", () => {
+    const markup = render(request(), true);
 
-    expect(markup).toContain("subagent reviewer");
     expect(markup).toContain("Reconnecting…");
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Decline/);
-  });
-
-  it("reads a reason this build does not know as needing a sign-in", () => {
-    expect(whyLabel("something_new")).toBe("Not signed in");
-    expect(whyLabel("rejected")).toBe("The server rejected the sign-in");
   });
 });

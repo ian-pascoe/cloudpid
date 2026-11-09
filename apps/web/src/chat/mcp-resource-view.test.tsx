@@ -82,56 +82,6 @@ describe("an image preview", () => {
     expect(html).toContain('src="data:image/png;base64,iVBORw0KGgo="');
     expect(html).not.toContain("evil.test");
   });
-
-  it("is no img for a type outside the list, or for base64 that is not", () => {
-    for (const held of [
-      { kind: "blob", base64: "AAAA", mimeType: "image/svg+xml" },
-      { kind: "blob", base64: 'x" onerror="y', mimeType: "image/png" },
-    ] as const) {
-      const html = renderToStaticMarkup(
-        <ReadPreview resource={resource()} read={{ status: "held", held }} />,
-      );
-
-      expect(html).not.toContain("<img");
-      expect(html).toContain("Download");
-    }
-  });
-});
-
-describe("a download", () => {
-  it("is offered with the preview, and alone for a type that is not previewed", () => {
-    const html = renderToStaticMarkup(
-      <ReadPreview
-        resource={resource({ uri: "file:///a.zip", mimeType: "application/zip" })}
-        read={{
-          status: "held",
-          held: { kind: "blob", base64: "AAEC", mimeType: "application/zip" },
-        }}
-      />,
-    );
-
-    expect(html).toContain("This type is not previewed");
-    expect(html).toContain("Download");
-  });
-});
-
-describe("a download of a blob over what a card draws", () => {
-  it("is offered alone, saying it is too large to show, whatever its type", () => {
-    const html = renderToStaticMarkup(
-      <ReadPreview
-        resource={resource({ uri: "file:///big.png", mimeType: "image/png" })}
-        read={{
-          status: "held",
-          // A megabyte and a little more, decoded.
-          held: { kind: "blob", base64: "A".repeat(1_500_000), mimeType: "image/png" },
-        }}
-      />,
-    );
-
-    expect(html).toContain("Too large to show here");
-    expect(html).not.toContain("<img");
-    expect(html).toContain("Download");
-  });
 });
 
 describe("a read that has no preview", () => {

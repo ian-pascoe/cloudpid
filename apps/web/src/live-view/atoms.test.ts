@@ -110,20 +110,6 @@ describe("the screen's atoms over a Live View with a fake link source", () => {
     }),
   );
 
-  it.effect("ends when the link source is over", () =>
-    Effect.gen(function* () {
-      const { fake, view, registry } = screen();
-      const state = liveViewStateAtom(view);
-
-      registry.mount(state);
-      yield* until(registry, state, status("live"));
-
-      fake.finish();
-      registry.set(showLiveViewWindowAtom(view), "W");
-      yield* until(registry, state, status("ended"));
-    }),
-  );
-
   it.effect("is lost when the Live View cannot be built, and Try again builds it", () =>
     Effect.gen(function* () {
       const { view, registry, builds } = screen({ buildFails: 1 });

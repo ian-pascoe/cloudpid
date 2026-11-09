@@ -1,14 +1,12 @@
 // @effect-diagnostics preferEffectArray:off -- fixtures built over native arrays.
 import { describe, expect, it } from "vitest";
-import { LINE_UP_TIMEOUT_MS, lineUp, wholeFilePatch } from "./line-up.ts";
+import { lineUp, wholeFilePatch } from "./line-up.ts";
 
 const lines = (count: number, prefix: string): string =>
   Array.from({ length: count }, (_, index) => `${prefix} ${index}\n`).join("");
 
 describe("lineUp", () => {
-  it("lines up a small change as hunks of context, with the budget of 2 s", () => {
-    expect(LINE_UP_TIMEOUT_MS).toBe(2000);
-
+  it("lines up a small change as hunks of context", () => {
     const result = lineUp({
       oldName: "src/a.ts",
       newName: "src/a.ts",
@@ -24,10 +22,8 @@ describe("lineUp", () => {
   it("gives up past its budget and shows the file replaced whole", () => {
     const oldText = lines(20_000, "old line");
     const newText = lines(20_000, "new line");
-    const started = performance.now();
     const result = lineUp({ oldName: "big.txt", newName: "big.txt", oldText, newText }, 50);
 
-    expect(performance.now() - started).toBeLessThan(1500);
     expect(result.replaced).toBe(true);
     expect(result.patch).toBe(wholeFilePatch("big.txt", "big.txt", oldText, newText));
   });

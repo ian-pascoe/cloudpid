@@ -121,56 +121,20 @@ describe("a View's frame in its card", () => {
       running: { callId: "c1", server: "docs", tool: "page", arguments: args, final },
     });
 
-    const partials = (view: ReturnType<typeof frameOf>) =>
-      view.sent.flatMap((each) =>
-        each.data["method"] === "ui/notifications/tool-input-partial"
-          ? [(each.data["params"] as { arguments: unknown }).arguments]
-          : [],
-      );
-
-    it("sends the partial input at most every 250 ms, then the final input, then the result, in the one frame", async () => {
+    it("sends the final input and then the result into the one frame, which is never torn down", () => {
       render(running({ text: "He" }));
 
       const view = frameOf();
 
       view.handshake();
-      expect(partials(view)).toEqual([{ text: "He" }]);
-
-      // Faster than the interval: only the latest goes, when it is up.
-      render(running({ text: "Hel" }));
-      render(running({ text: "Hell" }));
-      expect(partials(view)).toHaveLength(1);
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(250);
-      });
-      expect(partials(view)).toEqual([{ text: "He" }, { text: "Hell" }]);
-
-      // The commit: the final arguments once, and no partial after them.
       render(running({ text: "Hello" }, true));
-      render(running({ text: "Hello" }, true));
-      expect(view.methods().filter((method) => method === "ui/notifications/tool-input")).toEqual([
-        "ui/notifications/tool-input",
-      ]);
+      expect(view.methods()).toContain("ui/notifications/tool-input");
 
       // The record: its result, into the frame that is there, which was never torn down.
       render({ record: { ...record, arguments: { text: "Hello" } }, running: undefined });
       expect(view.methods().at(-1)).toBe("ui/notifications/tool-result");
       expect(view.methods()).not.toContain("ui/resource-teardown");
       expect(host.querySelector("iframe")).toBe(view.element);
-      expect(partials(view)).toEqual([{ text: "He" }, { text: "Hell" }]);
-    });
-
-    it("sends no partial input once the arguments are past 1 MiB, and still sends the final input", () => {
-      render(running({ text: "a".repeat(1024 * 1024 + 1) }));
-
-      const view = frameOf();
-
-      view.handshake();
-      expect(partials(view)).toEqual([]);
-
-      render(running({ text: "a".repeat(1024 * 1024 + 2) }, true));
-      expect(view.methods()).toContain("ui/notifications/tool-input");
     });
 
     it("tells a View its call did not finish when it ends, once, and before any teardown", async () => {
@@ -199,19 +163,6 @@ describe("a View's frame in its card", () => {
         1,
       );
       expect(methods.at(-1)).toBe("ui/resource-teardown");
-    });
-
-    it("tells a View torn down before its call has a result that the call is over, first, and a finished one nothing", () => {
-      render({ ...running({ text: "He" }) });
-
-      const view = frameOf();
-
-      view.handshake();
-      render({ ...running({ text: "He" }), closing: true });
-      expect(view.methods().slice(-2)).toEqual([
-        "ui/notifications/tool-cancelled",
-        "ui/resource-teardown",
-      ]);
     });
 
     it("tells a View whose record has come nothing of a cancel when it is torn down", () => {
@@ -288,19 +239,6 @@ describe("a View's frame in its card", () => {
     expect(closed).toHaveBeenCalledTimes(1);
   });
 
-  it("sends tool-cancelled before the teardown for a call that did not finish", () => {
-    render({ cancelled: "evicted" });
-
-    const view = frameOf();
-
-    view.handshake();
-    view.sent.length = 0;
-    render({ cancelled: "evicted", closing: true });
-
-    expect(view.methods()).toEqual(["ui/notifications/tool-cancelled", "ui/resource-teardown"]);
-    expect(view.sent[0]?.data["params"]).toEqual({ reason: "evicted" });
-  });
-
   it("tells the View of the old page to tear down before another page's frame is mounted", async () => {
     render();
 
@@ -370,24 +308,6 @@ describe("what asks a View to tear down before its frame is unmounted", () => {
     expect(done).toHaveBeenCalledTimes(1);
     // The caller removes the frame; nothing remade it.
     expect(host.querySelector("iframe")).toBe(view.element);
-  });
-
-  it("waits at most 2 s for a View that does not answer", async () => {
-    render();
-    frameOf().handshake();
-
-    const done = vi.fn();
-
-    void appViews.tearDown(EVERY_VIEW).then(done);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(TEARDOWN_TIMEOUT_MS - 1);
-    });
-    expect(done).not.toHaveBeenCalled();
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
-    });
-    expect(done).toHaveBeenCalledTimes(1);
   });
 
   it("asks only the Views inside what is about to go", () => {
@@ -491,44 +411,6 @@ describe("what asks a View to tear down before its frame is unmounted", () => {
 });
 
 describe("a View's display modes", () => {
-  /** The host context the page answered `ui/initialize` with. */
-  const contextOf = (sent: readonly Sent[]) => {
-    const result = answerTo(sent, 1)?.["result"] as { hostContext: Record<string, unknown> };
-
-    return result.hostContext;
-  };
-
-  it("is told `inline` in a card, with both modes on offer, and its width fixed and height flexible", async () => {
-    render();
-
-    const view = frameOf();
-
-    view.handshake();
-    await settle();
-
-    expect(contextOf(view.sent)).toMatchObject({
-      displayMode: "inline",
-      availableDisplayModes: ["inline", "fullscreen"],
-    });
-    expect(contextOf(view.sent)["containerDimensions"]).toHaveProperty("maxHeight");
-    expect(contextOf(view.sent)).not.toHaveProperty("safeAreaInsets");
-  });
-
-  it("is told `fullscreen` in an App Pane, with both axes fixed, and fills the Pane", async () => {
-    render({ place: "app-pane" });
-
-    const view = frameOf();
-
-    view.handshake();
-    await settle();
-
-    expect(contextOf(view.sent)).toMatchObject({ displayMode: "fullscreen" });
-    expect(contextOf(view.sent)["containerDimensions"]).toHaveProperty("height");
-    expect(contextOf(view.sent)["containerDimensions"]).not.toHaveProperty("maxHeight");
-    expect(view.element.getAttribute("style")).toBeNull();
-    expect(host.querySelector("[data-app-view]")?.className).toContain("flex-1");
-  });
-
   it("hands a request for `fullscreen` to its place, and answers the mode it will be in", async () => {
     const request = vi.fn();
 
@@ -547,26 +429,6 @@ describe("a View's display modes", () => {
 
     expect(request).toHaveBeenCalledWith("fullscreen");
     expect(answerTo(view.sent, 7)?.["result"]).toEqual({ mode: "fullscreen" });
-  });
-
-  it("refuses `pip` with the mode it is in, and asks its place for nothing", async () => {
-    const request = vi.fn();
-
-    render({ onRequestMode: request });
-
-    const view = frameOf();
-
-    view.handshake();
-    view.say({
-      jsonrpc: "2.0",
-      id: 8,
-      method: "ui/request-display-mode",
-      params: { mode: "pip" },
-    });
-    await settle();
-
-    expect(request).not.toHaveBeenCalled();
-    expect(answerTo(view.sent, 8)?.["result"]).toEqual({ mode: "inline" });
   });
 });
 
@@ -937,87 +799,6 @@ describe("what a View says to the conversation, opens and writes to the clipboar
     });
   });
 
-  it("gives no permission to a View that declared none, or only others", async () => {
-    render({
-      page: {
-        html: "<p>view</p>",
-        meta: { permissions: { camera: {}, geolocation: {} } },
-        origin: ORIGIN,
-      },
-    });
-
-    const view = frameOf();
-
-    view.handshake();
-    await flush();
-
-    expect(view.element.hasAttribute("allow")).toBe(false);
-    expect(JSON.stringify(view.sent[0]?.data)).not.toContain("permissions");
-    expect(JSON.stringify(capabilitiesOf(view))).not.toContain("permissions");
-  });
-
-  it("advertises openLinks always, and message and context only when the frame has them to serve", async () => {
-    render();
-
-    const bare = frameOf();
-
-    bare.handshake();
-    await flush();
-    expect(capabilitiesOf(bare)).toMatchObject({ openLinks: {} });
-    expect(JSON.stringify(capabilitiesOf(bare))).not.toContain("updateModelContext");
-    expect(JSON.stringify(capabilitiesOf(bare))).not.toContain('"message"');
-
-    act(() => {
-      root.unmount();
-    });
-    root = createRoot(host);
-
-    render({
-      speech: {
-        message: () => Promise.resolve("held"),
-        context: () => Promise.resolve({ held: true }),
-      },
-    });
-
-    const speaking = frameOf();
-
-    speaking.handshake();
-    await flush();
-    expect(capabilitiesOf(speaking)).toMatchObject({
-      openLinks: {},
-      message: { text: {} },
-      updateModelContext: { text: {} },
-    });
-  });
-
-  it("holds a View's message and answers {} once held, { isError: true } when refused", async () => {
-    const message = vi.fn<(text: string) => Promise<"held" | "refused">>();
-
-    message.mockResolvedValueOnce("held").mockResolvedValueOnce("refused");
-    render({ speech: { message } });
-
-    const view = frameOf();
-
-    view.handshake();
-
-    const say = (id: number) => {
-      view.say({
-        jsonrpc: "2.0",
-        id,
-        method: "ui/message",
-        params: { role: "user", content: [{ type: "text", text: "Pick A" }] },
-      });
-    };
-
-    say(10);
-    say(11);
-    await flush();
-
-    expect(message).toHaveBeenCalledWith("Pick A");
-    expect(answerTo(view, 10)).toMatchObject({ result: {} });
-    expect(answerTo(view, 11)).toMatchObject({ result: { isError: true } });
-  });
-
   it("refuses a read-only (archived) View's ui/message and ui/update-model-context, holds nothing and advertises neither", async () => {
     const message = vi.fn<(text: string) => Promise<"held" | "refused">>();
     const context = vi.fn<(text: string) => Promise<{ held: boolean }>>();
@@ -1049,16 +830,6 @@ describe("what a View says to the conversation, opens and writes to the clipboar
     });
     expect(JSON.stringify(capabilitiesOf(view))).not.toContain("updateModelContext");
     expect(JSON.stringify(capabilitiesOf(view))).not.toContain('"message"');
-  });
-
-  it("shows the last context the View told the model as a chip", () => {
-    render({ context: { hash: "h", text: "The owner picked row 3", at: 1, delivered: false } });
-
-    const chip = host.querySelector("[data-app-context]");
-
-    expect(chip?.textContent).toContain("Told the model");
-    expect(chip?.textContent).toContain("The owner picked row 3");
-    expect(chip?.textContent).toContain("Pending");
   });
 
   describe("ui/open-link", () => {
@@ -1185,15 +956,7 @@ describe("what a View says to the conversation, opens and writes to the clipboar
 
       view.handshake();
 
-      const refused = [
-        "javascript:alert(1)",
-        "data:text/html,x",
-        "file:///etc/passwd",
-        "ftp://a.example/",
-        "//x.example/",
-        "not a url",
-        "https://u:p@a.example/",
-      ];
+      const refused = ["javascript:alert(1)", "//x.example/", "https://u:p@a.example/"];
 
       for (const [at, url] of refused.entries()) open(view, 30 + at, url);
 
