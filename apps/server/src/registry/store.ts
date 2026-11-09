@@ -1314,8 +1314,9 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   },
   // 40: the cloudpid reports the agent filed (`docs/architecture/agent-capabilities.md` → cloudpid reports, ADR-0051;
   // `./cloudpid-reports.ts`), one per Session and tool call: its state (`claimed`, `filed`, `failed`, `unknown`), the
-  // issue's number and page once filed, its kind, when it was claimed, and a hash of its title (never its title or body).
-  // Kept 30 days, and not deleted with their Session. None before.
+  // issue's number and page once filed, and whether it carries the `cloudpid-report` label (1 or 0), its kind, when it was
+  // claimed, and a hash of its title (never its title or body). Kept 30 days, and not deleted with their Session. None
+  // before.
   (sql) => {
     sql.exec(`CREATE TABLE cloudpid_reports (
       session TEXT NOT NULL,
@@ -1323,6 +1324,7 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       state TEXT NOT NULL,
       number INTEGER,
       url TEXT,
+      labelled INTEGER,
       kind TEXT NOT NULL,
       at INTEGER NOT NULL,
       title_hash TEXT NOT NULL,

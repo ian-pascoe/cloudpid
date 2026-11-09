@@ -3,12 +3,16 @@
 // the label's precheck, GitHub's refusals, the second call for a dropped label, a post with no answer, `retry-after`, the
 // pacing of posts, and the pruning of old rows. Never GitHub itself.
 // workerd's Durable Object and `cloudflare:test` APIs are Promise-based, so this file is too.
-// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off
+// @effect-diagnostics asyncFunction:off preferEffectArray:off globalDate:off newPromise:off globalTimers:off
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { GitHubNotInstalled } from "../github/app.ts";
-import { type AgentReportInput, openCloudpidReports } from "./cloudpid-reports.ts";
+import {
+  type AgentCloudpidReportInput,
+  openCloudpidReports,
+  REPORT_FOOTER_SEPARATOR,
+} from "./cloudpid-reports.ts";
 import type { RealRegistry } from "./registry.fixture.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 import { openRegistryStore } from "./store.ts";
@@ -23,7 +27,7 @@ type Seen = { readonly method: string; readonly path: string; readonly body: unk
 /** What the fake answers each call with; a function of the call's number among its kind. */
 type Script = {
   label: () => Response;
-  create: (body: { readonly title: string; readonly body: string }) => Response | "hang";
+  create: (body: { readonly title: string; readonly body: string }) => Response | "hang" | "never";
   addLabels: () => Response;
 };
 
@@ -70,6 +74,9 @@ const fakeGitHub = () => {
 
       if (answer === "hang") throw new Error("The operation was aborted due to timeout");
 
+      // The object is cut off while it waits: an eviction mid-post.
+      if (answer === "never") return new Promise<Response>(() => {});
+
       return answer;
     }
 
@@ -91,7 +98,7 @@ const report = (
   session: string,
   task: number,
   title = `report ${session} ${String(task)}`,
-): AgentReportInput => ({
+): AgentCloudpidReportInput => ({
   session,
   conversation: 1,
   task,
@@ -117,6 +124,8 @@ const inRegistry = <A>(
     readonly clock: { now: number };
     readonly waits: number[];
     readonly installed: { value: boolean };
+    /** The tokens the reports dropped as refused. */
+    readonly invalidated: string[];
     readonly reopen: () => ReturnType<typeof openCloudpidReports>;
   }) => Promise<A>,
   options: { readonly dailyCap?: number } = {},
@@ -127,6 +136,7 @@ const inRegistry = <A>(
     const clock = { now: NOON };
     const waits: number[] = [];
     const installed = { value: true };
+    const invalidated: string[] = [];
 
     const reopen = () =>
       openCloudpidReports({
@@ -138,7 +148,9 @@ const inRegistry = <A>(
 
             return "ghs_report";
           },
-          invalidate: () => {},
+          invalidate: (token) => {
+            invalidated.push(token);
+          },
         },
         fetch: github.fetch,
         dailyCap: options.dailyCap ?? 10,
@@ -150,7 +162,16 @@ const inRegistry = <A>(
         },
       });
 
-    return body({ reports: reopen(), store, github, clock, waits, installed, reopen });
+    return body({
+      reports: reopen(),
+      store,
+      github,
+      clock,
+      waits,
+      installed,
+      invalidated,
+      reopen,
+    });
   });
 
 /** The calls of `method` to `path`. */
@@ -184,24 +205,31 @@ describe("a cloudpid report", () => {
 
     expect(issue.labels).toEqual(["cloudpid-report", "needs-triage"]);
     expect(issue.title).toBe("report s1 7");
-    // A mention outside code is defused with a zero-width space; one in a code span is left alone.
+    // The body is posted defused, with the footer after it (their cases are in `cloudpid-reports.test.ts`).
     expect(issue.body).toContain("@\u200bsomeone");
-    expect(issue.body).toContain("`@decorator`");
-
-    const footer = issue.body.slice(issue.body.indexOf(BODY.slice(0, 20)) + 1);
-
-    for (const part of [
-      "bug",
-      "bash",
-      "pr-731",
-      "v-1234",
-      "anthropic/claude-opus-4-5",
-      "high",
-      "agent-1",
+    expect(issue.body.split(REPORT_FOOTER_SEPARATOR)[1]).toContain(
       "https://cloudpid-server-pr-731.example.workers.dev/sessions/s1",
-    ]) {
-      expect(footer).toContain(part);
-    }
+    );
+  });
+
+  it("answers a rerun of a call cut off while it posted that it may have been filed, and posts nothing more", async () => {
+    const { again, seen } = await inRegistry(async ({ reports, github, reopen }) => {
+      github.script.create = () => "never";
+
+      void reports.file(report("s1", 1));
+
+      while (calls(github.seen, "POST", "/issues").length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+
+      github.script.create = () => created(2, ["cloudpid-report", "needs-triage"]);
+
+      // The object after the eviction finds the call claimed.
+      return { again: await reopen().file(report("s1", 1)), seen: github.seen };
+    });
+
+    expect(again).toEqual({ status: "unknown" });
+    expect(calls(seen, "POST", "/issues")).toHaveLength(1);
   });
 
   it("is refused, posting nothing and counting no cap, when it names the owner's Repos", async () => {
@@ -383,19 +411,28 @@ describe("a cloudpid report", () => {
       false,
     ],
   ])("%s", async (_, addLabels, labelled) => {
-    const { answer, seen } = await inRegistry(async ({ reports, github }) => {
+    const { answer, again, seen } = await inRegistry(async ({ reports, github }) => {
       github.script.create = () => created(3, []);
       github.script.addLabels = addLabels;
 
-      return { answer: await reports.file(report("s1", 1)), seen: github.seen };
+      return {
+        answer: await reports.file(report("s1", 1)),
+        again: await reports.file(report("s1", 1)),
+        seen: github.seen,
+      };
     });
 
-    expect(answer).toEqual({
+    const filed = {
       status: "filed",
       number: 3,
       url: "https://github.com/ian-pascoe/cloudpid/issues/3",
       labelled,
-    });
+    };
+
+    expect(answer).toEqual(filed);
+    // A rerun of the call answers the same, labelled or not.
+    expect(again).toEqual(filed);
+    expect(calls(seen, "POST", "/issues")).toHaveLength(1);
     expect(calls(seen, "POST", "/issues/3/labels").map(({ body }) => body)).toEqual([
       { labels: ["cloudpid-report", "needs-triage"] },
     ]);
@@ -493,6 +530,17 @@ describe("a cloudpid report", () => {
     expect(answer).toMatchObject({ status: "failed" });
     expect(answer.status === "failed" ? answer.warning : undefined).toBeDefined();
     expect(seen).toEqual([]);
+  });
+
+  it("drops a token GitHub refused, and fails counting no cap", async () => {
+    const { answer, invalidated } = await inRegistry(async ({ reports, github, invalidated }) => {
+      github.script.label = () => Response.json({ message: "Bad credentials" }, { status: 401 });
+
+      return { answer: await reports.file(report("s1", 1)), invalidated };
+    });
+
+    expect(answer).toMatchObject({ status: "failed" });
+    expect(invalidated).toEqual(["ghs_report"]);
   });
 
   it("posts at least a second after the last post", async () => {

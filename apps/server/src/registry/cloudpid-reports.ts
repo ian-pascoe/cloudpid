@@ -20,16 +20,16 @@ import {
   createIssue,
   type IssueCallFailure,
   labelExists,
-  reportToken,
-  reportTokens,
-  type ReportTokens,
+  cloudpidReportToken,
+  cloudpidReportTokens,
+  type CloudpidReportTokens,
 } from "../github/issues.ts";
 import type { GitHubAppSecrets } from "../github/config.ts";
 import type { GithubFetch } from "../github/request.ts";
 import type { RegistryStorage, RegistryStore } from "./store.ts";
 
 /** What a Session asks the Registry to file: the call's request, its Session, and the Session's stage and version. */
-export type AgentReportInput = CloudpidReportRequest & {
+export type AgentCloudpidReportInput = CloudpidReportRequest & {
   readonly session: string;
   readonly footer: CloudpidReportRequest["footer"] & {
     /** `prod`, `pr-<n>`, a dev stage's label, or `local`. */
@@ -71,8 +71,11 @@ const OWN_OWNER = CLOUDPID_REPO.split("/")[0] ?? "";
 /** What a term may not touch on either side: a character of a name. */
 const NAME_CHARACTER = /[A-Za-z0-9_-]/;
 
-/** cloudpid's own paths in a Workspace, which name no Repo of the owner's whatever follows them. */
-const OWN_PATHS = /\/workspace\/\.(?:cloudpid|agents)(?:\/[^\s`'"<>()[\]{}]*)?/gi;
+/**
+ * cloudpid's own directories in a Workspace, which name no Repo of the owner's themselves: what follows them still may
+ * (`/workspace/.cloudpid/tmp/acme-portal.log`).
+ */
+const OWN_PREFIXES = /\/workspace\/\.(?:cloudpid|agents)(?![A-Za-z0-9_.-])/gi;
 
 /** A compound name: one holding `-`, `_`, `.` or a digit. */
 const COMPOUND = /[-_.0-9]/;
@@ -83,12 +86,16 @@ const MIN_BARE_NAME = 6;
 /** An owner long enough to be told from a word. */
 const MIN_OWNER = 4;
 
+/** Those of `names` that are compound and long enough to be told from a word, each once. */
+const bareNames = (names: ReadonlyArray<string>): ReadonlyArray<string> =>
+  [...new Set(names)].filter((bare) => COMPOUND.test(bare) && bare.length >= MIN_BARE_NAME);
+
 /** The terms that name `repo`: none for a clone of cloudpid's own repo. */
 const termsOf = (repo: EnvironmentRepo): ReadonlyArray<string> => {
   const url = URL.parse(repo.url);
   const directory = `/workspace/${repo.name}`;
 
-  if (url === null) return [repo.url, directory];
+  if (url === null) return [repo.url, directory, ...bareNames([repo.name])];
 
   const segments = url.pathname
     .split("/")
@@ -104,14 +111,11 @@ const termsOf = (repo: EnvironmentRepo): ReadonlyArray<string> => {
 
   const last = segments.at(-1) ?? "";
 
-  return [
-    path,
-    ...(owner.toLowerCase() !== OWN_OWNER && owner.length >= MIN_OWNER ? [owner] : []),
-    directory,
-    ...[...new Set([last, repo.name])].filter(
-      (bare) => COMPOUND.test(bare) && bare.length >= MIN_BARE_NAME,
-    ),
-  ];
+  // An owner is GitHub's: off GitHub the first segment may be a group any host's users share.
+  const owners =
+    github && owner.toLowerCase() !== OWN_OWNER && owner.length >= MIN_OWNER ? [owner] : [];
+
+  return [path, ...owners, directory, ...bareNames([last, repo.name])];
 };
 
 /** Whether `text` (lower case) holds `term` (lower case) with no name character on either side. */
@@ -127,16 +131,17 @@ const holdsTerm = (text: string, term: string): boolean => {
 };
 
 /**
- * The terms of `repos` that `texts` name, each once, in the Repos' order: a Repo's `owner/name` (`host/path` off GitHub),
- * its owner (not cloudpid's own, and of 4 or more characters), its `/workspace/<dir>`, and its bare name or directory
- * when compound and of 6 or more characters. Case-insensitive, at name boundaries; nothing of a clone of cloudpid's own
- * repo, and nothing inside cloudpid's own paths (`/workspace/.cloudpid/…`, `/workspace/.agents/…`).
+ * The terms of `repos` that `texts` name, each once, in the Repos' order: a Repo's `owner/name` (`host/path` off GitHub,
+ * and its whole URL when that does not parse), its GitHub owner (not cloudpid's own, and of 4 or more characters), its
+ * `/workspace/<dir>`, and its bare name or directory when compound and of 6 or more characters. Case-insensitive, at name
+ * boundaries; nothing of a clone of cloudpid's own repo, and not cloudpid's own directories `/workspace/.cloudpid` and
+ * `/workspace/.agents` themselves (a name below them counts).
  */
 export const namedRepoTerms = (
   repos: ReadonlyArray<EnvironmentRepo>,
   texts: ReadonlyArray<string>,
 ): ReadonlyArray<string> => {
-  const read = texts.map((text) => text.replaceAll(OWN_PATHS, " ").toLowerCase());
+  const read = texts.map((text) => text.replaceAll(OWN_PREFIXES, " ").toLowerCase());
   const named: string[] = [];
 
   for (const repo of repos) {
@@ -166,7 +171,10 @@ export const defuseMentions = (text: string): string =>
     .join("");
 
 /** cloudpid's footer: what filed the report, never an Environment, Repo, branch, title or directory. */
-const footerOf = (input: AgentReportInput, origin: string | undefined): string => {
+export const cloudpidReportFooter = (
+  input: AgentCloudpidReportInput,
+  origin: string | undefined,
+): string => {
   const { kind, tool, footer, session } = input;
 
   return [
@@ -187,14 +195,20 @@ const titleHash = (title: string): string =>
 /** The states a claim counts toward the caps in: all but `failed`. */
 const COUNTED = "state IN ('claimed', 'filed', 'unknown')";
 
-type ReportRow = { state: string; number: number | null; url: string | null };
+type ReportRow = {
+  state: string;
+  number: number | null;
+  url: string | null;
+  /** 1 when the issue carries `cloudpid-report`, 0 when not; null until filed. */
+  labelled: number | null;
+};
 
 /** What the reports are made with. */
 export type CloudpidReportsDeps = {
   readonly storage: RegistryStorage;
   readonly store: Pick<RegistryStore, "listEnvironments" | "getDocument" | "putDocument">;
-  /** The GitHub App's tokens for reports (`reportTokens`). */
-  readonly tokens: ReportTokens;
+  /** The GitHub App's tokens for reports (`cloudpidReportTokens`). */
+  readonly tokens: CloudpidReportTokens;
   readonly fetch: GithubFetch;
   /** The most reports a UTC day: `DAILY_REPORT_CAP`'s, by this stage. */
   readonly dailyCap: number;
@@ -239,7 +253,7 @@ export const registryCloudpidReports = (options: {
   openCloudpidReports({
     storage: options.storage,
     store: options.store,
-    tokens: reportTokens(options.github),
+    tokens: cloudpidReportTokens(options.github),
     fetch: (url, init) => fetch(url, init),
     dailyCap: options.stageLabel === undefined ? DAILY_REPORT_CAP.prod : DAILY_REPORT_CAP.other,
     origin: options.origin,
@@ -263,7 +277,7 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
   const rowOf = (session: string, task: number): ReportRow | undefined =>
     sql
       .exec<ReportRow>(
-        "SELECT state, number, url FROM cloudpid_reports WHERE session = ? AND task = ?",
+        "SELECT state, number, url, labelled FROM cloudpid_reports WHERE session = ? AND task = ?",
         session,
         task,
       )
@@ -306,7 +320,7 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
    * Claim the call, after the caps: a refusal claims nothing. In one transaction, so two calls never pass one cap
    * together.
    */
-  const claim = (input: AgentReportInput, hash: string, now: number): Refused | undefined =>
+  const claim = (input: AgentCloudpidReportInput, hash: string, now: number): Refused | undefined =>
     deps.storage.transactionSync(() => {
       const { inSession } = sql
         .exec<{ inSession: number }>(
@@ -383,7 +397,7 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
   };
 
   /** Post the claimed call's issue, settling its claim. */
-  const post = async (input: AgentReportInput): Promise<CloudpidReportAnswer> => {
+  const post = async (input: AgentCloudpidReportInput): Promise<CloudpidReportAnswer> => {
     const { session, task } = input;
     const until = blockedUntil();
 
@@ -399,7 +413,7 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
       return labelRefusal();
     }
 
-    const minted = await reportToken(deps.tokens);
+    const minted = await cloudpidReportToken(deps.tokens);
 
     if ("problem" in minted) {
       settle(session, task, "failed");
@@ -444,7 +458,7 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
 
     const made = await createIssue(calls, token, {
       title: defuseMentions(input.title),
-      body: `${defuseMentions(input.body)}${REPORT_FOOTER_SEPARATOR}${footerOf(input, deps.origin)}`,
+      body: `${defuseMentions(input.body)}${REPORT_FOOTER_SEPARATOR}${cloudpidReportFooter(input, deps.origin)}`,
       labels,
     });
 
@@ -458,6 +472,16 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
 
     const { number, url } = made.created;
 
+    /** Keep whether the issue carries `cloudpid-report`, which a rerun of the call answers. */
+    const keepLabelled = (labelled: boolean) => {
+      sql.exec(
+        "UPDATE cloudpid_reports SET labelled = ? WHERE session = ? AND task = ?",
+        labelled ? 1 : 0,
+        session,
+        task,
+      );
+    };
+
     // Filed: whatever follows, the call answers the issue.
     sql.exec(
       "UPDATE cloudpid_reports SET state = 'filed', number = ?, url = ? WHERE session = ? AND task = ?",
@@ -469,6 +493,8 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
 
     const dropped = labels.filter((label) => !made.created.labels.includes(label));
 
+    keepLabelled(!dropped.includes(CLOUDPID_REPORT_LABEL));
+
     if (dropped.length === 0) return { status: "filed", number, url, labelled: true };
 
     const added = await addLabels(calls, token, number, dropped);
@@ -479,12 +505,14 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
       !dropped.includes(CLOUDPID_REPORT_LABEL) ||
       ("labels" in added && added.labels.includes(CLOUDPID_REPORT_LABEL));
 
+    keepLabelled(labelled);
+
     return { status: "filed", number, url, labelled };
   };
 
   return {
     /** File `input`'s report, or answer what an earlier attempt of its call came to. */
-    file: async (input: AgentReportInput): Promise<CloudpidReportAnswer> => {
+    file: async (input: AgentCloudpidReportInput): Promise<CloudpidReportAnswer> => {
       const now = deps.now();
 
       sql.exec("DELETE FROM cloudpid_reports WHERE at <= ?", now - REPORT_MEMORY_MS);
@@ -493,7 +521,12 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
 
       if (earlier !== undefined) {
         if (earlier.state === "filed" && earlier.number !== null && earlier.url !== null) {
-          return { status: "filed", number: earlier.number, url: earlier.url, labelled: true };
+          return {
+            status: "filed",
+            number: earlier.number,
+            url: earlier.url,
+            labelled: earlier.labelled !== 0,
+          };
         }
 
         if (earlier.state === "failed") {
