@@ -1146,6 +1146,24 @@ describe("a Session trigger's definition", () => {
     expect(await registry.listTriggers()).toEqual([]);
   });
 
+  it("takes a Schedule only: a webhook source is refused, though RPC input is not decoded", async () => {
+    const registry = fresh();
+
+    await sessionIn(registry);
+
+    const webhook = { ...daily(), source: { type: "webhook" as const, format: "github" as const } };
+
+    // The type has a Schedule source only; a crafted call is not decoded over RPC.
+    // @ts-expect-error -- the webhook source is the point.
+    const made = await registry.createTrigger("t1", webhook, 2_000);
+
+    expect(made).toMatchObject({
+      status: "invalid",
+      problem: "A Session trigger fires on a Schedule only",
+    });
+    expect(await registry.listTriggers()).toEqual([]);
+  });
+
   it("takes queue, steer and skip, and no base, model or thinking", async () => {
     const registry = fresh();
 

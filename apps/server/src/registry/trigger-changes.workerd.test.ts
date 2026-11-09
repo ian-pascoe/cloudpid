@@ -13,7 +13,7 @@ import {
 } from "@cloudpid/protocol";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import type { SessionChangeAuthor } from "./agent-changes.ts";
+import type { AgentChangeAuthor, SessionChangeAuthor } from "./agent-changes.ts";
 import type { TestRegistry } from "./store.fixture.ts";
 
 declare global {
@@ -716,6 +716,36 @@ describe("the agent's Session triggers", () => {
       ),
     ).toMatchObject({ status: "invalid" });
     expect(await registry.storedTriggerIds()).toEqual([]);
+  });
+
+  it("are not the endpoint's: its author makes none, and finds none to change", async () => {
+    const registry = await inSession();
+
+    const endpoint: AgentChangeAuthor = {
+      via: { auth: "oauth", client: { name: "pi", version: "1.5.0" } },
+      tool: "trigger_create",
+      reason: "the owner asked for a weekly summary",
+      approved: true,
+    };
+
+    expect(await registry.agentCreateTrigger("t1", checkCi, endpoint, 1_000)).toMatchObject({
+      status: "invalid",
+      problem: expect.stringContaining("own Session"),
+    });
+    expect(await registry.storedTriggerIds()).toEqual([]);
+
+    await registry.agentCreateTrigger("t1", checkCi, author("trigger_create", true), 1_000);
+
+    expect(
+      await registry.agentUpdateTrigger("t1", { message: "Other" }, undefined, endpoint, 2_000),
+    ).toEqual({ status: "missing" });
+    expect(await registry.agentSetTriggerPaused("t1", true, undefined, endpoint, 2_000)).toEqual({
+      status: "missing",
+    });
+    expect(await registry.agentRemoveTrigger("t1", endpoint, 2_000)).toEqual({
+      status: "missing",
+    });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({ paused: false, revision: 1 });
   });
 
   it("are changed by their own Session alone: another Session finds none", async () => {

@@ -473,6 +473,10 @@ const decodeExpected = Schema.decodeUnknownOption(TriggerChangeValue);
 /** `trigger_create`'s owner for a Session trigger: this Session. */
 const SESSION_OWNER = "session";
 
+/** Why a Session trigger can't be made on a webhook. */
+const SESSION_SCHEDULE_ONLY =
+  "a Session trigger fires on a Schedule only: give a schedule, with no webhook or match. Webhook deliveries go to an Environment trigger or a Workspace trigger";
+
 /** The kind of Trigger `trigger_create`'s `owner` asks for: an Environment's id is an Environment trigger's. */
 const kindOfOwner = (owner: string): TriggerKind => {
   if (owner === WORKSPACE_OWNER) return "workspace";
@@ -1021,6 +1025,11 @@ export const TriggerTools: Effect.Effect<
         const kind = kindOfOwner(owner);
         const words = KIND_WORDS[kind];
 
+        // Before anything is read: a Session trigger has a Schedule only.
+        if (kind === "session" && source.type !== "schedule") {
+          return yield* refuse(SESSION_SCHEDULE_ONLY);
+        }
+
         const problem =
           triggerNameProblem(name) ??
           (base !== undefined && base.trim() === "" ? "a base branch can't be empty" : undefined) ??
@@ -1050,11 +1059,8 @@ export const TriggerTools: Effect.Effect<
           source,
         });
 
-        if (input === undefined) {
-          return yield* refuse(
-            "a Session trigger fires on a Schedule only: give a schedule, with no webhook or match. Webhook deliveries go to an Environment trigger or a Workspace trigger",
-          );
-        }
+        // Refused above already; this narrows what `input` is for the kinds that take a Schedule only.
+        if (input === undefined) return yield* refuse(SESSION_SCHEDULE_ONLY);
 
         const trigger: Types.Mutable<OwnTriggerInput> = input;
 

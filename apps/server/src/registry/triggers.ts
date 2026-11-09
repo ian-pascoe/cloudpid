@@ -235,6 +235,10 @@ const fieldsProblem = (
 ): string | undefined =>
   triggerNameProblem(fields.name) ??
   triggerMessageProblem(fields.message) ??
+  // The input is not decoded over RPC, so a Session trigger's Schedule-only source is held here too.
+  (kind === "session" && fields.source.type !== "schedule"
+    ? "A Session trigger fires on a Schedule only"
+    : undefined) ??
   sourceProblem(fields.source) ??
   whenBusyProblem(kind, fields.when_busy) ??
   (fields.base !== null && fields.base.trim() === ""
