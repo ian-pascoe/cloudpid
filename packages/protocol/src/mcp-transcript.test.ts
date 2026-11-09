@@ -229,6 +229,9 @@ describe("renderTranscript", () => {
       "aB3-_x9Q".repeat(50);
 
     expect(redactGithubTokens(`use ${token} now`)).toBe("use [REDACTED github token] now");
+    expect(redactGithubTokens(`use ${token}${"aB3-_x9Q".repeat(600)} now`)).toBe(
+      "use [REDACTED github token] now",
+    );
   });
 
   describe("redacts a Secret before the cut can split it", () => {
