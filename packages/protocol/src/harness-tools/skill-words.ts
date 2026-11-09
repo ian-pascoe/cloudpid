@@ -55,8 +55,8 @@ export const SKILL_APPROVAL =
 
 /**
  * What the endpoint's Skill tools say of a change to the Skills kept Global (`docs/architecture/mcp-endpoint.md` → Built so
- * far: S3b-3): the owner approves it in cloudpid, and the call does not wait for them. The words name the owner, never a
- * Session or the user, and only the tool the endpoint serves to follow the request.
+ * far: S3b-3): the owner approves it in cloudpid, and the call does not wait for them. The words name the owner (never the
+ * user), cloudpid and not a Session as where they answer, and only the tool the endpoint serves to follow the request.
  */
 export const GLOBAL_SKILL_ASK = `They steer every Session that starts after, so the owner must approve the change, in cloudpid: the call does not wait for them. It answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires (7 days); follow it with approval_wait, which says whether it was approved and applied, declined, or not applied, and on Approve gives the tool's result. Asking again for the same change while one waits answers the same approval_id; at most 10 of yours may wait or be applying at once. Each Environment's Workspaces and spares serve the change from their next readying (an Environment that keeps its own Skill of the name keeps serving that one).`;
 
