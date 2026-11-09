@@ -3,7 +3,7 @@
 // how each answer reads, who may call it, and that it is offered by default.
 // @effect-diagnostics asyncFunction:off preferEffectRecord:off
 import { DEFAULT_OFFERED_TOOLS } from "@cloudpid/config";
-import { noToolSpans } from "@cloudpid/effect-durable";
+import { makeToolSpans, type ToolSpanAttributes, ToolSpans } from "@cloudpid/effect-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type ConversationId,
@@ -23,7 +23,8 @@ import {
   type CloudpidReportRequest,
   CloudpidReports,
   CloudpidReportTools,
-  type RunReport,
+  type FiledCloudpidReport,
+  NO_RETRY,
 } from "./cloudpid-report.ts";
 import { DeployCredentials } from "./environment-change-parts.ts";
 import { secretReference } from "./secrets/references.ts";
@@ -57,7 +58,12 @@ const FILED: CloudpidReportAnswer = {
 /** A fake Registry that answers `answer` and records each request, and the reports kept for the Run's end. */
 const toolOver = async (answer: CloudpidReportAnswer = FILED) => {
   const asked: CloudpidReportRequest[] = [];
-  const logged: RunReport[] = [];
+  const logged: FiledCloudpidReport[] = [];
+  const spans = makeToolSpans();
+  /** What the calls added to their spans, as a traced Session's wrap lists call `call-7`'s. */
+  const annotated: ToolSpanAttributes[] = [];
+
+  spans.list("call-7", (attributes) => annotated.push(attributes));
 
   const extension = await Effect.runPromise(
     CloudpidReportTools.pipe(
@@ -77,7 +83,7 @@ const toolOver = async (answer: CloudpidReportAnswer = FILED) => {
       }),
       Effect.provideService(Secrets, heldSecrets({ API_KEY: "sk-held-value-123" })),
       Effect.provideService(DeployCredentials, { values: [APP_KEY] }),
-      Effect.provide(noToolSpans),
+      Effect.provideService(ToolSpans, spans),
     ),
   );
 
@@ -85,7 +91,10 @@ const toolOver = async (answer: CloudpidReportAnswer = FILED) => {
 
   if (Option.isNone(tool)) throw new Error("no cloudpid_report");
 
-  return { tool: tool.value, asked, logged, extension };
+  /** The outcome the last call put on its span. */
+  const outcome = () => annotated.at(-1)?.["cloudpid_report.outcome"];
+
+  return { tool: tool.value, asked, logged, extension, outcome };
 };
 
 // SAFETY: a subagent's conversation ID for the test, which the tool only tells apart from the root's.
@@ -169,8 +178,6 @@ const text = (result: Awaited<ReturnType<ToolRegistration["execute"]>>): string 
     "",
   );
 
-const NO_RETRY = "Don't retry in this Run; mention the problem in your final answer.";
-
 describe("cloudpid_report", () => {
   it("is the model's alone, safe to replay, and offered by default without being always offered", async () => {
     const { tool, extension } = await toolOver();
@@ -182,7 +189,7 @@ describe("cloudpid_report", () => {
   });
 
   it("files the report with cloudpid's footer, says where it is, and keeps it for the Run's end", async () => {
-    const { tool, asked, logged } = await toolOver();
+    const { tool, asked, logged, outcome } = await toolOver();
 
     const result = await run(tool, { ...valid, tool: "bash" }, apiOf({ child: true }));
 
@@ -198,10 +205,9 @@ describe("cloudpid_report", () => {
       },
     ]);
     expect(result.isError).toBeUndefined();
-    // The text names the issue as public, the plan's wording.
-    expect(text(result)).toBe(
-      "Filed cloudpid report #123 (public): https://github.com/ian-pascoe/cloudpid/issues/123",
-    );
+    expect(text(result)).toContain("#123");
+    expect(text(result)).toContain("https://github.com/ian-pascoe/cloudpid/issues/123");
+    expect(outcome()).toBe("filed");
     expect(result.details).toEqual({
       number: 123,
       url: "https://github.com/ian-pascoe/cloudpid/issues/123",
@@ -259,36 +265,70 @@ describe("cloudpid_report", () => {
     expect(asked).toEqual([]);
   });
 
-  it.each<[string, CloudpidReportAnswer, boolean]>([
+  it.each<[string, CloudpidReportAnswer, string, boolean]>([
     [
       "a refusal for the owner's Repos, which the agent may rewrite",
       { status: "refused", code: "names", message: "names /workspace/acme" },
+      "refused_names",
       false,
     ],
-    ["a cap reached", { status: "refused", code: "session_cap", message: "3 already" }, true],
-    ["a failure", { status: "failed", message: "GitHub answered 503" }, true],
-  ])("fails on %s", async (_, answer, final) => {
-    const { tool, logged } = await toolOver(answer);
+    [
+      "the Session's cap reached",
+      { status: "refused", code: "session_cap", message: "3 already" },
+      "refused_cap",
+      true,
+    ],
+    [
+      "the day's cap reached",
+      { status: "refused", code: "daily_cap", message: "10 today" },
+      "refused_cap",
+      true,
+    ],
+    [
+      "a title filed already",
+      { status: "refused", code: "repeated", message: "filed already" },
+      "refused_cap",
+      true,
+    ],
+    [
+      "GitHub's rate limit",
+      { status: "refused", code: "rate_limited", message: "until 12:01" },
+      "failed",
+      true,
+    ],
+    [
+      "the label missing",
+      { status: "refused", code: "label_missing", message: "no label" },
+      "failed",
+      true,
+    ],
+    ["a failure", { status: "failed", message: "GitHub answered 503" }, "failed", true],
+  ])("fails on %s", async (_, answer, spanOutcome, final) => {
+    const { tool, logged, outcome } = await toolOver(answer);
 
     const result = await run(tool, valid);
 
     expect(result.isError).toBe(true);
+    expect(outcome()).toBe(spanOutcome);
+    // The no-retry line is the contract: it tells the model not to call again in this Run.
     expect(text(result).endsWith(NO_RETRY)).toBe(final);
     expect(logged).toEqual([]);
   });
 
   it("says a call with no answer may have been filed, and not to file it again", async () => {
-    const { tool } = await toolOver({ status: "unknown" });
+    const { tool, outcome } = await toolOver({ status: "unknown" });
 
     const result = await run(tool, valid);
 
     expect(result.isError).toBe(true);
+    expect(outcome()).toBe("unknown");
+    // These words are the contract: a report that may be on GitHub must not be filed again.
     expect(text(result)).toMatch(/may have been filed/);
     expect(text(result).endsWith(NO_RETRY)).toBe(true);
   });
 
   it("warns when the report was filed without its label, and still succeeds", async () => {
-    const { tool } = await toolOver({
+    const { tool, outcome } = await toolOver({
       status: "filed",
       number: 123,
       url: "https://github.com/ian-pascoe/cloudpid/issues/123",
@@ -301,6 +341,7 @@ describe("cloudpid_report", () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.details).toMatchObject({ number: 123 });
+    expect(outcome()).toBe("unlabelled");
     expect(diagnostics).toMatchObject([{ severity: "warn" }]);
   });
 

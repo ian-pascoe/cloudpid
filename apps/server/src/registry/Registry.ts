@@ -172,7 +172,7 @@ import {
 import { GitHubAppConfig } from "../github/config.ts";
 import { APP_ORIGIN_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
 import type { CloudpidReportAnswer } from "@cloudpid/extensions/cloudpid-report";
-import { type AgentReportInput, registryCloudpidReports } from "./cloudpid-reports.ts";
+import { type AgentCloudpidReportInput, registryCloudpidReports } from "./cloudpid-reports.ts";
 import { PushConfig } from "../push/config.ts";
 import { pushNotifier, pushOwner } from "../push/notify.ts";
 import {
@@ -1266,7 +1266,9 @@ export type RegistryMethods = {
    * `cloudpid-reports.ts`): refused when it names the owner's Repos or a cap is reached, and a rerun of the call answered
    * what the first attempt came to. A status a newer Registry adds reads as `unknown` to the Session.
    */
-  readonly agentFileReport: (input: AgentReportInput) => Effect.Effect<CloudpidReportAnswer>;
+  readonly agentFileReport: (
+    input: AgentCloudpidReportInput,
+  ) => Effect.Effect<CloudpidReportAnswer>;
   /** Every Trigger, or `environment`'s, newest first. */
   readonly listTriggers: (input: {
     readonly environment?: string | undefined;

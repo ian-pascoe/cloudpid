@@ -67,7 +67,7 @@ import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { triggerObjects, triggersOfEnvironment } from "../trigger/objects.ts";
 import { sessionTriggers } from "./triggers.ts";
-import { reportStage, sessionCloudpidReports } from "./cloudpid-reports.ts";
+import { cloudpidReportStage, sessionCloudpidReports } from "./cloudpid-reports.ts";
 import { sessionApprovalsLayer } from "./approvals.ts";
 import { sessionMcpQuestions } from "./mcp-questions.ts";
 import { sessionMcpRecords } from "./mcp-records.ts";
@@ -523,7 +523,7 @@ export const SessionLive = Session.make(
         const cloudpidReports = sessionCloudpidReports({
           registry: registryObject,
           session: name,
-          stage: reportStage({
+          stage: cloudpidReportStage({
             label: Predicate.isString(worker[STAGE_LABEL_VAR])
               ? worker[STAGE_LABEL_VAR]
               : undefined,

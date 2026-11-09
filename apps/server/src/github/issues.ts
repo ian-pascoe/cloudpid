@@ -28,7 +28,7 @@ const [REPO_OWNER = "", REPO_NAME = ""] = CLOUDPID_REPO.split("/");
 export const CLOUDPID_REPO_OWNER = REPO_OWNER;
 
 /** A token for the installation on cloudpid's repo's owner, and how to tell a refused one. */
-export type ReportTokens = {
+export type CloudpidReportTokens = {
   readonly token: () => Promise<string>;
   readonly invalidate: (token: string) => void;
 };
@@ -37,7 +37,7 @@ export type ReportTokens = {
  * The GitHub App's tokens for reports: `issues: write` on cloudpid's repo alone, for the installation on its owner. Made
  * once per Registry object, so its token is shared by its reports.
  */
-export const reportTokens = (secrets: GitHubAppSecrets): ReportTokens => {
+export const cloudpidReportTokens = (secrets: GitHubAppSecrets): CloudpidReportTokens => {
   const app = new GitHubApp({
     appId: Redacted.value(secrets.appId),
     privateKey: Redacted.value(secrets.privateKey),
@@ -57,8 +57,8 @@ export const reportTokens = (secrets: GitHubAppSecrets): ReportTokens => {
 export type TokenProblem = { readonly notInstalled: boolean; readonly message: string };
 
 /** A token, or why none could be had. */
-export const reportToken = async (
-  tokens: ReportTokens,
+export const cloudpidReportToken = async (
+  tokens: CloudpidReportTokens,
 ): Promise<{ readonly token: string } | { readonly problem: TokenProblem }> => {
   try {
     return { token: await tokens.token() };

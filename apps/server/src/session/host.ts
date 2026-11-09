@@ -174,7 +174,7 @@ import type { PushEvent } from "../push/notification.ts";
 import { CloudpidReportLog } from "@cloudpid/extensions/cloudpid-report";
 import { AgentChangeLog } from "@cloudpid/extensions/environment";
 import { SettingsReload, type SettingsApplied } from "@cloudpid/extensions/settings";
-import { runChanges, runNotice, runReports } from "./agent-changes.ts";
+import { runChanges, runCloudpidReports, runNotice } from "./agent-changes.ts";
 import {
   harnessSettings,
   SessionSettings,
@@ -1335,7 +1335,7 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
 
   /** The Agent changes and cloudpid reports of the Run, kept until its end notifies them. */
   const changes = runChanges(storage.kv);
-  const reports = runReports(storage.kv);
+  const reports = runCloudpidReports(storage.kv);
 
   // Before anything resumes, so resumed tool calls find their tools.
   let installed = yield* options.extensions.pipe(

@@ -113,12 +113,12 @@ export class CloudpidReports extends Context.Service<
 >()("@cloudpid/extensions/cloudpid-report/CloudpidReports") {}
 
 /** A report filed in the Run, for the Notification its end sends: the issue's number and its title. */
-export type RunReport = { readonly number: number; readonly title: string };
+export type FiledCloudpidReport = { readonly number: number; readonly title: string };
 
 /** Where the Session keeps the Run's reports until its end notifies the owner of them, as it keeps its Agent changes. */
 export class CloudpidReportLog extends Context.Service<
   CloudpidReportLog,
-  { readonly record: (report: RunReport) => Effect.Effect<void> }
+  { readonly record: (report: FiledCloudpidReport) => Effect.Effect<void> }
 >()("@cloudpid/extensions/cloudpid-report/CloudpidReportLog") {}
 
 /** A report the tool refused, or that was not filed: its message is what the model sees. */
