@@ -151,7 +151,7 @@ import {
   type KeptTexts,
   openViaCheck,
   reachOf,
-  type ViaCheck,
+  type OpenViaCheck,
 } from "./via-secrets.ts";
 import { GitHubAppConfig } from "../github/config.ts";
 import { PushConfig } from "../push/config.ts";
@@ -1281,7 +1281,7 @@ export const registryMethods = Effect.suspend(() =>
           readonly folders?: ReadonlyArray<string> | undefined;
           readonly author: AgentChangeAuthor | null;
           readonly pin?: SkillInstallPin | undefined;
-          readonly openCheck?: (() => Promise<ViaCheck | undefined>) | undefined;
+          readonly openCheck?: OpenViaCheck | undefined;
         }) =>
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis;
@@ -1299,7 +1299,7 @@ export const registryMethods = Effect.suspend(() =>
         const updateFromGithub = (
           input: UpdateRequest & {
             readonly author: AgentChangeAuthor | null;
-            readonly openCheck?: (() => Promise<ViaCheck | undefined>) | undefined;
+            readonly openCheck?: OpenViaCheck | undefined;
           },
         ) =>
           Effect.gen(function* () {
@@ -1379,9 +1379,10 @@ export const registryMethods = Effect.suspend(() =>
           reach: SecretReach,
           refuse: (message: string) => A,
           write: (now: number) => A,
+          notKept: ReadonlyArray<string> = [],
         ): Effect.Effect<A> =>
           Effect.flatMap(Clock.currentTimeMillis, (now) =>
-            viaGuarded({ author: args.author, input: keptOf(args), reach }, refuse, () =>
+            viaGuarded({ author: args.author, input: keptOf(args, notKept), reach }, refuse, () =>
               write(now),
             ),
           );
@@ -1670,6 +1671,8 @@ export const registryMethods = Effect.suspend(() =>
                 reachOf(args.environment),
                 rejected,
                 (now) => changeEnvironment(state.raw.storage, store, changes, args, now),
+                // The value the field is expected to have is what the write replaces.
+                ["expected"],
               );
 
               if (outcome.status !== "changed") return outcome;
@@ -1686,8 +1689,13 @@ export const registryMethods = Effect.suspend(() =>
             Effect.gen(function* () {
               const { change, environment } = args;
 
-              const outcome = yield* viaWrite<GlobalChange>(args, "every", rejected, (now) =>
-                changeGlobal(state.raw.storage, store, changes, args, now),
+              const outcome = yield* viaWrite<GlobalChange>(
+                args,
+                "every",
+                rejected,
+                (now) => changeGlobal(state.raw.storage, store, changes, args, now),
+                // The value the field is expected to have is what the write replaces.
+                ["expected"],
               );
 
               if (outcome.status !== "changed") return outcome;
@@ -1750,8 +1758,12 @@ export const registryMethods = Effect.suspend(() =>
               markSecretBuildAs(state.raw.storage, store, changes, args, now),
             ),
           agentDeleteSecret: (args) =>
-            viaWrite<SecretDeletion>(args, reachOf(args.environment), rejected, (now) =>
-              deleteSecretAs(state.raw.storage, store, changes, args, now),
+            viaWrite<SecretDeletion>(
+              args,
+              reachOf(args.environment),
+              rejected,
+              (now) => deleteSecretAs(state.raw.storage, store, changes, args, now),
+              ["expected"],
             ),
           keepAskedSecrets: ({ session, conversation, scope, reason, secrets: asked }) =>
             Effect.gen(function* () {
@@ -1857,11 +1869,16 @@ export const registryMethods = Effect.suspend(() =>
 
               const hashed = yield* Effect.promise(() => hashFiles(files));
 
-              return yield* viaWrite<SkillSave>(args, reachOf(environment), rejected, (now) =>
-                saveSkillAs(
-                  { storage: state.raw.storage, store, skills, changes, now },
-                  { ...args, hashed },
-                ),
+              return yield* viaWrite<SkillSave>(
+                args,
+                reachOf(environment),
+                rejected,
+                (now) =>
+                  saveSkillAs(
+                    { storage: state.raw.storage, store, skills, changes, now },
+                    { ...args, hashed },
+                  ),
+                ["expected"],
               );
             }),
           agentPreviewSkill: ({ environment, folder, files }) =>
@@ -1877,11 +1894,16 @@ export const registryMethods = Effect.suspend(() =>
 
               return unapproved !== undefined
                 ? Effect.succeed({ status: "rejected" as const, message: unapproved })
-                : viaWrite<SkillRemoval>(args, reachOf(environment), rejected, (now) =>
-                    removeSkillAs(
-                      { storage: state.raw.storage, store, skills, changes, now },
-                      args,
-                    ),
+                : viaWrite<SkillRemoval>(
+                    args,
+                    reachOf(environment),
+                    rejected,
+                    (now) =>
+                      removeSkillAs(
+                        { storage: state.raw.storage, store, skills, changes, now },
+                        args,
+                      ),
+                    ["expected"],
                   );
             }),
           agentInstallSkills: ({ environment, source, skills: names, author, pin }) =>
@@ -2244,6 +2266,8 @@ export const registryMethods = Effect.suspend(() =>
                       refuse,
                     );
               },
+              // The MCP hosts' revision the change is checked against, not what it keeps.
+              ["guard"],
             ),
           listSettingsChanges: () => Effect.sync(() => changes.list(SETTINGS_SCOPE)),
           revertSettingsChange: ({ change }) =>
@@ -2293,12 +2317,21 @@ export const registryMethods = Effect.suspend(() =>
               triggerChanges.create(args.id, args.trigger, args.author, now),
             ),
           agentUpdateTrigger: (args) =>
-            viaWrite<TriggerChanged>(args, triggerReach(args.id), invalid, (now) =>
-              triggerChanges.update(args.id, args.patch, args.expected, args.author, now),
+            viaWrite<TriggerChanged>(
+              args,
+              triggerReach(args.id),
+              invalid,
+              (now) => triggerChanges.update(args.id, args.patch, args.expected, args.author, now),
+              ["expected"],
             ),
           agentSetTriggerPaused: (args) =>
-            viaWrite<TriggerChanged>(args, triggerReach(args.id), invalid, (now) =>
-              triggerChanges.setPaused(args.id, args.paused, args.expected, args.author, now),
+            viaWrite<TriggerChanged>(
+              args,
+              triggerReach(args.id),
+              invalid,
+              (now) =>
+                triggerChanges.setPaused(args.id, args.paused, args.expected, args.author, now),
+              ["expected"],
             ),
           agentRemoveTrigger: (args) =>
             viaWrite<TriggerChanged>(args, triggerReach(args.id), invalid, (now) =>

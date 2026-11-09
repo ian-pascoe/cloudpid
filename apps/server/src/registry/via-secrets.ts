@@ -77,15 +77,17 @@ const textsOf = (value: KeptTexts, found: string[] = []): string[] => {
   return found;
 };
 
-/** The keys of a write's arguments that name what to change or what it is expected to be, and are not kept. */
-const NOT_KEPT: ReadonlySet<string> = new Set(["expected", "guard", "environment"]);
-
 /**
- * What a write keeps, out of its arguments: all of them but those that only name what to change (`environment`) or what
- * the caller expected it to be (`expected`, `guard`), which the write replaces or compares and does not keep.
+ * What a write keeps, out of its arguments `args`: all of them but the `notKept` keys a call names for itself. Everything
+ * else is scanned, so an argument a method gains later is checked until its call says otherwise. The keys a call leaves
+ * out are values the write compares with or replaces, not what it keeps: `expected` is the value the caller saw (an
+ * `expected` Secret's value in a variable the write replaces must not refuse the write that replaces it), and `guard` is
+ * the MCP hosts' revision the change is checked against.
  */
-export const keptOf = (args: { readonly [key: string]: KeptTexts }): KeptTexts =>
-  Object.fromEntries(Object.entries(args).filter(([key]) => !NOT_KEPT.has(key)));
+export const keptOf = <Args extends { readonly [key: string]: KeptTexts }>(
+  args: Args,
+  notKept: ReadonlyArray<keyof Args> = [],
+): KeptTexts => Object.fromEntries(Object.entries(args).filter(([key]) => !notKept.includes(key)));
 
 /** How many Secrets are opened at once. */
 const OPEN_CONCURRENCY = 32;
@@ -110,6 +112,9 @@ export type ViaGuarded = {
  * transaction, where no Secret can be kept between the check and the write.
  */
 export type ViaCheck = (kept: KeptTexts) => string | undefined;
+
+/** What an install or an update of Skills calls once it has fetched: the check its saves run (`openViaCheck`), if any. */
+export type OpenViaCheck = () => Promise<ViaCheck | undefined>;
 
 /**
  * Open the Secrets `reach` names for a write by `author`, and answer the check to run on what it keeps, inside the

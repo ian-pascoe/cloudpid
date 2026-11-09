@@ -28,7 +28,7 @@ import {
   saveSkillAs,
   type SkillChangeContext,
 } from "./skills.ts";
-import type { ViaCheck } from "./via-secrets.ts";
+import type { OpenViaCheck } from "./via-secrets.ts";
 
 /** A digest of a Skill's files by their content hashes: what an Approval pins of a Skill. */
 const digestOf = (files: HashedFiles): Promise<string> =>
@@ -126,7 +126,7 @@ export const installSkills = async (
     readonly author: AgentChangeAuthor | null;
     readonly pin?: SkillInstallPin | undefined;
     /** An endpoint's install: opens the check of what each Skill keeps, once the files are fetched (`via-secrets.ts`). */
-    readonly openCheck?: (() => Promise<ViaCheck | undefined>) | undefined;
+    readonly openCheck?: OpenViaCheck | undefined;
   },
 ): Promise<SkillInstallation> => {
   const { environment, author, pin } = input;

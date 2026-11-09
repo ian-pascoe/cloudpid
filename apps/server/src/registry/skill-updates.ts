@@ -37,7 +37,7 @@ import {
   type Skills,
   type StoredSkill,
 } from "./skills.ts";
-import type { ViaCheck } from "./via-secrets.ts";
+import type { OpenViaCheck } from "./via-secrets.ts";
 
 /** The Registry document that keeps when the daily check last ran (epoch milliseconds, as text). */
 export const SKILL_CHECK_DOCUMENT = "skill-update-check";
@@ -348,7 +348,7 @@ export const updateSkills = async (
   request: UpdateRequest & {
     readonly author: AgentChangeAuthor | null;
     /** An endpoint's update: opens the check of what each Skill keeps, once the files are fetched (`via-secrets.ts`). */
-    readonly openCheck?: (() => Promise<ViaCheck | undefined>) | undefined;
+    readonly openCheck?: OpenViaCheck | undefined;
   },
 ): Promise<SkillUpdateRun> => {
   const planned = await plan(context, reader, request);

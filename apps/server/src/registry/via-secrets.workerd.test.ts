@@ -432,16 +432,23 @@ describe("the check a write that fetches first opens", () => {
 });
 
 describe("what a write keeps", () => {
-  it("leaves out the arguments that only name what to change or what it was expected to be", () => {
-    expect(
-      keptOf({
-        environment: "0000abcd",
-        change: { field: "variables.A", value: "1" },
-        expected: { value: VALUE },
-        guard: { hash: VALUE },
-        author: { tool: "t", reason: "r" },
-      }),
-    ).toEqual({ change: { field: "variables.A", value: "1" }, author: { tool: "t", reason: "r" } });
+  it("leaves out only the arguments a call names", () => {
+    const args = {
+      environment: "0000abcd",
+      change: { field: "variables.A", value: "1" },
+      expected: { value: VALUE },
+      guard: { hash: VALUE },
+      author: { tool: "t", reason: "r" },
+    };
+
+    expect(keptOf(args, ["expected"])).toEqual({
+      environment: "0000abcd",
+      change: { field: "variables.A", value: "1" },
+      guard: { hash: VALUE },
+      author: { tool: "t", reason: "r" },
+    });
+    // An argument a method gains later is scanned until its call names it, whatever it is called.
+    expect(keptOf(args)).toEqual(args);
   });
 });
 

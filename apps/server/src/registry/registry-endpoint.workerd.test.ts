@@ -6,12 +6,12 @@
 import { DEFAULT_ENVIRONMENT, variableField } from "@cloudpid/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import * as Predicate from "effect/Predicate";
 import { describe, expect, it } from "vitest";
 import type { AgentChangeAuthor } from "./agent-changes.ts";
 import type { ChangeClaim } from "./change-requests.ts";
+import type { RegistryMethods } from "./Registry.ts";
 import type { RealRegistry } from "./registry.fixture.ts";
-import { HOLDS_SECRET, type KeptTexts } from "./via-secrets.ts";
+import { HOLDS_SECRET } from "./via-secrets.ts";
 
 declare global {
   namespace Cloudflare {
@@ -23,6 +23,7 @@ declare global {
 }
 
 const VALUE = "sk-live-0123456789abcdef";
+const GLOBAL_VALUE = "global-secret-value-4321";
 
 const endpoint = (tool: string, request?: ChangeClaim): AgentChangeAuthor => ({
   via: { auth: "oauth", client: { name: "pi" } },
@@ -38,23 +39,31 @@ const session = (tool: string): AgentChangeAuthor => ({
   reason: "The tests need it",
 });
 
-/** An endpoint author whose reason holds the Secret: the one text a write without free text can be refused for. */
-const holding = (tool: string): AgentChangeAuthor => ({
+/** An endpoint author whose reason holds `value`: the one text a write without free text can be refused for. */
+const holding = (tool: string, value = VALUE): AgentChangeAuthor => ({
   ...endpoint(tool),
-  reason: `Because ${VALUE} is the key`,
+  reason: `Because ${value} is the key`,
 });
 
-/** A fresh real Registry with the Secret `API_KEY` kept for the default Environment. */
+/** A fresh real Registry with the Secret `API_KEY` kept for the default Environment, and `GLOBAL_KEY` kept Global. */
 const started = async () => {
   const stub = env.REAL_REGISTRIES.get(env.REAL_REGISTRIES.newUniqueId());
 
-  const call = async (method: string, input?: KeptTexts) =>
-    runInDurableObject(stub, (registry: RealRegistry) => registry.call(method, input));
+  const call = async <K extends keyof RegistryMethods>(
+    method: K,
+    ...input: Parameters<RegistryMethods[K]>
+  ) => runInDurableObject(stub, (registry: RealRegistry) => registry.call(method, ...input));
 
   await call("setEnvironmentSecret", {
     environment: DEFAULT_ENVIRONMENT,
     name: "API_KEY",
     value: VALUE,
+  });
+
+  await call("setEnvironmentSecret", {
+    environment: null,
+    name: "GLOBAL_KEY",
+    value: GLOBAL_VALUE,
   });
 
   return {
@@ -64,15 +73,9 @@ const started = async () => {
   };
 };
 
-/** The id of the Workspace a registered Session was made in. */
-const workspaceOf = (created: KeptTexts): string => {
-  if (
-    Predicate.isObject(created) &&
-    !Array.isArray(created) &&
-    Predicate.isString(created.workspace)
-  ) {
-    return created.workspace;
-  }
+/** The id of the Workspace a Session of the default Environment is registered in. */
+const workspaceOf = (created: Awaited<ReturnType<RealRegistry["call"]>>): string => {
+  if (created !== null && "workspace" in created) return created.workspace;
 
   throw new Error("No Session was registered");
 };
@@ -191,7 +194,10 @@ describe("the real Registry's check of an endpoint's write", () => {
     expect(mark).toEqual(refused);
     expect(deletion).toEqual(refused);
     expect(await changesOf(DEFAULT_ENVIRONMENT)).toEqual([]);
-    expect(await call("listEnvironmentSecrets")).toMatchObject([{ name: "API_KEY", build: false }]);
+    expect(await call("listEnvironmentSecrets")).toMatchObject([
+      { name: "GLOBAL_KEY" },
+      { name: "API_KEY", build: false },
+    ]);
   });
 
   it("refuses a Trigger's message, an Environment trigger's and a Workspace trigger's, making none", async () => {
@@ -204,7 +210,7 @@ describe("the real Registry's check of an endpoint's write", () => {
     const base = {
       name: "Nightly check",
       message: `Use ${VALUE} to check.`,
-      source: { type: "schedule", cron: "@daily", zone: "UTC" },
+      source: { type: "schedule", cron: "@daily", zone: "UTC" } as const,
     };
 
     const inEnvironment = await call("agentCreateTrigger", {
@@ -239,6 +245,100 @@ describe("the real Registry's check of an endpoint's write", () => {
     expect(outcome).toEqual(refused);
     expect(await call("listSkills", { environment: DEFAULT_ENVIRONMENT })).toEqual([]);
     expect(await changesOf(DEFAULT_ENVIRONMENT)).toEqual([]);
+  });
+
+  it("refuses a new Environment whose name holds a Secret kept Global, which a new Environment reaches", async () => {
+    const { call } = await started();
+
+    const outcome = await call("agentCreateEnvironment", {
+      name: `Prod ${GLOBAL_VALUE}`,
+      repos: [],
+      author: endpoint("environment_create"),
+    });
+
+    expect(outcome).toEqual(refused);
+    expect(await call("listEnvironments")).toMatchObject([{ id: DEFAULT_ENVIRONMENT }]);
+  });
+
+  it("does not check a new Environment against another Environment's Secret", async () => {
+    const { call } = await started();
+
+    // `API_KEY` is the default Environment's own: a new Environment has none of its own and reaches only Global's.
+    const outcome = await call("agentCreateEnvironment", {
+      name: `Prod ${VALUE}`,
+      repos: [],
+      author: endpoint("environment_create"),
+    });
+
+    expect(outcome).not.toEqual(refused);
+  });
+
+  it("refuses the rename of an existing Environment to a name that holds a Secret", async () => {
+    const { call, changesOf } = await started();
+
+    const outcome = await call("agentRenameEnvironment", {
+      environment: DEFAULT_ENVIRONMENT,
+      name: `Prod ${VALUE}`,
+      author: endpoint("environment_rename"),
+    });
+
+    expect(outcome).toEqual(refused);
+    expect(await call("getEnvironment", { id: DEFAULT_ENVIRONMENT })).toMatchObject({
+      name: "Default",
+    });
+    expect(await changesOf(DEFAULT_ENVIRONMENT)).toEqual([]);
+  });
+
+  it("refuses the removal of a Skill by an author whose reason holds a Secret, leaving it kept", async () => {
+    const { call, changesOf } = await started();
+
+    const files = { "SKILL.md": "---\nname: deploy\ndescription: Deploy\n---\nShip it.\n" };
+
+    await call("agentSaveSkill", {
+      environment: DEFAULT_ENVIRONMENT,
+      folder: "deploy",
+      files,
+      author: session("skill_save"),
+    });
+
+    const outcome = await call("agentRemoveSkill", {
+      environment: DEFAULT_ENVIRONMENT,
+      name: "deploy",
+      author: holding("skill_remove"),
+    });
+
+    expect(outcome).toEqual(refused);
+    expect(await call("listSkills", { environment: DEFAULT_ENVIRONMENT })).toMatchObject([
+      { name: "deploy" },
+    ]);
+    expect(await changesOf(DEFAULT_ENVIRONMENT)).toMatchObject([{ session: "s-1" }]);
+  });
+
+  it("refuses the update of a Trigger to a message that holds a Secret, leaving it as it was", async () => {
+    const { call } = await started();
+
+    await call("agentCreateTrigger", {
+      id: "t1",
+      trigger: {
+        kind: "environment",
+        environment: DEFAULT_ENVIRONMENT,
+        name: "Weekly report",
+        message: "Summarize last week.",
+        source: { type: "schedule", cron: "0 9 * * MON", zone: "UTC" },
+      },
+      author: session("trigger_create"),
+    });
+
+    const outcome = await call("agentUpdateTrigger", {
+      id: "t1",
+      patch: { message: `Use ${VALUE}.` },
+      author: endpoint("trigger_update"),
+    });
+
+    expect(outcome).toMatchObject({ status: "invalid", problem: HOLDS_SECRET });
+    expect(await call("listTriggers", { environment: DEFAULT_ENVIRONMENT })).toMatchObject([
+      { id: "t1", message: "Summarize last week.", revision: 1 },
+    ]);
   });
 
   it("makes the same write for a Session, which is never checked", async () => {
