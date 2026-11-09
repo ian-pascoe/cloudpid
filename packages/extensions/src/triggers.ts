@@ -730,7 +730,8 @@ export const TriggerTools: Effect.Effect<
         const kind = here === undefined ? "environment" : "workspace";
 
         const optionProblem =
-          baseProblem(kind, base) ?? whenBusyProblem(kind, when_busy ?? defaultWhenBusy(kind));
+          baseProblem(kind, base) ??
+          whenBusyProblem(kind, when_busy ?? defaultWhenBusy(kind, source));
 
         if (optionProblem !== undefined) return yield* refuse(optionProblem);
 
@@ -751,7 +752,7 @@ export const TriggerTools: Effect.Effect<
           name: name.trim(),
           message,
           source,
-          whenBusy: when_busy ?? defaultWhenBusy(kind),
+          whenBusy: when_busy ?? defaultWhenBusy(kind, source),
           paused: false,
         };
 

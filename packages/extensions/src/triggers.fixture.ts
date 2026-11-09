@@ -167,7 +167,7 @@ export const fakeTriggers = (
       name,
       message,
       source,
-      whenBusy: whenBusy ?? defaultWhenBusy(kind),
+      whenBusy: whenBusy ?? defaultWhenBusy(kind, source),
       paused: false,
       createdAt: now,
       updatedAt: now,

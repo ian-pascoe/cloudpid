@@ -73,7 +73,7 @@ const TRIGGERS: ReadonlyArray<TriggerOverview> = [
 ];
 
 const WORKSPACE_TRIGGER: TriggerDefinition = {
-  ...definition("t3", "work", "Lint sweep"),
+  ...definition("t5", "work", "Lint sweep"),
   workspace: { id: "ab12cd34", branch: "feature/lint" },
   whenBusy: "wait",
 };
@@ -242,8 +242,8 @@ describe("the Triggers section", () => {
 
       expect(markup).toContain("CI failed");
       expect(markup).toContain("Webhook · github");
-      // Fire now is the Schedule Trigger's alone.
-      expect(markup.match(/Fire now<\/button>/g)).toHaveLength(1);
+      // Fire now is the Schedule triggers' alone: the Environment's and the Workspace's, not the webhook's.
+      expect(markup.match(/Fire now<\/button>/g)).toHaveLength(2);
     }),
   );
 
@@ -283,7 +283,7 @@ describe("the Triggers section", () => {
     () =>
       Effect.gen(function* () {
         const markup = yield* render("work", (registry) => {
-          registry.set(removeTriggerDialogAtom("work"), "t3");
+          registry.set(removeTriggerDialogAtom("work"), "t5");
         });
 
         expect(markup).toContain("Remove Lint sweep?");
@@ -295,7 +295,7 @@ describe("the Triggers section", () => {
         const sessioned = yield* render(
           "work",
           (registry) => {
-            registry.set(removeTriggerDialogAtom("work"), "t3");
+            registry.set(removeTriggerDialogAtom("work"), "t5");
           },
           // SAFETY: the dialog reads the Session's Workspace id only.
           { listSessions: () => Effect.succeed([{ id: "s1", workspace: "ab12cd34" } as never]) },
@@ -307,14 +307,14 @@ describe("the Triggers section", () => {
         const shared = yield* render(
           "work",
           (registry) => {
-            registry.set(removeTriggerDialogAtom("work"), "t3");
+            registry.set(removeTriggerDialogAtom("work"), "t5");
           },
           {
             listTriggers: () =>
               Effect.succeed([
                 WORKSPACE_OVERVIEW,
                 {
-                  definition: { ...WORKSPACE_TRIGGER, id: "t4", name: "Weekly lint" },
+                  definition: { ...WORKSPACE_TRIGGER, id: "t6", name: "Weekly lint" },
                   lastFire: null,
                   reached: true,
                 },

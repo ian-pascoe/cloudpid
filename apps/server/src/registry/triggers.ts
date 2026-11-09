@@ -7,7 +7,6 @@
 import { ThinkingLevel } from "@cloudpid/config";
 import {
   defaultWhenBusy,
-  type EnvironmentTriggerInput,
   fireTitle,
   senderText,
   type TriggerSource,
