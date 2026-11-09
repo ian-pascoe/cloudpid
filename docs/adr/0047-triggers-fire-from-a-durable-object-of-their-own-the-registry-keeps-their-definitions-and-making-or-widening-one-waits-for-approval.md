@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (a webhook Trigger's Fire rate, and a `match` change that only narrows applying at once: amended by ADR-0051)
 ---
 
 # Triggers fire from a Durable Object of their own, the Registry keeps their definitions, and making or widening one waits for Approval
