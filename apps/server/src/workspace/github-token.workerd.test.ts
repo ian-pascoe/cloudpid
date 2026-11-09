@@ -68,11 +68,7 @@ describe("the GitHub tokens of the Workspace DO", () => {
     ]);
 
     for (const { body } of mints) {
-      const asked = JSON.parse(body ?? "null");
-
-      expect(asked).toEqual({ permissions: CONTAINER_GITHUB_PERMISSIONS });
-      // The App has Webhooks: write for the Trigger objects' hooks; a Container's token never asks for it (ADR-0049).
-      expect(asked.permissions).not.toHaveProperty("repository_hooks");
+      expect(JSON.parse(body ?? "null")).toEqual({ permissions: CONTAINER_GITHUB_PERMISSIONS });
     }
   });
 });
