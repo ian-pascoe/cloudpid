@@ -141,10 +141,7 @@ const description = Arr.join(
 );
 
 const Parameters = Schema.Struct({
-  title: Schema.String.check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(MAX_REPORT_TITLE),
-  ).annotate({
+  title: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(MAX_REPORT_TITLE)).annotate({
     description: "One line saying what went wrong in cloudpid (at most 120 characters)",
   }),
   body: Schema.String.check(
@@ -273,7 +270,7 @@ export const CloudpidReportTools: Effect.Effect<
         title,
         body,
         kind,
-        ...(named === undefined ? {} : { tool: named }),
+        tool: named,
         footer: {
           model:
             agent.model === undefined
@@ -301,14 +298,13 @@ export const CloudpidReportTools: Effect.Effect<
             output: [
               {
                 type: "text" as const,
-                text: answer.labelled
-                  ? filed
-                  : `${filed}, not labelled \`cloudpid-report\`.`,
+                text: answer.labelled ? filed : `${filed}, not labelled \`cloudpid-report\`.`,
               },
             ],
             details: { number: answer.number, url: answer.url, title, kind },
           };
         }
+
         case "refused":
           return yield* fail(
             refusalOutcome(answer.code),

@@ -8,23 +8,19 @@ import type {
   CloudpidReportRequest,
 } from "@cloudpid/extensions/cloudpid-report";
 import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
-import { LOCAL_MODE_VAR, STAGE_LABEL_VAR } from "../deployment.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 
 /** The statuses this build reads; any other is `unknown`. */
 const KNOWN: ReadonlySet<string> = new Set(["filed", "refused", "failed", "unknown"]);
 
 /**
- * The stage a report's footer names: `local` under `alchemy dev`, a non-prod stage's label (`pr-<n>`, a dev stage's),
- * else `prod`, which has none.
+ * The stage a report's footer names: `local` under `alchemy dev` (`CLOUDPID_LOCAL_MODE`), a non-prod stage's label
+ * (`CLOUDPID_STAGE_LABEL`: `pr-<n>`, a dev stage's), else `prod`, which has none.
  */
-export const reportStage = (env: Readonly<Record<string, unknown>>): string =>
-  env[LOCAL_MODE_VAR] === "true"
-    ? "local"
-    : Predicate.isString(env[STAGE_LABEL_VAR])
-      ? env[STAGE_LABEL_VAR]
-      : "prod";
+export const reportStage = (stage: {
+  readonly label: string | undefined;
+  readonly local: boolean;
+}): string => (stage.local ? "local" : (stage.label ?? "prod"));
 
 export const sessionCloudpidReports = (options: {
   readonly registry: Pick<RegistryMethods, "agentFileReport">;
@@ -47,9 +43,8 @@ export const sessionCloudpidReports = (options: {
     return registry
       .agentFileReport({ ...request, session, footer: { ...request.footer, stage, version } })
       .pipe(
-        Effect.map(
-          (answer): CloudpidReportAnswer =>
-            KNOWN.has(answer.status) ? answer : { status: "unknown" },
+        Effect.map((answer): CloudpidReportAnswer =>
+          KNOWN.has(answer.status) ? answer : { status: "unknown" },
         ),
         Effect.catchCause((cause) =>
           Effect.logWarning("A cloudpid report's call to the Registry failed", cause).pipe(

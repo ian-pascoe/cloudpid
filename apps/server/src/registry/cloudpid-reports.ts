@@ -308,12 +308,12 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
    */
   const claim = (input: AgentReportInput, hash: string, now: number): Refused | undefined =>
     deps.storage.transactionSync(() => {
-      const [{ inSession = 0 } = {}] = sql
+      const { inSession } = sql
         .exec<{ inSession: number }>(
           `SELECT count(*) AS inSession FROM cloudpid_reports WHERE session = ? AND ${COUNTED}`,
           input.session,
         )
-        .toArray();
+        .one();
 
       if (inSession >= SESSION_REPORT_CAP) {
         return refused(
@@ -324,12 +324,12 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
 
       const dayStart = Math.floor(now / DAY_MS) * DAY_MS;
 
-      const [{ today = 0 } = {}] = sql
+      const { today } = sql
         .exec<{ today: number }>(
           `SELECT count(*) AS today FROM cloudpid_reports WHERE at >= ? AND ${COUNTED}`,
           dayStart,
         )
-        .toArray();
+        .one();
 
       if (today >= deps.dailyCap) {
         return refused(
@@ -347,10 +347,7 @@ export const openCloudpidReports = (deps: CloudpidReportsDeps) => {
         .toArray();
 
       if (repeated.length > 0) {
-        return refused(
-          "repeated",
-          "this Session filed a cloudpid report with this title already.",
-        );
+        return refused("repeated", "this Session filed a cloudpid report with this title already.");
       }
 
       sql.exec(

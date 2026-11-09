@@ -118,6 +118,12 @@ export type GitHubTokens = {
   readonly forget: (account: string) => void;
 };
 
+/** The body of a token's mint: what it narrows the token to, each absent for the installation's own. */
+type MintBody = {
+  repositories?: ReadonlyArray<string>;
+  permissions?: GitHubPermissions;
+};
+
 /** What a `GitHubApp` is made with. */
 export type GitHubAppOptions = {
   /** The app's ID (or its Client ID), the JWT's issuer. */
@@ -454,15 +460,19 @@ export class GitHubApp implements GitHubTokens {
   async #mint(account: string, installation: number): Promise<MintedToken> {
     const { permissions, repositories } = this.#options;
 
+    // What the token is narrowed to; never `repository_ids`.
+    const narrowed: MintBody = {};
+
+    if (repositories !== undefined) narrowed.repositories = repositories;
+
+    if (permissions !== undefined) narrowed.permissions = permissions;
+
     const answer = await this.#ask(`${API}/app/installations/${installation}/access_tokens`, {
       method: "POST",
       body:
         permissions === undefined && repositories === undefined
           ? undefined
-          : JSON.stringify({
-              ...(repositories === undefined ? {} : { repositories }),
-              ...(permissions === undefined ? {} : { permissions }),
-            }),
+          : JSON.stringify(narrowed),
     });
 
     if (!answer.ok) {

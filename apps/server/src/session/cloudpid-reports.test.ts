@@ -67,11 +67,11 @@ describe("the Session's cloudpid reports", () => {
     expect(await Effect.runPromise(reports.file(request))).toMatchObject({ status: "failed" });
   });
 
-  it.each<[string, Record<string, unknown>, string]>([
-    ["prod, which has no stage label", {}, "prod"],
-    ["a preview's label", { CLOUDPID_STAGE_LABEL: "pr-731" }, "pr-731"],
-    ["local under alchemy dev", { CLOUDPID_STAGE_LABEL: "dev-ian", CLOUDPID_LOCAL_MODE: "true" }, "local"],
-  ])("name the stage %s", (_, env, stage) => {
-    expect(reportStage(env)).toBe(stage);
+  it.each<[string, Parameters<typeof reportStage>[0], string]>([
+    ["prod, which has no stage label", { label: undefined, local: false }, "prod"],
+    ["a preview's label", { label: "pr-731", local: false }, "pr-731"],
+    ["local under alchemy dev", { label: "dev-ian", local: true }, "local"],
+  ])("name the stage %s", (_, stage, name) => {
+    expect(reportStage(stage)).toBe(name);
   });
 });

@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import { describe, expect, it } from "vitest";
 import {
@@ -82,12 +83,27 @@ const toolOver = async (answer: CloudpidReportAnswer = FILED) => {
 
   const tool = Arr.findFirst(extension.tools ?? [], ({ name }) => name === CLOUDPID_REPORT_TOOL);
 
-  if (tool._tag === "None") throw new Error("no cloudpid_report");
+  if (Option.isNone(tool)) throw new Error("no cloudpid_report");
 
   return { tool: tool.value, asked, logged, extension };
 };
 
+// SAFETY: a subagent's conversation ID for the test, which the tool only tells apart from the root's.
 const CHILD = 42 as ConversationId;
+
+/** An API that keeps the diagnostics a call emits. */
+const diagnosing = () => {
+  const diagnostics: Array<Parameters<ToolExecutionApi["diagnostic"]>[0]> = [];
+
+  const api: ToolExecutionApi = {
+    ...apiOf(),
+    diagnostic: (diagnostic) => {
+      diagnostics.push(diagnostic);
+    },
+  };
+
+  return { api, diagnostics };
+};
 
 /** The calling conversation: its tools (offered and deferred), and whether it is a subagent's. */
 const apiOf = (
@@ -97,8 +113,11 @@ const apiOf = (
     readonly child?: boolean;
   } = {},
 ): ToolExecutionApi => {
-  const { offered = ["read", "bash", CLOUDPID_REPORT_TOOL], deferred = [], child = false } =
-    options;
+  const {
+    offered = ["read", "bash", CLOUDPID_REPORT_TOOL],
+    deferred = [],
+    child = false,
+  } = options;
 
   const named = (names: ReadonlyArray<string>) => Arr.map(names, (name) => ({ name }));
 
@@ -232,7 +251,11 @@ describe("cloudpid_report", () => {
   });
 
   it.each<[string, CloudpidReportAnswer, boolean]>([
-    ["a refusal for the owner's Repos, which the agent may rewrite", { status: "refused", code: "names", message: "names /workspace/acme" }, false],
+    [
+      "a refusal for the owner's Repos, which the agent may rewrite",
+      { status: "refused", code: "names", message: "names /workspace/acme" },
+      false,
+    ],
     ["a cap reached", { status: "refused", code: "session_cap", message: "3 already" }, true],
     ["a failure", { status: "failed", message: "GitHub answered 503" }, true],
   ])("fails on %s", async (_, answer, final) => {
@@ -256,9 +279,14 @@ describe("cloudpid_report", () => {
   });
 
   it("warns when the report was filed without its label, and still succeeds", async () => {
-    const { tool } = await toolOver({ ...FILED, labelled: false } as CloudpidReportAnswer);
-    const diagnostics: unknown[] = [];
-    const api = Object.assign(apiOf(), { diagnostic: (each: unknown) => diagnostics.push(each) });
+    const { tool } = await toolOver({
+      status: "filed",
+      number: 123,
+      url: "https://github.com/ian-pascoe/cloudpid/issues/123",
+      labelled: false,
+    });
+
+    const { api, diagnostics } = diagnosing();
 
     const result = await run(tool, valid, api);
 
@@ -273,8 +301,8 @@ describe("cloudpid_report", () => {
       message: "The GitHub App is not installed on ian-pascoe",
       warning: "The GitHub App is not installed on ian-pascoe",
     });
-    const diagnostics: unknown[] = [];
-    const api = Object.assign(apiOf(), { diagnostic: (each: unknown) => diagnostics.push(each) });
+
+    const { api, diagnostics } = diagnosing();
 
     const result = await run(tool, valid, api);
 

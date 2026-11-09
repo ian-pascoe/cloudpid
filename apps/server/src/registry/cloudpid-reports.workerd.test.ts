@@ -83,7 +83,8 @@ const fakeGitHub = () => {
   return { fetch, seen, script };
 };
 
-const BODY = "Calling bash with a timeout of 30 s never returned; @someone said it ends at the timeout. `@decorator` stays.";
+const BODY =
+  "Calling bash with a timeout of 30 s never returned; @someone said it ends at the timeout. `@decorator` stays.";
 
 /** A report of Session `session`'s call `task`. */
 const report = (
@@ -337,7 +338,10 @@ describe("a cloudpid report", () => {
     const { answers, seen } = await inRegistry(async ({ reports, github }) => {
       github.script.create = () =>
         Response.json(
-          { message: "Validation Failed", errors: [{ resource: "Issue", code: "custom", message: "title is too long" }] },
+          {
+            message: "Validation Failed",
+            errors: [{ resource: "Issue", code: "custom", message: "title is too long" }],
+          },
           { status: 422 },
         );
 
