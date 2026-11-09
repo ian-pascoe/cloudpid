@@ -370,6 +370,71 @@ describe("a webhook Trigger's definition", () => {
   });
 });
 
+describe("a GitHub-managed hook's Trigger", () => {
+  const source = {
+    type: "webhook",
+    format: "github",
+    repo: "o/r",
+    events: ["workflow_run", "push"],
+  } as const;
+
+  const hooked: EnvironmentTriggerInput = { ...weekly, name: "CI failed", source };
+
+  it("keeps its repo and events, which a patch never changes, and a create retried with them in another order is one", async () => {
+    const registry = fresh();
+
+    await registry.createTrigger("t1", hooked, 1_000);
+
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      source: { type: "webhook", format: "github", repo: "o/r", events: ["push", "workflow_run"] },
+    });
+    expect(
+      await registry.createTrigger(
+        "t1",
+        { ...hooked, source: { ...source, events: ["push", "workflow_run"] } },
+        2_000,
+      ),
+    ).toMatchObject({ status: "unchanged" });
+    expect(
+      await registry.updateTrigger(
+        "t1",
+        { source: { type: "webhook", format: "github", repo: "x/y", events: ["issues"] } },
+        3_000,
+      ),
+    ).toMatchObject({ status: "unchanged" });
+    expect(await registry.updateTrigger("t1", { match: { event: ["push"] } }, 4_000)).toMatchObject(
+      {
+        definition: {
+          source: { repo: "o/r", events: ["push", "workflow_run"], match: { event: ["push"] } },
+        },
+      },
+    );
+  });
+
+  it("is refused for a repo and events it can't hook", async () => {
+    const registry = fresh();
+
+    expect(
+      await registry.createTrigger("t1", { ...hooked, source: { ...source, repo: "o" } }, 1_000),
+    ).toMatchObject({ status: "invalid" });
+  });
+
+  it("is known to the orphan sweep while it is active or paused, and not once removed by the agent or for good", async () => {
+    const registry = fresh();
+
+    for (const id of ["t1", "t2", "t3", "t4"]) await registry.createTrigger(id, hooked, 1_000);
+
+    await registry.setTriggerPaused("t2", true, 2_000);
+    await registry.retireTrigger("t3", 2_000);
+    await registry.removeTrigger("t4");
+
+    expect(await registry.knownTriggers(["t1", "t2", "t3", "t4", "t5", "t1"])).toEqual([
+      "t1",
+      "t2",
+    ]);
+  });
+});
+
 describe("admitFire", () => {
   it("starts a Session in a new Workspace, titled by cloudpid and marked with the Trigger", async () => {
     const registry = fresh();

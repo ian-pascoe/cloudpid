@@ -1176,6 +1176,18 @@ export type RegistryMethods = {
   readonly listSessionTriggers: (input: {
     readonly session: string;
   }) => Effect.Effect<ReadonlyArray<TriggerDefinition>>;
+  /**
+   * Which of `ids` are Triggers the Registry holds (active or paused, not removed): what a Trigger object's orphan sweep
+   * asks before it deletes a hook of this stage's on a repo (`docs/architecture/triggers.md` → GitHub-managed hooks).
+   */
+  readonly knownTriggers: (input: {
+    readonly ids: ReadonlyArray<string>;
+  }) => Effect.Effect<ReadonlyArray<string>>;
+  /**
+   * What this Registry's Triggers take that an older one would drop: `githubHooks`, a `github` source's `repo` and
+   * `events`. A caller offers them only once it is listed (`docs/development/workers.md` → Bindings).
+   */
+  readonly triggerFeatures: () => Effect.Effect<{ readonly githubHooks: boolean }>;
   /** A Trigger's definition, or null once it is gone: what its object reads at each touch (self-healing). */
   readonly triggerDefinition: (input: {
     readonly id: string;
@@ -2393,6 +2405,8 @@ export const registryMethods = Effect.suspend(() =>
           listTriggers: ({ environment }) => Effect.sync(() => triggers.list(environment)),
           listSessionTriggers: ({ session }) => Effect.sync(() => triggers.listOfSession(session)),
           triggerDefinition: ({ id }) => Effect.sync(() => triggers.get(id)),
+          knownTriggers: ({ ids }) => Effect.sync(() => triggers.known(ids)),
+          triggerFeatures: () => Effect.succeed({ githubHooks: true }),
           admitFire: (fire) =>
             Effect.gen(function* () {
               const session = yield* newSessionId;

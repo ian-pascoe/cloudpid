@@ -176,13 +176,20 @@ const sourceText = (source: TriggerSourceInput): string => {
     return JSON.stringify({ type: source.type, cron: source.cron, zone: source.zone });
   }
 
-  const { type, format, match } = source;
+  const { type, format, match, repo, events } = source;
 
-  if (match === undefined) return JSON.stringify({ type, format });
+  // A GitHub-managed hook's repo and events (`triggers.md` → GitHub-managed hooks): its events sorted, as GitHub keeps them.
+  const hook =
+    repo === undefined || events === undefined
+      ? {}
+      : { repo, events: Arr.sort(events, Order.String) };
+
+  if (match === undefined) return JSON.stringify({ type, format, ...hook });
 
   return JSON.stringify({
     type,
     format,
+    ...hook,
     match: Record.fromEntries(
       Arr.map(
         Arr.sort(Record.keys(match), Order.String),
@@ -563,6 +570,22 @@ export const openTriggers = (
       }),
 
     get: definition,
+
+    /**
+     * Which of `ids` name a Trigger the Registry holds, active or paused: one the agent removed (kept only for a revert)
+     * is not one, so the orphan sweep deletes its hook (`triggers.md` → GitHub-managed hooks).
+     */
+    known: (ids: ReadonlyArray<string>): Array<string> =>
+      Arr.filter(
+        Arr.dedupe(ids),
+        (id) =>
+          sql
+            .exec<{ found: number }>(
+              "SELECT EXISTS (SELECT 1 FROM triggers WHERE id = ? AND removed_at IS NULL) AS found",
+              id,
+            )
+            .one().found === 1,
+      ),
 
     /** Every Trigger, or `environment`'s, newest first. */
     list: (environment?: string): Array<TriggerDefinition> =>

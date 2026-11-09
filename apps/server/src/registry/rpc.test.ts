@@ -1695,6 +1695,8 @@ const fakeRegistries = () => {
         ),
       ),
     triggerDefinition: () => Effect.succeed(null),
+    knownTriggers: () => Effect.succeed([]),
+    triggerFeatures: () => Effect.succeed({ githubHooks: true }),
     admitFire: () => Effect.succeed({ status: "removed" as const }),
     notifyTriggerFailed: () => Effect.void,
     deleteEnvironmentWithTriggers: ({ id }) =>
