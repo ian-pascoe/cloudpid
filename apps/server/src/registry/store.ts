@@ -204,6 +204,12 @@ export type BuildRecord = {
 /** A kept Secret's sealed value with what it is kept as (`docs/architecture/agent-capabilities.md` → Secrets): the Registry DO opens it. */
 export type StoredEnvironmentSecret = EnvironmentSecretRecord & { readonly sealed: SealedValue };
 
+/**
+ * The Scopes whose kept Secrets a check reads: the ids listed (an Environment's, and Global's `GLOBAL_SCOPE`), or `every`
+ * Scope's.
+ */
+export type SecretReach = ReadonlyArray<string> | "every";
+
 /** How keeping a Secret went: its record, or its Environment does not exist, or its scope holds as many as it may. */
 export type SecretPut = EnvironmentSecretRecord | "missing" | "full";
 
@@ -389,6 +395,13 @@ export type RegistryStore = {
   readonly listEnvironmentSecrets: () => EnvironmentSecretRecord[];
   /** The sealed Secrets `environment` uses: those kept Global, and its own. */
   readonly getEnvironmentSecrets: (environment: string) => StoredEnvironmentSecret[];
+  /** The sealed Secrets kept in the Scopes `reach` names (`SecretReach`), those at Global first. */
+  readonly sealedSecretsIn: (reach: SecretReach) => StoredEnvironmentSecret[];
+  /**
+   * What the Secrets kept in `reach` amount to as one text, which changes whenever one is added, replaced or deleted: how
+   * many there are and when the newest was kept.
+   */
+  readonly keptSecretsStamp: (reach: SecretReach) => string;
   /**
    * Keep a sealed value under `name` for `environment` (null: Global), replacing the one kept there; `build`
    * left out keeps a replaced one's flag (false for a new one).
@@ -498,6 +511,17 @@ type EnvironmentSecretRow = {
 };
 
 const scopeOf = (environment: string | null): string => environment ?? GLOBAL_SCOPE;
+
+/** The `WHERE` that keeps the Secrets of the Scopes `reach` names, with `reachScopes` for its parameters. */
+const reachFilter = (reach: SecretReach): string =>
+  reach === "every"
+    ? ""
+    : ` WHERE scope IN (${Arr.join(
+        Arr.map(reach, () => "?"),
+        ", ",
+      )})`;
+
+const reachScopes = (reach: SecretReach): ReadonlyArray<string> => (reach === "every" ? [] : reach);
 
 const toSecretRecord = (row: EnvironmentSecretRow): EnvironmentSecretRecord => ({
   environment: row.scope === GLOBAL_SCOPE ? null : row.scope,
@@ -1209,6 +1233,33 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   (sql) => {
     sql.exec("ALTER TABLE triggers ADD COLUMN workspace TEXT");
     sql.exec("CREATE INDEX triggers_by_workspace ON triggers (workspace)");
+  },
+  // 36: who made an Agent change over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → The recorded author): how
+  // the caller got in (`via_auth`), its client's name and version as it gave them, and the owner's Access OAuth
+  // registration (`via_client_id`, which is kept and never shown). All null for every change before, and for a Session's
+  // and the owner's.
+  (sql) => {
+    sql.exec("ALTER TABLE agent_changes ADD COLUMN via_auth TEXT");
+    sql.exec("ALTER TABLE agent_changes ADD COLUMN via_client_name TEXT");
+    sql.exec("ALTER TABLE agent_changes ADD COLUMN via_client_version TEXT");
+    sql.exec("ALTER TABLE agent_changes ADD COLUMN via_client_id TEXT");
+  },
+  // 37: the `request_id` of a change made over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → Retries:
+  // `request_id`), kept for 24 h: the tool, a digest of its arguments, the attempt that claimed it (a repeat's lookup
+  // checks the digest, a settle the attempt), when, the final answer as JSON (null until settled, and when it is over
+  // 64 KiB), and the numbers of the Agent changes the claim's write recorded. Not `session_requests`, which is STRICT
+  // with a Session NOT NULL. None before.
+  (sql) => {
+    sql.exec(`CREATE TABLE change_requests (
+      id TEXT PRIMARY KEY,
+      tool TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      attempt TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      answer TEXT,
+      changes TEXT NOT NULL
+    ) STRICT`);
+    sql.exec("CREATE INDEX change_requests_by_at ON change_requests (at)");
   },
 ];
 
@@ -1998,6 +2049,32 @@ export const openRegistryStore = (storage: RegistryStorage): RegistryStore => {
           sealed: { version: 1, iv: row.iv, ciphertext: row.ciphertext },
         }),
       ),
+
+    sealedSecretsIn: (reach) =>
+      Arr.map(
+        sql
+          .exec<EnvironmentSecretRow>(
+            `SELECT * FROM environment_secrets${reachFilter(reach)} ORDER BY scope != ?, scope, name`,
+            ...reachScopes(reach),
+            GLOBAL_SCOPE,
+          )
+          .toArray(),
+        (row) => ({
+          ...toSecretRecord(row),
+          sealed: { version: 1, iv: row.iv, ciphertext: row.ciphertext },
+        }),
+      ),
+
+    keptSecretsStamp: (reach) => {
+      const [row] = sql
+        .exec<{ count: number; newest: number }>(
+          `SELECT COUNT(*) AS count, COALESCE(MAX(updated_at), 0) AS newest FROM environment_secrets${reachFilter(reach)}`,
+          ...reachScopes(reach),
+        )
+        .toArray();
+
+      return `${row?.count ?? 0}:${row?.newest ?? 0}`;
+    },
 
     putEnvironmentSecret: ({ environment, name, sealed, build }, now) =>
       storage.transactionSync((): SecretPut => {

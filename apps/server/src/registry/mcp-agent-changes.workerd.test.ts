@@ -669,3 +669,59 @@ describe("mcpSettingsView's twinsIn", () => {
       expect(view("unrelated")?.twinsIn).toBeUndefined();
     }));
 });
+
+describe("an MCP server changed over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "settings_mcp_disable",
+    reason: "Not needed",
+  };
+
+  it("is recorded under the Settings with the via and no Session, and reverted as a Session's is", () =>
+    inRegistry(({ setGlobal, storage, store, changes, revertGlobal }) => {
+      setGlobal({ mcp: { servers: { files: FILES } } });
+
+      const [made] = changed(
+        changeSettings(
+          storage,
+          store,
+          changes,
+          { changes: [{ field: field("enabled"), value: false }], author: endpoint },
+          1_000,
+        ),
+      ).changes;
+
+      expect(made).toMatchObject({
+        scope: SETTINGS_SCOPE,
+        actor: "agent",
+        session: null,
+        conversation: null,
+        tool: "settings_mcp_disable",
+        via: { auth: "oauth", client: { name: "pi" } },
+      });
+      expect(JSON.stringify(changes.list(SETTINGS_SCOPE))).not.toContain("grant-1");
+      expect(revertGlobal(made?.id ?? 0)).toMatchObject({ status: "reverted" });
+    }));
+
+  it("is recorded under an Environment with the via", () =>
+    inRegistry(({ setOverrides, storage, store, changes }) => {
+      setOverrides(STAGING, { mcp: { servers: { docs: DOCS } } });
+
+      const made = changeSettingsOverrides(
+        storage,
+        store,
+        changes,
+        {
+          environment: STAGING,
+          changes: [{ field: field("enabled", "docs"), value: false }],
+          author: endpoint,
+        },
+        1_000,
+      );
+
+      expect(made).toMatchObject({
+        status: "changed",
+        changes: [{ scope: STAGING, via: { auth: "oauth" }, session: null }],
+      });
+    }));
+});

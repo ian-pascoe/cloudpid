@@ -33,7 +33,12 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type { SkillSet } from "../workspace/skill-set-schema.ts";
-import type { AgentChangeAuthor, AgentChangeRevert, AgentChanges } from "./agent-changes.ts";
+import {
+  type AgentChangeAuthor,
+  type AgentChangeRevert,
+  type AgentChanges,
+  recordedAuthor,
+} from "./agent-changes.ts";
 import { type SecretScope, scopeOf } from "./secret-changes.ts";
 import type { EnvironmentRecord, RegistryStorage } from "./store.ts";
 
@@ -941,10 +946,7 @@ export const saveSkillAs = (
     const change = context.changes.record({
       scope: environment,
       at: context.now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: skillField(skill.name),
       before: before === null ? null : changeValue(before),
@@ -1055,10 +1057,7 @@ export const removeSkillAs = (
     const change = changes.record({
       scope: environment,
       at: now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: skillField(name),
       before: changeValue(before),

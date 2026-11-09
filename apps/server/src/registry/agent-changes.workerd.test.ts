@@ -994,3 +994,144 @@ describe("the owner's dismissal of an Agent change", () => {
     expect(otherScope).toBe(false);
   });
 });
+
+describe("an Agent change made over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi", version: "1.5.0" }, clientId: "grant-1" },
+    tool: "environment_variable_set",
+    reason: "The tests need the API's address",
+  };
+
+  it("is recorded with its via and no Session, and read back without the client id", async () => {
+    const [outcome, listed, stored] = await inRegistry(({ store, storage, changes }) => [
+      changeEnvironment(
+        storage,
+        store,
+        changes,
+        {
+          environment: DEFAULT_ENVIRONMENT,
+          change: setVariable("API_URL", "https://example.test"),
+          author: endpoint,
+        },
+        1_000,
+      ),
+      changes.list(DEFAULT_ENVIRONMENT),
+      storage.sql
+        .exec(
+          "SELECT via_auth, via_client_name, via_client_version, via_client_id FROM agent_changes",
+        )
+        .toArray(),
+    ]);
+
+    const expected = {
+      id: 1,
+      actor: "agent",
+      session: null,
+      conversation: null,
+      tool: "environment_variable_set",
+      via: { auth: "oauth", client: { name: "pi", version: "1.5.0" } },
+    };
+
+    expect(outcome).toMatchObject({ status: "changed", change: expected });
+    expect(listed).toMatchObject([expected]);
+    // The client id is recorded, and never answered.
+    expect(JSON.stringify(listed)).not.toContain("grant-1");
+    expect(stored).toEqual([
+      {
+        via_auth: "oauth",
+        via_client_name: "pi",
+        via_client_version: "1.5.0",
+        via_client_id: "grant-1",
+      },
+    ]);
+  });
+
+  it("records a caller that gave no name with only how it got in", async () => {
+    const listed = await inRegistry(({ store, storage, changes }) => {
+      changeGlobal(
+        storage,
+        store,
+        changes,
+        {
+          change: { field: "idleMinutes", value: 5 },
+          author: { ...endpoint, via: { auth: "local" } },
+        },
+        1_000,
+      );
+
+      return changes.list(GLOBAL_SCOPE);
+    });
+
+    expect(listed).toMatchObject([{ session: null, via: { auth: "local" } }]);
+    expect(listed[0]).not.toHaveProperty("via.client");
+  });
+
+  it("leaves a Session's change and the owner's revert with no via", async () => {
+    const [made, reverted] = await inRegistry(({ change, revert }) => {
+      change(setVariable("A", "1"));
+
+      return [change(setVariable("B", "2"), 1_500), revert(1)];
+    });
+
+    expect(made).toMatchObject({ status: "changed", change: { session: "s-1" } });
+    expect(made).not.toHaveProperty("change.via");
+    expect(reverted).toMatchObject({ status: "reverted", change: { actor: "owner" } });
+    expect(reverted).not.toHaveProperty("change.via");
+  });
+
+  it("is reverted by the owner and dismissed as any change is", async () => {
+    const [outcome, reverted, dismissed, listed, stored] = await inRegistry(
+      ({ store, storage, changes, revert }) => {
+        const made = changeEnvironment(
+          storage,
+          store,
+          changes,
+          {
+            environment: DEFAULT_ENVIRONMENT,
+            change: setVariable("API_URL", "https://example.test"),
+            author: endpoint,
+          },
+          1_000,
+        );
+
+        return [
+          made,
+          revert(1),
+          changes.dismiss(DEFAULT_ENVIRONMENT, 1),
+          changes.list(DEFAULT_ENVIRONMENT),
+          store.getEnvironmentSettings(DEFAULT_ENVIRONMENT),
+        ];
+      },
+    );
+
+    expect(outcome).toMatchObject({ status: "changed" });
+    expect(reverted).toMatchObject({
+      status: "reverted",
+      change: { actor: "owner", reverts: 1, tool: null },
+    });
+    expect(dismissed).toBe(true);
+    // The revert stays listed; the dismissed change is out of the list.
+    expect(listed).toMatchObject([{ id: 2, actor: "owner" }]);
+    expect(stored).toEqual({});
+  });
+
+  it("is one the owner approved, when its author says so", async () => {
+    const listed = await inRegistry(({ store, storage, changes }) => {
+      changeEnvironment(
+        storage,
+        store,
+        changes,
+        {
+          environment: DEFAULT_ENVIRONMENT,
+          change: { field: "maxInstance", value: "cpu-3" },
+          author: { ...endpoint, approved: true, tool: "environment_container_size_limit_set" },
+        },
+        1_000,
+      );
+
+      return changes.list(DEFAULT_ENVIRONMENT);
+    });
+
+    expect(listed).toMatchObject([{ approved: true, via: { auth: "oauth" } }]);
+  });
+});

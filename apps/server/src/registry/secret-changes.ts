@@ -17,6 +17,7 @@ import {
   type AgentChangeAuthor,
   type AgentChangeRevert,
   type AgentChanges,
+  recordedAuthor,
 } from "./agent-changes.ts";
 import {
   GLOBAL_SCOPE,
@@ -38,6 +39,11 @@ export type SecretBuildMark =
   | { readonly status: "unchanged"; readonly environment: SecretScope; readonly build: boolean }
   /** No Secret of the name is kept in that scope. */
   | { readonly status: "absent"; readonly environment: SecretScope }
+  /**
+   * A write over the MCP endpoint that the Registry's check refused (`via-secrets.ts`): nothing was saved. A Session's
+   * is never refused, so only a caller that sends `via` is answered it.
+   */
+  | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
 
 /** How the agent's delete of a kept Secret went, once the owner approved it. */
@@ -47,6 +53,8 @@ export type SecretDeletion =
   | { readonly status: "absent"; readonly environment: SecretScope }
   /** The Secret's value or Build mark changed since the owner was asked: nothing was deleted or recorded. */
   | { readonly status: "changed-since"; readonly environment: SecretScope }
+  /** A write over the MCP endpoint that the Registry's check refused: nothing was deleted (see `SecretBuildMark`). */
+  | { readonly status: "rejected"; readonly message: string }
   | { readonly status: "missing" };
 
 /** The part of the store these changes use. */
@@ -124,10 +132,7 @@ export const markSecretBuildAs = (
     const change = changes.record({
       scope: environment,
       at: now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: secretBuildField(name),
       before,
@@ -179,10 +184,7 @@ export const deleteSecretAs = (
     const change = changes.record({
       scope: environment,
       at: now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: keptSecretField(name),
       before: KEPT_SECRET,

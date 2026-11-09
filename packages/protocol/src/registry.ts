@@ -8,12 +8,13 @@ import {
   SettingsError,
 } from "@cloudpid/config";
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 import { AttachedResource } from "./attached-resources.ts";
 import { EnvironmentSecretRecord, SecretName } from "./environment-secrets.ts";
-import { MarkedOrigin } from "./mcp-api.ts";
+import { McpAuth, McpClient, MarkedOrigin } from "./mcp-api.ts";
 import {
   McpCompletion,
   McpCompletionArgument,
@@ -505,6 +506,36 @@ export const SETTINGS_SCOPE = "settings";
 /** An Environment, or Global (id `*`), as a change, a result or a card names it: its id and name. */
 export type EnvironmentRef = { readonly id: string; readonly name: string };
 
+const AgentChangeViaFields = {
+  /** The caller's name and version as it gave them (display only, untrusted). */
+  client: Schema.optionalKey(McpClient),
+  /** How the caller got in, from the verified caller: never an argument. */
+  auth: McpAuth,
+};
+
+/**
+ * Who made an Agent change over the MCP endpoint, as the Registry records it (`docs/architecture/mcp-endpoint.md` →
+ * The recorded author): the client's name and version, how it got in, and the owner's Access OAuth registration
+ * (`clientId`, an opaque id that tells the owner's grants apart). `AgentChange.via` leaves `clientId` out: it is
+ * recorded, never shown.
+ */
+export const AgentChangeVia = Schema.Struct({
+  ...AgentChangeViaFields,
+  clientId: Schema.optionalKey(Schema.String),
+});
+
+export type AgentChangeVia = typeof AgentChangeVia.Type;
+
+/** `AgentChange.via`: what a reader is told of who made a change over the endpoint. */
+const AgentChangeViaShown = Schema.Struct(AgentChangeViaFields);
+
+/**
+ * The words that say a change was made over the endpoint, for its byline and its Notification's title: "Changed over MCP
+ * · pi", or "Changed over MCP" when the caller gave no name.
+ */
+export const agentChangeViaLabel = (via: Pick<AgentChangeVia, "client">): string =>
+  via.client === undefined ? "Changed over MCP" : `Changed over MCP · ${via.client.name}`;
+
 /**
  * One Agent change (GLOSSARY.md → Agent change; `docs/architecture/agent-changes.md`): a change the agent made to an
  * Environment or to the Settings, or the owner's revert of one. `field` names what changed (`variableField` for a variable), and `before`
@@ -524,6 +555,11 @@ export const AgentChange = Schema.Struct({
   conversation: Schema.NullOr(Schema.Finite),
   /** The tool that made it; null for the owner's. */
   tool: Schema.NullOr(Schema.String),
+  /**
+   * Set on a change made over the MCP endpoint (its `session` and `conversation` are then null): who made it. Left out
+   * for a Session's agent, for the owner's, and for a change recorded before it. One this version cannot read is left out.
+   */
+  via: Schema.optionalKey(AgentChangeViaShown).pipe(Schema.catchDecoding(() => Effect.succeedNone)),
   /** Why: the agent's reason, or what the owner's revert undid. */
   reason: Schema.String,
   field: Schema.String,

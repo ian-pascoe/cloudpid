@@ -1146,3 +1146,46 @@ describe("the daily check", () => {
     expect(retried).toMatchObject({ rateLimited: true });
   });
 });
+
+describe("updating installed Skills over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "environment_skill_update",
+    reason: "The user asked for the latest grill-me",
+  };
+
+  it("records each Skill moved with the via and no Session, and the owner reverts it", async () => {
+    const github = fakeGithub();
+
+    github.push(REPO, files());
+
+    const [updated, listed, reverted] = await inRegistry(
+      async ({ install, context, changes, revert }) => {
+        await install(REPO, { owner: true });
+
+        github.push(REPO, files({}, "New steps."));
+
+        const updated = await updateSkills(context(2_000), github.reader, {
+          environment: DEFAULT_ENVIRONMENT,
+          names: ["grill-me"],
+          overwrite: false,
+          author: endpoint,
+        });
+
+        return [updated, changes.list(DEFAULT_ENVIRONMENT), revert(1)];
+      },
+      github,
+    );
+
+    expect(updated).toMatchObject({ status: "done", results: [{ outcome: "updated" }] });
+    expect(listed[0]).toMatchObject({
+      actor: "agent",
+      session: null,
+      tool: "environment_skill_update",
+      via: { auth: "oauth", client: { name: "pi" } },
+    });
+    expect(JSON.stringify(listed)).not.toContain("grant-1");
+    // The install was the owner's, with no change of its own to revert: the update is the first record.
+    expect(reverted).toMatchObject({ status: "reverted" });
+  });
+});

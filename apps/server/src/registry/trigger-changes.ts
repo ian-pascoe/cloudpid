@@ -20,7 +20,7 @@ import {
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
+import { type AgentChangeAuthor, type AgentChanges, recordedAuthor } from "./agent-changes.ts";
 import type { RegistryStorage, RegistryStore } from "./store.ts";
 import type { Triggers, TriggerWrite } from "./triggers.ts";
 
@@ -74,10 +74,7 @@ export const openTriggerChanges = (
     const change = changes.record({
       scope: environment,
       at: now,
-      actor: "agent",
-      session: author.session,
-      conversation: author.conversation,
-      tool: author.tool,
+      ...recordedAuthor(author),
       reason: author.reason,
       field: triggerField(id),
       before: valueOf(before),

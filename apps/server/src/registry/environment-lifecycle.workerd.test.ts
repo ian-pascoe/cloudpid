@@ -322,3 +322,82 @@ describe("the agent asking for a Build", () => {
     expect(await inRegistry(({ rebuild }) => rebuild("ghost"))).toEqual({ status: "missing" });
   });
 });
+
+describe("an Environment's record changed over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "environment_repo_add",
+    reason: "The work needs it",
+  };
+
+  it("is recorded with its via and no Session in each change, and the owner reverts a rename", async () => {
+    const [listed, reverted, name] = await runInDurableObject(
+      env.REGISTRIES.get(env.REGISTRIES.newUniqueId()),
+      (_: TestRegistry, state) => {
+        const store = openRegistryStore(state.storage);
+        const changes = openAgentChanges(state.storage);
+        const environment = "0000abcd";
+
+        createEnvironmentAs(
+          state.storage,
+          store,
+          changes,
+          { id: environment, name: "Billing", repos: [APP], author: endpoint },
+          1_000,
+        );
+        addRepoAs(
+          state.storage,
+          store,
+          changes,
+          { environment, repo: LIB, author: endpoint },
+          1_100,
+        );
+        removeRepoAs(
+          state.storage,
+          store,
+          changes,
+          { environment, name: "lib", author: endpoint },
+          1_200,
+        );
+        renameEnvironmentAs(
+          state.storage,
+          store,
+          changes,
+          { environment, name: "Payments", author: endpoint },
+          1_300,
+        );
+        recordRebuildAs(state.storage, store, changes, { environment, author: endpoint }, 1_400);
+
+        const reverted = revertAgentChange(
+          state.storage,
+          store,
+          changes,
+          { environment, id: 4 },
+          2_000,
+          noSkills(state.storage),
+        );
+
+        return [changes.list(environment), reverted, store.getEnvironment(environment)?.name];
+      },
+    );
+
+    // The owner's revert, then the endpoint's five changes, newest first.
+    expect(listed).toHaveLength(6);
+
+    for (const change of listed.slice(1)) {
+      expect(change).toMatchObject({
+        actor: "agent",
+        session: null,
+        conversation: null,
+        tool: "environment_repo_add",
+        via: { auth: "oauth", client: { name: "pi" } },
+      });
+      expect(JSON.stringify(change)).not.toContain("grant-1");
+    }
+
+    expect(listed[0]).toMatchObject({ actor: "owner", reverts: 4 });
+    expect(listed[0]).not.toHaveProperty("via");
+    expect(reverted).toMatchObject({ status: "reverted" });
+    expect(name).toBe("Billing");
+  });
+});

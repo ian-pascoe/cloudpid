@@ -21,7 +21,7 @@ import {
   secretValueProblem,
 } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
-import type { AgentChangeAuthor, AgentChanges } from "./agent-changes.ts";
+import { type AgentChangeAuthor, type AgentChanges, recordedAuthor } from "./agent-changes.ts";
 import { GLOBAL_SCOPE, type RegistryStorage, type RegistryStore } from "./store.ts";
 
 /** The part of the Registry's store kept Secrets are read from and written to. */
@@ -35,7 +35,7 @@ export type SecretWrite =
   | { readonly status: "full" };
 
 /** What a Secret's ciphertext is bound to: its scope (an Environment's id, or each Environment's) and its name. */
-const binding = (environment: string | null, name: string) => ({
+export const binding = (environment: string | null, name: string) => ({
   owner: environment ?? GLOBAL_SCOPE,
   name,
 });
@@ -136,10 +136,7 @@ export const keepSecretAs = (
       const change = changes.record({
         scope: input.environment ?? GLOBAL_SCOPE,
         at: now,
-        actor: "agent",
-        session: input.author.session,
-        conversation: input.author.conversation,
-        tool: input.author.tool,
+        ...recordedAuthor(input.author),
         reason: input.author.reason,
         field: keptSecretField(input.name),
         before: before ? KEPT_SECRET : null,

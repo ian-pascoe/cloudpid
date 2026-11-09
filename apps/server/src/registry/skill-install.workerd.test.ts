@@ -981,3 +981,48 @@ describe("the Skill directory's badges over installed Skills", () => {
     expect(none).toBeUndefined();
   });
 });
+
+describe("installing Skills over the MCP endpoint", () => {
+  const endpoint: AgentChangeAuthor = {
+    via: { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    tool: "environment_skill_install",
+    reason: "The user asked for the grill-me Skill",
+  };
+
+  it("records the install with the via and no Session, and the owner reverts it", async () => {
+    const [installed, listed, reverted, kept] = await inRegistry(
+      async ({ context, skills, changes, revert }) => {
+        const installed = await installSkills(context(1_000), readerOf(REPO), {
+          environment: DEFAULT_ENVIRONMENT,
+          source: "o/skills@grill-me",
+          skills: undefined,
+          folders: undefined,
+          author: endpoint,
+          pin: undefined,
+        });
+
+        return [
+          installed,
+          changes.list(DEFAULT_ENVIRONMENT),
+          revert(1),
+          skills.list(DEFAULT_ENVIRONMENT),
+        ];
+      },
+    );
+
+    expect(installed).toMatchObject({ status: "installed", results: [{ outcome: "installed" }] });
+    expect(listed).toMatchObject([
+      {
+        actor: "agent",
+        session: null,
+        conversation: null,
+        tool: "environment_skill_install",
+        field: "skills.grill-me",
+        via: { auth: "oauth", client: { name: "pi" } },
+      },
+    ]);
+    expect(JSON.stringify(listed)).not.toContain("grant-1");
+    expect(reverted).toMatchObject({ status: "reverted" });
+    expect(kept).toEqual([]);
+  });
+});
