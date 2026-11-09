@@ -3,8 +3,9 @@
 // `prepare` (`./approval-tools.ts`) reads the target and refuses what the tool would refuse; a target that has the value
 // already answers `unchanged`, asking nothing. Otherwise the Registry keeps the request (`../registry/approvals.ts`:
 // checking every text of the arguments against the kept Secrets, deduping, superseding, capping), the owner is pushed a
-// Notification for a new one, and the call answers `pending` with the request's id and its card's `url`, settling the
-// caller's `request_id` with that answer before it is sent.
+// Notification for a new one, and the call answers `pending` with the request's id and its card's `url` (and what `prepare`
+// noted the request leaves out: a Skill change at Global's Skills left out, and what its card could not show), settling
+// the caller's `request_id` with that answer before it is sent.
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- an id quoted in a sentence.
 import { type AgentChangeVia, approvalPath } from "@cloudpid/protocol";
 import type { ApprovalToolName } from "@cloudpid/protocol/harness-tools";
@@ -61,21 +62,28 @@ const keptArgs = (args: AskArgs): Schema.Json =>
 const cardUrl = (approval: StoredApproval, origin: string | undefined): string =>
   `${origin ?? ""}${approvalPath(approval.scope, approval.section, approval.id)}`;
 
-/** The `pending` answer of an ask: the request made (`fresh`), or the one that waits already. */
+/**
+ * The `pending` answer of an ask: the request made (`fresh`), or the one that waits already, with what `prepare` noted of what
+ * the request leaves out (`note`), when anything.
+ */
 const pendingAnswer = (
   approval: StoredApproval,
   fresh: boolean,
   scope: ScopeRef,
   origin: string | undefined,
+  note: string | undefined,
 ): HarnessAnswer => {
   const url = cardUrl(approval, origin);
   const what = `${approval.card.change}, ${approval.card.target}`;
   const expires = expiresAtIso(approval);
+  const noted = note === undefined || note === "" ? "" : `\n${note}`;
 
   return {
-    text: fresh
-      ? `Asked the owner to approve: ${what}. Nothing is changed until they approve it in cloudpid at ${url}; the request (approval_id ${approval.id}) expires ${expires} if they do not answer.`
-      : `A request for this change waits for the owner already (approval_id ${approval.id}): nothing was asked again. ${what}; they answer it in cloudpid at ${url}, and it expires ${expires}.`,
+    text: `${
+      fresh
+        ? `Asked the owner to approve: ${what}. Nothing is changed until they approve it in cloudpid at ${url}; the request (approval_id ${approval.id}) expires ${expires} if they do not answer.`
+        : `A request for this change waits for the owner already (approval_id ${approval.id}): nothing was asked again. ${what}; they answer it in cloudpid at ${url}, and it expires ${expires}.`
+    }${noted}`,
     structured: {
       status: "pending",
       approval_id: approval.id,
@@ -160,7 +168,7 @@ export const askApproval = (services: ApprovalAskServices) => {
 
       if (Result.isFailure(prepared)) return askRefused(prepared.failure);
 
-      const { card, expected, unchanged, immediate, scope, section } = prepared.success;
+      const { card, expected, unchanged, immediate, scope, section, note } = prepared.success;
 
       // A repeat of a call that asked asks again (its request is answered); otherwise a target set already asks nothing.
       if (unchanged !== undefined && earlier === null) {
@@ -204,7 +212,7 @@ export const askApproval = (services: ApprovalAskServices) => {
             `${asked.limit} of your requests wait for the owner or are being applied, as many as may: follow them with approval_wait, or take one back with approval_withdraw, then ask again.`,
           );
         case "asked": {
-          const answer = pendingAnswer(asked.approval, asked.fresh, scope, services.origin);
+          const answer = pendingAnswer(asked.approval, asked.fresh, scope, services.origin, note);
 
           if (asked.fresh) {
             yield* services.background(

@@ -8,6 +8,9 @@
 // (`surface: "endpoint"`): the owner, no Session, and only the tools the endpoint serves. An Environment's delete is
 // long (#688 C2): its apply reports each step, where the run renews its lease, and the runner leaves the request
 // approved for the next run when it fails (`./approval-runner.ts`), since every step of the removal is safe to repeat.
+// A Skill's install or update at Global (→ Built so far: S3b-3; #685 L18) is multi-write, one transaction per Skill: a
+// run cut after some committed is applied again under the same attempt, told the changes the claim recorded before
+// (`earlier`), so a Skill kept already is found unchanged and told as kept by this request.
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- an id quoted in a sentence.
 import {
   type Applied,
@@ -35,6 +38,11 @@ import {
   type StepProgress,
 } from "@cloudpid/extensions/environment-deletes";
 import { resetLimitCore as resetSizeLimitCore } from "@cloudpid/extensions/environment-reset";
+import {
+  type GlobalSkillCore,
+  globalSkillCores,
+  type GlobalSkillOutcome,
+} from "@cloudpid/extensions/environment-skill-approvals";
 import { sizeLimitCore } from "@cloudpid/extensions/environment-size-limit";
 import type { AppliedSettingsChange, SettingsView } from "@cloudpid/extensions/settings";
 import {
@@ -108,16 +116,23 @@ export type ApprovalTool = {
   readonly section: string;
   /** Whether its apply is long (an Environment's delete): `approval_wait` never runs it (#688 C2). */
   readonly long: boolean;
+  /**
+   * Whether its apply makes several writes, each committed alone (a Skill install or update at Global): a claim with
+   * changes and no answer is applied again under the same attempt, told those changes (L18), rather than rebuilt.
+   */
+  readonly multiWrite: boolean;
   /** The core's `prepare`, with where the change is. */
   readonly prepare: (args: Schema.Json) => Effect.Effect<PreparedAsk, CoreError>;
   /**
    * The core's `apply` of the request `asked` (against its `expected`) as `author`, then its `render`; a long one
-   * reports its steps to `progress`, where the run renews its lease.
+   * reports its steps to `progress`, where the run renews its lease. A multi-write one is told the changes an earlier run
+   * of the request recorded under its claim (`earlier`), which its answer and outcome count as this request's.
    */
   readonly apply: (
     asked: AskedRequest,
     author: ChangeAuthor,
     progress?: StepProgress,
+    earlier?: ReadonlyArray<ClaimedChange>,
   ) => Effect.Effect<ApplyOutcome, CoreError>;
   /** The answer of a write that committed before its run was cut: `render` of the Agent changes it recorded. */
   readonly fromClaim: (
@@ -172,7 +187,7 @@ const agentChangeOf = (tool: string, reason: string, change: ClaimedChange): Age
  * `deleted`, or `absent` for one gone already): the target has the change (`wrote`: this write made it, rather than
  * finding it made), or the request ends without it.
  */
-type WriteOutcome =
+export type WriteOutcome =
   | { readonly made: true; readonly wrote: boolean }
   | { readonly made: false; readonly end: Exclude<ApprovalEnd, "finished"> };
 
@@ -210,12 +225,21 @@ const approvalTool = <
   how,
   rebuilt,
   long = false,
+  multiWrite = false,
+  outcomeOf = writeOutcome,
   run,
 }: {
   readonly core: ApprovalCore<Args, Known, Res, E, How>;
   readonly section: string;
   /** Whether the apply is long (`ApprovalTool.long`). */
   readonly long?: boolean;
+  /** Whether the apply makes several writes, each committed alone (`ApprovalTool.multiWrite`). */
+  readonly multiWrite?: boolean;
+  /**
+   * How the write went, from its result and the changes an earlier run recorded under the claim: by the result's status
+   * (`writeOutcome`), unless the tool reads its own (a Skill write's outcome is each Skill's).
+   */
+  readonly outcomeOf?: (result: NoInfer<Res>, earlier: ReadonlyArray<AgentChange>) => WriteOutcome;
   /**
    * The write of a long apply in place of `core.apply`: told of its steps, and of the card approved, from which it knows
    * its target once the target is gone. It records no Agent change, so it takes no author.
@@ -228,7 +252,8 @@ const approvalTool = <
   readonly decode: (args: Schema.Json) => Option.Option<NoInfer<Args>>;
   /** Where the change is, from what `prepare` read of the target. */
   readonly scopeRef: (target: NoInfer<Known>) => ScopeRef;
-  readonly how: (args: NoInfer<Args>) => How;
+  /** What `render` is told, with the changes an earlier run of the request recorded under its claim (multi-write only). */
+  readonly how: (args: NoInfer<Args>, earlier: ReadonlyArray<AgentChange>) => How;
   /**
    * What `apply` would have answered of the write, rebuilt from the changes it recorded (`changes`, as Agent changes, and
    * `claimed`, as the claim's lookup gives them, with their Scopes' names).
@@ -244,13 +269,18 @@ const approvalTool = <
     Effect.fromOption(decode(args)).pipe(Effect.mapError(() => unreadable(core.tool)));
 
   /** `render`'s answer, or its refusal (for a write that was not made, the reason the request ends with), as a `Result`. */
-  const renderResult = (args: Args, expected: Schema.Json | null, applied: Applied<Known, Res>) =>
-    core.render(args, expected, applied, how(args)).pipe(Effect.result);
+  const renderResult = (
+    args: Args,
+    expected: Schema.Json | null,
+    applied: Applied<Known, Res>,
+    earlier: ReadonlyArray<AgentChange> = [],
+  ) => core.render(args, expected, applied, how(args, earlier)).pipe(Effect.result);
 
   return {
     tool: core.tool,
     section,
     long,
+    multiWrite,
     prepare: (args) =>
       Effect.flatMap(read(args), (decoded) =>
         Effect.map(core.prepare(decoded), (prepared) => ({
@@ -259,17 +289,21 @@ const approvalTool = <
           section,
         })),
       ),
-    apply: (asked, author, progress) =>
+    apply: (asked, author, progress, claimed = []) =>
       Effect.gen(function* () {
         const { args, expected } = asked;
         const decoded = yield* read(args);
+
+        const earlier = Arr.map(claimed, (change) =>
+          agentChangeOf(core.tool, decoded.reason, change),
+        );
 
         const applied = yield* run === undefined
           ? core.apply(decoded, expected, author)
           : run(decoded, asked, progress);
 
-        const outcome = writeOutcome(applied.result);
-        const answer = yield* renderResult(decoded, expected, applied);
+        const outcome = outcomeOf(applied.result, earlier);
+        const answer = yield* renderResult(decoded, expected, applied, earlier);
         const said = Result.isFailure(answer) ? answer.failure.message : answer.success.text;
 
         if (!outcome.made) return { status: outcome.end, reason: said };
@@ -285,19 +319,68 @@ const approvalTool = <
 
         if (!Arr.isReadonlyArrayNonEmpty(changes)) return notKept(core.tool);
 
-        const applied = yield* rebuilt(
-          decoded,
-          Arr.map(changes, (change) => agentChangeOf(core.tool, decoded.reason, change)),
-          changes,
-          expected,
+        const agentChanges = Arr.map(changes, (change) =>
+          agentChangeOf(core.tool, decoded.reason, change),
         );
 
-        const answer = yield* renderResult(decoded, expected, applied);
+        const applied = yield* rebuilt(decoded, agentChanges, changes, expected);
+
+        // A multi-write tool's rebuilt write holds none of the changes: it is told them as an earlier run's.
+        const answer = yield* renderResult(
+          decoded,
+          expected,
+          applied,
+          multiWrite ? agentChanges : [],
+        );
 
         return Result.getOrElse(answer, () => notKept(core.tool));
       }),
   };
 };
+
+/** A Skill write's outcome (`GlobalSkillCore["outcome"]`) as the request's. */
+const skillWriteOutcome = (outcome: GlobalSkillOutcome): WriteOutcome => {
+  switch (outcome) {
+    case "wrote":
+      return { made: true, wrote: true };
+    case "found":
+      return { made: true, wrote: false };
+    case "changed_since":
+      return { made: false, end: "changed_since" };
+    case "refused":
+      return { made: false, end: "refused" };
+  }
+};
+
+/** The Skills page section a Skill change at Global shows its card in. */
+const SKILLS_SECTION = "skills";
+
+/**
+ * A Skill tool at Global (`@cloudpid/extensions/environment-skill-approvals`): its card on the Skills section of Global, its
+ * outcome each Skill's, and an install or update multi-write, one transaction per Skill.
+ */
+const globalSkillToolOf = <
+  Args extends { readonly reason: string },
+  Res extends { readonly status: string },
+>(
+  core: GlobalSkillCore<Args, Res>,
+  decode: (args: Schema.Json) => Option.Option<Args>,
+  multiWrite: boolean,
+): ApprovalTool =>
+  approvalTool({
+    core,
+    section: SKILLS_SECTION,
+    decode,
+    multiWrite,
+    outcomeOf: (result, earlier) => skillWriteOutcome(core.outcome(result, earlier)),
+    scopeRef: (known) => known,
+    how: (_args, earlier) => ({ earlier }),
+    rebuilt: (args, changes) =>
+      Effect.succeed({
+        known: { id: GLOBAL_ID, name: GLOBAL_NAME },
+        result: core.rebuilt(args, changes),
+      }),
+  });
 
 /** What a Settings change reaches, as the endpoint says it: no Session of the caller's runs with them. */
 const settingsReach = (scope: string): SettingsHow => ({
@@ -420,6 +503,7 @@ const settingsReset = (
     tool: "settings_reset",
     section: "limits",
     long: false,
+    multiWrite: false,
     prepare: (args) => Effect.flatMap(pick(args), (tool) => tool.prepare(args)),
     apply: (asked, author) => Effect.flatMap(pick(asked.args), (tool) => tool.apply(asked, author)),
     fromClaim: (args, expected, changes) =>
@@ -459,6 +543,12 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
       // The Registry checks the kept Secrets in the write itself: a text that cannot be checked is refused, as holding one.
       holdsSecret: (text) => writes.holdsSecret(text).pipe(Effect.orElseSucceed(() => true)),
       sync: writes.mcpSync,
+    });
+
+  const skillCoresOf = (source: AuthorSource) =>
+    globalSkillCores({
+      environments: writes.environments(source),
+      holdsSecret: writes.holdsSecret,
     });
 
   const mcpTool =
@@ -609,6 +699,25 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
           }),
       });
     },
+    // A Skill's install, update and removal at Global (S3b-3): each Skill kept only while the pin the owner approved holds.
+    environment_skill_install: (source) =>
+      globalSkillToolOf(
+        skillCoresOf(source).environment_skill_install,
+        Schema.decodeUnknownOption(HARNESS_TOOLS.environment_skill_install.endpoint.input),
+        true,
+      ),
+    environment_skill_update: (source) =>
+      globalSkillToolOf(
+        skillCoresOf(source).environment_skill_update,
+        Schema.decodeUnknownOption(HARNESS_TOOLS.environment_skill_update.endpoint.input),
+        true,
+      ),
+    environment_skill_remove: (source) =>
+      globalSkillToolOf(
+        skillCoresOf(source).environment_skill_remove,
+        Schema.decodeUnknownOption(HARNESS_TOOLS.environment_skill_remove.endpoint.input),
+        false,
+      ),
     // An Environment's delete (#688 C2): long, so `approval_wait` never runs it; the owner's Approve runs it inline, and
     // Try again or their next visit resumes one cut off. Its failure leaves the request approved (the runner's rule for a
     // long apply), its removal safe to run again; the run renews its lease after each step. It knows the Environment by

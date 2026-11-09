@@ -3,7 +3,10 @@
 // resume of those no run is applying. A run claims the request under a 60 s lease (`../registry/approvals.ts`), then reads
 // its claim (`approval:<id>`, whose attempt is the request's own id) first: an answer kept finishes it; changes recorded
 // with no answer (a write that committed before its run was cut) finish it with an answer the tool rebuilds from them
-// (`./approval-tools.ts`); nothing runs the tool's `apply` against `expected` and the endpoint author. A write that made
+// (`./approval-tools.ts`), except for a multi-write tool's (a Skill install or update at Global, one transaction per Skill),
+// whose `apply` runs again under the same attempt, told those changes, so a Skill kept already is found unchanged and
+// nothing is kept twice (L18; one the rerun cannot make is rebuilt as the others); nothing runs the tool's `apply` against
+// `expected` and the endpoint author. A write that made
 // nothing looks the claim up once more, since a run that overlapped a lapsed lease may have committed under it. The claim
 // is settled, then the request. A run cut anywhere leaves it approved, and the next (Try again, `approval_wait`, the
 // owner's next visit: `resumeStale`) picks it up from the claim. A long apply (an Environment's delete, #688 C2) renews
@@ -75,6 +78,8 @@ export const approvalRunner = ({
 
       const approval = claimed.approval;
       const claim = approvalClaim(approval);
+      // The endpoint author an approved write records: the tool, and the reason the card showed.
+      const author = { tool: approval.tool, reason: approval.card.reason };
 
       /** Settle the request as ended with nothing changed, for this run's lease. */
       const end = (status: Exclude<ApprovalEnd, "finished">, reason: string) =>
@@ -119,9 +124,21 @@ export const approvalRunner = ({
           }
 
           // Claimed with no answer: the write committed and its run was cut. Its changes stand.
-          const built = yield* tool
+          const rebuilt = tool
             .fromClaim(approval.args, approval.expected, found.changes)
             .pipe(Effect.orElseSucceed(() => notKept(approval.tool)));
+
+          // A multi-write tool's run may have been cut between its writes: the rest are made now, under the same attempt.
+          const built = yield* tool.multiWrite
+            ? tool.apply(approval, author, undefined, found.changes).pipe(
+                Effect.result,
+                Effect.flatMap((rerun) =>
+                  Result.isSuccess(rerun) && rerun.success.status === "finished"
+                    ? Effect.succeed(rerun.success.answer)
+                    : rebuilt,
+                ),
+              )
+            : rebuilt;
 
           yield* background(upkeep(found.changes));
 
@@ -154,9 +171,7 @@ export const approvalRunner = ({
           ),
         );
 
-      const outcome = yield* tool
-        .apply(approval, { tool: approval.tool, reason: approval.card.reason }, { onStep })
-        .pipe(Effect.result);
+      const outcome = yield* tool.apply(approval, author, { onStep }).pipe(Effect.result);
 
       if (
         Result.isSuccess(outcome) &&
