@@ -10,6 +10,7 @@ import {
   GLOBAL_SCOPE,
   MAX_SECRET_NAME_LENGTH,
   type EnvironmentSecretRecord,
+  settingsPath,
 } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
@@ -40,7 +41,6 @@ import {
   secretVariable,
 } from "../environments.ts";
 import { settledFailureOf } from "../registry.ts";
-import { settingsPath } from "../router.ts";
 import { CODE_AREA, Group, MarkedNames, OverriddenIn, SettingsSection } from "./parts.tsx";
 
 /**

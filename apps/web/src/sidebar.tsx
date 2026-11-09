@@ -1,6 +1,11 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- a list's relative times are read against the wall clock as it renders, and its rows are JSX lists over native arrays.
 
-import { type SessionRecord, UNTITLED_SESSION } from "@cloudpid/protocol";
+import {
+  type SessionRecord,
+  UNTITLED_SESSION,
+  SETTINGS_PATH,
+  settingsPath,
+} from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import {
   ArrowLeft,
@@ -26,14 +31,7 @@ import { Button } from "./components/ui/button.tsx";
 import { relativeTime } from "./format.ts";
 import { InAppLink } from "./in-app-link.tsx";
 import { cn } from "./lib/utils.ts";
-import {
-  DRAFT_PATH,
-  navigate,
-  SETTINGS_PATH,
-  sessionPath,
-  settingsPath,
-  type SettingsView,
-} from "./router.ts";
+import { DRAFT_PATH, navigate, sessionPath, type SettingsView } from "./router.ts";
 import { SettingsNav, SettingsRailLinks } from "./settings/nav.tsx";
 import { listProblemAtom, noticeAtom } from "./app-state.ts";
 import { groupCollapsedAtom, groupKey, type ListSection } from "./collapsed-groups.ts";

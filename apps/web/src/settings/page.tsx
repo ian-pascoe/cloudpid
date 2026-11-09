@@ -4,14 +4,14 @@
 // and a wide screen goes on to the Scope's first section. A section the Scope does not have goes to its first section
 // too, and an Environment that is not listed says so, with a way back to Global.
 
-import { type EnvironmentRecord, GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { type EnvironmentRecord, GLOBAL_SCOPE, settingsPath } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import { useEffect } from "react";
 import { environmentListAtom, environmentsErrorAtom } from "../environments-state.ts";
 import { InAppLink } from "../in-app-link.tsx";
-import { redirect, settingsPath, type SettingsView } from "../router.ts";
+import { redirect, type SettingsView } from "../router.ts";
 import { SkillOwnerPage } from "../skills-owner.tsx";
 import { SkillRepoPage } from "../skills-repo.tsx";
 import { SkillPage } from "../skills-skill.tsx";

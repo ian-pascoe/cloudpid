@@ -12,6 +12,7 @@ import {
   type SkillInstall,
   type SkillSource,
   skillSourceText,
+  agentChangesPath,
 } from "@cloudpid/protocol";
 import * as Option from "effect/Option";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -25,7 +26,6 @@ import { Input } from "./components/ui/input.tsx";
 import { InAppLink } from "./in-app-link.tsx";
 import { relativeTime } from "./format.ts";
 import { failureOf, settledFailureOf } from "./registry.ts";
-import { settingsPath } from "./router.ts";
 import { MarkedNames } from "./settings/parts.tsx";
 import { useScopeName, useSettingsScope } from "./settings/scope.tsx";
 import { GLOBAL } from "./environments.ts";
@@ -715,7 +715,7 @@ export const InstalledTab = () => {
       <p className="text-xs text-muted-foreground">
         What the agent changed in these skills, with Revert, is in{" "}
         <InAppLink
-          href={settingsPath(scope, "agent-changes")}
+          href={agentChangesPath(scope)}
           className="underline underline-offset-2 hover:text-foreground"
         >
           Agent changes

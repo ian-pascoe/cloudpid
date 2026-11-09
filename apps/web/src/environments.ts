@@ -10,6 +10,7 @@ import {
   branchProblem,
   BUILD_FIELD,
   CREATED_FIELD,
+  agentChangeViaLabel,
   DEFAULT_ENVIRONMENT,
   type EnvironmentRecord,
   GLOBAL_SCOPE,
@@ -449,6 +450,8 @@ export const fieldValueText = (field: string, value: AgentChange["before"]): str
 /**
  * Who made an Agent change and when, as of `now`: the agent, with its tool (the page links the Session after it) and
  * whether the owner approved it first (`docs/architecture/agent-changes.md` → Approval), or the owner, reverting an earlier one.
+ * An agent over the MCP endpoint is "Changed over MCP · pi" ("Changed over MCP" with no client's name) in place of "The
+ * agent" (`docs/architecture/mcp-endpoint.md` → The recorded author).
  */
 export const changeByline = (change: AgentChange, now: number): string => {
   const when = relativeTime(change.at, now);
@@ -461,7 +464,9 @@ export const changeByline = (change: AgentChange, now: number): string => {
 
   const tool = change.tool === null ? "" : `, with ${change.tool}`;
 
-  return `The agent, ${when}${tool}${change.approved === true ? ", approved by you" : ""}`;
+  const who = change.via === undefined ? "The agent" : agentChangeViaLabel(change.via);
+
+  return `${who}, ${when}${tool}${change.approved === true ? ", approved by you" : ""}`;
 };
 
 /**

@@ -32,7 +32,7 @@
 // as the page opens or is navigated to (`legacyRedirect`), so a bookmark or an old link still lands.
 
 import { afterTeardown, appViews, EVERY_VIEW } from "./app-view/teardown.ts";
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, GLOBAL_SEGMENT, settingsPath } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Atom from "effect/reactivity/Atom";
 
@@ -169,23 +169,6 @@ export const sessionPath = (sessionId: string): string =>
  */
 export const subagentPath = (sessionId: string, agentId: string): string =>
   `${sessionPath(sessionId)}/agents/${encodeURIComponent(agentId)}`;
-
-/** The Settings page, at Global's list of sections (a wide screen opens its first section). */
-export const SETTINGS_PATH = "/settings";
-
-/** Global's Scope in a Settings page path, in place of the `*` the Registry names it by. */
-export const GLOBAL_SEGMENT = "all";
-
-/** The path segment of Scope `scope` (`*` for Global, or an Environment's id). */
-const scopeSegment = (scope: string): string =>
-  scope === GLOBAL_SCOPE ? GLOBAL_SEGMENT : encodeURIComponent(scope);
-
-/**
- * The Settings page at Scope `scope` (`*` for Global, or an Environment's id): section `section` (its slug), or the
- * Scope's list of sections when none is named.
- */
-export const settingsPath = (scope: string, section?: string): string =>
-  `${SETTINGS_PATH}/${scopeSegment(scope)}${section === undefined ? "" : `/${section}`}`;
 
 /** The Skills section's tabs, as the query names them, in the order the tab bar shows them. */
 export const SKILLS_TABS = ["installed", "all-time", "trending", "hot"] as const;

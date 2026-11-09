@@ -6,7 +6,7 @@
 // Global's only (the device's). A section a Scope does not have is not shown there; the page opens the Scope's first section in its
 // place.
 
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, settingsPath } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import {
   AlarmClock,
@@ -27,13 +27,7 @@ import {
   SquareTerminal,
   Wrench,
 } from "lucide-react";
-import {
-  settingsPath,
-  type SettingsView,
-  skillOwnerPath,
-  skillPagePath,
-  skillRepoPath,
-} from "../router.ts";
+import { type SettingsView, skillOwnerPath, skillPagePath, skillRepoPath } from "../router.ts";
 
 /** Each section's slug, as its path names it. */
 export type SectionSlug =

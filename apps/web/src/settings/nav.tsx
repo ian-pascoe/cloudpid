@@ -5,12 +5,12 @@
 // Scope's sections, each with its icon and a dot while it has unsaved changes. Collapsed, the rail shows the sections'
 // icons alone.
 
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, settingsPath } from "@cloudpid/protocol";
 import { useAtomValue } from "@effect/atom-react";
 import { environmentListAtom } from "../environments-state.ts";
 import { InAppLink } from "../in-app-link.tsx";
 import { cn } from "../lib/utils.ts";
-import { settingsPath, type SettingsView } from "../router.ts";
+import { type SettingsView } from "../router.ts";
 import type { SectionForm } from "./drafts.ts";
 import { formOf } from "./forms.ts";
 import { useScopeName } from "./scope.tsx";

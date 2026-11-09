@@ -6,7 +6,12 @@ import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as ScopedAtom from "@effect/atom-react/ScopedAtom";
 import * as Atom from "effect/reactivity/Atom";
 import { Archive, ArchiveRestore, ArrowDown, ArrowLeft } from "lucide-react";
-import { type ForkKind, MAX_TITLE_LENGTH, type SessionView } from "@cloudpid/protocol";
+import {
+  type ForkKind,
+  MAX_TITLE_LENGTH,
+  type SessionView,
+  SETTINGS_PATH,
+} from "@cloudpid/protocol";
 import { panesAtom } from "../panes-state.ts";
 import { TREE_PANE } from "../panes.ts";
 import { forkChooserAtom } from "./tree-state.ts";
@@ -14,7 +19,7 @@ import { type ReactNode, type RefObject, useRef } from "react";
 import { Button, buttonVariants } from "../components/ui/button.tsx";
 import { cn } from "../lib/utils.ts";
 import { isLevel, modelChoices, modelName } from "../models.ts";
-import { navigate, SETTINGS_PATH } from "../router.ts";
+import { navigate } from "../router.ts";
 import {
   configureAtom,
   sessionFailureAtom,

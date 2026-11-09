@@ -2,7 +2,14 @@
 // What a push says (`docs/architecture/client-and-protocol.md` → Notifications): a title, a line of body, and the Session's
 // page, small enough for any push service and for a lock screen.
 import { MAX_NOTICE_URL_LENGTH, type PushEvent } from "@cloudpid/extensions/notify";
-import { sessionPagePath } from "@cloudpid/protocol";
+import {
+  type AgentChangeVia,
+  agentChangesPath,
+  agentChangeViaLabel,
+  sessionPagePath,
+} from "@cloudpid/protocol";
+import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
 
 export type { PushEvent, PushNotice } from "@cloudpid/extensions/notify";
 
@@ -124,3 +131,50 @@ export const describeTriggerFailure = (
   url: `/settings/${encodeURIComponent(trigger.environment)}/triggers`,
   tag: `trigger:${trigger.id}:failed`,
 });
+
+/** One of the changes an agent made over the MCP endpoint, as a Notification lists it. */
+export type McpChangeLine = {
+  readonly id: number;
+  /** The Scope whose Agent changes section shows the change: an Environment's id, or `*` for Global (the Settings' are there). */
+  readonly scope: string;
+  /** What the body calls the Scope: "Default", "Global", "Settings". */
+  readonly scopeName: string;
+  readonly field: string;
+};
+
+/**
+ * The push for the changes a caller made over the MCP endpoint (`docs/architecture/mcp-endpoint.md` → After a change,
+ * and Notifications), in any order: titled "Changed over MCP · <client>", its body the fields changed by Scope name
+ * ("Default: variables.API_URL, name; Global: instructions"), linking to the newest change in its Scope's Agent changes
+ * section. Tagged by `caller` (who it is: the Registry's rule), so a burst of calls leaves one Notification.
+ */
+export const describeMcpChanges = (
+  who: { readonly via: Pick<AgentChangeVia, "client">; readonly caller: string },
+  changes: Arr.NonEmptyReadonlyArray<McpChangeLine>,
+): PushPayload => {
+  const newest = Arr.sort(
+    changes,
+    Order.mapInput(Order.flip(Order.Number), (line: McpChangeLine) => line.id),
+  );
+
+  const latest = Arr.headNonEmpty(newest);
+  const groups = new Map<string, string[]>();
+
+  for (const { scopeName, field } of newest) {
+    const fields = groups.get(scopeName) ?? [];
+
+    if (!fields.includes(field)) fields.push(field);
+
+    groups.set(scopeName, fields);
+  }
+
+  return {
+    title: brief(agentChangeViaLabel(who.via), MAX_TITLE),
+    body: brief(
+      Array.from(groups, ([name, fields]) => `${name}: ${fields.join(", ")}`).join("; "),
+      MAX_BODY,
+    ),
+    url: agentChangesPath(latest.scope, latest.id),
+    tag: `mcp-changes:${who.caller}`,
+  };
+};

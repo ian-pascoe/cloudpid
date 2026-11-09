@@ -6,7 +6,7 @@
 // Global), and the bar's Reset all to Global resets the section's Overrides once confirmed. At Global a field that
 // Environments override says so under it, naming each with a link to the field at its Scope.
 
-import { GLOBAL_SCOPE } from "@cloudpid/protocol";
+import { GLOBAL_SCOPE, settingsPath } from "@cloudpid/protocol";
 import { useAtom, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
@@ -15,7 +15,6 @@ import * as Result from "effect/Result";
 import type { ReactNode } from "react";
 import { DialogProblem } from "../components/ui/dialog.tsx";
 import { settledFailureOf } from "../registry.ts";
-import { settingsPath } from "../router.ts";
 import { cn } from "../lib/utils.ts";
 import { FieldMark, OverriddenIn, SectionFormView } from "./parts.tsx";
 import type { MarkedFields, ScopedForm } from "./scoped.ts";

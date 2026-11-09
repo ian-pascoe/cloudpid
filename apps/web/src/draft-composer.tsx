@@ -1,6 +1,11 @@
 // @effect-diagnostics globalDate:off preferEffectArray:off -- the Workspaces' ages are read against the wall clock as the menu renders, and JSX lists of options are native arrays.
 
-import { NEW_WORKSPACE, type EnvironmentRecord, type WorkspaceRecord } from "@cloudpid/protocol";
+import {
+  NEW_WORKSPACE,
+  type EnvironmentRecord,
+  type WorkspaceRecord,
+  settingsPath,
+} from "@cloudpid/protocol";
 import { DraftPromptFormView } from "./chat/template-form.tsx";
 import { draftPromptAtoms } from "./chat/mcp-prompt-state.ts";
 import { PromptChipView } from "./chat/prompt-chip.tsx";
@@ -89,7 +94,7 @@ import { isTouchScreen } from "./lib/device.ts";
 import { cn } from "./lib/utils.ts";
 import { failureOf, settledFailureOf } from "./registry.ts";
 import { GLOBAL } from "./environments.ts";
-import { navigate, settingsPath } from "./router.ts";
+import { navigate } from "./router.ts";
 
 /** Whether files are being dragged over the draft. */
 const draftDragAtom = Atom.make(false);

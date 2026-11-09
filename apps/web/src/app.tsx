@@ -1,3 +1,4 @@
+import { settingsPath } from "@cloudpid/protocol";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import * as Match from "effect/Match";
 import { pageProblemAtom } from "./app-state.ts";
@@ -8,7 +9,7 @@ import { SubagentPage } from "./chat/subagent-page.tsx";
 import { cn } from "./lib/utils.ts";
 import { pushSyncAtom } from "./push-state.ts";
 import { InAppLink } from "./in-app-link.tsx";
-import { pageAtom, settingsPath, type Page } from "./router.ts";
+import { pageAtom, type Page } from "./router.ts";
 import { useSessionActions } from "./session-actions.ts";
 import { SessionMenu } from "./session-menu.tsx";
 import { Origin } from "./session-origin.tsx";

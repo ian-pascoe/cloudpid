@@ -16,6 +16,7 @@ import {
   type TriggerDefinition,
   type TriggerOverview,
   type WorkspaceRef,
+  settingsPath,
 } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -30,7 +31,7 @@ import { environmentsErrorAtom, environmentsInOrderAtom } from "../environments-
 import { InAppLink } from "../in-app-link.tsx";
 import { modelName } from "../models.ts";
 import { failureOf, settledFailureOf } from "../registry.ts";
-import { sessionPath, settingsPath } from "../router.ts";
+import { sessionPath } from "../router.ts";
 import { sessionListAtom } from "../sessions.ts";
 import {
   fireLogAtom,

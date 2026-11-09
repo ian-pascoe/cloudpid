@@ -14,6 +14,7 @@ import {
   parseRepoSource,
   type SessionRecord,
   type WorkspaceRecord,
+  settingsPath,
 } from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -47,7 +48,7 @@ import {
 } from "../environments.ts";
 import { InAppLink } from "../in-app-link.tsx";
 import { failureOf, settledFailureOf } from "../registry.ts";
-import { navigate, settingsPath } from "../router.ts";
+import { navigate } from "../router.ts";
 import { sessionListAtom } from "../sessions.ts";
 import { triggersInAtom } from "../triggers-state.ts";
 import { oneOrMany, triggerNames } from "../triggers.ts";

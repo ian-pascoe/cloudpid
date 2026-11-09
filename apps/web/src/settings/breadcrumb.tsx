@@ -2,9 +2,10 @@
 // Scope / section, the Scope being its picker. A phone shows a back arrow to the Scope's list of sections in place of
 // "Settings", since the list and the section take turns there.
 
+import { SETTINGS_PATH, settingsPath } from "@cloudpid/protocol";
 import { ArrowLeft } from "lucide-react";
 import { InAppLink } from "../in-app-link.tsx";
-import { SETTINGS_PATH, settingsPath, type SettingsView } from "../router.ts";
+import { type SettingsView } from "../router.ts";
 import { currentSection } from "./nav.tsx";
 import { ScopePicker } from "./scope-picker.tsx";
 import { sectionLabel } from "./sections.ts";

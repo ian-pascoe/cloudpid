@@ -63,6 +63,8 @@ export * from "./session.ts";
 
 export * from "./settings-mcp.ts";
 
+export * from "./settings-paths.ts";
+
 export * from "./skills.ts";
 
 export * from "./style-variables.ts";

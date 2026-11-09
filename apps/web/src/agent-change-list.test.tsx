@@ -64,3 +64,43 @@ describe("an Agent change of an MCP server", () => {
     expect(markup).toContain("&quot;enabled&quot;: false");
   });
 });
+
+describe("the byline of an Agent change", () => {
+  it("says a Session's agent made it, and that its Session is gone when it is not listed", () => {
+    const markup = render(change("variables.API_URL", { before: null, after: "x" }));
+
+    expect(markup).toContain("The agent, just now, with settings_mcp_disable");
+    expect(markup).toContain(", in a session that is gone");
+  });
+
+  it("says a change over the MCP endpoint was, with the client, and never that a session is gone", () => {
+    const markup = render(
+      change("variables.API_URL", {
+        before: null,
+        after: "x",
+        session: null,
+        conversation: null,
+        via: { auth: "oauth", client: { name: "pi", version: "1.2" } },
+      }),
+    );
+
+    expect(markup).toContain("Changed over MCP · pi, just now");
+    expect(markup).not.toContain("The agent");
+    expect(markup).not.toContain("a session that is gone");
+    expect(markup).not.toContain("1.2");
+  });
+
+  it("says a change over the MCP endpoint without a client's name was Changed over MCP", () => {
+    const markup = render(
+      change("variables.API_URL", {
+        session: null,
+        conversation: null,
+        via: { auth: "local" },
+      }),
+    );
+
+    expect(markup).toContain("Changed over MCP, just now");
+    expect(markup).not.toContain("Changed over MCP ·");
+    expect(markup).not.toContain("a session that is gone");
+  });
+});

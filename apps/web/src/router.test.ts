@@ -1,4 +1,5 @@
 // @effect-diagnostics asyncFunction:off newPromise:off -- a test that holds a native promise open and lets it go.
+import { agentChangesPath, GLOBAL_SEGMENT, SETTINGS_PATH, settingsPath } from "@cloudpid/protocol";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { appViews } from "./app-view/teardown.ts";
@@ -12,14 +13,12 @@ import {
   searchAtom,
   sessionIdAtom,
   legacyRedirect,
-  SETTINGS_PATH,
   sessionIdOf,
   sessionPath,
   DRAFT_PATH,
   withPaneParams,
   agentIdOf,
   pageOf,
-  settingsPath,
   subagentPath,
   skillOwnerPath,
   skillPagePath,
@@ -120,6 +119,7 @@ describe("the Settings page's paths", () => {
   });
 
   it("are written with `all` for Global, and round-trip", () => {
+    expect(GLOBAL_SEGMENT).toBe("all");
     expect(settingsPath(GLOBAL)).toBe("/settings/all");
     expect(settingsPath(GLOBAL, "general")).toBe("/settings/all/general");
     expect(settingsPath("1a2b3c4d", "environments")).toBe("/settings/1a2b3c4d/environments");
@@ -127,6 +127,21 @@ describe("the Settings page's paths", () => {
       kind: "settings",
       scope: "a b",
       view: { kind: "section", section: "limits" },
+    });
+  });
+
+  it("link to a Scope's Agent changes, and to one change in it", () => {
+    expect(agentChangesPath(GLOBAL)).toBe("/settings/all/agent-changes");
+    expect(agentChangesPath("1a2b3c4d")).toBe("/settings/1a2b3c4d/agent-changes");
+    expect(agentChangesPath("1a2b3c4d", 41)).toBe(
+      "/settings/1a2b3c4d/agent-changes#agent-change-41",
+    );
+    expect(agentChangesPath(GLOBAL, 7)).toBe("/settings/all/agent-changes#agent-change-7");
+    // The browser keeps the fragment out of the path the router reads.
+    expect(pageOf(agentChangesPath("1a2b3c4d", 41).split("#")[0] ?? "")).toEqual({
+      kind: "settings",
+      scope: "1a2b3c4d",
+      view: { kind: "section", section: "agent-changes" },
     });
   });
 

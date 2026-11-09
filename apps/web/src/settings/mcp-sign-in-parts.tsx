@@ -4,7 +4,12 @@
 // Settings, Sign-out): a row's state chip, last problem and hint, its Sign in, Sign in again and Sign out; the Sign out dialog;
 // the Sign-ins list at Global. Never a token, a client secret or a URL beyond a host: the Registry's list has none.
 
-import { GLOBAL_SCOPE, type McpSignInView, type McpSignOutView } from "@cloudpid/protocol";
+import {
+  GLOBAL_SCOPE,
+  type McpSignInView,
+  type McpSignOutView,
+  settingsPath,
+} from "@cloudpid/protocol";
 import { useAtom, useAtomSet, useAtomValue } from "@effect/atom-react";
 import * as Arr from "effect/Array";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
@@ -17,7 +22,6 @@ import { Dialog, DialogActions, DialogProblem } from "../components/ui/dialog.ts
 import { relativeTime } from "../format.ts";
 import { cn } from "../lib/utils.ts";
 import { settledFailureOf } from "../registry.ts";
-import { settingsPath } from "../router.ts";
 import { MessageList } from "./mcp-parts.tsx";
 import {
   type McpSignInLine,

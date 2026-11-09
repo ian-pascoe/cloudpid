@@ -1,13 +1,13 @@
 // @effect-diagnostics preferEffectArray:off -- an in-memory fake of the Registry over native arrays.
 
-import { SessionNotFound, type SessionRecord } from "@cloudpid/protocol";
+import { SessionNotFound, type SessionRecord, SETTINGS_PATH } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { callOf } from "./calls.ts";
 import { deletedHereAtom, noticeAtom, pageProblemAtom, sessionGoneAtom } from "./app-state.ts";
 import { registryWith, settled } from "./registry.testing.ts";
-import { pathAtom, sessionPath, SETTINGS_PATH } from "./router.ts";
+import { pathAtom, sessionPath } from "./router.ts";
 import { createSessionAtom, currentSessionAtom, deleteSessionAtom } from "./sessions.ts";
 
 const session = (id: string): SessionRecord => ({

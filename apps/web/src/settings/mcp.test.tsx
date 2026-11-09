@@ -450,6 +450,35 @@ describe("the mark of a server the agent changed", () => {
     }),
   );
 
+  it.effect("says Changed over MCP · <client> for a change an agent made over the endpoint", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work", {
+        held: {
+          changes: [
+            agentChange(7, "mcp.servers.linear.enabled", {
+              session: null,
+              conversation: null,
+              via: { auth: "oauth", client: { name: "pi" } },
+            }),
+            agentChange(8, "mcp.servers.files.enabled", {
+              session: null,
+              conversation: null,
+              via: { auth: "local" },
+            }),
+          ],
+        },
+      });
+
+      expect(textOf(rowOf(markup, "linear"))).toContain("Changed over MCP · pi · 5 minutes ago");
+      expect(textOf(rowOf(markup, "linear"))).not.toContain("Changed by the agent");
+      expect(rowOf(markup, "linear")).toContain(
+        'href="/settings/work/agent-changes#agent-change-7"',
+      );
+      expect(textOf(rowOf(markup, "files"))).toContain("Changed over MCP · 5 minutes ago");
+      expect(textOf(rowOf(markup, "files"))).not.toContain("Changed by the agent");
+    }),
+  );
+
   it.effect("is gone once the owner reverted the change", () =>
     Effect.gen(function* () {
       const markup = yield* render("work", {

@@ -1,6 +1,7 @@
+import * as Arr from "effect/Array";
 import { describe, expect, it } from "vitest";
 import { MAX_PAYLOAD_BYTES } from "./webpush.ts";
-import { describeEvent, describeTriggerFailure } from "./notification.ts";
+import { describeEvent, describeMcpChanges, describeTriggerFailure } from "./notification.ts";
 
 const session = { id: "0190f3a0-1111-7000-8000-000000000001", title: "Fix the build" };
 
@@ -182,5 +183,51 @@ describe("describeTriggerFailure", () => {
       url: "/settings/0000abcd/triggers",
       tag: "trigger:t1:failed",
     });
+  });
+});
+
+describe("describeMcpChanges", () => {
+  const who = { via: { client: { name: "pi", version: "1.2" } }, caller: "grant-1" };
+
+  it("titles the call by its client, groups the fields by Scope name, and links to the newest change", () => {
+    expect(
+      describeMcpChanges(who, [
+        { id: 40, scope: "0000abcd", scopeName: "Default", field: "variables.API_URL" },
+        { id: 41, scope: "*", scopeName: "Global", field: "variables.REGION" },
+        { id: 42, scope: "0000abcd", scopeName: "Default", field: "name" },
+      ]),
+    ).toEqual({
+      title: "Changed over MCP · pi",
+      body: "Default: name, variables.API_URL; Global: variables.REGION",
+      url: "/settings/0000abcd/agent-changes#agent-change-42",
+      tag: "mcp-changes:grant-1",
+    });
+  });
+
+  it("tags by the caller it is given, and titles a caller with no name plainly", () => {
+    expect(
+      describeMcpChanges({ via: {}, caller: "local" }, [
+        { id: 3, scope: "*", scopeName: "Global", field: "instructions" },
+      ]),
+    ).toMatchObject({
+      title: "Changed over MCP",
+      tag: "mcp-changes:local",
+      url: "/settings/all/agent-changes#agent-change-3",
+    });
+  });
+
+  it("keeps the body to 140 characters", () => {
+    const { body } = describeMcpChanges(
+      who,
+      Arr.makeBy(30, (id) => ({
+        id,
+        scope: "0000abcd",
+        scopeName: "Default",
+        field: `variables.LONG_VARIABLE_NAME_${id}`,
+      })),
+    );
+
+    expect(body).toHaveLength(140);
+    expect(body.endsWith("…")).toBe(true);
   });
 });

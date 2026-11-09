@@ -452,6 +452,39 @@ describe("an Agent change", () => {
     expect(revertible({ ...change, revertedBy: 4 })).toBe(false);
     expect(revertible({ ...change, actor: "owner", reverts: 2 })).toBe(false);
   });
+
+  it("says a change made over the MCP endpoint was, with the client's name when it gave one", () => {
+    const over = { ...change, session: null, conversation: null };
+
+    expect(
+      changeByline(
+        { ...over, via: { auth: "oauth", client: { name: "pi", version: "1.2" } } },
+        NOW,
+      ),
+    ).toBe("Changed over MCP · pi, 5 minutes ago, with environment_variable_set");
+    expect(changeByline({ ...over, via: { auth: "local" } }, NOW)).toBe(
+      "Changed over MCP, 5 minutes ago, with environment_variable_set",
+    );
+    expect(
+      changeByline(
+        {
+          ...over,
+          tool: "environment_container_size_limit_set",
+          approved: true,
+          via: { auth: "oauth", client: { name: "claude-code" } },
+        },
+        NOW,
+      ),
+    ).toBe(
+      "Changed over MCP · claude-code, 5 minutes ago, with environment_container_size_limit_set, approved by you",
+    );
+    // The owner's revert of one is still the owner's.
+    expect(changeByline({ ...over, actor: "owner", tool: null, reverts: 3 }, NOW)).toBe(
+      "You reverted change 3, 5 minutes ago",
+    );
+    // It can be reverted as the agent's is.
+    expect(revertible({ ...over, via: { auth: "oauth" } })).toBe(true);
+  });
 });
 
 describe("an Environment's Secrets", () => {
