@@ -55,6 +55,7 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
@@ -183,7 +184,7 @@ const Schedule = Schema.Struct({
 const Webhook = Schema.Struct({
   format: WebhookFormat.annotate({
     description:
-      '"github": GitHub signs each delivery with X-Hub-Signature-256 (the repo or App webhook\'s secret); "standard": Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature), which Stripe-like senders, Svix and many others use',
+      '"github": GitHub signs each delivery with X-Hub-Signature-256 (the repo or App webhook\'s secret); "standard": Standard Webhooks (webhook-id, webhook-timestamp and webhook-signature), which Svix-based senders use',
   }),
 }).annotate({
   description:
@@ -197,7 +198,7 @@ const Match = TriggerMatch.annotate({
 
 const WhenBusy = Schema.Literals(["wait", "skip", "start"]).annotate({
   description:
-    'What a Fire does while the work of the last one is still going on. Environment trigger: "skip" (the default) skips a Fire while the last Fire\'s Session is still running or waiting for the user; "start" starts a Session anyway. Workspace trigger: "wait" (the default) keeps the Fire pending until no Session in the Workspace is at work (the user\'s own included), merging any later Fires into it; "skip" skips it; "start" starts a Session anyway. "wait" is refused for an Environment trigger',
+    'What a Fire does while the work of the last one is still going on. Environment trigger: "skip" (the default for a Schedule) skips a Fire while the last Fire\'s Session is still running or waiting for the user; "start" (the default for a webhook) starts a Session anyway. Workspace trigger: "wait" (the default) keeps the Fire pending until no Session in the Workspace is at work (the user\'s own included), merging any later Fires into it; "skip" skips it; "start" starts a Session anyway. "wait" is refused for an Environment trigger',
 });
 
 const Base = Schema.String.check(Schema.isMinLength(1)).annotate({
@@ -215,23 +216,49 @@ const APPROVAL =
 const RECORDED =
   "The change is recorded as an Agent change of the Trigger's Environment, which the user can revert on the Environments page.";
 
+/** What a card says of a Trigger with no `match`. */
+const NO_MATCH = "none: every delivery that is signed right starts a Session";
+
 /** A Schedule as the owner reads it. */
 const scheduleWords = (schedule: ScheduleSource | undefined): string =>
   schedule === undefined
     ? "a source this version can't read"
     : `"${schedule.cron}" in ${schedule.zone}`;
 
-/** A `match` as the owner reads it: each path with the values it may have, or that there is none. */
+/**
+ * A `match` as the owner reads it: each path with the values it may have, every one quoted, so that a value can't fake
+ * a line or blur two values; or that there is none.
+ */
 const matchWords = (match: TriggerMatch | undefined): string => {
   const entries = Rec.toEntries(match ?? {});
 
   return entries.length === 0
-    ? "none: every delivery that is signed right starts a Session"
+    ? NO_MATCH
     : Arr.join(
-        Arr.map(entries, ([path, values]) => `${path} is ${Arr.join(values, " or ")}`),
+        Arr.map(
+          entries,
+          ([path, values]) =>
+            `${JSON.stringify(path)} is ${Arr.join(
+              Arr.map(values, (value) => JSON.stringify(value)),
+              " or ",
+            )}`,
+        ),
         "; ",
       );
 };
+
+/** `matchWords` of a match the Trigger holds, cut to what a card shows. */
+const matchCard = (match: TriggerMatch | undefined): string =>
+  clipped(matchWords(match), MAX_CARD_CHARS);
+
+/** A `match` as the Trigger holds it, for comparing: its paths in order, each with its values in order. */
+const matchKey = (match: TriggerMatch | undefined): string =>
+  JSON.stringify(
+    Arr.sort(
+      Rec.toEntries(match ?? {}),
+      Order.mapInput(Order.String, ([path]: readonly [string, ReadonlyArray<string>]) => path),
+    ),
+  );
 
 /** What fires a Trigger, as the owner reads it: its Schedule, or the format of its webhook. */
 const sourceWords = (holder: { readonly source: TriggerChangeValue["source"] }): string => {
@@ -312,7 +339,7 @@ const triggerWords = (value: TriggerChangeValue): string =>
       ...(value.workspace === undefined ? [] : [`Workspace: ${value.workspace.branch}`]),
       ...(webhookOf(value) === undefined
         ? [`Schedule: ${scheduleWords(scheduleOf(value))}`]
-        : [`Webhook: ${sourceWords(value)}`, `Match: ${matchWords(webhookOf(value)?.match)}`]),
+        : [`Webhook: ${sourceWords(value)}`, `Match: ${matchCard(webhookOf(value)?.match)}`]),
       `Options: ${optionsWords(value)}`,
       ...(value.paused ? ["Paused"] : []),
       `Message:\n${cardMessage(value.message)}`,
@@ -406,6 +433,13 @@ export const TriggerTools: Effect.Effect<
       const problem = matchProblem(match);
 
       if (problem !== undefined) return yield* refuse(problem);
+
+      // The card shows the whole match, or the owner would approve what they can't read.
+      if (matchWords(match).length > MAX_CARD_CHARS) {
+        return yield* refuse(
+          `the match is longer than the ${String(MAX_CARD_CHARS)} characters the card shows: use fewer paths or values`,
+        );
+      }
     });
 
   /**
@@ -422,11 +456,7 @@ export const TriggerTools: Effect.Effect<
     readonly match: TriggerMatch | undefined;
   }) =>
     Effect.gen(function* () {
-      if ((schedule === undefined) === (webhook === undefined)) {
-        return yield* refuse("give either a schedule or a webhook, one of them");
-      }
-
-      if (schedule !== undefined) {
+      if (schedule !== undefined && webhook === undefined) {
         if (match !== undefined) {
           return yield* refuse("a match filters a webhook's deliveries: a Schedule has none");
         }
@@ -434,11 +464,16 @@ export const TriggerTools: Effect.Effect<
         return yield* scheduleSource(schedule);
       }
 
+      if (webhook === undefined || schedule !== undefined) {
+        return yield* refuse("give either a schedule or a webhook, one of them");
+      }
+
       if (match !== undefined) yield* plainMatch(match);
 
-      const source: TriggerSourceInput = { type: "webhook", format: webhook?.format ?? "github" };
+      const source: TriggerSourceInput = { type: "webhook", format: webhook.format };
 
-      return match === undefined ? source : { ...source, match };
+      // An empty match is none, as the Trigger holds it.
+      return match === undefined || Rec.isEmptyRecord(match) ? source : { ...source, match };
     });
 
   /** Trigger `id`, or a refusal naming the tool that lists them. */
@@ -593,6 +628,7 @@ export const TriggerTools: Effect.Effect<
     apply,
     made,
     already,
+    read,
   }: {
     readonly tool: string;
     readonly id: string;
@@ -609,9 +645,11 @@ export const TriggerTools: Effect.Effect<
     ) => Effect.Effect<TriggerChanged, EnvironmentsError>;
     readonly made: (definition: TriggerDefinition | null) => string;
     readonly already: string;
+    /** The Trigger as the caller read it just now, which the change takes as the Trigger rather than reading it again. */
+    readonly read?: TriggerDefinition | undefined;
   }) =>
     Effect.gen(function* () {
-      const definition = yield* found(id);
+      const definition = read ?? (yield* found(id));
       const environment = yield* environmentNamed(definition.environment);
 
       // A Trigger that has the values asks nothing; the call still goes to the Registry, which changes nothing, so the
@@ -681,7 +719,7 @@ export const TriggerTools: Effect.Effect<
   const list = yield* defineEffectTool({
     name: "trigger_list",
     description:
-      "List the Triggers: what makes cloudpid start a Session unattended. An Environment trigger fires on its Schedule, each Fire starting a new Session in a new Workspace of its Environment with the Trigger message; a Workspace trigger starts each Fire's Session in one Workspace, on its files and branch. Gives each one's id, name, kind, Environment, Workspace (a Workspace trigger's), Schedule, options, whether it is paused, and its next Fires; trigger_get gives one with its message.",
+      "List the Triggers: what makes cloudpid start a Session unattended. An Environment trigger fires on its Schedule, each Fire starting a new Session in a new Workspace of its Environment with the Trigger message; a Workspace trigger starts each Fire's Session in one Workspace, on its files and branch. Gives each one's id, name, kind, Environment, Workspace (a Workspace trigger's), Schedule or, for a webhook Trigger, its format and match (never its URL or Signing secret), options, whether it is paused, and its next Fires (none for a webhook Trigger); trigger_get gives one with its message.",
     parameters: Schema.Struct({
       environment: Schema.optionalKey(
         Id.annotate({
@@ -735,7 +773,7 @@ export const TriggerTools: Effect.Effect<
   const get = yield* defineEffectTool({
     name: "trigger_get",
     description:
-      "Get one Trigger: its name, kind, Environment, Workspace (a Workspace trigger's), Trigger message, Schedule, options, whether it is paused, and its next Fires.",
+      "Get one Trigger: its name, kind, Environment, Workspace (a Workspace trigger's), Trigger message, Schedule or, for a webhook Trigger, its format and match (never its URL or Signing secret), options, whether it is paused, and its next Fires (none for a webhook Trigger).",
     parameters: Schema.Struct({ id: TriggerId }),
     structuredOutputSchema: outputSchema(TriggerOutput),
     executionMode: "sequential",
@@ -1028,20 +1066,23 @@ export const TriggerTools: Effect.Effect<
       Effect.gen(function* () {
         yield* plainReason(reason);
 
-        const source = yield* scheduleSource(schedule);
-        const now = yield* Clock.currentTimeMillis;
+        const held = yield* found(id);
 
-        if (webhookOf(yield* found(id)) !== undefined) {
+        if (webhookOf(held) !== undefined) {
           return yield* refuse(
             "this Trigger fires on a webhook, which has no Schedule: trigger_match_set changes which deliveries it takes",
           );
         }
+
+        const source = yield* scheduleSource(schedule);
+        const now = yield* Clock.currentTimeMillis;
 
         return yield* approvedChange({
           tool: "trigger_schedule_set",
           id,
           reason,
           api,
+          read: held,
           change: "Change a Trigger's Schedule",
           same: (definition) => {
             const held = scheduleOf(definition);
@@ -1085,7 +1126,11 @@ export const TriggerTools: Effect.Effect<
         const definition = yield* found(id);
 
         if (webhookOf(definition) === undefined) {
-          return yield* refuse("only a webhook Trigger has a match: this one fires on a Schedule");
+          return yield* refuse(
+            scheduleOf(definition) === undefined
+              ? "only a webhook Trigger has a match: this Trigger's source is one this version can't read"
+              : "only a webhook Trigger has a match: this one fires on a Schedule",
+          );
         }
 
         // The match as the Trigger holds it: none for an empty one.
@@ -1096,9 +1141,10 @@ export const TriggerTools: Effect.Effect<
           id,
           reason,
           api,
+          read: definition,
           change: "Change a Trigger's match",
-          same: (held) => matchWords(webhookOf(held)?.match) === matchWords(wanted),
-          before: (held) => matchWords(webhookOf(held)?.match),
+          same: (held) => matchKey(webhookOf(held)?.match) === matchKey(wanted),
+          before: (held) => matchCard(webhookOf(held)?.match),
           after: matchWords(wanted),
           notes: () => [
             wanted === undefined
@@ -1229,11 +1275,20 @@ export const TriggerTools: Effect.Effect<
         const schedule = scheduleOf(definition);
         const now = yield* Clock.currentTimeMillis;
 
+        // What it was not caught up on: the times a Schedule missed, the deliveries a webhook was sent.
+        const missed =
+          webhookOf(definition) !== undefined
+            ? "Deliveries that arrived while it was paused are not caught up."
+            : schedule === undefined
+              ? ""
+              : "The times it missed while paused are not caught up.";
+
         return yield* approvedChange({
           tool: "trigger_resume",
           id,
           reason,
           api,
+          read: definition,
           change: "Resume a Trigger",
           same: (held) => !held.paused,
           before: () => "Paused",
@@ -1241,7 +1296,7 @@ export const TriggerTools: Effect.Effect<
           notes: () => (schedule === undefined ? [] : [nextFiresNote(schedule, now)]),
           apply: (expected, author) => access.setPaused({ id, paused: false, expected, author }),
           made: () =>
-            `the Trigger is active again${schedule === undefined ? "" : `; ${nextFiresNote(schedule, now)}`}. ${schedule === undefined ? "Deliveries that arrived while it was paused are not caught up." : "The times it missed while paused are not caught up."}`,
+            `the Trigger is active again${schedule === undefined ? "" : `; ${nextFiresNote(schedule, now)}`}.${missed === "" ? "" : ` ${missed}`}`,
           already: "The Trigger is active already",
         });
       }),
@@ -1297,7 +1352,7 @@ export const TriggerTools: Effect.Effect<
   const remove = yield* defineEffectTool({
     name: "trigger_remove",
     description:
-      "Remove a Trigger: it never fires again, and its fire log goes with it. It applies at once, with no Approval; the user can revert it on the Environments page, which brings the Trigger back.",
+      "Remove a Trigger: it never fires again, and its fire log goes with it. It applies at once, with no Approval; the user can revert it on the Environments page, which brings the Trigger back (a webhook Trigger with a new URL and Signing secret, which the user pastes again where the old ones were used).",
     parameters: Schema.Struct({ id: TriggerId, reason: Reason }),
     structuredOutputSchema: outputSchema(TriggerChangeOutput),
     executionMode: "sequential",

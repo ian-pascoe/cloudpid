@@ -643,7 +643,7 @@ describe("a webhook Trigger", () => {
     });
     expect(asked[0]?.after).toContain("Webhook: a webhook (github format)");
     expect(asked[0]?.after).toContain(
-      "Match: event is workflow_run; workflow_run.conclusion is failure or timed_out",
+      'Match: "event" is "workflow_run"; "workflow_run.conclusion" is "failure" or "timed_out"',
     );
     expect(asked[0]?.after).toContain("when busy: start");
     expect(asked[0]?.after).not.toContain("Schedule:");
@@ -691,7 +691,9 @@ describe("a webhook Trigger", () => {
     });
 
     expect(asked[0]?.after).toContain("Webhook: a webhook (standard format)");
-    expect(asked[0]?.after).toContain("Match: none: every delivery that is signed right");
+    expect(asked[0]?.after).toContain(
+      "Match: none: every delivery that is signed right starts a Session",
+    );
     expect(triggers.held.get("0190-a")?.source).toEqual({ type: "webhook", format: "standard" });
     expect(decodeChange(result.structuredOutput).trigger).toMatchObject({
       webhook: { format: "standard", match: null },
@@ -747,7 +749,7 @@ describe("a webhook Trigger", () => {
     const got = await call("trigger_get", { id: "h1" });
 
     expect(got.text).toContain("Webhook: a webhook (github format)");
-    expect(got.text).toContain("Match: event is workflow_run");
+    expect(got.text).toContain('Match: "event" is "workflow_run"');
     expect(got.text).toContain("Signing secret are the user's alone");
     expect(got.text).not.toContain("Next Fires");
     expect(decodeTrigger(got.result.structuredOutput)).toMatchObject({
@@ -768,8 +770,8 @@ describe("a webhook Trigger", () => {
     expect(asked[0]).toMatchObject({
       tool: "trigger_match_set",
       change: "Change a Trigger's match",
-      before: "event is workflow_run; workflow_run.conclusion is failure or timed_out",
-      after: "event is workflow_run; workflow_run.head_branch is main",
+      before: '"event" is "workflow_run"; "workflow_run.conclusion" is "failure" or "timed_out"',
+      after: '"event" is "workflow_run"; "workflow_run.head_branch" is "main"',
       reason: "only the main branch matters",
     });
     expect(text).toContain("The user approved");
@@ -822,6 +824,106 @@ describe("a webhook Trigger", () => {
     ).toContain("trigger_list");
     expect(asked).toEqual([]);
     expect(triggers.changes).toEqual([]);
+  });
+
+  it("trigger_match_set compares matches as the Trigger holds them, not as the card reads them", async () => {
+    // Two values read as one on a card that doesn't quote them; they are two matches.
+    const { call, triggers, asked } = await setUp([
+      hook({ source: { type: "webhook", format: "github", match: { a: ["x or y"] } } }),
+    ]);
+
+    await call("trigger_match_set", { id: "h1", match: { a: ["x", "y"] }, reason: "two values" });
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ before: '"a" is "x or y"', after: '"a" is "x" or "y"' });
+    expect(triggers.held.get("h1")?.source).toMatchObject({ match: { a: ["x", "y"] } });
+
+    // The same paths in another order is the same match: nothing is asked.
+    const { call: again, asked: none } = await setUp([
+      hook({ source: { type: "webhook", format: "github", match: { a: ["x"], b: ["y"] } } }),
+    ]);
+
+    const same = await again("trigger_match_set", {
+      id: "h1",
+      match: { b: ["y"], a: ["x"] },
+      reason: "r",
+    });
+
+    expect(same.text).toContain("has that match already");
+    expect(none).toEqual([]);
+  });
+
+  it("quotes a match's paths and values on the card, so none can fake a line or blur two values", async () => {
+    const { call, asked } = await setUp();
+
+    await call("trigger_create", {
+      ...CI,
+      match: { "label.name": ["bug\nMessage:", 'a" or "b', "x; y"] },
+    });
+
+    expect(asked[0]?.after).toContain(
+      'Match: "label.name" is "bug\\nMessage:" or "a\\" or \\"b" or "x; y"',
+    );
+    expect(asked[0]?.after.split("\n").filter((line) => line.startsWith("Message:"))).toHaveLength(
+      1,
+    );
+  });
+
+  it("refuses a match the card can't show whole, without asking", async () => {
+    const { call, asked } = await setUp([hook()]);
+
+    const long = { "a.b": Array.from({ length: 2_000 }, (_, at) => `value-${String(at)}`) };
+
+    const made = await call("trigger_create", { ...CI, match: long });
+    const set = await call("trigger_match_set", { id: "h1", match: long, reason: "r" });
+
+    for (const refused of [made, set]) {
+      expect(refused.error).toBe(true);
+      expect(refused.text).toContain("the card shows");
+    }
+
+    expect(asked).toEqual([]);
+  });
+
+  it("is made without a match when the match is empty", async () => {
+    const { call, triggers } = await setUp();
+
+    await call("trigger_create", { ...CI, match: {} });
+
+    expect(triggers.held.get("0190-a")?.source).toEqual({ type: "webhook", format: "github" });
+  });
+
+  it("names neither a Schedule nor a webhook for a source this version can't read", async () => {
+    const { call, asked } = await setUp([weekly({ id: "u1", source: { type: "unknown" } })]);
+
+    const match = await call("trigger_match_set", { id: "u1", match: MATCH, reason: "r" });
+
+    expect(match.error).toBe(true);
+    expect(match.text).toContain("can't read");
+    expect(match.text).not.toContain("Schedule");
+
+    const paused = await call("trigger_pause", { id: "u1", reason: "r" });
+
+    expect(paused.error).toBe(false);
+
+    const { text } = await call("trigger_resume", { id: "u1", reason: "r" });
+
+    expect(text).not.toContain("not caught up");
+    expect(asked[0]?.after).toBe("Active: fires a source this version can't read");
+  });
+
+  it("refuses a webhook Trigger's Schedule change before it looks at the Schedule", async () => {
+    const { call, asked } = await setUp([hook()]);
+
+    const { error, text } = await call("trigger_schedule_set", {
+      id: "h1",
+      schedule: { cron: "0 9 * * MON", zone: "" },
+      reason: "r",
+    });
+
+    expect(error).toBe(true);
+    expect(text).toContain("trigger_match_set");
+    expect(asked).toEqual([]);
   });
 
   it("trigger_match_set changes nothing once the Trigger changed while the card waited", async () => {

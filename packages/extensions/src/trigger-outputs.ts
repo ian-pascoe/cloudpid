@@ -10,6 +10,7 @@ import {
   type TriggerDefinition,
   TriggerMatch,
   webhookOf,
+  WebhookFormat,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
@@ -59,7 +60,7 @@ const TriggerSummaryFields = {
   }),
   webhook: Schema.NullOr(
     Schema.Struct({
-      format: Schema.String.annotate({
+      format: WebhookFormat.annotate({
         description: '"github" or "standard": how its deliveries are signed',
       }),
       match: Schema.NullOr(TriggerMatch).annotate({
@@ -73,7 +74,7 @@ const TriggerSummaryFields = {
   }),
   when_busy: Schema.String.annotate({
     description:
-      '"skip": a Fire while the last Fire\'s Session (a Workspace trigger\'s: any Session in its Workspace) is still at work is skipped; "start": it starts a Session anyway; "wait" (a Workspace trigger\'s default): it stays pending until the Workspace is idle',
+      '"skip" (an Environment trigger\'s default for a Schedule): a Fire while the last Fire\'s Session (a Workspace trigger\'s: any Session in its Workspace) is still at work is skipped; "start" (an Environment trigger\'s default for a webhook): it starts a Session anyway; "wait" (a Workspace trigger\'s default): it stays pending until the Workspace is idle',
   }),
   base: Schema.NullOr(Schema.String).annotate({
     description:
