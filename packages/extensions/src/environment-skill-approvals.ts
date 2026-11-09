@@ -15,7 +15,9 @@
 //   `installed`): what was kept, what was found kept already, and each Skill it skipped, with why. An install and an update
 //   are multi-write (one transaction per Skill): a resumed apply is run again under the same attempt (L18), and `how.earlier`
 //   holds the Agent changes the request's claim recorded before, so a Skill an earlier run kept, which this run finds
-//   unchanged, is told as installed or updated with its change.
+//   unchanged, is told as installed or updated with its change. `outcome` is the request's end: an install that finds the
+//   repo listing Skills to choose from at the pinned commit no longer holds what the owner was shown (`changed_since`).
+//   A Registry sentence is told in the owner's words (`ownerWords`), never a repo's text.
 //
 // There is no Session to hand the new Skill set to: the Workspaces take it at their next readying. These cores answer the
 // endpoint's form only; the Session's tools keep their own (`./environment-skills-global.ts`, `./environment-skill-update.ts`)
@@ -39,6 +41,7 @@ import {
 import {
   GLOBAL_ID,
   GLOBAL_NAME,
+  type GlobalSkillToolName,
   type HARNESS_TOOLS,
   MAX_APPROVED_SKILLS,
   MAX_CARD_CHARS,
@@ -121,12 +124,12 @@ export type GlobalSkillCore<Args, Result> = ApprovalCore<
 };
 
 /** A refusal the caller reads: nothing was done, and why. */
-const refusal = (message: string) =>
-  EnvironmentsError.make({ message: ownerWords(message), code: INVALID_ARGUMENT });
+const refusal = (message: string) => EnvironmentsError.make({ message, code: INVALID_ARGUMENT });
 
 /**
  * A Registry message in the endpoint's words: the Registry's words of a pinned Skill are the Session's, which name the user,
- * and the endpoint's caller answers to the owner.
+ * and the endpoint's caller answers to the owner. Only cloudpid's own sentences are reworded, never a repo's text (a
+ * Skill's description is quoted as it is).
  */
 const ownerWords = (message: string): string =>
   message.replaceAll(/\bthe user\b/g, "the owner").replaceAll(/\bThe user\b/g, "The owner");
@@ -284,12 +287,44 @@ const skillsOutcome = (
 ): GlobalSkillOutcome =>
   kept > 0 || earlier.length > 0 ? "wrote" : same > 0 ? "found" : "changed_since";
 
-/** The answer an ask gives in place of a request when Global has everything asked for already. */
-const unchangedAnswer = (text: string, structured: HarnessAnswer["structured"]): HarnessAnswer => ({
-  text: endpointText(text),
-  structured,
-  details: null,
+/** The decoded `expected` of an update: the pins the owner approved. */
+const UpdateAsked = Schema.Struct({ pins: Schema.Array(SkillUpdatePin) });
+
+/** The decoded `expected` of a removal: when the Skill was last saved, as the owner saw it. */
+const RemoveAsked = Schema.Struct({ savedAt: Schema.NullOr(Schema.Finite) });
+
+/**
+ * What an ask prepares when Global has the change already: no card and no request, and `answer`, which the ask gives in
+ * place of one.
+ */
+const noAsk = (
+  tool: GlobalSkillToolName,
+  reason: string,
+  text: string,
+  structured: HarnessAnswer["structured"],
+): Prepared<GlobalKnown> => ({
+  card: { tool, target: "Global", change: "", before: "", after: "", reason },
+  expected: null,
+  known: GLOBAL,
+  unchanged: { text: endpointText(text), structured, details: null },
 });
+
+/** The refusal of more Skills than one request shows (`MAX_APPROVED_SKILLS`), each with its files: `what` would be done. */
+const tooMany = (what: string, ready: ReadonlyArray<{ readonly name: string }>, again: string) =>
+  refusal(
+    `Nothing was asked: ${ready.length} Skills ${what} (${namesOf(ready)}), and one request for the owner's Approval shows at most ${MAX_APPROVED_SKILLS}, each with its files. ${again}`,
+  );
+
+/** The lines that tell the caller what a request leaves out: the Skills found as asked, then those `refused` under `header`. */
+const leftOutWords = (
+  same: ReadonlyArray<{ readonly name: string }>,
+  sameSentence: (names: string, one: boolean) => string,
+  header: string,
+  refused: ReadonlyArray<string>,
+): ReadonlyArray<string> => [
+  ...(same.length === 0 ? [] : [sameSentence(namesOf(same), same.length === 1)]),
+  ...(refused.length === 0 ? [] : [header, ...refused]),
+];
 
 /** The words a declined request says: the owner's refusal and reason. Only a Session's request is declined to a caller. */
 const declinedText = (what: string, reason: string | null) =>
@@ -336,7 +371,9 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
           case "missing":
             return yield* noGlobal;
           case "refused":
-            return yield* refusal(`Nothing was asked or installed: ${previewed.message}`);
+            return yield* refusal(
+              `Nothing was asked or installed: ${ownerWords(previewed.message)}`,
+            );
           case "listed":
             return yield* refusal(
               Arr.join(
@@ -367,23 +404,13 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
           outcome: "unchanged" as const,
         }));
 
-        const sameWords =
-          same.length === 0
-            ? []
-            : [
-                `${namesOf(same)} ${same.length === 1 ? "is" : "are"} kept Global from there already, so ${same.length === 1 ? "it is" : "they are"} not part of it.`,
-              ];
-
-        const refusedWords =
-          rejected.length === 0
-            ? []
-            : [
-                "Refused, so not part of it:",
-                ...Arr.map(
-                  rejected,
-                  (skill) => `- ${skillLine(skill)}: ${ownerWords(skill.message)}`,
-                ),
-              ];
+        const leftOut = leftOutWords(
+          same,
+          (names, one) =>
+            `${names} ${one ? "is" : "are"} kept Global from there already, so ${one ? "it is" : "they are"} not part of it.`,
+          "Refused, so not part of it:",
+          Arr.map(rejected, (skill) => `- ${skillLine(skill)}: ${ownerWords(skill.message)}`),
+        );
 
         if (ready.length === 0) {
           if (rejected.length > 0) {
@@ -391,35 +418,26 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
               Arr.join(
                 [
                   `Nothing was asked or installed: no Skill of ${pinned} could be kept Global.`,
-                  ...sameWords,
-                  ...refusedWords,
+                  ...leftOut,
                 ],
                 "\n",
               ),
             );
           }
 
-          return {
-            card: {
-              tool: "environment_skill_install",
-              target: "Global",
-              change: "",
-              before: "",
-              after: "",
-              reason,
-            },
-            expected: null,
-            known: GLOBAL,
-            unchanged: unchangedAnswer(
-              `Global keeps ${namesOf(same)} from ${pinned} with these files already: nothing was asked, changed or recorded.`,
-              installEmpty(sameResults, where),
-            ),
-          } satisfies Prepared<GlobalKnown>;
+          return noAsk(
+            "environment_skill_install",
+            reason,
+            `Global keeps ${namesOf(same)} from ${pinned} with these files already: nothing was asked, changed or recorded.`,
+            installEmpty(sameResults, where),
+          );
         }
 
         if (ready.length > MAX_APPROVED_SKILLS) {
-          return yield* refusal(
-            `Nothing was asked or installed: ${ready.length} Skills from ${repo} would be installed at Global (${namesOf(ready)}), and one request for the owner's Approval shows at most ${MAX_APPROVED_SKILLS}, each with its files. Call again with skills naming up to ${MAX_APPROVED_SKILLS} of them, then again for the rest.`,
+          return yield* tooMany(
+            `from ${repo} would be installed at Global`,
+            ready,
+            `Call again with skills naming up to ${MAX_APPROVED_SKILLS} of them, then again for the rest.`,
           );
         }
 
@@ -463,7 +481,7 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
             })),
           } satisfies typeof SkillInstallPin.Encoded,
           known: GLOBAL,
-          note: Arr.join([...sameWords, ...refusedWords, ...unseenNote(unseen)], "\n"),
+          note: Arr.join([...leftOut, ...unseenNote(unseen)], "\n"),
         } satisfies Prepared<GlobalKnown>;
       }),
     apply: ({ source, skills }, expected, author) =>
@@ -500,6 +518,9 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
       };
     },
     outcome: (result, earlier) => {
+      // A repo that lists its Skills to choose from no longer holds the folders the owner was shown at that commit.
+      if (result.status === "listed") return "changed_since";
+
       if (result.status !== "installed") return "refused";
 
       const results = withEarlierInstalls(result.results, earlier);
@@ -517,7 +538,7 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
             return yield* noGlobal;
           case "refused":
             return yield* refusal(
-              `The owner approved, but nothing was installed: ${result.message}`,
+              `The owner approved, but nothing was installed: ${ownerWords(result.message)}`,
             );
           case "listed":
             return yield* refusal(
@@ -602,9 +623,6 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
 
   // ─── Update ────────────────────────────────────────────────────────────────
 
-  /** The decoded `expected` of an update: the pins the owner approved. */
-  const UpdateAsked = Schema.Struct({ pins: Schema.Array(SkillUpdatePin) });
-
   /** The lines that tell what became of each Skill that was not moved or found the same. */
   const notMovedLines = (results: ReadonlyArray<SkillUpdateEntry>): ReadonlyArray<string> =>
     Arr.flatMap(results, (result) =>
@@ -632,24 +650,16 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
           case "missing":
             return yield* noGlobal;
           case "refused":
-            return yield* refusal(`Nothing was asked or updated: ${previewed.message}.`);
+            return yield* refusal(
+              `Nothing was asked or updated: ${ownerWords(previewed.message)}.`,
+            );
           case "nothing":
-            return {
-              card: {
-                tool: "environment_skill_update",
-                target: "Global",
-                change: "",
-                before: "",
-                after: "",
-                reason,
-              },
-              expected: null,
-              known: GLOBAL,
-              unchanged: unchangedAnswer(
-                'No Skill kept Global is marked update available: nothing was asked. The daily check marks a Skill when its folder changed at its Skill source on the ref it was installed from (environment_get with id "*" shows the marks); name Skills in names to update them anyway.',
-                updateValue({ scope: GLOBAL, results: [], nothingMarked: true }),
-              ),
-            } satisfies Prepared<GlobalKnown>;
+            return noAsk(
+              "environment_skill_update",
+              reason,
+              'No Skill kept Global is marked update available: nothing was asked. The daily check marks a Skill when its folder changed at its Skill source on the ref it was installed from (environment_get with id "*" shows the marks); name Skills in names to update them anyway.',
+              updateValue({ scope: GLOBAL, results: [], nothingMarked: true }),
+            );
           case "done":
             break;
         }
@@ -667,50 +677,37 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
         const same = Arr.filter(settled, (result) => result.outcome === "unchanged");
         const left = notMovedLines(settled);
 
-        const sameWords =
-          same.length === 0
-            ? []
-            : [
-                `${namesOf(same)} ${same.length === 1 ? "is" : "are"} the same at the ref's latest commit, so not part of it.`,
-              ];
-
-        const leftWords = left.length === 0 ? [] : ["Not part of it:", ...left];
+        const leftOut = leftOutWords(
+          same,
+          (names, one) =>
+            `${names} ${one ? "is" : "are"} the same at the ref's latest commit, so not part of it.`,
+          "Not part of it:",
+          left,
+        );
 
         if (ready.length === 0) {
           if (left.length > 0) {
             return yield* refusal(
               Arr.join(
-                [
-                  "Nothing was asked or updated: no Skill named would move.",
-                  ...sameWords,
-                  ...leftWords,
-                ],
+                ["Nothing was asked or updated: no Skill named would move.", ...leftOut],
                 "\n",
               ),
             );
           }
 
-          return {
-            card: {
-              tool: "environment_skill_update",
-              target: "Global",
-              change: "",
-              before: "",
-              after: "",
-              reason,
-            },
-            expected: null,
-            known: GLOBAL,
-            unchanged: unchangedAnswer(
-              `${namesOf(same)} ${same.length === 1 ? "is" : "are"} the same at the ref's latest commit: nothing was asked, changed or recorded.`,
-              updateValue({ scope: GLOBAL, results: settled, nothingMarked: false }),
-            ),
-          } satisfies Prepared<GlobalKnown>;
+          return noAsk(
+            "environment_skill_update",
+            reason,
+            `${namesOf(same)} ${same.length === 1 ? "is" : "are"} the same at the ref's latest commit: nothing was asked, changed or recorded.`,
+            updateValue({ scope: GLOBAL, results: settled, nothingMarked: false }),
+          );
         }
 
         if (ready.length > MAX_APPROVED_SKILLS) {
-          return yield* refusal(
-            `Nothing was asked or updated: ${ready.length} Skills would be updated at Global (${namesOf(ready)}), and one request for the owner's Approval shows at most ${MAX_APPROVED_SKILLS}, each with its files. Name up to ${MAX_APPROVED_SKILLS} of them, then call again for the rest.`,
+          return yield* tooMany(
+            "would be updated at Global",
+            ready,
+            `Name up to ${MAX_APPROVED_SKILLS} of them, then call again for the rest.`,
           );
         }
 
@@ -719,7 +716,7 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
           files: skill.files,
         }));
 
-        const leftOut =
+        const notPart =
           left.length === 0 ? "" : `Not part of this update:\n${Arr.join(left, "\n")}\n\n`;
 
         return {
@@ -738,7 +735,7 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
               ),
               "\n",
             ),
-            after: `${leftOut}${Arr.join(
+            after: `${notPart}${Arr.join(
               Arr.map(
                 cards,
                 ({ skill, card }) =>
@@ -758,7 +755,7 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
             })),
           } satisfies typeof UpdateAsked.Encoded,
           known: GLOBAL,
-          note: Arr.join([...sameWords, ...leftWords, ...unseenNote(unseen)], "\n"),
+          note: Arr.join([...leftOut, ...unseenNote(unseen)], "\n"),
         } satisfies Prepared<GlobalKnown>;
       }),
     apply: ({ overwrite }, expected, author) =>
@@ -797,7 +794,9 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
           case "missing":
             return yield* noGlobal;
           case "refused":
-            return yield* refusal(`The owner approved, but nothing was updated: ${result.message}`);
+            return yield* refusal(
+              `The owner approved, but nothing was updated: ${ownerWords(result.message)}`,
+            );
           case "nothing":
             return yield* refusal(
               "The owner approved, but no Skill the request names is kept Global to update: nothing was updated. Ask again.",
@@ -877,9 +876,6 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
   };
 
   // ─── Remove ────────────────────────────────────────────────────────────────
-
-  /** The decoded `expected` of a removal: when the Skill was last saved, as the owner saw it. */
-  const RemoveAsked = Schema.Struct({ savedAt: Schema.NullOr(Schema.Finite) });
 
   /** A removal's value. */
   const removeValue = (
@@ -975,7 +971,7 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
             return yield* noGlobal;
           case "rejected":
             return yield* refusal(
-              `The owner approved, but nothing was removed:\n${result.message}`,
+              `The owner approved, but nothing was removed:\n${ownerWords(result.message)}`,
             );
           case "changed-since":
             return yield* refusal(
