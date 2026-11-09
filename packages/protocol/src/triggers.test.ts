@@ -342,12 +342,17 @@ describe("a GitHub-managed hook's source", () => {
     expect(githubHookOf({ source: hooked })).toEqual({ repo: "o/r", events: ["workflow_run"] });
     expect(githubHookOf({ source: { type: "webhook", format: "github" } })).toBeUndefined();
     expect(sourceProblem(hooked)).toBeUndefined();
+    expect(sourceProblem({ ...hooked, repo: "octo-org/.github" })).toBeUndefined();
+    expect(sourceProblem({ ...hooked, repo: "o/..r" })).toBeUndefined();
   });
 
   it.each([
     ["a standard source", { ...hooked, format: "standard" as const }],
     ["no repo", { type: "webhook" as const, format: "github" as const, events: ["push"] }],
     ["a repo that is no owner/name", { ...hooked, repo: "o/r/x" }],
+    ["a repo named .", { ...hooked, repo: "o/." }],
+    ["a repo named ..", { ...hooked, repo: "o/.." }],
+    ["an owner that starts with a hyphen", { ...hooked, repo: "-o/r" }],
     ["no events", { type: "webhook" as const, format: "github" as const, repo: "o/r" }],
     ["an empty list of events", { ...hooked, events: [] }],
     ["an event that is no event's name", { ...hooked, events: ["*"] }],

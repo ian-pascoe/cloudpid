@@ -86,7 +86,8 @@ export type WebhookSource = typeof WebhookSource.Type;
 /** The repo and events of a GitHub-managed hook. */
 export type GitHubHookSource = { readonly repo: string; readonly events: ReadonlyArray<string> };
 
-const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u;
+/** `owner/name`: GitHub's owner starts with a letter or digit, and no repo is named `.` or `..`. */
+const REPO_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/u;
 
 const EVENT_PATTERN = /^[a-z][a-z_]{0,63}$/u;
 
