@@ -2,6 +2,7 @@
 // its name, its Repos, its creation and the Builds it asks for. Besides the Container settings (`variableField` and
 // the setting names), these are the `field`s of an Agent change. Shared by the server (which writes and reverts them)
 // and the web app (which labels them and offers a revert only where there is one).
+import * as Schema from "effect/Schema";
 import { fieldSecret } from "./environment-secrets.ts";
 import { MAX_ENVIRONMENT_NAME_LENGTH } from "./registry.ts";
 
@@ -13,6 +14,12 @@ export const NAME_FIELD = "name";
  * with. There is no revert: deleting an Environment needs the owner's Approval (`environment_delete`).
  */
 export const CREATED_FIELD = "environment";
+
+/** What the change to `CREATED_FIELD` holds after it: the name and the Repos the Environment was made with. */
+export const CreatedValue = Schema.Struct({
+  name: Schema.String,
+  repos: Schema.Array(Schema.Struct({ name: Schema.String, url: Schema.String })),
+});
 
 /**
  * The field of the Environment's delete the owner approved (`environment_delete`, `docs/architecture/agent-changes.md` → Approval): before it

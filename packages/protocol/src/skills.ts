@@ -12,8 +12,11 @@ import type { AgentChange } from "./registry.ts";
  */
 export type SkillExpectation = { readonly savedAt: number | null };
 
-/** Where every Workspace serves its Skill set, read-only: a Skill named `name` is at `<SKILLS_ROOT>/<name>`. */
-export const SKILLS_ROOT = "/workspace/.agents/skills";
+/**
+ * Where every Workspace serves its Skill set, read-only: a Skill named `name` is at `<SKILLS_ROOT>/<name>`. It is kept
+ * with the shared tool declarations' words (`harness-tools/skill-words.ts`), which import nothing of this package.
+ */
+export { SKILLS_ROOT } from "./harness-tools/skill-words.ts";
 
 /**
  * Where a Skill was installed from (ADR-0026, GLOSSARY.md → Skill source): a GitHub repo, the Skill's folder in it, the
