@@ -84,6 +84,7 @@ const UNEXPECTED: Handlers = {
   dismissSettingsChange: unexpected("dismissSettingsChange"),
   getPush: unexpected("getPush"),
   listTriggers: unexpected("listTriggers"),
+  listSessionTriggers: unexpected("listSessionTriggers"),
   createTrigger: unexpected("createTrigger"),
   updateTrigger: unexpected("updateTrigger"),
   setTriggerPaused: unexpected("setTriggerPaused"),

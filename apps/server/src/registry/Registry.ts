@@ -35,6 +35,7 @@ import type {
   SkillChangeFiles,
   SkillFile,
   TriggerChanged,
+  OwnerTriggerInput,
   TriggerChangeValue,
   TriggerDefinition,
   TriggerInput,
@@ -163,6 +164,7 @@ import { newEnvironmentId, newSessionId, newTriggerId, newWorkspaceId, shortId }
 import { openTriggerChanges } from "./trigger-changes.ts";
 import {
   type EnvironmentRemoval,
+  type SessionRemoval,
   type FireAdmission,
   type FireAdmitted,
   openTriggers,
@@ -454,8 +456,25 @@ export type RegistryMethods = {
   readonly unarchiveSession: (input: {
     readonly id: string;
   }) => Effect.Effect<SessionRecord | null>;
-  /** Forget a Session, once its object is wiped; says whether it was registered. */
+  /**
+   * Forget a Session, once its object is wiped; says whether it was registered. Its Session triggers go with it, though
+   * their objects are left to heal (`deleteSessionWithTriggers`).
+   */
   readonly deleteSession: (input: { readonly id: string }) => Effect.Effect<boolean>;
+  /**
+   * `deleteSession`, answering the ids of the Session triggers that went with the Session (deleted in the same
+   * transaction), whose objects the caller wipes (`docs/architecture/triggers.md` → Cascades).
+   */
+  readonly deleteSessionWithTriggers: (input: {
+    readonly id: string;
+  }) => Effect.Effect<SessionRemoval>;
+  /**
+   * Delete the Session triggers of Session `session`, which stays, answering their ids, whose objects the caller wipes:
+   * the first step of a Session's deletion, before its object is wiped, so no Fire reaches an object nothing owns.
+   */
+  readonly deleteSessionTriggers: (input: {
+    readonly session: string;
+  }) => Effect.Effect<ReadonlyArray<string>>;
   /** Register an Environment under a fresh id, unless another has the name in any case. */
   readonly createEnvironment: (input: {
     readonly name: string;
@@ -1102,7 +1121,7 @@ export type RegistryMethods = {
    */
   readonly createTrigger: (input: {
     readonly id?: string | undefined;
-    readonly trigger: TriggerInput;
+    readonly trigger: OwnerTriggerInput;
   }) => Effect.Effect<TriggerWrite>;
   /**
    * Change a Trigger's fields at its next revision; its kind and Environment never change. With `expected`, only while
@@ -1152,6 +1171,10 @@ export type RegistryMethods = {
   /** Every Trigger, or `environment`'s, newest first. */
   readonly listTriggers: (input: {
     readonly environment?: string | undefined;
+  }) => Effect.Effect<ReadonlyArray<TriggerDefinition>>;
+  /** The Session triggers of Session `session`, newest first. */
+  readonly listSessionTriggers: (input: {
+    readonly session: string;
   }) => Effect.Effect<ReadonlyArray<TriggerDefinition>>;
   /** A Trigger's definition, or null once it is gone: what its object reads at each touch (self-healing). */
   readonly triggerDefinition: (input: {
@@ -1406,12 +1429,19 @@ export const registryMethods = Effect.suspend(() =>
 
         /**
          * What a new Trigger's write reaches: its Environment's Scopes, or for a Workspace trigger its Workspace's
-         * Environment's. A Workspace that is not kept reaches every Scope, since the write is refused before it keeps anything.
+         * Environment's, or for a Session trigger its Session's. A Workspace or Session that is not kept reaches every
+         * Scope, since the write is refused before it keeps anything.
          */
-        const createReach = (trigger: TriggerInput) =>
-          trigger.kind === "environment"
-            ? reachOf(trigger.environment)
-            : reachOf(store.getWorkspace(trigger.workspace)?.environment ?? GLOBAL_SCOPE);
+        const createReach = (trigger: TriggerInput) => {
+          if (trigger.kind === "environment") return reachOf(trigger.environment);
+
+          const kept =
+            trigger.kind === "workspace"
+              ? store.getWorkspace(trigger.workspace)
+              : store.getSession(trigger.session);
+
+          return reachOf(kept?.environment ?? GLOBAL_SCOPE);
+        };
 
         /** The Scopes a change of Trigger `id` reaches: its Environment's and Global's (every one's for a Trigger gone). */
         const triggerReach = (id: string) => reachOf(triggers.get(id)?.environment ?? GLOBAL_SCOPE);
@@ -1601,7 +1631,10 @@ export const registryMethods = Effect.suspend(() =>
           archiveSession: ({ id }) =>
             Clock.currentTimeMillis.pipe(Effect.map((now) => store.archiveSession(id, now))),
           unarchiveSession: ({ id }) => Effect.sync(() => store.unarchiveSession(id)),
-          deleteSession: ({ id }) => Effect.sync(() => store.deleteSession(id)),
+          deleteSession: ({ id }) => Effect.sync(() => triggers.deleteSession(id).deleted),
+          deleteSessionWithTriggers: ({ id }) => Effect.sync(() => triggers.deleteSession(id)),
+          deleteSessionTriggers: ({ session }) =>
+            Effect.sync(() => triggers.deleteOfSession(session)),
           createEnvironment: ({ name }) =>
             Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
@@ -2358,6 +2391,7 @@ export const registryMethods = Effect.suspend(() =>
               triggerChanges.remove(args.id, args.author, now),
             ),
           listTriggers: ({ environment }) => Effect.sync(() => triggers.list(environment)),
+          listSessionTriggers: ({ session }) => Effect.sync(() => triggers.listOfSession(session)),
           triggerDefinition: ({ id }) => Effect.sync(() => triggers.get(id)),
           admitFire: (fire) =>
             Effect.gen(function* () {
@@ -2366,7 +2400,16 @@ export const registryMethods = Effect.suspend(() =>
 
               const now = yield* Clock.currentTimeMillis;
 
-              return triggers.admit(fire, { session, workspace }, now, STARTING_MS);
+              const admitted = triggers.admit(fire, { session, workspace }, now, STARTING_MS);
+
+              // A caller that can't read `send` fails: it is tried again once it is replaced.
+              return admitted.status === "unsupported"
+                ? yield* Effect.die(
+                    new Error(
+                      "A Session trigger's Fire needs a caller that knows Session triggers",
+                    ),
+                  )
+                : admitted;
             }),
           notifyTriggerFailed: ({ trigger, reason }) =>
             Effect.suspend(() => {

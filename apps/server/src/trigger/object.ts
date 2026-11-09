@@ -1,15 +1,16 @@
 // What a `Trigger` object does (`docs/architecture/triggers.md` → The Trigger object and the Registry, ADR-0047): _how_
 // a Trigger is reached and _when_ it fires. A Schedule coming due becomes a pending Fire, which the alarm drains through
-// the Registry's `admitFire` and then the Session's `fire`, both keyed by the Fire's key, so a retried alarm never starts
-// a second Session. At each touch the object reads its definition again (`triggerDefinition`) and retires (removed:
-// its admitted Fires get a last try, then it wipes itself), drops its Fires not yet admitted and arms only for the
-// admitted ones (paused), or re-arms (a changed Schedule): a lost message from a caller heals at its next touch. The
-// alarm catches its own errors and re-arms, since the platform gives up after 6 retries. The ports keep the object
-// testable: the real ones are RPC to the Registry and the Sessions (`Trigger.ts`). A webhook Trigger's object also
-// holds its token and Signing secret (sealed, made at its first adopt), checks each delivery to its URL (`deliver`:
-// token, signature, size, content type, then `match` and the bot-loop guard), counts what it refuses or filters per day
-// without calling the Registry, and keeps an accepted delivery as a pending Fire (`docs/architecture/triggers.md` →
-// Webhooks).
+// the Registry's `admitFire` and then the Session's `fire` (a Session trigger's admission answers `send`, and its Fire
+// goes to the Session's `fireSession`), both keyed by the Fire's key, so a retried alarm never starts a second Session.
+// At each touch the object reads its definition again (`triggerDefinition`) and retires (removed: its admitted Fires get
+// a last try, a repeat of their `admitFire`, which a Session's deletion answers `removed`, so the object wipes itself
+// then), drops its Fires not yet admitted and arms only for the admitted ones (paused), or re-arms (a changed Schedule):
+// a lost message from a caller heals at its next touch. The alarm catches its own errors and re-arms, since the
+// platform gives up after 6 retries. The ports keep the object testable: the real ones are RPC to the Registry and the
+// Sessions (`Trigger.ts`). A webhook Trigger's object also holds its token and Signing secret (sealed, made at its
+// first adopt), checks each delivery to its URL (`deliver`: token, signature, size, content type, then `match` and the
+// bot-loop guard), counts what it refuses or filters per day without calling the Registry, and keeps an accepted
+// delivery as a pending Fire (`docs/architecture/triggers.md` → Webhooks).
 // @effect-diagnostics missingPipeableSignature:off asyncFunction:off -- the object's methods, over a Promise-based alarm.
 import type { KeptVault } from "@cloudpid/extensions/secrets/core";
 import {
@@ -20,6 +21,7 @@ import {
   type FirePayload,
   type FireRecord,
   type FireRequest,
+  type FireResult,
   type FireSource,
   matchesDelivery,
   matchFacts,
@@ -29,6 +31,8 @@ import {
   scheduledFireKey,
   scheduleOf,
   senderText,
+  sessionWhenBusyOf,
+  type SessionFireRequest,
   type SubmitResult,
   TriggerDefinition,
   type TriggerRotation,
@@ -86,6 +90,11 @@ export type TriggerPorts = {
     session: string,
     request: FireRequest,
   ) => Effect.Effect<ApiResult<SubmitResult>, TriggerUnreachable>;
+  /** A Session trigger's Fire into its own Session (`fireSession`). */
+  readonly fireSession: (
+    session: string,
+    request: SessionFireRequest,
+  ) => Effect.Effect<ApiResult<FireResult>, TriggerUnreachable>;
   /** What runs after a Fire's Session started in `environment`: the spare and Build upkeep. Never fails. */
   readonly afterStart: (environment: string) => Effect.Effect<void>;
   /** The vault the object's token and Signing secret are sealed with, bound to the object's own id. */
@@ -627,12 +636,12 @@ export const triggerHandlers = (options: {
       ),
     );
 
-  /** The Session's `fire` for `pending` of `definition` at `at`. */
-  const requestOf = (
+  /** The header of `pending`'s Fire of `definition` at `at`. */
+  const headerOf = (
     definition: TriggerDefinition,
     pending: PendingFire,
     at: number,
-  ): FireRequest => {
+  ): FireRequest["header"] => {
     const header: Types.Mutable<FireRequest["header"]> = {
       name: definition.name,
       zone: scheduleOf(definition)?.zone ?? "UTC",
@@ -648,11 +657,20 @@ export const triggerHandlers = (options: {
     // A manual Fire that carries a payload is the owner's Fire again: the last delivery, sent once more.
     if (pending.source.type === "manual" && pending.delivery !== undefined) header.again = true;
 
+    return header;
+  };
+
+  /** The Session's `fire` for `pending` of `definition` at `at`. */
+  const requestOf = (
+    definition: TriggerDefinition,
+    pending: PendingFire,
+    at: number,
+  ): FireRequest => {
     const request: Types.Mutable<FireRequest> = {
       trigger: { id: definition.id, name: definition.name },
       requestId: pending.key,
       message: definition.message,
-      header,
+      header: headerOf(definition, pending, at),
     };
 
     if (pending.delivery !== undefined) request.payload = payloadOf(pending.delivery);
@@ -663,6 +681,63 @@ export const triggerHandlers = (options: {
 
     return request;
   };
+
+  /** The Session's `fireSession` for `pending` of Session trigger `definition` at `at`. */
+  const sessionRequestOf = (
+    definition: TriggerDefinition,
+    pending: PendingFire,
+    at: number,
+  ): SessionFireRequest => ({
+    trigger: { id: definition.id, name: definition.name },
+    requestId: pending.key,
+    message: definition.message,
+    header: headerOf(definition, pending, at),
+    whenBusy: sessionWhenBusyOf(definition.whenBusy),
+  });
+
+  /** What a Fire that started a new Session settles as, from the Session's answer `sent`. */
+  const startedOutcome = (session: string, sent: ApiResult<SubmitResult>): FireOutcome =>
+    sent.ok ? { type: "started", session } : { type: "failed", reason: sent.error.message };
+
+  /** What a Session trigger's Fire settles as, from the Session's answer `sent`. */
+  const sentOutcome = (sent: ApiResult<FireResult>): FireOutcome => {
+    if (sent.ok) {
+      return "skipped" in sent.value
+        ? { type: "skipped", reason: sent.value.skipped }
+        : { type: "sent", delivery: sent.value.delivery };
+    }
+
+    const { code, message } = sent.error;
+
+    // Its Session is archived or importing: nothing needs resuming afterwards.
+    if (code === "session_archived") return { type: "skipped", reason: "archived" };
+
+    if (code === "session_importing") return { type: "skipped", reason: "importing" };
+
+    return { type: "failed", reason: message };
+  };
+
+  /**
+   * Send an admitted Fire (`send`, a call to its Session) and settle it as `outcomeOf` says of the Session's answer: a
+   * Fire that can't reach the Session, or is told to try again, waits for a later try.
+   */
+  const sendFire = <A>(
+    pending: PendingFire,
+    at: number,
+    send: Effect.Effect<ApiResult<A>, TriggerUnreachable>,
+    outcomeOf: (sent: ApiResult<A>) => FireOutcome,
+  ) =>
+    Effect.gen(function* () {
+      const sent = yield* Effect.result(send);
+
+      if (Result.isFailure(sent)) return yield* later(pending, at, sent.failure.message);
+
+      if (!sent.success.ok && sent.success.error.retryable) {
+        return yield* later(pending, at, sent.success.error.message);
+      }
+
+      yield* settle(pending, outcomeOf(sent.success), at);
+    });
 
   /**
    * Drain one pending Fire at `at`: let it through (`admitFire`, adopting a `stale` answer's definition and asking again),
@@ -705,6 +780,7 @@ export const triggerHandlers = (options: {
           trigger: id,
           revision: matched ?? definition.revision,
           requestId: pending.key,
+          sessionTriggers: true,
         };
 
         if (pending.source.type === "schedule") admission.scheduledAt = pending.source.scheduledAt;
@@ -754,7 +830,9 @@ export const triggerHandlers = (options: {
           }
 
           case "removed":
-            // The Fires already admitted get their last try, unless this is one of them, retiring already.
+            // The Fires already admitted get their last try, unless this is one of them, retiring already. That try is
+            // a repeat of `admitFire`, which a Session's deletion answers `removed` (its `trigger_sends` went with its
+            // Triggers): the object then only wipes.
             yield* retiring ? wipe : retire(at);
 
             return false;
@@ -777,25 +855,26 @@ export const triggerHandlers = (options: {
             // Session answers (a Fire let through before took nothing new).
             if (answer.repeated !== true) yield* ports.afterStart(answer.environment);
 
-            const sent = yield* Effect.result(
+            yield* sendFire(
+              pending,
+              at,
               ports.fire(answer.session, requestOf(definition, pending, at)),
+              (sent) => startedOutcome(answer.session, sent),
             );
 
-            if (Result.isFailure(sent)) {
-              yield* later(pending, at, sent.failure.message);
+            return true;
+          }
 
-              return true;
-            }
+          case "send": {
+            // A Session trigger's own Session: nothing was made, so there is no upkeep.
+            store().admitted(pending.key, answer.session);
 
-            if (!sent.success.ok) {
-              yield* sent.success.error.retryable
-                ? later(pending, at, sent.success.error.message)
-                : settle(pending, { type: "failed", reason: sent.success.error.message }, at);
-
-              return true;
-            }
-
-            yield* settle(pending, { type: "started", session: answer.session }, at);
+            yield* sendFire(
+              pending,
+              at,
+              ports.fireSession(answer.session, sessionRequestOf(definition, pending, at)),
+              sentOutcome,
+            );
 
             return true;
           }

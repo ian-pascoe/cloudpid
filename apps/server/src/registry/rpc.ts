@@ -1088,6 +1088,7 @@ export const serveRegistryRpc = <R = never>(
             ),
           ),
         ),
+      listSessionTriggers: ({ session }) => registry.listSessionTriggers({ session }),
       createTrigger: ({ id, trigger }) =>
         registry.createTrigger({ id, trigger }).pipe(
           Effect.flatMap((write) =>

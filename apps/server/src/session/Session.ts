@@ -152,6 +152,8 @@ import type {
   SubmitRequest,
   SubmitResult,
   FireRequest,
+  FireResult,
+  SessionFireRequest,
   TranscriptPage,
   TranscriptRequest,
   WaitOutcome,
@@ -252,6 +254,12 @@ export type SessionMethods = {
    * `submit`. A failure is the result's, never a throw.
    */
   readonly fire: (request: FireRequest) => Effect.Effect<ApiResult<SubmitResult>>;
+  /**
+   * A Session trigger's Fire into this Session (`docs/architecture/triggers.md` → Overlap): `fire`, with `when_busy`
+   * (queue, steer or skip) and coalescing, answering how it was delivered or why it was skipped. A method of its own,
+   * so a Session on older code fails it loudly and the Trigger's alarm tries again. A failure is the result's.
+   */
+  readonly fireSession: (request: SessionFireRequest) => Effect.Effect<ApiResult<FireResult>>;
   /** Begin the Session import this new Session is for: it shows `importing` and takes no message or move until it ends. */
   readonly stageImportBegin: (request: StageImportBegin) => Effect.Effect<ApiResult<StagedImport>>;
   /** Keep a slice of the pi Session file, at the byte `offset` the held bytes end at. */
@@ -968,6 +976,21 @@ export const SessionLive = Session.make(
                   ),
                 );
 
+        // Whether the Registry still lists the Session, for a Session trigger's Fire: one it does not is a Session that was
+        // deleted while the Fire was on its way. A Registry that cannot say fails the call, which is tried again.
+        const registeredSession: Effect.Effect<boolean, SessionError> =
+          name === undefined
+            ? Effect.succeed(true)
+            : registries
+                .getByName(REGISTRY_NAME)
+                .getSession({ id: name })
+                .pipe(
+                  Effect.map((session) => session !== null),
+                  Effect.mapError((error) =>
+                    SessionError.make({ operation: "registered", message: String(error) }),
+                  ),
+                );
+
         // The object's services, built once and kept for its lifetime. Building the sockets restarts the watches of
         // sockets that outlived the last instance, before any of their events is handled.
         const runtime = ManagedRuntime.make(
@@ -977,7 +1000,14 @@ export const SessionLive = Session.make(
             // Reviews, which the sockets send, place through the host and check against the Changes.
             Layer.provideMerge(sessionReviewsLayer(kv)),
             // The MCP endpoint's calls, over the host, the Secrets and the requests waiting for the owner.
-            Layer.provideMerge(sessionMcpLayer({ session: name, kv, archived: archivedSession })),
+            Layer.provideMerge(
+              sessionMcpLayer({
+                session: name,
+                kv,
+                archived: archivedSession,
+                registered: registeredSession,
+              }),
+            ),
             Layer.provideMerge(
               sessionHostLayer({
                 storage: state.raw.storage,
@@ -1263,6 +1293,8 @@ export const SessionLive = Session.make(
           submit: (request) => invoked("session.mcp.submit", mcp.submit(request)),
           stop: (request) => invoked("session.mcp.stop", mcp.stop(request)),
           fire: (request) => invoked("session.trigger.fire", mcp.fire(request)),
+          fireSession: (request) =>
+            invoked("session.trigger.fire_session", mcp.fireSession(request)),
           configure: (request) =>
             invoked(
               "session.mcp.configure",

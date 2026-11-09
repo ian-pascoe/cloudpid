@@ -634,6 +634,7 @@ const fakeRegistries = () => {
 
   /** The Triggers of each Environment, by its id: what deleting it answers, for the caller to wipe their objects. */
   const environmentTriggers = new Map<string, Array<string>>();
+  const sessionTriggers = new Map<string, Array<string>>();
 
   /** The Trigger objects whose wake fails, as objects that never answer. */
   const unreachableTriggers = new Set<string>();
@@ -883,6 +884,29 @@ const fakeRegistries = () => {
         calls.push(`deleteSession:${id}`);
 
         return remove(sessions, (session) => session.id === id);
+      }),
+    deleteSessionTriggers: ({ session }) =>
+      Effect.sync(() => {
+        calls.push(`deleteSessionTriggers:${session}`);
+
+        const triggers = sessionTriggers.get(session) ?? [];
+
+        sessionTriggers.delete(session);
+
+        return triggers;
+      }),
+    listSessionTriggers: ({ session }) =>
+      Effect.sync(() => Arr.filter([...triggersHeld.values()], (held) => held.session === session)),
+    deleteSessionWithTriggers: ({ id }) =>
+      Effect.sync(() => {
+        calls.push(`deleteSession:${id}`);
+
+        const deleted = remove(sessions, (session) => session.id === id);
+        const triggers = sessionTriggers.get(id) ?? [];
+
+        sessionTriggers.delete(id);
+
+        return { deleted, triggers };
       }),
     renameSession: ({ id, title }) =>
       Effect.sync(() => {
@@ -1777,6 +1801,7 @@ const fakeRegistries = () => {
     sessionObjects,
     workspaceObjects,
     environmentTriggers,
+    sessionTriggers,
     triggerObjects,
     unreachableTriggers,
     triggersHeld,
@@ -2794,6 +2819,50 @@ it("removes a Workspace's Triggers with it, then wipes their objects", async () 
   ]);
   expect(fake.triggersHeld.size).toBe(0);
   expect(fake.workspaces).toEqual([]);
+});
+
+it("deletes a Session's Session triggers and wipes their objects before the Session's own, then forgets it", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.sessionTriggers.set(session.id, ["t1", "t2"]);
+
+  await call(fake, (registry) => registry.deleteSession({ id: session.id }));
+
+  expect(
+    Arr.filter(fake.calls, (name) =>
+      /^(deleteSessionTriggers|removeTriggerObject|destroy):/.test(name),
+    ),
+  ).toEqual([
+    `deleteSessionTriggers:${session.id}`,
+    "removeTriggerObject:t1",
+    "removeTriggerObject:t2",
+    `destroy:${session.id}`,
+  ]);
+  expect(lifecycle(fake)).toEqual([
+    "removeTriggerObject:t1",
+    "removeTriggerObject:t2",
+    `destroy:${session.id}`,
+    `deleteSession:${session.id}`,
+    expect.stringMatching(/^destroyWorkspace:ws:/),
+    expect.stringMatching(/^deleteWorkspace:/),
+  ]);
+});
+
+it("leaves no Session trigger to fire at a Session whose object could not be wiped, which is kept", async () => {
+  const fake = fakeRegistries();
+  const session = await call(fake, (registry) => registry.createSession({}));
+
+  fake.sessionTriggers.set(session.id, ["t1"]);
+  fake.breakSession(session.id, "storage error");
+
+  await call(fake, (registry) => Effect.flip(registry.deleteSession({ id: session.id })));
+
+  // Its Triggers went first, so no Fire is admitted while the Session is half deleted.
+  expect(fake.calls).toContain(`deleteSessionTriggers:${session.id}`);
+  expect(fake.calls).toContain("removeTriggerObject:t1");
+  expect(fake.calls).not.toContain(`deleteSession:${session.id}`);
+  expect(fake.sessions.map((each) => each.id)).toContain(session.id);
 });
 
 it("wipes no Trigger object of an Environment it could not delete", async () => {
@@ -5676,6 +5745,35 @@ it("forks a Session before an owner's message into its Workspace, copying its br
   expect(fake.finished.get(forked.session.id)).toMatchObject({ through: 2 });
   // It shares its source's Workspace: no file is carried.
   expect(Arr.some(fake.calls, (name) => name.startsWith("carry:"))).toBe(false);
+});
+
+it("leaves a Fork and a Clone of a Session with a Session trigger with none of its own", async () => {
+  const { fake, source } = await withSource();
+
+  const held = await call(fake, (registry) =>
+    registry.createTrigger({
+      id: "t1",
+      trigger: {
+        kind: "environment",
+        environment: DEFAULT_ENVIRONMENT,
+        name: "Check CI",
+        message: "Check CI.",
+        source: { type: "schedule", cron: "0 9 * * *", zone: "UTC" },
+        whenBusy: "skip",
+      },
+    }),
+  );
+
+  fake.triggersHeld.set("t1", { ...held, kind: "session", session: source.id, whenBusy: "queue" });
+  fake.calls.length = 0;
+
+  await call(fake, (registry) =>
+    registry.forkSession({ source: source.id, point: { entryId: 3, position: "before" } }),
+  );
+  await call(fake, (registry) => registry.forkSession({ source: source.id }));
+
+  // A copy answers every Fire too, so it takes none: a Fork and a Clone touch no Trigger.
+  expect(Arr.some(fake.calls, (name) => /rigger/.test(name))).toBe(false);
 });
 
 it("clones a Session as it is, and refuses while its Run is in progress, registering nothing", async () => {

@@ -9,11 +9,13 @@ import {
   TriggerUnscheduled,
 } from "@cloudpid/protocol";
 import { describe, expect, it } from "@effect/vitest";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import { type RegistryHandlers, registryWith, settled } from "./registry.testing.ts";
 import {
   saveTriggerAtom,
+  sessionTriggersAtom,
   type TriggerForm,
   triggerDraftAtom,
   triggerFormAtom,
@@ -147,6 +149,63 @@ describe("saving the Trigger form", () => {
         expect(registry.get(triggerDraftAtom("work"))).toEqual(draft);
         registry.dispose();
       }
+    }),
+  );
+});
+
+describe("a Session's triggers", () => {
+  const SESSION_TRIGGER: TriggerDefinition = {
+    ...DEFINITION,
+    id: "t2",
+    kind: "session",
+    session: "s-1",
+    whenBusy: "queue",
+  };
+
+  it.effect(
+    "are asked of the Session's own method, so a Registry without it fails them loudly",
+    () =>
+      Effect.gen(function* () {
+        const asked: Array<string> = [];
+
+        const registry = registryWith({
+          listSessionTriggers: ({ session }) =>
+            Effect.sync(() => {
+              asked.push(session);
+
+              return [SESSION_TRIGGER];
+            }),
+        });
+
+        // Until its answer, the list is empty.
+        const listed = yield* Effect.callback<readonly TriggerDefinition[]>((resume) => {
+          const cancel = registry.subscribe(sessionTriggersAtom("s-1"), (found) => {
+            if (found.length === 0) return;
+
+            cancel();
+            resume(Effect.succeed(found));
+          });
+
+          return Effect.sync(cancel);
+        });
+
+        // Asked again as the page becomes visible: always of the one Session.
+        expect(Arr.dedupe(asked)).toEqual(["s-1"]);
+        expect(listed).toEqual([SESSION_TRIGGER]);
+        registry.dispose();
+      }),
+  );
+
+  it.effect("are none while the Registry cannot answer", () =>
+    Effect.gen(function* () {
+      const registry = registryWith({ listSessionTriggers: () => Effect.die("no such method") });
+
+      registry.mount(sessionTriggersAtom("s-1"));
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+
+      expect(registry.get(sessionTriggersAtom("s-1"))).toEqual([]);
+      registry.dispose();
     }),
   );
 });

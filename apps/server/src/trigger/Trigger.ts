@@ -1,14 +1,15 @@
 // The Trigger object (`docs/architecture/triggers.md` → The Trigger object and the Registry, ADR-0047): one Durable
 // Object per Trigger, `trigger:<trigger id>`, which holds its Schedule's cursor, its pending Fires and its fire log, and
 // whose alarm fires it (`object.ts`). Its ports are RPC to the Registry (`triggerDefinition`, `admitFire`,
-// `notifyTriggerFailed`) and to the Fire's Session (`fire`), and the spare and Build upkeep after a Fire took a spare,
-// as after the owner's start (`upkeepAfterStart`). A webhook Trigger's secrets are sealed with `SecretsConfig`'s key under
-// the purpose `trigger:<id>`, and the App's own bot account (for the bot-loop guard) is asked of GitHub as the App
+// `notifyTriggerFailed`) and to the Fire's Session (`fire`, or `fireSession` for a Session trigger, whose admission
+// answers `send`), and the spare and Build upkeep after a Fire took a spare, as after the owner's start
+// (`upkeepAfterStart`). A webhook Trigger's secrets are sealed with `SecretsConfig`'s key under the purpose
+// `trigger:<id>`, and the App's own bot account (for the bot-loop guard) is asked of GitHub as the App
 // (`GitHubAppConfig`). Every span is a custom span of the Worker's trace.
 // @effect-diagnostics globalFetch:off globalDate:off -- GitHub is asked with `fetch`, as `GitHubApp` is everywhere.
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { openKeptVault } from "@cloudpid/extensions/secrets/core";
-import { ApiResult, SubmitResult, TriggerDefinition } from "@cloudpid/protocol";
+import { ApiResult, FireResult, SubmitResult, TriggerDefinition } from "@cloudpid/protocol";
 import { workersTelemetry } from "@cloudpid/telemetry";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -44,6 +45,8 @@ export class Trigger extends Cloudflare.DurableObject<Trigger, TriggerHandlers>(
 const decodeDefinition = Schema.decodeUnknownEffect(Schema.NullOr(TriggerDefinition));
 
 const decodeFired = Schema.decodeUnknownEffect(ApiResult(SubmitResult));
+
+const decodeFiredInto = Schema.decodeUnknownEffect(ApiResult(FireResult));
 
 /** A failed call for `what`, as the object reads it: unreachable for now, tried again later. */
 const unreachable = (what: string) => (cause: Cause.Cause<unknown>) =>
@@ -123,6 +126,14 @@ export const TriggerLive = Trigger.make(
               .pipe(
                 Effect.flatMap(decodeFired),
                 Effect.catchCause(unreachable("The Session's fire")),
+              ),
+          fireSession: (session, request) =>
+            sessions
+              .getByName(session)
+              .fireSession(request)
+              .pipe(
+                Effect.flatMap(decodeFiredInto),
+                Effect.catchCause(unreachable("The Session's fireSession")),
               ),
           afterStart: (environment) => upkeepAfterStart({ spares, builds }, environment),
           vault,

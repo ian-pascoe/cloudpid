@@ -191,13 +191,17 @@ const dollars = (amount: number): string =>
 export const spendReason = (spent: number, limit: number): string =>
   `it has spent ${dollars(spent)} of its ${dollars(limit)} limit`;
 
+/** What a Session out of budget is told, `reason` being a clause such as `spendReason` gives. */
+export const outOfBudgetMessage = (reason: string): string =>
+  `This Session is out of budget: ${reason}. Raise or clear the spend limit in the settings to go on.`;
+
 /**
  * What a refused request ends with, and so what the owner reads (in the assistant message and in the push of the failed
  * Run). "Out of budget" is pi-ai's own marker of a limit that retrying will not lift, so a request that carries it is
  * never retried; digits and words that mark a transient failure (a status code, "timeout") are kept out of it.
  */
 export const spendMessage = (spent: number, limit: number): string =>
-  `This Session is out of budget: it has spent ${dollars(spent)} of its ${dollars(limit)} limit. Raise or clear the spend limit in the settings to go on.`;
+  outOfBudgetMessage(spendReason(spent, limit));
 
 export type SpendGate = {
   /** The spend limit in force, in US dollars; `null` for none. Read at each request. */

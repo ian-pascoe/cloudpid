@@ -13,6 +13,8 @@ import {
   apiOk,
   type ConfigureRequest,
   type FireRequest,
+  type FireResult,
+  type SessionFireRequest,
   type CursorState,
   decodeCursor,
   encodeCursor,
@@ -55,7 +57,7 @@ import type * as Types from "effect/Types";
 import * as Record from "effect/Record";
 import { CONVERSATION_MISSING, isWithdrawn, SessionError } from "./errors.ts";
 import { type Prompt, SessionHost } from "./host.ts";
-import { sessionFire } from "./fire.ts";
+import { sessionFire, sessionFireSession } from "./fire.ts";
 import { agentChange } from "./sockets.ts";
 import { cursorOf, endedBy, statusOf, type Snapshot, waitingMark } from "./mcp-follow.ts";
 import type { FollowState, SettledInput } from "./mcp-reads.ts";
@@ -74,6 +76,8 @@ export type SessionMcpService = {
   readonly configure: (request: ConfigureRequest) => Effect.Effect<ApiResult<null>>;
   /** A Trigger's Fire (`fire.ts`). */
   readonly fire: (request: FireRequest) => Effect.Effect<ApiResult<SubmitResult>>;
+  /** A Session trigger's Fire into this Session (`fire.ts`). */
+  readonly fireSession: (request: SessionFireRequest) => Effect.Effect<ApiResult<FireResult>>;
 };
 
 export class SessionMcp extends Context.Service<SessionMcp, SessionMcpService>()(
@@ -90,6 +94,8 @@ export type SessionMcpOptions = {
   };
   /** Whether the owner archived the Session: it takes no input then. */
   readonly archived: Effect.Effect<boolean, SessionError>;
+  /** Whether the Registry still lists the Session; a Trigger's Fire into one it does not is refused, for good. */
+  readonly registered: Effect.Effect<boolean, SessionError>;
   /** How often a wait looks again, in milliseconds. */
   readonly pollMs?: number;
   /** How long a stop waits for the Session to go idle, in milliseconds. */
@@ -100,13 +106,26 @@ export type SessionMcpOptions = {
 export const WAIT_POLL_MS = 500;
 
 /** One input the Session takes from outside its sockets: the endpoint's `submit`, or a Trigger's `fire`. */
-export type Delivery = {
+export type Delivery<Declined = never> = {
   /** The send's request id: a repeat is answered as its first send was, and sends nothing. */
   readonly requestId: string | undefined;
   readonly prompt: Prompt;
-  /** Why a first send is refused, given the Session as it is now, or undefined to send it. */
-  readonly refuse?: (before: FollowState) => ApiResult<SubmitResult> | undefined;
-  /** What runs before a first send only: the Trigger's model and thinking level. */
+  /**
+   * Why a first send is refused, given the Session as it is now, or undefined to send it: checked at once on the state
+   * read, with nothing awaited between, so a `Declined` value that says it was skipped during a Run (a Session trigger's
+   * `skip`) holds when the send is made.
+   */
+  readonly refuse?: (before: FollowState) => ApiResult<SubmitResult | Declined> | undefined;
+  /**
+   * Why a first send is not made, asked before the Session is read, as it may await the Registry: a failure, or a
+   * `Declined` value that says it was skipped (a Session trigger's Fire while an earlier one is still queued); or
+   * undefined to send it. A repeat of a send admitted before never asks.
+   */
+  readonly decline?: Effect.Effect<ApiResult<Declined> | undefined, SessionError>;
+  /**
+   * What runs before a first send only: the Trigger's model and thinking level. It must not wait on anything (the
+   * Registry, a Run, the owner): `refuse` has read the busy state, and the send follows with nothing awaited between.
+   */
   readonly first?: Effect.Effect<void, SessionError> | undefined;
 };
 
@@ -114,7 +133,9 @@ export type Delivery = {
  * Send `delivery` as the endpoint's sends go: refused while the Session is archived or importing (unless its request id
  * was admitted before), answered with its delivery and the cursor its Run's end is waited from. Never fails.
  */
-export type Deliver = (delivery: Delivery) => Effect.Effect<ApiResult<SubmitResult>>;
+export type Deliver = <Declined = never>(
+  delivery: Delivery<Declined>,
+) => Effect.Effect<ApiResult<SubmitResult | Declined>>;
 
 /** Where the time each waiting request was first seen is kept (a request has no time of its own), and the newest. */
 const SEEN_KEY = "mcp-waiting-seen";
@@ -725,8 +746,13 @@ const sessionMcp = (options: SessionMcpOptions) =>
       return delivery;
     };
 
-    const deliver: Deliver = (delivery) =>
-      guarded(
+    const importingFailure = apiFailure(
+      "session_importing",
+      "This Session is still importing: wait for it to finish.",
+    );
+
+    const deliver: Deliver = <Declined = never>(delivery: Delivery<Declined>) =>
+      guarded<SubmitResult | Declined>(
         Effect.gen(function* () {
           const { requestId, prompt } = delivery;
           const earlier = requestId === undefined ? undefined : yield* host.admitted(requestId);
@@ -740,15 +766,19 @@ const sessionMcp = (options: SessionMcpOptions) =>
             );
           }
 
+          // Importing is answered before `decline`, which may fail a Fire that a Session still importing would only skip.
+          if (earlier === undefined && (yield* host.copying)) return importingFailure;
+
+          if (earlier === undefined && delivery.decline !== undefined) {
+            const declined = yield* delivery.decline;
+
+            if (declined !== undefined) return declined;
+          }
+
           const seam = yield* redactor;
           const before = yield* host.follow();
 
-          if (earlier === undefined && before.copying) {
-            return apiFailure(
-              "session_importing",
-              "This Session is still importing: wait for it to finish.",
-            );
-          }
+          if (earlier === undefined && before.copying) return importingFailure;
 
           if (earlier === undefined) {
             const refused = delivery.refuse?.(before);
@@ -854,6 +884,14 @@ const sessionMcp = (options: SessionMcpOptions) =>
       redact: redactor.pipe(Effect.map((seam) => seam.redact)),
     });
 
+    const fireSession = sessionFireSession({
+      deliver,
+      admitted: host.admitted,
+      overLimit: host.overLimit,
+      registered: options.registered,
+      kv: options.kv,
+    });
+
     return {
       status,
       waitForChange,
@@ -862,6 +900,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
       stop,
       configure,
       fire,
+      fireSession,
     } satisfies SessionMcpService;
   });
 

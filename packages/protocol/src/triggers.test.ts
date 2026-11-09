@@ -4,11 +4,11 @@ import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import {
   armsTrigger,
-  baseProblem,
   defaultWhenBusy,
   sourceProblem,
   webhookOf,
   FireOutcome,
+  FireResult,
   FireSource,
   fireText,
   fireTitle,
@@ -19,7 +19,9 @@ import {
   TriggerDefinition,
   fieldTrigger,
   fireTimeWords,
+  heldBySession,
   holdsEditedFields,
+  ownOptionsProblem,
   triggerChangeJson,
   triggerChangeValue,
   triggerField,
@@ -131,10 +133,14 @@ describe("a value a later slice added", () => {
       }),
     ).toMatchObject({ kind: "unknown", source: { type: "unknown" }, whenBusy: "skip" });
     expect(read(FireSource, { type: "slack", delivery: "d1" })).toEqual({ type: "unknown" });
-    expect(read(FireOutcome, { type: "sent", delivery: "queued" })).toEqual({ type: "unknown" });
-    expect(read(FireOutcome, { type: "skipped", reason: "later-reason" })).toEqual({
+    expect(read(FireOutcome, { type: "retried" })).toEqual({ type: "unknown" });
+    expect(read(FireOutcome, { type: "skipped", reason: "a later reason" })).toEqual({
       type: "skipped",
       reason: "unknown",
+    });
+    expect(read(FireOutcome, { type: "sent", delivery: "a later delivery" })).toEqual({
+      type: "sent",
+      delivery: "unknown",
     });
   });
 
@@ -145,6 +151,74 @@ describe("a value a later slice added", () => {
     expect(scheduleOf(known)).toEqual({ type: "schedule", cron: "@daily", zone: "UTC" });
     expect(scheduleOf(later)).toBeUndefined();
     expect(scheduleOf(undefined)).toBeUndefined();
+  });
+});
+
+const schedule = { type: "schedule", cron: "@daily", zone: "UTC" } as const;
+
+describe("whenBusyProblem", () => {
+  it("takes skip and start for an Environment trigger, and queue, steer and skip for a Session trigger", () => {
+    for (const whenBusy of ["skip", "start"] as const) {
+      expect(whenBusyProblem("environment", whenBusy)).toBeUndefined();
+    }
+
+    for (const whenBusy of ["queue", "steer", "skip"] as const) {
+      expect(whenBusyProblem("session", whenBusy)).toBeUndefined();
+    }
+
+    expect(whenBusyProblem("environment", "queue")).toBeDefined();
+    expect(whenBusyProblem("session", "start")).toBeDefined();
+  });
+
+  it("reads a kind a later version added as an Environment trigger's", () => {
+    expect(defaultWhenBusy("unknown", schedule)).toBe("skip");
+    expect(whenBusyProblem("unknown", "start")).toBeUndefined();
+  });
+});
+
+describe("what a kind takes", () => {
+  it("refuses the options a kind has none of, and takes null for any", () => {
+    expect(ownOptionsProblem("environment", { base: "main", model: "m", thinking: "high" })).toBe(
+      undefined,
+    );
+    expect(ownOptionsProblem("session", {})).toBeUndefined();
+    expect(ownOptionsProblem("session", { base: undefined })).toBeUndefined();
+    expect(ownOptionsProblem("session", { thinking: "high" })).toBeDefined();
+    // `null` puts an option back to its default, which the Registry accepts for any kind.
+    expect(
+      ownOptionsProblem("session", { base: null, model: null, thinking: null }),
+    ).toBeUndefined();
+  });
+
+  it("holds a Session trigger for its own Session alone", () => {
+    const base = {
+      id: "t1",
+      revision: 1,
+      environment: "default",
+      name: "n",
+      message: "m",
+      source: { type: "schedule", cron: "@daily", zone: "UTC" },
+      whenBusy: "queue",
+      paused: false,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const mine = read(TriggerDefinition, { ...base, kind: "session", session: "s-1" });
+    const environment = read(TriggerDefinition, { ...base, kind: "environment", whenBusy: "skip" });
+
+    expect(heldBySession(mine, "s-1")).toBe(true);
+    expect(heldBySession(mine, "s-2")).toBe(false);
+    expect(heldBySession(mine, undefined)).toBe(false);
+    expect(heldBySession(environment, "s-2")).toBe(true);
+    expect(heldBySession(environment, undefined)).toBe(true);
+  });
+});
+
+describe("what fireSession answers", () => {
+  it("reads a delivery or a skip (a later reason as unknown), and refuses anything else", () => {
+    expect(read(FireResult, { skipped: "later" })).toEqual({ skipped: "unknown" });
+    expect(() => read(FireResult, { nothing: true })).toThrow();
   });
 });
 
@@ -317,14 +391,15 @@ describe("the options a kind takes", () => {
       "wait",
     );
     expect(whenBusyProblem("workspace", "wait")).toBeUndefined();
-    expect(whenBusyProblem("environment", "wait")).toContain("Only a Workspace trigger");
+    expect(whenBusyProblem("environment", "wait")).toBeDefined();
     expect(whenBusyProblem("environment", "start")).toBeUndefined();
   });
 
   it("takes a base only as an Environment trigger", () => {
-    expect(baseProblem("environment", "develop")).toBeUndefined();
-    expect(baseProblem("workspace", undefined)).toBeUndefined();
-    expect(baseProblem("workspace", null)).toBeUndefined();
-    expect(baseProblem("workspace", "develop")).toContain("takes no base");
+    expect(ownOptionsProblem("environment", { base: "develop" })).toBeUndefined();
+    expect(ownOptionsProblem("workspace", { base: undefined })).toBeUndefined();
+    expect(ownOptionsProblem("workspace", { base: null })).toBeUndefined();
+    expect(ownOptionsProblem("workspace", { base: "develop" })).toBeDefined();
+    expect(ownOptionsProblem("workspace", { model: "m", thinking: "high" })).toBeUndefined();
   });
 });

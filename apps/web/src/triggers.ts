@@ -9,6 +9,7 @@ import {
   type EnvironmentTriggerInput,
   type FireOutcome,
   type FireRecord,
+  type FireSkip,
   fireTimeWords,
   nextFires,
   scheduleOf,
@@ -16,12 +17,14 @@ import {
   webhookOf,
   scheduleProblem,
   type TriggerDefinition,
-  type TriggerInput,
+  type OwnerTriggerInput,
   type TriggerKind,
   triggerMessageProblem,
   triggerNameProblem,
   type TriggerPatch,
   type TriggerWhenBusy,
+  takesBase,
+  whenBusyValues,
   type WorkspaceTriggerInput,
 } from "@cloudpid/protocol";
 import { ThinkingLevel } from "@cloudpid/config";
@@ -40,6 +43,11 @@ export const PREVIEWED_FIRES = 5;
  * its Workspace (`workspace`, by id) and has no `base`.
  */
 export type TriggerDraft = {
+  /**
+   * The kind of Trigger edited. A new one is an Environment trigger's, or a Workspace trigger's when it names a
+   * Workspace; a Session trigger's form has no base, model or thinking.
+   */
+  readonly kind: TriggerKind;
   readonly environment: string;
   readonly scheduled: boolean;
   /** The Workspace a Workspace trigger is kept for; null for an Environment trigger. */
@@ -69,6 +77,7 @@ export const emptyTriggerDraft = (
   zone: string,
   workspace: string | null = null,
 ): TriggerDraft => ({
+  kind: workspace === null ? "environment" : "workspace",
   environment,
   scheduled: true,
   workspace,
@@ -87,6 +96,7 @@ export const triggerDraftOf = (definition: TriggerDefinition): TriggerDraft => {
   const schedule = scheduleOf(definition);
 
   return {
+    kind: definition.kind,
     environment: definition.environment,
     scheduled: definition.source.type !== "webhook",
     workspace: definition.workspace?.id ?? null,
@@ -143,12 +153,12 @@ const thinkingOf = (text: string): ThinkingLevel | undefined =>
 /** The new Trigger `draft` makes: the owner's own, active. */
 export const triggerInput = (
   draft: TriggerDraft,
-): TriggerInput & { readonly source: ScheduleSource } => {
+): OwnerTriggerInput & { readonly source: ScheduleSource } => {
   const model = optional(draft.model);
   const thinking = thinkingOf(draft.thinking);
   const source = { type: "schedule", cron: draft.cron.trim(), zone: draft.zone.trim() } as const;
 
-  if (draft.workspace !== null) {
+  if (draft.kind === "workspace" && draft.workspace !== null) {
     const input: Types.Mutable<WorkspaceTriggerInput & { source: ScheduleSource }> = {
       kind: "workspace",
       workspace: draft.workspace,
@@ -185,28 +195,6 @@ export const triggerInput = (
   return input;
 };
 
-/** What a Trigger of `kind` does while busy, as the form offers it: its value and the words for it. */
-export const whenBusyChoices = (
-  kind: TriggerKind,
-): ReadonlyArray<{ readonly value: TriggerWhenBusy; readonly label: string }> =>
-  kind === "workspace"
-    ? [
-        { value: "wait", label: "Wait until the workspace is idle" },
-        { value: "skip", label: "Skip this fire" },
-        { value: "start", label: "Start another session" },
-      ]
-    : [
-        { value: "skip", label: "Skip this fire" },
-        { value: "start", label: "Start another session" },
-      ];
-
-/** The `when_busy` a select's text names; unknown text is the first choice, the kind's default for a Schedule. */
-export const whenBusyOfText = (kind: TriggerKind, text: string): TriggerWhenBusy =>
-  Arr.findFirst(whenBusyChoices(kind), (choice) => choice.value === text).pipe(
-    Option.map((choice) => choice.value),
-    Option.getOrElse(() => defaultWhenBusy(kind, SCHEDULE_DEFAULT)),
-  );
-
 /**
  * The change `draft` makes to `definition`: each field it changed, an option emptied set to null (back to the
  * Environment's own). Nothing changed is an empty change.
@@ -215,7 +203,7 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
   const input = triggerInput(draft);
   const schedule = scheduleOf(definition);
   const patch: Types.Mutable<TriggerPatch> = {};
-  const base = input.kind === "environment" ? input.base : undefined;
+  const base = optional(draft.base);
 
   if (input.name !== definition.name) patch.name = input.name;
 
@@ -231,8 +219,8 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
 
   if (input.whenBusy !== definition.whenBusy) patch.whenBusy = input.whenBusy;
 
-  // A Workspace trigger has no base to change.
-  if (input.kind === "environment" && base !== definition.base) patch.base = base ?? null;
+  // A Workspace or Session trigger has no base to change.
+  if (takesBase(definition.kind) && base !== definition.base) patch.base = base ?? null;
 
   if (input.model !== definition.model) patch.model = input.model ?? null;
 
@@ -266,13 +254,100 @@ export const nextFireOf = (definition: TriggerDefinition, now: number): number |
 export const zoneOf = (definition: TriggerDefinition): string =>
   scheduleOf(definition)?.zone ?? "UTC";
 
-/** What came of a Fire, as its fire log says it; a started one links its Session apart. */
-export const outcomeWords = (outcome: FireOutcome): string => {
+const whenBusyLabels: Record<TriggerWhenBusy, string> = {
+  wait: "Wait until the workspace is idle",
+  skip: "Skip this fire",
+  start: "Start another session",
+  queue: "Queue it after the run",
+  steer: "Steer the run with it",
+};
+
+/** What the "when busy" choice offers a Trigger of `kind`, each with the words that name it. */
+export const whenBusyChoices = (
+  kind: TriggerKind,
+): ReadonlyArray<{ readonly value: TriggerWhenBusy; readonly label: string }> =>
+  Arr.map(whenBusyValues(kind), (value) => ({ value, label: whenBusyLabels[value] }));
+
+/** The `when_busy` a select's text names; unknown text is the kind's default for a Schedule. */
+export const whenBusyOfText = (kind: TriggerKind, text: string): TriggerWhenBusy =>
+  Arr.findFirst(whenBusyValues(kind), (value) => value === text).pipe(
+    Option.getOrElse(() => defaultWhenBusy(kind, SCHEDULE_DEFAULT)),
+  );
+
+/** What the Settings page says of a Trigger of a kind, where kinds differ. */
+type KindWords = {
+  /** The badge on its row, if the kind has one. */
+  readonly badge: string | undefined;
+  /** The label of its "when busy" choice. */
+  readonly whenBusyLabel: string;
+  /** What "busy" means for it, in the choice's hint. */
+  readonly whenBusyHint: string;
+  /** What each Fire sends its message to, in the message's hint. */
+  readonly messageTarget: string;
+  /** What its Remove confirm says of what it leaves. */
+  readonly removeNote: string;
+  /** What the fire log says of a Fire skipped as `coalesced`. */
+  readonly coalescedWords: string;
+};
+
+const ENVIRONMENT_WORDS: KindWords = {
+  badge: undefined,
+  whenBusyLabel: "When the last fire's session is busy",
+  whenBusyHint: "Busy: still running, or waiting for you.",
+  messageTarget: "a new session",
+  removeNote: "The sessions it started stay.",
+  coalescedWords: "Skipped: coalesced",
+};
+
+/** Each kind's words: a later kind is one more entry. A kind this version doesn't know reads as an Environment trigger's. */
+const KIND_WORDS: Record<TriggerKind, KindWords> = {
+  environment: ENVIRONMENT_WORDS,
+  workspace: {
+    badge: undefined,
+    whenBusyLabel: "When the workspace is busy",
+    whenBusyHint:
+      "Busy: any session in the workspace is running or waiting for you, yours included. A waiting fire starts once it is idle; later ones are merged into it.",
+    messageTarget: "a new session",
+    removeNote: "The sessions it started stay.",
+    coalescedWords: "Skipped: merged into the waiting fire",
+  },
+  session: {
+    badge: "Session trigger",
+    whenBusyLabel: "When its session is busy",
+    whenBusyHint: "Busy: its run is going on, or waiting for you.",
+    messageTarget: "its session",
+    removeNote: "Its session stays.",
+    coalescedWords: "Skipped: an earlier fire is still queued",
+  },
+  unknown: ENVIRONMENT_WORDS,
+};
+
+export const kindWords = (kind: TriggerKind): KindWords => KIND_WORDS[kind];
+
+const skippedWords = (reason: FireSkip, kind: TriggerKind): string => {
+  switch (reason) {
+    case "unknown":
+      return "Skipped";
+    case "coalesced":
+      return KIND_WORDS[kind].coalescedWords;
+    case "archived":
+      return "Skipped: its session is archived";
+    case "importing":
+      return "Skipped: its session is still importing";
+    default:
+      return `Skipped: ${reason}`;
+  }
+};
+
+/** What came of a Fire of a Trigger of `kind`, as its fire log says it; a started one links its Session apart. */
+export const outcomeWords = (outcome: FireOutcome, kind: TriggerKind): string => {
   switch (outcome.type) {
     case "started":
       return "Started a session";
+    case "sent":
+      return outcome.delivery === "unknown" ? "Sent" : `Sent (${outcome.delivery})`;
     case "skipped":
-      return `${outcome.reason === "unknown" ? "Skipped" : `Skipped: ${outcome.reason}`}${
+      return `${skippedWords(outcome.reason, kind)}${
         outcome.merged === undefined ? "" : `, ${String(outcome.merged)} merged`
       }`;
     case "failed":

@@ -13,7 +13,10 @@ import {
   fireTimeWords,
   GLOBAL_SCOPE,
   MAX_TRIGGER_NAME_LENGTH,
+  takesBase,
+  takesModel,
   type TriggerDefinition,
+  type TriggerKind,
   type TriggerOverview,
   type WorkspaceRef,
   settingsPath,
@@ -62,6 +65,7 @@ import {
   waitingWords,
   whenBusyChoices,
   whenBusyOfText,
+  kindWords,
   zoneOf,
   oneOrMany,
   triggerNames,
@@ -73,7 +77,7 @@ import { CODE_AREA, Field, Group, Pending, SettingsSection, TEXT_AREA } from "./
 export const browserZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 /** Trigger `id`'s fire log, newest first: each Fire's time, what made it and what came of it. */
-const FireLog = ({ id, zone }: { id: string; zone: string }) => {
+const FireLog = ({ id, kind, zone }: { id: string; kind: TriggerKind; zone: string }) => {
   const log = useAtomValue(fireLogAtom(id));
   const fires = AsyncResult.isSuccess(log) ? log.value : null;
 
@@ -87,7 +91,7 @@ const FireLog = ({ id, zone }: { id: string; zone: string }) => {
         <li key={fire.key} className="flex flex-wrap gap-x-2">
           <span className="text-muted-foreground">{fireTimeWords(fire.at, zone)}</span>
           <span>{sourceWords(fire, zone)}</span>
-          <span>{outcomeWords(fire.outcome)}</span>
+          <span>{outcomeWords(fire.outcome, kind)}</span>
           {fire.outcome.type === "started" && (
             <InAppLink
               href={sessionPath(fire.outcome.session)}
@@ -108,7 +112,7 @@ const lastFireWords = (overview: TriggerOverview, zone: string): string => {
 
   return overview.lastFire === null
     ? "No fires yet"
-    : `Last fire: ${fireTimeWords(overview.lastFire.at, zone)} · ${outcomeWords(overview.lastFire.outcome)}`;
+    : `Last fire: ${fireTimeWords(overview.lastFire.at, zone)} · ${outcomeWords(overview.lastFire.outcome, overview.definition.kind)}`;
 };
 
 /** A Trigger: its name, Schedule and Fires, and its actions. */
@@ -131,12 +135,25 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
         <span className="flex min-w-0 flex-col">
           <span className="flex items-center gap-2 text-sm font-medium">
             {definition.name}
+            {kindWords(definition.kind).badge !== undefined && (
+              <span className="rounded-full border px-2 text-xs font-normal text-muted-foreground">
+                {kindWords(definition.kind).badge}
+              </span>
+            )}
             {definition.paused && (
               <span className="rounded-full border px-2 text-xs font-normal text-muted-foreground">
                 Paused
               </span>
             )}
           </span>
+          {definition.session !== undefined && (
+            <InAppLink
+              href={sessionPath(definition.session)}
+              className="self-start text-xs underline underline-offset-2"
+            >
+              Open its session
+            </InAppLink>
+          )}
           <span className="font-mono text-xs text-muted-foreground">
             {triggerSourceWords(definition)}
           </span>
@@ -224,7 +241,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
       >
         {logOpen ? "Hide fire log" : "Show fire log"}
       </button>
-      {logOpen && <FireLog id={definition.id} zone={zone} />}
+      {logOpen && <FireLog id={definition.id} kind={definition.kind} zone={zone} />}
     </li>
   );
 };
@@ -308,7 +325,8 @@ export const TriggerFormView = ({
   const preview = previewFires(draft, Date.now());
   const busy = saved.waiting;
   const id = (field: string) => `trigger-${field}-${formKey}`;
-  const kind = draft.workspace === null ? "environment" : "workspace";
+  const { kind } = draft;
+  const words = kindWords(kind);
 
   const change = (patch: Partial<TriggerDraft>) => {
     setDraft({ ...draft, ...patch });
@@ -360,7 +378,7 @@ export const TriggerFormView = ({
       <Field
         label="Message"
         htmlFor={id("message")}
-        hint="What each fire sends a new session, under a header with the trigger's name and the time."
+        hint={`What each fire sends ${words.messageTarget}, under a header with the trigger's name and the time.`}
         problem={draft.message === "" ? null : problems.message}
       >
         <textarea
@@ -425,19 +443,7 @@ export const TriggerFormView = ({
         </div>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field
-          label={
-            kind === "workspace"
-              ? "When the workspace is busy"
-              : "When the last fire's session is busy"
-          }
-          htmlFor={id("when-busy")}
-          hint={
-            kind === "workspace"
-              ? "Busy: any session in the workspace is running or waiting for you, yours included. A waiting fire starts once it is idle; later ones are merged into it."
-              : "Busy: still running, or waiting for you."
-          }
-        >
+        <Field label={words.whenBusyLabel} htmlFor={id("when-busy")} hint={words.whenBusyHint}>
           <NativeSelect
             id={id("when-busy")}
             value={draft.whenBusy}
@@ -453,7 +459,7 @@ export const TriggerFormView = ({
             ))}
           </NativeSelect>
         </Field>
-        {kind === "environment" && (
+        {takesBase(kind) && (
           <Field
             label="Start from"
             htmlFor={id("base")}
@@ -472,44 +478,48 @@ export const TriggerFormView = ({
             />
           </Field>
         )}
-        <Field label="Model" htmlFor={id("model")}>
-          <NativeSelect
-            id={id("model")}
-            value={draft.model}
-            disabled={busy}
-            onChange={(event) => {
-              change({ model: event.target.value });
-            }}
-          >
-            <option value="">The environment's</option>
-            {/* A model the agent set that this version doesn't list stays as it is. */}
-            {draft.model !== "" && !SUPPORTED_MODELS.some((model) => model === draft.model) && (
-              <option value={draft.model}>{draft.model}</option>
-            )}
-            {SUPPORTED_MODELS.map((model) => (
-              <option key={model} value={model}>
-                {modelName(model)}
-              </option>
-            ))}
-          </NativeSelect>
-        </Field>
-        <Field label="Thinking" htmlFor={id("thinking")}>
-          <NativeSelect
-            id={id("thinking")}
-            value={draft.thinking}
-            disabled={busy}
-            onChange={(event) => {
-              change({ thinking: event.target.value });
-            }}
-          >
-            <option value="">The environment's</option>
-            {THINKING_LEVELS.map((level) => (
-              <option key={level} value={level}>
-                {level}
-              </option>
-            ))}
-          </NativeSelect>
-        </Field>
+        {takesModel(kind) && (
+          <>
+            <Field label="Model" htmlFor={id("model")}>
+              <NativeSelect
+                id={id("model")}
+                value={draft.model}
+                disabled={busy}
+                onChange={(event) => {
+                  change({ model: event.target.value });
+                }}
+              >
+                <option value="">The environment's</option>
+                {/* A model the agent set that this version doesn't list stays as it is. */}
+                {draft.model !== "" && !SUPPORTED_MODELS.some((model) => model === draft.model) && (
+                  <option value={draft.model}>{draft.model}</option>
+                )}
+                {SUPPORTED_MODELS.map((model) => (
+                  <option key={model} value={model}>
+                    {modelName(model)}
+                  </option>
+                ))}
+              </NativeSelect>
+            </Field>
+            <Field label="Thinking" htmlFor={id("thinking")}>
+              <NativeSelect
+                id={id("thinking")}
+                value={draft.thinking}
+                disabled={busy}
+                onChange={(event) => {
+                  change({ thinking: event.target.value });
+                }}
+              >
+                <option value="">The environment's</option>
+                {THINKING_LEVELS.map((level) => (
+                  <option key={level} value={level}>
+                    {level}
+                  </option>
+                ))}
+              </NativeSelect>
+            </Field>
+          </>
+        )}
       </div>
       <DialogProblem problem={settledFailureOf(saved)} />
       <div className="flex justify-end gap-2">
@@ -596,7 +606,7 @@ const RemoveTriggerDialog = ({
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
       <p className="text-sm">
-        It stops firing, and its fire log goes with it. The sessions it started stay.
+        It stops firing, and its fire log goes with it. {kindWords(definition.kind).removeNote}
       </p>
       {definition.workspace !== undefined && (
         <p className="text-sm">
@@ -631,8 +641,8 @@ const RemoveTriggerDialog = ({
 /** What the section says it is for, at Scope `scope`. */
 const description = (scope: string): string =>
   scope === GLOBAL_SCOPE
-    ? "Each trigger starts a new session when its schedule comes due: in a new workspace of its environment, or, for a workspace trigger, in its workspace. Your changes here apply at once; the agent's wait for your approval."
-    : "Each of this environment's triggers starts a new session when its schedule comes due: in a new workspace of it, or, for a workspace trigger, in its workspace. Your changes here apply at once; the agent's wait for your approval.";
+    ? "Each trigger starts a new session when its schedule comes due: in a new workspace of its environment, or, for a workspace trigger, in its workspace; a session trigger sends its message to the session that made it instead. Your changes here apply at once; the agent's wait for your approval."
+    : "Each of this environment's triggers starts a new session when its schedule comes due: in a new workspace of it, or, for a workspace trigger, in its workspace; a session trigger sends its message to the session that made it instead. Your changes here apply at once; the agent's wait for your approval.";
 
 /** The Triggers, under each Environment's name at Global, or the Environment's own. */
 const TriggerLists = ({

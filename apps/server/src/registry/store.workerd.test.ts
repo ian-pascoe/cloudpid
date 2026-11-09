@@ -2159,7 +2159,7 @@ describe("the Registry store", () => {
         return body(storage);
       });
 
-    it("migrates to 37, and its old changes read without a via", async () => {
+    it("migrates to the latest, and its old changes read without a via", async () => {
       const [listed, tables, version] = await atMigration35((storage) => {
         const store = openRegistryStore(storage);
         const changes = openAgentChanges(storage);
@@ -2195,7 +2195,7 @@ describe("the Registry store", () => {
         },
       ]);
       expect(tables).toEqual([{ name: "change_requests" }]);
-      expect(version).toEqual([{ version: 37 }]);
+      expect(version).toEqual([{ version: MIGRATIONS.length }]);
     });
 
     it("records an endpoint's change beside them, and reverts the old one as before", async () => {

@@ -118,9 +118,24 @@ describe("a Trigger's row and fire log", () => {
   });
 
   it("says what made each Fire and what came of it", () => {
-    expect(outcomeWords({ type: "started", session: "s-1" })).toBe("Started a session");
-    expect(outcomeWords({ type: "skipped", reason: "overlap" })).toBe("Skipped: overlap");
-    expect(outcomeWords({ type: "failed", reason: "The Session refused it" })).toBe(
+    expect(outcomeWords({ type: "started", session: "s-1" }, "environment")).toBe(
+      "Started a session",
+    );
+    expect(outcomeWords({ type: "skipped", reason: "overlap" }, "environment")).toBe(
+      "Skipped: overlap",
+    );
+    expect(outcomeWords({ type: "sent", delivery: "queued" }, "environment")).toBe("Sent (queued)");
+    expect(outcomeWords({ type: "sent", delivery: "unknown" }, "environment")).toBe("Sent");
+    expect(outcomeWords({ type: "skipped", reason: "coalesced" }, "workspace")).toBe(
+      "Skipped: merged into the waiting fire",
+    );
+    expect(outcomeWords({ type: "skipped", reason: "coalesced" }, "environment")).toBe(
+      "Skipped: coalesced",
+    );
+    expect(outcomeWords({ type: "skipped", reason: "coalesced" }, "session")).toBe(
+      "Skipped: an earlier fire is still queued",
+    );
+    expect(outcomeWords({ type: "failed", reason: "The Session refused it" }, "environment")).toBe(
       "Failed: The Session refused it",
     );
     expect(
@@ -208,10 +223,12 @@ const NIGHTLY: TriggerDefinition = {
 
 describe("a waiting Fire", () => {
   it("says how many Fires were merged into one skipped for good", () => {
-    expect(outcomeWords({ type: "skipped", reason: "overlap", merged: 2 })).toBe(
+    expect(outcomeWords({ type: "skipped", reason: "overlap", merged: 2 }, "environment")).toBe(
       "Skipped: overlap, 2 merged",
     );
-    expect(outcomeWords({ type: "skipped", reason: "overlap" })).toBe("Skipped: overlap");
+    expect(outcomeWords({ type: "skipped", reason: "overlap" }, "environment")).toBe(
+      "Skipped: overlap",
+    );
   });
 
   it("says since when it waits, and how many more Fires were merged into it", () => {
@@ -299,5 +316,33 @@ describe("the Workspace trigger form", () => {
     expect(triggerNames([{ name: "A" }, { name: "B" }])).toBe("“A” and “B”");
     expect(triggerNames([{ name: "A" }, { name: "B" }, { name: "C" }])).toBe("“A”, “B” and “C”");
     expect(triggerNames([])).toBe("");
+  });
+});
+
+describe("a Session trigger's form", () => {
+  const { model: _model, ...environmentTrigger } = DEFINITION;
+
+  const SESSION: TriggerDefinition = {
+    ...environmentTrigger,
+    kind: "session",
+    session: "s-1",
+    whenBusy: "queue",
+  };
+
+  it("falls back to a kind's default for a choice it doesn't take", () => {
+    expect(whenBusyOfText("session", "steer")).toBe("steer");
+    expect(whenBusyOfText("session", "start")).toBe("queue");
+    expect(whenBusyOfText("environment", "queue")).toBe("skip");
+  });
+
+  it("holds the kind, and changes only the choice, Schedule, name and message", () => {
+    const draft = triggerDraftOf(SESSION);
+
+    expect(draft.kind).toBe("session");
+    expect(triggerPatch(SESSION, draft)).toEqual({});
+    expect(triggerPatch(SESSION, { ...draft, whenBusy: "steer", name: "Renamed" })).toEqual({
+      name: "Renamed",
+      whenBusy: "steer",
+    });
   });
 });

@@ -14,6 +14,7 @@ import {
   TriggerChangeValue,
   type TriggerDefinition,
   triggerField,
+  heldBySession,
   type TriggerInput,
   type TriggerPatch,
 } from "@cloudpid/protocol";
@@ -107,7 +108,7 @@ export const openTriggerChanges = (
     storage.transactionSync((): TriggerChanged => {
       const before = triggers.get(id);
 
-      if (before === null) return { status: "missing" };
+      if (before === null || !heldBySession(before, author.session)) return { status: "missing" };
 
       // A Trigger that already has the values is unchanged, whatever the owner saw: the rerun of a call that made the
       // change before an eviction.
@@ -150,7 +151,18 @@ export const openTriggerChanges = (
             : { status: "changed-since", current: null };
         }
 
-        if (input.kind === "environment" && store.getEnvironment(input.environment) === null) {
+        if (input.kind === "session") {
+          // Its own Session makes it: the owner approved a Trigger for the Session they were asking in.
+          if (input.session !== author.session) {
+            return {
+              status: "invalid",
+              problem: "A Session trigger is made by its own Session, for it",
+            };
+          }
+        } else if (
+          input.kind === "environment" &&
+          store.getEnvironment(input.environment) === null
+        ) {
           return { status: "missing" };
         }
 
@@ -160,6 +172,7 @@ export const openTriggerChanges = (
           case "ok":
           case "unchanged":
           case "changed-since":
+            // The Trigger's Environment: a Session trigger's is its Session's.
             return record(author, id, made.definition.environment, null, made.definition, now);
           case "invalid":
           case "missing":
@@ -192,7 +205,13 @@ export const openTriggerChanges = (
       storage.transactionSync((): TriggerChanged => {
         const before = triggers.get(id);
 
-        if (before === null || !triggers.retire(id, now)) return { status: "missing" };
+        if (
+          before === null ||
+          !heldBySession(before, author.session) ||
+          !triggers.retire(id, now)
+        ) {
+          return { status: "missing" };
+        }
 
         return record(author, id, before.environment, before, null, now);
       }),

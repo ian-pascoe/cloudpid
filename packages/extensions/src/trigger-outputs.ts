@@ -37,7 +37,11 @@ const TriggerSummaryFields = {
   name: Schema.String.annotate({ description: "The Trigger's name, which titles its Sessions" }),
   kind: Schema.String.annotate({
     description:
-      '"environment": each Fire starts a new Session in a new Workspace of its Environment; "workspace": each Fire starts a new Session in its Workspace',
+      '"environment": each Fire starts a new Session in a new Workspace of its Environment; "workspace": each Fire starts a new Session in its Workspace; "session": each Fire sends its message into the root conversation of the Session that keeps it',
+  }),
+  session: Schema.NullOr(Schema.String).annotate({
+    description:
+      "The Session id of a Session trigger, which is this Session's; null for the other kinds",
   }),
   environment: ScopeRef.annotate({ description: "The Environment the Trigger belongs to" }),
   workspace: Schema.NullOr(
@@ -74,7 +78,7 @@ const TriggerSummaryFields = {
   }),
   when_busy: Schema.String.annotate({
     description:
-      '"skip" (an Environment trigger\'s default for a Schedule): a Fire while the last Fire\'s Session (a Workspace trigger\'s: any Session in its Workspace) is still at work is skipped; "start" (an Environment trigger\'s default for a webhook): it starts a Session anyway; "wait" (a Workspace trigger\'s default): it stays pending until the Workspace is idle',
+      '"skip" (an Environment trigger\'s default for a Schedule): a Fire while the last Fire\'s Session (a Workspace trigger\'s: any Session in its Workspace; a Session trigger\'s: a Run going on) is still at work is skipped; "start" (an Environment trigger\'s default for a webhook): it starts a Session anyway; "wait" (a Workspace trigger\'s default): it stays pending until the Workspace is idle; a Session trigger\'s "queue" (its default: the message waits behind the Run going on) and "steer" (it joins the Run)',
   }),
   base: Schema.NullOr(Schema.String).annotate({
     description:
@@ -137,6 +141,7 @@ export const triggerSummaryOutput = (
     id: definition.id,
     name: definition.name,
     kind: definition.kind,
+    session: definition.session ?? null,
     environment: scopeRef(environment),
     workspace: definition.workspace === undefined ? null : { ...definition.workspace },
     schedule: schedule === undefined ? null : { cron: schedule.cron, zone: schedule.zone },

@@ -9,6 +9,8 @@ import { openKeptVault } from "@cloudpid/extensions/secrets/core";
 import type {
   ApiResult,
   FireRequest,
+  FireResult,
+  SessionFireRequest,
   SubmitResult,
   TriggerDefinition,
   TriggerRotation,
@@ -44,10 +46,16 @@ declare global {
 }
 
 /** What a scripted Session's `fire` answers: its answer, or `"unreachable"` for an RPC that fails. */
-export type FireScript = ApiResult<SubmitResult> | "unreachable";
+export type FireScript = ApiResult<FireResult> | "unreachable";
 
-/** A `fire` the object sent: to which Session, with what. */
-export type FireSent = { readonly session: string; readonly request: FireRequest };
+/**
+ * A `fire` or `fireSession` the object sent: to which Session, with what. A `fireSession` carries no `payload` (a
+ * Session trigger has no webhook); the type says so, so a test can read `payload` of either.
+ */
+export type FireSent = {
+  readonly session: string;
+  readonly request: FireRequest | (SessionFireRequest & { readonly payload?: undefined });
+};
 
 /** The master key the test object's token and Signing secret are sealed under. */
 const TEST_MASTER_KEY = "test-master-key-0123456789abcdef0123456789";
@@ -94,6 +102,24 @@ export class TestTrigger extends DurableObject {
 
   readonly #upkeep: Array<string> = [];
 
+  /** What a scripted Session answers to `request`, recorded. */
+  #answer(session: string, request: FireRequest | SessionFireRequest) {
+    return Effect.suspend(() => {
+      this.#sent.push({ session, request });
+
+      const script = this.#scripts.shift() ?? OK;
+
+      if (this.#replaceOnFire) {
+        this.#replaceOnFire = false;
+        this.#gate.trip();
+      }
+
+      return script === "unreachable"
+        ? Effect.fail(TriggerUnreachable.make({ message: "The Session did not answer" }))
+        : Effect.succeed(script);
+    });
+  }
+
   readonly #handlers: TriggerHandlers = triggerHandlers({
     id: triggerOfObject(this.ctx.id.name) ?? "",
     storage: this.#gate.storage,
@@ -123,35 +149,30 @@ export class TestTrigger extends DurableObject {
 
           this.#admitted = n;
 
-          return reach(
-            "admitFire",
-            async (): Promise<FireAdmitted> =>
-              await this.#registryStub().admitFire(
-                fire,
-                { session: `s-${String(n)}`, workspace: String(n).padStart(8, "0") },
-                this.#now,
-              ),
-          );
+          return reach("admitFire", async (): Promise<FireAdmitted> => {
+            const admitted = await this.#registryStub().admitFire(
+              fire,
+              { session: `s-${String(n)}`, workspace: String(n).padStart(8, "0") },
+              this.#now,
+            );
+
+            // As the Registry's `admitFire` fails the call for a caller that can't read `send`.
+            if (admitted.status === "unsupported") throw new Error("Session triggers unsupported");
+
+            return admitted;
+          });
         }),
       failed: (trigger, reason) =>
         Effect.sync(() => {
           this.#failed.push({ trigger, reason });
         }),
+      // SAFETY: a script answers `fire` with what a started Session answers: a skip is `fireSession`'s alone.
       fire: (session, request) =>
-        Effect.suspend(() => {
-          this.#sent.push({ session, request });
-
-          const script = this.#scripts.shift() ?? OK;
-
-          if (this.#replaceOnFire) {
-            this.#replaceOnFire = false;
-            this.#gate.trip();
-          }
-
-          return script === "unreachable"
-            ? Effect.fail(TriggerUnreachable.make({ message: "The Session did not answer" }))
-            : Effect.succeed(script);
-        }),
+        this.#answer(session, request) as Effect.Effect<
+          ApiResult<SubmitResult>,
+          TriggerUnreachable
+        >,
+      fireSession: (session, request) => this.#answer(session, request),
       afterStart: (environment) =>
         Effect.sync(() => {
           this.#upkeep.push(environment);

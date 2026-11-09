@@ -21,7 +21,8 @@ export type RemovalRegistry = Pick<
   | "getEnvironment"
   | "getSession"
   | "listSessions"
-  | "deleteSession"
+  | "deleteSessionWithTriggers"
+  | "deleteSessionTriggers"
   | "listWorkspaces"
   | "deleteWorkspace"
   | "deleteWorkspaceWithTriggers"
@@ -87,7 +88,11 @@ export const removals = (
       workspaces.destroy(workspaceObjectName(workspace.id)),
     ).pipe(Effect.andThen(registry.deleteWorkspace({ id: workspace.id })), Effect.asVoid);
 
-  /** Remove Session `id`'s Subagent Workspaces, then forget it: its object is wiped already. */
+  /**
+   * Remove Session `id`'s Subagent Workspaces, then forget it: its object is wiped already. Its Session triggers go with
+   * its record (`docs/architecture/triggers.md` → Cascades), and their objects are wiped after it, or wipe themselves at
+   * their next alarm.
+   */
   const forgetSession = (id: string) =>
     Effect.gen(function* () {
       for (const workspace of yield* registry.listSubagentWorkspaces({ session: id })) {
@@ -100,15 +105,24 @@ export const removals = (
         );
       }
 
-      yield* registry.deleteSession({ id });
+      const removal = yield* registry.deleteSessionWithTriggers({ id });
+
+      yield* Effect.forEach(removal.triggers, triggers.remove, { discard: true });
     });
 
   /**
    * Wipe a Session's object, then its Subagent Workspaces, then forget it: a wipe that fails leaves it listed (with the
    * Subagent Workspaces left), to try again. The object goes first, so no subagent spawned meanwhile makes another.
+   * Its Session triggers go before that (their rows, then their objects): a Fire that reached an object already wiped
+   * would start a Run in it, and the Session would be made anew with nothing that lists it.
    */
   const deleteSession = (session: SessionRecord) =>
-    onSession("Could not delete the session", sessions.destroy(session.id)).pipe(
+    Effect.gen(function* () {
+      const ended = yield* registry.deleteSessionTriggers({ session: session.id });
+
+      yield* Effect.forEach(ended, triggers.remove, { discard: true });
+    }).pipe(
+      Effect.andThen(onSession("Could not delete the session", sessions.destroy(session.id))),
       Effect.andThen(forgetSession(session.id)),
     );
 

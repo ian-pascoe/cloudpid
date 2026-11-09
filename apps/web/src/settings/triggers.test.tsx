@@ -70,6 +70,16 @@ const TRIGGERS: ReadonlyArray<TriggerOverview> = [
     lastFire: null,
     reached: false,
   },
+  {
+    definition: {
+      ...definition("t3", "work", "Check the build"),
+      kind: "session",
+      session: "s-owner",
+      whenBusy: "queue",
+    },
+    lastFire: { ...STARTED, key: "t3:1", outcome: { type: "sent", delivery: "queued" } },
+    reached: true,
+  },
   { definition: WEBHOOK_TRIGGER, lastFire: null, reached: true },
 ];
 
@@ -244,7 +254,7 @@ describe("the Triggers section", () => {
       expect(markup).toContain("CI failed");
       expect(markup).toContain("Webhook · github");
 
-      // Fire now is the Schedule triggers' alone: the webhook's row has none, the others' do.
+      // Fire now is the Schedule triggers' alone: the webhook's row has none, the others' do (a Session trigger's too).
       const rows = markup.split("<li ");
 
       const rowOf = (name: string) =>
@@ -256,6 +266,7 @@ describe("the Triggers section", () => {
       expect(rowOf("CI failed")).not.toContain("Fire now</button>");
       expect(rowOf("Weekly report")).toContain("Fire now</button>");
       expect(rowOf("Lint sweep")).toContain("Fire now</button>");
+      expect(rowOf("Check the build")).toContain("Fire now</button>");
     }),
   );
 
@@ -373,5 +384,59 @@ describe("the Triggers section", () => {
         expect(environment).toContain('id="trigger-environment-*"');
         expect(environment).not.toContain("Wait until the workspace is idle");
       }),
+  );
+  it.effect("marks a Session trigger and links its Session", () =>
+    Effect.gen(function* () {
+      const markup = yield* render("work");
+
+      expect(markup).toContain("Check the build");
+      expect(markup).toContain("Session trigger");
+      expect(markup).toContain('href="/sessions/s-owner"');
+      expect(markup).toContain("Last fire: ");
+      expect(markup).toContain("Sent (queued)");
+      expect(markup.match(/Session trigger/g)).toHaveLength(1);
+    }),
+  );
+
+  it.effect(
+    "edits a Session trigger's when-busy choice only, with no base, model or thinking",
+    () =>
+      Effect.gen(function* () {
+        const opened = TRIGGERS[2]?.definition;
+
+        if (opened === undefined) return;
+
+        const markup = yield* render("work", (registry) => {
+          registry.set(triggerFormAtom("work"), { kind: "edit", opened });
+          registry.set(triggerDraftAtom("work"), triggerDraftOf(opened));
+        });
+
+        expect(markup).toContain('aria-label="Edit trigger"');
+        expect(markup).toContain("When its session is busy");
+        expect(markup).toContain(">Queue it after the run<");
+        expect(markup).toContain(">Steer the run with it<");
+        expect(markup).toContain(">Skip this fire<");
+        expect(markup).not.toContain("Start another session");
+        expect(markup).not.toContain("Start from");
+        expect(markup).not.toContain('for="trigger-model-work"');
+        expect(markup).not.toContain('for="trigger-thinking-work"');
+      }),
+  );
+
+  it.effect("keeps the whole form for an Environment trigger", () =>
+    Effect.gen(function* () {
+      const opened = TRIGGERS[0]?.definition;
+
+      if (opened === undefined) return;
+
+      const markup = yield* render("work", (registry) => {
+        registry.set(triggerFormAtom("work"), { kind: "edit", opened });
+        registry.set(triggerDraftAtom("work"), triggerDraftOf(opened));
+      });
+
+      expect(markup).toContain(">Start another session<");
+      expect(markup).toContain("Start from");
+      expect(markup).not.toContain(">Queue it after the run<");
+    }),
   );
 });
