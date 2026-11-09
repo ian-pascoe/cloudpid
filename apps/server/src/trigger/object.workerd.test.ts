@@ -30,10 +30,17 @@ const HOUR = 60 * 60_000;
 
 const DAY = 24 * HOUR;
 
-/** Monday, 8:00 UTC: an hour before the daily Schedule's first Fire. */
-const start = Date.parse("2026-11-09T08:00:00Z");
+/**
+ * 8:00 UTC on a day a week after the real clock: an hour before the daily Schedule's first Fire. It follows the real
+ * clock, since workerd runs an alarm set in the past at once.
+ */
+const start = (() => {
+  const day = new Date(Date.now() + 7 * DAY);
 
-const nine = Date.parse("2026-11-09T09:00:00Z");
+  return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), 8);
+})();
+
+const nine = start + HOUR;
 
 const daily: EnvironmentTriggerInput = {
   kind: "environment",
@@ -255,7 +262,7 @@ describe("a Trigger's object", () => {
 
     it("arms at a changed Schedule, even one it was not told of", async () => {
       const { id, registry, trigger } = await made();
-      const noon = Date.parse("2026-11-09T12:00:00Z");
+      const noon = start + 4 * HOUR;
 
       // The change's message to the object was lost: the alarm at 9:00 reads the new Schedule and fires nothing.
       await registry.updateTrigger(
