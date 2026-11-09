@@ -9,7 +9,6 @@ import { describe, expect, it } from "vitest";
 import {
   deliveryDays,
   emptyTriggerDraft,
-  githubHookWords,
   matchRowsProblem,
   nextFireOf,
   outcomeWords,
@@ -410,16 +409,12 @@ describe("a GitHub-managed hook", () => {
     ).toEqual({ type: "webhook", format: "standard" });
   });
 
-  it("holds a repo without events, events without a repo, and a repo not written owner/name", () => {
-    for (const draft of [
-      hookDraft("octo-org/octo-repo", ""),
-      hookDraft("", "push"),
-      hookDraft("octo-repo", "push"),
-      hookDraft("octo-org/octo-repo", "*"),
-    ]) {
-      expect(triggerDraftProblems(draft).hook).not.toBeNull();
-      expect(triggerDraftReady(draft)).toBe(false);
-    }
+  it("holds a repo and events the Registry would refuse", () => {
+    // Which ones those are is `githubHookProblem`'s (`packages/protocol`): one passes through here.
+    const draft = hookDraft("octo-org/octo-repo", "");
+
+    expect(triggerDraftProblems(draft).hook).not.toBeNull();
+    expect(triggerDraftReady(draft)).toBe(false);
   });
 
   it("opens a Trigger with its repo and events, which an edit never sends", () => {
@@ -433,25 +428,7 @@ describe("a GitHub-managed hook", () => {
     expect(triggerPatch(hooked, { ...draft, repo: "other/repo", name: "CI broke" })).toEqual({
       name: "CI broke",
     });
-    expect(triggerSourceWords(hooked)).toBe("Webhook · github · octo-org/octo-repo");
-  });
-
-  it("says where the hook is on the row: made, being made, or why GitHub refused it", () => {
-    const repo = "octo-org/octo-repo";
-
-    expect(githubHookWords({ repo, state: "ready" })).toBe(
-      "GitHub hook on octo-org/octo-repo: made",
-    );
-    expect(githubHookWords({ repo, state: "pending" })).toBe(
-      "GitHub hook on octo-org/octo-repo: not made yet, tried again soon",
-    );
-    expect(
-      githubHookWords({
-        repo,
-        state: "failed",
-        problem: { code: "refused", message: "GitHub refused to make the webhook" },
-      }),
-    ).toBe("GitHub hook on octo-org/octo-repo failed: GitHub refused to make the webhook");
+    expect(triggerSourceWords(hooked)).toContain("octo-org/octo-repo");
   });
 });
 

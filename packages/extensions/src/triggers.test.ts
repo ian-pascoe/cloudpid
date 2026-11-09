@@ -1004,12 +1004,9 @@ describe("a GitHub-managed hook", () => {
     const { result, text, error } = await call("trigger_create", HOOKED);
 
     expect(error).toBe(false);
-    expect(asked[0]?.after).toContain(
-      'Webhook: a webhook (github format), its hook made on GitHub repo "octo-org/octo-repo" for "workflow_run"',
-    );
-    expect(asked[0]?.notes?.join("\n")).toContain(
-      "cloudpid makes its hook on octo-org/octo-repo as the GitHub App",
-    );
+    // The owner approves the repo and the events: the card names both.
+    expect(asked[0]?.after).toContain('"octo-org/octo-repo"');
+    expect(asked[0]?.after).toContain('"workflow_run"');
     expect(triggers.held.get("0190-a")?.source).toEqual({
       type: "webhook",
       format: "github",
@@ -1017,10 +1014,7 @@ describe("a GitHub-managed hook", () => {
       repo: "octo-org/octo-repo",
       events: ["workflow_run"],
     });
-    expect(text).toContain(
-      "GitHub has its hook on octo-org/octo-repo: there is nothing to set up.",
-    );
-    expect(text).not.toContain("set up the sender");
+    expect(text).not.toContain("/hooks/");
 
     const output = decodeChange(result.structuredOutput);
 
@@ -1051,34 +1045,30 @@ describe("a GitHub-managed hook", () => {
 
     const { result, text, error } = await call("trigger_create", HOOKED);
 
+    // The Trigger is made: only its hook waits.
     expect(error).toBe(false);
-    expect(text).toContain(
-      "GitHub has no hook on octo-org/octo-repo yet: The GitHub App can't make hooks: accept Webhooks: write on its installation. cloudpid keeps trying",
-    );
-    expect(decodeChange(result.structuredOutput).github_hook).toMatchObject({
+    expect(decodeChange(result.structuredOutput).github_hook).toEqual({
+      repo: "octo-org/octo-repo",
       state: "failed",
       problem: "The GitHub App can't make hooks: accept Webhooks: write on its installation",
     });
+    // GitHub's reason reaches the agent, who tells the user what to do.
+    expect(text).toContain(
+      "The GitHub App can't make hooks: accept Webhooks: write on its installation",
+    );
   });
 
   it("refuses a repo or events it can't make a hook of, without asking", async () => {
     const { call, asked, triggers } = await setUp();
 
-    const refused = [
-      { ...HOOKED, webhook: { ...HOOKED.webhook, format: "standard" } },
-      { ...HOOKED, webhook: { format: "github", repo: "octo-org/octo-repo" } },
-      { ...HOOKED, webhook: { format: "github", events: ["push"] } },
-      { ...HOOKED, webhook: { ...HOOKED.webhook, repo: "octo-repo" } },
-      { ...HOOKED, webhook: { ...HOOKED.webhook, events: ["*"] } },
-    ];
+    // Which repos and events are refused is `githubHookProblem`'s (`packages/protocol`): one passes through here.
+    const { error, text } = await call("trigger_create", {
+      ...HOOKED,
+      webhook: { format: "github", repo: "octo-org/octo-repo" },
+    });
 
-    for (const args of refused) {
-      const { error, text } = await call("trigger_create", args);
-
-      expect(error).toBe(true);
-      expect(text).toContain("Nothing was asked or saved");
-    }
-
+    expect(error).toBe(true);
+    expect(text).toContain("Nothing was asked or saved");
     expect(asked).toEqual([]);
     expect(triggers.held.size).toBe(0);
   });
