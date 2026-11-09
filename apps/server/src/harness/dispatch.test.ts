@@ -24,6 +24,7 @@ import { harnessDispatch, requestDigest } from "./dispatch.ts";
 import {
   type ChangeOptions,
   changingRegistry,
+  FRESH_SKILL,
   HOLDS_KEPT_SECRET,
   type HostCalls,
   harnessHosts,
@@ -785,18 +786,50 @@ describe("the lifecycle, Skill and reset tools", () => {
       ),
   );
 
-  it("hands a Skill removal at Global to the ask, which reads the Skills kept Global and writes nothing", () =>
+  // S3b-3: a Skill change at Global that needs the owner answers `pending`, its value the tool's endpoint output (read with
+  // its schema, so every key `asChangeAnswer` adds is there), with no change made.
+  it.each([
+    [
+      "environment_skill_install",
+      { id: "*", source: "o/skills", skills: [FRESH_SKILL], reason },
+      { installed: [], refused: [], listed: [], source: null },
+    ],
+    ["environment_skill_update", { id: "*", names: [FRESH_SKILL], reason }, { updated: [] }],
+    [
+      "environment_skill_remove",
+      { id: "*", name: FRESH_SKILL, reason },
+      { skill: FRESH_SKILL, global_served: false },
+    ],
+  ] as const)(
+    "answers %s at Global pending, with its change's keys and no change",
+    (tool, input, own) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const { call, ledger } = changing({ globalSkills: [FRESH_SKILL] });
+
+          const value = valueOf(HARNESS_TOOLS[tool].endpoint.output, yield* call(tool, input));
+
+          expect(value).toMatchObject({
+            status: "pending",
+            approval_id: "approval-1",
+            scope: { id: "*", name: "Global" },
+            changes: [],
+            changed: false,
+            ...own,
+          });
+          expect(ledger.changes).toEqual([]);
+        }),
+      ),
+  );
+
+  it("refuses the removal at Global of a Skill Global does not keep as not_found, writing nothing", () =>
     Effect.runPromise(
       Effect.gen(function* () {
-        const { call, registryCalls, ledger } = changing();
+        const { call, ledger } = changing();
 
-        // The stand-in keeps no Skill Global: the ask refuses the removal, asking nobody.
         const result = yield* call("environment_skill_remove", { id: "*", name: "a", reason });
 
         expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
-        expect(registryCalls).toContain("listSkills");
-        expect(registryCalls).not.toContain("agentChangeFeatures");
-        expect(registryCalls).not.toContain("agentRemoveSkill");
         expect(ledger.changes).toEqual([]);
       }),
     ));

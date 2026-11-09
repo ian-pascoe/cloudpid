@@ -22,6 +22,7 @@ import { McpApplied } from "@cloudpid/mcp/types";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
 import type { AgentChangeAuthor } from "../registry/agent-changes.ts";
+import type { ApprovalAsk } from "../registry/approvals.ts";
 import type { ChangeAnswer } from "../registry/change-requests.ts";
 import { HOLDS_SECRET } from "../registry/via-secrets.ts";
 import type { HarnessDeps, HarnessRegistry } from "./services.ts";
@@ -36,6 +37,9 @@ const DEFAULT = {
 
 /** The commit a Skill install read at. */
 const COMMIT = "a".repeat(40);
+
+/** The Skill a change at Global needs the owner's Approval for: an install adds it, an update moves it. */
+export const FRESH_SKILL = "fresh";
 
 /** The setup script of the Environment: long enough to need a second page of 40,000 characters. */
 const LONG_SCRIPT = `${"echo setup\n".repeat(4_000)}echo done\n`;
@@ -211,6 +215,8 @@ export type ChangeOptions = {
    * defect.
    */
   readonly beforeRecordRebuild?: (() => Effect.Effect<void>) | undefined;
+  /** The Skills Global keeps, by name: none unless a test names them. */
+  readonly globalSkills?: ReadonlyArray<string> | undefined;
 };
 
 /** The Registry's refusal of a write whose text holds a kept Secret, as `via-secrets.ts` words it. */
@@ -230,8 +236,12 @@ export const changingRegistry = (
     refusal = HOLDS_KEPT_SECRET,
     afterWrite,
     beforeRecordRebuild,
+    globalSkills,
   }: ChangeOptions = {},
 ): ChangingRegistry => {
+  /** The requests for the owner's Approval made so far. */
+  let approvals = 0;
+
   const ledger: ChangeLedger = {
     changes: [],
     claims: new Map(),
@@ -583,8 +593,9 @@ export const changingRegistry = (
         ),
       ),
     mcpLookRepoFiles: () => noted("mcpLookRepoFiles", () => null),
-    // The previews an ask at Global reads (S3b-3): Global keeps every Skill named so already, and none is marked update
-    // available, so the ask answers `unchanged`; what an ask does past them is `approvals.workerd.test.ts`'s.
+    // The previews an ask at Global reads (S3b-3): Global keeps every Skill named so already but `fresh`, which an install
+    // would add and an update would move; with no `fresh` named the ask answers `unchanged`. What an apply does is
+    // `approvals.workerd.test.ts`'s.
     agentPreviewSkillInstall: ({
       source,
       skills,
@@ -604,16 +615,72 @@ export const changingRegistry = (
           description: "Asks hard questions",
           files: { "SKILL.md": `---\nname: ${name}\ndescription: Asks hard questions\n---\n` },
           digest: `digest-of-${name}`,
-          unchanged: true,
+          unchanged: name !== FRESH_SKILL,
           current: null,
         })),
         rejected: [],
       })),
-    previewSkillUpdates: () =>
-      noted("previewSkillUpdates", () => ({
-        status: "nothing" as const,
-        environment: { id: "*", name: "Global" },
+    previewSkillUpdates: ({ names }: { readonly names?: ReadonlyArray<string> | undefined }) =>
+      noted("previewSkillUpdates", () => {
+        const environment = { id: "*", name: "Global" };
+        const source = { repo: "o/skills", path: `skills/${FRESH_SKILL}`, ref: null };
+
+        return names?.includes(FRESH_SKILL) === true
+          ? {
+              status: "done" as const,
+              environment,
+              results: [
+                {
+                  name: FRESH_SKILL,
+                  outcome: "ready" as const,
+                  from: { ...source, commit: COMMIT },
+                  to: { ...source, commit: "f".repeat(40) },
+                  description: "Asks hard questions",
+                  files: { "SKILL.md": "Ask one question at a time.\n" },
+                  folderHash: "folder-hash-1",
+                  savedAt: 5,
+                  overwrites: false,
+                  current: { description: "Asks hard questions", files: ["SKILL.md"] },
+                },
+              ],
+            }
+          : { status: "nothing" as const, environment };
+      }),
+    // Global keeps `fresh` only when a test says so: the reads of other tests list no Skill there.
+    listSkills: ({ environment }: { readonly environment: string }) =>
+      noted("listSkills", () =>
+        environment === "*"
+          ? (globalSkills ?? []).map((name) => ({
+              name,
+              description: "Asks hard questions",
+              savedAt: 5,
+            }))
+          : [],
+      ),
+    // The Registry's request for the owner's Approval: a new one each time, kept nowhere.
+    requestApproval: (ask: ApprovalAsk) =>
+      noted("requestApproval", () => ({
+        status: "asked" as const,
+        fresh: true,
+        approval: {
+          ...ask,
+          id: `approval-${String(++approvals)}`,
+          args: ask.args,
+          long: ask.long ?? false,
+          requestId: ask.request?.id ?? null,
+          status: "pending" as const,
+          createdAt: 1_000,
+          expiresAt: 1_000 + 7 * 24 * 60 * 60_000,
+          answeredAt: null,
+          settledAt: null,
+          leaseUntil: null,
+          leaseToken: null,
+          reason: null,
+          withdrawal: null,
+          result: null,
+        },
       })),
+    notifyApproval: () => noted("notifyApproval", () => null),
     agentInstallSkills: ({
       environment,
       source,
