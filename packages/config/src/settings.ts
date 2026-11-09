@@ -90,7 +90,8 @@ const Compaction = Schema.Struct({
  * deferred: the model finds it by searching, and code mode scripts call it without loading it. This is the owner's local
  * pi exposure (`defaultTools` on top of pi's read, bash, edit and write: codemode, the file search tools, `tool_search`),
  * plus the context tools, which compaction depends on (the Rollover request tells the model to call `context_rollover`),
- * and `secret_ask`, so the prompt keeps its guidance not to ask the owner to paste a credential into the conversation.
+ * `secret_ask`, so the prompt keeps its guidance not to ask the owner to paste a credential into the conversation, and
+ * `cloudpid_report`, so the agent can report a problem with cloudpid in passing (ADR-0051).
  * `tool_search` and `context_rollover` are always offered, whatever is saved: without the first the model cannot reach
  * a deferred tool, and without the second Rollover turns itself off.
  */
@@ -108,6 +109,7 @@ export const DEFAULT_OFFERED_TOOLS: ReadonlyArray<string> = [
   "context_history",
   "context_rollover",
   "secret_ask",
+  "cloudpid_report",
 ];
 
 /** What a name or pattern in the offered tools looks like: snake_case, with `*` for any run of characters. */

@@ -171,9 +171,10 @@ import * as Stream from "effect/Stream";
 import type * as Tracer from "effect/Tracer";
 import type * as Types from "effect/Types";
 import type { PushEvent } from "../push/notification.ts";
+import { CloudpidReportLog } from "@cloudpid/extensions/cloudpid-report";
 import { AgentChangeLog } from "@cloudpid/extensions/environment";
 import { SettingsReload, type SettingsApplied } from "@cloudpid/extensions/settings";
-import { agentChangesNotice, runChanges } from "./agent-changes.ts";
+import { runChanges, runCloudpidReports, runNotice } from "./agent-changes.ts";
 import {
   harnessSettings,
   SessionSettings,
@@ -582,13 +583,14 @@ export type SessionHostOptions<R = never> = {
   readonly reset: (reason: string) => void;
   /**
    * The extensions the Session's conversations run with, installed before any work resumes. Their Agent changes
-   * (`AgentChangeLog`) are kept for the Notification at the end of the Run, and the Settings they change are read
-   * again, and the root conversation's agent brought to the default, through `SettingsReload`.
+   * (`AgentChangeLog`) and cloudpid reports (`CloudpidReportLog`) are kept for the Notification at the end of the Run,
+   * and the Settings they change are read again, and the root conversation's agent brought to the default, through
+   * `SettingsReload`.
    */
   readonly extensions: Effect.Effect<
     readonly Extension[],
     never,
-    Harness | SessionSettings | AgentChangeLog | SettingsReload | R
+    Harness | SessionSettings | AgentChangeLog | CloudpidReportLog | SettingsReload | R
   >;
   /**
    * Extensions that follow the settings: after a read that brought new values, given the extensions installed, the
@@ -1331,12 +1333,14 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       ? Effect.void
       : Effect.provideContext(options.onSettled(newestEntry), services);
 
-  /** The Agent changes of the Run, kept until its end notifies them. */
+  /** The Agent changes and cloudpid reports of the Run, kept until its end notifies them. */
   const changes = runChanges(storage.kv);
+  const reports = runCloudpidReports(storage.kv);
 
   // Before anything resumes, so resumed tool calls find their tools.
   let installed = yield* options.extensions.pipe(
     Effect.provideService(AgentChangeLog, { record: changes.record }),
+    Effect.provideService(CloudpidReportLog, { record: reports.record }),
     Effect.provideService(SettingsReload, { apply: Effect.suspend(() => reloadSettings) }),
   );
 
@@ -1985,11 +1989,17 @@ const startSessionHost = Effect.fn("startSessionHost")(function* <R>(
       Arr.filter(pendingNotices(), (id) => !endedIds.has(id)),
     );
 
-    // Besides the Run's own: one Notification of the Agent changes it made, which wait for the next end if it fails.
+    // Besides the Run's own: one Notification of the Agent changes it made and the cloudpid reports it filed, which wait
+    // for the next end if it fails.
     const changed = yield* changes.pending;
+    const filed = yield* reports.pending;
 
-    if (changed.length > 0 && (yield* notifyOwner(agentChangesNotice(changed)))) {
+    if (
+      (changed.length > 0 || filed.length > 0) &&
+      (yield* notifyOwner(runNotice(changed, filed)))
+    ) {
       yield* changes.drop(changed.length);
+      yield* reports.drop(filed.length);
     }
   }).pipe(
     Effect.catchCause((cause) => Effect.logWarning("Run notifications failed", cause)),

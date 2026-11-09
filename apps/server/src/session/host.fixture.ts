@@ -35,6 +35,7 @@ import {
   type VisualCheckResult,
 } from "@cloudpid/extensions/browser";
 import { readingOwnerTabPages } from "@cloudpid/extensions/browser/pages.testing";
+import type { CloudpidReportLog } from "@cloudpid/extensions/cloudpid-report";
 import {
   type AgentChangeLog,
   DeployCredentials,
@@ -732,6 +733,7 @@ export class TestSession extends DurableObject {
     | OwnerTabDrivers
     | SessionSettings
     | AgentChangeLog
+    | CloudpidReportLog
     | SettingsReload
     | Approvals
     | SessionRuns

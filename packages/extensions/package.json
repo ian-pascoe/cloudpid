@@ -28,6 +28,7 @@
     "./prompt-templates": "./src/prompt-templates.ts",
     "./coding-tools": "./src/coding-tools.ts",
     "./container": "./src/container.ts",
+    "./cloudpid-report": "./src/cloudpid-report.ts",
     "./environment": "./src/environment.ts",
     "./environment-changes": "./src/environment-changes.ts",
     "./environment-lifecycle": "./src/environment-lifecycle.ts",

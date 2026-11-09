@@ -118,6 +118,12 @@ export type GitHubTokens = {
   readonly forget: (account: string) => void;
 };
 
+/** The body of a token's mint: what it narrows the token to, each absent for the installation's own. */
+type MintBody = {
+  repositories?: ReadonlyArray<string>;
+  permissions?: GitHubPermissions;
+};
+
 /** What a `GitHubApp` is made with. */
 export type GitHubAppOptions = {
   /** The app's ID (or its Client ID), the JWT's issuer. */
@@ -130,6 +136,11 @@ export type GitHubAppOptions = {
   readonly now: () => number;
   /** The permissions its tokens ask for (a subset of the app's); absent, all of the installation's. */
   readonly permissions?: GitHubPermissions | undefined;
+  /**
+   * The repositories its tokens reach, by name (without the owner), of those the installation has; absent, all of them.
+   * Sent as `repositories`, never `repository_ids` (the Registry's issues-only token, ADR-0051).
+   */
+  readonly repositories?: ReadonlyArray<string> | undefined;
   /**
    * Where the tokens minted are kept until they expire, so an object made again (a Workspace DO after its eviction,
    * while its Container runs on) still hands out the latest one and still takes them all out of output. Absent, in
@@ -447,12 +458,21 @@ export class GitHubApp implements GitHubTokens {
   }
 
   async #mint(account: string, installation: number): Promise<MintedToken> {
+    const { permissions, repositories } = this.#options;
+
+    // What the token is narrowed to; never `repository_ids`.
+    const narrowed: MintBody = {};
+
+    if (repositories !== undefined) narrowed.repositories = repositories;
+
+    if (permissions !== undefined) narrowed.permissions = permissions;
+
     const answer = await this.#ask(`${API}/app/installations/${installation}/access_tokens`, {
       method: "POST",
       body:
-        this.#options.permissions === undefined
+        permissions === undefined && repositories === undefined
           ? undefined
-          : JSON.stringify({ permissions: this.#options.permissions }),
+          : JSON.stringify(narrowed),
     });
 
     if (!answer.ok) {

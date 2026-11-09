@@ -1312,6 +1312,26 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
     sql.exec("CREATE INDEX approval_requests_by_request ON approval_requests (request_id)");
     sql.exec("CREATE INDEX approval_requests_by_scope ON approval_requests (scope)");
   },
+  // 40: the cloudpid reports the agent filed (`docs/architecture/agent-capabilities.md` → cloudpid reports, ADR-0051;
+  // `./cloudpid-reports.ts`), one per Session and tool call: its state (`claimed`, `filed`, `failed`, `unknown`), the
+  // issue's number and page once filed, and whether it carries the `cloudpid-report` label (1 or 0), its kind, when it was
+  // claimed, and a hash of its title (never its title or body). Kept 30 days, and not deleted with their Session. None
+  // before.
+  (sql) => {
+    sql.exec(`CREATE TABLE cloudpid_reports (
+      session TEXT NOT NULL,
+      task INTEGER NOT NULL,
+      state TEXT NOT NULL,
+      number INTEGER,
+      url TEXT,
+      labelled INTEGER,
+      kind TEXT NOT NULL,
+      at INTEGER NOT NULL,
+      title_hash TEXT NOT NULL,
+      PRIMARY KEY (session, task)
+    ) STRICT`);
+    sql.exec("CREATE INDEX cloudpid_reports_by_at ON cloudpid_reports (at)");
+  },
 ];
 
 /** Migrate the tables and return the store over them. Run it from the object's constructor. */

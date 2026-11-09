@@ -4,6 +4,7 @@
 import { defineEffectTool, type Harness } from "@cloudpid/effect-durable";
 import type { Approvals } from "@cloudpid/extensions/approvals";
 import type { BrowserHandoffs, OwnerTabDrivers } from "@cloudpid/extensions/browser";
+import type { CloudpidReportLog } from "@cloudpid/extensions/cloudpid-report";
 import type { AgentChangeLog } from "@cloudpid/extensions/environment";
 import type { Secrets } from "@cloudpid/extensions/secrets";
 import type { SettingsReload } from "@cloudpid/extensions/settings";
@@ -26,6 +27,7 @@ export class TestCodemodeSession extends TestWorkspaceSession {
     | BrowserHandoffs
     | OwnerTabDrivers
     | AgentChangeLog
+    | CloudpidReportLog
     | SettingsReload
     | Approvals
   > {
