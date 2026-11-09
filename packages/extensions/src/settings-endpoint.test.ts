@@ -1,6 +1,6 @@
 // docs/architecture/mcp-endpoint.md → Environment and Settings tools → The tools, Approvals with no Session: the Settings'
 // and the MCP servers' changing tools as the endpoint serves them (`settingsEndpointCores`). Each makes its change as the
-// Session's tool does, in the endpoint's words (the owner, no Session, no tool the endpoint does not serve); a Limit, the
+// Session's tool does, in the endpoint's words (the owner, no Session; `harness-tools.test.ts` keeps unserved tools out); a Limit, the
 // Instructions and a change that would make something reachable that is not answer `unsupported` with nothing asked,
 // saved or recorded. The world is the MCP fixture's: Settings at two Scopes, the real widening check, a fake host.
 // @effect-diagnostics asyncFunction:off preferEffectArray:off preferEffectRecord:off
