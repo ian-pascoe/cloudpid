@@ -77,6 +77,7 @@ import type { RepoWorkState } from "@cloudpid/sandbox-image/workspaces";
 import { BUILD_LOOK_INTERVAL_MS, buildUpkeep, buildView } from "./builds.ts";
 import { draftBranches, NO_GITHUB_MESSAGE } from "./draft-branches.ts";
 import { patchEnvironmentSettings, readEnvironmentSettings } from "./environment-settings.ts";
+import { triggerGitHubHooksUnavailable } from "./messages.ts";
 import {
   GLOBAL_DOCUMENT,
   type GlobalStore,
@@ -136,8 +137,8 @@ const scriptedMcpHost = (methods: {
   // SAFETY: the answers are `unknown` on purpose; the status reads decode them as they would an answer from the wire.
   methods as Pick<McpHostMethods, "servers" | "serverLog" | "apply" | "request">;
 
-/** What a fake Registry's `triggerFeatures` answers: `missing` for an older Registry that has no such method. */
-type TriggerFeatureAnswer = { current: { githubHooks: boolean } | "missing" };
+/** What a fake Registry's `triggerFeatures` answers. */
+type TriggerFeatureAnswer = { current: { githubHooks: boolean } };
 
 /** An in-memory Registry behind `getByName`, as the Worker's binding presents it. */
 const fakeRegistries = () => {
@@ -668,7 +669,7 @@ const fakeRegistries = () => {
   });
 
   /** A Trigger object's `ok` answer for `secrets`, with its GitHub-managed hook when it has one. */
-  const hookAnswer = (id: string, secrets: { token: string; secret: string }) => {
+  const revealAnswer = (id: string, secrets: { token: string; secret: string }) => {
     const github = triggerGitHub.get(id);
 
     return github === undefined
@@ -751,7 +752,7 @@ const fakeRegistries = () => {
 
         if (unreadableHooks.has(id)) return { status: "unreadable" as const };
 
-        return held === undefined ? { status: "none" as const } : hookAnswer(id, held);
+        return held === undefined ? { status: "none" as const } : revealAnswer(id, held);
       }),
     rotate: (id, what) =>
       reachTrigger(id, () => {
@@ -771,7 +772,7 @@ const fakeRegistries = () => {
 
         triggerHooks.set(id, next);
 
-        return hookAnswer(id, next);
+        return revealAnswer(id, next);
       }),
     fireNow: (id, key) =>
       reachTrigger(id, () => {
@@ -1717,14 +1718,7 @@ const fakeRegistries = () => {
       ),
     triggerDefinition: () => Effect.succeed(null),
     knownTriggers: () => Effect.succeed([]),
-    triggerFeatures: () =>
-      Effect.suspend(() => {
-        const features = triggerFeatureList.current;
-
-        return features === "missing"
-          ? Effect.die("The Registry has no method triggerFeatures")
-          : Effect.succeed(features);
-      }),
+    triggerFeatures: () => Effect.sync(() => triggerFeatureList.current),
     admitFire: () => Effect.succeed({ status: "removed" as const }),
     notifyTriggerFailed: () => Effect.void,
     deleteEnvironmentWithTriggers: ({ id }) =>
@@ -3892,37 +3886,20 @@ describe("the owner's Triggers", () => {
   it("makes a GitHub-managed hook only once the Registry lists the feature", async () => {
     const fake = fakeRegistries();
 
-    fake.triggerFeatureList.current = "missing";
-
-    const older = await call(fake, (registry) =>
-      Effect.flip(registry.createTrigger({ id: "t1", trigger: HOOKED })),
-    );
-
+    // How each answer of `triggerFeatures` reads is `trigger-features.test.ts`'s: one passes through here.
     fake.triggerFeatureList.current = { githubHooks: false };
 
-    const without = await call(fake, (registry) =>
+    const refused = await call(fake, (registry) =>
       Effect.flip(registry.createTrigger({ id: "t1", trigger: HOOKED })),
     );
 
-    expect(older).toBeInstanceOf(EnvironmentError);
-    expect(older.message).toBe(
-      "The server is being updated and can't make a GitHub-managed hook yet: try again in a few minutes",
-    );
-    expect(without.message).toBe(older.message);
+    expect(refused).toBeInstanceOf(EnvironmentError);
+    expect(refused.message).toBe(triggerGitHubHooksUnavailable);
     expect(fake.triggersHeld.size).toBe(0);
-
-    // A webhook with no repo needs no feature.
-    const plain = await create(fake, "t2", {
-      ...HOOKED,
-      source: { type: "webhook", format: "github" },
-    });
 
     fake.triggerFeatureList.current = { githubHooks: true };
 
-    const hooked = await create(fake, "t1", HOOKED);
-
-    expect(plain.id).toBe("t2");
-    expect(hooked.source).toEqual(HOOKED.source);
+    expect((await create(fake, "t1", HOOKED)).source).toEqual(HOOKED.source);
   });
 
   it("lists a GitHub-managed hook's state on its row, and says it with the revealed URL", async () => {

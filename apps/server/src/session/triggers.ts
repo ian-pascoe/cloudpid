@@ -13,9 +13,8 @@ import type { TriggerAccessService } from "@cloudpid/extensions/triggers";
 import { githubHookOf, heldBySession, type TriggerChanged } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
 import { newTriggerId } from "../registry/ids.ts";
-import { triggerGitHubHooksUnavailable } from "../registry/messages.ts";
+import { githubHookRefusal } from "../registry/trigger-features.ts";
 import type { RegistryMethods } from "../registry/Registry.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
 import { sessionAuthor } from "./change-author.ts";
@@ -67,15 +66,6 @@ export const sessionTriggers = ({
    */
   const wake = (id: string, arming: boolean) => (arming ? arm(id) : objects.sync(id));
 
-  /** Fails while the Registry can't keep a GitHub-managed hook: one older than this Session's server has no such method. */
-  const hooksListed = registry.triggerFeatures().pipe(
-    Effect.map(({ githubHooks }) => githubHooks),
-    Effect.catchCause(() => Effect.succeed(false)),
-    Effect.filterOrFail(Predicate.isTruthy, () =>
-      EnvironmentsError.make({ message: `${triggerGitHubHooksUnavailable}. Nothing was saved.` }),
-    ),
-  );
-
   /** Make a change as this Session's, then wake Trigger `id`'s object unless the change was refused. */
   const changing = (
     id: string,
@@ -125,7 +115,11 @@ export const sessionTriggers = ({
 
         const hook = githubHookOf(trigger);
 
-        if (hook !== undefined) yield* hooksListed;
+        const refused = yield* githubHookRefusal(registry, trigger.source);
+
+        if (refused !== undefined) {
+          return yield* EnvironmentsError.make({ message: `${refused}. Nothing was saved.` });
+        }
 
         const applied = yield* registry.agentCreateTrigger({
           id,

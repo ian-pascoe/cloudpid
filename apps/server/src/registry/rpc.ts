@@ -7,8 +7,6 @@ import {
   fieldSkill,
   armsTrigger,
   type TriggerDefinition,
-  type TriggerSourceInput,
-  githubHookOf,
   type TriggerOverview,
   TriggerUnscheduled,
   fieldTrigger,
@@ -58,6 +56,7 @@ import type { Builds } from "./builds.ts";
 import { hookPath } from "../hooks-path.ts";
 import type { HookAnswer, TriggerUnreachable } from "../trigger/object.ts";
 import type { TriggerObjects } from "../trigger/objects.ts";
+import { githubHookRefusal } from "./trigger-features.ts";
 import type { TriggerWrite } from "./triggers.ts";
 import type { DraftBranches } from "./draft-branches.ts";
 import { withInstalled } from "./skill-badges.ts";
@@ -73,7 +72,6 @@ import {
   repoTaken,
   triggerChangedSince,
   triggerNoDelivery,
-  triggerGitHubHooksUnavailable,
   triggerNoWebhook,
   triggerRevertNotWiped,
   triggerSecretsUnreadable,
@@ -504,21 +502,6 @@ export const serveRegistryRpc = <R = never>(
         Effect.mapError(() => failed(triggerUnreachable)),
         Effect.flatMap((hook) => triggerHook(id, hook, appOrigin)),
       );
-
-    /**
-     * Whether the Registry makes `source`'s GitHub-managed hook (`workers.md` → the callee lists its features): a source
-     * that names none passes, and one that does is refused while the Registry doesn't list `githubHooks`.
-     */
-    const githubHooksListed = (source: TriggerSourceInput) =>
-      githubHookOf({ source }) === undefined
-        ? Effect.void
-        : registry.triggerFeatures().pipe(
-            Effect.map(({ githubHooks }) => githubHooks),
-            // An older Registry has no such method.
-            Effect.catchCause(() => Effect.succeed(false)),
-            Effect.filterOrFail(Predicate.isTruthy, () => failed(triggerGitHubHooksUnavailable)),
-            Effect.asVoid,
-          );
 
     /** Trigger `id`'s object woken after the owner's write, as `paused` leaves the Trigger, answering `definition`. */
     const afterWrite = (definition: TriggerDefinition, done: string) =>
@@ -1074,7 +1057,10 @@ export const serveRegistryRpc = <R = never>(
         ),
       listSessionTriggers: ({ session }) => registry.listSessionTriggers({ session }),
       createTrigger: ({ id, trigger }) =>
-        githubHooksListed(trigger.source).pipe(
+        githubHookRefusal(registry, trigger.source).pipe(
+          Effect.flatMap((refused) =>
+            refused === undefined ? Effect.void : Effect.fail(failed(refused)),
+          ),
           Effect.andThen(registry.createTrigger({ id, trigger })),
           Effect.flatMap((write) =>
             triggerWritten(
