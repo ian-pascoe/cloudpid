@@ -61,6 +61,7 @@ import { sessionSubagentWorkspaces } from "./subagent-workspaces.ts";
 import { workspaceObjectsRemote } from "../workspace/lifecycle.ts";
 import { sessionLifecycle } from "./environment-lifecycle.ts";
 import { runChanges } from "./agent-changes.ts";
+import { sessionSource } from "./change-author.ts";
 import { sessionEnvironments } from "./environments.ts";
 import { sessionEnvironmentRemoval } from "./environment-removal.ts";
 import { triggerObjects, triggersOfEnvironment } from "../trigger/objects.ts";
@@ -488,14 +489,21 @@ export const SessionLive = Session.make(
 
         const environments = sessionEnvironments({
           registry: registryObject,
-          session: name,
-          placement,
-          handOver: (object, overrides) =>
-            workspaces.getByName(object).updateContainerSettings(overrides),
-          handSkills: (object, set) => workspaces.getByName(object).updateSkills(set),
+          author: sessionSource(name),
+          workspace: {
+            placement,
+            handOver: (object, overrides) =>
+              workspaces.getByName(object).updateContainerSettings(overrides),
+            handSkills: (object, set) => workspaces.getByName(object).updateSkills(set),
+          },
           builds,
           spares,
-          lifecycle: sessionLifecycle({ registry: registryObject, session: name, builds, spares }),
+          lifecycle: sessionLifecycle({
+            registry: registryObject,
+            author: sessionSource(name),
+            builds,
+            spares,
+          }),
         });
 
         // The objects of the Triggers the agent changes, and of those that go with an Environment the owner approved
@@ -628,7 +636,7 @@ export const SessionLive = Session.make(
         // The `settings_mcp_*` tools' read of the Registry, and their pushes of a changed set.
         const settingsMcp = sessionSettingsMcpAccess({
           registry: registries.getByName(REGISTRY_NAME),
-          session: name,
+          author: sessionSource(name),
           appOrigin,
           host: (environment) => mcpHostClient(() => mcpHosts.getByName(mcpHostName(environment))),
           workspace: Effect.tryPromise(() => placement()).pipe(
@@ -640,7 +648,7 @@ export const SessionLive = Session.make(
         // Sampling card's *Always allow* and *Never* for the owner.
         const settingsAccess = sessionSettingsAccess({
           registry: registries.getByName(REGISTRY_NAME),
-          session: name,
+          author: sessionSource(name),
         });
 
         // What MCP servers ask the owner during a call: shown on the sockets, pushed, never kept (`./mcp-questions.ts`).

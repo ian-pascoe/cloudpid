@@ -1,5 +1,6 @@
 // The Session's Settings read and its MCP read of the Registry (`./settings-access.ts`, `./settings-mcp-access.ts`): the count
-// of MCP servers a failed read leaves out without failing the read, and the one answer for an id no Environment has.
+// of MCP servers a failed read leaves out without failing the read, the one answer for an id no Environment has, and who
+// a change is recorded as from each author source (a Session's, or the endpoint's, which has no own Environment).
 // @effect-diagnostics asyncFunction:off missedPipeableOpportunity:off preferEffectRecord:off
 import { SettingsAccessError } from "@cloudpid/extensions/settings";
 import type { McpChangeGuard } from "@cloudpid/protocol";
@@ -12,6 +13,7 @@ import {
   type SettingsRegistry,
 } from "./settings-access.ts";
 import { sessionSettingsMcpAccess, settingsMcpReads } from "./settings-mcp-access.ts";
+import { type AuthorSource, sessionSource } from "./change-author.ts";
 
 /** A Registry that answers one Environment's Settings, and whose count of MCP servers the test makes fail or answer. */
 const settingsRegistry = (
@@ -43,7 +45,7 @@ describe("a Session's Settings read", () => {
   it("counts the MCP servers of an Environment from its whole set", async () => {
     const access = sessionSettingsAccess({
       registry: settingsRegistry(Effect.succeed(["a", "b", "c"])),
-      session: undefined,
+      author: sessionSource(undefined),
     });
 
     expect(await Effect.runPromise(access.get("env-a"))).toMatchObject({ mcpServers: 3 });
@@ -54,7 +56,7 @@ describe("a Session's Settings read", () => {
       registry: settingsRegistry(
         Effect.fail(SettingsAccessError.make({ message: "An old Registry has no such method" })),
       ),
-      session: undefined,
+      author: sessionSource(undefined),
     });
 
     const view = await Effect.runPromise(access.get("env-a"));
@@ -96,8 +98,13 @@ describe("what a Session hands the Registry for an agent's MCP change", () => {
         }),
     } as never;
 
-    const settings = sessionSettingsAccess({ registry, session: "s-1" });
-    const mcp = sessionSettingsMcpAccess({ registry, session: "s-1", host: () => NO_HOST });
+    const settings = sessionSettingsAccess({ registry, author: sessionSource("s-1") });
+
+    const mcp = sessionSettingsMcpAccess({
+      registry,
+      author: sessionSource("s-1"),
+      host: () => NO_HOST,
+    });
 
     await Effect.runPromise(
       settings.change({
@@ -114,6 +121,74 @@ describe("what a Session hands the Registry for an agent's MCP change", () => {
 
     expect(sent[0]).toMatchObject({ guard: { name: "files", widening: true } });
     expect(sent[1]).toMatchObject({ environment: "env-a", name: "files", reads: ["TOKEN"] });
+  });
+});
+
+describe("who a Settings change is recorded as", () => {
+  const via = { auth: "local" as const, client: { name: "pi" } };
+  const request = { id: "req-1", tool: "settings_model_set", digest: "d", attempt: "a" };
+
+  /** The access over a Registry that notes each author it is given and whether the Session's own Environment was read. */
+  const opened = (author: AuthorSource) => {
+    const authors: Array<unknown> = [];
+    const sessionsRead: Array<string> = [];
+
+    // SAFETY: a change and the own Environment use these two methods only.
+    const registry = {
+      changeSettings: (input: { readonly author: unknown }) =>
+        Effect.sync(() => {
+          authors.push(input.author);
+
+          return { status: "unchanged" as const };
+        }),
+      sessionSettings: ({ session }: { readonly session: string }) =>
+        Effect.sync(() => {
+          sessionsRead.push(session);
+
+          return { environment: "env-a" };
+        }),
+    } as never;
+
+    return { access: sessionSettingsAccess({ registry, author }), authors, sessionsRead };
+  };
+
+  const by = { conversation: 2, tool: "settings_model_set", reason: "r" };
+
+  it.each([
+    [
+      "a Session's, from its conversation, with its own Environment",
+      sessionSource("s-1"),
+      { session: "s-1", ...by },
+      "env-a",
+    ],
+    [
+      "the endpoint's, as the caller with its claim, with no own Environment",
+      { kind: "endpoint", via, request } satisfies AuthorSource,
+      { via, tool: by.tool, reason: by.reason, request },
+      null,
+    ],
+  ])("is %s", async (_, source, recorded, own) => {
+    const { access, authors } = opened(source);
+
+    await Effect.runPromise(access.change({ scope: "*", changes: [], author: by }));
+
+    expect(authors).toEqual([recorded]);
+    expect(await Effect.runPromise(access.own)).toBe(own);
+  });
+
+  it("refuses a Session the Registry does not list, asking the Registry nothing", async () => {
+    const { access, authors, sessionsRead } = opened(sessionSource(undefined));
+
+    const refused = await Effect.runPromise(
+      Effect.flip(access.change({ scope: "*", changes: [], author: by })),
+    );
+
+    // A refusal with no code: the Session's own state, which the caller's arguments cannot mend.
+    expect(refused).toBeInstanceOf(SettingsAccessError);
+    expect(refused.code).toBeUndefined();
+    expect(authors).toEqual([]);
+    expect(await Effect.runPromise(access.own)).toBeNull();
+    expect(sessionsRead).toEqual([]);
   });
 });
 

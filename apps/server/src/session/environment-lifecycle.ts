@@ -31,6 +31,10 @@ import type {
   LifecycleOutcome,
 } from "../registry/environment-lifecycle.ts";
 import type { EnvironmentRecord } from "../registry/store.ts";
+import { type AuthorSource, authored, sessionOf, unlistedSession } from "./change-author.ts";
+
+/** What a Test Build asked for on the endpoint is refused with: one is started from a Session only. */
+const TEST_BUILD_FROM_A_SESSION = "A Test Build is started from a Session only.";
 
 /** What the lifecycle operations use of the Registry. */
 export type LifecycleRegistry = Pick<
@@ -45,10 +49,16 @@ export type LifecycleRegistry = Pick<
 
 export type SessionLifecycleOptions = {
   readonly registry: LifecycleRegistry;
-  /** The Session's id in the Registry; undefined when unknown, for a Session that then changes no Environment. */
-  readonly session: string | undefined;
-  /** The upkeep of the Builds: kept current after a change, asked for a Build by `rebuild`, and the Test Builds. */
-  readonly builds: Pick<Builds, "of" | "rebuild" | "test">;
+  /**
+   * Who the changes are made by: the Session (its id in the Registry; undefined when unknown, for a Session that then
+   * changes no Environment), or the endpoint's caller.
+   */
+  readonly author: AuthorSource;
+  /**
+   * The upkeep of the Builds: kept current after a change, and asked for a Build by `rebuild`; and a Session's Test
+   * Builds (none on the endpoint).
+   */
+  readonly builds: Pick<Builds, "of" | "rebuild"> & { readonly test?: Builds["test"] };
   /** The upkeep of the spare Workspaces, run after the Repos change. */
   readonly spares: Pick<Spares, "of">;
   /** How long one round of waiting for a Test Build lasts at most, and how often it looks; for tests. */
@@ -106,22 +116,33 @@ const repoOf = (
 
 export const sessionLifecycle = ({
   registry,
-  session,
+  author: source,
   builds,
   spares,
   rounds = { roundMs: TEST_BUILD_ROUND_MS, pollMs: TEST_BUILD_POLL_MS },
 }: SessionLifecycleOptions): EnvironmentLifecycle => {
-  /** The Session's id, or why it changes no Environment. */
-  const author = Effect.fromNullishOr(session).pipe(
-    Effect.mapError(() =>
-      EnvironmentsError.make({
-        message: "This Session is not one the Registry lists, so it changes no Environment.",
-      }),
-    ),
-  );
+  const unlisted = EnvironmentsError.make({ message: unlistedSession("Environment") });
 
-  /** The Test Build object's id of call `call`'s Test Build: the Session's, as the call's task is only within it. */
-  const testId = (call: string) => Effect.map(author, (owner) => `${owner}/${call}`);
+  /** The Registry's author of a change, or why the Session changes no Environment. */
+  const authorOf = authored(source, unlisted);
+
+  /**
+   * Call `call`'s Test Build: its object's id, the Session's, as the call's task is only within it, and the Test Builds.
+   * The endpoint has none (its `proposed` Build is a later stage), so a Test Build is refused there, the one place it is.
+   */
+  const testOf = (call: string) => {
+    const owner = sessionOf(source);
+
+    if (source.kind === "endpoint" || builds.test === undefined) {
+      return Effect.fail(
+        EnvironmentsError.make({ message: TEST_BUILD_FROM_A_SESSION, code: "invalid_argument" }),
+      );
+    }
+
+    return owner === undefined
+      ? Effect.fail(unlisted)
+      : Effect.succeed({ id: `${owner}/${call}`, test: builds.test });
+  };
 
   /** A failed call to a Test Build, as the model sees it. */
   const testFailed = (message: string) =>
@@ -134,14 +155,14 @@ export const sessionLifecycle = ({
   return {
     create: ({ name, repos, author: by }) =>
       Effect.gen(function* () {
-        const owner = yield* author;
+        const author = yield* authorOf(by);
         const parsed: EnvironmentRepo[] = [];
 
-        for (const source of repos) {
-          const repo = repoOf(source, undefined);
+        for (const url of repos) {
+          const repo = repoOf(url, undefined);
 
           if (Result.isFailure(repo)) {
-            return { status: "rejected" as const, message: `${source}: ${repo.failure}` };
+            return { status: "rejected" as const, message: `${url}: ${repo.failure}` };
           }
 
           parsed.push(repo.success);
@@ -150,7 +171,7 @@ export const sessionLifecycle = ({
         const made = yield* registry.agentCreateEnvironment({
           name,
           repos: parsed,
-          author: { session: owner, ...by },
+          author,
         });
 
         if (made.status === "rejected") return made;
@@ -167,27 +188,25 @@ export const sessionLifecycle = ({
       }),
     rename: ({ environment, name, author: by }) =>
       Effect.gen(function* () {
-        const owner = yield* author;
-
         const answer = yield* registry.agentRenameEnvironment({
           environment,
           name,
-          author: { session: owner, ...by },
+          author: yield* authorOf(by),
         });
 
         return recordChanged(answer);
       }),
-    addRepo: ({ environment, source, name, author: by }) =>
+    addRepo: ({ environment, source: url, name, author: by }) =>
       Effect.gen(function* () {
-        const owner = yield* author;
-        const repo = repoOf(source, name);
+        const author = yield* authorOf(by);
+        const repo = repoOf(url, name);
 
         if (Result.isFailure(repo)) return { status: "rejected" as const, message: repo.failure };
 
         const answer = yield* registry.agentAddRepo({
           environment,
           repo: repo.success,
-          author: { session: owner, ...by },
+          author,
         });
 
         // The spare holds the Repos it was made with: one made before is stale now, and so is the Build.
@@ -197,12 +216,10 @@ export const sessionLifecycle = ({
       }),
     removeRepo: ({ environment, name, author: by }) =>
       Effect.gen(function* () {
-        const owner = yield* author;
-
         const answer = yield* registry.agentRemoveRepo({
           environment,
           name,
-          author: { session: owner, ...by },
+          author: yield* authorOf(by),
         });
 
         if (answer.status === "changed") yield* keepCurrent(environment);
@@ -211,7 +228,7 @@ export const sessionLifecycle = ({
       }),
     rebuild: ({ environment, author: by }) =>
       Effect.gen(function* () {
-        const owner = yield* author;
+        const author = yield* authorOf(by);
 
         const known = yield* registry.getEnvironment({ id: environment });
 
@@ -230,13 +247,11 @@ export const sessionLifecycle = ({
           return { status: "unchanged" as const, environment: changedEnvironment(known) };
         }
 
-        return recordedChange(
-          yield* registry.recordRebuild({ environment, author: { session: owner, ...by } }),
-        );
+        return recordedChange(yield* registry.recordRebuild({ environment, author }));
       }),
     startTestBuild: ({ environment, call, proposed }) =>
       Effect.gen(function* () {
-        const id = yield* testId(call);
+        const { id, test } = yield* testOf(call);
         const found = yield* registry.getEnvironment({ id: environment });
 
         if (found === null) return { status: "missing" as const };
@@ -265,7 +280,7 @@ export const sessionLifecycle = ({
           }
         }
 
-        const started = yield* builds.test
+        const started = yield* test
           .start({ environment, id, proposed: { ...proposed, repos } })
           .pipe(
             Effect.map((state) => ({
@@ -280,12 +295,12 @@ export const sessionLifecycle = ({
       }),
     testBuildRound: ({ environment, call }) =>
       Effect.gen(function* () {
-        const id = yield* testId(call);
+        const { id, test } = yield* testOf(call);
         const until = (yield* Clock.currentTimeMillis) + rounds.roundMs;
 
         while (true) {
           const progress = testProgress(
-            yield* builds.test.state({ environment, id }).pipe(Effect.mapError(testFailed)),
+            yield* test.state({ environment, id }).pipe(Effect.mapError(testFailed)),
           );
 
           const now = yield* Clock.currentTimeMillis;
@@ -297,9 +312,9 @@ export const sessionLifecycle = ({
       }),
     cancelTestBuild: ({ environment, call }) =>
       Effect.gen(function* () {
-        const id = yield* testId(call);
+        const { id, test } = yield* testOf(call);
 
-        yield* builds.test.cancel({ environment, id }).pipe(Effect.mapError(testFailed));
+        yield* test.cancel({ environment, id }).pipe(Effect.mapError(testFailed));
       }),
   };
 };

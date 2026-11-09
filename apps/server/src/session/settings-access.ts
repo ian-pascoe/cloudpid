@@ -13,6 +13,7 @@ import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import type { RegistryMethods } from "../registry/Registry.ts";
+import { type AuthorSource, authored, sessionOf, unlistedSession } from "./change-author.ts";
 
 /** What the Session's Settings read and change in the Registry. */
 export type SettingsRegistry = Pick<
@@ -27,8 +28,26 @@ export type SettingsRegistry = Pick<
 
 export type SessionSettingsAccessOptions = {
   readonly registry: SettingsRegistry;
-  /** The Session's id in the Registry; undefined when unknown, for a Session that then changes nothing. */
-  readonly session: string | undefined;
+  /**
+   * Who the changes are made by: the Session (its id in the Registry; undefined when unknown, for a Session that then
+   * changes nothing and has no own Environment), or the endpoint's caller, who has none either.
+   */
+  readonly author: AuthorSource;
+};
+
+/** The Environment of the Session `source` names, as the Registry lists it; null for a Session it does not, or the endpoint. */
+// @effect-diagnostics-next-line missingPipeableSignature:off
+export const ownEnvironment = (
+  registry: Pick<RegistryMethods, "sessionSettings">,
+  source: AuthorSource,
+): Effect.Effect<string | null> => {
+  const session = sessionOf(source);
+
+  return session === undefined
+    ? Effect.succeed(null)
+    : Effect.suspend(() => registry.sessionSettings({ session })).pipe(
+        Effect.map(({ environment }) => environment),
+      );
 };
 
 /** Why an Environment's Settings or MCP servers are not reached: no Environment has the id. */
@@ -94,27 +113,21 @@ export const settingsReads = (
 
 export const sessionSettingsAccess = ({
   registry,
-  session,
+  author: source,
 }: SessionSettingsAccessOptions): SettingsAccessService => ({
   ...settingsReads(registry),
-  own:
-    session === undefined
-      ? Effect.succeed(null)
-      : Effect.suspend(() => registry.sessionSettings({ session })).pipe(
-          Effect.map(({ environment }) => environment),
-        ),
+  own: ownEnvironment(registry, source),
   change: ({ scope, changes, author, guard }) =>
     Effect.gen(function* () {
-      if (session === undefined) {
-        return yield* SettingsAccessError.make({
-          message: "This Session is not one the Registry lists, so it changes no Settings.",
-        });
-      }
+      const by = yield* authored(
+        source,
+        SettingsAccessError.make({ message: unlistedSession("Settings") }),
+      )(author);
 
       const answer = yield* registry.changeSettings({
         environment: scope === GLOBAL_SETTINGS_SCOPE ? undefined : scope,
         changes,
-        author: { session, ...author },
+        author: by,
         guard,
       });
 

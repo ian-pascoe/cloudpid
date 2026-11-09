@@ -220,7 +220,7 @@ export const setup = async (
 
         if (scope === GLOBAL_SETTINGS_SCOPE) {
           const changed = changeGlobalSettings(world.global, changes, (made) =>
-            record({ ...made, conversation, tool, reason }),
+            record({ ...made, conversation: conversation ?? null, tool, reason }),
           );
 
           world.global = changed.global;
@@ -237,7 +237,7 @@ export const setup = async (
           environment.overrides,
           scope,
           changes,
-          (made) => record({ ...made, conversation, tool, reason }),
+          (made) => record({ ...made, conversation: conversation ?? null, tool, reason }),
         );
 
         environment.overrides = changed.overrides;

@@ -1,11 +1,14 @@
 // The Session's lifecycle operations over a fake Registry: what each asks the Registry, and the upkeep that follows a
-// change (the spare Workspace and the Build), as after the owner's RPC.
+// change (the spare Workspace and the Build), as after the owner's RPC; from either author source (a Session's, or the
+// endpoint's, whose changes carry the caller and its claim, and which has no Test Build of its own yet).
 // @effect-diagnostics asyncFunction:off
+import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import type { ProposedBuild } from "../registry/builds.ts";
 import type { TestBuildState } from "../workspace/build-record.ts";
+import { type AuthorSource, sessionSource } from "./change-author.ts";
 import { type LifecycleRegistry, sessionLifecycle } from "./environment-lifecycle.ts";
 
 const RECORD = { id: "0000abcd", name: "Other", repos: [], createdAt: 0 };
@@ -37,8 +40,8 @@ type Options = {
   readonly answer?: Answer;
   /** What the Builds answer to a request for a Build: nothing, or why not. */
   readonly rebuild?: Effect.Effect<"asked" | "underway", string>;
-  /** The Session's id; null for a Session the Registry does not list. */
-  readonly session?: string | null;
+  /** Who makes the changes: Session s-1 unless given (a Session the Registry does not list has no id). */
+  readonly source?: AuthorSource;
   readonly known?: boolean;
 };
 
@@ -53,7 +56,7 @@ type FakeTestBuilds = {
 const open = ({
   answer = "changed",
   rebuild = Effect.succeed("asked" as const),
-  session = "s-1",
+  source = sessionSource("s-1"),
   known = true,
 }: Options = {}) => {
   const asked: Array<{ op: string; input: Asked }> = [];
@@ -112,7 +115,7 @@ const open = ({
 
   const lifecycle = sessionLifecycle({
     registry,
-    session: session ?? undefined,
+    author: source,
     builds: {
       of: (environment) => Effect.sync(() => void upkept.push(`build:${environment}`)),
       rebuild: (environment) =>
@@ -173,11 +176,15 @@ describe("creating an Environment", () => {
   });
 
   it("is refused for a Session the Registry does not list", async () => {
-    const { lifecycle } = open({ session: null });
+    const { lifecycle } = open({ source: sessionSource(undefined) });
 
-    await expect(
-      Effect.runPromise(lifecycle.create({ name: "N", repos: [], author })),
-    ).rejects.toThrow(/not one the Registry lists/);
+    const refused = await Effect.runPromise(
+      lifecycle.create({ name: "N", repos: [], author }).pipe(Effect.flip),
+    );
+
+    // A refusal with no code: the Session's own state, which the caller's arguments cannot mend.
+    expect(refused).toBeInstanceOf(EnvironmentsError);
+    expect(refused.code).toBeUndefined();
   });
 });
 
@@ -389,5 +396,49 @@ describe("asking for a Build", () => {
       (await Effect.runPromise(lifecycle.rebuild({ environment: "ghost", author }))).status,
     ).toBe("missing");
     expect(upkept).toEqual([]);
+  });
+});
+
+describe("from the endpoint", () => {
+  const via = { auth: "oauth" as const, client: { name: "pi" }, clientId: "c-1" };
+  const request = { id: "req-1", tool: "environment_repo_add", digest: "d", attempt: "a" };
+  const endpoint: AuthorSource = { kind: "endpoint", via, request };
+
+  it("records a change as the caller, with its claim and no Session, and keeps the spare and the Build current", async () => {
+    const { lifecycle, asked, upkept } = open({ source: endpoint });
+
+    await Effect.runPromise(
+      lifecycle.addRepo({
+        environment: "0000abcd",
+        source: "o/api",
+        name: "backend",
+        author: { tool: author.tool, reason: author.reason },
+      }),
+    );
+
+    expect(asked).toEqual([
+      {
+        op: "addRepo",
+        input: {
+          environment: "0000abcd",
+          repo: { name: "backend", url: "https://github.com/o/api.git" },
+          author: { via, tool: author.tool, reason: author.reason, request },
+        },
+      },
+    ]);
+    expect(upkept).toEqual(["spare:0000abcd", "build:0000abcd"]);
+  });
+
+  it("starts no Test Build, which is a Session's only so far", async () => {
+    const { lifecycle, tests } = open({ source: endpoint });
+
+    expect(
+      await Effect.runPromise(
+        lifecycle
+          .startTestBuild({ environment: "0000abcd", call: "7", proposed: {} })
+          .pipe(Effect.flip),
+      ),
+    ).toMatchObject({ code: "invalid_argument" });
+    expect(tests.started).toEqual([]);
   });
 });

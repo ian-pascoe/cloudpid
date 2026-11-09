@@ -55,7 +55,7 @@ export type SecretMarks = {
     readonly name: string;
     readonly build: boolean;
     readonly author: {
-      readonly conversation: number;
+      readonly conversation?: number | undefined;
       readonly tool: string;
       readonly reason: string;
     };

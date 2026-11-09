@@ -96,7 +96,7 @@ export const testEnvironments = (kv: SettingsKv): EnvironmentsService => {
           at: 0,
           actor: "agent",
           session: "test",
-          conversation: author.conversation,
+          conversation: author.conversation ?? null,
           tool: author.tool,
           reason: author.reason,
           field: change.field,

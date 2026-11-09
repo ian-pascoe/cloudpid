@@ -13,7 +13,8 @@ import * as Arr from "effect/Array";
 import type * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import type { RegistryMethods } from "../registry/Registry.ts";
-import { noEnvironment } from "./settings-access.ts";
+import type { AuthorSource } from "./change-author.ts";
+import { noEnvironment, ownEnvironment } from "./settings-access.ts";
 
 /** What the Session's MCP read and pushes use of the Registry. */
 export type SettingsMcpRegistry = Pick<
@@ -31,8 +32,11 @@ export type SettingsMcpReadsRegistry = Pick<RegistryMethods, "mcpSettingsView">;
 
 export type SessionSettingsMcpAccessOptions = {
   readonly registry: SettingsMcpRegistry;
-  /** The Session's id in the Registry; undefined when unknown, for a Session that then has no own Environment. */
-  readonly session: string | undefined;
+  /**
+   * Whose the changes are: the Session (its id in the Registry; undefined when unknown, for a Session that then has no
+   * own Environment), or the endpoint's caller, who has none either. The MCP tools record through `SettingsAccess`.
+   */
+  readonly author: AuthorSource;
   /** The `McpHostClient` of Environment `environment`'s host: any Environment's, since a Session names the host it reaches. */
   readonly host: (environment: string) => McpHostClientService;
   /** The object of the Session's Workspace (`ws:<id>`), which the status wait names; null with none. */
@@ -69,19 +73,14 @@ export const settingsMcpReads = (
 
 export const sessionSettingsMcpAccess = ({
   registry,
-  session,
+  author,
   host,
   workspace,
   appOrigin,
 }: SessionSettingsMcpAccessOptions): SettingsMcpAccessService => ({
   ...settingsMcpReads(registry, host),
   appOrigin,
-  own:
-    session === undefined
-      ? Effect.succeed(null)
-      : Effect.suspend(() => registry.sessionSettings({ session })).pipe(
-          Effect.map(({ environment }) => environment),
-        ),
+  own: ownEnvironment(registry, author),
   check: ({ scope, name, changes, reads }) =>
     Effect.suspend(() =>
       registry.mcpChangeCheck({

@@ -1,7 +1,9 @@
-// The Session's Environments over a fake Registry: what they read, and what follows a change (the handover to the
-// Session's own Workspace, and the Builds' upkeep).
-// @effect-diagnostics asyncFunction:off preferEffectRecord:off
+// The Session's Environments over a fake Registry: what they read, what follows a change (the handover to the Session's
+// own Workspace, and the Builds' upkeep), and who a change is recorded as from each author source (a Session's, or the
+// endpoint's, which has no Workspace to hand a change to).
+// @effect-diagnostics asyncFunction:off preferEffectRecord:off missedPipeableOpportunity:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import { EnvironmentsError } from "@cloudpid/extensions/environment";
 import type { AgentChange } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -9,6 +11,7 @@ import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { SecretBuildMark } from "../registry/secret-changes.ts";
+import { type AuthorSource, sessionSource } from "./change-author.ts";
 import { unusedLifecycle } from "./environments.fixture.ts";
 import {
   type EnvironmentReadsRegistry,
@@ -82,6 +85,8 @@ const open = (
   overridesHere = false,
   // Whether the Registry fails to say what the Session's Workspace is handed.
   overridesUnreadable = false,
+  // Who makes the changes: Session s-1, in its Workspace, unless the endpoint's caller.
+  source: AuthorSource = sessionSource("s-1"),
 ) => {
   const handedOver: Array<{ object: string; overrides: Schema.Json }> = [];
   const skillSetsHanded: Array<{ object: string; hash: string }> = [];
@@ -360,18 +365,23 @@ const open = (
 
   const environments = sessionEnvironments({
     registry,
-    session: "s-1",
-    placement: () => Promise.resolve(workspacePlacement("0a1b2c3d", "/workspace")),
-    handOver: (object, overrides) => {
-      handedOver.push({ object, overrides });
+    author: source,
+    workspace:
+      source.kind === "endpoint"
+        ? undefined
+        : {
+            placement: () => Promise.resolve(workspacePlacement("0a1b2c3d", "/workspace")),
+            handOver: (object, overrides) => {
+              handedOver.push({ object, overrides });
 
-      return Promise.resolve({ ok: true });
-    },
-    handSkills: (object, set) => {
-      skillSetsHanded.push({ object, hash: set.hash });
+              return Promise.resolve({ ok: true });
+            },
+            handSkills: (object, set) => {
+              skillSetsHanded.push({ object, hash: set.hash });
 
-      return Promise.resolve({ ok: true });
-    },
+              return Promise.resolve({ ok: true });
+            },
+          },
     builds: {
       of: (environment) =>
         Effect.sync(() => {
@@ -879,6 +889,110 @@ describe("the Session's Environments", () => {
     ).toBe("missing");
     expect(handedOver).toEqual([]);
     expect(upkept).toEqual([]);
+  });
+});
+
+describe("the Environments from the endpoint", () => {
+  const via = { auth: "oauth" as const, client: { name: "pi", version: "1" }, clientId: "c-1" };
+  const request = { id: "req-1", tool: "environment_variable_set", digest: "d", attempt: "a" };
+
+  it("record a change with the caller and its claim, hand it to no Workspace, and keep the Build current", async () => {
+    const { environments, handedOver, upkept, asked } = open("changed", "changed", false, false, {
+      kind: "endpoint",
+      via,
+      request,
+    });
+
+    const applied = await Effect.runPromise(
+      environments.change({
+        environment: "default",
+        change,
+        author: { ...author, conversation: undefined },
+      }),
+    );
+
+    expect(asked).toEqual([
+      {
+        environment: "default",
+        change,
+        author: { via, tool: author.tool, reason: author.reason, request },
+      },
+    ]);
+    expect(applied).toMatchObject({ status: "changed", newBuild: true });
+    expect(await Effect.runPromise(environments.current)).toBeNull();
+    expect(handedOver).toEqual([]);
+    expect(upkept).toEqual(["default"]);
+  });
+
+  it("name no own Environment for a change at Global, and mark a Secret as the caller", async () => {
+    const { environments, globalAsked, markAsked, upkept } = open(
+      "changed",
+      "changed",
+      false,
+      false,
+      {
+        kind: "endpoint",
+        via,
+      },
+    );
+
+    const applied = await Effect.runPromise(
+      environments.change({ environment: "*", change, author }),
+    );
+
+    expect(globalAsked).toEqual([
+      { change, author: { via, tool: author.tool, reason: author.reason }, environment: undefined },
+    ]);
+    // No Environment is the caller's own, so no change is "its own": the Registry was asked without one.
+    expect(applied).toMatchObject({ status: "changed", global: { own: false } });
+
+    await Effect.runPromise(
+      environments.markSecret({
+        environment: "default",
+        name: "API_KEY",
+        build: false,
+        author: { tool: "environment_secret_build", reason: "r" },
+      }),
+    );
+
+    expect(markAsked).toEqual([
+      {
+        environment: "default",
+        name: "API_KEY",
+        build: false,
+        author: { via, tool: "environment_secret_build", reason: "r" },
+      },
+    ]);
+    expect(upkept).toEqual(["default", "0000abcd", "default"]);
+  });
+
+  it("refuse every change of a Session the Registry does not list, asking the Registry nothing", async () => {
+    const { environments, asked, markAsked } = open("changed", "changed", false, false, {
+      kind: "session",
+      id: undefined,
+    });
+
+    const refused = await Effect.runPromise(
+      Effect.flip(environments.change({ environment: "default", change, author })),
+    );
+
+    // A refusal with no code: the Session's own state, which the caller's arguments cannot mend.
+    expect(refused).toBeInstanceOf(EnvironmentsError);
+    expect(refused.code).toBeUndefined();
+    expect(asked).toEqual([]);
+
+    await Effect.runPromise(
+      Effect.flip(
+        environments.markSecret({
+          environment: "default",
+          name: "API_KEY",
+          build: false,
+          author: { tool: "environment_secret_build", reason: "r" },
+        }),
+      ),
+    );
+
+    expect(markAsked).toEqual([]);
   });
 });
 

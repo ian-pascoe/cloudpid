@@ -149,9 +149,12 @@ export type SettingChange = {
   readonly value: Schema.Json | null;
 };
 
-/** Who makes an Agent change: the conversation that called the tool, the tool, and the agent's reason. */
+/**
+ * Who makes an Agent change: the conversation that called the tool (none where there is no Session: the endpoint's
+ * core, whose service knows the caller instead), the tool, and the agent's reason.
+ */
 export type ChangeAuthor = {
-  readonly conversation: number;
+  readonly conversation?: number | undefined;
   readonly tool: string;
   readonly reason: string;
   /** Set when the owner approved the change before it was made (`./approvals.ts`). */

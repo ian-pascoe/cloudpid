@@ -97,7 +97,7 @@ export const fakeLifecycle = () => {
     at: 1_000,
     actor: "agent",
     session: "s-1",
-    conversation: author.conversation,
+    conversation: author.conversation ?? null,
     tool: author.tool,
     reason: author.reason,
     field,

@@ -70,7 +70,7 @@ export const fakeTriggers = (
       at: now,
       actor: "agent" as const,
       session: "s-1",
-      conversation: author.conversation,
+      conversation: author.conversation ?? null,
       tool: author.tool,
       reason: author.reason,
       field: triggerField(id),

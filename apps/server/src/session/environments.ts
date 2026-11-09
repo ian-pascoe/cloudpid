@@ -30,6 +30,7 @@ import type { Builds } from "../registry/builds.ts";
 import type { Spares } from "../registry/rpc.ts";
 import type { Placement } from "./workspace.ts";
 import type { SkillSet } from "../workspace/skill-set-schema.ts";
+import { type AuthorSource, authored, sessionOf, unlistedSession } from "./change-author.ts";
 
 /** What the Session's Environments read and change in the Registry. */
 export type EnvironmentsRegistry = Pick<
@@ -58,8 +59,23 @@ export type EnvironmentsRegistry = Pick<
 
 export type SessionEnvironmentsOptions = {
   readonly registry: EnvironmentsRegistry;
-  /** The Session's id in the Registry; undefined when unknown, for a Session that then belongs to no Environment. */
-  readonly session: string | undefined;
+  /**
+   * Who the changes are made by: the Session (its id in the Registry; undefined when unknown, for a Session that then
+   * belongs to no Environment and changes none), or the endpoint's caller, who has no Workspace to hand a change to.
+   */
+  readonly author: AuthorSource;
+  /** The Session's own Workspace, which a change to its Environment is handed at once; none on the endpoint. */
+  readonly workspace?: SessionWorkspaceHandOver | undefined;
+  /** The Builds' upkeep, run for an Environment after each change, as after the owner's save. */
+  readonly builds: Pick<Builds, "of">;
+  /** The spares' upkeep, run for an Environment after a change of its Spare Workspace setting. */
+  readonly spares: Pick<Spares, "of">;
+  /** What the agent does to an Environment's own record: make, rename, Repos, Build (`sessionLifecycle`). */
+  readonly lifecycle: EnvironmentLifecycle;
+};
+
+/** How a Session reaches its own Workspace: where it is, and how a change is handed to it. */
+export type SessionWorkspaceHandOver = {
   /** Where the Session works: its Workspace, whose Environment is the Session's. */
   readonly placement: () => Promise<Placement>;
   /** Hand an Environment's new Container settings overrides to the Workspace DO `object`. */
@@ -72,12 +88,6 @@ export type SessionEnvironmentsOptions = {
     object: string,
     set: SkillSet,
   ) => Promise<{ readonly ok: true } | { readonly ok: false; readonly message: string }>;
-  /** The Builds' upkeep, run for an Environment after each change, as after the owner's save. */
-  readonly builds: Pick<Builds, "of">;
-  /** The spares' upkeep, run for an Environment after a change of its Spare Workspace setting. */
-  readonly spares: Pick<Spares, "of">;
-  /** What the agent does to an Environment's own record: make, rename, Repos, Build (`sessionLifecycle`). */
-  readonly lifecycle: EnvironmentLifecycle;
 };
 
 /** An Environment as a change names it: its id and name. */
@@ -139,6 +149,9 @@ export const buildsAfterScope = (
           ),
         )
     : builds.of(environment);
+
+/** What handing a change to a Workspace answers where there is none to hand it to: never reached, as `where` is null then. */
+const NO_WORKSPACE = Promise.resolve({ ok: false, message: "There is no Workspace" } as const);
 
 /** The error of a failed call to the Registry or the Workspace, as the model sees it. */
 const failedCall = (what: string) => (cause: unknown) =>
@@ -248,10 +261,8 @@ export const environmentReads = (
 
 export const sessionEnvironments = ({
   registry,
-  session,
-  placement,
-  handOver,
-  handSkills,
+  author: source,
+  workspace,
   builds,
   spares,
   lifecycle,
@@ -259,18 +270,21 @@ export const sessionEnvironments = ({
   /** The Session's Workspace and its Environment, once found: neither changes for the Session's life. */
   let found: { readonly object: string; readonly environment: string } | undefined;
 
+  const session = sessionOf(source);
+
   const where = Effect.gen(function* () {
     if (found !== undefined) return found;
 
-    const { workspace, object } = yield* Effect.tryPromise({
-      try: placement,
+    // The endpoint has no Workspace: nothing is its own, and no change is handed anywhere.
+    if (workspace === undefined) return null;
+
+    const { workspace: id, object } = yield* Effect.tryPromise({
+      try: workspace.placement,
       catch: failedCall("Finding the Session's Workspace"),
     });
 
     const record =
-      session === undefined || workspace === null
-        ? null
-        : yield* registry.getWorkspace({ id: workspace });
+      session === undefined || id === null ? null : yield* registry.getWorkspace({ id });
 
     if (record === null) return null;
 
@@ -288,7 +302,7 @@ export const sessionEnvironments = ({
       Effect.flatMap((overrides) =>
         overrides === null
           ? Effect.void
-          : Effect.tryPromise(() => handOver(object, overrides)).pipe(
+          : Effect.tryPromise(() => workspace?.handOver(object, overrides) ?? NO_WORKSPACE).pipe(
               Effect.flatMap((written) =>
                 written.ok
                   ? Effect.void
@@ -320,7 +334,9 @@ export const sessionEnvironments = ({
 
       if (set === null) return false;
 
-      const written = yield* Effect.tryPromise(() => handSkills(own.object, set));
+      const written = yield* Effect.tryPromise(
+        () => workspace?.handSkills(own.object, set) ?? NO_WORKSPACE,
+      );
 
       if (written.ok) return true;
 
@@ -361,11 +377,10 @@ export const sessionEnvironments = ({
         : yield* handSkillsIfOwn(own.environment);
     });
 
-  /** The refusal of a change by a Session the Registry does not list. */
-  const unlisted = Effect.suspend(() =>
-    EnvironmentsError.make({
-      message: "This Session is not one the Registry lists, so it changes no Environment.",
-    }),
+  /** The Registry's author of a change, or the refusal of a Session the Registry does not list. */
+  const authorOf = authored(
+    source,
+    EnvironmentsError.make({ message: unlistedSession("Environment") }),
   );
 
   return {
@@ -374,14 +389,12 @@ export const sessionEnvironments = ({
     current: Effect.map(where, (known) => known?.environment ?? null),
     saveSkill: ({ environment, folder, files, expected, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) return yield* unlisted;
-
         const saved = yield* registry.agentSaveSkill({
           environment,
           folder,
           files,
           expected,
-          author: { session, ...author },
+          author: yield* authorOf(author),
         });
 
         switch (saved.status) {
@@ -411,13 +424,11 @@ export const sessionEnvironments = ({
       registry.agentPreviewSkill({ environment, folder, files }),
     removeSkill: ({ environment, name, expected, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) return yield* unlisted;
-
         const removed = yield* registry.agentRemoveSkill({
           environment,
           name,
           expected,
-          author: { session, ...author },
+          author: yield* authorOf(author),
         });
 
         switch (removed.status) {
@@ -450,16 +461,14 @@ export const sessionEnvironments = ({
             return { ...previewed, environment: changedEnvironment(previewed.environment) };
         }
       }),
-    installSkills: ({ environment, source, skills, author, pin }) =>
+    installSkills: ({ environment, source: from, skills, author, pin }) =>
       Effect.gen(function* () {
-        if (session === undefined) return yield* unlisted;
-
         // The Registry fetches as the GitHub App: no token comes here.
         const installed = yield* registry.agentInstallSkills({
           environment,
-          source,
+          source: from,
           skills,
-          author: { session, ...author },
+          author: yield* authorOf(author),
           pin,
         });
 
@@ -488,15 +497,13 @@ export const sessionEnvironments = ({
       }),
     updateSkills: ({ environment, names, overwrite, pins, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) return yield* unlisted;
-
         // The Registry fetches as the GitHub App: no token comes here.
         const updated = yield* registry.agentUpdateSkills({
           environment,
           names,
           overwrite,
           pins,
-          author: { session, ...author },
+          author: yield* authorOf(author),
         });
 
         switch (updated.status) {
@@ -522,16 +529,14 @@ export const sessionEnvironments = ({
       registry.previewSkillUpdates({ environment, names, overwrite }),
     markSecret: ({ environment, name, build, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) return yield* unlisted;
-
         const marked = yield* registry.agentMarkSecretBuild({
           environment,
           name,
           build,
-          author: { session, ...author },
+          author: yield* authorOf(author),
         });
 
-        // The Registry refuses only a write over the MCP endpoint (`via`), which a Session's is not.
+        // The Registry refuses a write over the MCP endpoint (`via`) whose texts hold a kept Secret; never a Session's.
         if (marked.status === "rejected") {
           return yield* EnvironmentsError.make({ message: marked.message });
         }
@@ -545,15 +550,14 @@ export const sessionEnvironments = ({
       }),
     change: ({ environment, change, expected, author }) =>
       Effect.gen(function* () {
-        if (session === undefined) return yield* unlisted;
-
+        const by = yield* authorOf(author);
         const own = yield* where;
 
         if (environment === GLOBAL_ID) {
           const atGlobal = yield* registry.changeGlobal({
             change,
             expected,
-            author: { session, ...author },
+            author: by,
             environment: own?.environment,
           });
 
@@ -608,7 +612,7 @@ export const sessionEnvironments = ({
           environment,
           change,
           expected,
-          author: { session, ...author },
+          author: by,
         });
 
         switch (answer.status) {
