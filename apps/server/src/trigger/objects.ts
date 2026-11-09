@@ -34,6 +34,11 @@ export type TriggerObjects = {
   readonly sync: (id: string) => Effect.Effect<void>;
   /** Wipe Trigger `id`'s object: its alarm and its storage. Never fails. */
   readonly remove: (id: string) => Effect.Effect<void>;
+  /**
+   * Wipe Trigger `id`'s object as `remove` does, for a caller that must know it is wiped (a reverted removal, whose
+   * Trigger must not keep the old URL and Signing secret): tried `WAKE_RETRIES` more times, then fails.
+   */
+  readonly wipe: (id: string) => Effect.Effect<void, TriggerUnreachable>;
   /** The owner's Fire now of Trigger `id`, one Fire per `key`: a Fire recorded `manual`, or why there is none. */
   readonly fireNow: (id: string, key: string) => Effect.Effect<FireNowAnswer, TriggerUnreachable>;
   /** The owner's Fire again of Trigger `id`, one Fire per `key`: a Fire recorded `manual` with the last delivery. */
@@ -103,6 +108,10 @@ export const triggerObjects = (
         Effect.catchCause((cause) =>
           Effect.logWarning("A Trigger's object could not be wiped", cause),
         ),
+      ),
+    wipe: (id) =>
+      reach(id, (stub) => stub.remove()).pipe(
+        Effect.retry({ schedule: wakeSchedule, times: WAKE_RETRIES }),
       ),
     fireNow: (id, key) => reach(id, (stub) => stub.fireNow({ key })),
     fireAgain: (id, key) => reach(id, (stub) => stub.fireAgain({ key })),

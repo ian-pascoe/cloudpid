@@ -691,6 +691,9 @@ const fakeRegistries = () => {
   /** The token and Signing secret each webhook Trigger's object holds, and what it says of its deliveries. */
   const triggerHooks = new Map<string, HookSecrets>();
 
+  /** The Triggers whose object can't be wiped. */
+  const unwipableTriggers = new Set<string>();
+
   /** The webhook Triggers whose object holds secrets that no longer read. */
   const unreadableHooks = new Set<string>();
 
@@ -791,6 +794,14 @@ const fakeRegistries = () => {
     remove: (id) =>
       Effect.sync(() => {
         calls.push(`removeTriggerObject:${id}`);
+      }),
+    wipe: (id) =>
+      Effect.suspend(() => {
+        calls.push(`removeTriggerObject:${id}`);
+
+        return unwipableTriggers.has(id)
+          ? Effect.fail(TriggerUnreachable.make({ message: "no answer" }))
+          : Effect.void;
       }),
   };
 
@@ -1814,6 +1825,7 @@ const fakeRegistries = () => {
     triggerWaiting,
     triggerHooks,
     unreadableHooks,
+    unwipableTriggers,
     triggerDeliveries,
     lastDeliveries,
     breakSession: (id: string, message: string) => {
@@ -4047,6 +4059,38 @@ it("does not wipe the object of a Trigger a revert only resumed", async () => {
 
   expect(fake.calls).toContain("wakeTriggerObject:t1");
   expect(fake.calls).not.toContain("removeTriggerObject:t1");
+});
+
+it("fails the revert of a removal whose object can't be wiped, saying the URL and secret may be the old ones", async () => {
+  const value: TriggerChangeValue = {
+    kind: "environment",
+    name: "On events",
+    message: "Look.",
+    source: { type: "webhook", format: "github" },
+    whenBusy: "start",
+    paused: false,
+  };
+
+  const fake = fakeRegistries();
+
+  fake.agentChanges.push({
+    ...agentChange(1, "A", null, null),
+    tool: "trigger_remove",
+    field: triggerField("t1"),
+    before: asChangeJson(value),
+    after: null,
+  });
+  fake.unwipableTriggers.add("t1");
+
+  const failure = await call(fake, (registry) =>
+    Effect.flip(registry.revertAgentChange({ environment: DEFAULT_ENVIRONMENT, change: 1 })),
+  );
+
+  expect(failure).toBeInstanceOf(EnvironmentError);
+  expect(failure.message).toContain("may still have its old URL and signing secret");
+  // The revert stays made, and the object is not woken as though it were wiped.
+  expect(Arr.map(fake.agentChanges, (change) => change.reverts)).toEqual([null, 1]);
+  expect(fake.calls).not.toContain("wakeTriggerObject:t1");
 });
 
 describe("the owner's Triggers", () => {

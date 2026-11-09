@@ -80,6 +80,7 @@ import {
   triggerChangedSince,
   triggerNoDelivery,
   triggerNoWebhook,
+  triggerRevertNotWiped,
   triggerSecretsUnreadable,
   triggerPaused,
   triggerRemoved,
@@ -997,7 +998,10 @@ export const serveRegistryRpc = <R = never>(
                   // new ones, as its Agent change says.
                   const wiped =
                     revert.change.before === null && revert.change.after !== null
-                      ? triggers.remove(trigger)
+                      ? triggers.wipe(trigger).pipe(
+                          // The revert's own error: it stays made.
+                          Effect.mapError(() => failed(triggerRevertNotWiped)),
+                        )
                       : Effect.void;
 
                   return wiped.pipe(
