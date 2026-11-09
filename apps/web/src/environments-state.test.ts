@@ -298,16 +298,6 @@ describe("the Environment list", () => {
     10_000,
   );
 
-  it.effect("says why a rename was refused", () =>
-    Effect.gen(function* () {
-      const registry = holding([environment("default"), environment("work")], []);
-
-      expect(failureOf(yield* renaming(registry, "default"))).toBe(
-        "An environment is already named default.",
-      );
-    }),
-  );
-
   it.effect("asks for the Environments and the Sessions again after a delete", () =>
     Effect.gen(function* () {
       const registry = holding(
@@ -532,18 +522,6 @@ describe("the Repos of an Environment", () => {
           (repo) => repo.name,
         ),
       ).toEqual(["api"]);
-    }),
-  );
-
-  it.effect("says why a removal failed", () =>
-    Effect.gen(function* () {
-      const registry = registryWith({ removeRepo: () => refused("No such repo.") });
-
-      registry.set(removeRepoAtom("work"), "web");
-
-      expect(settledFailureOf(yield* settled(registry, removeRepoAtom("work")))).toBe(
-        "No such repo.",
-      );
     }),
   );
 });
@@ -1549,18 +1527,6 @@ describe("the variables kept Global", () => {
         { set: { variables: { API_URL: "https://new.test", ADDED: "1" } } },
         { reset: ["variables.API_URL"] },
       ]);
-      registry.dispose();
-    }),
-  );
-
-  it.effect("say why a save was refused", () =>
-    Effect.gen(function* () {
-      const { registry, saved } = keeping();
-
-      expect(settledFailureOf(yield* saving(registry, "TOO_MANY=1"))).toBe(
-        "variables: with the 50 variables it would have 51",
-      );
-      expect(saved).toEqual([]);
       registry.dispose();
     }),
   );

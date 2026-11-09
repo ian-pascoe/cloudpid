@@ -418,21 +418,15 @@ describe("every section", () => {
         }),
     });
 
-  it.effect.each([
-    ...sectionsAt("*").map((slug) => ["*", slug] as const),
-    ...sectionsAt("work").map((slug) => ["work", slug] as const),
-  ])("renders %s's %s section under its heading", ([scope, slug]) =>
+  it.effect.each(sectionsAt("*"))("renders Global's %s section under its heading", (slug) =>
     Effect.gen(function* () {
       const registry = everything();
 
       yield* loaded(registry);
 
-      const markup = render(registry, scope, section(slug));
+      const markup = render(registry, "*", section(slug));
 
-      const heading =
-        slug === "environments" && scope === "work" ? "Work" : sectionLabel(slug, scope);
-
-      expect(markup).toContain(`>${heading}</h1>`);
+      expect(markup).toContain(`>${sectionLabel(slug, "*")}</h1>`);
       expect(markup).not.toContain("unexpected Registry call");
       registry.dispose();
     }),

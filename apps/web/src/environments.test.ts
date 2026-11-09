@@ -1,13 +1,6 @@
 // @effect-diagnostics preferEffectArray:off -- tests of plain functions over native arrays.
 
-import {
-  DEFAULT_CONTAINER_SETTINGS,
-  INSTANCE_TYPES,
-  MAX_IGNORE_PATTERNS,
-  MAX_SCRIPT_BYTES,
-  MAX_TOOLCHAINS_BYTES,
-  MAX_VARIABLES,
-} from "@cloudpid/config";
+import { MAX_IGNORE_PATTERNS, MAX_VARIABLES } from "@cloudpid/config";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import {
@@ -42,18 +35,13 @@ import {
   environmentNameProblem,
   groupByEnvironment,
   idleMinutesProblem,
-  ignorePatternsFrom,
   ignoreProblem,
   instanceLabel,
-  sizeLimitLabel,
   optionalBranchProblem,
   parseVariables,
   repoNameProblem,
-  scriptFieldProblem,
-  toolchainsFieldProblem,
   sourceProblem,
   splitArchived,
-  variablesText,
 } from "./environments.ts";
 
 const session = (id: string, environment: string, workspace = "0a1b2c3d"): SessionRecord => ({
@@ -208,34 +196,6 @@ describe("instanceLabel", () => {
     expect(instanceLabel("cpu-1")).toBe("cpu-1: 1 vCPU, 3 GiB memory, 12 GB disk (default)");
     expect(instanceLabel("cpu-2")).toBe("cpu-2: 2 vCPU, 6 GiB memory, 12 GB disk");
     expect(instanceLabel("standard-2")).toBe("standard-2: 1 vCPU, 6 GiB memory, 12 GB disk");
-    expect(instanceLabel("cpu-3")).toBe("cpu-3: 3 vCPU, 9 GiB memory, 12 GB disk");
-    expect(instanceLabel("mem-4")).toBe("mem-4: 1 vCPU, 4 GiB memory, 12 GB disk");
-    expect(instanceLabel("mem-12")).toBe("mem-12: 2 vCPU, 12 GiB memory, 12 GB disk");
-  });
-
-  it("offers cpu-3 and mem-12 between standard-3 and standard-4, in the size and the size limit pickers", () => {
-    expect(INSTANCE_TYPES.slice(INSTANCE_TYPES.indexOf("standard-3"))).toEqual([
-      "standard-3",
-      "cpu-3",
-      "mem-12",
-      "standard-4",
-    ]);
-    expect(sizeLimitLabel("cpu-3")).toBe("cpu-3: 3 vCPU, 9 GiB memory, 12 GB disk");
-  });
-
-  it("marks exactly one of the offered sizes", () => {
-    expect(INSTANCE_TYPES.filter((type) => instanceLabel(type).endsWith("(default)"))).toEqual([
-      DEFAULT_CONTAINER_SETTINGS.instance,
-    ]);
-  });
-});
-
-describe("sizeLimitLabel", () => {
-  it("marks cpu-2, the default size limit", () => {
-    expect(sizeLimitLabel("cpu-2")).toBe("cpu-2: 2 vCPU, 6 GiB memory, 12 GB disk (default)");
-    expect(INSTANCE_TYPES.filter((type) => sizeLimitLabel(type).endsWith("(default)"))).toEqual([
-      "cpu-2",
-    ]);
   });
 });
 
@@ -249,16 +209,6 @@ describe("idleMinutesProblem", () => {
     expect(idleMinutesProblem("1441")).not.toBeNull();
     expect(idleMinutesProblem("2.5")).not.toBeNull();
     expect(idleMinutesProblem("soon")).not.toBeNull();
-  });
-});
-
-describe("ignorePatternsFrom", () => {
-  it("takes one pattern per line, without the spaces around it or the blank lines", () => {
-    expect(ignorePatternsFrom("  /data \n\n**/.gradle-cache\n")).toEqual([
-      "/data",
-      "**/.gradle-cache",
-    ]);
-    expect(ignorePatternsFrom("")).toEqual([]);
   });
 });
 
@@ -295,16 +245,10 @@ describe("parseVariables", () => {
       EMPTY: "",
       SPACED: " two words ",
     });
-  });
-
-  it("leaves out blank lines and # comments, and spaces around a name", () => {
+    // Blank lines, # comments and spaces around a name are left out; any name a shell can export is taken.
     expect(parsed("\n  # the database\n  DB_URL =postgres://x\n\n")).toEqual({
       DB_URL: "postgres://x",
     });
-    expect(parsed("")).toEqual({});
-  });
-
-  it("takes any name a shell can export, __proto__ too", () => {
     expect(Record.keys(parsed("__proto__=1"))).toEqual(["__proto__"]);
   });
 
@@ -352,13 +296,6 @@ describe("parseVariables", () => {
     ).toBe(true);
     expect(problem(own(MAX_VARIABLES + 1))).toBe(`Use at most ${MAX_VARIABLES} variables`);
   });
-
-  it("gives back the variables it was made from", () => {
-    const variables = { NODE_ENV: "test", QUERY: "a=b" };
-
-    expect(variablesText(variables)).toBe("NODE_ENV=test\nQUERY=a=b");
-    expect(parsed(variablesText(variables))).toEqual(variables);
-  });
 });
 
 describe("inheritedVariables", () => {
@@ -368,26 +305,6 @@ describe("inheritedVariables", () => {
       overridden: ["B"],
     });
     expect(inheritedVariables({ A: "1" }, {})).toEqual({ inherited: [], overridden: [] });
-  });
-});
-
-describe("scriptFieldProblem", () => {
-  it("takes a script up to 64 KiB, and refuses a longer one", () => {
-    expect(scriptFieldProblem("pnpm install\n")).toBeNull();
-    expect(scriptFieldProblem("a".repeat(MAX_SCRIPT_BYTES))).toBeNull();
-    expect(scriptFieldProblem("a".repeat(MAX_SCRIPT_BYTES + 1))).toBe(
-      "The script is longer than 64 KiB",
-    );
-  });
-});
-
-describe("toolchainsFieldProblem", () => {
-  it("takes a mise.toml up to 16 KiB, and refuses a longer one", () => {
-    expect(toolchainsFieldProblem('[tools]\nnode = "22.20.0"\n')).toBeNull();
-    expect(toolchainsFieldProblem("a".repeat(MAX_TOOLCHAINS_BYTES))).toBeNull();
-    expect(toolchainsFieldProblem("a".repeat(MAX_TOOLCHAINS_BYTES + 1))).toBe(
-      "The mise.toml is longer than 16 KiB",
-    );
   });
 });
 

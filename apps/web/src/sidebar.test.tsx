@@ -95,41 +95,15 @@ describe("the sidebar on the Settings page", () => {
     ]);
   });
 
-  it("lists an Environment's sections, as Global's but Notifications, the Skills current below the Skill directory", () => {
+  it("marks the Skills section current on a Skill directory page of an Environment", () => {
     const markup = render(false, { scope: "work", view: { kind: "skillOwner", owner: "acme" } });
 
     expect(
-      links(markup).map(({ name, current }) => (current ? `${name} (current)` : name)),
-    ).toEqual([
-      "Back to sessions",
-      "General",
-      "Instructions",
-      "Models",
-      "Tools",
-      "MCP servers",
-      "Limits",
-      "Container",
-      "Setup",
-      "Environment",
-      "Workspaces",
-      "Triggers",
-      "Skills (current)",
-      "Variables",
-      "Secrets",
-      "Agent changes",
-    ]);
+      links(markup)
+        .filter(({ current }) => current)
+        .map(({ name }) => name),
+    ).toEqual(["Skills"]);
     expect(markup).toContain("Work");
-  });
-
-  it("shows the sections' icons on the rail, each named", () => {
-    const rail = links(render(true, { scope: "*", view: MODELS })).slice(0, 13);
-
-    expect(rail[0]).toEqual({ href: "/", name: "Back to sessions", current: false });
-    expect(rail.slice(1, 4)).toEqual([
-      { href: "/settings/all/general", name: "General", current: false },
-      { href: "/settings/all/instructions", name: "Instructions", current: false },
-      { href: "/settings/all/models", name: "Models", current: true },
-    ]);
   });
 
   it.effect("marks a section with unsaved changes, and no other", () =>

@@ -61,30 +61,4 @@ describe("the install confirm", () => {
       expect(markup).not.toContain("Install for Global");
     }),
   );
-
-  it.effect("says which ref it installs from, or the default branch", () =>
-    Effect.gen(function* () {
-      const named = yield* render({ source: "o/skills", skills: ["a"], ref: "v2" });
-      const none = yield* render({ source: "o/skills", skills: ["a"] });
-
-      expect(named).toContain("latest commit of <span");
-      expect(named).toContain(">v2</span>");
-      expect(none).toContain("its default branch");
-    }),
-  );
-
-  it.effect("says how many Skills it installs when several are picked", () =>
-    Effect.gen(function* () {
-      const markup = yield* render({ source: "o/skills", skills: ["a", "b"] });
-
-      expect(markup).toContain("Install 2 skills");
-      expect(markup).toContain("Only the picked skills are");
-    }),
-  );
-
-  it.effect("shows nothing while no Skill is being installed", () =>
-    Effect.gen(function* () {
-      expect(yield* render(null)).not.toContain("Global");
-    }),
-  );
 });

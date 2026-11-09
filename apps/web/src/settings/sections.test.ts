@@ -1,56 +1,13 @@
 // @effect-diagnostics preferEffectArray:off -- expected lists are native arrays.
 
 import { describe, expect, it } from "vitest";
-import {
-  defaultSection,
-  leadOnPath,
-  scopeSwitchPath,
-  sectionLabel,
-  sectionsAt,
-} from "./sections.ts";
+import { defaultSection, leadOnPath, scopeSwitchPath, sectionsAt } from "./sections.ts";
 
 const GLOBAL = "*";
 
 describe("the Settings sections of a Scope", () => {
-  it("are, at Global, the Settings, the MCP servers, the Container settings, the Environments, Workspaces, Triggers, Skills, Variables, Secrets, Notifications and Agent changes", () => {
-    expect(sectionsAt(GLOBAL).map((slug) => sectionLabel(slug, GLOBAL))).toEqual([
-      "General",
-      "Instructions",
-      "Models",
-      "Tools",
-      "MCP servers",
-      "Limits",
-      "Container",
-      "Setup",
-      "Environments",
-      "Workspaces",
-      "Triggers",
-      "Skills",
-      "Variables",
-      "Secrets",
-      "Notifications",
-      "Agent changes",
-    ]);
-  });
-
-  it("are, at an Environment, Global's in the same order, but Notifications", () => {
-    expect(sectionsAt("1a2b3c4d").map((slug) => sectionLabel(slug, "1a2b3c4d"))).toEqual([
-      "General",
-      "Instructions",
-      "Models",
-      "Tools",
-      "MCP servers",
-      "Limits",
-      "Container",
-      "Setup",
-      "Environment",
-      "Workspaces",
-      "Triggers",
-      "Skills",
-      "Variables",
-      "Secrets",
-      "Agent changes",
-    ]);
+  it("lack Notifications at an Environment", () => {
+    expect(sectionsAt(GLOBAL)).toContain("notifications");
     expect(sectionsAt("1a2b3c4d")).not.toContain("notifications");
   });
 

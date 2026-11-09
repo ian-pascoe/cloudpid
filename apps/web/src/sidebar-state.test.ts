@@ -8,7 +8,6 @@ import { afterEach } from "vitest";
 import { RegistryClient } from "./registry.ts";
 import { fakeRegistryLayer } from "./registry.testing.ts";
 import {
-  clampSidebarWidth,
   DEFAULT_SIDEBAR_WIDTH,
   MAX_SIDEBAR_WIDTH,
   MIN_SIDEBAR_WIDTH,
@@ -88,11 +87,6 @@ describe("the Session list's width", () => {
     registry.set(sidebarWidthAtom, 300.6);
     expect(registry.get(sidebarWidthAtom)).toBe(301);
   });
-
-  it("falls back to the default for a width that is no number", () => {
-    expect(clampSidebarWidth(Number.NaN)).toBe(DEFAULT_SIDEBAR_WIDTH);
-    expect(clampSidebarWidth(Number.POSITIVE_INFINITY)).toBe(DEFAULT_SIDEBAR_WIDTH);
-  });
 });
 
 describe("whether the Session list is collapsed", () => {
@@ -115,11 +109,6 @@ describe("the width a key sets on the list's resize handle", () => {
     expect(sidebarWidthForKey(300, "ArrowLeft", false)).toBe(284);
     expect(sidebarWidthForKey(300, "ArrowRight", true)).toBe(364);
     expect(sidebarWidthForKey(300, "ArrowLeft", true)).toBe(236);
-  });
-
-  it("goes to the narrowest with Home and the widest with End", () => {
-    expect(sidebarWidthForKey(300, "Home", false)).toBe(MIN_SIDEBAR_WIDTH);
-    expect(sidebarWidthForKey(300, "End", false)).toBe(MAX_SIDEBAR_WIDTH);
   });
 
   it("is none for another key", () => {

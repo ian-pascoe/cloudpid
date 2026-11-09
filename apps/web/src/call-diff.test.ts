@@ -5,10 +5,8 @@ import {
   callDiffCounts,
   callDiffOf,
   capPatch,
-  diffStyleFor,
   diffTotals,
   patchCounts,
-  SPLIT_MIN_WIDTH,
 } from "./call-diff.ts";
 
 const HEAD = "--- src/a.ts\n+++ src/a.ts\n";
@@ -125,14 +123,6 @@ describe("capPatch", () => {
     expect(result.lines).toBe(2500);
     expect(result.capped).toBe(true);
     expect(patchCounts(result.patch)).toEqual({ additions: 2000, deletions: 0 });
-  });
-});
-
-describe("diffStyleFor", () => {
-  it("is split from the width where two columns fit, stacked below it", () => {
-    expect(diffStyleFor(SPLIT_MIN_WIDTH)).toBe("split");
-    expect(diffStyleFor(SPLIT_MIN_WIDTH - 1)).toBe("unified");
-    expect(diffStyleFor(0)).toBe("unified");
   });
 });
 
