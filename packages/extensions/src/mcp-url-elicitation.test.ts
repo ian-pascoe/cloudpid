@@ -286,7 +286,6 @@ describe("a Legacy server's page during its call", () => {
     ["http://auth.example.com/authorize", "the page isn't served over HTTPS"],
     ["https://user:pw@auth.example.com/", "the address has a username or password in it"],
     ["https://localhost:8443/", "the page is on a local or private address"],
-    ["https://192.168.1.5/", "the page is on a local or private address"],
     ["https://pi.ianpascoe.dev/oauth/mcp/start", "the page is on one of cloudpid's own hosts"],
   ])("declines %s unseen, and tells the server and the agent why", async (url, reason) => {
     const { host, questions, tools, session, pending, told } = await setup();

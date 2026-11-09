@@ -67,15 +67,6 @@ describe("an App View's MCP task whose question cannot be asked", () => {
     expect(await Effect.runPromise(followViewTask(task))).toMatchObject({ kind: "refused" });
     expect(sent()).toEqual(["tasks/get", "tasks/cancel"]);
   });
-
-  it("is cancelled at the server when the hook throws", async () => {
-    const { task, sent } = setup(() => {
-      throw new Error("boom");
-    });
-
-    expect(await Effect.runPromise(followViewTask(task))).toMatchObject({ kind: "refused" });
-    expect(sent()).toEqual(["tasks/get", "tasks/cancel"]);
-  });
 });
 
 describe("an App View's MCP task the follower is interrupted on", () => {

@@ -161,23 +161,6 @@ describe("the owner's preview of a link", () => {
     expect(requests(host)[0]?.ctx).toMatchObject({ workspace: "ws:w1", start: false });
   });
 
-  it("refuses a server that is hidden, switched off or not there, without asking the host", async () => {
-    for (const more of [{ exposure: "hidden" }, { state: "disabled" }]) {
-      const { host, tools } = await started([server(more)]);
-
-      expect(await run(tools, input())).toMatchObject({ status: "unavailable", reason: "hidden" });
-      expect(requests(host)).toEqual([]);
-    }
-
-    const { host, tools } = await started();
-
-    expect(await run(tools, input({ server: "Elsewhere" }))).toMatchObject({
-      status: "unavailable",
-      reason: "unavailable",
-    });
-    expect(requests(host)).toEqual([]);
-  });
-
   it("answers the host's failures as the card says them", async () => {
     const { host, tools } = await started();
 

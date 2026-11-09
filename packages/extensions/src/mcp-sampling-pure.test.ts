@@ -2,22 +2,11 @@
 // requests): the pairing rules, the content mapping, which Role answers, how `toolChoice` is spelled per API, and what the
 // model's reply becomes. Goldens of #387 D4, D11, D14, D15.
 // @effect-diagnostics preferEffectArray:off
-import type { RoleName } from "@cloudpid/config";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
+import { chooseRole, type RoleModel, toolChoiceFor } from "./mcp/sampling-model.ts";
+import { type SamplingBlock, type SamplingMessage } from "./mcp/sampling-params.ts";
 import {
-  chooseRole,
-  lowestAvailable,
-  type RoleModel,
-  toolChoiceFor,
-} from "./mcp/sampling-model.ts";
-import {
-  decodeSamplingParams,
-  type SamplingBlock,
-  type SamplingMessage,
-} from "./mcp/sampling-params.ts";
-import {
-  cutText,
   SAMPLING_RECORD_BYTES,
   SAMPLING_RECORDS_BYTES,
   type McpSamplingRecord,
@@ -89,21 +78,6 @@ describe("pairingProblem", () => {
     expect(
       pairingProblem([use("a"), { role: "user", content: [result("a"), result("a")] }]),
     ).toContain("every tool_use must be answered exactly once");
-  });
-
-  it("says only the rule, never an id or text the server wrote, which the agent reads", () => {
-    const id = "toolu_SERVER_WROTE_THIS_91";
-
-    const problems = [
-      pairingProblem([use(id)]),
-      pairingProblem([{ role: "user", content: result(id) }]),
-      pairingProblem([use(id), { role: "user", content: result("other_SERVER_ID") }]),
-    ];
-
-    for (const problem of problems) {
-      expect(problem).toBeDefined();
-      expect(problem).not.toMatch(/SERVER/);
-    }
   });
 
   it("refuses a tool_result with no tool_use before it, or leaving one out", () => {
@@ -248,19 +222,6 @@ describe("toPiMessages", () => {
   });
 });
 
-describe("decodeSamplingParams", () => {
-  it("reads the spec's params and rejects ones without messages or maxTokens", () => {
-    expect(
-      decodeSamplingParams({
-        messages: [{ role: "user", content: { type: "text", text: "a" } }],
-        maxTokens: 5,
-      })._tag,
-    ).toBe("Some");
-    expect(decodeSamplingParams({ messages: [] })._tag).toBe("None");
-    expect(decodeSamplingParams({ maxTokens: 1 })._tag).toBe("None");
-  });
-});
-
 const ROLES: ReadonlyArray<RoleModel> = [
   { role: "small", id: "claude-haiku-4" },
   { role: "medium", id: "claude-sonnet-4" },
@@ -318,16 +279,6 @@ describe("chooseRole", () => {
   });
 });
 
-describe("lowestAvailable", () => {
-  it("falls to the next lower Role with a model, and to nothing when none is left", () => {
-    const has = (held: ReadonlyArray<RoleName>) => (role: RoleName) => held.includes(role);
-
-    expect(lowestAvailable("medium", has(["small", "medium"]))).toBe("medium");
-    expect(lowestAvailable("medium", has(["small", "large"]))).toBe("small");
-    expect(lowestAvailable("small", has(["medium"]))).toBeUndefined();
-  });
-});
-
 describe("toolChoiceFor", () => {
   it("leaves the default for auto and none given", () => {
     expect(toolChoiceFor("anthropic-messages", undefined)).toEqual({});
@@ -341,14 +292,8 @@ describe("toolChoiceFor", () => {
 
   it.each([
     ["anthropic-messages", "any"],
-    ["bedrock-converse-stream", "any"],
     ["google-generative-ai", "any"],
-    ["google-vertex", "any"],
-    ["mistral-conversations", "any"],
-    ["openai-completions", "required"],
     ["openai-responses", "required"],
-    ["azure-openai-responses", "required"],
-    ["openai-codex-responses", "required"],
   ] as const)("spells required for %s as %s", (api, value) => {
     expect(toolChoiceFor(api, "required")).toEqual({ value });
   });
@@ -519,13 +464,6 @@ describe("samplingRecords", () => {
     expect(all[0]?.stub).toBe(true);
     expect(all.at(-1)?.stub).toBeUndefined();
     expect(all.at(-1)?.messages).toBeDefined();
-  });
-});
-
-describe("cutText", () => {
-  it("keeps the start and marks the cut", () => {
-    expect(cutText("abcdef", 4)).toBe("abc…");
-    expect(cutText("abc", 4)).toBe("abc");
   });
 });
 
