@@ -753,6 +753,19 @@ describe("the lifecycle, Skill and reset tools", () => {
       { changes: [], changes_truncated: false, global: null },
     ],
     ["settings_mcp_enable", "settings_mcp_enable", { scope: "default", name: "docs", reason }, {}],
+    // S3b-3: a Skill change at Global asks the owner; its answer has the keys of the tool's change answer.
+    [
+      "a Skill install at Global",
+      "environment_skill_install",
+      { id: "*", source: "o/skills", skills: ["grill-me"], reason },
+      { changes: [], changed: false, installed: [], refused: [], listed: [], source: null },
+    ],
+    [
+      "a Skill update at Global",
+      "environment_skill_update",
+      { id: "*", reason },
+      { changes: [], changed: false, updated: [], refused: [], nothing_marked: false },
+    ],
   ] as const)(
     "hands %s to the ask for the owner's Approval, writing nothing",
     (_, tool, input, keys) =>
@@ -772,14 +785,23 @@ describe("the lifecycle, Skill and reset tools", () => {
       ),
   );
 
+  it("hands a Skill removal at Global to the ask, which reads the Skills kept Global and writes nothing", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const { call, registryCalls, ledger } = changing();
+
+        // The stand-in keeps no Skill Global: the ask refuses the removal, asking nobody.
+        const result = yield* call("environment_skill_remove", { id: "*", name: "a", reason });
+
+        expect(result).toMatchObject({ ok: false, error: { code: "not_found" } });
+        expect(registryCalls).toContain("listSkills");
+        expect(registryCalls).not.toContain("agentChangeFeatures");
+        expect(registryCalls).not.toContain("agentRemoveSkill");
+        expect(ledger.changes).toEqual([]);
+      }),
+    ));
+
   it.each([
-    [
-      "a Skill install at Global",
-      "environment_skill_install",
-      { id: "*", source: "o/skills", reason },
-    ],
-    ["a Skill update at Global", "environment_skill_update", { id: "*", reason }],
-    ["a Skill removal at Global", "environment_skill_remove", { id: "*", name: "a", reason }],
     [
       "a Test Build of proposed changes",
       "environment_rebuild",

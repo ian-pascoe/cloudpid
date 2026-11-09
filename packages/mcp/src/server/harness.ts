@@ -202,8 +202,11 @@ const afterServersAsk = (structured: Wire, enabled: Enabled): string | undefined
 const afterReset = (structured: Wire, enabled: Enabled): string | undefined =>
   afterAsk(structured, enabled) ?? afterSettingsChange(structured, enabled);
 
-/** What follows an Environment's reset: `approval_wait` for the size limit's, which waits for the owner, else `environment_get`. */
-const afterEnvironmentReset = (structured: Wire, enabled: Enabled): string | undefined =>
+/**
+ * What follows an Environment's change that may ask: `approval_wait` for one that waits for the owner (the reset of the size
+ * limit, a Skill change at Global), else `environment_get`.
+ */
+const afterEnvironmentAsk = (structured: Wire, enabled: Enabled): string | undefined =>
   afterAsk(structured, enabled) ?? afterChange(structured, enabled);
 
 const NEXTS: Readonly<
@@ -247,10 +250,10 @@ const NEXTS: Readonly<
   environment_repo_add: afterChange,
   environment_repo_remove: afterChange,
   environment_rebuild: afterChange,
-  environment_skill_install: afterChange,
-  environment_skill_update: afterChange,
-  environment_skill_remove: afterChange,
-  environment_setting_reset: afterEnvironmentReset,
+  environment_skill_install: afterEnvironmentAsk,
+  environment_skill_update: afterEnvironmentAsk,
+  environment_skill_remove: afterEnvironmentAsk,
+  environment_setting_reset: afterEnvironmentAsk,
   environment_list: nextOf(
     Schema.Struct({ environments: Schema.Array(Schema.Unknown) }),
     ({ environments }, enabled) =>

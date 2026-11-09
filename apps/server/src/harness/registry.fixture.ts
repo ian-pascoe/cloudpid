@@ -583,6 +583,37 @@ export const changingRegistry = (
         ),
       ),
     mcpLookRepoFiles: () => noted("mcpLookRepoFiles", () => null),
+    // The previews an ask at Global reads (S3b-3): Global keeps every Skill named so already, and none is marked update
+    // available, so the ask answers `unchanged`; what an ask does past them is `approvals.workerd.test.ts`'s.
+    agentPreviewSkillInstall: ({
+      source,
+      skills,
+    }: {
+      readonly source: string;
+      readonly skills?: ReadonlyArray<string> | undefined;
+    }) =>
+      noted("agentPreviewSkillInstall", () => ({
+        status: "previewed" as const,
+        environment: { id: "*", name: "Global" },
+        repo: source,
+        ref: null,
+        commit: COMMIT,
+        skills: (skills ?? ["grill-me"]).map((name) => ({
+          name,
+          path: `skills/${name}`,
+          description: "Asks hard questions",
+          files: { "SKILL.md": `---\nname: ${name}\ndescription: Asks hard questions\n---\n` },
+          digest: `digest-of-${name}`,
+          unchanged: true,
+          current: null,
+        })),
+        rejected: [],
+      })),
+    previewSkillUpdates: () =>
+      noted("previewSkillUpdates", () => ({
+        status: "nothing" as const,
+        environment: { id: "*", name: "Global" },
+      })),
     agentInstallSkills: ({
       environment,
       source,

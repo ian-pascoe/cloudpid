@@ -1861,6 +1861,40 @@ describe("the management tools", () => {
       { id: "default", setting: "maxInstance", reason: "r" },
       { global: null },
     ],
+    // S3b-3: a Skill change at Global asks the owner.
+    [
+      "environment_skill_install",
+      { id: "*", source: "o/skills", reason: "r" },
+      {
+        unchanged_truncated: false,
+        changed: false,
+        source: null,
+        installed: [],
+        installed_truncated: false,
+        refused: [],
+        refused_truncated: false,
+        listed: [],
+        listed_truncated: false,
+      },
+    ],
+    [
+      "environment_skill_update",
+      { id: "*", reason: "r" },
+      {
+        unchanged_truncated: false,
+        changed: false,
+        updated: [],
+        updated_truncated: false,
+        refused: [],
+        refused_truncated: false,
+        nothing_marked: false,
+      },
+    ],
+    [
+      "environment_skill_remove",
+      { id: "*", name: "a", reason: "r" },
+      { changed: false, skill: "a", global_served: false },
+    ],
   ])("send a %s that asks the owner to approval_wait as next", async (tool, args, own) => {
     const pending = await call(
       tool,

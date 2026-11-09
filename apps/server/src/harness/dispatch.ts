@@ -7,9 +7,9 @@
 // not meant to read it. A change goes through one path: the probe (`agentChangeFeatures`, failing closed), the
 // `request_id` (refused with the Registry's own `approval:` prefix; looked up, then claimed by the write's own transaction
 // and settled before the answer is sent), then the notice and the upkeep after the answer. A tool whose change waits for
-// the owner's Approval, the reset of a Limit, and an MCP server's change that widens what is reachable, goes to the ask
-// instead (`./approval-ask.ts`); an MCP server's change that narrows is made at once, through the path above, when the ask
-// finds it does. The input is the caller's
+// the owner's Approval, the reset of a Limit, an MCP server's change that widens what is reachable, and a Skill tool's
+// change at Global (`id: "*"`, → Built so far: S3b-3), goes to the ask instead (`./approval-ask.ts`); an MCP server's
+// change that narrows is made at once, through the path above, when the ask finds it does. The input is the caller's
 // JSON, read again, and an attempt is a plain UUID:
 // @effect-diagnostics missingPipeableSignature:off preferTypedSchemaDecoder:off cryptoRandomUUID:off
 import { sha256Hex, sortedJson } from "@cloudpid/config";
@@ -51,6 +51,7 @@ import {
   type ApprovalToolName,
   type DispatchedToolName,
   GLOBAL_ID,
+  type GlobalSkillToolName,
   HARNESS_TOOLS,
   type HarnessToolName,
   type McpWideningToolName,
@@ -117,8 +118,7 @@ const ENVIRONMENT_REPLAYED: Readonly<Record<EnvironmentToolName, Replayed>> = {
 
 /**
  * The words of what a tool is asked for that this stage does not serve (`unsupported`), or undefined for a call it does:
- * a change to the Skills kept Global waits for the owner's Approval (S3b), and a Test Build of `proposed` is S4a's. They
- * are answered before anything is claimed or written.
+ * a Test Build of `proposed` is S4a's. They are answered before anything is claimed or written.
  */
 type Unsupported<Name extends HarnessToolName> = (args: InputOf<Name>) => string | undefined;
 
@@ -262,6 +262,54 @@ const SETTINGS_CHANGE_KEYS = { changes: [], changes_truncated: false, unchanged:
 
 /** The keys an Environment change's endpoint answer always has, as an ask that changed nothing yet gives them. */
 const ENVIRONMENT_CHANGE_KEYS = { ...SETTINGS_CHANGE_KEYS, global: null };
+
+/** The keys a Skill tool's endpoint answer always has (`SkillEndpointFields`), as an ask that changed nothing yet gives them. */
+const SKILL_CHANGE_KEYS = { ...SETTINGS_CHANGE_KEYS, unchanged_truncated: false, changed: false };
+
+/** `SkillInstallEndpointOutput`'s keys, as an ask that read and installed nothing yet gives them. */
+const SKILL_INSTALL_KEYS = {
+  ...SKILL_CHANGE_KEYS,
+  source: null,
+  installed: [],
+  installed_truncated: false,
+  refused: [],
+  refused_truncated: false,
+  listed: [],
+  listed_truncated: false,
+};
+
+/** `SkillUpdateEndpointOutput`'s keys, as an ask that updated nothing yet gives them. */
+const SKILL_UPDATE_KEYS = {
+  ...SKILL_CHANGE_KEYS,
+  updated: [],
+  updated_truncated: false,
+  refused: [],
+  refused_truncated: false,
+  nothing_marked: false,
+};
+
+/** What a Skill tool's routing reads of its input: the Scope, and the Skill a removal names. */
+const decodeSkillTarget = Schema.decodeUnknownOption(
+  Schema.Struct({ id: Schema.String, name: Schema.optionalKey(Schema.String) }),
+);
+
+/** Whether a Skill tool's input names Global, whose change waits for the owner's Approval. */
+const atGlobal = (input: HarnessRequest["input"]): boolean =>
+  Option.match(decodeSkillTarget(input), {
+    onNone: () => false,
+    onSome: ({ id }) => id === GLOBAL_ID,
+  });
+
+/** `SkillRemoveEndpointOutput`'s keys for the removal `input` asks for, as an ask that removed nothing yet gives them. */
+const skillRemoveKeys = (input: HarnessRequest["input"]) => ({
+  ...SETTINGS_CHANGE_KEYS,
+  changed: false,
+  skill: Option.match(decodeSkillTarget(input), {
+    onNone: () => "",
+    onSome: ({ name }) => name ?? "",
+  }),
+  global_served: false,
+});
 
 /**
  * An ask's answer as a reset's endpoint output has it (`SettingsResetEndpointOutput`, `EnvironmentResetEndpointOutput`):
@@ -558,13 +606,23 @@ export const harnessDispatch = (
       newAttempt,
     );
 
-  /** The words of a Skill tool's call at Global, or none for a call at an Environment: the Skills kept Global wait for the owner's Approval, which is S3b's. */
-  const globalSkillsWords = ({ id }: { readonly id: string }) =>
-    id === GLOBAL_ID
-      ? `The Skills kept Global (id "${GLOBAL_ID}") wait for the owner's Approval, which is not offered yet: name an Environment's id.`
-      : undefined;
-
   const ask = askApproval(services);
+
+  // A Skill tool's change at Global asks the owner (S3b-3), its answer a change's with the request's keys; at an Environment
+  // it is made at once.
+  const skillChange = <Name extends GlobalSkillToolName>(
+    tool: Name,
+    keys: (input: HarnessRequest["input"]) => Readonly<Record<string, Schema.Json>>,
+  ): Served => {
+    const asks = serveAsk(ask, tool, newAttempt);
+    // SAFETY: the core of a tool is a `HarnessWrite` of that tool's input (`EnvironmentCores` is keyed by tool).
+    const made = change(tool, (cores) => cores[tool] as HarnessWrite<InputOf<Name>, CoreError>);
+
+    return (request, caller) =>
+      atGlobal(request.input)
+        ? Effect.map(asks(request, caller), asChangeAnswer(keys(request.input)))
+        : made(request, caller);
+  };
 
   const asking = <Name extends ApprovalAskToolName>(tool: Name) => serveAsk(ask, tool, newAttempt);
 
@@ -708,21 +766,9 @@ export const harnessDispatch = (
           ? undefined
           : "A Test Build of proposed changes is not offered yet: call environment_rebuild without proposed for a Build of the saved settings.",
     ),
-    environment_skill_install: change(
-      "environment_skill_install",
-      (cores) => cores.environment_skill_install,
-      globalSkillsWords,
-    ),
-    environment_skill_update: change(
-      "environment_skill_update",
-      (cores) => cores.environment_skill_update,
-      globalSkillsWords,
-    ),
-    environment_skill_remove: change(
-      "environment_skill_remove",
-      (cores) => cores.environment_skill_remove,
-      globalSkillsWords,
-    ),
+    environment_skill_install: skillChange("environment_skill_install", () => SKILL_INSTALL_KEYS),
+    environment_skill_update: skillChange("environment_skill_update", () => SKILL_UPDATE_KEYS),
+    environment_skill_remove: skillChange("environment_skill_remove", skillRemoveKeys),
     environment_setting_reset: environmentSettingReset,
     // The tools that wait for the owner's Approval: they ask, and answer `pending` (`./approval-ask.ts`).
     settings_spend_limit_set: asking("settings_spend_limit_set"),
