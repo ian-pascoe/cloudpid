@@ -15,21 +15,20 @@
 // @effect-diagnostics missingPipeableSignature:off
 import {
   extensionField,
-  ModelId,
   overrideValue,
   resetsOverride,
-  ROLE_NAMES,
-  SUPPORTED_MODELS,
-  THINKING_LEVELS,
-  ThinkingLevel,
   matchesToolPattern,
 } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
 import type { AgentChange, McpChangeGuard } from "@cloudpid/protocol";
 import {
+  CHANGE_NOTE,
   GLOBAL_SETTINGS_SCOPE,
   HARNESS_TOOLS,
-  SettingsScope,
+  OFFER_NOTE,
+  OFFER_NOTE_ENDPOINT,
+  SCOPE_NOTE,
+  type Surface,
 } from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
@@ -45,10 +44,17 @@ import {
   type ChangeAuthor,
   credentialCheck,
   type DeployCredentials,
-  MAX_CHANGE_REASON,
+  type RunChange,
 } from "./environment.ts";
-import { toolResult } from "./harness.ts";
-import { APPROVED, ChangeOutput, outputSchema } from "./outputs.ts";
+import {
+  cutNote,
+  cutText,
+  type HarnessWrite,
+  type HarnessWriteAnswer,
+  loggedOf,
+  toolResult,
+} from "./harness.ts";
+import { APPROVED, outputSchema } from "./outputs.ts";
 import { holdsPlaceholder } from "./secrets/references.ts";
 import { Secrets } from "./secrets/store.ts";
 import {
@@ -159,22 +165,8 @@ export class SettingsReload extends Context.Service<
   { readonly apply: Effect.Effect<SettingsApplied> }
 >()("@cloudpid/extensions/settings/SettingsReload") {}
 
-const Reason = Schema.String.check(
-  Schema.isMinLength(1),
-  Schema.isMaxLength(MAX_CHANGE_REASON),
-).annotate({
-  description:
-    "Why you make the change, for the user to read in the Settings' Agent changes, such as 'this task is small and cheap'",
-});
-
-/** What the descriptions of the changing tools say of the `scope`. */
-export const SCOPE_NOTE = `Give scope "${GLOBAL_SETTINGS_SCOPE}" to change Global, which each Environment inherits unless it overrides the field, or an Environment's id (environment_list shows them) to override Global for that Environment's Sessions only; there is no default. At an Environment the value is kept as its Override even when it equals Global's, so the field stops following Global until settings_reset removes the Override.`;
-
-/** What the descriptions of the changing tools say of the record and of the Sessions a change reaches. */
-export const CHANGE_NOTE =
-  "The change is recorded with your reason, and the user can see and revert it on the Settings page. Each Session runs with its own Environment's Settings (its Overrides over Global over the defaults): a change at an Environment reaches only that Environment's Sessions, and a change at Global only those whose Environment does not override the field. A Session it reaches uses it from its next request (this one) or when it next admits input (the others); the result says whether it reaches this Session.";
-
-const MODEL_LIST = Arr.join(SUPPORTED_MODELS, ", ");
+// What the descriptions of the changing tools say of the `scope` and of the record, from the declarations.
+export { CHANGE_NOTE, SCOPE_NOTE };
 
 /** What a value at an Environment says of where it comes from; nothing at Global, where nothing is inherited. */
 export const inheritedWords = (inherited: boolean | undefined): string => {
@@ -288,6 +280,13 @@ const REFUSED_PLACEHOLDER =
 const REFUSED_SECRET =
   "the text holds the value of a Secret this Session holds, or a GitHub token or the GitHub App's key. Settings are plain and the user reads them. Say it without the value.";
 
+/** The same on the endpoint: no Session's Secrets are held there, and the owner reads the Settings. */
+const REFUSED_PLACEHOLDER_ENDPOINT =
+  "the reason or a text of the call holds a Secret Reference, which these tools do not resolve, so the Settings would hold the reference's text, not the Secret. Settings are plain and the owner reads them. Say it without the reference.";
+
+const REFUSED_SECRET_ENDPOINT =
+  "the text holds a GitHub token or the GitHub App's key. Settings are plain and the owner reads them. Say it without the value.";
+
 /** Whether a change reaches this Session, field by field, and what a result says of it. */
 export type SettingsReach = {
   readonly reaches: (field: string) => boolean;
@@ -303,7 +302,8 @@ export type SettingsChangeRequest = {
   /** The text the values are made of, kept as written: none holds a Secret's value or a credential. */
   readonly texts?: ReadonlyArray<string>;
   readonly reason: string;
-  readonly conversation: number;
+  /** The calling conversation in a Session; none on the endpoint, whose services know the caller. */
+  readonly conversation: number | undefined;
   /** The result's words when nothing changed; an Effect where they wait for something (the MCP tools' status after an approved change). */
   readonly unchanged: string | Effect.Effect<string>;
   /** The owner approved this change: it is recorded as approved, and refusals and answers say "The user approved, but …". */
@@ -318,29 +318,56 @@ export type SettingsChangeRequest = {
   }) => string | Effect.Effect<string>;
 };
 
+/** What the settings tools' engine is built over: the Settings' access, and what only the surface knows. */
+export type SettingsChangeServices = {
+  /** Where the change is made from: a Session's words say "this Session" and "the user"; the endpoint's neither. */
+  readonly surface: Surface;
+  readonly access: SettingsAccessService;
+  /** Where the Session reads the Settings again after a change; the endpoint has no Session, and reads nothing. */
+  readonly reload: Effect.Effect<SettingsApplied>;
+  /** Where each change made is told, for the Run's Notification (a Session's) or for the answer's `logged` (the cores'). */
+  readonly log: { readonly record: (change: RunChange) => Effect.Effect<void> };
+  /** Whether `value` holds a Secret's value or a credential: the Session's Secrets are fresh; the endpoint has none of its own. */
+  readonly holdsSecret: (value: string) => Effect.Effect<boolean>;
+};
+
+/** What a Session says of itself when nothing reads it again: it picked nothing, so no change is kept from it. */
+export const NOT_PICKED: SettingsApplied = { picked: { model: false, thinkingLevel: false } };
+
+/** The Settings' recorded-change sentence, as `who` reads it. */
+export const recordedFor = (surface: Surface): string =>
+  surface === "session"
+    ? RECORDED
+    : "The change is recorded with your reason; the owner can see and revert it on the Settings page.";
+
 /**
- * How the settings tools change the Settings, over the Session's `SettingsAccess`: refusing text that holds a Secret
- * (`Secrets`) or a deploy-time credential (`DeployCredentials`), reading the Settings again after each change
- * (`SettingsReload`), telling the Session of each change for the Run's Notification (`AgentChangeLog`), and saying
- * whether a change reaches this Session.
+ * How the settings tools change the Settings, over `services`: refusing text that holds a Secret or a deploy-time credential,
+ * reading the Settings again after each change, telling of each change made, and saying whether a change reaches this
+ * Session. A Session's are the `SettingsChanges` below; the endpoint's cores build them with its own services.
  */
-export const SettingsChanges = Effect.gen(function* () {
-  const access = yield* SettingsAccess;
-  const reload = yield* SettingsReload;
-  const log = yield* AgentChangeLog;
-  const secrets = yield* Secrets;
-
-  const holdsCredential = yield* credentialCheck;
-
-  /** Whether `value` holds a Secret's value or a credential, once the Session's Secrets are fresh. */
-  const holdsSecret = (value: string) =>
-    Effect.map(secrets.refresh, () => secrets.redact(value) !== value || holdsCredential(value));
+export const settingsChanges = ({
+  surface,
+  access,
+  reload,
+  log,
+  holdsSecret,
+}: SettingsChangeServices) => {
+  /** What a change at `view`'s Scope reaches on the endpoint: no Session is its own, and each takes it when it next admits input. */
+  const endpointReach = (view: SettingsView): SettingsReach => ({
+    reaches: () => true,
+    text: isGlobalView(view)
+      ? `Sessions whose Environment does not override the field get it when they next admit input (settings_get with scope "${GLOBAL_SETTINGS_SCOPE}" names those Environments).`
+      : `${scopeName(view)}'s Sessions get it when they next admit input.`,
+  });
 
   /**
    * Whether a change of `fields` at `view`'s Scope reaches this Session, which runs with its own Environment's
    * Settings: a change at another Environment does not, nor one at Global of a field its Environment overrides.
    */
   const reach = (view: SettingsView, fields: ReadonlyArray<string>) =>
+    surface === "endpoint" ? Effect.succeed(endpointReach(view)) : sessionReach(view, fields);
+
+  const sessionReach = (view: SettingsView, fields: ReadonlyArray<string>) =>
     Effect.gen(function* () {
       const own = yield* access.own;
 
@@ -409,11 +436,17 @@ export const SettingsChanges = Effect.gen(function* () {
       const kept = Arr.join([reason, ...texts], "\n");
 
       if (holdsPlaceholder(kept)) {
-        return yield* SettingsAccessError.make({ message: `${outcome}: ${REFUSED_PLACEHOLDER}` });
+        return yield* SettingsAccessError.make({
+          message: `${outcome}: ${surface === "session" ? REFUSED_PLACEHOLDER : REFUSED_PLACEHOLDER_ENDPOINT}`,
+          code: "invalid_argument",
+        });
       }
 
       if (yield* holdsSecret(kept)) {
-        return yield* SettingsAccessError.make({ message: `${outcome}: ${REFUSED_SECRET}` });
+        return yield* SettingsAccessError.make({
+          message: `${outcome}: ${surface === "session" ? REFUSED_SECRET : REFUSED_SECRET_ENDPOINT}`,
+          code: "invalid_argument",
+        });
       }
     });
 
@@ -459,6 +492,7 @@ export const SettingsChanges = Effect.gen(function* () {
         case "rejected":
           return yield* SettingsAccessError.make({
             message: `${approved === true ? "The user approved, but nothing was saved" : "Nothing was saved"}: ${answer.message}`,
+            code: "invalid_argument",
           });
         // Only a change made against an expected value: the one the owner saw.
         case "changed-since":
@@ -481,6 +515,7 @@ export const SettingsChanges = Effect.gen(function* () {
               changes: [],
               unchanged: Arr.map(fields, (field) => field.field),
               approval,
+              surface,
             }),
             details: {
               scope: view.scope,
@@ -494,7 +529,7 @@ export const SettingsChanges = Effect.gen(function* () {
             yield* log.record(loggedChange(view, tool, change.field));
           }
 
-          const applied = yield* reload.apply;
+          const applied = yield* reload;
 
           const reached = yield* reach(
             view,
@@ -525,6 +560,7 @@ export const SettingsChanges = Effect.gen(function* () {
                 (name) => !Arr.some(answer.changes, (change) => change.field === name),
               ),
               approval,
+              surface,
             }),
             details: {
               scope: view.scope,
@@ -538,59 +574,137 @@ export const SettingsChanges = Effect.gen(function* () {
     });
 
   return { apply, reach, plain };
+};
+
+/**
+ * The settings tools' engine in a Session: over the Session's `SettingsAccess`, refusing text that holds a Secret
+ * (`Secrets`) or a deploy-time credential (`DeployCredentials`), reading the Settings again after each change
+ * (`SettingsReload`), and telling the Run's Notification of each change (`AgentChangeLog`).
+ */
+export const SettingsChanges = Effect.gen(function* () {
+  const access = yield* SettingsAccess;
+  const reload = yield* SettingsReload;
+  const log = yield* AgentChangeLog;
+  const secrets = yield* Secrets;
+
+  const holdsCredential = yield* credentialCheck;
+
+  return settingsChanges({
+    surface: "session",
+    access,
+    reload: reload.apply,
+    log,
+    // Whether `value` holds a Secret's value or a credential, once the Session's Secrets are fresh.
+    holdsSecret: (value) =>
+      Effect.map(secrets.refresh, () => secrets.redact(value) !== value || holdsCredential(value)),
+  });
 });
 
 export const RECORDED =
   "The change is recorded with your reason; the user can see and revert it on the Settings page.";
 
+/** What an engine's `apply` answers: the text, the value for programs and the details of the card. */
+type SettingsToolResult = Effect.Success<ReturnType<ReturnType<typeof settingsChanges>["apply"]>>;
+
+/** What the endpoint's text of a settings change is cut to: it is read whole by `settings_get`. */
+const endpointText = (text: string): string =>
+  cutText(text, cutNote("settings_get shows the settings as they are now"));
+
+/** The arguments of tool `Name`, as a Session's call decodes them (the endpoint's add only `request_id`). */
+type ArgsOf<Name extends keyof typeof HARNESS_TOOLS> =
+  (typeof HARNESS_TOOLS)[Name]["session"]["input"]["Type"];
+
+/** What the cores run over: the Settings' access, what the Session reads again, and the check of a text. */
+export type SettingsChangeCoreServices = Omit<SettingsChangeServices, "surface" | "log">;
+
+/** The result of a call that found a field as it was asked to be: nothing is saved, recorded or pushed. */
+export const nothingChanged = (
+  surface: Surface,
+  view: SettingsView,
+  field: string,
+  text: string,
+) => ({
+  output: [{ type: "text" as const, text }],
+  structuredOutput: settingsChangeOutput({
+    view,
+    changes: [],
+    unchanged: [field],
+    approval: null,
+    surface,
+  }),
+  details: { scope: view.scope, unchanged: [field], agentChanges: [] },
+});
+
 /**
- * The `settings` extension: its tools over the Session's `SettingsAccess`, refusing text that holds a Secret
- * (`Secrets`) or a deploy-time credential (`DeployCredentials`), reading the Settings again after each change
- * (`SettingsReload`), and telling the Session of each change for the Run's Notification (`AgentChangeLog`).
+ * An engine's result as a core answers it on `surface`: a Session's as it is, the endpoint's text cut; with the Agent changes
+ * made (`logged`), which the Session's wrapper tells the Run's Notification of.
  */
-export const SettingsTools: Effect.Effect<
-  Extension,
-  never,
-  SettingsAccess | SettingsReload | AgentChangeLog | DeployCredentials | Secrets
-> = Effect.gen(function* () {
-  const access = yield* SettingsAccess;
-  const { apply } = yield* SettingsChanges;
+export const settingsAnswer = (
+  surface: Surface,
+  {
+    output,
+    structuredOutput,
+    details,
+  }: {
+    readonly output: ReadonlyArray<{ readonly text: string }>;
+    readonly structuredOutput: JsonValue;
+    readonly details: JsonValue;
+  },
+  logged: ReadonlyArray<RunChange>,
+): HarnessWriteAnswer => {
+  const [first] = output;
+  const text = first === undefined ? "" : first.text;
 
-  const getRead = settingsGetRead(access);
+  return {
+    text: surface === "session" ? text : endpointText(text),
+    structured: structuredOutput,
+    details,
+    logged: logged.length === 0 ? undefined : logged,
+  };
+};
 
-  const get = yield* defineEffectTool({
-    name: HARNESS_TOOLS.settings_get.name,
-    description: HARNESS_TOOLS.settings_get.session.description,
-    parameters: HARNESS_TOOLS.settings_get.session.input,
-    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_get.session.output),
-    replay: "safe",
-    execute: (args) => Effect.map(getRead(args, "session"), toolResult),
-  });
+/**
+ * Run `make` over the Settings' engine of `surface` built over `services`, collecting the changes it records, and answer as
+ * a core does.
+ */
+export const settingsWritten =
+  (services: SettingsChangeCoreServices) =>
+  (
+    surface: Surface,
+    make: (
+      engine: ReturnType<typeof settingsChanges>,
+    ) => Effect.Effect<SettingsToolResult, SettingsAccessError>,
+  ): Effect.Effect<HarnessWriteAnswer, SettingsAccessError> =>
+    Effect.suspend(() => {
+      const logged: Array<RunChange> = [];
 
-  const model = yield* defineEffectTool({
-    name: "settings_model_set",
-    description: Arr.join(
-      [
-        `Set the default model and/or thinking level: what a Session's root conversation runs with until the Session picks its own with the model picker. Models: ${MODEL_LIST}; thinking levels: ${Arr.join(THINKING_LEVELS, ", ")}. Give at least one of them.`,
-        "A Session that picked its own model or thinking level keeps its pick; the result says whether this Session did. Subagents keep the agent they started with: their models come from the roles (settings_role_set).",
-        SCOPE_NOTE,
-        CHANGE_NOTE,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      scope: SettingsScope,
-      model: Schema.optionalKey(ModelId.annotate({ description: "The default model" })),
-      thinking_level: Schema.optionalKey(
-        ThinkingLevel.annotate({ description: "The default thinking level" }),
-      ),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(ChangeOutput),
-    executionMode: "sequential",
-    // A rerun after an eviction would record the change again, against the value it set.
-    replay: "unsafe",
-    execute: ({ scope, model, thinking_level, reason }, api) =>
+      const engine = settingsChanges({
+        ...services,
+        surface,
+        log: { record: (change) => Effect.sync(() => void logged.push(change)) },
+      });
+
+      return Effect.map(make(engine), (result) => settingsAnswer(surface, result, logged));
+    });
+
+/**
+ * The cores of the Settings' changing tools, by name (`docs/architecture/mcp-endpoint.md` → Shared definitions and the
+ * core/wrapper split): each makes its tool's checks and one `SettingsAccess` call, and answers the text, the value for
+ * programs and the card's `details` of its surface, with the Agent changes made. The Session's wrappers call them with the
+ * session surface, whose words and values are byte-identical to the tools' before the split; the endpoint's dispatcher
+ * calls them with `surface: "endpoint"`, whose words name no Session and no tool the endpoint does not serve, and say the
+ * owner where a Session's say the user. A Limit's option is refused there as `unsupported`.
+ */
+export const settingsChangeCores = (services: SettingsChangeCoreServices) => {
+  const { access } = services;
+  const written = settingsWritten(services);
+
+  const modelSet: HarnessWrite<ArgsOf<"settings_model_set">, SettingsAccessError> = (
+    { scope, model, thinking_level, reason },
+    surface,
+    conversation,
+  ) =>
+    written(surface, ({ apply }) =>
       Effect.gen(function* () {
         const fields: SettingsFieldChange[] = [
           ...(model === undefined ? [] : [{ field: "model", value: model }]),
@@ -602,6 +716,7 @@ export const SettingsTools: Effect.Effect<
         if (fields.length === 0) {
           return yield* SettingsAccessError.make({
             message: "Give a model, a thinking level, or both.",
+            code: "invalid_argument",
           });
         }
 
@@ -612,7 +727,7 @@ export const SettingsTools: Effect.Effect<
           view,
           fields,
           reason,
-          conversation: api.conversationId,
+          conversation,
           unchanged: isGlobalView(view)
             ? "The default already has these values at Global: nothing changed, and nothing was recorded."
             : `${scopeName(view)} overrides the default with these values already: nothing changed, and nothing was recorded.`,
@@ -627,7 +742,8 @@ export const SettingsTools: Effect.Effect<
               [
                 `Changed the defaults ${scopeWhere(view)}:\n${changedLines(changes)}`,
                 reach.text,
-                ...(reaching.length === 0
+                // Only a Session knows what it picked.
+                ...(reaching.length === 0 || surface === "endpoint"
                   ? []
                   : [
                       kept.length === 0
@@ -639,41 +755,21 @@ export const SettingsTools: Effect.Effect<
                             " and ",
                           )}, which it keeps; Sessions that follow the defaults use the new ones.`,
                     ]),
-                RECORDED,
+                recordedFor(surface),
               ],
               " ",
             );
           },
         });
       }),
-  });
+    );
 
-  const role = yield* defineEffectTool({
-    name: "settings_role_set",
-    description: Arr.join(
-      [
-        `Set one model role: the model a subagent runs on when it is started with that role, and optionally its hint, the text that tells an agent when to pick it. Roles: ${Arr.join(ROLE_NAMES, ", ")}. Models: ${MODEL_LIST}.`,
-        "A Role's model and hint are one setting: a hint left out keeps the hint the role has at that Scope now, and at an Environment the two are its Override together. The change reaches the next subagent started; subagents that run keep the model they started with.",
-        SCOPE_NOTE,
-        CHANGE_NOTE,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      scope: SettingsScope,
-      role: Schema.Literals(ROLE_NAMES).annotate({ description: "The role to change" }),
-      model: ModelId.annotate({ description: "The role's model" }),
-      hint: Schema.optionalKey(
-        Schema.String.annotate({
-          description: "When an agent should pick this role (replaces the hint it has)",
-        }),
-      ),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(ChangeOutput),
-    executionMode: "sequential",
-    replay: "unsafe",
-    execute: ({ scope, role, model, hint, reason }, api) =>
+  const roleSet: HarnessWrite<ArgsOf<"settings_role_set">, SettingsAccessError> = (
+    { scope, role, model, hint, reason },
+    surface,
+    conversation,
+  ) =>
+    written(surface, ({ apply }) =>
       Effect.gen(function* () {
         const view = yield* access.get(scope);
 
@@ -688,64 +784,32 @@ export const SettingsTools: Effect.Effect<
           ],
           texts: hint === undefined ? [] : [hint],
           reason,
-          conversation: api.conversationId,
+          conversation,
           unchanged: isGlobalView(view)
             ? `The ${role} role already has ${hint === undefined ? "that model" : "that model and hint"} at Global: nothing changed, and nothing was recorded.`
             : `${scopeName(view)} overrides the ${role} role with ${hint === undefined ? "that model" : "that model and hint"} already: nothing changed, and nothing was recorded.`,
           changed: ({ changes, reach }) =>
-            `Changed the ${role} role ${scopeWhere(view)}:\n${changedLines(changes)}\nThe next subagent started with the role ${role} where the change applies uses it. ${reach.text} ${RECORDED}`,
+            `Changed the ${role} role ${scopeWhere(view)}:\n${changedLines(changes)}\nThe next subagent started with the role ${role} where the change applies uses it. ${reach.text} ${recordedFor(surface)}`,
         });
       }),
-  });
+    );
 
   const offered = (current: ReadonlyArray<string>, pattern: string) =>
     Arr.filter(current, (entry) => matchesToolPattern(entry, pattern));
 
-  const offerNote =
-    "A tool that a conversation has loaded with tool_search stays offered to it. A pattern is a tool's name, or a name with * for any run of characters (context_*): snake_case, and one that matches no tool does nothing.";
-
-  const listNote =
-    "The offered tools are one setting: the list in force at the Scope gets the entry, and is saved whole there (at an Environment, as its Override).";
-
-  const offer = yield* defineEffectTool({
-    name: "settings_tool_offer",
-    description: Arr.join(
-      [
-        "Offer a tool to the model from the first request: add one entry (a tool's name, or a pattern with * for any run of characters, such as context_*) to the offered tools, which every conversation's model is shown without searching. The rest of the tools are deferred: the model loads them with tool_search, and code mode scripts call them without loading. Every offered tool costs context on every request, so offer what is used constantly.",
-        offerNote,
-        listNote,
-        SCOPE_NOTE,
-        CHANGE_NOTE,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      scope: SettingsScope,
-      pattern: Schema.String.check(Schema.isMinLength(1)).annotate({
-        description: "The tool's name or a pattern, such as web_fetch or settings_*",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(ChangeOutput),
-    executionMode: "sequential",
-    replay: "unsafe",
-    execute: ({ scope, pattern, reason }, api) =>
+  const offerSet: HarnessWrite<ArgsOf<"settings_tool_offer">, SettingsAccessError> = (
+    { scope, pattern, reason },
+    surface,
+    conversation,
+  ) =>
+    written(surface, ({ apply }) =>
       Effect.gen(function* () {
         const view = yield* access.get(scope);
         const current = view.settings.tools.offered;
         const already = `${pattern} is among the offered tools ${scopeWhere(view)} already: nothing changed, and nothing was recorded.`;
 
         if (Arr.contains(current, pattern)) {
-          return {
-            output: [{ type: "text" as const, text: already }],
-            structuredOutput: settingsChangeOutput({
-              view,
-              changes: [],
-              unchanged: ["tools.offered"],
-              approval: null,
-            }),
-            details: { scope: view.scope, unchanged: ["tools.offered"], agentChanges: [] },
-          };
+          return nothingChanged(surface, view, "tools.offered", already);
         }
 
         return yield* apply({
@@ -754,38 +818,20 @@ export const SettingsTools: Effect.Effect<
           fields: [{ field: "tools.offered", value: [...current, pattern] }],
           texts: [pattern],
           reason,
-          conversation: api.conversationId,
+          conversation,
           unchanged: already,
           changed: ({ reach }) =>
-            `Offered ${pattern} ${scopeWhere(view)}: it is added to the offered tools, so the model of each conversation the change reaches is shown the tools it names from its next request. ${reach.text} ${offerNote} ${RECORDED}`,
+            `Offered ${pattern} ${scopeWhere(view)}: it is added to the offered tools, so the model of each conversation the change reaches is shown the tools it names from its next request. ${reach.text} ${surface === "session" ? OFFER_NOTE : OFFER_NOTE_ENDPOINT} ${recordedFor(surface)}`,
         });
       }),
-  });
+    );
 
-  const defer = yield* defineEffectTool({
-    name: "settings_tool_defer",
-    description: Arr.join(
-      [
-        `Defer a tool: remove one entry (exactly as settings_get lists it) from the offered tools, so the model loads the tools it names with tool_search instead of being shown them. ${Arr.join(ALWAYS_OFFERED, " and ")} stay offered whatever the list says. An entry that is a pattern covers many tools: remove it whole, or offer fewer by replacing it.`,
-        "A tool that a conversation has loaded with tool_search stays offered to it.",
-        listNote,
-        SCOPE_NOTE,
-        CHANGE_NOTE,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      scope: SettingsScope,
-      pattern: Schema.String.check(Schema.isMinLength(1)).annotate({
-        description:
-          "The entry of the offered tools to remove, as settings_get shows it (a tool's name or a pattern)",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(ChangeOutput),
-    executionMode: "sequential",
-    replay: "unsafe",
-    execute: ({ scope, pattern, reason }, api) =>
+  const deferSet: HarnessWrite<ArgsOf<"settings_tool_defer">, SettingsAccessError> = (
+    { scope, pattern, reason },
+    surface,
+    conversation,
+  ) =>
+    written(surface, ({ apply }) =>
       Effect.gen(function* () {
         const view = yield* access.get(scope);
         const current = view.settings.tools.offered;
@@ -793,25 +839,16 @@ export const SettingsTools: Effect.Effect<
         if (!Arr.contains(current, pattern)) {
           const covering = offered(current, pattern);
 
-          return {
-            output: [
-              {
-                type: "text" as const,
-                text: `The offered tools ${scopeWhere(view)} have no entry "${pattern}": nothing changed, and nothing was recorded.${
-                  covering.length === 0
-                    ? ""
-                    : ` ${pattern} is offered by ${Arr.join(covering, ", ")}: defer that entry to defer it.`
-                }`,
-              },
-            ],
-            structuredOutput: settingsChangeOutput({
-              view,
-              changes: [],
-              unchanged: ["tools.offered"],
-              approval: null,
-            }),
-            details: { scope: view.scope, unchanged: ["tools.offered"], agentChanges: [] },
-          };
+          return nothingChanged(
+            surface,
+            view,
+            "tools.offered",
+            `The offered tools ${scopeWhere(view)} have no entry "${pattern}": nothing changed, and nothing was recorded.${
+              covering.length === 0
+                ? ""
+                : ` ${pattern} is offered by ${Arr.join(covering, ", ")}: defer that entry to defer it.`
+            }`,
+          );
         }
 
         return yield* apply({
@@ -821,41 +858,28 @@ export const SettingsTools: Effect.Effect<
             { field: "tools.offered", value: Arr.filter(current, (entry) => entry !== pattern) },
           ],
           reason,
-          conversation: api.conversationId,
+          conversation,
           unchanged: `${pattern} is not among the offered tools ${scopeWhere(view)}: nothing changed, and nothing was recorded.`,
           changed: ({ reach }) =>
-            `Deferred ${pattern} ${scopeWhere(view)}: it is removed from the offered tools, so the tools it names are loaded with tool_search from the next request of each conversation the change reaches${
+            `Deferred ${pattern} ${scopeWhere(view)}: it is removed from the offered tools, so ${
+              surface === "session"
+                ? "the tools it names are loaded with tool_search from the next request of each conversation the change reaches"
+                : "the model of each conversation the change reaches loads the tools it names when it needs them"
+            }${
               Arr.contains(ALWAYS_OFFERED, pattern)
                 ? `. ${pattern} stays offered whatever the list says`
                 : ""
-            }. A tool a conversation has loaded stays offered to it. ${reach.text} ${RECORDED}`,
+            }. A tool a conversation has loaded stays offered to it. ${reach.text} ${recordedFor(surface)}`,
         });
       }),
-  });
+    );
 
-  const compaction = yield* defineEffectTool({
-    name: "settings_compaction_set",
-    description: Arr.join(
-      [
-        "Set automatic compaction: whether a conversation's context is summarized before it outgrows the model's window, and how. Give at least one of the settings; those left out stay as they are. Each is a setting of its own, overridden at an Environment by itself.",
-        "`enabled` turns it on or off. `reserve_tokens` is the room kept free for the next answer (the window minus this triggers compaction), `keep_recent_tokens` how much of the latest messages a compaction keeps as they are, and `background_tokens` how far before the trigger a compaction may start in the background (0 turns that off). The token counts are whole numbers; reserve and keep above 0.",
-        SCOPE_NOTE,
-        CHANGE_NOTE,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      scope: SettingsScope,
-      enabled: Schema.optionalKey(Schema.Boolean),
-      reserve_tokens: Schema.optionalKey(Schema.Finite),
-      keep_recent_tokens: Schema.optionalKey(Schema.Finite),
-      background_tokens: Schema.optionalKey(Schema.Finite),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(ChangeOutput),
-    executionMode: "sequential",
-    replay: "unsafe",
-    execute: (args, api) =>
+  const compactionSet: HarnessWrite<ArgsOf<"settings_compaction_set">, SettingsAccessError> = (
+    args,
+    surface,
+    conversation,
+  ) =>
+    written(surface, ({ apply }) =>
       Effect.gen(function* () {
         const fields: SettingsFieldChange[] = [
           ...(args.enabled === undefined
@@ -876,6 +900,7 @@ export const SettingsTools: Effect.Effect<
           return yield* SettingsAccessError.make({
             message:
               "Give at least one of enabled, reserve_tokens, keep_recent_tokens and background_tokens.",
+            code: "invalid_argument",
           });
         }
 
@@ -886,37 +911,21 @@ export const SettingsTools: Effect.Effect<
           view,
           fields,
           reason: args.reason,
-          conversation: api.conversationId,
+          conversation,
           unchanged: isGlobalView(view)
             ? "Compaction already has these values at Global: nothing changed, and nothing was recorded."
             : `${scopeName(view)} overrides compaction with these values already: nothing changed, and nothing was recorded.`,
           changed: ({ changes, reach }) =>
-            `Changed compaction ${scopeWhere(view)}:\n${changedLines(changes)}\nIt applies from the next request of each conversation the change reaches. ${reach.text} ${RECORDED}`,
+            `Changed compaction ${scopeWhere(view)}:\n${changedLines(changes)}\nIt applies from the next request of each conversation the change reaches. ${reach.text} ${recordedFor(surface)}`,
         });
       }),
-  });
+    );
 
-  const branchSummary = yield* defineEffectTool({
-    name: "settings_branch_summary_set",
-    description: Arr.join(
-      [
-        "Set whether the web app asks, when the user moves to another point of a Session's tree, whether to carry a summary of the branch they leave (a model request on the Session's usage). With skip_prompt true it does not ask and carries no summary; false asks.",
-        SCOPE_NOTE,
-        CHANGE_NOTE,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      scope: SettingsScope,
-      skip_prompt: Schema.Boolean.annotate({
-        description: "True: leave a branch without asking or summarizing",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(ChangeOutput),
-    executionMode: "sequential",
-    replay: "unsafe",
-    execute: ({ scope, skip_prompt, reason }, api) =>
+  const branchSummarySet: HarnessWrite<
+    ArgsOf<"settings_branch_summary_set">,
+    SettingsAccessError
+  > = ({ scope, skip_prompt, reason }, surface, conversation) =>
+    written(surface, ({ apply }) =>
       Effect.gen(function* () {
         const view = yield* access.get(scope);
 
@@ -925,65 +934,61 @@ export const SettingsTools: Effect.Effect<
           view,
           fields: [{ field: "branchSummary.skipPrompt", value: skip_prompt }],
           reason,
-          conversation: api.conversationId,
+          conversation,
           unchanged: isGlobalView(view)
             ? `The branch summary prompt is ${skip_prompt ? "skipped" : "asked"} at Global already: nothing changed, and nothing was recorded.`
             : `${scopeName(view)} overrides the branch summary prompt to be ${skip_prompt ? "skipped" : "asked"} already: nothing changed, and nothing was recorded.`,
           changed: ({ changes, reach }) =>
-            `Changed the branch summary prompt ${scopeWhere(view)}:\n${changedLines(changes)}\n${reach.text} ${RECORDED}`,
+            `Changed the branch summary prompt ${scopeWhere(view)}:\n${changedLines(changes)}\n${reach.text} ${recordedFor(surface)}`,
         });
       }),
-  });
+    );
 
-  const extension = yield* defineEffectTool({
-    name: "settings_extension_set",
-    description: Arr.join(
-      [
-        `Set one option of one extension: the settings keep each extension's options under its name, and an extension reads the ones it knows. The subagents extension reads ${Arr.join(SUBAGENT_TOOLSET_OPTIONS, ", ")} (lists of tool names or patterns with *: the tools a subagent is granted); an option no extension reads is saved and does nothing. Each option is a setting of its own. A value of null at Global takes the option away, back to the extension's default; at an Environment it removes the option's Override, so the option inherits Global (as settings_reset does).`,
-        "The subagent depth (subagents.maxSubagentDepth) and the Subagent Workspace limit (subagents.maxSubagentWorkspaces) are Limits: they are not set here, but with settings_subagent_depth_set and settings_subagent_workspaces_set, which ask the user for their Approval.",
-        SCOPE_NOTE,
-        CHANGE_NOTE,
-      ],
-      "\n\n",
-    ),
-    parameters: Schema.Struct({
-      scope: SettingsScope,
-      extension: Schema.String.check(Schema.isMinLength(1), Schema.isPattern(/^[^.]+$/)).annotate({
-        description: "The extension's name, without dots, such as subagents",
-      }),
-      key: Schema.String.check(Schema.isMinLength(1)).annotate({
-        description: "The option's name, such as readToolset",
-      }),
-      value: Schema.Json.annotate({
-        description:
-          "The option's value (JSON); null takes the option away at Global, or removes its Override at an Environment",
-      }),
-      reason: Reason,
-    }),
-    structuredOutputSchema: outputSchema(ChangeOutput),
-    executionMode: "sequential",
-    replay: "unsafe",
-    execute: ({ scope, extension, key, value, reason }, api) =>
+  const extensionSet: HarnessWrite<ArgsOf<"settings_extension_set">, SettingsAccessError> = (
+    { scope, extension, key, value, reason },
+    surface,
+    conversation,
+  ) =>
+    written(surface, ({ apply }) =>
       Effect.gen(function* () {
         if (extension === "mcp") {
           return yield* SettingsAccessError.make({
             message:
               "mcp is not an extension whose options are set here: MCP servers are kept under their own settings root, extensions.mcp is read by nothing, and the mcp extension is not switched off this way. The settings_mcp tools show and change the MCP servers (settings_mcp_list shows them).",
+            code: "invalid_argument",
           });
         }
 
         if (extension === "subagents" && key === "maxSubagentDepth") {
-          return yield* SettingsAccessError.make({
-            message:
-              "subagents.maxSubagentDepth is a Limit: it is not set with settings_extension_set. Use settings_subagent_depth_set, which asks the user for their Approval.",
-          });
+          return yield* SettingsAccessError.make(
+            surface === "session"
+              ? {
+                  message:
+                    "subagents.maxSubagentDepth is a Limit: it is not set with settings_extension_set. Use settings_subagent_depth_set, which asks the user for their Approval.",
+                  code: "invalid_argument",
+                }
+              : {
+                  message:
+                    "Nothing was saved: subagents.maxSubagentDepth is a Limit, which these tools do not change. The owner changes it on the Settings page.",
+                  code: "unsupported",
+                },
+          );
         }
 
         if (extension === "subagents" && key === "maxSubagentWorkspaces") {
-          return yield* SettingsAccessError.make({
-            message:
-              "subagents.maxSubagentWorkspaces is a Limit: it is not set with settings_extension_set. Use settings_subagent_workspaces_set, which asks the user for their Approval.",
-          });
+          return yield* SettingsAccessError.make(
+            surface === "session"
+              ? {
+                  message:
+                    "subagents.maxSubagentWorkspaces is a Limit: it is not set with settings_extension_set. Use settings_subagent_workspaces_set, which asks the user for their Approval.",
+                  code: "invalid_argument",
+                }
+              : {
+                  message:
+                    "Nothing was saved: subagents.maxSubagentWorkspaces is a Limit, which these tools do not change. The owner changes it on the Settings page.",
+                  code: "unsupported",
+                },
+          );
         }
 
         if (
@@ -994,6 +999,7 @@ export const SettingsTools: Effect.Effect<
         ) {
           return yield* SettingsAccessError.make({
             message: `Nothing was saved: ${extension}.${key} is a list of tool names or patterns, and the subagents extension ignores every option of its own when one is not.`,
+            code: "invalid_argument",
           });
         }
 
@@ -1012,7 +1018,7 @@ export const SettingsTools: Effect.Effect<
           ],
           texts: [jsonText(value)],
           reason,
-          conversation: api.conversationId,
+          conversation,
           unchanged: global
             ? value === null
               ? `${extension}.${key} is not set at Global: nothing changed, and nothing was recorded.`
@@ -1025,9 +1031,147 @@ export const SettingsTools: Effect.Effect<
               extension === "subagents" && Arr.contains(SUBAGENT_TOOLSET_OPTIONS, key)
                 ? "It applies to the next subagent started where the change applies."
                 : `Only an extension that reads ${extension}.${key} is affected by it.`
-            } ${reach.text} ${RECORDED}`,
+            } ${reach.text} ${recordedFor(surface)}`,
         });
       }),
+    );
+
+  return {
+    settings_model_set: modelSet,
+    settings_role_set: roleSet,
+    settings_tool_offer: offerSet,
+    settings_tool_defer: deferSet,
+    settings_compaction_set: compactionSet,
+    settings_branch_summary_set: branchSummarySet,
+    settings_extension_set: extensionSet,
+  };
+};
+
+export type SettingsChangeCores = ReturnType<typeof settingsChangeCores>;
+
+/** The tools these cores serve, by name. */
+export type SettingsChangeToolName = keyof SettingsChangeCores;
+
+/** The Session's check of a text: its Secrets are fresh, and it holds no deploy-time credential. */
+const sessionHoldsSecret = Effect.gen(function* () {
+  const secrets = yield* Secrets;
+  const holdsCredential = yield* credentialCheck;
+
+  return (value: string) =>
+    Effect.map(secrets.refresh, () => secrets.redact(value) !== value || holdsCredential(value));
+});
+
+/**
+ * The `settings` extension: its tools over the Session's `SettingsAccess`, refusing text that holds a Secret
+ * (`Secrets`) or a deploy-time credential (`DeployCredentials`), reading the Settings again after each change
+ * (`SettingsReload`), and telling the Session of each change for the Run's Notification (`AgentChangeLog`). Each changing
+ * tool is a wrapper over its core (`settingsChangeCores`).
+ */
+export const SettingsTools: Effect.Effect<
+  Extension,
+  never,
+  SettingsAccess | SettingsReload | AgentChangeLog | DeployCredentials | Secrets
+> = Effect.gen(function* () {
+  const access = yield* SettingsAccess;
+  const reload = yield* SettingsReload;
+  const log = yield* AgentChangeLog;
+  const holdsSecret = yield* sessionHoldsSecret;
+
+  const cores = settingsChangeCores({ access, reload: reload.apply, holdsSecret });
+
+  /** A core's answer as the Session's tool returns it, once the Run's Notification is told of the changes it made. */
+  const inSession = (answer: Effect.Effect<HarnessWriteAnswer, SettingsAccessError>) =>
+    answer.pipe(
+      Effect.tap(({ logged }) => Effect.forEach(loggedOf(logged), log.record, { discard: true })),
+      Effect.map(toolResult),
+    );
+
+  const getRead = settingsGetRead(access);
+
+  const get = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_get.name,
+    description: HARNESS_TOOLS.settings_get.session.description,
+    parameters: HARNESS_TOOLS.settings_get.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_get.session.output),
+    replay: "safe",
+    execute: (args) => Effect.map(getRead(args, "session"), toolResult),
+  });
+
+  const model = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_model_set.name,
+    description: HARNESS_TOOLS.settings_model_set.session.description,
+    parameters: HARNESS_TOOLS.settings_model_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_model_set.session.output),
+    executionMode: "sequential",
+    // A rerun after an eviction would record the change again, against the value it set.
+    replay: "unsafe",
+    execute: (args, api) =>
+      inSession(cores.settings_model_set(args, "session", api.conversationId)),
+  });
+
+  const role = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_role_set.name,
+    description: HARNESS_TOOLS.settings_role_set.session.description,
+    parameters: HARNESS_TOOLS.settings_role_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_role_set.session.output),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: (args, api) => inSession(cores.settings_role_set(args, "session", api.conversationId)),
+  });
+
+  const offer = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_tool_offer.name,
+    description: HARNESS_TOOLS.settings_tool_offer.session.description,
+    parameters: HARNESS_TOOLS.settings_tool_offer.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_tool_offer.session.output),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: (args, api) =>
+      inSession(cores.settings_tool_offer(args, "session", api.conversationId)),
+  });
+
+  const defer = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_tool_defer.name,
+    description: HARNESS_TOOLS.settings_tool_defer.session.description,
+    parameters: HARNESS_TOOLS.settings_tool_defer.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_tool_defer.session.output),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: (args, api) =>
+      inSession(cores.settings_tool_defer(args, "session", api.conversationId)),
+  });
+
+  const compaction = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_compaction_set.name,
+    description: HARNESS_TOOLS.settings_compaction_set.session.description,
+    parameters: HARNESS_TOOLS.settings_compaction_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_compaction_set.session.output),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: (args, api) =>
+      inSession(cores.settings_compaction_set(args, "session", api.conversationId)),
+  });
+
+  const branchSummary = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_branch_summary_set.name,
+    description: HARNESS_TOOLS.settings_branch_summary_set.session.description,
+    parameters: HARNESS_TOOLS.settings_branch_summary_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_branch_summary_set.session.output),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: (args, api) =>
+      inSession(cores.settings_branch_summary_set(args, "session", api.conversationId)),
+  });
+
+  const extension = yield* defineEffectTool({
+    name: HARNESS_TOOLS.settings_extension_set.name,
+    description: HARNESS_TOOLS.settings_extension_set.session.description,
+    parameters: HARNESS_TOOLS.settings_extension_set.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_extension_set.session.output),
+    executionMode: "sequential",
+    replay: "unsafe",
+    execute: (args, api) =>
+      inSession(cores.settings_extension_set(args, "session", api.conversationId)),
   });
 
   return defineExtension({

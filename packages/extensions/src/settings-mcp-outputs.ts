@@ -4,66 +4,12 @@
 // value, a hash or a token: an entry is as written, each `${NAME}` it reads is marked `secret`, `variable` or `missing`.
 // What can grow is cut as `./outputs.ts` says, with a `*_truncated` flag.
 // @effect-diagnostics missingPipeableSignature:off
-import { SERVER_STATES } from "@cloudpid/protocol/harness-tools";
+import { SERVER_STATES, SettingsMcpReloadOutput } from "@cloudpid/protocol/harness-tools";
 import * as Schema from "effect/Schema";
-import { ChangeOutputFields, ScopeRef } from "./outputs.ts";
+import { ChangeOutputFields } from "./outputs.ts";
 
-// The two read tools' schemas are declared once, in `@cloudpid/protocol/harness-tools`, for both surfaces.
-/** What a reload found of one Repo's file. */
-export const ReloadRepoOutput = Schema.Struct({
-  directory: Schema.String,
-  slug: Schema.NullOr(Schema.String),
-  path: Schema.String,
-  outcome: Schema.String.annotate({
-    description:
-      "changed, unchanged, absent (no such file: its servers go), unreadable (GitHub gave no answer: the last good copy is kept), invalid (read, but not usable: its servers go), not_github, or recent (looked at in the last 30 s, so not again)",
-  }),
-  blob: Schema.NullOr(Schema.String),
-  read_at: Schema.NullOr(Schema.Finite),
-  error: Schema.NullOr(Schema.String),
-  error_since: Schema.NullOr(Schema.Finite),
-  kept_copy: Schema.Boolean.annotate({
-    description:
-      "An unreadable Repo's last good copy is kept, so its servers still stand: only the user's Reload drops it",
-  }),
-  problem: Schema.NullOr(Schema.String),
-});
-
-/** `settings_mcp_reload`. */
-export const SettingsMcpReloadOutput = Schema.Struct({
-  scope: ScopeRef,
-  repos: Schema.Array(ReloadRepoOutput),
-  repos_truncated: Schema.Boolean.annotate({ description: "repos was cut" }),
-  set: Schema.Struct({
-    servers: Schema.Finite.annotate({ description: "The servers the set has now" }),
-    added: Schema.Array(Schema.String),
-    added_truncated: Schema.Boolean.annotate({ description: "added was cut" }),
-    removed: Schema.Array(Schema.String),
-    removed_truncated: Schema.Boolean.annotate({ description: "removed was cut" }),
-    changed: Schema.Array(Schema.String),
-    changed_truncated: Schema.Boolean.annotate({ description: "changed was cut" }),
-    problems_added: Schema.Array(Schema.String),
-    problems_added_truncated: Schema.Boolean.annotate({ description: "problems_added was cut" }),
-    problems_cleared: Schema.Array(Schema.String),
-    problems_cleared_truncated: Schema.Boolean.annotate({
-      description: "problems_cleared was cut",
-    }),
-  }),
-  push: Schema.Literals(["pushed", "not_needed", "failed"]).annotate({
-    description:
-      "Whether the new set was sent to the Environment's host: pushed, not_needed (the host has it, or neither it nor the set has any server) or failed",
-  }),
-  host: Schema.Struct({
-    status: Schema.Literals(["reloaded", "not_reached", "unsupported", "failed"]).annotate({
-      description:
-        "reloaded (the host dropped its eras and Legacy sessions and rediscovers its HTTP servers at once), not_reached (the set has no servers, so the host is not woken), unsupported (an older host) or failed",
-    }),
-    servers: Schema.Array(Schema.String).annotate({
-      description: "The servers the reload reached",
-    }),
-    note: Schema.NullOr(Schema.String),
-  }),
-});
+// The read tools' and the reload's schemas are declared once, in `@cloudpid/protocol/harness-tools`, for both surfaces.
+export { SettingsMcpReloadOutput };
 
 /** A server's status once an `add`, `update` or `enable` is made (`docs/architecture/mcp-configuration.md` → Results, Status wait). */
 export const ServerStatusOutput = Schema.Struct({

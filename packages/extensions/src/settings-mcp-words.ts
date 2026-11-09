@@ -11,6 +11,7 @@ import {
   type McpSourceOutput,
   type SettingsMcpGetOutput,
   type SettingsMcpListOutput,
+  type Surface,
 } from "@cloudpid/protocol/harness-tools";
 import type { SettingsMcpReloadOutput } from "./settings-mcp-outputs.ts";
 
@@ -335,14 +336,18 @@ const PUSH_WORDS = {
     "The new set could not be sent to the Environment's MCP host: it gets it at its next Context Window, or at the next change.",
 } as const;
 
-export const describeReload = (out: typeof SettingsMcpReloadOutput.Type): string => {
+export const describeReload = (
+  out: typeof SettingsMcpReloadOutput.Type,
+  surface: Surface = "session",
+): string => {
+  const owner = surface === "session" ? "user" : "owner";
   const lines = [`Reloaded the MCP servers of ${scopeWords(out.scope)}.`];
 
   if (out.repos.length === 0) lines.push("The Environment has no Repos, so no file was read.");
 
   for (const repo of out.repos) {
     lines.push(
-      `- Repo ${repo.directory}${repo.slug === null ? "" : ` (${repo.slug})`}: ${repo.path} ${OUTCOME_WORDS.get(repo.outcome) ?? repo.outcome}${repo.outcome === "unreadable" ? `${repo.error === null ? "" : ` (${repo.error}${repo.error_since === null ? "" : ` since ${when(repo.error_since)}`})`}; ${repo.kept_copy ? "its last good copy is kept, so its servers still stand (only the user's Reload drops it)" : "there is no copy of it"}` : ""}${repo.problem === null ? "" : `; the file ${repo.problem}`}.`,
+      `- Repo ${repo.directory}${repo.slug === null ? "" : ` (${repo.slug})`}: ${repo.path} ${OUTCOME_WORDS.get(repo.outcome) ?? repo.outcome}${repo.outcome === "unreadable" ? `${repo.error === null ? "" : ` (${repo.error}${repo.error_since === null ? "" : ` since ${when(repo.error_since)}`})`}; ${repo.kept_copy ? `its last good copy is kept, so its servers still stand (only the ${owner}'s Reload drops it)` : "there is no copy of it"}` : ""}${repo.problem === null ? "" : `; the file ${repo.problem}`}.`,
     );
   }
 
@@ -372,7 +377,9 @@ export const describeReload = (out: typeof SettingsMcpReloadOutput.Type): string
   );
 
   lines.push(
-    "Its tools follow from the next request of a Session in that Environment; the mcp_servers section keeps what it was for a Context Window. This is no Agent change: nothing is recorded.",
+    surface === "session"
+      ? "Its tools follow from the next request of a Session in that Environment; the mcp_servers section keeps what it was for a Context Window. This is no Agent change: nothing is recorded."
+      : "Its tools follow from the next request of a Session in that Environment. This is no Agent change: nothing is recorded.",
   );
 
   const cut = cutNote(out);

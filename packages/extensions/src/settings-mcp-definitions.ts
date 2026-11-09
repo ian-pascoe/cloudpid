@@ -38,12 +38,17 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { GLOBAL_SETTINGS_SCOPE, SettingsScope } from "@cloudpid/protocol/harness-tools";
-import { ChangeOutput, outputSchema } from "./outputs.ts";
+import {
+  GLOBAL_SETTINGS_SCOPE,
+  HARNESS_TOOLS,
+  SettingsScope,
+} from "@cloudpid/protocol/harness-tools";
+import { outputSchema } from "./outputs.ts";
 import {
   environmentWords,
   type McpCall,
   McpCommit,
+  type McpCommitService,
   NOTHING,
   refuse,
 } from "./settings-mcp-commit.ts";
@@ -393,10 +398,12 @@ const nameClash = (input: {
     : undefined;
 };
 
-/** The tools of the definition tools, over the shared ending of the changing tools. */
-export const McpDefinitions = Effect.gen(function* () {
-  const engine = yield* McpCommit;
-  const { access, settings } = engine;
+/**
+ * The tools of the definition tools, over the shared ending of the changing tools. On the endpoint's surface only `remove` is
+ * served, and it asks nobody: one that falls back to a wider server is refused as `unsupported`.
+ */
+export const mcpDefinitions = (engine: McpCommitService) => {
+  const { access, settings, owner, surface } = engine;
 
   const environmentName = (view: SettingsView): string =>
     isGlobalView(view) ? "Global" : `Environment ${JSON.stringify(view.name)}`;
@@ -903,7 +910,7 @@ export const McpDefinitions = Effect.gen(function* () {
       const source = found.value.server.source;
 
       return yield* refuse(
-        `${NOTHING}${JSON.stringify(name)} comes from ${source.kind === "repo" ? `${source.directory}'s ${source.path}` : "a Repo"}, which no tool writes: edit that file in a pull request, or copy the server with settings_mcp_add and from_repo to change it here.`,
+        `${NOTHING}${JSON.stringify(name)} comes from ${source.kind === "repo" ? `${source.directory}'s ${source.path}` : "a Repo"}, which no tool writes: edit that file in a pull request${surface === "session" ? ", or copy the server with settings_mcp_add and from_repo to change it here" : ""}.`,
       );
     });
 
@@ -952,7 +959,7 @@ export const McpDefinitions = Effect.gen(function* () {
             lead: `Removed MCP server ${input.name} ${where(view)}. ${fallback}`,
             notes: [`Removes the definition ${where(view)}; ${fallback}`],
             extra: [
-              "Its MCP sign-in, if any, stays, listed as unused, until the user signs out on the Settings page; a new server of that name and URL would use it again.",
+              `Its MCP sign-in, if any, stays, listed as unused, until the ${owner} signs out on the Settings page; a new server of that name and URL would use it again.`,
             ],
             status: false,
           });
@@ -971,7 +978,10 @@ export const McpDefinitions = Effect.gen(function* () {
     });
 
   return { add, update, remove, engine };
-});
+};
+
+/** The definition tools in a Session. */
+export const McpDefinitions = Effect.map(McpCommit, mcpDefinitions);
 
 const NOTE =
   "It always waits for the user's Approval: the call waits for their answer on a card in the Session (and a notification), with no deadline, and a decline changes nothing, the result carrying their reason (do not ask again unless they want it). The card says what the server runs or connects to, which ${NAME} values it sends and where, whom it reaches and what it replaces. A server definition is the user's to approve because it decides which code runs, where Secrets the Session never holds go (a Global entry resolves ${NAME} against each Environment's Secrets, and scope <id> writes into that Environment), what every later call sends, and what the model is told (the description) — not because the Session's own Secrets are at risk. Keep every credential as a Secret and write ${NAME}: a literal in an Authorization, Proxy-Authorization, Cookie, X-API-Key or Api-Key header, or in an env or headers key ending TOKEN, SECRET, PASSWORD, PASSWD, API_KEY, APIKEY, ACCESS_KEY or PRIVATE_KEY, is refused (secret_ask with keep \"environment\" or \"all\" keeps one, environment_variable_set a value that is not secret). At an Environment a ${NAME} must be a Secret or a Variable there or at Global, or it is refused; oauth's clientSecret and privateKey are exactly one ${NAME}. Once made, the result says the server's status, waiting up to 10 s (connected with its tool count, needs sign-in, failed with the error, still connecting), only when the change reaches this Session's Environment; a stdio server is discovered only in this Workspace's Container while it runs ('not discovered: the first call starts the Container'); no other Environment's host is woken ('not checked'). A server that needs sign-in: load mcp_sign_in_ask with tool_search and ask the user. A Repo's .pi/mcp.json is edited as a file in a pull request and is no Agent change.";
@@ -1022,10 +1032,10 @@ export const McpDefinitionTools = Effect.gen(function* () {
   });
 
   const remove = yield* defineEffectTool({
-    name: "settings_mcp_remove",
-    description: `Remove an MCP server where it is defined: Global's at "*" (every Environment loses it, but those with an entry of their own), an Environment's own entry at its id (the server then falls back to Global's of the name, or the Repo's it shadowed). A Global server at an Environment is not removed there: settings_mcp_disable switches it off for that Environment. Its MCP sign-in stays, listed as unused, until the user signs out. Removing makes no Approval necessary, unless it falls back to a server that is switched on or a tool that is not hidden (then it waits for the user's Approval as settings_mcp_enable does). A rename is an add (which waits for the user's Approval) and a remove, so an MCP sign-in never follows a new name without the user's yes. The change is recorded with your reason, and the user can see and revert it on the Settings page. A Repo's .pi/mcp.json is edited as a file in a pull request.`,
-    parameters: Schema.Struct({ scope: SettingsScope, name: ServerName, reason: Reason }),
-    structuredOutputSchema: outputSchema(ChangeOutput),
+    name: HARNESS_TOOLS.settings_mcp_remove.name,
+    description: HARNESS_TOOLS.settings_mcp_remove.session.description,
+    parameters: HARNESS_TOOLS.settings_mcp_remove.session.input,
+    structuredOutputSchema: outputSchema(HARNESS_TOOLS.settings_mcp_remove.session.output),
     executionMode: "sequential",
     replay: "safe",
     execute: ({ scope, name, reason }, api) => definitions.remove({ scope, name, reason, api }),

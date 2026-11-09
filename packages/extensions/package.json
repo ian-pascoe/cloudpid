@@ -36,6 +36,7 @@
     "./harness": "./src/harness.ts",
     "./settings": "./src/settings.ts",
     "./settings-mcp": "./src/settings-mcp.ts",
+    "./settings-endpoint": "./src/settings-endpoint.ts",
     "./settings-mcp-reads": "./src/settings-mcp-reads.ts",
     "./settings-reads": "./src/settings-reads.ts",
     "./approvals": "./src/approvals.ts",

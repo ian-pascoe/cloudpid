@@ -137,7 +137,9 @@ type EndpointMark = typeof ChangeEndpointOutput.Type;
  * `ENDPOINT_STRUCTURED_BYTES`: a script or the Toolchains can be 64 KiB on each side. `environment_get` with `field`
  * reads a value whole.
  */
-const fittedChanges = <A extends { readonly changes: EndpointChange["changes"] }>(value: A): A =>
+export const fittedChanges = <A extends { readonly changes: EndpointChange["changes"] }>(
+  value: A,
+): A =>
   fitted(value, [
     (each) => ({
       ...each,
@@ -772,7 +774,11 @@ const replayedValue = (value: Schema.Json | null): string => {
  * The text of a replayed answer: the changes the first call recorded, each with its Scope, field, values and number,
  * and that the full answer was not kept.
  */
-const replayedText = (changes: ReadonlyArray<RecordedChange>): string =>
+const replayedText = (
+  changes: ReadonlyArray<RecordedChange>,
+  /** The read that shows the current state. */
+  shows = "environment_get",
+): string =>
   endpointText(
     `Already applied by an earlier call with this request_id: ${
       changes.length === 0
@@ -785,7 +791,7 @@ const replayedText = (changes: ReadonlyArray<RecordedChange>): string =>
             ),
             "; ",
           )
-    }. The full answer wasn't kept; environment_get shows the current state.`,
+    }. The full answer wasn't kept; ${shows} shows the current state.`,
   );
 
 /** The changes of a replayed answer, as an answer gives Agent changes: what the record does not say is neutral. */
@@ -835,6 +841,26 @@ const replayedSetting: Replayed = (changes, id) => ({
   ),
   details: null,
 });
+
+/**
+ * The replayed answer of a tool that makes Agent changes at a Scope and nothing else known only to its first call: built from
+ * the records, with `shows` the read that gives the current state.
+ */
+export const replayedChange =
+  (shows: string): Replayed =>
+  (changes, id) => ({
+    text: replayedText(changes, shows),
+    structured: asOutput(
+      ChangeEndpointOutput,
+      fittedChanges({
+        scope: replayedScope(changes, id),
+        ...replayedChanges(changes),
+        unchanged: [],
+        replayed: true,
+      } satisfies EndpointMark),
+    ),
+    details: null,
+  });
 
 /** A Build mark's replayed answer. */
 const replayedMark: Replayed = (changes, id) => ({

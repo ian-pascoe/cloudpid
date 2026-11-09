@@ -85,7 +85,9 @@ export class SettingsAccessError extends Schema.TaggedError<
 >()("SettingsAccessError", {
   message: Schema.String,
   /** Why a read was refused, for the endpoint's dispatcher; none for a refusal that is only a message. */
-  code: Schema.optionalKey(Schema.Literals(["not_found", "invalid_argument"])),
+  code: Schema.optionalKey(
+    Schema.Literals(["not_found", "invalid_argument", "unsupported", "unavailable"]),
+  ),
 }) {}
 
 /** A Role's value, its model and hint. */

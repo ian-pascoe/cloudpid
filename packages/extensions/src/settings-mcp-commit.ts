@@ -19,7 +19,7 @@ import {
 } from "@cloudpid/config";
 import { callDurable } from "@cloudpid/effect-durable";
 import { decodeMcpServerValue } from "@cloudpid/config";
-import { GLOBAL_SETTINGS_SCOPE } from "@cloudpid/protocol/harness-tools";
+import { GLOBAL_SETTINGS_SCOPE, type Surface } from "@cloudpid/protocol/harness-tools";
 import { entryReferences, entryTexts } from "./settings-mcp-entry.ts";
 import type {
   AgentChange,
@@ -43,6 +43,7 @@ import {
   approvedAlready,
   askedBefore,
   Approvals,
+  type ApprovalsService,
   type ApprovalChange,
   MAX_APPROVAL_NOTE,
   MAX_APPROVAL_NOTES,
@@ -61,7 +62,9 @@ import {
   isGlobalView,
   SettingsAccess,
   SettingsAccessError,
+  type SettingsAccessService,
   SettingsChanges,
+  type settingsChanges,
   type SettingsFieldChange,
   settingsTarget,
   type SettingsView,
@@ -74,10 +77,17 @@ import {
   STATUS_WAIT_MS,
 } from "./settings-mcp-status.ts";
 
-/** The call that changes an MCP server: its task and conversation, and, in a Session, the running details it may send. */
-export type McpCall = ApprovalCall & { readonly details?: ToolExecutionApi["details"] | undefined };
+/**
+ * The call that changes an MCP server: its task and conversation, and, in a Session, the running details it may send. None on
+ * the endpoint, which has no Session's task to ask the owner for, and makes only the changes that ask nobody.
+ */
+export type McpCall =
+  | (ApprovalCall & { readonly details?: ToolExecutionApi["details"] | undefined })
+  | undefined;
 
-export const refuse = (message: string) => SettingsAccessError.make({ message });
+/** A refusal the caller reads: on the endpoint, `invalid_argument` with these words. */
+export const refuse = (message: string) =>
+  SettingsAccessError.make({ message, code: "invalid_argument" });
 
 /** How every refusal begins. */
 export const NOTHING = "Nothing was changed: ";
@@ -297,12 +307,32 @@ export type McpCommitInput = {
   readonly declined: string;
 };
 
-/** The shared ending of the tools that change servers, over the Session's access to the Registry, the hosts and the Approvals. */
-export const McpCommit = Effect.gen(function* () {
-  const access = yield* SettingsMcpAccess;
-  const approvals = yield* Approvals;
-  const settings = yield* SettingsAccess;
-  const { apply, plain } = yield* SettingsChanges;
+/** What the shared ending of the tools that change servers is built over. */
+export type McpCommitServices = {
+  /** Where the change is made from: a Session's words say "this Session" and "the user"; the endpoint's neither. */
+  readonly surface: Surface;
+  readonly access: SettingsMcpAccessService;
+  readonly settings: SettingsAccessService;
+  /** The Settings' change machinery over the same surface (`settingsChanges`). */
+  readonly changes: Pick<ReturnType<typeof settingsChanges>, "apply" | "plain">;
+  /** The owner's Approvals: none on the endpoint, which makes only the changes that ask nobody. */
+  readonly approvals: ApprovalsService | undefined;
+};
+
+/**
+ * The shared ending of the tools that change servers, over `services`. On the endpoint's surface a change that would ask
+ * the owner (a definition, or a widening) is refused as `unsupported` with nothing changed, and one that narrows is made
+ * and pushed to the hosts it reaches before the answer; the words say the owner and name no Session.
+ */
+export const mcpCommit = ({
+  surface,
+  access,
+  settings,
+  changes: { apply, plain },
+  approvals,
+}: McpCommitServices) => {
+  /** Whom the words call the one who reads the Settings page. */
+  const owner = surface === "session" ? "user" : "owner";
 
   /** Send each Environment the change reaches its new set; the names of those it could not be sent to. */
   const push = (reached: ReadonlyArray<{ readonly id: string; readonly name: string }>) =>
@@ -352,7 +382,10 @@ export const McpCommit = Effect.gen(function* () {
       const now =
         nowView === undefined ? undefined : Option.getOrUndefined(Arr.head(nowView.servers));
 
-      const own = yield* access.own.pipe(Effect.orElseSucceed(() => null));
+      // The endpoint has no Session, so no Environment is its own.
+      const own =
+        surface === "endpoint" ? null : yield* access.own.pipe(Effect.orElseSucceed(() => null));
+
       const reachesOwn = own !== null && Arr.some(reached, (each) => each.id === own);
       const recorded = Option.getOrUndefined(Arr.head(made.changes));
 
@@ -401,9 +434,13 @@ export const McpCommit = Effect.gen(function* () {
         [
           ...input.wording(now, recorded),
           reach,
-          reachesOwn
-            ? "This Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request."
-            : "This Session's Environment is not one of them, so the change does not reach this Session; the Sessions of the Environments it reaches get it at their next request.",
+          ...(surface === "endpoint"
+            ? ["The Sessions of the Environments it reaches get it at their next request."]
+            : [
+                reachesOwn
+                  ? "This Session's Environment is one of them: the server's tools follow from this Session's next request once discovered (the mcp_servers section of the system prompt stays as it is for this Context Window, and a notice says so); other Sessions get it at their next request."
+                  : "This Session's Environment is not one of them, so the change does not reach this Session; the Sessions of the Environments it reaches get it at their next request.",
+              ]),
           unsent.length === 0
             ? reached.length === 0
               ? "No MCP host was sent anything."
@@ -413,7 +450,9 @@ export const McpCommit = Effect.gen(function* () {
           ...input.extra,
           made.approved
             ? "The change is recorded as approved, with your reason; the user can see and revert it on the Settings page."
-            : RECORDED,
+            : surface === "session"
+              ? RECORDED
+              : `The change is recorded with your reason; the ${owner} can see and revert it on the Settings page.`,
         ],
         "\n",
       );
@@ -466,9 +505,29 @@ export const McpCommit = Effect.gen(function* () {
       const asks = input.always || widens || rerunning || check === null;
       const held: HeldStatus = { status: null };
 
+      // Nothing on the endpoint asks the owner: a change that would is not made there, and says so.
+      const asking =
+        surface === "session" && approvals !== undefined && api !== undefined
+          ? { approvals, api }
+          : undefined;
+
+      const notHere = SettingsAccessError.make({
+        message: `${NOTHING}${
+          check !== null && widens
+            ? `it would make something reachable that is not (${Arr.join(
+                Arr.flatMap(check.environments, (each) => Arr.map(each.widening, wideningWords)),
+                "; ",
+              )}), which waits for the owner's Approval and is not made here`
+            : "it waits for the owner's Approval, which is not asked here"
+        }. The owner makes it on the Settings page.`,
+        code: "unsupported",
+      });
+
+      if (asks && asking === undefined) return yield* notHere;
+
       /** The details of the call while the status is waited for: the change made, and the server connecting. */
       const running = (approved: boolean, made: ReadonlyArray<AgentChange>) => {
-        const send = api.details;
+        const send = api?.details;
         const approvedDetails = approved ? { approval: { approved: true } } : {};
 
         if (send === undefined) return () => Effect.void;
@@ -516,7 +575,7 @@ export const McpCommit = Effect.gen(function* () {
           texts:
             approved && written !== null ? [...input.texts, ...entryTexts(written)] : input.texts,
           reason: input.reason,
-          conversation: api.conversationId,
+          conversation: api?.conversationId,
           approved: approved ? true : undefined,
           guard,
           unchanged: approved
@@ -557,6 +616,8 @@ export const McpCommit = Effect.gen(function* () {
         return withStatus(result, held.status);
       }
 
+      if (asking === undefined) return yield* notHere;
+
       const expected: Mutable<{
         value: Schema.Json | null;
         inherited?: boolean;
@@ -582,7 +643,7 @@ export const McpCommit = Effect.gen(function* () {
         expected,
       };
 
-      const result = yield* withApproval(approvals, api, asked, (answer) =>
+      const result = yield* withApproval(asking.approvals, asking.api, asked, (answer) =>
         Effect.gen(function* () {
           if (!answer.approved) {
             return declinedWith(answer, input.declined, (approval) =>
@@ -633,8 +694,11 @@ export const McpCommit = Effect.gen(function* () {
       return withStatus(result, held.status);
     });
 
-  /** Whether the call is a rerun that asked already. */
-  const rerun = (api: ApprovalCall) => askedBefore(approvals, api);
+  /** Whether the call is a rerun that asked already: none on the endpoint, which never asks. */
+  const rerun = (api: ApprovalCall | undefined) =>
+    approvals === undefined || api === undefined
+      ? Effect.succeed(false)
+      : askedBefore(approvals, api);
 
   /**
    * The input of a call that reruns without being able to read the state again (the server it changed is gone, or its name
@@ -728,6 +792,9 @@ export const McpCommit = Effect.gen(function* () {
     readonly view: SettingsMcpView | undefined;
   }) =>
     Effect.gen(function* () {
+      // The card's notes: the endpoint asks nobody, so it has no card.
+      if (surface === "endpoint") return Arr.empty<string>();
+
       const { check } = input;
       const reached = Arr.filter(check.environments, (each) => each.reached);
       const missed = Arr.filter(check.environments, (each) => !each.reached);
@@ -780,10 +847,31 @@ export const McpCommit = Effect.gen(function* () {
   const plainBeforeAsking = (reason: string, texts: ReadonlyArray<string>) =>
     plain(reason, texts, "Nothing was asked or saved");
 
-  return { access, settings, plain: plainBeforeAsking, commit, rerun, resumeOf, run, reachNotes };
+  return {
+    surface,
+    owner,
+    access,
+    settings,
+    plain: plainBeforeAsking,
+    commit,
+    rerun,
+    resumeOf,
+    run,
+    reachNotes,
+  };
+};
+
+/** The shared ending in a Session: over its access to the Registry, the hosts and the Approvals. */
+export const McpCommit = Effect.gen(function* () {
+  const access = yield* SettingsMcpAccess;
+  const approvals = yield* Approvals;
+  const settings = yield* SettingsAccess;
+  const changes = yield* SettingsChanges;
+
+  return mcpCommit({ surface: "session", access, settings, changes, approvals });
 });
 
-export type McpCommitService = Effect.Success<typeof McpCommit>;
+export type McpCommitService = ReturnType<typeof mcpCommit>;
 
 /** What a call's preparation comes to: a result that needs no change, or the change to make. */
 export type Prepared<D> =

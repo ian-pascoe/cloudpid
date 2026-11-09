@@ -37,8 +37,12 @@ export type HarnessRead<A, E> = (args: A, surface: Surface) => Effect.Effect<Har
  * (`AgentChangeLog`); none when nothing was recorded. On the endpoint the dispatcher reads the changes from `structured`.
  */
 export type HarnessWriteAnswer = HarnessAnswer & {
-  readonly logged: RunChange | undefined;
+  readonly logged: RunChange | ReadonlyArray<RunChange> | undefined;
 };
+
+/** The Agent changes a write's answer says it made, for the Session's wrapper to tell the Run's Notification of. */
+export const loggedOf = (logged: HarnessWriteAnswer["logged"]): ReadonlyArray<RunChange> =>
+  logged === undefined ? [] : "tool" in logged ? [logged] : logged;
 
 /**
  * A changing tool's core: its arguments, the surface, and the conversation that called it (a Session's; none on the
