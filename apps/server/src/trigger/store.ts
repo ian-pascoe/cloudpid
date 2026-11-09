@@ -54,14 +54,17 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
   (sql) => {
     sql.exec("ALTER TABLE trigger_pending ADD COLUMN coalesced INTEGER");
   },
-  // 3: the webhook parts, all additive: a pending Fire's `payload` (JSON `FirePayload` without its body) and `body`
-  // (the body, when it was kept); `trigger_secrets`, the one row of the sealed token and Signing secret (JSON
+  // 3: the webhook parts, all additive: a pending Fire's `payload` (JSON `FirePayload` without its body), `body` (the
+  // body's bytes as received, when kept), `revision` (the revision of the definition whose `match` the delivery passed)
+  // and `facts` (JSON, when the body was not kept: what that `match` read of it, nested by path); `trigger_secrets`, the one row of the sealed token and Signing secret (JSON
   // `SealedValue`s) with the token's keyed hash; `trigger_counts`, the deliveries refused or filtered, per UTC day and
   // outcome; `trigger_hook`, the one row with the time of the last authentic delivery, of GitHub's last ping, and the
-  // last accepted delivery's payload and body (what Fire again sends).
+  // last accepted delivery's payload and body bytes (what Fire again sends).
   (sql) => {
     sql.exec("ALTER TABLE trigger_pending ADD COLUMN payload TEXT");
-    sql.exec("ALTER TABLE trigger_pending ADD COLUMN body TEXT");
+    sql.exec("ALTER TABLE trigger_pending ADD COLUMN body BLOB");
+    sql.exec("ALTER TABLE trigger_pending ADD COLUMN revision INTEGER");
+    sql.exec("ALTER TABLE trigger_pending ADD COLUMN facts TEXT");
     sql.exec(`CREATE TABLE trigger_secrets (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       token TEXT NOT NULL,
@@ -79,10 +82,13 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       last_delivery_at INTEGER,
       ping_at INTEGER,
       last_payload TEXT,
-      last_body TEXT
+      last_body BLOB
     ) STRICT`);
   },
 ];
+
+/** How long a delivery's Fire is held against a repeat once it is in the fire log: the Registry's memory of its key. */
+export const DEDUPE_MS = 24 * 60 * 60_000;
 
 /** How many UTC days the per-day counts of refused and filtered deliveries are kept, today's included. */
 export const COUNT_DAYS = 30;
@@ -103,9 +109,21 @@ export type HookState = {
   readonly pingAt: number | undefined;
 };
 
+/** What a webhook delivery gave a pending Fire: its payload (without the body), the body's bytes when kept, and what its `match` passed. */
+export type KeptDelivery = {
+  readonly payload: FirePayload;
+  /** The body as received, when it was within `MAX_KEPT_BODY_BYTES`. */
+  readonly body?: Uint8Array | undefined;
+  /** The revision of the definition whose `match` the delivery passed: the Fire is admitted at it, and checked again once stale. */
+  readonly revision?: number | undefined;
+  /** What that `match` read of a body that was not kept, nested by path, so a later `match` can be checked as far as it goes. */
+  readonly facts?: Schema.Json | undefined;
+};
+
 /**
  * A Fire waiting in the object: its key, what made it, when to try it next, and the Session `admitFire` registered for
- * it, once it did (an admitted Fire is completed whatever comes after: a pause, a removal).
+ * it, once it did (an admitted Fire is completed whatever comes after: a pause, a removal). A webhook's carries what the
+ * delivery gave it (`delivery`).
  */
 export type PendingFire = {
   readonly key: string;
@@ -120,8 +138,7 @@ export type PendingFire = {
    * while it does not wait.
    */
   readonly waiting: { readonly merged: number } | undefined;
-  /** What the delivery gave a webhook Fire (and Fire again's), with its body when it was kept. */
-  readonly payload: FirePayload | undefined;
+  readonly delivery: KeptDelivery | undefined;
 };
 
 type MetaRow = { readonly definition: string; readonly cursor: number | null };
@@ -135,7 +152,9 @@ type PendingRow = {
   readonly session: string | null;
   readonly coalesced: number | null;
   readonly payload: string | null;
-  readonly body: string | null;
+  readonly body: ArrayBuffer | null;
+  readonly revision: number | null;
+  readonly facts: string | null;
 };
 
 type FireRow = {
@@ -159,26 +178,43 @@ const decodePayload = Schema.decodeUnknownOption(Schema.fromJsonString(FirePaylo
 
 const decodeSealed = Schema.decodeUnknownOption(Schema.fromJsonString(SealedValue));
 
-/** A kept payload and its body as the Fire's `FirePayload`, or undefined when there is none or it no longer reads. */
-const payloadOf = (payload: string | null, body: string | null): FirePayload | undefined => {
-  const read = payload === null ? undefined : Option.getOrUndefined(decodePayload(payload));
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
 
-  if (read === undefined) return undefined;
+/** A kept payload (without its body), or undefined when there is none or it no longer reads. */
+const payloadOf = (payload: string | null): FirePayload | undefined =>
+  payload === null ? undefined : Option.getOrUndefined(decodePayload(payload));
 
-  return body === null ? read : { ...read, body };
+/** A kept body's bytes, or undefined for none. */
+const bodyOf = (body: ArrayBuffer | null): Uint8Array<ArrayBuffer> | undefined =>
+  body === null ? undefined : new Uint8Array(body);
+
+/** `payload` as its row keeps it: the JSON without a body (a `FirePayload` that has one is stored without it). */
+const payloadJson = (payload: FirePayload): string => {
+  const { body: _body, ...rest } = payload;
+
+  return JSON.stringify(rest);
 };
 
-/** `payload` as its row keeps it: the JSON without the body, and the body apart. */
-const payloadRow = (payload: FirePayload | undefined): [string | null, string | null] => {
-  if (payload === undefined) return [null, null];
-
-  const { body, ...rest } = payload;
-
-  return [JSON.stringify(rest), body ?? null];
-};
+/** `body` as a value a row takes: its own bytes, not a view of a larger buffer. */
+const blobOf = (body: Uint8Array | undefined): ArrayBuffer | null =>
+  body === undefined ? null : Uint8Array.from(body).buffer;
 
 /** The UTC day of `at` (ms), `YYYY-MM-DD`. */
 export const dayOf = (at: number): string => new Date(at).toISOString().slice(0, 10);
+
+/** The delivery a pending row keeps, or undefined for a Fire that has none (or one that no longer reads). */
+const deliveryOf = (row: PendingRow): KeptDelivery | undefined => {
+  const payload = payloadOf(row.payload);
+
+  if (payload === undefined) return undefined;
+
+  return {
+    payload,
+    body: bodyOf(row.body),
+    revision: row.revision ?? undefined,
+    facts: row.facts === null ? undefined : Option.getOrUndefined(decodeJson(row.facts)),
+  };
+};
 
 const toPending = (row: PendingRow): PendingFire => ({
   key: row.key,
@@ -188,7 +224,7 @@ const toPending = (row: PendingRow): PendingFire => ({
   attempts: row.attempts,
   session: row.session ?? undefined,
   waiting: row.coalesced === null ? undefined : { merged: row.coalesced },
-  payload: payloadOf(row.payload, row.body),
+  delivery: deliveryOf(row),
 });
 
 /**
@@ -239,30 +275,45 @@ export const openTriggerStore = (storage: MigrationStorage) => {
         toPending,
       ),
 
-    /** Keep a pending Fire (with a webhook's `payload`), unless one of its key is pending already. */
-    enqueue: (key: string, source: FireSource, now: number, payload?: FirePayload): void => {
-      const [kept, body] = payloadRow(payload);
-
+    /** Keep a pending Fire (with a webhook's `delivery`), unless one of its key is pending already. */
+    enqueue: (key: string, source: FireSource, now: number, delivery?: KeptDelivery): void => {
       sql.exec(
-        `INSERT INTO trigger_pending (key, source, queued_at, next_try_at, payload, body) VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO trigger_pending (key, source, queued_at, next_try_at, payload, body, revision, facts)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (key) DO NOTHING`,
         key,
         JSON.stringify(source),
         now,
         now,
-        kept,
-        body,
+        delivery === undefined ? null : payloadJson(delivery.payload),
+        blobOf(delivery?.body),
+        delivery?.revision ?? null,
+        delivery?.facts === undefined ? null : JSON.stringify(delivery.facts),
       );
     },
 
-    /** Whether a Fire of `key` is pending, or in the fire log. */
-    holds: (key: string): boolean =>
+    /** Drop pending Fire `key`, recording nothing (a delivery that no longer matches). */
+    drop: (key: string): void => {
+      sql.exec("DELETE FROM trigger_pending WHERE key = ?", key);
+    },
+
+    /** Pending Fire `key`'s delivery passes the `match` of revision `revision` now. */
+    matched: (key: string, revision: number): void => {
+      sql.exec("UPDATE trigger_pending SET revision = ? WHERE key = ?", revision, key);
+    },
+
+    /**
+     * Whether a Fire of `key` is pending, or was recorded in the last `DEDUPE_MS` before `now`: a sender's redelivery
+     * a day later fires again, as the Registry's memory of the key (`REQUEST_MEMORY_MS`) ends too.
+     */
+    holds: (key: string, now: number): boolean =>
       sql
         .exec<{ found: number }>(
           `SELECT EXISTS (SELECT 1 FROM trigger_pending WHERE key = ?)
-             OR EXISTS (SELECT 1 FROM trigger_fires WHERE key = ?) AS found`,
+             OR EXISTS (SELECT 1 FROM trigger_fires WHERE key = ? AND at > ?) AS found`,
           key,
           key,
+          now - DEDUPE_MS,
         )
         .one().found === 1,
 
@@ -318,8 +369,11 @@ export const openTriggerStore = (storage: MigrationStorage) => {
       });
     },
 
-    /** The sealed token and Signing secret, or undefined while the object holds none (or they no longer read). */
-    secrets: (): KeptSecrets | undefined => {
+    /**
+     * The sealed token and Signing secret; undefined while the object holds no row, and `unreadable` for a row that is
+     * there and no longer reads (a later version's shape): it is never replaced but by the owner's rotation.
+     */
+    secrets: (): KeptSecrets | "unreadable" | undefined => {
       const row = sql
         .exec<{ token: string; secret: string; token_hash: string }>(
           "SELECT token, secret, token_hash FROM trigger_secrets WHERE id = 1",
@@ -333,7 +387,7 @@ export const openTriggerStore = (storage: MigrationStorage) => {
 
       return Option.isSome(token) && Option.isSome(secret)
         ? { token: token.value, secret: secret.value, tokenHash: row.token_hash }
-        : undefined;
+        : "unreadable";
     },
 
     /** Keep `secrets` as the object's token and Signing secret, in place of any it held. */
@@ -394,27 +448,29 @@ export const openTriggerStore = (storage: MigrationStorage) => {
       );
     },
 
-    /** Keep `payload` (and its body, when it has one) as the last accepted delivery, for Fire again. */
-    keepLast: (payload: FirePayload): void => {
-      const [kept, body] = payloadRow(payload);
-
+    /** Keep `payload` (without its body) and `body`, when it was kept, as the last accepted delivery, for Fire again. */
+    keepLast: (payload: FirePayload, body: Uint8Array | undefined): void => {
       sql.exec(
         `INSERT INTO trigger_hook (id, last_payload, last_body) VALUES (1, ?, ?)
            ON CONFLICT (id) DO UPDATE SET last_payload = excluded.last_payload, last_body = excluded.last_body`,
-        kept,
-        body,
+        payloadJson(payload),
+        blobOf(body),
       );
     },
 
-    /** The last accepted delivery's payload, or undefined while none was accepted. */
-    last: (): FirePayload | undefined => {
+    /** The last accepted delivery's payload and body, or undefined while none was accepted. */
+    last: ():
+      | { readonly payload: FirePayload; readonly body: Uint8Array | undefined }
+      | undefined => {
       const row = sql
-        .exec<{ last_payload: string | null; last_body: string | null }>(
+        .exec<{ last_payload: string | null; last_body: ArrayBuffer | null }>(
           "SELECT last_payload, last_body FROM trigger_hook WHERE id = 1",
         )
         .toArray()[0];
 
-      return row === undefined ? undefined : payloadOf(row.last_payload, row.last_body);
+      const payload = payloadOf(row?.last_payload ?? null);
+
+      return payload === undefined ? undefined : { payload, body: bodyOf(row?.last_body ?? null) };
     },
 
     /** The fire log, newest first, at most `limit` records. */

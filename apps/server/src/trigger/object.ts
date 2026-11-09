@@ -22,6 +22,7 @@ import {
   type FireRequest,
   type FireSource,
   matchesDelivery,
+  matchFacts,
   MAX_DELIVERY_BODY_BYTES,
   MAX_KEPT_BODY_BYTES,
   nextFires,
@@ -30,6 +31,7 @@ import {
   senderText,
   type SubmitResult,
   TriggerDefinition,
+  type TriggerRotation,
   webhookOf,
 } from "@cloudpid/protocol";
 import * as Arr from "effect/Array";
@@ -44,9 +46,9 @@ import type { FireAdmission, FireAdmitted } from "../registry/triggers.ts";
 import {
   actionOf,
   bodyOf,
+  botGuard,
   contentKind,
   eventOf,
-  isBotSender,
   keyedDelivery,
   senderLogin,
 } from "./delivery.ts";
@@ -59,6 +61,7 @@ import {
 import {
   type DayCount,
   hasTriggerStore,
+  type KeptDelivery,
   type KeptSecrets,
   openTriggerStore,
   type PendingFire,
@@ -163,6 +166,15 @@ export type DeliveryAnswer = {
 /** A webhook Trigger's token and Signing secret, as the owner reads them (a `standard` secret as `whsec_<base64>`). */
 export type HookSecrets = { readonly token: string; readonly secret: string };
 
+/**
+ * What `reveal` and `rotate` answer: the secrets, `none` for an object that holds no webhook Trigger, or `unreadable`
+ * for one whose kept secrets no longer read (never replaced but by the owner's rotation).
+ */
+export type HookAnswer =
+  | { readonly status: "ok"; readonly secrets: HookSecrets }
+  | { readonly status: "none" }
+  | { readonly status: "unreadable" };
+
 /** What the object says of the deliveries it took: the last 30 days' counts, the last delivery's time, GitHub's ping's. */
 export type DeliveryStats = {
   readonly counts: ReadonlyArray<DayCount>;
@@ -201,15 +213,16 @@ export type TriggerHandlers = {
   readonly deliver: (delivery: Delivery) => Effect.Effect<DeliveryAnswer>;
   /** The deliveries the object took: the counts of the last 30 days, the last delivery's time and GitHub's ping's. */
   readonly deliveries: () => Effect.Effect<DeliveryStats>;
-  /** The Trigger's token and Signing secret, or null for an object with none (not a webhook Trigger, not yet synced). */
-  readonly reveal: () => Effect.Effect<HookSecrets | null, TriggerUnreachable>;
+  /**
+   * The Trigger's token and Signing secret. A webhook Trigger whose object holds none yet (its creation did not finish)
+   * makes them now.
+   */
+  readonly reveal: () => Effect.Effect<HookAnswer, TriggerUnreachable>;
   /**
    * Make a new token (`url`) or Signing secret (`secret`) at once: the old one stops working at that moment. Answers the
-   * secrets as `reveal` does, null for an object with none.
+   * secrets as `reveal` does. Secrets that no longer read are replaced, both of them, whichever is asked.
    */
-  readonly rotate: (
-    what: "url" | "secret",
-  ) => Effect.Effect<HookSecrets | null, TriggerUnreachable>;
+  readonly rotate: (what: TriggerRotation) => Effect.Effect<HookAnswer, TriggerUnreachable>;
   /** The fire log, newest first. */
   readonly fireLog: (input?: {
     readonly limit?: number;
@@ -255,6 +268,9 @@ const encoder = new TextEncoder();
 
 const decoder = new TextDecoder();
 
+/** Decodes a kept body as it is sent and shown: UTF-8, a byte order mark kept (the file holds the body as received). */
+const bodyDecoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+
 /** 256 random bits as 43 base64url characters: a Trigger URL's token, and a Signing secret. */
 const randomSecret = (): string =>
   btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
@@ -263,8 +279,9 @@ const randomSecret = (): string =>
     .replace(/=+$/u, "");
 
 /** Whether `a` and `b` are the same sealed token and Signing secret. */
-const sameSecrets = (a: KeptSecrets | undefined, b: KeptSecrets): boolean =>
+const sameSecrets = (a: KeptSecrets | "unreadable" | undefined, b: KeptSecrets): boolean =>
   a !== undefined &&
+  a !== "unreadable" &&
   a.tokenHash === b.tokenHash &&
   a.token.ciphertext === b.token.ciphertext &&
   a.secret.ciphertext === b.secret.ciphertext;
@@ -390,7 +407,9 @@ export const triggerHandlers = (options: {
     vaulted(
       Effect.gen(function* () {
         const vault = yield* ports.vault;
-        const kept = store().secrets();
+        const held = store().secrets();
+        // Rotation is the one way to replace secrets that no longer read: it makes both.
+        const kept = held === "unreadable" ? undefined : held;
         const text = randomSecret();
 
         const token =
@@ -417,19 +436,33 @@ export const triggerHandlers = (options: {
           ),
         );
 
-  /** The token and Signing secret as the owner reads them, or null for an object that has none. */
-  const revealed = (): Effect.Effect<HookSecrets | null, TriggerUnreachable> =>
+  /**
+   * The token and Signing secret as the owner reads them. A webhook Trigger that holds none (its creation did not
+   * finish) makes them first; one whose kept secrets no longer read answers `unreadable`, and keeps them.
+   */
+  const revealed = (): Effect.Effect<HookAnswer, TriggerUnreachable> =>
     Effect.gen(function* () {
-      const kept = existing()?.secrets();
       const webhook = webhookOf(existing()?.definition());
 
-      if (kept === undefined || webhook === undefined) return null;
+      if (webhook === undefined) return { status: "none" } as const;
+
+      if (store().secrets() === undefined) yield* renew({ token: true, secret: true });
+
+      const kept = store().secrets();
+
+      if (kept === undefined || kept === "unreadable") return { status: "unreadable" } as const;
 
       const vault = yield* ports.vault;
       const token = yield* vault.open(tokenBinding, kept.token);
       const secret = yield* vault.open(secretBinding, kept.secret);
 
-      return { token, secret: webhook.format === "standard" ? standardSecretText(secret) : secret };
+      return {
+        status: "ok",
+        secrets: {
+          token,
+          secret: webhook.format === "standard" ? standardSecretText(secret) : secret,
+        },
+      } as const;
     }).pipe(vaulted);
 
   /**
@@ -528,6 +561,46 @@ export const triggerHandlers = (options: {
           Effect.andThen(Effect.annotateCurrentSpan("trigger.outcome", "retry")),
         );
 
+  /** What the delivery gave a Fire, as the Session's `fire` takes it: its payload with the body decoded, when one was kept. */
+  const payloadOf = (delivery: KeptDelivery): FirePayload =>
+    delivery.body === undefined
+      ? delivery.payload
+      : { ...delivery.payload, body: bodyDecoder.decode(delivery.body) };
+
+  /**
+   * Whether a kept delivery passes the `match` of `definition`: its body as it was kept, or, for one that was not, the
+   * facts its earlier `match` read of it (a path it did not keep never matches).
+   */
+  const passes = (definition: TriggerDefinition, delivery: KeptDelivery): boolean => {
+    const webhook = webhookOf(definition);
+
+    if (webhook === undefined) return true;
+
+    const kind = contentKind(delivery.payload.contentType) ?? "text";
+
+    const body =
+      delivery.body === undefined ? delivery.facts : bodyOf(kind, decoder.decode(delivery.body));
+
+    return matchesDelivery(webhook.match, { event: delivery.payload.event, body });
+  };
+
+  /**
+   * A pending delivery that no longer passes the `match` of the definition it was admitted against (changed since it was
+   * accepted): counted `filtered` for the day and dropped, as if it had been filtered when it arrived.
+   */
+  const unmatched = (pending: PendingFire, at: number) =>
+    Effect.sync(() => {
+      store().drop(pending.key);
+      store().count("filtered", at);
+    }).pipe(
+      Effect.andThen(
+        Effect.logInfo("A pending delivery no longer matches its Trigger").pipe(
+          Effect.annotateLogs({ "trigger.id": id, "trigger.fire": pending.key }),
+        ),
+      ),
+      Effect.andThen(Effect.annotateCurrentSpan("trigger.outcome", "filtered")),
+    );
+
   /** The Session's `fire` for `pending` of `definition` at `at`. */
   const requestOf = (
     definition: TriggerDefinition,
@@ -547,7 +620,7 @@ export const triggerHandlers = (options: {
     }
 
     // A manual Fire that carries a payload is the owner's Fire again: the last delivery, sent once more.
-    if (pending.source.type === "manual" && pending.payload !== undefined) header.again = true;
+    if (pending.source.type === "manual" && pending.delivery !== undefined) header.again = true;
 
     const request: Types.Mutable<FireRequest> = {
       trigger: { id: definition.id, name: definition.name },
@@ -556,7 +629,7 @@ export const triggerHandlers = (options: {
       header,
     };
 
-    if (pending.payload !== undefined) request.payload = pending.payload;
+    if (pending.delivery !== undefined) request.payload = payloadOf(pending.delivery);
 
     if (definition.model !== undefined) request.model = definition.model;
 
@@ -573,6 +646,9 @@ export const triggerHandlers = (options: {
    */
   const drain = (pending: PendingFire, at: number, retryCount: number): Effect.Effect<boolean> =>
     Effect.gen(function* () {
+      // The revision whose `match` a delivery passed: it is admitted at that, never at a later one it was not checked against.
+      let matched = pending.delivery?.revision;
+
       for (let refresh = 0; refresh < MAX_STALE_REFRESHES; refresh++) {
         const definition = store().definition();
 
@@ -601,13 +677,15 @@ export const triggerHandlers = (options: {
 
         const admission: Types.Mutable<FireAdmission> = {
           trigger: id,
-          revision: definition.revision,
+          revision: matched ?? definition.revision,
           requestId: pending.key,
         };
 
         if (pending.source.type === "schedule") admission.scheduledAt = pending.source.scheduledAt;
 
-        if (pending.payload?.event !== undefined) admission.event = pending.payload.event;
+        if (pending.delivery?.payload.event !== undefined) {
+          admission.event = pending.delivery.payload.event;
+        }
 
         const admitted = yield* Effect.result(ports.admit(admission));
 
@@ -631,6 +709,20 @@ export const triggerHandlers = (options: {
             }
 
             if (!(yield* adopt(current.value, at))) return false;
+
+            // The delivery was checked against the older `match`: the one now current decides.
+            if (matched !== undefined && pending.delivery !== undefined) {
+              const next = store().definition();
+
+              if (next !== undefined && !passes(next, pending.delivery)) {
+                yield* unmatched(pending, at);
+
+                return true;
+              }
+
+              matched = next?.revision ?? current.value.revision;
+              store().matched(pending.key, matched);
+            }
 
             continue;
           }
@@ -823,7 +915,7 @@ export const triggerHandlers = (options: {
       const key = `${id}:manual:${input?.key ?? newManualId()}`;
 
       // Asked again: the Fire is already pending or settled.
-      if (existing()?.holds(key) === true) return { status: "queued", key } as const;
+      if (existing()?.holds(key, at) === true) return { status: "queued", key } as const;
 
       const definition = yield* ports.definition(id);
 
@@ -836,6 +928,18 @@ export const triggerHandlers = (options: {
       return { status: "ready", key, at } as const;
     });
 
+  /** Keep a manual Fire that is `ready` (with the delivery Fire again sends) and wake the alarm for it. */
+  const enqueueManual = (
+    ready: { readonly key: string; readonly at: number },
+    delivery?: KeptDelivery,
+  ) =>
+    Effect.gen(function* () {
+      store().enqueue(ready.key, { type: "manual" }, ready.at, delivery);
+      yield* Effect.promise(() => storage.setAlarm(ready.at));
+
+      return { status: "queued", key: ready.key } as const;
+    });
+
   /** What `examine` found of a delivery, to be kept by `deliver`. */
   type Verdict =
     | {
@@ -843,14 +947,18 @@ export const triggerHandlers = (options: {
         readonly status: 401 | 404 | 413 | 415;
         readonly outcome: DeliveryOutcome;
       }
-    | { readonly type: "filtered"; readonly event: string | undefined }
+    | {
+        readonly type: "filtered";
+        readonly outcome: "filtered" | "bot_unverified";
+        readonly event: string | undefined;
+      }
     | { readonly type: "ping" }
     | { readonly type: "unavailable" }
     | {
         readonly type: "accepted";
         readonly key: string;
         readonly source: FireSource;
-        readonly payload: FirePayload;
+        readonly delivery: KeptDelivery;
       };
 
   const refused = (status: 401 | 404 | 413 | 415, outcome: DeliveryOutcome): Verdict => ({
@@ -861,11 +969,12 @@ export const triggerHandlers = (options: {
 
   /**
    * Check `delivery` against what the object keeps, in order: the token (by its keyed hash, in constant time), the size,
-   * the signature, GitHub's ping, the content type, the bot-loop guard and `match`. Reads and writes nothing of the
-   * object's.
+   * the signature, GitHub's ping, the content type, the bot-loop guard and `match` (of the definition at `revision`,
+   * which the accepted delivery keeps). Reads and writes nothing of the object's.
    */
   const examine = (
     webhook: NonNullable<ReturnType<typeof webhookOf>>,
+    revision: number,
     secrets: KeptSecrets,
     delivery: Delivery,
     at: number,
@@ -912,16 +1021,21 @@ export const triggerHandlers = (options: {
         const login = senderLogin(parsed);
 
         // A bot's login ends `[bot]`: only then is GitHub asked for the App's own.
-        if (
-          webhook.format === "github" &&
-          login?.toLowerCase().endsWith("[bot]") === true &&
-          isBotSender(login, yield* ports.botLogin)
-        ) {
-          return { type: "filtered", event } as const;
+        const guard =
+          webhook.format === "github" && login?.toLowerCase().endsWith("[bot]") === true
+            ? botGuard(login, yield* ports.botLogin)
+            : "pass";
+
+        if (guard === "own") return { type: "filtered", outcome: "filtered", event } as const;
+
+        if (guard === "unverified") {
+          yield* Effect.logWarning("A bot's delivery was dropped: the App's own bot is not known");
+
+          return { type: "filtered", outcome: "bot_unverified", event } as const;
         }
 
         if (!matchesDelivery(webhook.match, { event, body: parsed })) {
-          return { type: "filtered", event } as const;
+          return { type: "filtered", outcome: "filtered", event } as const;
         }
 
         const sent =
@@ -932,10 +1046,8 @@ export const triggerHandlers = (options: {
         const delivered = keyedDelivery(sent);
         const action = actionOf(parsed);
 
-        // The body is kept as the text it decodes to, which a body of invalid bytes makes longer than it came.
-        const kept =
-          delivery.size <= MAX_KEPT_BODY_BYTES &&
-          encoder.encode(text).length <= MAX_KEPT_BODY_BYTES;
+        // The body is kept as the bytes received; a larger one is not, and keeps what its `match` read of it instead.
+        const bodyKept = delivery.size <= MAX_KEPT_BODY_BYTES;
 
         const payload: Types.Mutable<FirePayload> = {
           format: webhook.format,
@@ -949,7 +1061,10 @@ export const triggerHandlers = (options: {
 
         if (headers.contentType !== undefined) payload.contentType = headers.contentType;
 
-        if (kept) payload.body = text;
+        const kept: Types.Mutable<KeptDelivery> = { payload, revision };
+
+        if (bodyKept) kept.body = body;
+        else kept.facts = matchFacts(webhook.match ?? {}, parsed);
 
         const source: Types.Mutable<Extract<FireSource, { type: "webhook" }>> = {
           type: "webhook",
@@ -958,7 +1073,7 @@ export const triggerHandlers = (options: {
 
         if (event !== undefined) source.event = event;
 
-        return { type: "accepted", key: `${id}:${delivered}`, source, payload } as const;
+        return { type: "accepted", key: `${id}:${delivered}`, source, delivery: kept } as const;
       }),
     ).pipe(
       Effect.catch((error) =>
@@ -993,9 +1108,22 @@ export const triggerHandlers = (options: {
         return NOT_FOUND;
       }
 
+      // Secrets that no longer read: the URL answers as a wrong token does (and is counted), and is said in the logs.
+      if (secrets === "unreadable") {
+        kept.count("not_found", at);
+        yield* Effect.logError(
+          "A webhook Trigger's secrets no longer read; its owner must make new ones",
+        );
+        yield* spanned(NOT_FOUND, undefined);
+
+        return NOT_FOUND;
+      }
+
       yield* Effect.annotateCurrentSpan("trigger.format", webhook.format);
 
-      const verdict = yield* Effect.result(examine(webhook, secrets, delivery, at)).pipe(
+      const revision = kept.definition()?.revision ?? 0;
+
+      const verdict = yield* Effect.result(examine(webhook, revision, secrets, delivery, at)).pipe(
         Effect.map((result) =>
           Result.isSuccess(result) ? result.success : ({ type: "unavailable" } as const),
         ),
@@ -1026,16 +1154,16 @@ export const triggerHandlers = (options: {
             return { status: 200, outcome: "ping" };
           case "filtered":
             current.delivered(at, false);
-            current.count("filtered", at);
+            current.count(verdict.outcome, at);
 
-            return { status: 200, outcome: "filtered" };
+            return { status: 200, outcome: verdict.outcome };
           case "accepted": {
             current.delivered(at, false);
 
             // A repeat of a delivery (the sender's retry) is answered as the first was, and makes no second Fire.
-            if (current.holds(verdict.key)) return { status: 200, outcome: "accepted" };
+            if (current.holds(verdict.key, at)) return { status: 200, outcome: "accepted" };
 
-            current.keepLast(verdict.payload);
+            current.keepLast(verdict.delivery.payload, verdict.delivery.body);
 
             if (definition.paused) {
               current.record({
@@ -1045,7 +1173,7 @@ export const triggerHandlers = (options: {
                 outcome: { type: "skipped", reason: "paused" },
               });
             } else {
-              current.enqueue(verdict.key, verdict.source, at, verdict.payload);
+              current.enqueue(verdict.key, verdict.source, at, verdict.delivery);
             }
 
             return { status: 200, outcome: "accepted" };
@@ -1058,7 +1186,10 @@ export const triggerHandlers = (options: {
         yield* Effect.promise(() => storage.setAlarm(at));
       }
 
-      yield* spanned(answer, verdict.type === "accepted" ? verdict.payload.event : undefined);
+      yield* spanned(
+        answer,
+        verdict.type === "accepted" ? verdict.delivery.payload.event : undefined,
+      );
 
       return answer;
     }).pipe(
@@ -1083,12 +1214,7 @@ export const triggerHandlers = (options: {
       Effect.gen(function* () {
         const ready = yield* manual(input);
 
-        if (ready.status !== "ready") return ready;
-
-        store().enqueue(ready.key, { type: "manual" }, ready.at);
-        yield* Effect.promise(() => storage.setAlarm(ready.at));
-
-        return { status: "queued", key: ready.key } as const;
+        return ready.status === "ready" ? yield* enqueueManual(ready) : ready;
       }).pipe(serially),
 
     fireAgain: (input) =>
@@ -1099,12 +1225,10 @@ export const triggerHandlers = (options: {
 
         const last = store().last();
 
-        if (last === undefined) return { status: "none" } as const;
-
-        store().enqueue(ready.key, { type: "manual" }, ready.at, last);
-        yield* Effect.promise(() => storage.setAlarm(ready.at));
-
-        return { status: "queued", key: ready.key } as const;
+        // The last delivery as it was kept, with no revision or facts: no `match` is checked of it again.
+        return last === undefined
+          ? ({ status: "none" } as const)
+          : yield* enqueueManual(ready, { payload: last.payload, body: last.body });
       }).pipe(serially),
 
     deliver,
@@ -1129,7 +1253,7 @@ export const triggerHandlers = (options: {
 
     rotate: (what) =>
       Effect.gen(function* () {
-        if (existing()?.secrets() === undefined) return null;
+        if (webhookOf(existing()?.definition()) === undefined) return { status: "none" } as const;
 
         yield* renew({ token: what === "url", secret: what === "secret" });
 

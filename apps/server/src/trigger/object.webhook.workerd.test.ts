@@ -73,11 +73,11 @@ const made = async (format: "github" | "standard" = "github", match?: TriggerMat
   await trigger.setNow(start);
   await trigger.sync();
 
-  const secrets = await trigger.reveal();
+  const answer = await trigger.reveal();
 
-  if (secrets === null) throw new Error("A webhook Trigger has no secrets");
+  if (answer.status !== "ok") throw new Error("A webhook Trigger has no secrets");
 
-  return { id, registry, trigger, ...secrets };
+  return { id, registry, trigger, ...answer.secrets };
 };
 
 const hex = (bytes: ArrayBuffer): string =>
@@ -178,9 +178,9 @@ describe("a webhook Trigger's secrets", () => {
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(secret).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(token).not.toBe(secret);
-    expect(await trigger.reveal()).toEqual({ token, secret });
+    expect(await trigger.reveal()).toEqual({ status: "ok", secrets: { token, secret } });
     expect(await trigger.sync()).toMatchObject({ definition: { name: "On events" } });
-    expect(await trigger.reveal()).toEqual({ token, secret });
+    expect(await trigger.reveal()).toEqual({ status: "ok", secrets: { token, secret } });
   });
 
   it("show a standard Trigger's Signing secret as whsec_<base64>, which decodes to the key the checks use", async () => {
@@ -188,7 +188,7 @@ describe("a webhook Trigger's secrets", () => {
 
     expect(secret).toMatch(/^whsec_[A-Za-z0-9+/]+=*$/);
     expect(keyOfShown(secret)).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(await trigger.reveal()).toMatchObject({ secret });
+    expect(await trigger.reveal()).toMatchObject({ status: "ok", secrets: { secret } });
   });
 
   it("are kept sealed: no row of the object's storage holds either as text", async () => {
@@ -225,7 +225,7 @@ describe("a webhook Trigger's secrets", () => {
     await trigger.setNow(start);
     await trigger.sync();
 
-    expect(await trigger.reveal()).toBeNull();
+    expect(await trigger.reveal()).toEqual({ status: "none" });
     expect(
       await runInDurableObject(
         trigger,
@@ -241,7 +241,7 @@ describe("a webhook Trigger's secrets", () => {
     await registry.removeTrigger(id);
     await trigger.sync();
 
-    expect(await trigger.reveal()).toBeNull();
+    expect(await trigger.reveal()).toEqual({ status: "none" });
 
     // The revert brings the definition back: the object, reached again, makes its own.
     await registry.createTrigger(id, webhook("github"), start + 1_000);
@@ -249,9 +249,10 @@ describe("a webhook Trigger's secrets", () => {
 
     const again = await trigger.reveal();
 
-    expect(again).not.toBeNull();
-    expect(again?.token).not.toBe(token);
-    expect(again?.secret).not.toBe(secret);
+    if (again.status !== "ok") throw new Error("The brought back Trigger has no secrets");
+
+    expect(again.secrets.token).not.toBe(token);
+    expect(again.secrets.secret).not.toBe(secret);
   });
 });
 
@@ -650,7 +651,7 @@ describe("a Trigger's filter and the bot-loop guard", () => {
     expect(await trigger.state()).toMatchObject({ pending: 2 });
   });
 
-  it("drops any bot's delivery while GitHub cannot say which bot is the App's", async () => {
+  it("drops any bot's delivery while GitHub cannot say which bot is the App's, counted as bot_unverified", async () => {
     const { secret, token, trigger } = await made();
 
     await trigger.setBot(undefined);
@@ -659,13 +660,17 @@ describe("a Trigger's filter and the bot-loop guard", () => {
       await trigger.deliver(await github(token, secret, issue("created", "dependabot[bot]"))),
     ).toEqual({
       status: 200,
-      outcome: "filtered",
+      outcome: "bot_unverified",
     });
     expect(
       await trigger.deliver(await github(token, secret, issue("created", "octocat"))),
     ).toMatchObject({
       outcome: "accepted",
     });
+    // Counted apart from a filter's, so the owner sees why the delivery was dropped.
+    expect((await trigger.deliveries()).counts).toEqual([
+      { day: dayOf(start), outcome: "bot_unverified", n: 1 },
+    ]);
   });
 
   it("does not guard a standard Trigger: a bot-looking sender is not the App's", async () => {
@@ -751,15 +756,17 @@ describe("rotation", () => {
 
     const rotated = await trigger.rotate("url");
 
-    expect(rotated?.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(rotated?.token).not.toBe(token);
-    expect(rotated?.secret).toBe(secret);
+    if (rotated.status !== "ok") throw new Error("The rotation answered no secrets");
+
+    expect(rotated.secrets.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(rotated.secrets.token).not.toBe(token);
+    expect(rotated.secrets.secret).toBe(secret);
     expect(await trigger.reveal()).toEqual(rotated);
     expect(await trigger.deliver(await github(token, secret, issue()))).toMatchObject({
       status: 404,
     });
     expect(
-      await trigger.deliver(await github(rotated?.token ?? "", secret, issue())),
+      await trigger.deliver(await github(rotated.secrets.token, secret, issue())),
     ).toMatchObject({
       status: 200,
     });
@@ -770,23 +777,25 @@ describe("rotation", () => {
 
     const rotated = await trigger.rotate("secret");
 
-    expect(rotated?.token).toBe(token);
-    expect(rotated?.secret).not.toBe(secret);
+    if (rotated.status !== "ok") throw new Error("The rotation answered no secrets");
+
+    expect(rotated.secrets.token).toBe(token);
+    expect(rotated.secrets.secret).not.toBe(secret);
     expect(await trigger.deliver(await github(token, secret, issue()))).toMatchObject({
       status: 401,
     });
     expect(
-      await trigger.deliver(await github(token, rotated?.secret ?? "", issue())),
+      await trigger.deliver(await github(token, rotated.secrets.secret, issue())),
     ).toMatchObject({
       status: 200,
     });
   });
 
-  it("answers null for an object with no Trigger, and makes no storage", async () => {
+  it("answers none for an object with no Trigger, and makes no storage", async () => {
     const trigger = env.TRIGGERS.getByName(`trigger:ghost${String(counter++)}`);
 
-    expect(await trigger.rotate("url")).toBeNull();
-    expect(await trigger.reveal()).toBeNull();
+    expect(await trigger.rotate("url")).toEqual({ status: "none" });
+    expect(await trigger.reveal()).toEqual({ status: "none" });
     expect(await tables(trigger)).toEqual([]);
   });
 });
@@ -829,5 +838,330 @@ describe("Fire again", () => {
     await registry.setTriggerPaused(id, true, start + 1_000);
 
     expect(await trigger.fireAgain("k")).toEqual({ status: "paused" });
+  });
+});
+
+/** What the object keeps of its pending Fires, as storage holds them. */
+const pendingRows = (trigger: DurableObjectStub<TestTrigger>) =>
+  runInDurableObject(trigger, (_instance, state) =>
+    state.storage.sql
+      .exec<{
+        key: string;
+        body: ArrayBuffer | null;
+        facts: string | null;
+        revision: number | null;
+      }>("SELECT key, body, facts, revision FROM trigger_pending ORDER BY key")
+      .toArray()
+      .map((row) => ({
+        key: row.key,
+        body: row.body === null ? null : Array.from(new Uint8Array(row.body)),
+        facts: row.facts,
+        revision: row.revision,
+      })),
+  );
+
+describe("a delivery kept while the Trigger's match changes", () => {
+  it("is counted filtered, with no Session, when the match narrowed between the delivery and the alarm", async () => {
+    const { id, registry, secret, token, trigger } = await made("github", { action: ["opened"] });
+
+    await trigger.deliver(await github(token, secret, issue("opened")));
+
+    expect(await trigger.state()).toMatchObject({ pending: 1 });
+    expect((await pendingRows(trigger))[0]?.revision).toBe(1);
+
+    expect(
+      await registry.updateTrigger(id, { match: { action: ["closed"] } }, start + 500),
+    ).toMatchObject({ status: "ok" });
+
+    await trigger.setNow(start + 1_000);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.sent()).toEqual([]);
+    expect(await trigger.state()).toMatchObject({ pending: 0 });
+    expect(await trigger.fireLog()).toEqual([]);
+    expect(await registry.listSessions()).toEqual([]);
+    expect((await trigger.deliveries()).counts).toEqual([
+      { day: dayOf(start), outcome: "filtered", n: 1 },
+    ]);
+  });
+
+  it("fires, admitted at the revision now current, when the match changed but still passes it", async () => {
+    const { id, registry, secret, token, trigger } = await made("github", { action: ["opened"] });
+
+    await trigger.deliver(await github(token, secret, issue("opened")));
+    await registry.updateTrigger(id, { match: { action: ["opened", "closed"] } }, start + 500);
+    await trigger.setNow(start + 1_000);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.sent()).toHaveLength(1);
+    expect((await trigger.deliveries()).counts).toEqual([]);
+  });
+
+  /** A delivery over 1 MiB of issue 7, kept as the facts its `match` read, then the match set to `next`. */
+  const overTheBody = async (next: TriggerMatch) => {
+    const { id, registry, secret, token, trigger } = await made("github", {
+      "issue.number": ["7"],
+    });
+
+    const text = JSON.stringify({
+      action: "opened",
+      issue: { number: 7 },
+      pad: "a".repeat(MAX_KEPT_BODY_BYTES),
+    });
+
+    await trigger.deliver(await github(token, secret, text));
+
+    const [row] = await pendingRows(trigger);
+
+    // The body is not kept: what the match read of it is, by path.
+    expect(row?.body).toBeNull();
+    expect(JSON.parse(row?.facts ?? "null")).toEqual({ issue: { number: "7" } });
+
+    await registry.updateTrigger(id, { match: next }, start + 500);
+    await trigger.setNow(start + 1_000);
+    await runDurableObjectAlarm(trigger);
+
+    return { registry, trigger };
+  };
+
+  it("is checked against the facts of a body over 1 MiB, and filtered when they no longer match", async () => {
+    const { registry, trigger } = await overTheBody({ "issue.number": ["8"] });
+
+    expect(await trigger.sent()).toEqual([]);
+    expect(await registry.listSessions()).toEqual([]);
+    expect((await trigger.deliveries()).counts).toEqual([
+      { day: dayOf(start), outcome: "filtered", n: 1 },
+    ]);
+  });
+
+  it("is filtered when the new match reads a path of a body over 1 MiB that was not kept", async () => {
+    const { trigger } = await overTheBody({ action: ["opened"] });
+
+    expect(await trigger.sent()).toEqual([]);
+    expect((await trigger.deliveries()).counts).toEqual([
+      { day: dayOf(start), outcome: "filtered", n: 1 },
+    ]);
+  });
+
+  it("fires when a body over 1 MiB still matches the facts, with its size and no body", async () => {
+    const { trigger } = await overTheBody({ "issue.number": ["7", "8"] });
+
+    const [sent] = await trigger.sent();
+
+    expect(sent?.request.payload?.size).toBeGreaterThan(MAX_KEPT_BODY_BYTES);
+    expect(sent?.request.payload).not.toHaveProperty("body");
+  });
+});
+
+describe("a Trigger whose kept secrets no longer read", () => {
+  const corrupt = (trigger: DurableObjectStub<TestTrigger>) =>
+    runInDurableObject(trigger, (_instance, state) => {
+      state.storage.sql.exec("UPDATE trigger_secrets SET token = 'junk'");
+    });
+
+  const tokenRow = (trigger: DurableObjectStub<TestTrigger>) =>
+    runInDurableObject(
+      trigger,
+      (_instance, state) =>
+        state.storage.sql.exec<{ token: string }>("SELECT token FROM trigger_secrets").one().token,
+    );
+
+  it("answers every delivery 404 as a wrong token is, counts it and says so in the logs", async () => {
+    const { secret, token, trigger } = await made();
+
+    await corrupt(trigger);
+
+    expect(await trigger.deliver(await github(token, secret, issue()))).toEqual({
+      status: 404,
+      outcome: "not_found",
+    });
+    expect((await trigger.deliveries()).counts).toEqual([
+      { day: dayOf(start), outcome: "not_found", n: 1 },
+    ]);
+    expect(await trigger.logged()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ level: "Error" })]),
+    );
+    expect(await trigger.state()).toMatchObject({ pending: 0 });
+  });
+
+  it("is not replaced by a sync, and says unreadable when asked to reveal", async () => {
+    const { trigger } = await made();
+
+    await corrupt(trigger);
+    await trigger.sync();
+
+    expect(await tokenRow(trigger)).toBe("junk");
+    expect(await trigger.reveal()).toEqual({ status: "unreadable" });
+    expect(await tokenRow(trigger)).toBe("junk");
+  });
+
+  it("gets both secrets new from a rotation, whichever is asked, and takes deliveries again", async () => {
+    const { secret, token, trigger } = await made();
+
+    await corrupt(trigger);
+
+    const rotated = await trigger.rotate("secret");
+
+    if (rotated.status !== "ok") throw new Error("The rotation answered no secrets");
+
+    expect(rotated.secrets.token).not.toBe(token);
+    expect(rotated.secrets.secret).not.toBe(secret);
+    expect(await trigger.reveal()).toEqual(rotated);
+    expect(
+      await trigger.deliver(await github(rotated.secrets.token, rotated.secrets.secret, issue())),
+    ).toMatchObject({ status: 200, outcome: "accepted" });
+  });
+});
+
+describe("a webhook Trigger whose secrets were never made", () => {
+  const forget = (trigger: DurableObjectStub<TestTrigger>) =>
+    runInDurableObject(trigger, (_instance, state) => {
+      state.storage.sql.exec("DELETE FROM trigger_secrets");
+    });
+
+  it("makes them when the owner asks to reveal them", async () => {
+    const { token, secret, trigger } = await made();
+
+    await forget(trigger);
+
+    const revealed = await trigger.reveal();
+
+    if (revealed.status !== "ok") throw new Error("The reveal answered no secrets");
+
+    expect(revealed.secrets.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(revealed.secrets.token).not.toBe(token);
+    expect(await trigger.reveal()).toEqual(revealed);
+    expect(
+      await trigger.deliver(await github(revealed.secrets.token, revealed.secrets.secret, issue())),
+    ).toMatchObject({ status: 200 });
+    expect(secret).toBeTruthy();
+  });
+
+  it("makes both when the owner rotates one", async () => {
+    const { token, secret, trigger } = await made();
+
+    await forget(trigger);
+
+    const rotated = await trigger.rotate("url");
+
+    if (rotated.status !== "ok") throw new Error("The rotation answered no secrets");
+
+    expect(rotated.secrets.token).not.toBe(token);
+    expect(rotated.secrets.secret).not.toBe(secret);
+    expect(await trigger.reveal()).toEqual(rotated);
+  });
+});
+
+describe("a Trigger brought back by a reverted removal", () => {
+  it("has new secrets once the revert wipes its object, even where the removal's own sync was lost", async () => {
+    const { id, registry, token, secret, trigger } = await made();
+
+    // The removal's sync never reached the object: it still holds the removed Trigger's secrets.
+    await registry.removeTrigger(id);
+    await registry.createTrigger(id, webhook("github"), start + 1_000);
+
+    // The revert wipes the object before it wakes it, as `revertAgentChange` does.
+    await trigger.remove();
+    await trigger.sync();
+
+    const again = await trigger.reveal();
+
+    if (again.status !== "ok") throw new Error("The brought back Trigger has no secrets");
+
+    expect(again.secrets.token).not.toBe(token);
+    expect(again.secrets.secret).not.toBe(secret);
+    expect(await trigger.deliver(await github(token, secret, issue()))).toMatchObject({
+      status: 404,
+    });
+  });
+
+  it("would keep the old secrets with no wipe, which is why the revert wipes", async () => {
+    const { id, registry, token, secret, trigger } = await made();
+
+    await registry.removeTrigger(id);
+    await registry.createTrigger(id, webhook("github"), start + 1_000);
+    await trigger.sync();
+
+    expect(await trigger.reveal()).toEqual({ status: "ok", secrets: { token, secret } });
+  });
+});
+
+describe("a repeated delivery", () => {
+  it("makes no second Fire within 24 hours of the first, and makes one once they have passed", async () => {
+    const { secret, token, trigger } = await made();
+    const one = await github(token, secret, issue(), { delivery: "again" });
+
+    await trigger.deliver(one);
+    await runDurableObjectAlarm(trigger);
+
+    expect(await trigger.sent()).toHaveLength(1);
+
+    await trigger.setNow(start + DAY - 1_000);
+    expect(await trigger.deliver(one)).toEqual({ status: 200, outcome: "accepted" });
+    expect(await trigger.state()).toMatchObject({ pending: 0 });
+
+    await trigger.setNow(start + DAY + 1_000);
+    expect(await trigger.deliver(one)).toEqual({ status: 200, outcome: "accepted" });
+    expect(await trigger.state()).toMatchObject({ pending: 1 });
+  });
+});
+
+describe("a delivery's body", () => {
+  /** A BOM, JSON with an action, and a byte no UTF-8 text holds. */
+  const raw = Uint8Array.from([
+    0xef,
+    0xbb,
+    0xbf,
+    ...bytes('{"action":"opened","text":"'),
+    0xff,
+    ...bytes('"}'),
+  ]);
+
+  it("is kept as the bytes received, and decoded only when it is sent, with its byte order mark and a replacement character", async () => {
+    const { secret, token, trigger } = await made();
+
+    await trigger.deliver(await githubBytes(token, secret, raw, { delivery: "raw" }));
+
+    const [row] = await pendingRows(trigger);
+
+    expect(row?.body).toEqual(Array.from(raw));
+
+    await runDurableObjectAlarm(trigger);
+
+    const [sent] = await trigger.sent();
+
+    expect(sent?.request.payload?.size).toBe(raw.length);
+    expect(sent?.request.payload?.body).toBe('\uFEFF{"action":"opened","text":"\uFFFD"}');
+  });
+
+  it("is sent again as the bytes received, by Fire again", async () => {
+    const { secret, token, trigger } = await made();
+
+    await trigger.deliver(await githubBytes(token, secret, raw, { delivery: "raw" }));
+    await runDurableObjectAlarm(trigger);
+    await trigger.setNow(start + 60_000);
+    await trigger.fireAgain("k");
+    await runDurableObjectAlarm(trigger);
+
+    const sent = await trigger.sent();
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.request.payload?.body).toBe(sent[0]?.request.payload?.body);
+    expect(sent[1]?.request.payload?.size).toBe(raw.length);
+  });
+
+  it("counts by its bytes for the 1 MiB it is kept to: bytes the text would make longer are kept", async () => {
+    const { secret, token, trigger } = await made();
+
+    // 1 MiB of bytes that each decode to a three-byte replacement character.
+    const body = new Uint8Array(MAX_KEPT_BODY_BYTES).fill(0xff);
+
+    body.set(bytes('{"action":"opened"}'));
+
+    await trigger.deliver(await githubBytes(token, secret, body, { delivery: "bytes" }));
+
+    const [row] = await pendingRows(trigger);
+
+    expect(row?.body).toHaveLength(MAX_KEPT_BODY_BYTES);
   });
 });

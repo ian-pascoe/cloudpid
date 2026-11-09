@@ -4,7 +4,7 @@
 // see a Trigger with no alarm scheduled (one made, brought back or resumed), tries again and then fails; `sync` and
 // `remove` log a failure and leave it to the object, which reads its definition again at its next alarm.
 import * as Cloudflare from "@alchemy.run/cloudflare";
-import type { FireRecord } from "@cloudpid/protocol";
+import type { FireRecord, TriggerRotation } from "@cloudpid/protocol";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Schedule from "effect/Schedule";
@@ -15,7 +15,7 @@ import {
   type DeliveryStats,
   type FireAgainAnswer,
   type FireNowAnswer,
-  type HookSecrets,
+  type HookAnswer,
   type TriggerState,
   TriggerUnreachable,
 } from "./object.ts";
@@ -48,13 +48,13 @@ export type TriggerObjects = {
   ) => Effect.Effect<DeliveryAnswer, TriggerUnreachable>;
   /** The deliveries Trigger `id`'s object took: the counts of 30 days, its last delivery and its ping. */
   readonly deliveries: (id: string) => Effect.Effect<DeliveryStats, TriggerUnreachable>;
-  /** Trigger `id`'s token and Signing secret, null for one that has none. */
-  readonly reveal: (id: string) => Effect.Effect<HookSecrets | null, TriggerUnreachable>;
+  /** Trigger `id`'s token and Signing secret, or why there are none to show. */
+  readonly reveal: (id: string) => Effect.Effect<HookAnswer, TriggerUnreachable>;
   /** Replace Trigger `id`'s token (`url`) or Signing secret (`secret`) at once, and answer both. */
   readonly rotate: (
     id: string,
-    what: "url" | "secret",
-  ) => Effect.Effect<HookSecrets | null, TriggerUnreachable>;
+    what: TriggerRotation,
+  ) => Effect.Effect<HookAnswer, TriggerUnreachable>;
   /** Trigger `id`'s fire log, newest first: at most `limit` Fires. */
   readonly fireLog: (
     id: string,

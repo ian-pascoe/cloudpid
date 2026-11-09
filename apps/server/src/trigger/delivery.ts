@@ -64,16 +64,22 @@ export const senderLogin = (body: Schema.Json | undefined): string | undefined =
   return textAt(sender, "login");
 };
 
+/** What the bot-loop guard makes of a sender: `own` (the App's own bot: dropped), `unverified` (a bot, and the App's own is not known: dropped) or `pass`. */
+export type BotGuard = "own" | "unverified" | "pass";
+
 /**
- * Whether the bot-loop guard drops a delivery from `login`: the App's own bot (`botLogin`, in lower case), or, while
- * that is not known (GitHub could not be asked), any bot.
+ * The bot-loop guard's reading of a delivery from `login`, when the App's own bot is `botLogin` (in lower case) or
+ * `undefined` while GitHub could not say. It fails closed: a bot's delivery is dropped while its identity can't be
+ * checked, since a loop costs more than a missed bot event.
  */
-export const isBotSender = (login: string | undefined, botLogin: string | undefined): boolean => {
-  if (login === undefined) return false;
+export const botGuard = (login: string | undefined, botLogin: string | undefined): BotGuard => {
+  const lower = login?.toLowerCase();
 
-  const lower = login.toLowerCase();
+  if (lower === undefined || !lower.endsWith("[bot]")) return "pass";
 
-  return botLogin === undefined ? lower.endsWith("[bot]") : lower === botLogin;
+  if (botLogin === undefined) return "unverified";
+
+  return lower === botLogin ? "own" : "pass";
 };
 
 /** The longest delivery id a Fire's key holds as it is. */

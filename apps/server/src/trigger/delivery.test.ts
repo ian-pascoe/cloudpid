@@ -5,7 +5,7 @@ import {
   bodyOf,
   contentKind,
   eventOf,
-  isBotSender,
+  botGuard,
   keyedDelivery,
   senderLogin,
 } from "./delivery.ts";
@@ -72,16 +72,17 @@ describe("the bot-loop guard", () => {
     expect(senderLogin({})).toBeUndefined();
   });
 
-  it("drops the App's own bot, whatever the case", () => {
-    expect(isBotSender("Cloudpid-App[bot]", "cloudpid-app[bot]")).toBe(true);
-    expect(isBotSender("someone", "cloudpid-app[bot]")).toBe(false);
-    expect(isBotSender("dependabot[bot]", "cloudpid-app[bot]")).toBe(false);
-    expect(isBotSender(undefined, "cloudpid-app[bot]")).toBe(false);
+  it("drops the App's own bot, whatever the case, and lets other senders through", () => {
+    expect(botGuard("Cloudpid-App[bot]", "cloudpid-app[bot]")).toBe("own");
+    expect(botGuard("someone", "cloudpid-app[bot]")).toBe("pass");
+    expect(botGuard("dependabot[bot]", "cloudpid-app[bot]")).toBe("pass");
+    expect(botGuard(undefined, "cloudpid-app[bot]")).toBe("pass");
   });
 
-  it("drops any bot while the App's own is not known", () => {
-    expect(isBotSender("dependabot[bot]", undefined)).toBe(true);
-    expect(isBotSender("someone", undefined)).toBe(false);
+  it("fails closed on a bot while the App's own is not known, and only on a bot", () => {
+    expect(botGuard("dependabot[bot]", undefined)).toBe("unverified");
+    expect(botGuard("someone", undefined)).toBe("pass");
+    expect(botGuard(undefined, undefined)).toBe("pass");
   });
 });
 

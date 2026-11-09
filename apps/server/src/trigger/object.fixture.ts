@@ -6,7 +6,13 @@
 // upkeep after a start. The clock is the test's (`setNow`), and `replace()` makes its storage refuse, as a replaced
 // instance's does.
 import { openKeptVault } from "@cloudpid/extensions/secrets/core";
-import type { ApiResult, FireRequest, SubmitResult, TriggerDefinition } from "@cloudpid/protocol";
+import type {
+  ApiResult,
+  FireRequest,
+  SubmitResult,
+  TriggerDefinition,
+  TriggerRotation,
+} from "@cloudpid/protocol";
 import { refusingStorage } from "@cloudpid/effect-durable/sqlite/testing";
 import { DurableObject } from "cloudflare:workers";
 import * as Arr from "effect/Array";
@@ -21,7 +27,7 @@ import {
   type DeliveryStats,
   type FireAgainAnswer,
   type FireNowAnswer,
-  type HookSecrets,
+  type HookAnswer,
   type TriggerHandlers,
   triggerHandlers,
   type TriggerState,
@@ -286,11 +292,11 @@ export class TestTrigger extends DurableObject {
     return this.#run(this.#handlers.deliveries());
   }
 
-  reveal(): Promise<HookSecrets | null> {
+  reveal(): Promise<HookAnswer> {
     return this.#run(this.#handlers.reveal());
   }
 
-  rotate(what: "url" | "secret"): Promise<HookSecrets | null> {
+  rotate(what: TriggerRotation): Promise<HookAnswer> {
     return this.#run(this.#handlers.rotate(what));
   }
 
