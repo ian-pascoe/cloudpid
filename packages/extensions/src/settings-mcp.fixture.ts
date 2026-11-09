@@ -91,6 +91,8 @@ export const setup = async (
     }>;
     /** Runs when a request is asked, before the owner answers: what changes in the world meanwhile. */
     readonly onAsk?: (request: ApprovalAsk) => void;
+    /** The Registry refuses every write in its transaction with these words, as its guard does for a change that widens. */
+    readonly rejects?: string;
     /** Task ids whose requests an eviction left waiting: those calls are reruns. */
     readonly held?: ReadonlyArray<number>;
     /** What each `${NAME}` is at the Environments: the rest are missing. */
@@ -217,6 +219,10 @@ export const setup = async (
             ",",
           )}`,
         );
+
+        if (start.rejects !== undefined) {
+          return Effect.succeed({ status: "rejected" as const, message: start.rejects });
+        }
 
         if (scope === GLOBAL_SETTINGS_SCOPE) {
           const changed = changeGlobalSettings(world.global, changes, (made) =>

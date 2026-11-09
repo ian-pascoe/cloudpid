@@ -2345,6 +2345,20 @@ describe("the management tools", () => {
       ).toBeUndefined();
     });
 
+    it.each(["settings_mcp_add", "settings_mcp_exposure_set", "settings_mcp_remove"] as const)(
+      "sends %s, once it asked the owner, to approval_wait",
+      (tool) => {
+        const scope = { id: "*", name: "Global" };
+
+        expect(
+          presented(tool, { scope, changes: [], status: "pending", approval_id: "a-1" }, [
+            tool,
+            "approval_wait",
+          ]).structured["next"],
+        ).toContain('approval_id="a-1"');
+      },
+    );
+
     it("sends a list of MCP servers to settings_mcp_get, and says nothing after a get", () => {
       expect(
         presented("settings_mcp_list", {

@@ -78,6 +78,12 @@ export type Prepared<Known> = {
    * owner answered.
    */
   readonly unchanged?: HarnessAnswer | undefined;
+  /**
+   * Nothing waits for the owner: the change narrows what is reachable, so it is made at once, by the tool's own core. Only the
+   * MCP servers' tools that ask when they widen set it (`./settings-mcp-approvals.ts`); a call that asked before (a rerun) asks
+   * anyway, as it does for `unchanged`.
+   */
+  readonly immediate?: boolean | undefined;
 };
 
 /** What `apply` did: what it knew of the target, and how the write went (`Result` is the target's own kind of answer). */

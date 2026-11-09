@@ -54,6 +54,7 @@ import {
   type McpCall,
   McpCommit,
   type McpCommitService,
+  type McpPlan,
   NOTHING,
   type Prepared,
   refuse,
@@ -438,27 +439,19 @@ export const mcpChanges = (engine: McpCommitService) => {
     readonly texts?: ReadonlyArray<string>;
     readonly status: boolean;
     readonly prepare: (rerun: boolean) => Effect.Effect<Prepared<D>, SettingsAccessError>;
-  }) =>
-    Effect.gen(function* () {
-      const rerun = yield* engine.rerun(input.api);
+  }): McpPlan<D> => ({
+    tool: input.tool,
+    api: input.api,
+    scope: input.scope,
+    name: input.name,
+    field: mcpKeyField(input.name, input.key),
+    reason: input.reason,
+    texts: input.texts ?? [],
+    status: input.status,
+    prepare: input.prepare,
+  });
 
-      return yield* engine.run({
-        rerun,
-        prepare: input.prepare(rerun),
-        resume: engine.resumeOf({
-          tool: input.tool,
-          api: input.api,
-          scope: input.scope,
-          name: input.name,
-          field: mcpKeyField(input.name, input.key),
-          reason: input.reason,
-          texts: input.texts ?? [],
-          status: input.status,
-        }),
-      });
-    });
-
-  const disable = (input: {
+  const disablePlan = (input: {
     readonly scope: string;
     readonly name: string;
     readonly reason: string;
@@ -467,7 +460,7 @@ export const mcpChanges = (engine: McpCommitService) => {
     Effect.gen(function* () {
       yield* engine.plain(input.reason, []);
 
-      return yield* call({
+      return call({
         tool: "settings_mcp_disable",
         api: input.api,
         scope: input.scope,
@@ -515,7 +508,10 @@ export const mcpChanges = (engine: McpCommitService) => {
       });
     });
 
-  const enable = (input: {
+  const disable = (input: Parameters<typeof disablePlan>[0]) =>
+    Effect.flatMap(disablePlan(input), (planned) => engine.runPlan(planned));
+
+  const enablePlan = (input: {
     readonly scope: string;
     readonly name: string;
     readonly reason: string;
@@ -524,7 +520,7 @@ export const mcpChanges = (engine: McpCommitService) => {
     Effect.gen(function* () {
       yield* engine.plain(input.reason, []);
 
-      return yield* call({
+      return call({
         tool: "settings_mcp_enable",
         api: input.api,
         scope: input.scope,
@@ -575,7 +571,10 @@ export const mcpChanges = (engine: McpCommitService) => {
       });
     });
 
-  const exposureSet = (input: {
+  const enable = (input: Parameters<typeof enablePlan>[0]) =>
+    Effect.flatMap(enablePlan(input), (planned) => engine.runPlan(planned));
+
+  const exposureSetPlan = (input: {
     readonly scope: string;
     readonly name: string;
     readonly exposure: McpExposure;
@@ -585,7 +584,7 @@ export const mcpChanges = (engine: McpCommitService) => {
     Effect.gen(function* () {
       yield* engine.plain(input.reason, []);
 
-      return yield* call({
+      return call({
         tool: "settings_mcp_exposure_set",
         api: input.api,
         scope: input.scope,
@@ -635,7 +634,10 @@ export const mcpChanges = (engine: McpCommitService) => {
       });
     });
 
-  const toolExposureSet = (input: {
+  const exposureSet = (input: Parameters<typeof exposureSetPlan>[0]) =>
+    Effect.flatMap(exposureSetPlan(input), (planned) => engine.runPlan(planned));
+
+  const toolExposureSetPlan = (input: {
     readonly scope: string;
     readonly name: string;
     readonly tool: string;
@@ -650,7 +652,7 @@ export const mcpChanges = (engine: McpCommitService) => {
         ...(input.before === undefined ? [] : [input.before]),
       ]);
 
-      return yield* call({
+      return call({
         tool: "settings_mcp_tool_exposure_set",
         api: input.api,
         scope: input.scope,
@@ -758,13 +760,16 @@ export const mcpChanges = (engine: McpCommitService) => {
       });
     });
 
+  const toolExposureSet = (input: Parameters<typeof toolExposureSetPlan>[0]) =>
+    Effect.flatMap(toolExposureSetPlan(input), (planned) => engine.runPlan(planned));
+
   /**
    * `settings_reset` of `field`, one of an MCP server's `enabled`, `exposure` and `toolExposure` or the entry itself
    * (`mcp.servers.<name>[.key]`): only at an Environment and only an adjustment's key, as an Override of Global's or a Repo's
    * server is removed. The entry, anything at `*` and a key of the Environment's own entry are refused, naming the tool for each.
    * A reset that falls back to a switched-off server or a hidden tool waits for the owner's Approval.
    */
-  const resetField = (input: {
+  const resetFieldPlan = (input: {
     readonly scope: string;
     readonly field: string;
     readonly reason: string;
@@ -789,7 +794,7 @@ export const mcpChanges = (engine: McpCommitService) => {
 
       yield* engine.plain(input.reason, []);
 
-      return yield* call({
+      return call({
         tool: "settings_reset",
         api: input.api,
         scope: input.scope,
@@ -885,7 +890,19 @@ export const mcpChanges = (engine: McpCommitService) => {
       });
     });
 
-  return { disable, enable, exposureSet, toolExposureSet, resetField, engine };
+  const resetField = (input: Parameters<typeof resetFieldPlan>[0]) =>
+    Effect.flatMap(resetFieldPlan(input), (planned) => engine.runPlan(planned));
+
+  return {
+    disable,
+    enable,
+    exposureSet,
+    toolExposureSet,
+    resetField,
+    /** The calls before they run, which the endpoint's cores for an Approval prepare alone (`./settings-mcp-approvals.ts`). */
+    plans: { enablePlan, exposureSetPlan, toolExposureSetPlan, resetFieldPlan },
+    engine,
+  };
 };
 
 /** The key-changing tools in a Session. */

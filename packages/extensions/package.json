@@ -40,6 +40,7 @@
     "./settings": "./src/settings.ts",
     "./settings-mcp": "./src/settings-mcp.ts",
     "./settings-endpoint": "./src/settings-endpoint.ts",
+    "./settings-mcp-approvals": "./src/settings-mcp-approvals.ts",
     "./settings-mcp-reads": "./src/settings-mcp-reads.ts",
     "./settings-reads": "./src/settings-reads.ts",
     "./approvals": "./src/approvals.ts",

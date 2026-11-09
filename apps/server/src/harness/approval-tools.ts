@@ -37,6 +37,14 @@ import {
 import { resetLimitCore as resetSizeLimitCore } from "@cloudpid/extensions/environment-reset";
 import { sizeLimitCore } from "@cloudpid/extensions/environment-size-limit";
 import type { AppliedSettingsChange, SettingsView } from "@cloudpid/extensions/settings";
+import {
+  type McpApprovalCoreOf,
+  type McpAsked,
+  type McpAskCore,
+  mcpApprovalCores,
+  type McpResetArgs,
+} from "@cloudpid/extensions/settings-mcp-approvals";
+import { parseMcpField } from "@cloudpid/config";
 import type { AgentChange, ApprovalCardContent } from "@cloudpid/protocol";
 import {
   APPROVAL_ASK_TOOLS,
@@ -44,6 +52,7 @@ import {
   GLOBAL_ID,
   GLOBAL_NAME,
   GLOBAL_SETTINGS_SCOPE,
+  HARNESS_TOOLS,
 } from "@cloudpid/protocol/harness-tools";
 import type { HarnessAnswer } from "@cloudpid/protocol/mcp-api";
 import * as Arr from "effect/Array";
@@ -76,8 +85,14 @@ export type ApplyOutcome =
 /** Where a change is: its Scope by id and name. */
 export type ScopeRef = { readonly id: string; readonly name: string };
 
-/** What a tool's `prepare` answers: the core's, with where the change is. */
-export type PreparedAsk = Prepared<unknown> & { readonly scope: ScopeRef };
+/**
+ * What a tool's `prepare` answers: the core's, with where the change is and the section its card shows in (the tool's own,
+ * except for `settings_reset`, whose card is the Limits' or the MCP servers' as the field says).
+ */
+export type PreparedAsk = Prepared<unknown> & {
+  readonly scope: ScopeRef;
+  readonly section: string;
+};
 
 /** What the Registry kept of an approved request for its apply: the endpoint input, `expected`, and the card approved. */
 export type AskedRequest = {
@@ -119,6 +134,9 @@ export type ApprovalTool = {
 export type ApprovalToolTable = {
   readonly [Name in ApprovalToolName]: (source: AuthorSource) => ApprovalTool;
 };
+
+/** The Settings page section an MCP server's card shows in. */
+const MCP_SECTION = "mcp";
 
 /** The refusal of arguments a tool cannot read (a request kept by a build with another schema). */
 const unreadable = (tool: string): CoreError => ({
@@ -219,6 +237,7 @@ const approvalTool = <
     args: NoInfer<Args>,
     changes: Arr.NonEmptyReadonlyArray<AgentChange>,
     claimed: Arr.NonEmptyReadonlyArray<ClaimedChange>,
+    expected: Schema.Json | null,
   ) => Effect.Effect<Applied<Known, Res>, E>;
 }): ApprovalTool => {
   const read = (args: Schema.Json) =>
@@ -237,6 +256,7 @@ const approvalTool = <
         Effect.map(core.prepare(decoded), (prepared) => ({
           ...prepared,
           scope: scopeRef(prepared.known),
+          section,
         })),
       ),
     apply: (asked, author, progress) =>
@@ -269,6 +289,7 @@ const approvalTool = <
           decoded,
           Arr.map(changes, (change) => agentChangeOf(core.tool, decoded.reason, change)),
           changes,
+          expected,
         );
 
         const answer = yield* renderResult(decoded, expected, applied);
@@ -339,20 +360,60 @@ const SizeLimitResetArgs = Schema.Struct({
 });
 
 /**
- * `settings_reset` of a Limit: the core of the Limit the arguments' `field` names (`limitOfField`, which the dispatcher
- * routes by too). A field that is no Limit is not asked for (the dispatcher resets it at once), and its arguments are
- * refused here.
+ * Whether `settings_reset`'s `field` is a field of an MCP server's adjustment, whose reset waits for the owner's Approval when
+ * it widens: the one place the routing (the dispatcher's, and the table's pick) reads it.
  */
-const settingsLimitReset = (services: SettingsCoreServices): ApprovalTool => {
+export const resetsMcpField = (field: string): boolean => parseMcpField(field) !== null;
+
+/**
+ * An MCP server's tool that asks (`@cloudpid/extensions/settings-mcp-approvals`): its card is the MCP servers' section's, its
+ * Scope the view's, and an answer rebuilt from the changes a write recorded is worded over what the Registry says of where the
+ * change reaches now.
+ */
+const mcpToolOf = <Args extends SettingsArgs>(
+  core: McpAskCore<Args>,
+  decode: (args: Schema.Json) => Option.Option<Args>,
+): ApprovalTool =>
+  approvalTool({
+    core,
+    section: MCP_SECTION,
+    decode,
+    scopeRef: (known) => settingsScopeRef(known.input.view),
+    how: () => undefined,
+    rebuilt: (args, changes, _claimed, expected) =>
+      Effect.map(
+        core.knownFromClaim(args, expected),
+        (known): Applied<McpAsked, AppliedSettingsChange> => ({
+          known,
+          result: { status: "changed", changes },
+        }),
+      ),
+  });
+
+/**
+ * `settings_reset` of a Limit or of an MCP server's key: the core of the Limit the arguments' `field` names (`limitOfField`,
+ * which the dispatcher routes by too), or the MCP servers' core for a field of an adjustment. A field that is neither is not
+ * asked for (the dispatcher resets it at once), and its arguments are refused here.
+ */
+const settingsReset = (
+  services: SettingsCoreServices,
+  mcp: () => McpAskCore<McpResetArgs>,
+): ApprovalTool => {
   const decode = Schema.decodeUnknownOption(SettingsResetArgs);
 
-  // The tool of the Limit the request's arguments name.
+  // The tool of the Limit, or of the MCP server's key, the request's arguments name; none for a field that is neither.
+  const toolOf = ({ field }: typeof SettingsResetArgs.Type): Option.Option<ApprovalTool> =>
+    Option.match(limitOfField(field), {
+      onSome: (limit) =>
+        Option.some(
+          settingsToolOf(services, resetSettingsLimitCore(services, limit), "limits", decode),
+        ),
+      onNone: () => (resetsMcpField(field) ? Option.some(mcpToolOf(mcp(), decode)) : Option.none()),
+    });
+
   const pick = (args: Schema.Json): Effect.Effect<ApprovalTool, CoreError> =>
-    Effect.fromOption(Option.flatMap(decode(args), ({ field }) => limitOfField(field))).pipe(
+    Effect.fromOption(Option.flatMap(decode(args), toolOf)).pipe(
       Effect.mapError(() => unreadable("settings_reset")),
-      Effect.map((limit) =>
-        settingsToolOf(services, resetSettingsLimitCore(services, limit), "limits", decode),
-      ),
     );
 
   return {
@@ -390,6 +451,23 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
     plainText,
     surface: "endpoint",
   });
+
+  const mcpOf = (source: AuthorSource): McpApprovalCoreOf =>
+    mcpApprovalCores({
+      access: writes.settingsMcp(source),
+      settings: writes.settings(source),
+      // The Registry checks the kept Secrets in the write itself: a text that cannot be checked is refused, as holding one.
+      holdsSecret: (text) => writes.holdsSecret(text).pipe(Effect.orElseSucceed(() => true)),
+      sync: writes.mcpSync,
+    });
+
+  const mcpTool =
+    <Args extends SettingsArgs>(
+      pick: (cores: McpApprovalCoreOf) => () => McpAskCore<Args>,
+      decode: (args: Schema.Json) => Option.Option<Args>,
+    ) =>
+    (source: AuthorSource): ApprovalTool =>
+      mcpToolOf(pick(mcpOf(source))(), decode);
 
   const settingsTool =
     <Args extends SettingsArgs>(
@@ -454,8 +532,35 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
           });
         },
       }),
-    // `settings_reset` of a Limit (the dispatcher hands only those here): one core per Limit, by its field.
-    settings_reset: (source) => settingsLimitReset(settingsOf(source)),
+    // `settings_reset` of a Limit or of an MCP server's key (the dispatcher hands only those here): one core per Limit, by its
+    // field, or the MCP servers' core.
+    settings_reset: (source) => settingsReset(settingsOf(source), mcpOf(source).settings_reset),
+    // The MCP servers' tools: the definitions and switching on always ask; the others only when they widen (the dispatcher
+    // makes a narrowing change at once, on `prepare`'s `immediate`).
+    settings_mcp_add: mcpTool(
+      (cores) => cores.settings_mcp_add,
+      Schema.decodeUnknownOption(APPROVAL_ASK_TOOLS.settings_mcp_add.endpoint.input),
+    ),
+    settings_mcp_update: mcpTool(
+      (cores) => cores.settings_mcp_update,
+      Schema.decodeUnknownOption(APPROVAL_ASK_TOOLS.settings_mcp_update.endpoint.input),
+    ),
+    settings_mcp_enable: mcpTool(
+      (cores) => cores.settings_mcp_enable,
+      Schema.decodeUnknownOption(APPROVAL_ASK_TOOLS.settings_mcp_enable.endpoint.input),
+    ),
+    settings_mcp_exposure_set: mcpTool(
+      (cores) => cores.settings_mcp_exposure_set,
+      Schema.decodeUnknownOption(HARNESS_TOOLS.settings_mcp_exposure_set.endpoint.input),
+    ),
+    settings_mcp_tool_exposure_set: mcpTool(
+      (cores) => cores.settings_mcp_tool_exposure_set,
+      Schema.decodeUnknownOption(HARNESS_TOOLS.settings_mcp_tool_exposure_set.endpoint.input),
+    ),
+    settings_mcp_remove: mcpTool(
+      (cores) => cores.settings_mcp_remove,
+      Schema.decodeUnknownOption(HARNESS_TOOLS.settings_mcp_remove.endpoint.input),
+    ),
     // `environment_setting_reset` of the size limit (S2a-4 serves the tool).
     environment_setting_reset: (source) => {
       const environments = writes.environments(source);

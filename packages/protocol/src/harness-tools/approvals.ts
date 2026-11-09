@@ -3,7 +3,9 @@
 // ADR-0050). On the endpoint nothing waits for the owner inside a call: an asking tool answers `pending` with the request's
 // id and the url of its card, and `approval_wait` follows it. These declarations are the endpoint's only (`session` is
 // absent): the in-session tools keep their own (`packages/extensions/src/approval-tools.ts`), which wait for the answer.
-// The Self-use rule still reads their names (`HARNESS_TOOL_NAMES`), so a Session's own endpoint offers none of them.
+// The Self-use rule still reads their names (`HARNESS_TOOL_NAMES`), so a Session's own endpoint offers none of them. The
+// MCP servers' definition tools (`settings_mcp_add`, `_update`, `_enable`) are here: they always ask. The ones that ask only
+// when they widen (`settings_mcp_exposure_set` and the others) keep their declarations in `./settings-mcp-changes.ts`.
 // @effect-diagnostics missingPipeableSignature:off
 import { InstanceType, MAX_INSTRUCTIONS_BYTES } from "@cloudpid/config";
 import * as Arr from "effect/Array";
@@ -205,6 +207,94 @@ export const environmentContainerSizeLimitSet = {
   },
 } as const;
 
+/** The `name` of an MCP server, as `settings_mcp_list` shows it. */
+const McpServerName = Schema.String.check(Schema.isMinLength(1)).annotate({
+  description: "The server's name as settings_mcp_list shows it",
+});
+
+/** What the descriptions of the MCP servers' definition tools say of what a server definition is, on the endpoint. */
+const DEFINITION_NOTE = `A server definition is the owner's to approve because it decides which code runs, where Secrets go (a Global entry resolves \${NAME} against each Environment's Secrets, and an Environment's id as scope writes into that Environment), what every later call sends, and what the model is told (the description). The owner's card says what the server runs or connects to, which \${NAME} values it sends and where, whom it reaches and what it replaces. Keep every credential out of the entry: write \${NAME} for a Secret the owner keeps (they keep Secrets on the Secrets page) or a Variable (environment_variable_set keeps one that is not secret). A literal in an Authorization, Proxy-Authorization, Cookie, X-API-Key or Api-Key header, or in an env or headers key ending TOKEN, SECRET, PASSWORD, PASSWD, API_KEY, APIKEY, ACCESS_KEY or PRIVATE_KEY, is refused. At an Environment a \${NAME} must be a Secret or a Variable there or at Global, or the call is refused. Once approved the change is recorded with your reason, and the new set is sent to the MCP host of each Environment it reaches by cloudpid, after the answer. The result reports the server's status as not_checked: settings_mcp_get shows it later, and the owner signs in on the Settings page if the server asks for a sign-in. A Repo's .pi/mcp.json is edited as a file in a pull request and is no Agent change.`;
+
+export const settingsMcpAdd = {
+  name: "settings_mcp_add",
+  annotations: WRITE,
+  endpoint: {
+    description: Arr.join(
+      [
+        `Ask the owner to add an MCP server at one Scope: at "${GLOBAL_SETTINGS_SCOPE}" to Global's entries, or at an Environment's id to that Environment's own (which replaces Global's server of the name there, or shadows a Repo's). Give exactly one of entry (the server in pi's shape: command, args, env, cwd, url, headers, oauth, timeout, description, sampling, and optionally enabled, exposure, toolExposure; it must define a server with a command or a url) and from_repo (an Environment's id only: the directory name of a Repo of the Environment, whose server of that name is copied from the last good read of its .pi/mcp.json, with \${NAME} kept and a stdio cwd made absolute, /workspace/<directory>; settings_mcp_reload reads the file again). The copy is the owner's server afterwards: it can read Secrets, needs its own MCP sign-in, and no longer follows the Repo's commits.`,
+        "Adding a server always waits for the owner's Approval.",
+        DEFINITION_NOTE,
+        APPROVAL,
+      ],
+      "\n\n",
+    ),
+    input: Schema.Struct({
+      scope: SettingsScope,
+      name: McpServerName,
+      entry: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)).annotate({
+        description: "The server in pi's shape; exactly one of entry and from_repo",
+      }),
+      from_repo: Schema.optionalKey(Schema.String).annotate({
+        description:
+          "The directory name of a Repo of the Environment (as settings_mcp_list shows it, not owner/repo), whose server of this name is copied; an Environment's id as scope only",
+      }),
+      reason: AskReason,
+      ...RequestIdField,
+    }),
+    output: ApprovalAskOutput,
+  },
+} as const;
+
+export const settingsMcpUpdate = {
+  name: "settings_mcp_update",
+  annotations: WRITE,
+  endpoint: {
+    description: Arr.join(
+      [
+        `Ask the owner to change the definition of an MCP server where it is defined: Global's at "${GLOBAL_SETTINGS_SCOPE}", an Environment's own entry at its id (a Global server at an Environment is refused: change it at "${GLOBAL_SETTINGS_SCOPE}", or add an entry of its own; a Repo's is changed in the Repo's file). set takes definition keys only: a top-level key replaces its value and null removes it; env, headers and oauth merge key by key, null removing one key; args is replaced whole. enabled, exposure and toolExposure are refused: settings_mcp_disable, settings_mcp_enable, settings_mcp_exposure_set and settings_mcp_tool_exposure_set change them.`,
+        "Changing a definition always waits for the owner's Approval.",
+        DEFINITION_NOTE,
+        APPROVAL,
+      ],
+      "\n\n",
+    ),
+    input: Schema.Struct({
+      scope: SettingsScope,
+      name: McpServerName,
+      set: Schema.Record(Schema.String, Schema.Json).annotate({
+        description:
+          "The definition keys to change: a value replaces the key's, null removes it; env, headers and oauth merge key by key",
+      }),
+      reason: AskReason,
+      ...RequestIdField,
+    }),
+    output: ApprovalAskOutput,
+  },
+} as const;
+
+export const settingsMcpEnable = {
+  name: "settings_mcp_enable",
+  annotations: WRITE,
+  endpoint: {
+    description: Arr.join(
+      [
+        "Ask the owner to switch an MCP server on at one Scope. Switching a server on makes its tools reachable again, so it always waits for the owner's Approval, even for a server that is off nowhere it reaches. It connects at the next demand, and its tools are registered once discovered.",
+        `A name is the server in force in that Scope's set. At scope "${GLOBAL_SETTINGS_SCOPE}" the key is changed in Global's entry, which reaches every Environment but those whose own entry or adjustment overrides it; at an Environment's id the change is that Environment's own, an Override even when it equals Global's (settings_reset removes it).`,
+        "Once approved the change is recorded with your reason, and the new set is sent to the MCP host of each Environment it reaches by cloudpid, after the answer. The result reports the server's status as not_checked: settings_mcp_get shows it later, and the owner signs in on the Settings page if the server asks for a sign-in.",
+        APPROVAL,
+      ],
+      "\n\n",
+    ),
+    input: Schema.Struct({
+      scope: SettingsScope,
+      name: McpServerName,
+      reason: AskReason,
+      ...RequestIdField,
+    }),
+    output: ApprovalAskOutput,
+  },
+} as const;
+
 /** What the deletes' descriptions say of the Approval, on the endpoint: no revert can undo one, unlike a change. */
 const DELETE_APPROVAL = `No revert can undo it, so the owner must approve it, in cloudpid: the call does not wait for them. It answers status "pending" with an approval_id, the url of the card the owner answers, and when the request expires (7 days); follow it with approval_wait, which says whether it was approved and done, declined, or not done. Asking again for the same delete while one waits answers the same approval_id; at most 10 of yours may wait or be applying at once. A Secret's value in an argument is refused, and nothing is asked.`;
 
@@ -260,15 +350,36 @@ export const APPROVAL_ASK_TOOLS = {
   environment_container_size_limit_set: environmentContainerSizeLimitSet,
   environment_delete: environmentDelete,
   environment_secret_delete: environmentSecretDelete,
+  settings_mcp_add: settingsMcpAdd,
+  settings_mcp_update: settingsMcpUpdate,
+  settings_mcp_enable: settingsMcpEnable,
 } as const;
 
 export type ApprovalAskToolName = keyof typeof APPROVAL_ASK_TOOLS;
 
 /**
- * Every tool whose change waits for the owner's Approval on the endpoint: the asking tools, and the two resets, whose
- * Limit's reset asks (`settings_reset` of a Limit, `environment_setting_reset` of the size limit).
+ * The tools that ask the owner only when their change widens what an MCP server reaches (`docs/architecture/mcp-configuration.md`
+ * → Approval): they narrow at once, through their own core, and the three `settings_mcp` ones are the endpoint's changing
+ * tools with an output of their own (`McpChangeAskOutput`). The reset of an MCP field is `settings_reset`'s.
  */
-export type ApprovalToolName = ApprovalAskToolName | "settings_reset" | "environment_setting_reset";
+export const MCP_WIDENING_TOOLS = [
+  "settings_mcp_exposure_set",
+  "settings_mcp_tool_exposure_set",
+  "settings_mcp_remove",
+] as const;
+
+export type McpWideningToolName = (typeof MCP_WIDENING_TOOLS)[number];
+
+/**
+ * Every tool whose change waits for the owner's Approval on the endpoint: the asking tools, the two resets, whose Limit's
+ * reset asks (`settings_reset` of a Limit or of an MCP field that widens, `environment_setting_reset` of the size limit),
+ * and the MCP tools that ask when they widen.
+ */
+export type ApprovalToolName =
+  | ApprovalAskToolName
+  | McpWideningToolName
+  | "settings_reset"
+  | "environment_setting_reset";
 
 const ApprovalId = Schema.String.check(Schema.isMinLength(1)).annotate({
   description: "The approval_id the asking tool answered",
