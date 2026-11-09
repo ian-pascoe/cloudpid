@@ -12,6 +12,7 @@ import { SessionVia } from "./mcp-api.ts";
 import { SentAppMessage } from "./mcp-apps.ts";
 import { McpPromptData, mcpPromptLabel } from "./mcp-prompts.ts";
 import { ReviewData } from "./review.ts";
+import { TriggerPayloadChip } from "./trigger-payload.ts";
 
 /** The kind of an owner's message the Session expanded. */
 export const USER_ENTRY_KIND = "cloudpid.user";
@@ -50,6 +51,10 @@ export const UserEntryData = Schema.Struct({
   ),
   // A prompt this version cannot read leaves the entry readable, without it.
   mcpPrompt: Schema.optionalKey(McpPromptData).pipe(Schema.catchDecoding(() => Effect.succeedNone)),
+  // The webhook payload of a Trigger's Fire, for its chip (`trigger-payload.ts`): one this version cannot read leaves the entry readable, without the chip.
+  triggerPayload: Schema.optionalKey(TriggerPayloadChip).pipe(
+    Schema.catchDecoding(() => Effect.succeedNone),
+  ),
   // A mark this version cannot read leaves the entry readable, without the mark.
   via: Schema.optionalKey(SessionVia).pipe(Schema.catchDecoding(() => Effect.succeedNone)),
 });

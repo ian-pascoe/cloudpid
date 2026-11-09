@@ -31,7 +31,7 @@ export type SignInRoute =
  */
 const CALLBACK_WITH_HASH = new RegExp(`^${CALLBACK_PATH}/([A-Za-z0-9_-]{12})$`);
 
-/** The prefixes under which only the exact paths are routed, in the form {@link canonical} gives. */
+/** The prefixes under which only the exact paths are routed, in the form {@link canonicalPath} gives. */
 const PUBLIC_PREFIXES = Arr.map([CLIENT_DOCUMENT_PATH, CALLBACK_PATH], (path) =>
   path.toLowerCase(),
 );
@@ -49,7 +49,7 @@ const decodeEscapesOnce = (path: string): string =>
  * lowercased. It is only used to find the forms to refuse, so it errs on the broad side; it is never what the exact paths
  * are matched against.
  */
-const canonical = (path: string): string => {
+export const canonicalPath = (path: string): string => {
   let decoded = path;
 
   for (let pass = 0; pass < MAX_DECODE_PASSES; pass++) {
@@ -90,7 +90,7 @@ export const signInRoute = (pathname: string): SignInRoute | undefined => {
 
   if (hash !== undefined) return { kind: "callback", hash };
 
-  const lenient = canonical(pathname);
+  const lenient = canonicalPath(pathname);
 
   return Arr.some(PUBLIC_PREFIXES, (prefix) => lenient.startsWith(prefix))
     ? { kind: "refused" }

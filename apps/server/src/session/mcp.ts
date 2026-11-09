@@ -851,6 +851,7 @@ const sessionMcp = (options: SessionMcpOptions) =>
     const fire = sessionFire({
       deliver,
       configure: (pick) => host.configure(agentChange(pick)),
+      redact: redactor.pipe(Effect.map((seam) => seam.redact)),
     });
 
     return {

@@ -11,6 +11,9 @@ import * as Schema from "effect/Schema";
 import { MAX_MCP_INPUT_BYTES, TriggerMark } from "./mcp-api.ts";
 import type { AgentChange, EnvironmentRef } from "./registry.ts";
 import { openLiterals } from "./open-literals.ts";
+import { scheduleProblem } from "./trigger-schedule.ts";
+import { matchProblem, TriggerMatch } from "./trigger-match.ts";
+import { FirePayload, WebhookFormat } from "./trigger-payload.ts";
 
 /** The longest Trigger name, in characters after trimming. */
 export const MAX_TRIGGER_NAME_LENGTH = 80;
@@ -58,15 +61,50 @@ export const ScheduleSource = Schema.Struct({
 
 export type ScheduleSource = typeof ScheduleSource.Type;
 
-/** A source this version does not know (a later slice's webhook, say): its Trigger is listed, and never fired here. */
+/**
+ * A webhook source: deliveries to the Trigger's URL, signed in `format`, and passed on only when they match `match`
+ * (`docs/architecture/triggers.md` → Webhooks, Filters). The URL and Signing secret are the Trigger object's alone, never
+ * part of the definition.
+ */
+export const WebhookSource = Schema.Struct({
+  type: Schema.Literal("webhook"),
+  format: WebhookFormat,
+  match: Schema.optionalKey(TriggerMatch),
+});
+
+export type WebhookSource = typeof WebhookSource.Type;
+
+/** A source this version does not know (a later slice's, say): its Trigger is listed, and never fired here. */
 export const UnknownSource = Schema.Struct({ type: Schema.Literal("unknown") });
 
 /** What makes a Trigger fire. */
-export const TriggerSource = Schema.Union([ScheduleSource, UnknownSource]).pipe(
+export const TriggerSource = Schema.Union([ScheduleSource, WebhookSource, UnknownSource]).pipe(
   Schema.catchDecoding(() => Effect.succeedSome({ type: "unknown" as const })),
 );
 
 export type TriggerSource = typeof TriggerSource.Type;
+
+/** The sources the owner's form and `trigger_create` can give a Trigger. */
+export const TriggerSourceInput = Schema.Union([ScheduleSource, WebhookSource]);
+
+export type TriggerSourceInput = typeof TriggerSourceInput.Type;
+
+/** Why `source` can't make a Trigger fire, or undefined when it can. */
+export const sourceProblem = (source: TriggerSourceInput): string | undefined =>
+  source.type === "schedule"
+    ? scheduleProblem(source)
+    : source.match === undefined
+      ? undefined
+      : matchProblem(source.match);
+
+/** The webhook `holder` fires on, or undefined for none. */
+export const webhookOf = (
+  holder: { readonly source: TriggerSource } | undefined,
+): WebhookSource | undefined => (holder?.source.type === "webhook" ? holder.source : undefined);
+
+/** The `when_busy` a Trigger of `source` has when none is given: `skip` for a Schedule, `start` for a webhook. */
+export const defaultWhenBusy = (source: TriggerSourceInput): TriggerWhenBusy =>
+  source.type === "webhook" ? "start" : "skip";
 
 /** The Schedule `holder` fires on, or undefined for none (a source this version doesn't know). */
 export const scheduleOf = (
@@ -111,8 +149,8 @@ export const EnvironmentTriggerInput = Schema.Struct({
   environment: Schema.String,
   name: Schema.String,
   message: Schema.String,
-  source: ScheduleSource,
-  /** `skip` when absent, a Schedule's default (`triggers.md` → Overlap). */
+  source: TriggerSourceInput,
+  /** When absent: `skip` for a Schedule, `start` for a webhook (`triggers.md` → Overlap). */
   whenBusy: TriggerWhenBusy.pipe(Schema.optional),
   base: Schema.String.pipe(Schema.optional),
   model: Schema.String.pipe(Schema.optional),
@@ -129,7 +167,9 @@ export type EnvironmentTriggerInput = typeof EnvironmentTriggerInput.Type;
 export const TriggerPatch = Schema.Struct({
   name: Schema.String.pipe(Schema.optional),
   message: Schema.String.pipe(Schema.optional),
-  source: ScheduleSource.pipe(Schema.optional),
+  source: TriggerSourceInput.pipe(Schema.optional),
+  /** A webhook Trigger's `match` alone (null: none); a Trigger with another source refuses it. */
+  match: Schema.NullOr(TriggerMatch).pipe(Schema.optional),
   whenBusy: TriggerWhenBusy.pipe(Schema.optional),
   base: Schema.NullOr(Schema.String).pipe(Schema.optional),
   model: Schema.NullOr(Schema.String).pipe(Schema.optional),
@@ -248,9 +288,17 @@ export type TriggerChanged =
   /** No such Trigger, or (for a new one) no such Environment. */
   | { readonly status: "missing" };
 
-/** What made a Fire: a Schedule's time coming due, or the owner's **Fire now** (`manual`). */
+/**
+ * What made a Fire: a Schedule's time coming due, a webhook delivery (its id, and its event), or the owner's **Fire now**
+ * or **Fire again** (`manual`).
+ */
 export const FireSource = Schema.Union([
   Schema.Struct({ type: Schema.Literal("schedule"), scheduledAt: Schema.Finite }),
+  Schema.Struct({
+    type: Schema.Literal("webhook"),
+    delivery: Schema.String,
+    event: Schema.optionalKey(Schema.String),
+  }),
   Schema.Struct({ type: Schema.Literal("manual") }),
   Schema.Struct({ type: Schema.Literal("unknown") }),
 ]).pipe(Schema.catchDecoding(() => Effect.succeedSome({ type: "unknown" as const })));
@@ -335,6 +383,14 @@ export const fireTimeWords = (at: number, zone: string): string =>
 export const fireTitle = (name: string, at: number, zone: string): string =>
   `${name.trim()} · ${formatIn(zone, at, DATE_TIME)}`;
 
+/**
+ * The title of the Session a webhook's Fire starts, "`<name>` · `<event>` · `<date, time> UTC`": never generated. A
+ * webhook has no zone, so the time is UTC, which the title says. `event` is the sender's word, made plain by the
+ * caller (`senderText`).
+ */
+export const webhookFireTitle = (name: string, at: number, event: string): string =>
+  `${name.trim()} · ${event} · ${formatIn("UTC", at, { ...DATE_TIME, timeZoneName: "short" })}`;
+
 /** What cloudpid's header of a Fire's message says: the Trigger's name, and its scheduled (if any) and actual time. */
 export const FireHeader = Schema.Struct({
   name: Schema.String,
@@ -342,20 +398,41 @@ export const FireHeader = Schema.Struct({
   /** The Schedule's time the Fire is for; absent for the owner's Fire now. */
   scheduledAt: Schema.optionalKey(Schema.Finite),
   firedAt: Schema.Finite,
+  /** The owner sent the last delivery again (**Fire again**). */
+  again: Schema.optionalKey(Schema.Boolean),
 });
 
 export type FireHeader = typeof FireHeader.Type;
 
-/** cloudpid's header of a Fire's message, before the Trigger message (`triggers.md` → Payload and untrusted content). */
-export const renderFireHeader = (header: FireHeader): string => {
+/** The line of a webhook Fire's header that says where it came from: the format, the event (and its action) and the delivery id. */
+const webhookLine = (payload: FirePayload, again: boolean): string => {
+  const event =
+    payload.event === undefined
+      ? ""
+      : `, event ${payload.event}${payload.action === undefined ? "" : ` (action ${payload.action})`}`;
+
+  return `Source: a ${payload.format} webhook${event}, delivery ${payload.delivery}${again ? ", sent again by the owner from the last delivery" : ""}.`;
+};
+
+/**
+ * cloudpid's header of a Fire's message, before the Trigger message (`triggers.md` → Payload and untrusted content).
+ * With a `payload` (its sender's words made plain: `cleanPayload`) it says where the delivery came from; its body is not
+ * here but in a block after the message.
+ */
+export const renderFireHeader = (header: FireHeader, payload?: FirePayload): string => {
   const at = (time: number) => fireTimeWords(time, header.zone);
+
+  const source =
+    payload !== undefined
+      ? webhookLine(payload, header.again === true)
+      : header.scheduledAt === undefined
+        ? "Source: the owner's Fire now."
+        : `Scheduled for: ${at(header.scheduledAt)}.`;
 
   return Arr.join(
     [
       `[cloudpid] Trigger "${header.name.trim()}" fired.`,
-      header.scheduledAt === undefined
-        ? "Source: the owner's Fire now."
-        : `Scheduled for: ${at(header.scheduledAt)}.`,
+      source,
       `Fired at: ${at(header.firedAt)}.`,
     ],
     "\n",
@@ -363,8 +440,8 @@ export const renderFireHeader = (header: FireHeader): string => {
 };
 
 /** A Fire's message as its Session is given it: cloudpid's header, then the Trigger message as written. */
-export const fireText = (header: FireHeader, message: string): string =>
-  `${renderFireHeader(header)}\n\n${message}`;
+export const fireText = (header: FireHeader, message: string, payload?: FirePayload): string =>
+  `${renderFireHeader(header, payload)}\n\n${message}`;
 
 /**
  * The Session's `fire` argument (`docs/architecture/triggers.md` → Pending Fires): a new method, never a field on
@@ -377,8 +454,27 @@ export const FireRequest = Schema.Struct({
   requestId: Schema.String,
   message: Schema.String,
   header: FireHeader,
+  /** A webhook delivery's body and where it came from: fenced after the message, and its whole body kept as a file. */
+  payload: Schema.optionalKey(FirePayload),
   model: Schema.optionalKey(Schema.String),
   thinking: Schema.optionalKey(ThinkingLevel),
 });
 
 export type FireRequest = typeof FireRequest.Type;
+
+/**
+ * How a delivery to a Trigger URL came out (`triggers.md` → Observability): `accepted` (a pending Fire stored), `filtered`
+ * (by `match` or the bot-loop guard), `unauthorized` (no or a wrong signature, a stale timestamp), `too_large`,
+ * `unsupported` (content type), `not_found` (an unknown id, a wrong token) and `ping`.
+ */
+export const DELIVERY_OUTCOMES = [
+  "accepted",
+  "filtered",
+  "unauthorized",
+  "too_large",
+  "unsupported",
+  "not_found",
+  "ping",
+] as const;
+
+export type DeliveryOutcome = (typeof DELIVERY_OUTCOMES)[number];

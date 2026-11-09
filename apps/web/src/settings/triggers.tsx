@@ -48,7 +48,7 @@ import {
   nextFireOf,
   outcomeWords,
   previewFires,
-  scheduleWords,
+  triggerSourceWords,
   sourceWords,
   type TriggerDraft,
   triggerDraftOf,
@@ -127,7 +127,7 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
             )}
           </span>
           <span className="font-mono text-xs text-muted-foreground">
-            {scheduleWords(definition)}
+            {triggerSourceWords(definition)}
           </span>
           <span className="text-xs text-muted-foreground">{lastFireWords(overview, zone)}</span>
           <span className="text-xs text-muted-foreground">
@@ -135,18 +135,21 @@ const TriggerRow = ({ scope, overview }: { scope: string; overview: TriggerOverv
           </span>
         </span>
         <span className="flex shrink-0 flex-wrap items-center gap-1">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={definition.paused || fired.waiting}
-            onClick={() => {
-              fire(newTriggerKey());
-            }}
-          >
-            <Zap />
-            {fired.waiting ? "Firing…" : "Fire now"}
-          </Button>
+          {/* A webhook Trigger fires when a delivery comes; the owner's "Fire again" is a later part's. */}
+          {definition.source.type !== "webhook" && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={definition.paused || fired.waiting}
+              onClick={() => {
+                fire(newTriggerKey());
+              }}
+            >
+              <Zap />
+              {fired.waiting ? "Firing…" : "Fire now"}
+            </Button>
+          )}
           <Button
             type="button"
             size="sm"
@@ -315,40 +318,46 @@ const TriggerFormView = ({
           className={TEXT_AREA}
         />
       </Field>
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Field
-          label="Schedule"
-          htmlFor={id("cron")}
-          hint="5-field cron, or @hourly, @daily, @weekly."
-          problem={draft.cron === "" ? null : problems.schedule}
-        >
-          <Input
-            id={id("cron")}
-            value={draft.cron}
-            placeholder="0 9 * * MON"
-            spellCheck={false}
-            autoComplete="off"
-            disabled={busy}
-            onChange={(event) => {
-              change({ cron: event.target.value });
-            }}
-            className="font-mono"
-          />
-        </Field>
-        <Field label="Time zone" htmlFor={id("zone")} hint="An IANA zone, such as America/Chicago.">
-          <Input
-            id={id("zone")}
-            value={draft.zone}
-            spellCheck={false}
-            autoComplete="off"
-            disabled={busy}
-            onChange={(event) => {
-              change({ zone: event.target.value });
-            }}
-            className="font-mono"
-          />
-        </Field>
-      </div>
+      {draft.scheduled && (
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field
+            label="Schedule"
+            htmlFor={id("cron")}
+            hint="5-field cron, or @hourly, @daily, @weekly."
+            problem={draft.cron === "" ? null : problems.schedule}
+          >
+            <Input
+              id={id("cron")}
+              value={draft.cron}
+              placeholder="0 9 * * MON"
+              spellCheck={false}
+              autoComplete="off"
+              disabled={busy}
+              onChange={(event) => {
+                change({ cron: event.target.value });
+              }}
+              className="font-mono"
+            />
+          </Field>
+          <Field
+            label="Time zone"
+            htmlFor={id("zone")}
+            hint="An IANA zone, such as America/Chicago."
+          >
+            <Input
+              id={id("zone")}
+              value={draft.zone}
+              spellCheck={false}
+              autoComplete="off"
+              disabled={busy}
+              onChange={(event) => {
+                change({ zone: event.target.value });
+              }}
+              className="font-mono"
+            />
+          </Field>
+        </div>
+      )}
       {preview.length > 0 && (
         <div className="flex flex-col gap-1 text-xs text-muted-foreground">
           <span className="font-medium text-foreground">Next fires</span>

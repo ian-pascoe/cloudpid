@@ -11,6 +11,8 @@ import {
   fireTimeWords,
   nextFires,
   scheduleOf,
+  type ScheduleSource,
+  webhookOf,
   scheduleProblem,
   type TriggerDefinition,
   triggerMessageProblem,
@@ -25,9 +27,14 @@ import type * as Types from "effect/Types";
 /** How many next Fires the form previews. */
 export const PREVIEWED_FIRES = 5;
 
-/** What is typed in the Trigger form. An option left empty is the Environment's own (`base`: each Repo's default). */
+/**
+ * What is typed in the Trigger form. An option left empty is the Environment's own (`base`: each Repo's default).
+ * `scheduled` says the Trigger fires on a Schedule (a new one does), so the form asks for `cron` and `zone`; a webhook
+ * Trigger has none, and its source is fixed at creation, so editing it never sends one.
+ */
 export type TriggerDraft = {
   readonly environment: string;
+  readonly scheduled: boolean;
   readonly name: string;
   readonly message: string;
   readonly cron: string;
@@ -41,6 +48,7 @@ export type TriggerDraft = {
 /** An empty form for a Trigger of `environment`, its zone `zone` (the browser's). */
 export const emptyTriggerDraft = (environment: string, zone: string): TriggerDraft => ({
   environment,
+  scheduled: true,
   name: "",
   message: "",
   cron: "",
@@ -57,6 +65,7 @@ export const triggerDraftOf = (definition: TriggerDefinition): TriggerDraft => {
 
   return {
     environment: definition.environment,
+    scheduled: definition.source.type !== "webhook",
     name: definition.name,
     message: definition.message,
     cron: schedule?.cron ?? "",
@@ -81,7 +90,9 @@ const problemOf = (problem: string | undefined): string | null => problem ?? nul
 export const triggerDraftProblems = (draft: TriggerDraft): TriggerDraftProblems => ({
   name: problemOf(triggerNameProblem(draft.name)),
   message: problemOf(triggerMessageProblem(draft.message)),
-  schedule: problemOf(scheduleProblem({ cron: draft.cron, zone: draft.zone })),
+  schedule: draft.scheduled
+    ? problemOf(scheduleProblem({ cron: draft.cron, zone: draft.zone }))
+    : null,
 });
 
 /** Whether `draft` can be saved. */
@@ -93,7 +104,7 @@ export const triggerDraftReady = (draft: TriggerDraft): boolean => {
 
 /** The next Fires the form's Schedule gives after `now`, or none while it can't be saved. */
 export const previewFires = (draft: TriggerDraft, now: number): ReadonlyArray<number> =>
-  scheduleProblem({ cron: draft.cron, zone: draft.zone }) === undefined
+  draft.scheduled && scheduleProblem({ cron: draft.cron, zone: draft.zone }) === undefined
     ? nextFires({ cron: draft.cron.trim(), zone: draft.zone.trim() }, now, PREVIEWED_FIRES)
     : [];
 
@@ -106,8 +117,10 @@ const thinkingOf = (text: string): ThinkingLevel | undefined =>
   isThinkingLevel(text) ? text : undefined;
 
 /** The new Trigger `draft` makes: the owner's own, active. */
-export const triggerInput = (draft: TriggerDraft): EnvironmentTriggerInput => {
-  const input: Types.Mutable<EnvironmentTriggerInput> = {
+export const triggerInput = (
+  draft: TriggerDraft,
+): EnvironmentTriggerInput & { readonly source: ScheduleSource } => {
+  const input: Types.Mutable<EnvironmentTriggerInput & { source: ScheduleSource }> = {
     kind: "environment",
     environment: draft.environment,
     name: draft.name.trim(),
@@ -142,7 +155,11 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
 
   if (input.message !== definition.message) patch.message = input.message;
 
-  if (schedule?.cron !== input.source.cron || schedule.zone !== input.source.zone) {
+  // A webhook Trigger's source is fixed at creation: only a Schedule's is ever sent.
+  if (
+    draft.scheduled &&
+    (schedule?.cron !== input.source.cron || schedule.zone !== input.source.zone)
+  ) {
     patch.source = input.source;
   }
 
@@ -157,9 +174,12 @@ export const triggerPatch = (definition: TriggerDefinition, draft: TriggerDraft)
   return patch;
 };
 
-/** A Trigger's Schedule as its row says it: "0 9 * * 1 · America/Chicago". */
-export const scheduleWords = (definition: TriggerDefinition): string => {
+/** A Trigger's source as its row says it: "0 9 * * 1 · America/Chicago" for a Schedule, "Webhook · github". */
+export const triggerSourceWords = (definition: TriggerDefinition): string => {
   const schedule = scheduleOf(definition);
+  const webhook = webhookOf(definition);
+
+  if (webhook !== undefined) return `Webhook · ${webhook.format}`;
 
   return schedule === undefined
     ? "A source this version can't read"
@@ -198,6 +218,8 @@ export const sourceWords = (fire: FireRecord, zone: string): string => {
   switch (fire.source.type) {
     case "schedule":
       return `Scheduled for ${fireTimeWords(fire.source.scheduledAt, zone)}`;
+    case "webhook":
+      return `Webhook delivery ${fire.source.delivery}`;
     case "manual":
       return "Fire now";
     case "unknown":

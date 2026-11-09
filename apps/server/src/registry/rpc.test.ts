@@ -41,7 +41,7 @@ import {
   skillField,
   type FireRecord,
   MAX_FIRE_LOG,
-  scheduleProblem,
+  sourceProblem,
   type TriggerChangeValue,
   triggerChangeValue,
   holdsEditedFields,
@@ -1532,7 +1532,7 @@ const fakeRegistries = () => {
           return { status: "missing" };
         }
 
-        const problem = triggerNameProblem(trigger.name) ?? scheduleProblem(trigger.source);
+        const problem = triggerNameProblem(trigger.name) ?? sourceProblem(trigger.source);
 
         if (problem !== undefined) return { status: "invalid", problem };
 

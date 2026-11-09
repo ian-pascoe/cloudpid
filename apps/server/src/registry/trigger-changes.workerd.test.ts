@@ -288,6 +288,32 @@ describe("the owner's revert of a Trigger change", () => {
     });
   });
 
+  it("brings a removed webhook Trigger back with its format and match", async () => {
+    const registry = fresh();
+
+    const source = {
+      type: "webhook",
+      format: "github",
+      match: { event: ["workflow_run"], "workflow_run.conclusion": ["failure"] },
+    } as const;
+
+    await registry.agentCreateTrigger(
+      "t1",
+      { ...weekly, source },
+      author("trigger_create", true),
+      1_000,
+    );
+
+    const removal = await registry.agentRemoveTrigger("t1", author("trigger_remove"), 2_000);
+
+    if (removal.status !== "changed") throw new Error("not removed");
+
+    expect(
+      await registry.revertAgentChange(DEFAULT_ENVIRONMENT, removal.change.id, 3_000),
+    ).toMatchObject({ status: "reverted", change: { after: { source, whenBusy: "start" } } });
+    expect(await registry.triggerDefinition("t1")).toMatchObject({ source, revision: 2 });
+  });
+
   it("removes a Trigger the agent made", async () => {
     const { registry, creation } = await made();
 

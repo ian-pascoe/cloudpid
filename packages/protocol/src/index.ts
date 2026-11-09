@@ -69,6 +69,10 @@ export * from "./style-variables.ts";
 
 export * from "./transcript.ts";
 
+export * from "./trigger-match.ts";
+
+export * from "./trigger-payload.ts";
+
 export * from "./trigger-schedule.ts";
 
 export * from "./triggers.ts";
