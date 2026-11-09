@@ -55,6 +55,12 @@ export type TriggerDraft = {
 };
 
 /**
+ * Stands in for the source of a new draft, which is always a Schedule, to pick `defaultWhenBusy` (and the form's first
+ * `when_busy` choice) before any cron is typed.
+ */
+const SCHEDULE_DEFAULT: ScheduleSource = { type: "schedule", cron: "", zone: "" };
+
+/**
  * An empty form for a Trigger of `environment`, its zone `zone` (the browser's): a Workspace trigger's when `workspace`
  * names its Workspace, which waits when busy by default.
  */
@@ -178,9 +184,6 @@ export const triggerInput = (
 
   return input;
 };
-
-/** A Schedule, whose defaults the form's choices lead with. */
-const SCHEDULE_DEFAULT: ScheduleSource = { type: "schedule", cron: "", zone: "" };
 
 /** What a Trigger of `kind` does while busy, as the form offers it: its value and the words for it. */
 export const whenBusyChoices = (

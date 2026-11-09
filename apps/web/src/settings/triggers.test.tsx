@@ -11,6 +11,7 @@ import { RegistryContext } from "@effect/atom-react";
 import { describe, expect, it } from "@effect/vitest";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type * as AtomRegistry from "effect/reactivity/AtomRegistry";
 import { renderToStaticMarkup } from "react-dom/server";
 import { environmentsAtom } from "../environments-state.ts";
@@ -242,8 +243,19 @@ describe("the Triggers section", () => {
 
       expect(markup).toContain("CI failed");
       expect(markup).toContain("Webhook · github");
-      // Fire now is the Schedule triggers' alone: the Environment's and the Workspace's, not the webhook's.
-      expect(markup.match(/Fire now<\/button>/g)).toHaveLength(2);
+
+      // Fire now is the Schedule triggers' alone: the webhook's row has none, the others' do.
+      const rows = markup.split("<li ");
+
+      const rowOf = (name: string) =>
+        Arr.findFirst(rows, (row) => row.includes(`aria-label="Remove ${name}"`)).pipe(
+          Option.getOrElse(() => ""),
+        );
+
+      expect(rowOf("CI failed")).not.toBe("");
+      expect(rowOf("CI failed")).not.toContain("Fire now</button>");
+      expect(rowOf("Weekly report")).toContain("Fire now</button>");
+      expect(rowOf("Lint sweep")).toContain("Fire now</button>");
     }),
   );
 

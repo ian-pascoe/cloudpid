@@ -778,6 +778,53 @@ describe("a Workspace trigger", () => {
     ).toMatchObject({ status: "invalid" });
   });
 
+  it("may fire on a webhook, waiting when busy by default, and starts its Session in the Workspace", async () => {
+    const registry = fresh();
+
+    await startIn(registry, "s-0", "0f0f0f0f");
+    await registry.createTrigger(
+      "t1",
+      {
+        ...inWorkspace("0f0f0f0f"),
+        name: "CI failed",
+        source: { type: "webhook", format: "github" },
+      },
+      1_000,
+    );
+
+    expect(await registry.triggerDefinition("t1")).toMatchObject({
+      kind: "workspace",
+      workspace: { id: "0f0f0f0f", branch: "cloudpid/0f0f0f0f" },
+      source: { type: "webhook", format: "github" },
+      whenBusy: "wait",
+    });
+
+    const delivery = (n: number) => ({
+      trigger: "t1",
+      revision: 1,
+      requestId: `t1:d-${String(n)}`,
+      event: "push",
+    });
+
+    await registry.setSessionStatus("s-0", "running", monday - 1_000);
+
+    expect(await registry.admitFire(delivery(1), ids(1), monday)).toEqual({ status: "busy" });
+
+    await registry.setSessionStatus("s-0", "idle", monday + 1_000);
+
+    expect(await registry.admitFire(delivery(1), ids(1), monday + 2_000)).toMatchObject({
+      status: "started",
+      session: "s-1",
+    });
+    expect(await registry.getSession("s-1")).toMatchObject({
+      title: expect.stringMatching(/^CI failed · push · .* UTC$/),
+      workspace: "0f0f0f0f",
+    });
+    expect((await registry.listWorkspaces()).map((workspace) => workspace.id)).toEqual([
+      "0f0f0f0f",
+    ]);
+  });
+
   it("makes one Trigger of a create retried under its id", async () => {
     const registry = fresh();
 
