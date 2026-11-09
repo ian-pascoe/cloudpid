@@ -113,6 +113,11 @@ export type GlobalSkillCore<Args, Result> = ApprovalCore<
   GlobalSkillHow
 > & {
   readonly outcome: (result: Result, earlier: ReadonlyArray<AgentChange>) => GlobalSkillOutcome;
+  /**
+   * What `apply` answered of a write whose run was cut, rebuilt from the changes it recorded (`earlier`), for when it cannot
+   * be run again (the source refused the rerun): `render` with it tells those changes only.
+   */
+  readonly rebuilt: (args: Args, earlier: Arr.NonEmptyReadonlyArray<AgentChange>) => Result;
 };
 
 /** A refusal the caller reads: nothing was done, and why. */
@@ -477,6 +482,23 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
 
         return { known: GLOBAL, result };
       }),
+    rebuilt: ({ source }, earlier) => {
+      const read = Option.getOrElse(sourceOf(Arr.headNonEmpty(earlier).after), () => ({
+        repo: source,
+        ref: null,
+        commit: "",
+      }));
+
+      return {
+        status: "installed",
+        environment: GLOBAL,
+        repo: read.repo,
+        ref: read.ref,
+        commit: read.commit,
+        results: [],
+        handed: false,
+      };
+    },
     outcome: (result, earlier) => {
       if (result.status !== "installed") return "refused";
 
@@ -757,6 +779,7 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
 
         return { known: GLOBAL, result };
       }),
+    rebuilt: () => ({ status: "done", environment: GLOBAL, results: [], handed: false }),
     outcome: (result, earlier) => {
       if (result.status !== "done") return "refused";
 
@@ -925,6 +948,14 @@ export const globalSkillCores = ({ environments, holdsSecret }: GlobalSkillServi
 
         return { known: GLOBAL, result };
       }),
+    rebuilt: (_args, earlier) => ({
+      status: "removed",
+      environment: GLOBAL,
+      change: Arr.headNonEmpty(earlier),
+      inherited: false,
+      overriddenIn: [],
+      handed: false,
+    }),
     outcome: (result) => {
       switch (result.status) {
         case "removed":
