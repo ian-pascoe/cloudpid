@@ -431,17 +431,18 @@ const CALLER_KEYS: Arr.NonEmptyReadonlyArray<{
 ];
 
 /**
- * Who a caller over the endpoint is, for the changes it made together: the first of `CALLER_KEYS` that `via` has. `key`
- * is its value, `column` where the table keeps it, and `moreSpecific` the columns before it, which a row of this caller
- * leaves empty (a row with a more specific mark is another caller's, whatever its other columns say).
+ * Who a caller over the endpoint is, for the changes it made together. `key` is its value, `column` where the table
+ * keeps it, and `moreSpecific` the columns before it, which a row of this caller leaves empty (a row with a more
+ * specific mark is another caller's, whatever its other columns say).
  */
-export const callerOf = (
-  via: AgentChangeVia,
-): {
+export type McpCaller = {
   readonly key: string;
   readonly column: string;
   readonly moreSpecific: ReadonlyArray<string>;
-} => {
+};
+
+/** The caller `via` names: the first of `CALLER_KEYS` that it has. */
+export const callerOf = (via: AgentChangeVia): McpCaller => {
   const entry = Option.getOrElse(
     Arr.findFirst(CALLER_KEYS, ({ of }) => of(via) !== undefined),
     () => Arr.lastNonEmpty(CALLER_KEYS),
@@ -589,6 +590,7 @@ export const openAgentChanges = ({ sql }: Pick<RegistryStorage, "sql">): AgentCh
     },
     madeBy: (via, since) => {
       const { key, column, moreSpecific } = callerOf(via);
+
       // `via_client_id IS NULL AND via_client_name = ?`: this caller's rows, and no more specific caller's.
       const caller = Arr.join(
         Arr.append(
