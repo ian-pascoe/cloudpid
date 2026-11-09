@@ -598,10 +598,10 @@ export const environmentChangeOutput = ({
 /** The most each list of the Environments a change at Global reached weighs stored. */
 const MAX_REACHED_BYTES = 64 * 1024;
 
-/** Whom a change at Global reached, each list cut to `MAX_REACHED_BYTES`. */
-const globalReach = (global: GlobalChanged) => {
-  const overridden = boundItems(Arr.map(global.overriddenIn, scopeRef), MAX_REACHED_BYTES);
-  const builds = boundItems(Arr.map(global.newBuilds, scopeRef), MAX_REACHED_BYTES);
+/** Whom a change at Global reached, each list cut to `maxBytes` (`MAX_REACHED_BYTES` in a Session). */
+export const globalReach = (global: GlobalChanged, maxBytes: number = MAX_REACHED_BYTES) => {
+  const overridden = boundItems(Arr.map(global.overriddenIn, scopeRef), maxBytes);
+  const builds = boundItems(Arr.map(global.newBuilds, scopeRef), maxBytes);
 
   return {
     overridden_in: overridden.items,

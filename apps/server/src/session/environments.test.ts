@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import type * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 import type { SecretBuildMark } from "../registry/secret-changes.ts";
+import { HOLDS_SECRET, SECRETS_CHANGED, SECRETS_UNCHECKABLE } from "../registry/via-secrets.ts";
 import { type AuthorSource, sessionSource } from "./change-author.ts";
 import { unusedLifecycle } from "./environments.fixture.ts";
 import {
@@ -55,7 +56,7 @@ const CHANGE: AgentChange = {
 };
 
 /** What the fake Registry answers a mark with. */
-type MarkAnswers = { mark: SecretBuildMark };
+type MarkAnswers = { mark: SecretBuildMark; refusal: string };
 
 /** The variables kept Global in the fake Registry. */
 const GLOBAL_VARIABLES = { SHARED: "all" };
@@ -104,6 +105,7 @@ const open = (
       environment: { id: "default", name: "Default" },
       change: { ...CHANGE, field: "secrets.API_KEY.build", before: true, after: false },
     },
+    refusal: "no",
   };
 
   // SAFETY: the calls these tests make are answered; the rest are never reached.
@@ -152,7 +154,7 @@ const open = (
           case "unchanged":
             return { status: "unchanged" as const, value: "all" };
           case "rejected":
-            return { status: "rejected" as const, message: "no" };
+            return { status: "rejected" as const, message: answers.refusal };
           default:
             // SAFETY: a status a later Registry answers, which this build does not know: outside the union on purpose.
             return { status: globalAnswer } as never;
@@ -353,7 +355,7 @@ const open = (
           case "unchanged":
             return { status: "unchanged" as const, environment, value: null };
           case "rejected":
-            return { status: "rejected" as const, message: "no" };
+            return { status: "rejected" as const, message: answers.refusal };
           case "missing":
             return { status: "missing" as const };
           default:
@@ -409,6 +411,10 @@ const open = (
     markAsked,
     setMark: (next: SecretBuildMark) => {
       answers.mark = next;
+    },
+    /** The message the fake Registry refuses a change with. */
+    setRefusal: (message: string) => {
+      answers.refusal = message;
     },
   };
 };
@@ -993,6 +999,66 @@ describe("the Environments from the endpoint", () => {
     );
 
     expect(markAsked).toEqual([]);
+  });
+});
+
+describe("the Environments from the endpoint, refused", () => {
+  const via = { auth: "oauth" as const, client: { name: "pi", version: "1" }, clientId: "c-1" };
+  const endpoint: AuthorSource = { kind: "endpoint", via };
+  const mark = { environment: "default", name: "API_KEY", build: false, author };
+
+  it("fail a mark the Registry's check refuses with invalid_argument, or unavailable when it heals, in its own words", async () => {
+    for (const [message, code] of [
+      [HOLDS_SECRET, "invalid_argument"],
+      [SECRETS_CHANGED, "unavailable"],
+      [SECRETS_UNCHECKABLE, "unavailable"],
+    ] as const) {
+      const { environments, setMark, upkept } = open("changed", "changed", false, false, endpoint);
+
+      setMark({ status: "rejected", message });
+
+      expect(await Effect.runPromise(Effect.flip(environments.markSecret(mark)))).toMatchObject({
+        code,
+        message,
+      });
+      expect(upkept).toEqual([]);
+    }
+  });
+
+  it("fail a change the check refuses as one that heals with unavailable, and leave any other refusal to the core", async () => {
+    for (const environment of ["default", "*"]) {
+      const { environments, setRefusal } = open("rejected", "rejected", false, false, endpoint);
+
+      setRefusal(SECRETS_CHANGED);
+
+      expect(
+        await Effect.runPromise(Effect.flip(environments.change({ environment, change, author }))),
+      ).toMatchObject({ code: "unavailable", message: SECRETS_CHANGED });
+
+      setRefusal(HOLDS_SECRET);
+
+      expect(await Effect.runPromise(environments.change({ environment, change, author }))).toEqual(
+        { status: "rejected", message: HOLDS_SECRET },
+      );
+    }
+  });
+
+  it("fail with no code a change the Registry answered with a status this build does not know", async () => {
+    // SAFETY: a status outside the union, as a later Registry answers (`docs/development/workers.md` → Bindings).
+    const later = "later" as "changed";
+
+    for (const environment of ["default", "*"]) {
+      const { environments, upkept } = open(later, later, false, false, endpoint);
+
+      const failed = await Effect.runPromise(
+        Effect.flip(environments.change({ environment, change, author })),
+      );
+
+      // The dispatcher answers a failure with no code as one whose change is not known to be made or not.
+      expect(failed).toBeInstanceOf(EnvironmentsError);
+      expect(failed.code).toBeUndefined();
+      expect(upkept).toEqual([]);
+    }
   });
 });
 

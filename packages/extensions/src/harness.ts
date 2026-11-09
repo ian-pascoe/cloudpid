@@ -16,6 +16,7 @@ import {
 } from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import type * as Effect from "effect/Effect";
+import type { RunChange } from "./environment.ts";
 import { cutStored, type Stored, storedBytes } from "./stored-bytes.ts";
 
 /** A core's answer: the text the model reads, the structured value a program gets, and the details of the card. */
@@ -31,7 +32,26 @@ export type HarnessAnswer = {
  */
 export type HarnessRead<A, E> = (args: A, surface: Surface) => Effect.Effect<HarnessAnswer, E>;
 
-/** The error codes a core's refusals carry: what the dispatcher maps to the endpoint's `not_found` and `invalid_argument`. */
+/**
+ * A changing tool's answer: as a read's, with the Agent change the Session's wrapper tells the Run's Notification of
+ * (`AgentChangeLog`); none when nothing was recorded. On the endpoint the dispatcher reads the changes from `structured`.
+ */
+export type HarnessWriteAnswer = HarnessAnswer & {
+  readonly logged: RunChange | undefined;
+};
+
+/**
+ * A changing tool's core: its arguments, the surface, and the conversation that called it (a Session's; none on the
+ * endpoint, whose services know the caller), to its answer. A refusal is the service's error, with a `HarnessErrorCode`
+ * where the caller may read it.
+ */
+export type HarnessWrite<A, E> = (
+  args: A,
+  surface: Surface,
+  conversation?: number,
+) => Effect.Effect<HarnessWriteAnswer, E>;
+
+/** The error codes a core's refusals carry: what the dispatcher maps to the endpoint's codes of the same names. */
 export const NOT_FOUND = "not_found" satisfies HarnessErrorCode;
 
 export const INVALID_ARGUMENT = "invalid_argument" satisfies HarnessErrorCode;

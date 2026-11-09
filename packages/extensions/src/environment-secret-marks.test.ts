@@ -1,7 +1,9 @@
 // The `environment` extension's tool for the Build mark of a kept Secret (docs/architecture/agent-changes.md):
-// `environment_secret_build`, over fake kept Secrets that apply a mark as the Registry does.
-// @effect-diagnostics asyncFunction:off schemaSync:off
+// `environment_secret_build`, over fake kept Secrets that apply a mark as the Registry does; and its core on the endpoint's
+// surface (`docs/architecture/mcp-endpoint.md` → Names and surfaces), whose words send the caller to the owner.
+// @effect-diagnostics asyncFunction:off schemaSync:off missedPipeableOpportunity:off
 import { DEFAULT_CONTAINER_SETTINGS } from "@cloudpid/config";
+import { HARNESS_TOOLS } from "@cloudpid/protocol/harness-tools";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   type JsonObject,
@@ -28,6 +30,7 @@ import { unusedApprovals } from "./approvals.fixture.ts";
 import { unusedLifecycle } from "./environment-lifecycle.fixture.ts";
 import { fakeSecretMarks, type KeptMark } from "./environment-secret-marks.fixture.ts";
 import { unusedSkills } from "./environment-skills.fixture.ts";
+import { endpointTextCheck, environmentChangeCores } from "./environment-changes.ts";
 import { ChangeOutput } from "./outputs.ts";
 import { runProgram } from "./program.fixture.ts";
 import { Redactions } from "./secrets/redaction.ts";
@@ -300,5 +303,59 @@ describe("environment_secret_build from a program", () => {
       scope: { id: "*", name: "Global" },
       changes: [{ field: "secrets.NPM_TOKEN.build", before: false, after: true }],
     });
+  });
+});
+
+describe("environment_secret_build's core on the endpoint", () => {
+  /** The core over the fake kept Secrets as the endpoint runs it: no Session, and a check that knows no Session's Secrets. */
+  const endpointCore = async () => {
+    const marks = fakeSecretMarks();
+
+    const holdsSecret = await Effect.runPromise(
+      endpointTextCheck.pipe(Effect.provideService(DeployCredentials, { values: [GITHUB_TOKEN] })),
+    );
+
+    const environments = {
+      current: Effect.succeed(null),
+      get: () => Effect.die("not used here"),
+      global: Effect.die("not used here"),
+      change: () => Effect.die("not used here"),
+      ...marks.service,
+    };
+
+    return {
+      core: environmentChangeCores({ environments, holdsSecret }).environment_secret_build,
+      ...marks,
+    };
+  };
+
+  it("marks a Secret as the endpoint's schema declares, with no Approval", async () => {
+    const { core } = await endpointCore();
+
+    const answer = await Effect.runPromise(
+      core({ id: "default", name: "API_KEY", build: false, reason: "r" }, "endpoint"),
+    );
+
+    const output = Schema.decodeUnknownSync(HARNESS_TOOLS.environment_secret_build.endpoint.output)(
+      answer.structured,
+    );
+
+    expect(output.changes).toMatchObject([{ field: "secrets.API_KEY.build", after: false }]);
+    expect(output).not.toHaveProperty("approval");
+    expect(answer.logged).toMatchObject({ tool: "environment_secret_build" });
+  });
+
+  // The endpoint does not serve `secret_ask`: the refusal sends the caller to the owner instead (`mcp-endpoint.md` → Names
+  // and surfaces).
+  it("refuses a Secret that is not kept there as invalid_argument, without naming secret_ask", async () => {
+    const { core, calls } = await endpointCore();
+
+    const refused = await Effect.runPromise(
+      Effect.flip(core({ id: "default", name: "NPM_TOKEN", build: true, reason: "r" }, "endpoint")),
+    );
+
+    expect(refused.code).toBe("invalid_argument");
+    expect(refused.message).not.toContain("secret_ask");
+    expect(calls).toEqual([]);
   });
 });

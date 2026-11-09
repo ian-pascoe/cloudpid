@@ -7,14 +7,9 @@
 // nothing here runs a command. Each declares an output schema (`docs/architecture/agent-capabilities.md` → Values for
 // programs): what happened to the Container, as the text tells the model; a refused resize is an error and has none.
 // @effect-diagnostics missingPipeableSignature:off
-import {
-  compareInstances,
-  INSTANCE_DESCRIPTIONS,
-  INSTANCE_RESOURCES,
-  INSTANCE_TYPES,
-  InstanceType,
-} from "@cloudpid/config";
+import { INSTANCE_DESCRIPTIONS, INSTANCE_RESOURCES, InstanceType } from "@cloudpid/config";
 import { defineEffectTool } from "@cloudpid/effect-durable";
+import { SIZE_LINES } from "@cloudpid/protocol/harness-tools";
 import { defineExtension, type Extension } from "@earendil-works/pi-durable";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -164,15 +159,6 @@ const ContainerRestart = defineEffectTool({
     };
   }),
 });
-
-/** Every size, smallest memory first, with what it offers. */
-export const SIZE_LINES = Arr.join(
-  Arr.map(
-    Arr.sort(INSTANCE_TYPES, compareInstances),
-    (size) => `- ${size}: ${INSTANCE_DESCRIPTIONS[size]}`,
-  ),
-  "\n",
-);
 
 const resizeDescription = Arr.join(
   [

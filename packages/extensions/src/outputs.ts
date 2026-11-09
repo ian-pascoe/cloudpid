@@ -7,11 +7,27 @@
 // Keys are snake_case, and "none" is null rather than a missing key.
 // @effect-diagnostics missingPipeableSignature:off
 import type { AgentChange } from "@cloudpid/protocol";
+import type {
+  AgentChangeOutput,
+  ApprovalOutcome,
+  ScopeRef,
+} from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import * as Arr from "effect/Array";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import { cutStored, type Stored, storedBytes } from "./stored-bytes.ts";
+
+// The shapes of an Agent change and an Approval are the shared declarations' (`@cloudpid/protocol/harness-tools`), since
+// the endpoint declares the same tools; they are re-exported here, where the tools have always imported them from.
+export {
+  AgentChangeOutput,
+  ApprovalOutcome,
+  ChangeOutput,
+  ChangeOutputFields,
+  EnvironmentChangeOutput,
+  ScopeRef,
+} from "@cloudpid/protocol/harness-tools";
 
 /**
  * `schema` as a tool's `structuredOutputSchema`: its JSON Schema, which must hold no definitions, since a tool declares
@@ -70,12 +86,6 @@ export const boundText = (text: string, maxBytes: number = MAX_PART_BYTES) => {
 export const asOutput = <S extends Schema.Top>(_schema: S, value: S["Type"]): JsonValue =>
   value as JsonValue;
 
-/** An Environment, or Global (id `*`), by id and name. */
-export const ScopeRef = Schema.Struct({
-  id: Schema.String.annotate({ description: 'The Environment\'s id, or "*" for Global' }),
-  name: Schema.String.annotate({ description: 'The Environment\'s name, or "Global"' }),
-});
-
 /** An Environment or Global, by id and name, as a value gives it. */
 export const scopeRef = ({
   id,
@@ -98,16 +108,6 @@ export const overriddenInOutput = (
   return { overridden_in: items, overridden_in_truncated: truncated };
 };
 
-/** The owner's answer to a change that waits for their Approval; null for a change that does not. */
-export const ApprovalOutcome = Schema.NullOr(
-  Schema.Struct({
-    approved: Schema.Boolean.annotate({ description: "The owner approved the change" }),
-    reason: Schema.NullOr(Schema.String).annotate({
-      description: "Why the owner declined; null when they approved or gave none",
-    }),
-  }),
-).annotate({ description: "The owner's Approval; null for a change that does not wait for it" });
-
 /**
  * The most an Agent change's `before` or `after` weighs stored in a value. The values a tool sets are mostly far
  * smaller (a script or the Instructions are at most 64 KiB of text, which escapes to more), but one change can hold a
@@ -125,32 +125,6 @@ export const approvalOutput = (
     | { readonly approved: false; readonly reason?: string | undefined },
 ): typeof ApprovalOutcome.Type =>
   answer.approved ? APPROVED : { approved: false, reason: answer.reason ?? null };
-
-/** One Agent change, as the Registry recorded it. */
-export const AgentChangeOutput = Schema.Struct({
-  id: Schema.Finite.annotate({ description: "The Agent change's number in the Registry" }),
-  field: Schema.String.annotate({
-    description: "What changed: a setting's path, or variables.<NAME> for a variable",
-  }),
-  before: Schema.NullOr(Schema.Json).annotate({
-    description: "Its value before; null for none, or when before_truncated",
-  }),
-  before_truncated: Schema.Boolean.annotate({
-    description: "The value before was too large to give (over 128 KiB), so before is null",
-  }),
-  after: Schema.NullOr(Schema.Json).annotate({
-    description: "Its value after; null for none, or when after_truncated",
-  }),
-  after_truncated: Schema.Boolean.annotate({
-    description: "The value after was too large to give (over 128 KiB), so after is null",
-  }),
-  before_inherited: Schema.Boolean.annotate({
-    description: "At an Environment, the value before was inherited from Global",
-  }),
-  after_inherited: Schema.Boolean.annotate({
-    description: "At an Environment, the value after is inherited from Global (a reset)",
-  }),
-});
 
 /** `value`, or null with a flag when it weighs more than `MAX_CHANGE_VALUE_BYTES` stored. */
 const changeValue = (value: Schema.Json | null) =>
@@ -181,51 +155,3 @@ export const changesOutput = (changes: ReadonlyArray<AgentChange>) => {
 
   return { changes: items, changes_truncated: truncated };
 };
-
-/**
- * What a tool that makes Agent changes at one Scope gives programs: the Scope, the changes it made, the fields that
- * already had their value, and the owner's Approval where the change waits for it. An Environment's Container setting
- * tools add how a change reached the Environments (`EnvironmentChangeOutput`).
- */
-export const ChangeOutputFields = {
-  scope: ScopeRef,
-  changes: Schema.Array(AgentChangeOutput).annotate({
-    description: "The Agent changes made; empty when nothing changed",
-  }),
-  changes_truncated: Schema.Boolean.annotate({
-    description: "Some changes were left out, the list being too large to give",
-  }),
-  unchanged: Schema.Array(Schema.String).annotate({
-    description: "The fields that already had their value, so nothing was saved for them",
-  }),
-  approval: ApprovalOutcome,
-};
-
-export const ChangeOutput = Schema.Struct(ChangeOutputFields);
-
-/** A Container setting changed at an Environment or at Global, and whom it reached. */
-export const EnvironmentChangeOutput = Schema.Struct({
-  ...ChangeOutputFields,
-  own: Schema.Boolean.annotate({
-    description: "The change reaches this Session's own Workspace",
-  }),
-  new_build: Schema.Boolean.annotate({
-    description: "A new Build was asked for in the Environment changed",
-  }),
-  global: Schema.NullOr(
-    Schema.Struct({
-      overridden_in: Schema.Array(ScopeRef).annotate({
-        description: "The Environments that override the field, so the change does not reach them",
-      }),
-      overridden_in_truncated: Schema.Boolean.annotate({
-        description: "More Environments override it than fit this value: the first are listed",
-      }),
-      new_builds: Schema.Array(ScopeRef).annotate({
-        description: "The Environments in which a new Build was asked for",
-      }),
-      new_builds_truncated: Schema.Boolean.annotate({
-        description: "More Builds were asked for than fit this value: the first are listed",
-      }),
-    }),
-  ).annotate({ description: "For a change at Global, how it reached the Environments; else null" }),
-});

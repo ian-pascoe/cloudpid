@@ -4,6 +4,8 @@ import {
   ENDPOINT_CORE_TEXT_CHARS,
   ENDPOINT_TEXT_CHARS,
   HARNESS_TOOL_NAMES,
+  HARNESS_TOOLS,
+  type HarnessToolName,
   MAX_PAGE_CHARS,
 } from "@cloudpid/protocol/harness-tools";
 import {
@@ -1689,16 +1691,108 @@ describe("the management tools", () => {
     total_chars: 8,
   };
 
-  it("are offered when describe().harness lists them, each read-only with a flat object schema", async () => {
+  it("are offered when describe().harness lists them, each with its declared annotations and a flat object schema", async () => {
     const tools = await listed(fakeApi({ describe: serving(HARNESS_TOOL_NAMES) }));
 
     expect(tools.map((tool) => tool.name)).toEqual([...OPERATIONS_TOOLS, ...HARNESS_TOOL_NAMES]);
 
     for (const tool of tools.filter((each) => HARNESS_TOOL_NAMES.some((n) => n === each.name))) {
-      expect(tool.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+      // SAFETY: the filter kept the names of `HARNESS_TOOLS`.
+      const declared = HARNESS_TOOLS[tool.name as HarnessToolName];
+
+      // The handler's wiring: each offered tool carries the hints its declaration gives (D13, L9).
+      expect(tool.annotations, tool.name).toMatchObject(declared.annotations);
       expect(tool.inputSchema.type).toBe("object");
       expect(tool.outputSchema.type).toBe("object");
     }
+
+    const reads = tools.filter((each) => each.name === "environment_get");
+    const writes = tools.filter((each) => each.name === "environment_variable_set");
+
+    expect(reads[0]?.annotations).toMatchObject({ readOnlyHint: true });
+    expect(writes[0]?.annotations).toMatchObject({ readOnlyHint: false, idempotentHint: true });
+    expect(
+      tools.find((each) => each.name === "environment_variable_unset")?.annotations,
+    ).toMatchObject({ readOnlyHint: false, idempotentHint: true, destructiveHint: true });
+  });
+
+  it("pass a write's request_id as the request's requestId too, and leave it out when there is none", async () => {
+    const harness = vi.fn(() =>
+      Promise.resolve(
+        apiOk({
+          text: "Set.",
+          structured: {
+            scope: { id: "default", name: "Default" },
+            changes: [],
+            changes_truncated: false,
+            unchanged: ["variables.A"],
+            global: null,
+          },
+        }),
+      ),
+    );
+
+    const api = fakeApi({ describe: serving(HARNESS_TOOL_NAMES), harness });
+    const args = { id: "default", name: "A", value: "1", reason: "r" };
+
+    await call("environment_variable_set", { ...args, request_id: "req-1" }, api);
+    await call("environment_variable_set", args, api);
+
+    expect(harness).toHaveBeenNthCalledWith(1, {
+      tool: "environment_variable_set",
+      input: { ...args, request_id: "req-1" },
+      requestId: "req-1",
+      via: { era: "legacy" },
+    });
+    expect(harness).toHaveBeenNthCalledWith(2, {
+      tool: "environment_variable_set",
+      input: args,
+      via: { era: "legacy" },
+    });
+  });
+
+  it("send a change to environment_get as next, a replayed answer too, and an unchanged one nowhere", async () => {
+    const scope = { id: "default", name: "Default" };
+    const base = { scope, changes_truncated: false, unchanged: [], global: null };
+
+    const change = {
+      id: 4,
+      field: "variables.A",
+      before: null,
+      before_truncated: false,
+      after: "1",
+      after_truncated: false,
+      before_inherited: false,
+      after_inherited: false,
+    };
+
+    const answer = (structured: Schema.Json) =>
+      call(
+        "environment_variable_set",
+        { id: "default", name: "A", value: "1", reason: "r" },
+        fakeApi({
+          describe: serving(HARNESS_TOOL_NAMES),
+          harness: () => Promise.resolve(apiOk({ text: "Set.", structured })),
+        }),
+      );
+
+    const changed = await answer({ ...base, changes: [change], new_build: true });
+
+    expect(changed.isError, changed.content[0]?.text).toBeUndefined();
+    expect(changed.structuredContent.next).toBe(
+      'Call environment_get with id="default" to see the settings and the Build as they are now.',
+    );
+    expect(changed.content[0]?.text).toBe(`Set.\n\n${changed.structuredContent.next}`);
+
+    const replayed = await answer({ ...base, changes: [change], replayed: true });
+
+    expect(replayed.structuredContent).toMatchObject({ replayed: true });
+    expect(replayed.structuredContent.next).toContain("environment_get");
+
+    const unchanged = await answer({ ...base, changes: [], unchanged: ["variables.A"] });
+
+    expect(unchanged.structuredContent.next).toBeUndefined();
+    expect(unchanged.content[0]?.text).toBe("Set.");
   });
 
   it("are offered only as far as describe().harness lists them", async () => {
@@ -2104,6 +2198,25 @@ describe("the instructions with the management tools", () => {
       "To manage rather than start: environment_list, environment_get and settings_get show what is set (pass field to read a long text whole).",
     );
     expect(withReads).not.toContain("approval_wait");
+  });
+
+  // The gating is the contract (`mcp-endpoint.md` → `instructions`): a clause names a change tool only when one is served.
+  it("add the change clause and every change to request_id only when a change tool is served", () => {
+    const withReads = instructionsFor(new Set([...sessions, ...reads]));
+
+    const withWrites = instructionsFor(
+      new Set([...sessions, ...reads, "environment_variable_set"]),
+    );
+
+    expect(withReads).not.toContain("every change");
+    expect(withReads).not.toContain("the other environment_*");
+
+    expect(withWrites).toMatch(/request_id to session_start and every change/);
+    // The sentence is the contract (D14): the clause names only the families with a change tool served, so it points the
+    // model at no tool it cannot call. No settings_* change tool is served yet (S2b), so neither it nor "or scope" is said.
+    expect(withWrites).toContain("the other environment_* tools change it, naming an id (");
+    expect(withWrites).not.toContain("settings_*");
+    expect(withWrites.split("\n").length).toBe(withReads.split("\n").length);
   });
 
   it("name only the reads that are served, and say nothing of field for a list alone", () => {

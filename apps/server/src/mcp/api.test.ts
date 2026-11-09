@@ -17,13 +17,7 @@ import type { SessionRefusal } from "../registry/store.ts";
 import { endedBy } from "../session/mcp-follow.ts";
 import type { FollowState } from "../session/mcp-reads.ts";
 import { MCP_CALLS_PERIOD_S } from "../mcp-access.ts";
-import {
-  tooManyRunning,
-  mcpApiService,
-  type McpApiContext,
-  type McpBackend,
-  HARNESS_TOOLS_SERVED,
-} from "./api.ts";
+import { tooManyRunning, mcpApiService, type McpApiContext, type McpBackend } from "./api.ts";
 
 const ORIGIN = "https://cloudpid.test";
 const ID = "0190f0a8-1b2c-7d3e-8f40-123456789abc";
@@ -159,15 +153,24 @@ describe("describe", () => {
     expect(service().describe().version).toBeUndefined();
   });
 
-  it("lists the five management tools it serves in harness, and no other", () => {
+  it("lists the management tools it serves in harness, and no other", () => {
     expect(service().describe().harness).toEqual([
       "environment_list",
       "environment_get",
       "settings_get",
       "settings_mcp_list",
       "settings_mcp_get",
+      "environment_variable_set",
+      "environment_variable_unset",
+      "environment_container_resize",
+      "environment_idle_time_set",
+      "environment_setup_script_set",
+      "environment_start_script_set",
+      "environment_toolchains_set",
+      "environment_ignore_set",
+      "environment_spare_workspace_set",
+      "environment_secret_build",
     ]);
-    expect(service().describe().harness).toEqual([...HARNESS_TOOLS_SERVED]);
   });
 });
 
@@ -201,6 +204,49 @@ describe("harness", () => {
       value: { text: "Environment Default", structured: { scope: { id: "default" } } },
     });
   });
+
+  // A change is recorded as made by the verified caller, never by what an argument says (`mcp-endpoint.md` → The
+  // recorded author).
+  it.each([
+    [
+      "the owner, through a grant",
+      { kind: "owner", clientId: "grant-1" },
+      request.via,
+      { auth: "oauth", client: { name: "pi" }, clientId: "grant-1" },
+    ],
+    [
+      "the owner, with no grant named",
+      { kind: "owner" },
+      request.via,
+      { auth: "oauth", client: { name: "pi" } },
+    ],
+    [
+      "the Local agent, with no client name",
+      { kind: "local" },
+      { era: "legacy" },
+      { auth: "local" },
+    ],
+  ] as const)(
+    "hands the dispatcher %s as the caller a change is made by",
+    async (_, caller, via, recorded) => {
+      const callers: Array<unknown> = [];
+
+      await run(
+        service(
+          {
+            harness: (_given, by) => {
+              callers.push(by);
+
+              return Effect.succeed({ ok: true as const, value: { text: "ok", structured: {} } });
+            },
+          },
+          { caller },
+        ).harness({ ...request, via }),
+      );
+
+      expect(callers).toEqual([recorded]);
+    },
+  );
 
   it("passes the dispatcher's refusals through as values", async () => {
     const result = await run(

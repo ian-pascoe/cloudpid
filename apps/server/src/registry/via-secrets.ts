@@ -43,6 +43,15 @@ export const SECRETS_CHANGED =
 export const SECRETS_UNCHECKABLE =
   "Nothing was saved: the kept Secrets cannot be opened to check the call against, so no change can be made over MCP until they can";
 
+/**
+ * Whether the check's refusal `message` heals by itself (the kept Secrets changed meanwhile, or could not be opened), so
+ * the caller may try the same call again: the endpoint answers it `unavailable`, and any other refusal
+ * `invalid_argument`. It compares with the constants above, the one source of the words the check refuses with, so a
+ * reworded refusal still heals.
+ */
+export const healingRefusal = (message: string): boolean =>
+  message === SECRETS_CHANGED || message === SECRETS_UNCHECKABLE;
+
 /** The Scopes an Environment's write reaches: its own Secrets and Global's. */
 export const environmentReach = (environment: string): SecretReach => [environment, GLOBAL_SCOPE];
 

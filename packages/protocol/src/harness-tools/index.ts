@@ -10,10 +10,15 @@
 // @effect-diagnostics missingPipeableSignature:off
 import * as Record from "effect/Record";
 import { environmentGet, environmentList } from "./environment.ts";
+import { CONTAINER_SETTING_TOOLS, environmentSecretBuild } from "./environment-changes.ts";
 import { settingsGet } from "./settings.ts";
 import { settingsMcpGet, settingsMcpList } from "./settings-mcp.ts";
 
+export * from "./change-output.ts";
+
 export * from "./environment.ts";
+
+export * from "./environment-changes.ts";
 
 // `Source` and `placement` are this folder's own pieces of the output schemas, not part of its surface.
 export {
@@ -30,7 +35,11 @@ export {
 
 export * from "./field-page.ts";
 
+export * from "./reason.ts";
+
 export * from "./scope.ts";
+
+export * from "./secret-name.ts";
 
 export * from "./settings.ts";
 
@@ -42,10 +51,15 @@ export * from "./settings-output.ts";
 
 export * from "./surface.ts";
 
-/** Every harness tool's declaration, by name: the five reads. */
+/**
+ * Every harness tool's declaration, by name: the five reads, the nine Container setting tools and
+ * `environment_secret_build`.
+ */
 export const HARNESS_TOOLS = {
   environment_list: environmentList,
   environment_get: environmentGet,
+  ...CONTAINER_SETTING_TOOLS,
+  environment_secret_build: environmentSecretBuild,
   settings_get: settingsGet,
   settings_mcp_list: settingsMcpList,
   settings_mcp_get: settingsMcpGet,

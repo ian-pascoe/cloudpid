@@ -30,6 +30,7 @@ import type { Builds } from "../registry/builds.ts";
 import type { Spares } from "../registry/rpc.ts";
 import type { Placement } from "./workspace.ts";
 import type { SkillSet } from "../workspace/skill-set-schema.ts";
+import { healingRefusal } from "../registry/via-secrets.ts";
 import { type AuthorSource, authored, sessionOf, unlistedSession } from "./change-author.ts";
 
 /** What the Session's Environments read and change in the Registry. */
@@ -121,7 +122,9 @@ const GLOBAL = { id: GLOBAL_ID, name: GLOBAL_NAME };
 
 /**
  * A change the Registry answered with a status this build does not know (a later Registry's): a refusal, never the path
- * of a change that was made, though the Registry may have recorded it (`docs/development/workers.md` \u2192 Bindings).
+ * of a change that was made, though the Registry may have recorded it (`docs/development/workers.md` \u2192 Bindings). A
+ * Session's tool says it as a refusal; the endpoint's fails with no code, which the dispatcher answers `unavailable`,
+ * whether the change was made not known (`../harness/dispatch.ts`).
  */
 const unknownAnswer = {
   status: "rejected",
@@ -152,6 +155,16 @@ export const buildsAfterScope = (
 
 /** What handing a change to a Workspace answers where there is none to hand it to: never reached, as `where` is null then. */
 const NO_WORKSPACE = Promise.resolve({ ok: false, message: "There is no Workspace" } as const);
+
+/**
+ * A refusal of the Registry's check of a write over the endpoint (`../registry/via-secrets.ts`): `unavailable` for one a
+ * try again heals, `invalid_argument` for the rest. Its message is the Registry's, which says "Nothing was saved".
+ */
+const viaRefusal = (message: string) =>
+  EnvironmentsError.make({
+    message,
+    code: healingRefusal(message) ? "unavailable" : "invalid_argument",
+  });
 
 /** The error of a failed call to the Registry or the Workspace, as the model sees it. */
 const failedCall = (what: string) => (cause: unknown) =>
@@ -383,6 +396,15 @@ export const sessionEnvironments = ({
     EnvironmentsError.make({ message: unlistedSession("Environment") }),
   );
 
+  /**
+   * What an answer of the Registry's this build does not know is: a Session's refusal, or the endpoint's failure with no
+   * code, as the change may have been made.
+   */
+  const unknownOutcome: Effect.Effect<typeof unknownAnswer, EnvironmentsError> =
+    source.kind === "endpoint"
+      ? EnvironmentsError.make({ message: unknownAnswer.message })
+      : Effect.succeed(unknownAnswer);
+
   return {
     ...lifecycle,
     ...environmentReads(registry),
@@ -537,9 +559,7 @@ export const sessionEnvironments = ({
         });
 
         // The Registry refuses a write over the MCP endpoint (`via`) whose texts hold a kept Secret; never a Session's.
-        if (marked.status === "rejected") {
-          return yield* EnvironmentsError.make({ message: marked.message });
-        }
+        if (marked.status === "rejected") return yield* viaRefusal(marked.message);
 
         // As after the owner's switch: the Secrets marked for the Build are part of what a Build is made with.
         if (marked.status === "changed") {
@@ -562,7 +582,11 @@ export const sessionEnvironments = ({
           });
 
           switch (atGlobal.status) {
+            // A refusal that heals is the endpoint's `unavailable`; any other, the core's to word.
             case "rejected":
+              return healingRefusal(atGlobal.message)
+                ? yield* viaRefusal(atGlobal.message)
+                : atGlobal;
             case "changed-since":
               return atGlobal;
             case "unchanged":
@@ -574,7 +598,7 @@ export const sessionEnvironments = ({
             case "changed":
               break;
             default:
-              return unknownAnswer;
+              return yield* unknownOutcome;
           }
 
           // The Session's own Workspace takes it now unless its Environment overrides the field.
@@ -617,6 +641,7 @@ export const sessionEnvironments = ({
 
         switch (answer.status) {
           case "rejected":
+            return healingRefusal(answer.message) ? yield* viaRefusal(answer.message) : answer;
           case "missing":
           case "changed-since":
             return answer;
@@ -629,7 +654,7 @@ export const sessionEnvironments = ({
           case "changed":
             break;
           default:
-            return unknownAnswer;
+            return yield* unknownOutcome;
         }
 
         // The Session's own Workspace takes it now, not at its next readying; one that cannot be reached gets it then.
