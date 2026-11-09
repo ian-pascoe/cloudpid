@@ -803,6 +803,8 @@ describe("the lifecycle, Skill and reset tools", () => {
   it.each([
     ["environment_rename", { id: "*", name: "X", reason }],
     ["environment_setting_reset", { id: "*", setting: "setupScript", reason }],
+    // The size limit's reset asks the owner, and its ask refuses Global as the reset of any other setting does.
+    ["environment_setting_reset", { id: "*", setting: "maxInstance", reason }],
   ] as const)("refuses %s at Global as invalid_argument", (tool, input) =>
     Effect.runPromise(
       Effect.gen(function* () {

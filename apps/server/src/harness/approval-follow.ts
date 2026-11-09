@@ -16,8 +16,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import type * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import { awaitsApply, MAX_APPROVAL_WAITS, type StoredApproval } from "../registry/approvals.ts";
-import { isoTime } from "./approval-tools.ts";
+import {
+  awaitsApply,
+  expiresAtIso,
+  MAX_APPROVAL_WAITS,
+  type StoredApproval,
+} from "../registry/approvals.ts";
 import type { ApprovalRunner } from "./approval-runner.ts";
 import type { ApprovalsRegistry } from "./services.ts";
 
@@ -34,7 +38,7 @@ export const approvalState = (approval: StoredApproval): ApprovalState => {
     tool: approval.tool,
     status: approval.status,
     finished: approvalSettled(approval.status),
-    expires_at: isoTime(approval.expiresAt),
+    expires_at: expiresAtIso(approval),
   };
 
   const reason =
@@ -55,6 +59,10 @@ export const approvalState = (approval: StoredApproval): ApprovalState => {
   return state;
 };
 
+/**
+ * The answer for a request id the Registry keeps no row of (`not_found`): never asked, or ended and forgotten after its
+ * 24 h.
+ */
 const notFound = (id: string) =>
   apiFailure(
     "not_found",

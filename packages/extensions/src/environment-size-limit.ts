@@ -2,9 +2,10 @@
 // The core of `environment_container_size_limit_set` (`docs/architecture/mcp-endpoint.md` → Environment and Settings
 // tools → Approvals with no Session; #685 L2): `prepare`, `apply` and `render` over the Registry's Environments, as
 // `./approval-cores.ts` describes them. The size limit is a Limit, so the change waits for the owner's Approval. The card
-// shows the limit as it is now and after, and the change is made only while the limit is still as the owner saw it.
+// shows the limit as it is now and after, and the change is made only while the limit is still as the owner saw it. Its
+// words are a Session's, or on the endpoint (`surface`) the owner's, naming only the tools the endpoint serves.
 import { compareInstances, InstanceType } from "@cloudpid/config";
-import { GLOBAL_ID, GLOBAL_NAME } from "@cloudpid/protocol/harness-tools";
+import { GLOBAL_ID, GLOBAL_NAME, type Surface, whoWords } from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -26,13 +27,17 @@ import { APPROVED, asOutput, EnvironmentChangeOutput } from "./outputs.ts";
 /** The tool's name, which its cards and the changes it makes carry. */
 export const SIZE_LIMIT_TOOL = "environment_container_size_limit_set";
 
-/** What the core reads and writes: the Registry's Environments, and the check of the reason. */
+/**
+ * What the core reads and writes: the Registry's Environments, and the check of the reason; and whose words it answers in
+ * (`surface`, a Session's when absent).
+ */
 export type SizeLimitServices = {
   readonly environments: Pick<
     EnvironmentsService,
     "current" | "list" | "get" | "global" | "change"
   >;
   readonly plainText: PlainText;
+  readonly surface?: Surface;
 };
 
 /** The arguments of `environment_container_size_limit_set`. */
@@ -61,6 +66,7 @@ const storedSizeWords = (stored: Schema.Json | null): string =>
 export const sizeLimitCore = ({
   environments,
   plainText,
+  surface = "session",
 }: SizeLimitServices): ApprovalCore<
   SizeLimitArgs,
   SizeLimitKnown,
@@ -194,6 +200,13 @@ export const sizeLimitCore = ({
     render: ({ id, size }, expected, { known, result }) => {
       const details = known.environment;
       const where = named(details);
+      const who = whoWords(surface);
+
+      // The endpoint serves no Session's `container_resize`.
+      const resizers =
+        surface === "session"
+          ? "environment_container_resize and container_resize may"
+          : "environment_container_resize may";
 
       switch (result.status) {
         case "missing":
@@ -201,18 +214,22 @@ export const sizeLimitCore = ({
         case "rejected":
           return Effect.fail(
             EnvironmentsError.make({
-              message: `The user approved, but nothing was saved: ${result.message}`,
+              message: `The ${who} approved, but nothing was saved: ${result.message}`,
             }),
           );
         case "changed-since":
           return Effect.fail(
             EnvironmentsError.make({
-              message: changedSince(`the size limit of ${where}`, storedSizeWords(result.current)),
+              message: changedSince(
+                `the size limit of ${where}`,
+                storedSizeWords(result.current),
+                surface,
+              ),
             }),
           );
         case "unchanged":
           return Effect.succeed({
-            text: approvedAlready(`the size limit of ${where} is ${size}`),
+            text: approvedAlready(`the size limit of ${where} is ${size}`, surface),
             structured: asOutput(
               EnvironmentChangeOutput,
               unchangedOutput(details, "maxInstance", APPROVED),
@@ -221,7 +238,7 @@ export const sizeLimitCore = ({
           });
         case "changed":
           return Effect.succeed({
-            text: `The user approved: the size limit of ${named(result.environment)} was ${storedText(expected)}, and is ${size} now. environment_container_resize and container_resize may now use sizes up to ${size}. ${describeLimitReach(result, known.own)} The change is recorded as approved, with your reason; the user can revert it on the Environments page.`,
+            text: `The ${who} approved: the size limit of ${named(result.environment)} was ${storedText(expected)}, and is ${size} now. ${resizers} now use sizes up to ${size}. ${describeLimitReach(result, known.own, surface)} The change is recorded as approved, with your reason; the ${who} can revert it on the ${surface === "session" ? "Environments" : "Settings"} page.`,
             structured: asOutput(
               EnvironmentChangeOutput,
               changeOutput(result, known.own, APPROVED),

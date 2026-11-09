@@ -4,29 +4,35 @@
 // (the endpoint input, as JSON): its `prepare` with the Scope it reads, its `apply` against what the owner saw, settled
 // as how the write went, and the answer rebuilt from the Agent changes a write recorded before its run was cut. The asking
 // (`./approval-ask.ts`) and applying (`./approval-runner.ts`) parts look a tool up by name in `approvalTools`' table,
-// built once, and bind it to the caller's author source per call.
-// @effect-diagnostics missingPipeableSignature:off globalDate:off globalJsonInEffect:off -- ISO times of epoch numbers; an id quoted in a sentence.
+// built once, and bind it to the caller's author source per call. Every core answers in the endpoint's words
+// (`surface: "endpoint"`): the owner, no Session, and only the tools the endpoint serves.
+// @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- an id quoted in a sentence.
 import {
   type Applied,
   type ApprovalCore,
   instructionsCore,
+  limitOfField,
   type PlainText,
   type Prepared,
   resetLimitCore as resetSettingsLimitCore,
-  SETTINGS_LIMITS,
   type SettingsCoreServices,
   type SettingsHow,
   spendLimitCore,
   subagentDepthCore,
   subagentWorkspacesCore,
 } from "@cloudpid/extensions/approval-cores";
-import { type ChangeAuthor, EnvironmentsError } from "@cloudpid/extensions/environment";
+import {
+  type ChangeAuthor,
+  EnvironmentsError,
+  refuseGlobal,
+} from "@cloudpid/extensions/environment";
 import { resetLimitCore as resetSizeLimitCore } from "@cloudpid/extensions/environment-reset";
 import { sizeLimitCore } from "@cloudpid/extensions/environment-size-limit";
 import type { AppliedSettingsChange, SettingsView } from "@cloudpid/extensions/settings";
 import type { AgentChange } from "@cloudpid/protocol";
 import {
   APPROVAL_ASK_TOOLS,
+  type ApprovalToolName,
   GLOBAL_ID,
   GLOBAL_NAME,
   GLOBAL_SETTINGS_SCOPE,
@@ -35,7 +41,6 @@ import type { HarnessAnswer } from "@cloudpid/protocol/mcp-api";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { ApprovalEnd } from "../registry/approvals.ts";
@@ -87,11 +92,13 @@ export type ApprovalTool = {
   ) => Effect.Effect<HarnessAnswer, CoreError>;
 };
 
-/** The tools, by name, each bound to the author source of the call that asks or of the request that applies. */
-export type ApprovalToolTable = Readonly<Record<string, (source: AuthorSource) => ApprovalTool>>;
-
-/** A time as an answer says it. */
-export const isoTime = (at: number): string => new Date(at).toISOString();
+/**
+ * The tools, by name, each bound to the author source of the call that asks or of the request that applies: every tool
+ * whose change waits for the owner's Approval has one.
+ */
+export type ApprovalToolTable = {
+  readonly [Name in ApprovalToolName]: (source: AuthorSource) => ApprovalTool;
+};
 
 /** The refusal of arguments a tool cannot read (a request kept by a build with another schema). */
 const unreadable = (tool: string): CoreError => ({
@@ -122,17 +129,24 @@ const agentChangeOf = (tool: string, reason: string, change: ClaimedChange): Age
   revertedBy: null,
 });
 
-/** How a write went, by its result's status (a Settings' or an Environment's write, whose `missing` is refused). */
-const writeStatus = (result: { readonly status: string }): "made" | ApprovalEnd => {
+/**
+ * How a write went, by its result's status (a Settings' or an Environment's write, whose `missing` is refused): the target
+ * has the change (`wrote`: this write made it, rather than finding it made), or the request ends without it.
+ */
+type WriteOutcome =
+  | { readonly made: true; readonly wrote: boolean }
+  | { readonly made: false; readonly end: Exclude<ApprovalEnd, "finished"> };
+
+const writeOutcome = (result: { readonly status: string }): WriteOutcome => {
   switch (result.status) {
     case "changed":
-      return "made";
+      return { made: true, wrote: true };
     case "unchanged":
-      return "finished";
+      return { made: true, wrote: false };
     case "changed-since":
-      return "changed_since";
+      return { made: false, end: "changed_since" };
     default:
-      return "refused";
+      return { made: false, end: "refused" };
   }
 };
 
@@ -174,8 +188,8 @@ const approvalTool = <
   const read = (args: Schema.Json) =>
     Effect.fromOption(decode(args)).pipe(Effect.mapError(() => unreadable(core.tool)));
 
-  /** `render`'s answer, or for a write that was not made, its refusal as the reason the request ends with. */
-  const rendered = (args: Args, expected: Schema.Json | null, applied: Applied<Known, Res>) =>
+  /** `render`'s answer, or its refusal (for a write that was not made, the reason the request ends with), as a `Result`. */
+  const renderResult = (args: Args, expected: Schema.Json | null, applied: Applied<Known, Res>) =>
     core.render(args, expected, applied, how(args)).pipe(Effect.result);
 
   return {
@@ -192,20 +206,16 @@ const approvalTool = <
       Effect.gen(function* () {
         const decoded = yield* read(args);
         const applied = yield* core.apply(decoded, expected, author);
-        const made = writeStatus(applied.result);
+        const outcome = writeOutcome(applied.result);
+        const answer = yield* renderResult(decoded, expected, applied);
+        const said = Result.isFailure(answer) ? answer.failure.message : answer.success.text;
 
-        const answer = yield* rendered(decoded, expected, applied);
+        if (!outcome.made) return { status: outcome.end, reason: said };
 
-        if (Result.isFailure(answer)) {
-          return {
-            status: made === "made" || made === "finished" ? "refused" : made,
-            reason: answer.failure.message,
-          };
-        }
-
-        return made === "made" || made === "finished"
-          ? { status: "finished", answer: answer.success, wrote: made === "made" }
-          : { status: made, reason: answer.success.text };
+        // A write the target has whose words could not be made is refused: nothing says what it did.
+        return Result.isSuccess(answer)
+          ? { status: "finished", answer: answer.success, wrote: outcome.wrote }
+          : { status: "refused", reason: said };
       }),
     fromClaim: (args, expected, changes) =>
       Effect.gen(function* () {
@@ -219,7 +229,7 @@ const approvalTool = <
           changes,
         );
 
-        const answer = yield* rendered(decoded, expected, applied);
+        const answer = yield* renderResult(decoded, expected, applied);
 
         return Result.getOrElse(answer, () => notKept(core.tool));
       }),
@@ -287,23 +297,20 @@ const SizeLimitResetArgs = Schema.Struct({
 });
 
 /**
- * `settings_reset` of a Limit: the core of the Limit the arguments' `field` names. A field that is no Limit is not asked
- * for (the dispatcher resets it at once), and its arguments are refused here.
+ * `settings_reset` of a Limit: the core of the Limit the arguments' `field` names (`limitOfField`, which the dispatcher
+ * routes by too). A field that is no Limit is not asked for (the dispatcher resets it at once), and its arguments are
+ * refused here.
  */
 const settingsLimitReset = (services: SettingsCoreServices): ApprovalTool => {
   const decode = Schema.decodeUnknownOption(SettingsResetArgs);
 
-  // One tool per Limit; the request's arguments say which.
-  const byField = Record.fromEntries(
-    Arr.map(SETTINGS_LIMITS, (limit) => [
-      limit.field,
-      settingsToolOf(services, resetSettingsLimitCore(services, limit), "limits", decode),
-    ]),
-  );
-
+  // The tool of the Limit the request's arguments name.
   const pick = (args: Schema.Json): Effect.Effect<ApprovalTool, CoreError> =>
-    Effect.fromOption(Option.flatMap(decode(args), ({ field }) => Record.get(byField, field))).pipe(
+    Effect.fromOption(Option.flatMap(decode(args), ({ field }) => limitOfField(field))).pipe(
       Effect.mapError(() => unreadable("settings_reset")),
+      Effect.map((limit) =>
+        settingsToolOf(services, resetSettingsLimitCore(services, limit), "limits", decode),
+      ),
     );
 
   return {
@@ -339,6 +346,7 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
   const settingsOf = (source: AuthorSource): SettingsCoreServices => ({
     access: writes.settings(source),
     plainText,
+    surface: "endpoint",
   });
 
   const settingsTool =
@@ -379,7 +387,11 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
     // An Environment's size limit (`maxInstance`) is edited with the Limits on the Settings page (`LimitsForm`).
     environment_container_size_limit_set: (source) =>
       approvalTool({
-        core: sizeLimitCore({ environments: writes.environments(source), plainText }),
+        core: sizeLimitCore({
+          environments: writes.environments(source),
+          plainText,
+          surface: "endpoint",
+        }),
         section: "limits",
         decode: Schema.decodeUnknownOption(
           APPROVAL_ASK_TOOLS.environment_container_size_limit_set.endpoint.input,
@@ -413,7 +425,14 @@ export const approvalTools = (writes: EndpointWrites): ApprovalToolTable => {
             Effect.forEach(texts, ({ what, text }) => plainText(text, what, "Say it without it."), {
               discard: true,
             }),
-          target: (id) => Effect.succeed({ environment: id, own: false }),
+          // `*` is refused as the reset of any other setting is: Global inherits nothing.
+          target: (id) =>
+            Effect.gen(function* () {
+              yield* refuseGlobal(id, "endpoint");
+
+              return { environment: id, own: false };
+            }),
+          surface: "endpoint",
         }),
         section: "limits",
         decode: Schema.decodeUnknownOption(SizeLimitResetArgs),

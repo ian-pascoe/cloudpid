@@ -7,9 +7,11 @@
 // not meant to read it. A change goes through one path: the probe (`agentChangeFeatures`, failing closed), the
 // `request_id` (refused with the Registry's own `approval:` prefix; looked up, then claimed by the write's own transaction
 // and settled before the answer is sent), then the notice and the upkeep after the answer. A tool whose change waits for
-// the owner's Approval, and `settings_reset` of a Limit, goes to the ask instead (`./approval-ask.ts`).
-// @effect-diagnostics missingPipeableSignature:off preferTypedSchemaDecoder:off cryptoRandomUUID:off -- the input is the caller's JSON, read again; an attempt is a plain UUID.
+// the owner's Approval, and the reset of a Limit, goes to the ask instead (`./approval-ask.ts`). The input is the caller's
+// JSON, read again, and an attempt is a plain UUID:
+// @effect-diagnostics missingPipeableSignature:off preferTypedSchemaDecoder:off cryptoRandomUUID:off
 import { sha256Hex, sortedJson } from "@cloudpid/config";
+import { limitOfField } from "@cloudpid/extensions/approval-cores";
 import {
   environmentChangeCores,
   type Replayed,
@@ -44,14 +46,13 @@ import {
 import {
   APPROVAL_REQUEST_PREFIX,
   type ApprovalAskToolName,
+  type ApprovalToolName,
   type DispatchedToolName,
   GLOBAL_ID,
   HARNESS_TOOLS,
   type HarnessToolName,
   RESET_LIMIT_SETTING,
-  SETTINGS_LIMIT_FIELDS,
 } from "@cloudpid/protocol/harness-tools";
-import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -113,7 +114,8 @@ const ENVIRONMENT_REPLAYED: Readonly<Record<EnvironmentToolName, Replayed>> = {
 
 /**
  * The words of what a tool is asked for that this stage does not serve (`unsupported`), or undefined for a call it does:
- * a change to the Skills kept Global waits for the owner's Approval (S3b), and a Test Build of `proposed` is S4a's. They are answered before anything is claimed or written.
+ * a change to the Skills kept Global waits for the owner's Approval (S3b), and a Test Build of `proposed` is S4a's. They
+ * are answered before anything is claimed or written.
  */
 type Unsupported<Name extends HarnessToolName> = (args: InputOf<Name>) => string | undefined;
 
@@ -186,9 +188,7 @@ type Ask = (call: ApprovalAskCall) => Effect.Effect<ApiResult<HarnessAnswer>>;
  * An asking tool's served form (`./approval-ask.ts`): the input read again, a `request_id` beginning `approval:` refused,
  * then the ask, which answers `pending` (or `unchanged`) and claims and settles the `request_id` itself.
  */
-const serveAsk = <
-  Name extends ApprovalAskToolName | "settings_reset" | "environment_setting_reset",
->(
+const serveAsk = <Name extends ApprovalToolName>(
   ask: Ask,
   tool: Name,
   newAttempt: () => string,
@@ -226,12 +226,12 @@ const decodeResetField = Schema.decodeUnknownOption(Schema.Struct({ field: Schem
 /** What `environment_setting_reset`'s routing reads of its input: the setting. */
 const decodeResetSetting = Schema.decodeUnknownOption(Schema.Struct({ setting: Schema.String }));
 
-/** Whether a `settings_reset` input names a Limit, whose reset waits for the owner's Approval. */
+/**
+ * Whether a `settings_reset` input names a Limit, whose reset waits for the owner's Approval: `limitOfField` decides, as
+ * it picks the Limit's core for the ask.
+ */
 const resetsLimit = (input: HarnessRequest["input"]): boolean =>
-  Option.match(decodeResetField(input), {
-    onNone: () => false,
-    onSome: ({ field }) => Arr.contains(SETTINGS_LIMIT_FIELDS, field),
-  });
+  Option.isSome(Option.flatMap(decodeResetField(input), ({ field }) => limitOfField(field)));
 
 /** Whether an `environment_setting_reset` input names the size limit, whose reset waits for the owner's Approval. */
 const resetsSizeLimit = (input: HarnessRequest["input"]): boolean =>

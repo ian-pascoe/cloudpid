@@ -34,6 +34,7 @@ import {
   GLOBAL_ID,
   HARNESS_TOOLS,
   idDescription,
+  type Surface,
 } from "@cloudpid/protocol/harness-tools";
 import {
   type AgentChange,
@@ -313,16 +314,21 @@ export const storedText = (value: Schema.Json | null): string =>
 
 /**
  * What a change of the size limit (`maxInstance`) says of whom it reaches. A change from the Registry's write says it all;
- * one built from the recorded Agent change does not know the Builds the upkeep asked for, and says where to look.
+ * one built from the recorded Agent change does not know the Builds the upkeep asked for, and says where to look. On the
+ * endpoint (`surface`) it names only the tools the endpoint serves.
  */
-export const describeLimitReach = (result: ChangedSetting, own: boolean): string => {
+export const describeLimitReach = (
+  result: ChangedSetting,
+  own: boolean,
+  surface: Surface = "session",
+): string => {
   if (result.global !== undefined) return describeAppliedGlobal("maxInstance", result.global);
 
   if (result.environment.id === GLOBAL_ID) {
     return "It applies at the next Container start of every Workspace that inherits it: a Container that runs keeps what it started with. environment_get shows the Builds.";
   }
 
-  return describeApplied(own, result.newBuild);
+  return describeApplied(own, result.newBuild, surface);
 };
 
 /** How the write of one Container setting went: the Registry's answer, or one built from the Agent change it recorded. */

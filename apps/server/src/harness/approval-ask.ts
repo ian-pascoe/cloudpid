@@ -7,6 +7,7 @@
 // caller's `request_id` with that answer before it is sent.
 // @effect-diagnostics missingPipeableSignature:off globalJsonInEffect:off -- an id quoted in a sentence.
 import { type AgentChangeVia, approvalPath } from "@cloudpid/protocol";
+import type { ApprovalToolName } from "@cloudpid/protocol/harness-tools";
 import { type ApiResult, apiFailure, apiOk, type HarnessAnswer } from "@cloudpid/protocol/mcp-api";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -14,17 +15,20 @@ import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Types from "effect/Types";
-import type { StoredApproval } from "../registry/approvals.ts";
+import { expiresAtIso, type StoredApproval } from "../registry/approvals.ts";
 import type { ChangeClaim } from "../registry/change-requests.ts";
 import { healingRefusal } from "../registry/via-secrets.ts";
-import { approvalTools, type CoreError, isoTime, type ScopeRef } from "./approval-tools.ts";
+import { approvalTools, type CoreError, type ScopeRef } from "./approval-tools.ts";
 import type { ApprovalsRegistry, EndpointWrites } from "./services.ts";
+
+/** An asking tool's endpoint input as decoded: JSON, with the caller's `request_id` among its keys. */
+type AskArgs = { readonly request_id?: string | undefined };
 
 /** An ask as the dispatcher hands it over: the tool, its decoded input, who asks, and its digests. */
 export type ApprovalAskCall = {
-  readonly tool: string;
+  readonly tool: ApprovalToolName;
   /** The endpoint input as decoded, `request_id` included. */
-  readonly args: { readonly request_id?: string | undefined };
+  readonly args: AskArgs;
   readonly caller: AgentChangeVia;
   readonly requestId: string | undefined;
   /** The `request_id` digest (`requestDigest`): the tool and every argument but the id. */
@@ -44,7 +48,7 @@ export type ApprovalAskServices = {
 };
 
 /** The arguments a request keeps: the input as decoded, without the caller's `request_id`. */
-const keptArgs = (args: { readonly request_id?: string | undefined }): Schema.Json =>
+const keptArgs = (args: AskArgs): Schema.Json =>
   // SAFETY: `args` is an endpoint input as its schema decoded it: JSON.
   Record.remove(args as Readonly<Record<string, Schema.Json>>, "request_id");
 
@@ -61,7 +65,7 @@ const pendingAnswer = (
 ): HarnessAnswer => {
   const url = cardUrl(approval, origin);
   const what = `${approval.card.change}, ${approval.card.target}`;
-  const expires = isoTime(approval.expiresAt);
+  const expires = expiresAtIso(approval);
 
   return {
     text: fresh
@@ -125,13 +129,7 @@ export const askApproval = (services: ApprovalAskServices) => {
   return (call: ApprovalAskCall): Effect.Effect<ApiResult<HarnessAnswer>> =>
     Effect.gen(function* () {
       const { tool, args, caller, requestId } = call;
-      const toolOf = Record.get(tools, tool);
-
-      if (Option.isNone(toolOf)) {
-        return apiFailure("unsupported", `The server does not serve ${tool}: it is not offered.`);
-      }
-
-      const found = toolOf.value({ kind: "endpoint", via: caller });
+      const found = tools[tool]({ kind: "endpoint", via: caller });
 
       const earlier =
         requestId === undefined ? null : yield* services.registry.changeRequest({ id: requestId });

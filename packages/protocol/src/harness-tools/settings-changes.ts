@@ -40,7 +40,11 @@ export const SPEND_LIMIT_FIELD = "spendLimit.perSession";
 export const DEPTH_LIMIT_FIELD = extensionField("subagents", "maxSubagentDepth");
 export const WORKSPACES_LIMIT_FIELD = extensionField("subagents", "maxSubagentWorkspaces");
 
-/** The fields that are Limits: their tools, and a reset of one, wait for the owner's Approval. */
+/**
+ * The fields that are Limits, as the tools' descriptions name them: their tools, and a reset of one, wait for the owner's
+ * Approval. Which field a call names is a Limit is decided by `limitOfField` (`@cloudpid/extensions/approval-cores`, built
+ * over these fields), for the Session's tools and the endpoint's routing alike.
+ */
 export const SETTINGS_LIMIT_FIELDS: ReadonlyArray<string> = [
   SPEND_LIMIT_FIELD,
   DEPTH_LIMIT_FIELD,

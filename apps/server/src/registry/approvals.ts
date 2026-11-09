@@ -86,6 +86,11 @@ export type StoredApproval = {
 export const awaitsApply = (approval: StoredApproval, now: number): boolean =>
   approval.status === "approved" && (approval.leaseUntil === null || approval.leaseUntil <= now);
 
+/** When a request expires if the owner has not answered, as the caller is told it (ISO 8601): the ask's and the wait's. */
+export const expiresAtIso = (approval: StoredApproval): string =>
+  // @effect-diagnostics-next-line globalDate:off -- an ISO time of an epoch number, outside any Effect.
+  new Date(approval.expiresAt).toISOString();
+
 /** What a tool asks to be approved. */
 export type ApprovalAsk = {
   readonly tool: string;

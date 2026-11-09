@@ -13,6 +13,10 @@
 //   from `applied`'s `result`: the write's own answer, or one built from the Agent changes it recorded. `how` is what
 //   only the caller knows (here, what the change reaches). A write that was not made is the core's refusal.
 //
+// A core is built for one surface (`docs/architecture/mcp-endpoint.md` → Names and surfaces): a Session's words, the
+// default, are byte-identical to the tools' before the endpoint served them; the endpoint's name the owner, no Session
+// and no tool the endpoint does not serve.
+//
 // The Session's wrappers (`./approval-tools.ts`) run them between `withApproval` and their after-steps; Registry-held
 // Approvals run `apply` from the main Worker, and `render` for an Applied they build from recorded Agent changes.
 import {
@@ -28,7 +32,9 @@ import type { ApprovalCardContent } from "@cloudpid/protocol";
 import {
   DEPTH_LIMIT_FIELD,
   SPEND_LIMIT_FIELD,
+  type Surface,
   WORKSPACES_LIMIT_FIELD,
+  whoWords,
 } from "@cloudpid/protocol/harness-tools";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -115,10 +121,14 @@ export type PlainText = (
   fix: string,
 ) => Effect.Effect<void, EnvironmentsError>;
 
-/** What the Settings cores read and write: the Registry's Settings, and the check of the texts. */
+/**
+ * What the Settings cores read and write: the Registry's Settings, and the check of the texts; and whose words they answer
+ * in (`surface`, a Session's when absent).
+ */
 export type SettingsCoreServices = {
   readonly access: Pick<SettingsAccessService, "get" | "change">;
   readonly plainText: PlainText;
+  readonly surface?: Surface;
 };
 
 /** The refusals a Settings core gives. */
@@ -236,8 +246,10 @@ const grouped = (n: number): string => n.toLocaleString("en-US");
  * What a result says of when an approved change of the Instructions applies, to conversations named by `whose` ("its"
  * or "their"): never inside a context.
  */
-const instructionsApply = (whose: "its" | "their"): string =>
-  `from the start of ${whose} next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with.`;
+const instructionsApply = (whose: "its" | "their", surface: Surface): string =>
+  surface === "session"
+    ? `from the start of ${whose} next Context Window (a new Session, a Handoff or a Rollover); this one, like every context that has begun, keeps showing the Instructions it started with.`
+    : `from the start of ${whose} next Context Window (a new Session, a Handoff or a Rollover); a context that has begun keeps showing the Instructions it started with.`;
 
 /** What a Limit at an Environment was when the owner was asked: its value in force, and whether it was inherited. */
 const LimitAtEnvironment = Schema.Struct({
@@ -310,10 +322,11 @@ type LimitSpec<Args> = {
  * and the change is made only while the Limit is still as the owner saw it (at an Environment, inherited or not as it was).
  */
 const limitCore = <Args extends ScopedArgs>(
-  { access, plainText }: SettingsCoreServices,
+  { access, plainText, surface = "session" }: SettingsCoreServices,
   spec: LimitSpec<Args>,
 ): SettingsCore<Args> => {
   const { tool, limit } = spec;
+  const who = whoWords(surface);
 
   return {
     tool,
@@ -375,7 +388,7 @@ const limitCore = <Args extends ScopedArgs>(
         case "rejected":
           return Effect.fail(
             SettingsAccessError.make({
-              message: `The user approved, but nothing was saved: ${result.message}`,
+              message: `The ${who} approved, but nothing was saved: ${result.message}`,
             }),
           );
         case "changed-since":
@@ -384,12 +397,13 @@ const limitCore = <Args extends ScopedArgs>(
               message: changedSince(
                 `${limit.name} ${where}`,
                 `${limit.words(result.current)}${inheritedWords(result.inherited)}`,
+                surface,
               ),
             }),
           );
         case "unchanged":
           return Effect.succeed({
-            text: approvedAlready(`${limit.name} ${where} is ${after}`),
+            text: approvedAlready(`${limit.name} ${where} is ${after}`, surface),
             structured: settingsChangeOutput({
               view,
               changes: [],
@@ -400,7 +414,7 @@ const limitCore = <Args extends ScopedArgs>(
           });
         case "changed":
           return Effect.succeed({
-            text: `The user approved: ${limit.name} ${where} was ${beforeWords(limit, view, expected)}, and is ${after} now. ${how.reach} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
+            text: `The ${who} approved: ${limit.name} ${where} was ${beforeWords(limit, view, expected)}, and is ${after} now. ${how.reach} The change is recorded as approved, with your reason; the ${who} can revert it on the Settings page.`,
             structured: settingsChangeOutput({
               view,
               changes: result.changes,
@@ -552,8 +566,10 @@ const instructionsAt = (view: SettingsView): string =>
 export const instructionsCore = ({
   access,
   plainText,
+  surface = "session",
 }: SettingsCoreServices): SettingsCore<InstructionsArgs> => {
   const tool = "settings_instructions_set";
+  const who = whoWords(surface);
 
   return {
     tool,
@@ -627,7 +643,7 @@ export const instructionsCore = ({
         case "rejected":
           return Effect.fail(
             SettingsAccessError.make({
-              message: `The user approved, but nothing was saved: ${result.message}`,
+              message: `The ${who} approved, but nothing was saved: ${result.message}`,
             }),
           );
         case "changed-since":
@@ -638,12 +654,13 @@ export const instructionsCore = ({
                 Predicate.isString(result.current) && result.current !== ""
                   ? `${textSize(result.current)} long`
                   : "none",
+                surface,
               ),
             }),
           );
         case "unchanged":
           return Effect.succeed({
-            text: approvedAlready(`the Instructions ${where} have that text`),
+            text: approvedAlready(`the Instructions ${where} have that text`, surface),
             structured: settingsChangeOutput({
               view,
               changes: [],
@@ -663,11 +680,11 @@ export const instructionsCore = ({
 
           const done =
             text === ""
-              ? `are removed. ${stopped} ${instructionsApply("their")}`
-              : `are changed (${textSize(text)} now). ${shownTo} ${instructionsApply("its")}`;
+              ? `are removed. ${stopped} ${instructionsApply("their", surface)}`
+              : `are changed (${textSize(text)} now). ${shownTo} ${instructionsApply("its", surface)}`;
 
           return Effect.succeed({
-            text: `The user approved: the Instructions ${where} ${done} The change is recorded as approved, with your reason; the user can revert it on the Settings page.`,
+            text: `The ${who} approved: the Instructions ${where} ${done} The change is recorded as approved, with your reason; the ${who} can revert it on the Settings page.`,
             structured: settingsChangeOutput({
               view,
               changes: result.changes,

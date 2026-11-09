@@ -16,6 +16,7 @@
 // ends. A tool whose core is split (`./approval-cores.ts`) runs it through `approvedChange`. It is shared by the tools that change a Limit or delete, by those that change the Skills kept Global, and meant for the Guardian (#38) too.
 import { reachedWait } from "@cloudpid/effect-durable";
 import { ApprovalCardContent } from "@cloudpid/protocol";
+import { type Surface, whoWords } from "@cloudpid/protocol/harness-tools";
 import type { JsonValue } from "@earendil-works/chord";
 import type { ToolExecutionApi } from "@earendil-works/pi-durable";
 import * as Context from "effect/Context";
@@ -362,14 +363,17 @@ export const declinedWith = (
 
 /**
  * What a change the owner approved says when the target has the value already: this call made it before the Session
- * restarted (recorded then), or the user made it meanwhile.
+ * restarted (recorded then), or the user made it meanwhile. On the endpoint (`surface`) it names the owner.
  */
-export const approvedAlready = (what: string) =>
-  `The user approved, and ${what} already, as approved: nothing more needed changing.`;
+export const approvedAlready = (what: string, surface: Surface = "session") =>
+  `The ${whoWords(surface)} approved, and ${what} already, as approved: nothing more needed changing.`;
 
-/** What a change the owner approved says when the target changed between the request and the answer. */
-export const changedSince = (what: string, now: string) =>
-  `The user approved, but ${what} changed since they were asked: it is ${now} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`;
+/**
+ * What a change the owner approved says when the target changed between the request and the answer. On the endpoint
+ * (`surface`) it names the owner.
+ */
+export const changedSince = (what: string, now: string, surface: Surface = "session") =>
+  `The ${whoWords(surface)} approved, but ${what} changed since they were asked: it is ${now} now, so the change they saw was not made and nothing was saved. Ask again with the value as it is now if the change is still needed.`;
 
 /**
  * The Session's run of a tool's core (`./approval-cores.ts`): `prepare`, then, unless the target has the value asked for

@@ -17,6 +17,7 @@ import * as Result from "effect/Result";
 import type { ApprovalEnd, StoredApproval } from "../registry/approvals.ts";
 import type { ChangeClaim } from "../registry/change-requests.ts";
 import type { UpkeepChange } from "../registry/upkeep.ts";
+import type { AuthorSource } from "../session/change-author.ts";
 import { type ApprovalTool, approvalTools, notKept } from "./approval-tools.ts";
 import type { ApprovalsRegistry, EndpointWrites } from "./services.ts";
 
@@ -46,7 +47,9 @@ export const approvalRunner = ({
   background,
   newToken = () => crypto.randomUUID(),
 }: ApprovalRunnerDeps) => {
-  const tools = approvalTools(writes);
+  // By the name a request keeps, which a later build may no longer apply.
+  const tools: Readonly<Record<string, (source: AuthorSource) => ApprovalTool>> =
+    approvalTools(writes);
 
   /**
    * Apply approved request `id` (see the module's rules), answering it as it stands after: settled, or still approved
@@ -88,7 +91,7 @@ export const approvalRunner = ({
        * Finish from the claim, when a write committed under it: its kept answer, or one `tool` rebuilds from its changes,
        * with the upkeep that run may not have run run again (it is idempotent). None when nothing is claimed.
        */
-      const fromClaim = (tool: ApprovalTool) =>
+      const finishFromClaim = (tool: ApprovalTool) =>
         Effect.gen(function* () {
           const found = yield* registry.changeRequest({ id: claim.id });
 
@@ -126,7 +129,7 @@ export const approvalRunner = ({
       }
 
       const tool = toolOf.value({ kind: "endpoint", via: approval.via, request: claim });
-      const earlier = yield* fromClaim(tool);
+      const earlier = yield* finishFromClaim(tool);
 
       if (Option.isSome(earlier)) return earlier.value;
 
@@ -147,7 +150,7 @@ export const approvalRunner = ({
 
       // A write that made nothing (changed since, refused, or the value there already) may have met the change a run
       // that overlapped a lapsed lease committed under the claim: that run's change is this request's.
-      const overlapped = yield* fromClaim(tool);
+      const overlapped = yield* finishFromClaim(tool);
 
       if (Option.isSome(overlapped)) return overlapped.value;
 

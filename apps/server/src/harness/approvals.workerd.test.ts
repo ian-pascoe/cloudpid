@@ -14,6 +14,7 @@ import {
   GLOBAL_SCOPE,
   MAX_PENDING_APPROVALS,
 } from "@cloudpid/protocol";
+import type { ApprovalToolName } from "@cloudpid/protocol/harness-tools";
 import type { ApiResult, ApprovalState, HarnessAnswer } from "@cloudpid/protocol/mcp-api";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
@@ -93,7 +94,7 @@ const started = async (overrides: Overrides = () => ({})) => {
     call,
     /** Ask for `tool`'s change with `args`, as the dispatcher hands it over. */
     ask: async (
-      tool: string,
+      tool: ApprovalToolName,
       args: Readonly<Record<string, Schema.Json>>,
       requestId?: string,
     ): Promise<ApiResult<HarnessAnswer>> => {

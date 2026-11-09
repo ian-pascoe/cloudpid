@@ -208,6 +208,12 @@ export const APPROVAL_ASK_TOOLS = {
 
 export type ApprovalAskToolName = keyof typeof APPROVAL_ASK_TOOLS;
 
+/**
+ * Every tool whose change waits for the owner's Approval on the endpoint: the asking tools, and the two resets, whose
+ * Limit's reset asks (`settings_reset` of a Limit, `environment_setting_reset` of the size limit).
+ */
+export type ApprovalToolName = ApprovalAskToolName | "settings_reset" | "environment_setting_reset";
+
 const ApprovalId = Schema.String.check(Schema.isMinLength(1)).annotate({
   description: "The approval_id the asking tool answered",
 });

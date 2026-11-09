@@ -19,6 +19,7 @@ import {
   RESETTABLE_SETTINGS,
   type ResettableSetting,
   type Surface,
+  whoWords,
 } from "@cloudpid/protocol/harness-tools";
 import * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -154,16 +155,23 @@ const resetAnswer = ({
   own,
   approved,
   surface,
+  wordsOf = surface,
 }: {
   readonly environment: string;
   readonly setting: ResettableSetting;
   readonly result: ContainerSettingResult;
   readonly own: boolean;
   readonly approved: boolean;
-  /** Whose words the answer is in: the endpoint's names the owner and refuses with a code (never approved). */
+  /** Whose answer it is: the endpoint's values are its own, its text is cut and its refusals carry a code. */
   readonly surface: Surface;
+  /**
+   * Whose words the text is in (`surface`'s when absent): the endpoint's name the owner, and the Settings page where the
+   * change is reverted. An approved reset on the endpoint is the Session's answer in the endpoint's words.
+   */
+  readonly wordsOf?: Surface;
 }): Effect.Effect<HarnessAnswer, EnvironmentsError> => {
-  const prefix = approved ? "The user approved, but nothing was saved" : "Nothing was saved";
+  const who = whoWords(wordsOf);
+  const prefix = approved ? `The ${who} approved, but nothing was saved` : "Nothing was saved";
 
   const refusal = (message: string) =>
     Effect.fail(
@@ -180,7 +188,7 @@ const resetAnswer = ({
     case "changed-since":
       return Effect.fail(
         EnvironmentsError.make({
-          message: `${prefix}: the ${SETTING_WORDS[setting]} changed since the user was asked, to ${valueWords(setting, result.current)}. Ask again if the reset is still needed.`,
+          message: `${prefix}: the ${SETTING_WORDS[setting]} changed since the ${who} was asked, to ${valueWords(setting, result.current)}. Ask again if the reset is still needed.`,
         }),
       );
     case "unchanged":
@@ -189,6 +197,7 @@ const resetAnswer = ({
           ? {
               text: approvedAlready(
                 `the ${SETTING_WORDS[setting]} of ${named(result.environment)} is inherited from Global`,
+                wordsOf,
               ),
               structured: asOutput(
                 EnvironmentChangeOutput,
@@ -199,7 +208,7 @@ const resetAnswer = ({
           : inheritedAlready(setting, result.environment, result.value, surface),
       );
     case "changed": {
-      const text = `${approved ? "The user approved: r" : "R"}eset the ${SETTING_WORDS[setting]} of ${named(result.environment)}: it was ${valueWords(setting, result.change.before)} (its own), and inherits Global's ${valueWords(setting, result.change.after)} now, and each change of it at Global. ${describeApplied(own, result.newBuild, surface)} The change is recorded${approved ? " as approved" : ""} with your reason; the ${surface === "session" ? "user" : "owner"} can revert it on the Environments page.`;
+      const text = `${approved ? `The ${who} approved: r` : "R"}eset the ${SETTING_WORDS[setting]} of ${named(result.environment)}: it was ${valueWords(setting, result.change.before)} (its own), and inherits Global's ${valueWords(setting, result.change.after)} now, and each change of it at Global. ${describeApplied(own, result.newBuild, wordsOf)} The change is recorded${approved ? " as approved" : ""} with your reason; the ${who} can revert it on the ${wordsOf === "session" ? "Environments" : "Settings"} page.`;
 
       return Effect.succeed({
         text: surface === "session" ? text : endpointText(text),
@@ -286,9 +295,13 @@ export const resetCore =
       };
     });
 
-/** What the core of the reset of the size limit reads and writes. */
+/**
+ * What the core of the reset of the size limit reads and writes; and whose words it answers in (`surface`, a Session's
+ * when absent).
+ */
 export type ResetLimitServices = Pick<LifecycleDeps, "refuseSecrets" | "target"> & {
   readonly environments: Pick<EnvironmentsService, "get" | "change">;
+  readonly surface?: Surface;
 };
 
 /** The arguments of the reset of the size limit: `environment_setting_reset` with the setting `maxInstance`. */
@@ -306,6 +319,7 @@ export const resetLimitCore = ({
   environments,
   refuseSecrets,
   target,
+  surface = "session",
 }: ResetLimitServices): ApprovalCore<
   ResetLimitArgs,
   ResetLimitKnown,
@@ -351,7 +365,7 @@ export const resetLimitCore = ({
         if (details.overrides.maxInstance === undefined) {
           return {
             ...prepared,
-            unchanged: inheritedAlready("maxInstance", details, maxInstance, "session"),
+            unchanged: inheritedAlready("maxInstance", details, maxInstance, surface),
           };
         }
 
@@ -386,6 +400,7 @@ export const resetLimitCore = ({
         own: known.own,
         approved: true,
         surface: "session",
+        wordsOf: surface,
       }),
 
     declined: (_args, { details }, answer) =>

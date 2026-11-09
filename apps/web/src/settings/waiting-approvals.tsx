@@ -23,11 +23,11 @@ import {
 } from "./approvals.ts";
 
 /** What a request's row says of it: its words, whether Try again applies it, and whether its apply is under way. */
-interface Outcome {
+type Outcome = {
   readonly text: string;
   readonly retry: boolean;
   readonly busy: boolean;
-}
+};
 
 /** What came of a request no longer waiting, as its row says it; `retry` when Try again applies it. */
 const outcomeOf = (approval: RegistryApproval): Outcome => {
